@@ -23,6 +23,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -834,22 +835,8 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       </section>
 
       <div className="flex min-w-0 items-center gap-1.5 overflow-hidden" data-testid="git-action-row">
-        {pr ? (
-          <Button
-            asChild
-            size="sm"
-            variant={pr.state === "closed" ? "outline" : "default"}
-            className={cn(
-              "min-w-0 flex-1 px-2",
-              pr.state === "merged" && "border-transparent bg-emerald-600 text-white hover:bg-emerald-500",
-            )}
-          >
-            <a href={pr.url} target="_blank" rel="noopener noreferrer" data-testid="pr-link">
-              <ExternalLink className="h-3.5 w-3.5" />
-              <span className="min-w-0 truncate">View PR #{pr.number}</span>
-            </a>
-          </Button>
-        ) : (
+        {!pr ? (
+          /* ── No PR: full-width Create PR button ── */
           <Button
             size="sm"
             variant="default"
@@ -871,6 +858,117 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
           >
             <Github className="h-3.5 w-3.5" />
             Create PR
+          </Button>
+        ) : pr.state === "open" ? (
+          /* ── PR open: split Merge button ── */
+          <>
+            <div className="flex min-w-0 flex-1 overflow-hidden rounded-md border border-primary">
+              <Button
+                size="sm"
+                variant="default"
+                className="flex-1 rounded-none rounded-l-md border-0 gap-1 px-2"
+                disabled={mergePrMutation.isPending || closePrMutation.isPending}
+                onClick={() => mergePrMutation.mutate("squash")}
+                data-testid="pr-merge-btn"
+              >
+                {mergePrMutation.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                Merge
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="shrink-0 rounded-none rounded-r-md border-0 border-l border-primary-foreground/25 px-1.5"
+                    disabled={mergePrMutation.isPending || closePrMutation.isPending}
+                    aria-label="More merge options"
+                    data-testid="pr-merge-dropdown-trigger"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-52">
+                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("merge")}>
+                    <GitPullRequest className="h-4 w-4" />
+                    Merge commit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("squash")}>
+                    <GitPullRequest className="h-4 w-4" />
+                    Squash and merge
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("rebase")}>
+                    <GitPullRequest className="h-4 w-4" />
+                    Rebase and merge
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <a href={pr.url} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="h-4 w-4" />
+                      View PR #{pr.number}
+                    </a>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => closePrMutation.mutate()}
+                    disabled={closePrMutation.isPending}
+                  >
+                    {closePrMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : null}
+                    Close PR
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setShowRequestReviewDialog(true)}>
+                    Request Review
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <Button size="icon-xs" variant="ghost" asChild className="shrink-0">
+              <a href={pr.url} target="_blank" rel="noopener noreferrer" aria-label="View PR on GitHub" data-testid="pr-link">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </Button>
+          </>
+        ) : pr.state === "closed" ? (
+          /* ── PR closed: Reopen button ── */
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-w-0 flex-1 gap-1 px-2 border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
+              onClick={() => reopenPrMutation.mutate()}
+              disabled={reopenPrMutation.isPending}
+              data-testid="pr-reopen-btn"
+            >
+              {reopenPrMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              Reopen PR
+            </Button>
+            <Button size="icon-xs" variant="ghost" asChild className="shrink-0">
+              <a href={pr.url} target="_blank" rel="noopener noreferrer" aria-label="View PR on GitHub" data-testid="pr-link">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </Button>
+          </>
+        ) : (
+          /* ── PR merged: purple chip link ── */
+          <Button
+            size="sm"
+            variant="ghost"
+            className="min-w-0 flex-1 gap-1 px-2 bg-purple-500/10 text-purple-400 hover:bg-purple-500/15"
+            asChild
+            data-testid="pr-merged-chip"
+          >
+            <a href={pr.url} target="_blank" rel="noopener noreferrer" data-testid="pr-link">
+              <Check className="h-3.5 w-3.5" />
+              Merged #{pr.number}
+            </a>
           </Button>
         )}
 
@@ -938,82 +1036,6 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
 
         {workspace.cwd && <OpenInIdeButton cwd={workspace.cwd} compact />}
       </div>
-
-      {pr && pr.state !== "merged" && (
-        <div className="flex items-center gap-1.5 flex-wrap pt-1">
-          {pr.state === "open" && (
-            <>
-              {/* Merge dropdown */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    size="sm"
-                    variant="default"
-                    className="h-7 text-xs gap-1"
-                    disabled={mergePrMutation.isPending}
-                    aria-label="Merge"
-                  >
-                    {mergePrMutation.isPending ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <GitPullRequest className="h-3 w-3" />
-                    )}
-                    Merge
-                    <ChevronDown className="h-3 w-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("merge")}>
-                    Merge commit
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("squash")}>
-                    Squash and merge
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("rebase")}>
-                    Rebase and merge
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              {/* Close */}
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={() => closePrMutation.mutate()}
-                disabled={closePrMutation.isPending}
-                aria-label="Close PR"
-              >
-                {closePrMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Close PR"}
-              </Button>
-
-              {/* Request Review */}
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={() => setShowRequestReviewDialog(true)}
-                aria-label="Request review"
-              >
-                Request Review
-              </Button>
-            </>
-          )}
-
-          {pr.state === "closed" && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={() => reopenPrMutation.mutate()}
-              disabled={reopenPrMutation.isPending}
-              aria-label="Reopen"
-            >
-              {reopenPrMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Reopen"}
-            </Button>
-          )}
-        </div>
-      )}
 
       {pr && showRequestReviewDialog && (
         <RequestReviewInline
