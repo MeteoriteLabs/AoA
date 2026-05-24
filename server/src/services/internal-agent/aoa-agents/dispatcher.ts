@@ -1,6 +1,6 @@
 import { and, eq, lt, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents } from "@armyofagents/db";
+import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents, internalAgentConfig } from "@armyofagents/db";
 import { listEnabledOutboxAgents } from "./triggers.js";
 import { ensureExtractionAgent } from "./ensure-extraction-agent.js";
 import { runExtractionConsumer } from "../subagents/extraction-consumer.js";
@@ -8,6 +8,7 @@ import { runAoaAgent } from "./runner.js";
 import { createLimiter } from "../subagents/concurrency-limiter.js";
 import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
+import { isRoleActiveAtAutonomy, type CrewRole } from "./autonomy.js";
 
 export interface DispatchOptions {
   /** Max simultaneous extractions per dispatch tick. */
@@ -212,11 +213,43 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     );
   };
 
+  // Per-company autonomy level memoization within this tick.
+  const autonomyByCompany = new Map<string, number>();
+  async function resolveAutonomy(companyId: string): Promise<number> {
+    if (autonomyByCompany.has(companyId)) return autonomyByCompany.get(companyId)!;
+    const [cfg] = await db
+      .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+      .from(internalAgentConfig)
+      .where(eq(internalAgentConfig.companyId, companyId))
+      .limit(1);
+    const level = cfg?.autonomyLevel ?? 0;
+    autonomyByCompany.set(companyId, level);
+    return level;
+  }
+
   const drainPhase3 = async (): Promise<void> => {
     if (wakeupRows.length === 0) return;
     await Promise.allSettled(
       wakeupRows.map((w) =>
         p3Limiter.run(async () => {
+          // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
+          // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
+          // (scribe, memory_keeper, curator) are always active (min = 0).
+          const payloadRole = (w.payload as Record<string, unknown> | null)?.role as string | undefined;
+          if (payloadRole && !isRoleActiveAtAutonomy(payloadRole as CrewRole, await resolveAutonomy(w.companyId))) {
+            // Skip the run: mark wakeup 'done' (not 'failed') — it was
+            // correctly queued but autonomy level prevents execution.
+            await db
+              .update(agentWakeupRequests)
+              .set({ status: "done", finishedAt: new Date() })
+              .where(eq(agentWakeupRequests.id, w.id));
+            logger.child({ subagent: "aoa-dispatcher" }).info(
+              { agentId: w.agentId, role: payloadRole, companyId: w.companyId },
+              "aoa wakeup skipped: autonomy gate (role requires L2)",
+            );
+            return;
+          }
+
           // Atomic claim: queued → processing
           const claimed = await db
             .update(agentWakeupRequests)
