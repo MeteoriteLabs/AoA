@@ -11,7 +11,7 @@
  * - D4 batched RBAC: list() uses 2 queries, not 2N
  */
 
-import { and, eq, desc, inArray, isNull } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   discussions,
@@ -22,6 +22,10 @@ import {
   discussionEntries,
   discussionExtractedItems,
   issues,
+  agents,
+  authUsers,
+  agentWakeupRequests,
+  notifications,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -112,6 +116,88 @@ export function computeCreateDefaults(input: {
     visibility: input.departmentDefaultVisibility,
     ownerUserId: input.creator.isHuman ? input.creator.userId : null,
   };
+}
+
+// ── @mention parsing ──────────────────────────────────────────────────────────
+
+/**
+ * Extract all @mentions from a text string.
+ * A mention is a word starting with @ that is either at the start of the string
+ * or preceded by whitespace (so email addresses like user@example.com are skipped).
+ * Returns deduplicated list preserving first-occurrence order.
+ */
+export function parseMentions(text: string): Array<{ raw: string; name: string }> {
+  // Match @ preceded by start-of-string or whitespace, followed by word chars
+  const regex = /(?:^|(?<=\s))@(\w+)/g;
+  const seen = new Set<string>();
+  const results: Array<{ raw: string; name: string }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const name = match[1];
+    if (!seen.has(name)) {
+      seen.add(name);
+      results.push({ raw: `@${name}`, name });
+    }
+  }
+  return results;
+}
+
+/**
+ * Resolve each mention to an agent or user and dispatch:
+ * - agent match → insert agentWakeupRequests row
+ * - user match  → insert notifications row
+ * - no match    → silently skip
+ */
+export async function processMentions(
+  db: Db,
+  companyId: string,
+  threadId: string,
+  entryId: string,
+  mentions: Array<{ raw: string; name: string }>,
+): Promise<void> {
+  for (const mention of mentions) {
+    // 1) Check if name resolves to an agent in this company
+    const agentRows = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.name, mention.name)))
+      .then((rows) => rows);
+
+    if (agentRows.length > 0) {
+      // Create a wakeup request so the dispatcher Phase 3 picks it up
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId: agentRows[0].id,
+        source: "thread_mention",
+        triggerDetail: `@mention in thread ${threadId} entry ${entryId}`,
+        reason: "thread_mention",
+        payload: { threadId, entryId, mention: mention.raw },
+        requestedByActorType: "board",
+        requestedByActorId: entryId,
+      });
+      continue;
+    }
+
+    // 2) Check if name resolves to a human user (by name)
+    const userRows = await db
+      .select({ id: authUsers.id, name: authUsers.name })
+      .from(authUsers)
+      .where(eq(authUsers.name, mention.name))
+      .then((rows) => rows);
+
+    if (userRows.length > 0) {
+      await db.insert(notifications).values({
+        companyId,
+        userId: userRows[0].id,
+        type: "thread.mention",
+        title: `You were mentioned in a thread`,
+        message: `${mention.raw} in thread`,
+        relatedEntityType: "discussion",
+        relatedEntityId: threadId,
+      });
+    }
+    // if neither → skip
+  }
 }
 
 // ── Actor type ────────────────────────────────────────────────────────────────
