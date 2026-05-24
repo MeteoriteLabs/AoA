@@ -567,7 +567,7 @@ export function searchService(db: Db) {
           type: "brief" as const,
           title: row.title,
           subtitle: excerpt(row.subtitle),
-          href: `/briefs/${row.id}`,
+          href: `/discussions/${row.id}`,
           score: toFiniteScore(row.score),
           status: row.status,
           departmentName: row.departmentName,
