@@ -23,15 +23,9 @@ import type { HoveredNode } from "./GitHoverCard";
 import {
   computeArcLayout,
   computeHeadFocusTransform,
-  computeStackCardLayout,
   type ArcCommitLayout,
-  type ArcDefinition,
-  type TipStack,
 } from "./git-arc-layout";
 import {
-  COMMIT_R,
-  CARD_W,
-  CARD_H,
   drawCommitNode,
   drawCardLabel,
   drawCardBadges,
@@ -44,8 +38,13 @@ import {
   drawLabelDots,
   drawFlowPulse,
   drawTipStack,
-  pointToSegmentDistance,
 } from "./git-arc-draw";
+import {
+  buildHitRegions,
+  hitRegionAt,
+  resolveNodeRender,
+  type HitTarget,
+} from "./git-arc-hit";
 
 /**
  * Max non-trunk branches drawn in the default ("all") Map view. The trunk-and-
@@ -71,80 +70,60 @@ export interface GitGraphCanvasProps {
   filter: "all" | "running" | "blocked" | "prs" | "merged";
   onHover: (node: HoveredNode | null, position: { x: number; y: number }) => void;
   onClick: (node: HoveredNode) => void;
+  /** Called when the "+N more" stack pill is clicked — open the Pipeline tab. */
+  onShowMore?: () => void;
 }
 
 // ---------------------------------------------------------------------------
-// Hit testing
+// Hit-target resolution (registry HitTarget → HoveredNode)
 // ---------------------------------------------------------------------------
 
-function hitTest(
-  nodes: ArcCommitLayout[],
-  cx: number,
-  cy: number,
-): ArcCommitLayout | null {
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const n = nodes[i]!;
-    if (n.isTaskTip) {
-      if (
-        cx >= n.x - CARD_W / 2 - 4 &&
-        cx <= n.x + CARD_W / 2 + 4 &&
-        cy >= n.y - CARD_H / 2 - 4 &&
-        cy <= n.y + CARD_H / 2 + 4
-      ) {
-        return n;
-      }
-    } else {
-      const dist = Math.sqrt((cx - n.x) ** 2 + (cy - n.y) ** 2);
-      if (dist <= COMMIT_R + 4) return n;
-    }
-  }
-  return null;
-}
-
-function hitTestArc(
-  arcs: ArcDefinition[],
-  visibleNames: Set<string>,
-  cx: number,
-  cy: number,
-  threshold = 8,
-): ArcDefinition | null {
-  let best: ArcDefinition | null = null;
-  let bestDist = threshold;
-  for (const arc of arcs) {
-    if (!visibleNames.has(arc.branchName)) continue;
-    if (arc.isDone) continue;
-    const pts = arc.points;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const d = pointToSegmentDistance(cx, cy, pts[i]![0], pts[i]![1], pts[i + 1]![0], pts[i + 1]![1]);
-      if (d < bestDist) {
-        bestDist = d;
-        best = arc;
-      }
-    }
-  }
-  return best;
-}
-
-function hitTestStacks(
-  tipStacks: TipStack[],
+function resolveTarget(
+  target: HitTarget,
   branchByName: Map<string, GitBranchInfo>,
+  graph: GitGraphData,
+  layoutNodes: ArcCommitLayout[],
   cx: number,
-  cy: number,
-): GitBranchInfo | null {
-  for (const stack of tipStacks) {
-    for (const c of computeStackCardLayout(stack)) {
-      if (
-        cx >= c.x - CARD_W / 2 - 4 &&
-        cx <= c.x + CARD_W / 2 + 4 &&
-        cy >= c.y - CARD_H / 2 - 4 &&
-        cy <= c.y + CARD_H / 2 + 4
-      ) {
-        const b = branchByName.get(c.branchName);
-        if (b) return b;
-      }
+): { hover: HoveredNode | null; showMore: boolean } {
+  switch (target.kind) {
+    case "task": {
+      const b = branchByName.get(target.branchName);
+      if (b?.linkedIssueId) return { hover: { type: "task", branch: b }, showMore: false };
+      return { hover: b ? { type: "plain_tip", branch: b } : null, showMore: false };
     }
+    case "plainTip": {
+      const b = branchByName.get(target.branchName);
+      return { hover: b ? { type: "plain_tip", branch: b } : null, showMore: false };
+    }
+    case "commit": {
+      const c = graph.commits.find((x) => x.sha === target.sha);
+      return { hover: c ? { type: "commit", commit: c } : null, showMore: false };
+    }
+    case "merge": {
+      const c = graph.commits.find((x) => x.sha === target.sha);
+      return { hover: c ? { type: "merge", commit: c } : null, showMore: false };
+    }
+    case "tag": {
+      const c = graph.commits.find((x) => x.sha === target.sha);
+      return {
+        hover: { type: "tag", name: target.name, sha: target.sha, date: c?.committedAt ?? "" },
+        showMore: false,
+      };
+    }
+    case "trunkLine": {
+      let nearest: ArcCommitLayout | null = null;
+      let nd = Infinity;
+      for (const n of layoutNodes) {
+        if (!n.isTrunk) continue;
+        const d = Math.abs(n.x - cx);
+        if (d < nd) { nd = d; nearest = n; }
+      }
+      const c = nearest ? graph.commits.find((x) => x.sha === nearest!.sha) : undefined;
+      return { hover: c ? { type: "commit", commit: c } : null, showMore: false };
+    }
+    case "showMore":
+      return { hover: null, showMore: true };
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +131,7 @@ function hitTestStacks(
 // ---------------------------------------------------------------------------
 
 export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasProps>(
-  function GitGraphCanvas({ branches, graph, filter, onHover, onClick }, ref) {
+  function GitGraphCanvas({ branches, graph, filter, onHover, onClick, onShowMore }, ref) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const transformRef = useRef(d3.zoomIdentity);
     const zoomRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
@@ -251,6 +230,24 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       return s;
     }, [visibleNames, stackedBranchNames]);
 
+    // Hit regions for hover/click — rebuilt only when the layout/filter/branch
+    // data change (NOT per animation frame).
+    const regions = useMemo(
+      () =>
+        buildHitRegions({
+          layout,
+          visibleNames,
+          arcVisibleNames,
+          visibleStacks,
+          stackedShas,
+          branchByName,
+          taskBranchByTipSha,
+          trunkSpan,
+          defaultBranch: graph.defaultBranch,
+        }),
+      [layout, visibleNames, arcVisibleNames, visibleStacks, stackedShas, branchByName, taskBranchByTipSha, trunkSpan, graph.defaultBranch],
+    );
+
     // Reset initial-pan flag whenever graph data changes
     useEffect(() => {
       initialPanApplied.current = false;
@@ -333,35 +330,22 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       // card already shows the identifier + title — drawing both collides).
       const cardBranchNames = new Set<string>();
       for (const node of visibleNodes) {
-        const branchStatus =
-          node.branchName != null
-            ? (branchByName.get(node.branchName)?.linkedIssueStatus ?? null)
-            : null;
-        const isStacked = stackedShas.has(node.sha);
+        const r = resolveNodeRender(
+          node, visibleNames, branchByName, taskBranchByTipSha, stackedShas,
+        );
+        const branchStatus = r.taskBranch?.linkedIssueStatus ?? null;
+        drawCommitNode(ctx, node, animPhaseRef.current, branchStatus, r.asDot);
 
-        // Resolve the task branch at this commit (handles a SHA shared by the
-        // default branch + a task) and whether it passes the ACTIVE filter.
-        let taskBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
-        if (!taskBranch?.linkedIssueId) taskBranch = taskBranchByTipSha.get(node.sha);
-        const taskVisible =
-          !!taskBranch?.linkedIssueId && visibleNames.has(taskBranch.name);
-
-        // A task tip on a TRUNK commit is always in visibleNodes, so it would
-        // draw a card under every filter. Render it as a plain dot unless its
-        // task actually matches the active filter (stacked → handled by the fan).
-        const asDot = isStacked || (node.isTaskTip && !taskVisible);
-        drawCommitNode(ctx, node, animPhaseRef.current, branchStatus, asDot);
-
-        if (node.isBranchTip && !isStacked) {
+        if (node.isBranchTip && !r.isStacked) {
           let syncBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
           if (!syncBranch) syncBranch = taskBranchByTipSha.get(node.sha);
           if (syncBranch) drawSyncBadge(ctx, node, syncBranch);
         }
 
-        if (node.isTaskTip && !isStacked && taskVisible && taskBranch?.linkedIssueId) {
-          drawCardLabel(ctx, node, taskBranch);
-          drawCardBadges(ctx, node, taskBranch);
-          drawLabelDots(ctx, node, taskBranch);
+        if (node.isTaskTip && !r.isStacked && r.taskVisible && r.taskBranch?.linkedIssueId) {
+          drawCardLabel(ctx, node, r.taskBranch);
+          drawCardBadges(ctx, node, r.taskBranch);
+          drawLabelDots(ctx, node, r.taskBranch);
           if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
         }
       }
@@ -501,118 +485,22 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       (e: React.MouseEvent<HTMLCanvasElement>) => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-
         const rect = canvas.getBoundingClientRect();
         const t = transformRef.current;
         const cx = (e.clientX - rect.left - t.x) / t.k;
         const cy = (e.clientY - rect.top - t.y) / t.k;
 
-        // Fanned same-commit stack cards take priority over the underlying node.
-        const stackBranch = hitTestStacks(visibleStacks, branchByName, cx, cy);
-        if (stackBranch) {
-          canvas.style.cursor = "pointer";
-          onHover(
-            stackBranch.linkedIssueId
-              ? { type: "task", branch: stackBranch }
-              : { type: "plain_tip", branch: stackBranch },
-            { x: e.clientX, y: e.clientY },
-          );
-          return;
-        }
-
-        const hit = hitTest(layout.nodes, cx, cy);
-
-        if (!hit) {
-          // No node — check if cursor is over a branch arc
-          const arcHit = hitTestArc(layout.arcs, visibleNames, cx, cy);
-          if (arcHit) {
-            canvas.style.cursor = "pointer";
-            const branch = branchByName.get(arcHit.branchName);
-            if (branch) {
-              onHover(
-                branch.linkedIssueId
-                  ? { type: "task", branch }
-                  : { type: "plain_tip", branch },
-                { x: e.clientX, y: e.clientY },
-              );
-            } else {
-              onHover(null, { x: e.clientX, y: e.clientY });
-            }
-            return;
-          }
-
-          // No arc — check the trunk line (horizontal at layout.trunkY).
-          if (
-            trunkSpan &&
-            Math.abs(cy - layout.trunkY) <= 8 &&
-            cx >= trunkSpan.minX - 8 &&
-            cx <= trunkSpan.maxX + 8
-          ) {
-            let nearest: ArcCommitLayout | null = null;
-            let nd = Infinity;
-            for (const n of layout.nodes) {
-              if (!n.isTrunk) continue;
-              const d = Math.abs(n.x - cx);
-              if (d < nd) { nd = d; nearest = n; }
-            }
-            if (nearest) {
-              const commit = graph.commits.find((c) => c.sha === nearest!.sha);
-              if (commit) {
-                canvas.style.cursor = "pointer";
-                onHover({ type: "commit", commit }, { x: e.clientX, y: e.clientY });
-                return;
-              }
-            }
-          }
-
+        const target = hitRegionAt(regions, cx, cy);
+        if (!target) {
           canvas.style.cursor = "grab";
           onHover(null, { x: e.clientX, y: e.clientY });
           return;
         }
-
-        // Node hit — update cursor
         canvas.style.cursor = "pointer";
-
-        // 1. Task tip — handle SHA collision (main + feature branch at same commit)
-        if (hit.isTaskTip) {
-          let branch = hit.branchName ? branchByName.get(hit.branchName) : undefined;
-          if (!branch?.linkedIssueId) {
-            // tipShaToLane assigned this SHA to a non-task branch first (e.g. main).
-            // Fall back to the task branch that actually owns this tip SHA.
-            branch = taskBranchByTipSha.get(hit.sha);
-          }
-          if (branch?.linkedIssueId) {
-            onHover({ type: "task", branch }, { x: e.clientX, y: e.clientY });
-            return;
-          }
-          // SHA flagged as task tip but we couldn't resolve the branch — fall through
-        }
-
-        // 2. Non-task branch tip → plain_tip
-        if (hit.branchName) {
-          const branch = branchByName.get(hit.branchName);
-          if (branch) {
-            onHover({ type: "plain_tip", branch }, { x: e.clientX, y: e.clientY });
-            return;
-          }
-        }
-
-        // 3. Merge commit
-        if (hit.isMerge) {
-          const commit = graph.commits.find((c) => c.sha === hit.sha);
-          if (commit) {
-            onHover({ type: "merge", commit }, { x: e.clientX, y: e.clientY });
-            return;
-          }
-        }
-
-        // 4. Regular commit
-        const commit = graph.commits.find((c) => c.sha === hit.sha);
-        if (commit) {
-          onHover({ type: "commit", commit }, { x: e.clientX, y: e.clientY });
-        }
+        const { hover } = resolveTarget(target, branchByName, graph, layout.nodes, cx);
+        onHover(hover, { x: e.clientX, y: e.clientY });
       },
-      [layout.nodes, layout.arcs, layout.trunkY, trunkSpan, visibleNames, visibleStacks, branchByName, taskBranchByTipSha, graph.commits, onHover],
+      [regions, branchByName, graph, layout.nodes, onHover],
     );
 
     const handleMouseLeave = useCallback(() => {
@@ -626,49 +514,18 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       (e: React.MouseEvent<HTMLCanvasElement>) => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-
         const rect = canvas.getBoundingClientRect();
         const t = transformRef.current;
         const cx = (e.clientX - rect.left - t.x) / t.k;
         const cy = (e.clientY - rect.top - t.y) / t.k;
 
-        const stackBranch = hitTestStacks(visibleStacks, branchByName, cx, cy);
-        if (stackBranch?.linkedIssueId) {
-          onClick({ type: "task", branch: stackBranch });
-          return;
-        }
-
-        const hit = hitTest(layout.nodes, cx, cy);
-        if (!hit) return;
-
-        if (hit.isTaskTip) {
-          let branch = hit.branchName ? branchByName.get(hit.branchName) : undefined;
-          if (!branch?.linkedIssueId) {
-            branch = taskBranchByTipSha.get(hit.sha);
-          }
-          if (branch?.linkedIssueId) {
-            onClick({ type: "task", branch });
-            return;
-          }
-        }
-
-        if (hit.branchName) {
-          const branch = branchByName.get(hit.branchName);
-          if (branch) {
-            onClick({ type: "plain_tip", branch });
-            return;
-          }
-        }
-
-        if (hit.isMerge) {
-          const commit = graph.commits.find((c) => c.sha === hit.sha);
-          if (commit) { onClick({ type: "merge", commit }); return; }
-        }
-
-        const commit = graph.commits.find((c) => c.sha === hit.sha);
-        if (commit) onClick({ type: "commit", commit });
+        const target = hitRegionAt(regions, cx, cy);
+        if (!target) return;
+        const { hover, showMore } = resolveTarget(target, branchByName, graph, layout.nodes, cx);
+        if (showMore) { onShowMore?.(); return; }
+        if (hover) onClick(hover);
       },
-      [layout.nodes, visibleStacks, branchByName, taskBranchByTipSha, graph.commits, onClick],
+      [regions, branchByName, graph, layout.nodes, onClick, onShowMore],
     );
 
     return (
