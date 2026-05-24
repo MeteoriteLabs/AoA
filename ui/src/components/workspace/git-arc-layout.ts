@@ -619,7 +619,14 @@ export function computeHeadFocusTransform(
     return computeFitTransform(getLayoutBounds(layout), viewportW, viewportH, pad);
   }
   // Height-fit so the trunk ± arc heights are visible.
-  const contentH = MAX_ARC_HEIGHT * 2 + 160; // trunk band + cards/labels
+  // Use the actual tallest arc: multi-lane arcs (Phase 3A) can exceed
+  // MAX_ARC_HEIGHT, so a fixed estimate clipped lane-bumped arcs below the
+  // viewport. Falls back to MAX_ARC_HEIGHT when there are no arcs.
+  const maxArcDev = layout.arcs.reduce(
+    (m, a) => Math.max(m, Math.abs(a.apexY - layout.trunkY)),
+    MAX_ARC_HEIGHT,
+  );
+  const contentH = maxArcDev * 2 + 160; // trunk band + tallest arc + cards/labels
   const k = Math.max(0.4, Math.min((viewportH - 2 * pad) / contentH, 1.2));
   // Put HEAD at 70% width; center the trunk vertically.
   const x = viewportW * 0.7 - headNode.x * k;
