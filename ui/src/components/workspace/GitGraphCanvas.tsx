@@ -538,6 +538,8 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       <canvas
         ref={canvasRef}
         className="w-full h-full cursor-grab"
+        role="img"
+        aria-label={`Git branch graph: ${branches.length} branches across ${graph.commits.length} commits. Use the Pipeline tab for an accessible, screen-reader-friendly list.`}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         onClick={handleClick}

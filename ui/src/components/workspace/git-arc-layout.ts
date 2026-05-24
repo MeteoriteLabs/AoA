@@ -368,8 +368,16 @@ export function computeArcLayout(
   );
   // NOTE: uses lastCommitSha from GitBranchInfo (enriched list) not tipSha from graph.
   // These can diverge if data is stale. A missing task badge is the failure mode.
+  // Task tips key off the enriched lastCommitSha, which can be stale vs the
+  // graph. If it points at a commit not in the graph, fall back to the graph
+  // branch's tipSha so the task card still lands on a real node. (Phase 4D)
+  const graphTipByName = new Map(graph.branches.map((b) => [b.name, b.tipSha]));
   const taskTipShas = new Set(
-    branches.filter((b) => b.linkedIssueId).map((b) => b.lastCommitSha),
+    branches
+      .filter((b) => b.linkedIssueId)
+      .map((b) =>
+        commitMap.has(b.lastCommitSha) ? b.lastCommitSha : graphTipByName.get(b.name) ?? b.lastCommitSha,
+      ),
   );
 
   // tipSha → first branch name (default branch wins for shared tips)
