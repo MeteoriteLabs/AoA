@@ -37,6 +37,7 @@ import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
+import { ThreadDetail } from "./pages/ThreadDetail";
 import { Skills } from "./pages/Skills";
 import { WorkspaceView } from "./pages/WorkspaceView";
 import { WorkspacesList } from "./pages/WorkspacesList";
@@ -172,6 +173,8 @@ function boardRoutes() {
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="discussions" element={<Discussions />} />
       <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
+      {/* Threads — point individual thread views to ThreadDetail (Codex #1: sidebar label stays "Discussions") */}
+      <Route path="threads/:threadId" element={<ThreadDetail />} />
       <Route path="briefs" element={<Navigate to="/discussions" replace />} />
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
