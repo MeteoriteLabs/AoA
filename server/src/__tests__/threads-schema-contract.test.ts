@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { discussions, discussionEntries, discussionExtractedItems } from "@armyofagents/db";
+import { discussions, discussionEntries, discussionExtractedItems, projects } from "@armyofagents/db";
 
 // Helper: get Drizzle column names from a table object.
 function getColumnNames(table: Record<string, unknown>): string[] {
@@ -77,5 +77,17 @@ describe("discussion_extracted_items table — committed routing", () => {
     for (const c of ["suggestedDepartmentId", "suggestedAssigneeId", "resultTaskId", "resultMemoryId", "conflictsWith"]) {
       expect(cols, `missing column: ${c}`).toContain(c);
     }
+  });
+});
+
+describe("projects table — per-department thread visibility default", () => {
+  const cols = getColumnNames(projects);
+
+  it("has defaultThreadVisibility", () => {
+    expect(cols).toContain("defaultThreadVisibility");
+  });
+
+  it("preserves the department/project type discriminator", () => {
+    expect(cols).toContain("type");
   });
 });
