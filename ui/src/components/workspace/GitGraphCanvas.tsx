@@ -46,6 +46,7 @@ import {
   resolveNodeRender,
   type HitTarget,
 } from "./git-arc-hit";
+import { sortByRecency } from "./git-pipeline-sort";
 
 /**
  * Max non-trunk branches drawn in the default ("all") Map view. The trunk-and-
@@ -166,20 +167,21 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     // for real repos (e.g. SeaMaster has ~80 branches, paperclip ~296) where
     // showing every branch at once is an unreadable smear.
     const visibleBranches = useMemo(() => {
-      if (filter === "running") return branches.filter((b) => b.linkedIssueStatus === "in_progress");
-      if (filter === "blocked") return branches.filter((b) => b.linkedIssueStatus === "blocked");
-      if (filter === "prs")     return branches.filter((b) => !!b.pr);
-      if (filter === "merged")  return branches.filter(
-        (b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled",
+      if (filter === "running") return sortByRecency(branches.filter((b) => b.linkedIssueStatus === "in_progress"), MAX_DEFAULT_BRANCHES);
+      if (filter === "blocked") return sortByRecency(branches.filter((b) => b.linkedIssueStatus === "blocked"), MAX_DEFAULT_BRANCHES);
+      if (filter === "prs")     return sortByRecency(branches.filter((b) => !!b.pr), MAX_DEFAULT_BRANCHES);
+      if (filter === "merged")  return sortByRecency(
+        branches.filter((b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled"),
+        MAX_DEFAULT_BRANCHES,
       );
       // default "all"
       const isDone = (b: GitBranchInfo) =>
         b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled";
       const trunk = branches.filter((b) => b.name === graph.defaultBranch);
-      const rest = branches
-        .filter((b) => b.name !== graph.defaultBranch && !isDone(b))
-        .sort((a, b) => (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""))
-        .slice(0, MAX_DEFAULT_BRANCHES);
+      const rest = sortByRecency(
+        branches.filter((b) => b.name !== graph.defaultBranch && !isDone(b)),
+        MAX_DEFAULT_BRANCHES,
+      );
       return [...trunk, ...rest];
     }, [branches, filter, graph.defaultBranch]);
 
