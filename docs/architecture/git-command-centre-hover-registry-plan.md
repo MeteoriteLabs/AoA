@@ -852,6 +852,7 @@ Expected: clean + all pass. Nothing to commit unless a fix was needed.
 - [ ] Hovering a **tag pill** shows the pointer + the tag tooltip.
 - [ ] Hovering the **"+N more" pill** shows the pointer; **clicking** it opens the Pipeline tab.
 - [ ] Hovering **branch arcs (incl. done/cancelled when visible)** and the **trunk line** shows the pointer + the right tooltip.
+- [ ] Hovering the **HEAD label** and an **arc branch-name label** shows the pointer + the right tooltip.
 - [ ] Empty canvas shows the grab cursor.
 - [ ] `hitTest`/`hitTestArc`/`hitTestStacks` are gone; `git-arc-hit.ts` is the single source of hit-testing.
 - [ ] `cd ui && npx tsc -b` clean; `cd ui && npx vitest run` all pass (incl. `GitArcHit.test.ts`).
@@ -874,3 +875,28 @@ Note the B2↔C1 coupling: `handleClick` references `onShowMore`, which is added
 Two options:
 1. **Subagent-Driven (recommended)** — fresh implementer per task, spec + code-quality review between tasks.
 2. **Inline Execution** — `superpowers:executing-plans`, batch with checkpoints.
+
+---
+
+## Addendum — HEAD + branch-name label regions (added during D1)
+
+The D1 live cursor probe found the **HEAD label** and the **arc branch-name labels**
+were the only drawn glyphs still returning `grab` after Batch B — they were in the
+original "everything hoverable" goal but `buildHitRegions` (Task A2) never emitted
+regions for them. Two extra steps were added to `buildHitRegions`, mirroring the
+draw code exactly:
+
+- **Arc name labels** (mirrors `drawArcLabels`): for each arc in `arcVisibleNames`
+  that is **not** `isDone` and **not** in `cardBranchNames` (the card already labels
+  it), a rect at `labelX = isOpen ? branchPointX+80 : (branchPointX+mergePointX)/2`,
+  `baseY = direction==="up" ? apexY-8 : apexY+14`, width approximated from the
+  (≤18-char) name at `LABEL_CHAR_W=5.5`px/glyph. Target = `task`/`plainTip` for the
+  branch. `cardBranchNames` is collected during the node loop (same rule as redraw).
+- **HEAD label** (mirrors `drawHeadLabel`): a rect above the default tip
+  (`layout.nodes.find(n => n.isDefault && n.branchName != null)`), `labelY =
+  isTaskTip ? y-CARD_H/2-8 : y-COMMIT_R-8`, width `HEAD_W=24`. Target mirrors the
+  tip node (`task`/`plainTip`/`commit`).
+
+Both push **after** the stacks loop so labels sit above their arc line / node in
+hit order. Covered by two unit tests in `GitArcHit.test.ts`; verified live (every
+glyph → `pointer`, empty → `grab`).
