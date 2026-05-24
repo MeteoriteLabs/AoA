@@ -14,7 +14,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Lock, Unlock, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MentionInput } from "./MentionInput";
 
 /* ─── Constants ─── */
 
@@ -63,17 +66,44 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
 
   // The phase the user intends to advance to (pending confirm dialog)
   const [pendingPhase, setPendingPhase] = useState<ThreadPhase | null>(null);
+  const [mentionChips, setMentionChips] = useState<string[]>([]);
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["threads", companyId, thread.id] });
 
   const advancePhaseMutation = useMutation({
     mutationFn: (phase: string) =>
       threadsApi.advancePhase(companyId, thread.id, phase),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["threads", companyId, thread.id] });
+      invalidate();
       onPhaseChanged();
       pushToast({ title: "Phase advanced", tone: "success" });
     },
     onError: () => {
       pushToast({ title: "Failed to advance phase", tone: "warn" });
+    },
+  });
+
+  const claimMutation = useMutation({
+    mutationFn: () => threadsApi.claim(companyId, thread.id),
+    onSuccess: () => {
+      invalidate();
+      pushToast({ title: "Thread claimed", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to claim thread", tone: "warn" });
+    },
+  });
+
+  const visibilityMutation = useMutation({
+    mutationFn: (visibility: "open" | "private") =>
+      threadsApi.setVisibility(companyId, thread.id, visibility),
+    onSuccess: () => {
+      invalidate();
+      pushToast({ title: "Visibility updated", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to update visibility", tone: "warn" });
     },
   });
 
@@ -98,10 +128,28 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
 
         {/* Meta row: visibility + autonomy + owner */}
         <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-          {/* Visibility */}
+          {/* Visibility badge */}
           <Badge variant="outline" className="text-[10px] capitalize">
             {thread.visibility}
           </Badge>
+
+          {/* Visibility toggle button */}
+          <button
+            type="button"
+            data-testid="visibility-toggle"
+            onClick={() =>
+              visibilityMutation.mutate(thread.visibility === "open" ? "private" : "open")
+            }
+            disabled={visibilityMutation.isPending}
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] border border-border hover:bg-muted/30 transition-colors"
+            aria-label={thread.visibility === "open" ? "Make private" : "Make open"}
+          >
+            {thread.visibility === "open" ? (
+              <><Lock className="h-2.5 w-2.5" /> Make private</>
+            ) : (
+              <><Unlock className="h-2.5 w-2.5" /> Make open</>
+            )}
+          </button>
 
           {/* Autonomy level */}
           {thread.autonomyLevel != null && (
@@ -113,15 +161,34 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
             </span>
           )}
 
-          {/* Owner */}
-          <span>
-            {thread.ownerUserId ? (
-              <span>Owner: {thread.ownerUserId}</span>
-            ) : (
+          {/* Owner / Claim */}
+          {thread.ownerUserId ? (
+            <span className="flex items-center gap-1">
+              <User className="h-3 w-3" />
+              Owner: {thread.ownerUserId}
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
               <span className="text-muted-foreground italic">Unclaimed</span>
-            )}
-          </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-5 px-2 text-[10px]"
+                onClick={() => claimMutation.mutate()}
+                disabled={claimMutation.isPending}
+              >
+                Claim
+              </Button>
+            </span>
+          )}
         </div>
+
+        {/* @mention input */}
+        <MentionInput
+          chips={mentionChips}
+          onChipsChange={setMentionChips}
+          placeholder="@mention someone..."
+        />
 
         {/* Origin source chip */}
         {thread.originSource && (

@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { OriginCard } from "../OriginCard";
+import { threadsApi } from "../../../api/threads";
 import type { ThreadDetail } from "../../../api/threads";
 
 vi.mock("../../../api/threads", () => ({
   threadsApi: {
     advancePhase: vi.fn().mockResolvedValue({}),
+    claim: vi.fn().mockResolvedValue({ ownerUserId: "user-1" }),
+    transfer: vi.fn().mockResolvedValue({ ownerUserId: "user-2" }),
   },
 }));
 
@@ -129,5 +132,60 @@ describe("OriginCard", () => {
     await waitFor(() => {
       expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     });
+  });
+
+  // ── Task 6: Claim button + visibility toggle ─────────────────────────────
+
+  it("shows Claim button when ownerUserId is null", () => {
+    const thread = makeThread({ ownerUserId: null });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: /claim/i })).toBeInTheDocument();
+  });
+
+  it("does NOT show Claim button when thread is already owned", () => {
+    const thread = makeThread({ ownerUserId: "some-user" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button", { name: /claim/i })).not.toBeInTheDocument();
+  });
+
+  it("calls threadsApi.claim when Claim button is clicked", async () => {
+    const thread = makeThread({ ownerUserId: null });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    await user.click(screen.getByRole("button", { name: /claim/i }));
+    await waitFor(() => {
+      expect(threadsApi.claim).toHaveBeenCalledWith("comp-1", "thread-1");
+    });
+  });
+
+  it("shows visibility toggle button", () => {
+    const thread = makeThread({ visibility: "open" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    // Visibility toggle should be a button (either 'Make private' or 'Make open')
+    expect(screen.getByTestId("visibility-toggle")).toBeInTheDocument();
+  });
+
+  it("visibility toggle shows correct label for 'open' thread", () => {
+    const thread = makeThread({ visibility: "open" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.getByTestId("visibility-toggle")).toHaveTextContent(/private/i);
+  });
+
+  it("visibility toggle shows correct label for 'private' thread", () => {
+    const thread = makeThread({ visibility: "private" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.getByTestId("visibility-toggle")).toHaveTextContent(/open/i);
   });
 });

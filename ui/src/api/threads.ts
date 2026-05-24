@@ -65,4 +65,38 @@ export const threadsApi = {
       `/companies/${companyId}/discussions/${id}/promote-to-goal`,
       goalData,
     ),
+
+  setVisibility: (companyId: string, id: string, visibility: "open" | "private") =>
+    api.patch<ThreadDetail>(
+      `/companies/${companyId}/discussions/${id}`,
+      { visibility },
+    ),
+
+  createLink: (companyId: string, fromId: string, toThreadId: string, kind: string) =>
+    api.post<{ id: string; fromThreadId: string; toThreadId: string; kind: string }>(
+      `/companies/${companyId}/discussions/${fromId}/links`,
+      { toThreadId, kind },
+    ),
+
+  listLinks: (companyId: string, id: string) =>
+    api.get<{ links: Array<{ id: string; fromThreadId: string; toThreadId: string; kind: string }> }>(
+      `/companies/${companyId}/discussions/${id}/links`,
+    ),
+
+  spinOff: (companyId: string, id: string, scopeItemId: string, title?: string) =>
+    api.post<{ id: string; forkedFromId: string; title: string | null }>(
+      `/companies/${companyId}/discussions/${id}/spin-off`,
+      { scopeItemId, title },
+    ),
+
+  routeItem: (
+    companyId: string,
+    discussionId: string,
+    itemId: string,
+    routing: { departmentId?: string; assigneeAgentId?: string; assigneeUserId?: string },
+  ) =>
+    api.patch<{ itemId: string }>(
+      `/companies/${companyId}/discussions/${discussionId}/items/${itemId}/routing`,
+      routing,
+    ),
 };
