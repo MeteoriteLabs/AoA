@@ -834,6 +834,38 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // ── Plan 6: Spin-off thread ───────────────────────────────────────────────
+
+  const spinOffBodySchema = z.object({
+    scopeItemId: z.string().uuid(),
+    title: z.string().optional(),
+  });
+
+  // T.SO1 Spin off a child thread from a scope item
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/spin-off",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+
+      const parsed = spinOffBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid request" });
+        return;
+      }
+
+      try {
+        const result = await tSvc.spinOff(companyId, discussionId, parsed.data, actor);
+        res.status(201).json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
   // ── Plan 6: Scope-item dependencies ──────────────────────────────────────
 
   const scopeDepBodySchema = z.object({
