@@ -623,17 +623,52 @@ export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
 // "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write
-export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp"] as const;
+export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp", "transcript", "document", "routine", "webhook", "integration", "agent"] as const;
 export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
 
 export const EXTRACTION_STATUSES = ["pending", "processing", "completed", "failed", "skipped"] as const;
 export type ExtractionStatus = (typeof EXTRACTION_STATUSES)[number];
 
-export const EXTRACTION_ITEM_TYPES = ["decision", "task", "insight", "context", "reference", "preference"] as const;
+export const EXTRACTION_ITEM_TYPES = ["decision", "task", "insight", "context", "reference", "preference", "artifact", "spin_off_thread"] as const;
 export type ExtractionItemType = (typeof EXTRACTION_ITEM_TYPES)[number];
 
 export const EXTRACTION_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
 export type ExtractionItemStatus = (typeof EXTRACTION_ITEM_STATUSES)[number];
+
+// ── V2.5: Threads (extends Discussions) ───────────────────────────────────────
+
+export const THREAD_ORIGIN_SOURCES = ["human", "agent", "external", "system"] as const;
+export type ThreadOriginSource = (typeof THREAD_ORIGIN_SOURCES)[number];
+
+export const THREAD_ORIGIN_MEDIA = ["text", "voice", "transcription", "file", "api", "scheduled", "integration"] as const;
+export type ThreadOriginMedium = (typeof THREAD_ORIGIN_MEDIA)[number];
+
+export const THREAD_INTENTS = ["planning", "review", "decision", "research", "problem", "alignment", "feedback", "retrospective"] as const;
+export type ThreadIntent = (typeof THREAD_INTENTS)[number];
+
+export const THREAD_PHASES = ["discuss", "scope", "assign", "done"] as const;
+export type ThreadPhase = (typeof THREAD_PHASES)[number];
+
+export const THREAD_VISIBILITIES = ["open", "private"] as const;
+export type ThreadVisibility = (typeof THREAD_VISIBILITIES)[number];
+
+export const THREAD_SUBTYPES = ["normal", "live"] as const;
+export type ThreadSubtype = (typeof THREAD_SUBTYPES)[number];
+
+export const THREAD_PARTICIPANT_PRINCIPAL_TYPES = ["user", "agent"] as const;
+export type ThreadParticipantPrincipalType = (typeof THREAD_PARTICIPANT_PRINCIPAL_TYPES)[number];
+
+export const THREAD_PARTICIPANT_ROLES = ["owner", "co_owner", "collaborator", "viewer", "worker"] as const;
+export type ThreadParticipantRole = (typeof THREAD_PARTICIPANT_ROLES)[number];
+
+export const THREAD_LINK_KINDS = ["link", "spinoff", "fork", "merge", "goal_cluster", "spawned_from_task"] as const;
+export type ThreadLinkKind = (typeof THREAD_LINK_KINDS)[number];
+
+export const THREAD_ROUTER_DECISIONS = ["auto_attach", "suggest", "human"] as const;
+export type ThreadRouterDecision = (typeof THREAD_ROUTER_DECISIONS)[number];
+
+export const THREAD_INBOX_STATUSES = ["pending", "attached", "dismissed"] as const;
+export type ThreadInboxStatus = (typeof THREAD_INBOX_STATUSES)[number];
 
 // ── V2.5: Internal Agent ──────────────────────────────────────────────
 
