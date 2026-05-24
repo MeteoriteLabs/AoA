@@ -7,10 +7,12 @@
  * Done rows are dimmed and hidden behind a toggle.
  */
 
-import React, { useState } from "react";
-import { cn } from "@/lib/utils";
+import React, { useState, useMemo } from "react";
+import { cn, relativeTime } from "@/lib/utils";
 import { issueStatusText, issueStatusTextDefault } from "@/lib/status-colors";
 import type { GitBranchInfo, GitPrReviewState, GitCIStatus } from "@armyofagents/shared";
+import { sortBranches, DEFAULT_DIR, type SortKey, type SortDir } from "./git-pipeline-sort";
+import { pipelineStageRank } from "./git-tooltip-data";
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -19,13 +21,7 @@ import type { GitBranchInfo, GitPrReviewState, GitCIStatus } from "@armyofagents
 const PIPELINE_STAGES = ["Changes", "Committed", "Pushed", "PR", "Merged"] as const;
 
 function PipelineDots({ branch }: { branch: GitBranchInfo }) {
-  const activeIdx = (() => {
-    if (branch.pr?.reviewState === "merged") return 4;
-    if (branch.pr) return 3;
-    if (branch.isRemote && branch.aheadCount === 0) return 2;
-    if (branch.aheadCount > 0) return 1;
-    return 0;
-  })();
+  const activeIdx = pipelineStageRank(branch);
 
   return (
     <div className="flex items-center gap-1" title={PIPELINE_STAGES[activeIdx]}>
@@ -188,6 +184,14 @@ function BranchRow({
         </div>
       </td>
 
+      {/* Who (git author) */}
+      <td className="px-3 py-2 whitespace-nowrap text-[11px] text-muted-foreground">{branch.lastCommitAuthor || "—"}</td>
+
+      {/* Last activity */}
+      <td className="px-3 py-2 whitespace-nowrap text-[11px] text-muted-foreground">
+        {branch.lastCommitAt ? relativeTime(branch.lastCommitAt) : "—"}
+      </td>
+
       {/* PR badge */}
       <td className="px-3 py-2">
         {branch.pr && <PrBadge reviewState={branch.pr.reviewState} />}
@@ -216,6 +220,27 @@ function BranchRow({
 }
 
 // ---------------------------------------------------------------------------
+// Sort header helper
+// ---------------------------------------------------------------------------
+
+function SortHeader({
+  label, col, sortKey, sortDir, onSort, align = "left",
+}: {
+  label: string; col: SortKey; sortKey: SortKey; sortDir: SortDir; onSort: (k: SortKey) => void; align?: "left" | "center";
+}) {
+  const active = sortKey === col;
+  return (
+    <th
+      className={cn("px-3 py-2 font-normal cursor-pointer select-none hover:text-foreground transition-colors",
+        align === "center" ? "text-center" : "text-left", active && "text-foreground")}
+      onClick={() => onSort(col)}
+    >
+      {label}{active && <span className="ml-1 text-[#6470DC]">{sortDir === "asc" ? "▴" : "▾"}</span>}
+    </th>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -230,16 +255,35 @@ export function GitPipelineView({
 }) {
   const [showDone, setShowDone] = useState(false);
   const [showUnlinked, setShowUnlinked] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("status");
+  const [sortDir, setSortDir] = useState<SortDir>(DEFAULT_DIR.status);
+
+  const onSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(DEFAULT_DIR[key]);
+    }
+  };
 
   const linked = branches.filter((b) => b.linkedIssueId);
   const unlinked = branches.filter((b) => !b.linkedIssueId);
 
-  const active = linked.filter(
-    (b) => b.linkedIssueStatus !== "done" && b.linkedIssueStatus !== "cancelled",
-  );
-  const done = linked.filter(
-    (b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled",
-  );
+  const { active, done, unlinkedSorted } = useMemo(() => {
+    const activeRaw = linked.filter(
+      (b) => b.linkedIssueStatus !== "done" && b.linkedIssueStatus !== "cancelled",
+    );
+    return {
+      active: sortBranches(activeRaw, sortKey, sortDir),
+      done: sortBranches(
+        linked.filter((b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled"),
+        "activity", "desc",
+      ),
+      unlinkedSorted: sortBranches(unlinked, "activity", "desc"),
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linked, unlinked, sortKey, sortDir]);
 
   // Summary counts
   const runningCount = branches.filter((b) => b.linkedIssueStatus === "in_progress").length;
@@ -279,12 +323,14 @@ export function GitPipelineView({
           <thead>
             <tr className="border-b border-white/10 text-[11px] text-muted-foreground uppercase tracking-wider">
               <th className="w-1" />
-              <th className="px-3 py-2 text-left font-normal">ID</th>
+              <SortHeader label="ID" col="id" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
               <th className="px-3 py-2 text-left font-normal">Task</th>
               <th className="px-3 py-2 text-left font-normal">Branch</th>
-              <th className="px-3 py-2 text-left font-normal">Status</th>
-              <th className="px-3 py-2 text-left font-normal">Pipeline</th>
-              <th className="px-3 py-2 text-left font-normal">±</th>
+              <SortHeader label="Status" col="status" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+              <SortHeader label="Pipeline" col="pipeline" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+              <SortHeader label="±" col="ahead" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+              <SortHeader label="Who" col="who" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+              <SortHeader label="Last activity" col="activity" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
               <th className="px-3 py-2 text-left font-normal">PR</th>
               <th className="px-3 py-2 text-center font-normal">CI</th>
               <th className="px-3 py-2" />
@@ -299,7 +345,7 @@ export function GitPipelineView({
             {done.length > 0 && (
               <>
                 <tr>
-                  <td colSpan={10} className="px-3 py-1.5">
+                  <td colSpan={12} className="px-3 py-1.5">
                     <button
                       className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                       onClick={() => setShowDone((v) => !v)}
@@ -316,16 +362,16 @@ export function GitPipelineView({
             )}
 
             {/* Unlinked git-only branches */}
-            {unlinked.length > 0 && (
+            {unlinkedSorted.length > 0 && (
               <>
                 <tr>
-                  <td colSpan={10} className="px-3 py-1.5 border-t border-white/10">
+                  <td colSpan={12} className="px-3 py-1.5 border-t border-white/10">
                     <div className="flex items-center justify-between">
                       <button
                         className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                         onClick={() => setShowUnlinked((v) => !v)}
                       >
-                        {showUnlinked ? "▾" : "▸"} Git-only branches ({unlinked.length})
+                        {showUnlinked ? "▾" : "▸"} Git-only branches ({unlinkedSorted.length})
                       </button>
                       {onSwitchToMap && (
                         <button
@@ -339,7 +385,7 @@ export function GitPipelineView({
                   </td>
                 </tr>
                 {showUnlinked &&
-                  unlinked.map((b) => (
+                  unlinkedSorted.map((b) => (
                     <BranchRow key={b.name} branch={b} dimmed />
                   ))}
               </>
