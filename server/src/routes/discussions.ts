@@ -834,6 +834,109 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // ── Plan 6: Scope-item dependencies ──────────────────────────────────────
+
+  const scopeDepBodySchema = z.object({
+    blockerItemId: z.string().uuid(),
+    blockedItemId: z.string().uuid(),
+  });
+
+  // T.SD1 Add a scope-item dependency
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-deps",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      const actor = await buildActor(req, companyId);
+
+      const parsed = scopeDepBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid request" });
+        return;
+      }
+
+      try {
+        const result = await tSvc.addScopeItemDependency(companyId, discussionId, parsed.data, actor);
+        res.status(201).json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.SD2 Graduate scope-item deps → task_dependencies
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-deps/graduate",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      const actor = await buildActor(req, companyId);
+
+      try {
+        // Route handler performs the two-step lookup and passes pre-computed rows
+        // to the service (avoids complex aliased joins in the service layer).
+        const { eq: drizzleEq, inArray: drizzleInArray } = await import("drizzle-orm");
+        const { scopeItemDependencies, discussionExtractedItems, discussionEntries } =
+          await import("@armyofagents/db");
+
+        // Step 1: get all entry IDs for this discussion
+        const entryIds = await db
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(drizzleEq(discussionEntries.discussionId, discussionId))
+          .then((rows) => rows.map((r) => r.id));
+
+        if (entryIds.length === 0) {
+          res.json({ graduated: 0 });
+          return;
+        }
+
+        // Step 2: get all scope deps for items in this discussion
+        const allItemIds = await db
+          .select({ id: discussionExtractedItems.id, resultTaskId: discussionExtractedItems.resultTaskId })
+          .from(discussionExtractedItems)
+          .where(drizzleInArray(discussionExtractedItems.discussionEntryId, entryIds))
+          .then((rows) => rows);
+
+        const itemTaskMap = new Map(allItemIds.map((r) => [r.id, r.resultTaskId]));
+        const itemIdList = allItemIds.map((r) => r.id);
+
+        if (itemIdList.length === 0) {
+          res.json({ graduated: 0 });
+          return;
+        }
+
+        const sidRows = await db
+          .select({ id: scopeItemDependencies.id, blockerItemId: scopeItemDependencies.blockerItemId, blockedItemId: scopeItemDependencies.blockedItemId })
+          .from(scopeItemDependencies)
+          .where(drizzleInArray(scopeItemDependencies.blockerItemId, itemIdList))
+          .then((rows) => rows);
+
+        // Build pre-computed rows with both sides' resultTaskIds
+        const precomputed = sidRows.map((row) => ({
+          id: row.id,
+          blockerItemId: row.blockerItemId,
+          blockedItemId: row.blockedItemId,
+          blockerResultTaskId: itemTaskMap.get(row.blockerItemId) ?? null,
+          blockedResultTaskId: itemTaskMap.get(row.blockedItemId) ?? null,
+        }));
+
+        const result = await tSvc.graduateScopeItemDependencies(
+          companyId, discussionId, actor, precomputed,
+        );
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
   // ── Plan 6: Cross-thread links ────────────────────────────────────────────
 
   const createLinkSchema = z.object({
