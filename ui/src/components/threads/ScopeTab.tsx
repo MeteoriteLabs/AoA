@@ -2,16 +2,30 @@
  * ScopeTab — renders Summary, Plan, and grouped scope items.
  * Uses groupScopeItems() to sort items into four buckets.
  * Used inside ThreadDetail's center panel (Scope tab).
+ *
+ * Task 7 additions:
+ * - Per-item routing (department selector + assignee) — founder only
+ * - Dependency badges ("blocks N")
+ * - Amber conflict card styling for conflicted items in Needs Input
+ * - "Spin off →" button per item
  */
 import { groupScopeItems, type ScopeItem } from "./scopeGrouping";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, GitBranch, Link2 } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { threadsApi } from "../../api/threads";
+import { useToast } from "../../context/ToastContext";
 import { cn } from "@/lib/utils";
 
 /* ════════════════════════════════════════════════════════════════════════
    ScopeTab
    ════════════════════════════════════════════════════════════════════════ */
+
+export interface Department {
+  id: string;
+  name: string;
+}
 
 export interface ScopeTabProps {
   summaryText: string | null;
@@ -22,6 +36,13 @@ export interface ScopeTabProps {
   isError: boolean;
   onRetry: () => void;
   onItemClick: (item: ScopeItem) => void;
+  /** These are optional for backward compatibility */
+  companyId?: string;
+  discussionId?: string;
+  /** When true, per-item routing controls are shown */
+  isFounder?: boolean;
+  /** Available departments for routing dropdown */
+  departments?: Department[];
 }
 
 export function ScopeTab({
@@ -33,6 +54,10 @@ export function ScopeTab({
   isError,
   onRetry,
   onItemClick,
+  companyId,
+  discussionId,
+  isFounder = false,
+  departments = [],
 }: ScopeTabProps) {
   // ── Loading skeleton ──
   if (isLoading) {
@@ -136,6 +161,10 @@ export function ScopeTab({
                     item={item}
                     hasConflict={hasConflict}
                     onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
                   />
                 ))}
               </ItemGroup>
@@ -150,6 +179,10 @@ export function ScopeTab({
                     item={item}
                     hasConflict={false}
                     onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
                   />
                 ))}
               </ItemGroup>
@@ -164,6 +197,10 @@ export function ScopeTab({
                     item={item}
                     hasConflict={false}
                     onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
                   />
                 ))}
               </ItemGroup>
@@ -178,6 +215,10 @@ export function ScopeTab({
                     item={item}
                     hasConflict={false}
                     onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
                   />
                 ))}
               </ItemGroup>
@@ -233,45 +274,133 @@ function ScopeItemRow({
   item,
   hasConflict,
   onClick,
+  companyId,
+  discussionId,
+  isFounder = false,
+  departments = [],
 }: {
   item: ScopeItem;
   hasConflict: boolean;
   onClick: () => void;
+  companyId?: string;
+  discussionId?: string;
+  isFounder?: boolean;
+  departments?: Department[];
 }) {
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
+
+  const spinOffMutation = useMutation({
+    mutationFn: () => {
+      if (!companyId || !discussionId) throw new Error("Missing context");
+      return threadsApi.spinOff(companyId, discussionId, item.id);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["threads", companyId] });
+      pushToast({ title: "Spin-off thread created", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to spin off thread", tone: "warn" }),
+  });
+
+  const routingMutation = useMutation({
+    mutationFn: (routing: { departmentId?: string }) => {
+      if (!companyId || !discussionId) throw new Error("Missing context");
+      return threadsApi.routeItem(companyId, discussionId, item.id, routing);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["threads", companyId, discussionId] });
+    },
+  });
+
+  const depCount = (item.dependsOn ?? []).length;
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       className={cn(
-        "group flex items-center gap-3 w-full rounded-lg border p-3 text-left transition-colors",
-        "border-border bg-card hover:bg-muted/30 cursor-pointer",
-        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+        "group flex flex-col gap-2 w-full rounded-lg border p-3 transition-colors",
+        "border-border bg-card",
+        hasConflict && "border-amber-400 bg-amber-50 dark:bg-amber-900/10",
       )}
       data-testid={`scope-item-${item.id}`}
     >
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium truncate">{item.title}</span>
-          <span
-            className={cn(
-              "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase shrink-0",
-              TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
+      {/* Main row: click to open */}
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex items-center gap-3 w-full text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium truncate">{item.title}</span>
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase shrink-0",
+                TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
+              )}
+            >
+              {item.type}
+            </span>
+            {hasConflict && (
+              <Badge variant="destructive" className="text-[10px] shrink-0">
+                Conflict
+              </Badge>
             )}
-          >
-            {item.type}
-          </span>
-          {hasConflict && (
-            <Badge variant="destructive" className="text-[10px] shrink-0">
-              Conflict
-            </Badge>
+            {/* Dependency badge */}
+            {depCount > 0 && (
+              <span
+                data-testid={`dep-badge-${item.id}`}
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300 shrink-0"
+                title={`Blocked by ${depCount} item${depCount !== 1 ? "s" : ""}`}
+              >
+                <Link2 className="h-2.5 w-2.5" />
+                blocks {depCount}
+              </span>
+            )}
+          </div>
+          {item.description && (
+            <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+              {item.description}
+            </p>
           )}
         </div>
-        {item.description && (
-          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
-            {item.description}
-          </p>
+      </button>
+
+      {/* Action row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Spin-off button */}
+        <button
+          type="button"
+          data-testid={`spin-off-${item.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            spinOffMutation.mutate();
+          }}
+          disabled={spinOffMutation.isPending || !companyId || !discussionId}
+          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] border border-border hover:bg-muted/30 transition-colors text-muted-foreground"
+          aria-label="Spin off"
+        >
+          <GitBranch className="h-2.5 w-2.5" />
+          Spin off →
+        </button>
+
+        {/* Per-item routing (founder only) */}
+        {isFounder && (
+          <select
+            data-testid={`routing-dept-${item.id}`}
+            className="text-[10px] rounded border border-border bg-background px-1.5 py-0.5 text-muted-foreground"
+            defaultValue=""
+            onChange={(e) => routingMutation.mutate({ departmentId: e.target.value || undefined })}
+            aria-label="Route to department"
+          >
+            <option value="">Department…</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
         )}
       </div>
-    </button>
+    </div>
   );
 }
