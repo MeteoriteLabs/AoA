@@ -8,7 +8,11 @@
  */
 
 const RATES: Record<string, { inputCentsPerM: number; outputCentsPerM: number }> = {
-  // Anthropic — Claude 4 family
+  // Anthropic — Claude 4 family (canonical IDs from api-common.ts)
+  "claude-sonnet-4-6": { inputCentsPerM: 300, outputCentsPerM: 1500 },
+  "claude-opus-4-6": { inputCentsPerM: 1500, outputCentsPerM: 7500 },
+  "claude-haiku-4-5-20251001": { inputCentsPerM: 80, outputCentsPerM: 400 },
+  // Anthropic — Claude 4 family (dated aliases kept for rows written before canonical IDs settled)
   "claude-sonnet-4-20250514": { inputCentsPerM: 300, outputCentsPerM: 1500 },
   "claude-opus-4-20250514": { inputCentsPerM: 1500, outputCentsPerM: 7500 },
   "claude-haiku-4-20251001": { inputCentsPerM: 80, outputCentsPerM: 400 },
