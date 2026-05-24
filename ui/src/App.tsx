@@ -37,7 +37,6 @@ import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { NewThreadDialog } from "./components/NewThreadDialog";
 import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
-import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { ThreadDetail } from "./pages/ThreadDetail";
 import { Skills } from "./pages/Skills";
 import { WorkspaceView } from "./pages/WorkspaceView";

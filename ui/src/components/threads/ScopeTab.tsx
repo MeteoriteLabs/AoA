@@ -245,6 +245,7 @@ function ScopeItemRow({
       className={cn(
         "group flex items-center gap-3 w-full rounded-lg border p-3 text-left transition-colors",
         "border-border bg-card hover:bg-muted/30 cursor-pointer",
+        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
       )}
       data-testid={`scope-item-${item.id}`}
     >
