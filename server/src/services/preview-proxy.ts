@@ -1,9 +1,14 @@
 import type { Request, Response } from "express";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import type { Db } from "@armyofagents/db";
 import { workspaceRuntimeServices } from "@armyofagents/db";
+import type { DeploymentMode } from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 import httpProxy from "http-proxy";
+import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { assertCompanyAccess } from "../routes/authz.js";
+import { authorizeCompanyUpgrade } from "./upgrade-auth.js";
 import { isAllowedPreviewUpstream } from "./preview-url.js";
 
 const STRIPPED_UPSTREAM_HEADERS = [
@@ -26,9 +31,15 @@ previewProxy.on("proxyReq", (proxyReq) => {
   proxyReq.setHeader("x-aoa-preview", "1");
 });
 
-export async function resolvePreviewRuntimeService(
+previewProxy.on("proxyReqWs", (proxyReq) => {
+  for (const header of STRIPPED_UPSTREAM_HEADERS) {
+    proxyReq.removeHeader(header);
+  }
+  proxyReq.setHeader("x-aoa-preview", "1");
+});
+
+async function resolvePreviewRuntimeServiceRow(
   db: Db,
-  req: Request,
   serviceId: string,
 ) {
   const [row] = await db
@@ -40,8 +51,6 @@ export async function resolvePreviewRuntimeService(
   if (!row) {
     return { ok: false as const, status: 404, error: "Preview service not found" };
   }
-
-  assertCompanyAccess(req, row.companyId);
 
   if (!row.executionWorkspaceId) {
     return { ok: false as const, status: 409, error: "Preview service is not linked to a workspace" };
@@ -56,6 +65,17 @@ export async function resolvePreviewRuntimeService(
   }
 
   return { ok: true as const, row };
+}
+
+export async function resolvePreviewRuntimeService(
+  db: Db,
+  req: Request,
+  serviceId: string,
+) {
+  const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
+  if (!resolved.ok) return resolved;
+  assertCompanyAccess(req, resolved.row.companyId);
+  return resolved;
 }
 
 export function buildPreviewTargetUrl(input: {
@@ -103,4 +123,67 @@ export async function proxyPreviewHttp(
       });
     }
   });
+}
+
+function rejectPreviewUpgrade(socket: Duplex, status: number, message: string) {
+  const safe = message.replace(/[\r\n]+/g, " ").trim();
+  socket.write(`HTTP/1.1 ${status} ${safe}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
+  socket.destroy();
+}
+
+function parsePreviewServiceId(pathname: string): string | null {
+  const match = pathname.match(/^\/preview\/services\/([^/]+)(?:\/.*)?$/);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+export async function handlePreviewProxyUpgrade(
+  db: Db,
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  opts: {
+    deploymentMode: DeploymentMode;
+    resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+  },
+): Promise<boolean> {
+  if (!req.url?.startsWith("/preview/services/")) return false;
+
+  const parsed = new URL(req.url, "http://aoa.local");
+  const serviceId = parsePreviewServiceId(parsed.pathname);
+  if (!serviceId) {
+    rejectPreviewUpgrade(socket, 400, "Bad Request");
+    return true;
+  }
+
+  const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
+  if (!resolved.ok) {
+    rejectPreviewUpgrade(socket, resolved.status, "Preview Unavailable");
+    return true;
+  }
+
+  const actor = await authorizeCompanyUpgrade(db, req, resolved.row.companyId, parsed, opts);
+  if (!actor) {
+    rejectPreviewUpgrade(socket, 403, "Forbidden");
+    return true;
+  }
+
+  const target = buildPreviewTargetUrl({
+    serviceUrl: resolved.row.url!,
+    serviceId,
+    originalUrl: req.url,
+  });
+
+  previewProxy.ws(req, socket, head, { target, ignorePath: true }, (err) => {
+    rejectPreviewUpgrade(
+      socket,
+      502,
+      err instanceof Error ? err.message : "Preview proxy failed",
+    );
+  });
+  return true;
 }
