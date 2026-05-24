@@ -86,6 +86,9 @@ export const workspaceRuntimeServiceSchema = z.object({
   cwd: z.string().nullable(),
   port: z.number().int().nullable(),
   url: z.string().nullable(),
+  previewUrl: z.string().nullable(),
+  previewAccess: z.enum(["local", "company", "external"]).nullable(),
+  localTargetUrl: z.string().nullable(),
   provider: z.enum(["local_process", "adapter_managed"]),
   providerRef: z.string().nullable(),
   ownerAgentId: z.string().uuid().nullable(),
@@ -95,6 +98,7 @@ export const workspaceRuntimeServiceSchema = z.object({
   stoppedAt: z.coerce.date().nullable(),
   stopPolicy: z.record(z.unknown()).nullable(),
   healthStatus: z.enum(["unknown", "healthy", "unhealthy"]),
+  healthCheckedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).strict();
