@@ -575,6 +575,7 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
   // ── 1. One for-each-ref call for all branches ──────────────────────────
   const SEP = "\x1f";  // unit separator — safe in git output
   const FORMAT = [
+    "%(refname)",
     "%(refname:short)",
     "%(objectname)",
     // Ahead/behind vs each branch's OWN upstream (origin/<branch>), not trunk —
@@ -619,18 +620,22 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     const parts = line.split(SEP);
-    if (parts.length < 6) continue;
+    if (parts.length < 7) continue;
 
-    const [refShort, sha, track, subject, authorDate, authorName] = parts as [
-      string, string, string, string, string, string
+    const [refFull, refShort, sha, track, subject, authorDate, authorName] = parts as [
+      string, string, string, string, string, string, string
     ];
 
-    const isRemote = refShort.startsWith("origin/");
-    const localName = isRemote ? refShort.slice("origin/".length) : refShort;
+    // Classify by the full ref namespace, not a hard-coded "origin/" prefix, so
+    // refs from other remotes (e.g. upstream/main) aren't mistaken for locals.
+    const isRemote = refFull.startsWith("refs/remotes/");
+    const localName = isRemote
+      ? refFull.replace(/^refs\/remotes\/[^/]+\//, "") // strip refs/remotes/<remote>/
+      : refShort;
 
-    // Skip remote HEAD pointers in both forms (origin/HEAD → "HEAD",
-    // refs/remotes/origin/HEAD → bare "origin").
-    if (isSkippableRef(refShort)) continue;
+    // Skip HEAD pointers: local "HEAD", origin/HEAD (short "origin"), and any
+    // other remote's HEAD (refs/remotes/<remote>/HEAD).
+    if (isSkippableRef(refShort) || refFull.endsWith("/HEAD")) continue;
 
     // Parse %(upstream:track), e.g. "[ahead 2, behind 1]" / "[ahead 2]" /
     // "[behind 1]" / "[gone]" / "" → ahead 0, behind 0 when absent.
