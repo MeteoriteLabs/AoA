@@ -172,8 +172,10 @@ function boardRoutes() {
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="discussions" element={<Discussions />} />
-      <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
-      {/* Threads — point individual thread views to ThreadDetail (Codex #1: sidebar label stays "Discussions") */}
+      {/* Codex #1: sidebar label stays "Discussions" — individual items use ThreadDetail (Plan 4).
+          DiscussionDetail is preserved but no longer the primary route for discussion/:id. */}
+      <Route path="discussions/:discussionId" element={<ThreadDetail />} />
+      {/* Canonical thread route — same ThreadDetail component, different param name */}
       <Route path="threads/:threadId" element={<ThreadDetail />} />
       <Route path="briefs" element={<Navigate to="/discussions" replace />} />
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
