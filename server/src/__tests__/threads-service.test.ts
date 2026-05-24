@@ -530,6 +530,52 @@ describe("threadService.fork", () => {
   });
 });
 
+// ── assertCanEdit: co_owner ───────────────────────────────────────────────────
+
+describe("threadService.addParticipant (assertCanEdit co_owner)", () => {
+  it("allows a co_owner participant to add another participant", async () => {
+    // Thread owned by u9, actor is u1 (not owner, not founder)
+    // assertCanView: open visibility + null scope → hasScopeAccess=true → passes without participant query
+    //   (founder short-circuit skipped; scopeType null → hasScopeAccess=true; canViewThread open → true)
+    //   BUT assertCanView still issues the participants select for non-founders. Provide [] (not participant, but open thread → still visible).
+    // assertCanEdit: ownerUserId check fails → queries threadParticipants → returns co_owner row → passes
+    const db = createSequenceDb([
+      // getById select (thread exists, open, owned by u9)
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u9", scopeType: null, scopeId: null }],
+      // assertCanView: threadParticipants select (actor is not a direct participant, but open+null-scope → visible)
+      [],
+      // assertCanEdit: threadParticipants select → actor has co_owner role
+      [{ role: "co_owner" }],
+      // insert participant → success
+      [],
+    ]);
+    const result = await threadService(db).addParticipant(
+      "co1",
+      "t1",
+      { principalType: "user", principalId: "u2", role: "collaborator" },
+      { userId: "u1", role: "team_member", isHuman: true },
+    );
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("denies a participant with a non-edit role (collaborator) from adding participants", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u9", scopeType: null, scopeId: null }],
+      [], // assertCanView participants
+      // assertCanEdit: actor has collaborator role → not co_owner or owner → throws
+      [{ role: "collaborator" }],
+    ]);
+    await expect(
+      threadService(db).addParticipant(
+        "co1",
+        "t1",
+        { principalType: "user", principalId: "u2", role: "collaborator" },
+        { userId: "u1", role: "team_member", isHuman: true },
+      ),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
 // ── Task 7: merge ─────────────────────────────────────────────────────────────
 
 describe("threadService.merge", () => {
