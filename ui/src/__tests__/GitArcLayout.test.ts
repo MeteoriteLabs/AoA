@@ -216,7 +216,9 @@ describe("computeArcHeight", () => {
 // ---------------------------------------------------------------------------
 
 describe("assignArcDirections", () => {
-  it("alternates up/down correctly for 4 branches", () => {
+  it("assigns deterministic name-hash up/down for 4 branches", () => {
+    // Directions key on a stable name hash, not list index. For these four
+    // names the hash happens to fold to up/down/up/down (verified directly).
     const branches = [
       { name: "feat/a" },
       { name: "feat/b" },
@@ -612,5 +614,37 @@ describe("computeStackCardLayout", () => {
     expect(cards[0]!.x).toBe(100 + STACK_DX);
     expect(cards[0]!.y).toBeLessThan(200);          // above the commit
     expect(cards[1]!.y).toBeLessThan(cards[0]!.y);  // each higher than the last
+  });
+});
+
+describe("findTrunkShas full-walk (no 500 guard)", () => {
+  function linear(n: number) {
+    const commits = Array.from({ length: n }, (_, i) => ({
+      sha: "c" + i, parentShas: i < n - 1 ? ["c" + (i + 1)] : [], shortSha: "c" + i,
+      message: "m", author: "a", committedAt: new Date(Date.now() - i * 1000).toISOString(),
+      branchNames: [], isMerge: false, tags: [],
+    }));
+    return { commits, branches: [{ name: "main", laneIndex: 0, color: "#000", tipSha: "c0" }], defaultBranch: "main" } as any;
+  }
+  it("recognizes ALL trunk commits beyond 500", () => {
+    expect(findTrunkShas(linear(1200)).size).toBe(1200);
+  });
+  it("a branch off an old commit resolves a real branch point + bounded feature walk", () => {
+    const g = linear(1000);
+    g.commits.unshift({ sha: "f0", parentShas: ["c800"], shortSha: "f0", message: "f", author: "a", committedAt: new Date().toISOString(), branchNames: [], isMerge: false, tags: [] });
+    g.commits.unshift({ sha: "f1", parentShas: ["f0"], shortSha: "f1", message: "f", author: "a", committedAt: new Date().toISOString(), branchNames: [], isMerge: false, tags: [] });
+    const commitMap = new Map(g.commits.map((c: any) => [c.sha, c]));
+    const trunk = findTrunkShas(g);
+    expect(getFeatureCommitShas(commitMap, trunk, "f1")).toEqual(["f1", "f0"]);
+    expect(findBranchPoint(commitMap, trunk, "f1")).toBe("c800");
+  });
+});
+
+describe("assignArcDirections stability", () => {
+  it("adding a branch does not change existing branches' directions", () => {
+    const base = ["a", "b", "c", "d", "e"].map((name) => ({ name }));
+    const d1 = assignArcDirections(base);
+    const d2 = assignArcDirections([{ name: "NEW" }, ...base]);
+    for (const { name } of base) expect(d2.get(name)).toBe(d1.get(name));
   });
 });

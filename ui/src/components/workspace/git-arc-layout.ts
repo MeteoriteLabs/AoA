@@ -138,12 +138,15 @@ export function findTrunkShas(graph: GitGraphData): Set<string> {
   if (!defaultBranch) return new Set();
   const commitMap = new Map(graph.commits.map((c) => [c.sha, c]));
   const result = new Set<string>();
+  // Walk the FULL first-parent chain. The visited-set (result.has) bounds a
+  // cyclic/malformed parent ref without truncating a deep trunk. The old
+  // `guard < 500` dropped older trunk (history loss) and made branches that
+  // fork before commit 500 walk to end-of-history in getFeatureCommitShas
+  // (O(branches*commits) layout blowup).
   let current: string | undefined = defaultBranch.tipSha;
-  let guard = 0;
-  while (current && guard < 500) {
+  while (current && !result.has(current)) {
     result.add(current);
     current = commitMap.get(current)?.parentShas[0];
-    guard++;
   }
   return result;
 }
@@ -151,17 +154,19 @@ export function findTrunkShas(graph: GitGraphData): Set<string> {
 /**
  * Walks a feature branch tip backwards until a trunk SHA is found.
  * Returns that SHA as the branch point.
- * Graceful fallback: if none found within 500 steps, returns the tip itself.
+ * Graceful fallback: if no trunk ancestor is reachable, returns the tip itself.
  */
 export function findBranchPoint(
   commitMap: Map<string, { sha: string; parentShas: string[] }>,
   trunkShas: Set<string>,
   featureTipSha: string,
 ): string {
+  // BFS to the first trunk ancestor. The visited-set bounds it (can't revisit),
+  // so no fixed iteration cap is needed — the old `guard < 500` made a branch
+  // with >500 of its own commits fall back to the tip (wrong branch point). (D3)
   const visited = new Set<string>();
   const queue: string[] = [featureTipSha];
-  let guard = 0;
-  while (queue.length > 0 && guard < 500) {
+  while (queue.length > 0) {
     const sha = queue.shift()!;
     if (visited.has(sha)) continue;
     visited.add(sha);
@@ -172,7 +177,6 @@ export function findBranchPoint(
       if (trunkShas.has(p)) return p;
       if (!visited.has(p)) queue.push(p);
     }
-    guard++;
   }
   return featureTipSha; // fallback
 }
@@ -233,16 +237,26 @@ export function computeArcHeight(featureCommitCount: number): number {
 }
 
 /**
- * Assigns alternating up/down directions to feature branches by their
- * list index. Index 0 → "up", 1 → "down", 2 → "up", …
+ * Assigns up/down directions to feature branches by a stable hash of the branch
+ * name (so a branch's lane survives add/remove of OTHER branches).
  */
+/** Deterministic 32-bit hash so a branch's lane depends only on its name, not
+ * its index in the list. Index parity reshuffled the whole Map when any branch
+ * was added/removed; name-hash keeps each branch's lane stable across refreshes.
+ * Multi-lane packing (Phase 3) handles balance. */
+function branchHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+  return h;
+}
+
 export function assignArcDirections(
   featureBranches: Array<{ name: string }>,
 ): Map<string, "up" | "down"> {
   const result = new Map<string, "up" | "down">();
-  featureBranches.forEach((b, i) => {
-    result.set(b.name, i % 2 === 0 ? "up" : "down");
-  });
+  for (const b of featureBranches) {
+    result.set(b.name, (branchHash(b.name) & 1) === 0 ? "up" : "down");
+  }
   return result;
 }
 
