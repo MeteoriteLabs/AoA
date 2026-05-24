@@ -18,7 +18,7 @@ import { discussionService, logActivity, permissionService } from "../services/i
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
-import { threadService } from "../services/threads.js";
+import { threadService, parseMentions, processMentions } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
 
 // ── Thread lifecycle request-body schemas ────────────────────────────────────
@@ -159,6 +159,17 @@ export function discussionRoutes(db: Db) {
           req.body,
           actor.actorId,
         );
+
+        // Process @mentions in the entry text (fire-and-forget; errors must not
+        // fail the request since the entry is already committed).
+        const rawContent: string = (req.body as { rawContent?: string }).rawContent ?? "";
+        const mentions = parseMentions(rawContent);
+        if (mentions.length > 0) {
+          processMentions(db, companyId, discussionId, entry.id, mentions).catch(
+            (err) => console.error("[threads] processMentions error:", err),
+          );
+        }
+
         res.status(201).json(entry);
       } catch (err) {
         if (err instanceof HttpError) {
