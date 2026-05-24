@@ -11,6 +11,7 @@ import { resolveAdapterExecutionContext } from "../../heartbeat.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
+import { computeCostCents } from "../cost-model.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
 
@@ -153,10 +154,21 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         .set({ status: "completed", durationMs: Date.now() - startedAt, completedAt: new Date() })
         .where(eq(internalAgentRuns.id, runId));
     }
+    // Plan 3 Task 6: real cost accounting. CLI subscription runs report 0
+    // tokens (no per-token billing); SDK-mode runs will populate usage once
+    // providers/index.ts is extended (DONE_WITH_CONCERNS: providers/index.ts
+    // does not currently return token usage from SDK calls — it returns the
+    // provider instance, not a response object. Cost accounting for SDK-mode
+    // crew runs is deferred pending provider response shape extension.)
     await costService(db).createEvent(payload.companyId, {
       agentId, provider: "anthropic",
       model: process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514",
-      inputTokens: 0, outputTokens: 0, costCents: 0, occurredAt: new Date(),
+      inputTokens: 0, outputTokens: 0,
+      // CLI subscription: no per-token billing → always $0. If/when the
+      // adapter begins returning token usage, replace with:
+      //   computeCostCents(provider, model, usage.inputTokens, usage.outputTokens)
+      costCents: computeCostCents("anthropic", process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514", 0, 0),
+      occurredAt: new Date(),
     });
   } catch (err) {
     log.error({ err }, "aoa run failed (isolated)");
