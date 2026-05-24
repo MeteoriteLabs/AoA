@@ -23,8 +23,10 @@ import type { HoveredNode } from "./GitHoverCard";
 import {
   computeArcLayout,
   computeHeadFocusTransform,
+  computeStackCardLayout,
   type ArcCommitLayout,
   type ArcDefinition,
+  type TipStack,
 } from "./git-arc-layout";
 import {
   COMMIT_R,
@@ -41,6 +43,7 @@ import {
   drawArcLabels,
   drawLabelDots,
   drawFlowPulse,
+  drawTipStack,
   pointToSegmentDistance,
 } from "./git-arc-draw";
 
@@ -122,6 +125,28 @@ function hitTestArc(
   return best;
 }
 
+function hitTestStacks(
+  tipStacks: TipStack[],
+  branchByName: Map<string, GitBranchInfo>,
+  cx: number,
+  cy: number,
+): GitBranchInfo | null {
+  for (const stack of tipStacks) {
+    for (const c of computeStackCardLayout(stack)) {
+      if (
+        cx >= c.x - CARD_W / 2 - 4 &&
+        cx <= c.x + CARD_W / 2 + 4 &&
+        cy >= c.y - CARD_H / 2 - 4 &&
+        cy <= c.y + CARD_H / 2 + 4
+      ) {
+        const b = branchByName.get(c.branchName);
+        if (b) return b;
+      }
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -199,6 +224,33 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       return { minX: Math.min(...xs), maxX: Math.max(...xs) };
     }, [layout]);
 
+    // Stacks restricted to currently-visible branches. A stack needs >=2 visible
+    // members to fan; otherwise its node renders the normal single-card path.
+    const visibleStacks = useMemo(
+      () =>
+        layout.tipStacks
+          .map((s) => ({ ...s, branchNames: s.branchNames.filter((n) => visibleNames.has(n)) }))
+          .filter((s) => s.branchNames.length >= 2),
+      [layout.tipStacks, visibleNames],
+    );
+    // SHAs drawn as a fan (their node becomes a plain dot, not a card).
+    const stackedShas = useMemo(
+      () => new Set(visibleStacks.map((s) => s.sha)),
+      [visibleStacks],
+    );
+    // Branch names whose (degenerate) arc + label must be suppressed because the
+    // branch is shown as a fanned card instead.
+    const stackedBranchNames = useMemo(
+      () => new Set(visibleStacks.flatMap((s) => s.branchNames)),
+      [visibleStacks],
+    );
+    // visibleNames minus stacked branches — used ONLY for arc lines + arc labels.
+    const arcVisibleNames = useMemo(() => {
+      const s = new Set(visibleNames);
+      for (const n of stackedBranchNames) s.delete(n);
+      return s;
+    }, [visibleNames, stackedBranchNames]);
+
     // Reset initial-pan flag whenever graph data changes
     useEffect(() => {
       initialPanApplied.current = false;
@@ -256,7 +308,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
 
       // 2. Arc lines (smooth path through commit nodes + dashed open stub)
-      drawArcLines(ctx, layout.arcs, visibleNames, viewportLeftInLayout);
+      drawArcLines(ctx, layout.arcs, arcVisibleNames, viewportLeftInLayout);
 
       // 3. Flow pulse dots (trunk pulse always shows; arc pulses self-gate on status)
       {
@@ -282,15 +334,16 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           node.branchName != null
             ? (branchByName.get(node.branchName)?.linkedIssueStatus ?? null)
             : null;
-        drawCommitNode(ctx, node, animPhaseRef.current, branchStatus);
+        const isStacked = stackedShas.has(node.sha);
+        drawCommitNode(ctx, node, animPhaseRef.current, branchStatus, isStacked);
 
-        if (node.isBranchTip) {
+        if (node.isBranchTip && !isStacked) {
           let syncBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
           if (!syncBranch) syncBranch = taskBranchByTipSha.get(node.sha);
           if (syncBranch) drawSyncBadge(ctx, node, syncBranch);
         }
 
-        if (node.isTaskTip) {
+        if (node.isTaskTip && !isStacked) {
           let branch = node.branchName ? branchByName.get(node.branchName) : undefined;
           if (!branch?.linkedIssueId) branch = taskBranchByTipSha.get(node.sha);
           if (branch?.linkedIssueId) {
@@ -300,6 +353,11 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
             if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
           }
         }
+      }
+
+      // 4b. Same-commit task stacks (fanned cards + connectors + "+N more").
+      for (const stack of visibleStacks) {
+        drawTipStack(ctx, stack, branchByName, animPhaseRef.current);
       }
 
       // 5. Tag pills
@@ -313,10 +371,10 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
 
       // 7. Arc labels (branch name near apex) — only for plain branches that
       // don't already have a task card.
-      drawArcLabels(ctx, layout.arcs, visibleNames, cardBranchNames);
+      drawArcLabels(ctx, layout.arcs, arcVisibleNames, cardBranchNames);
 
       ctx.restore();
-    }, [layout, visibleNames, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches]);
+    }, [layout, visibleNames, arcVisibleNames, visibleStacks, stackedShas, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches]);
 
     // ── RAF loop (throttled to ~30fps, pauses when the tab is hidden) ─────────
 
@@ -438,6 +496,19 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         const cx = (e.clientX - rect.left - t.x) / t.k;
         const cy = (e.clientY - rect.top - t.y) / t.k;
 
+        // Fanned same-commit stack cards take priority over the underlying node.
+        const stackBranch = hitTestStacks(visibleStacks, branchByName, cx, cy);
+        if (stackBranch) {
+          canvas.style.cursor = "pointer";
+          onHover(
+            stackBranch.linkedIssueId
+              ? { type: "task", branch: stackBranch }
+              : { type: "plain_tip", branch: stackBranch },
+            { x: e.clientX, y: e.clientY },
+          );
+          return;
+        }
+
         const hit = hitTest(layout.nodes, cx, cy);
 
         if (!hit) {
@@ -530,7 +601,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           onHover({ type: "commit", commit }, { x: e.clientX, y: e.clientY });
         }
       },
-      [layout.nodes, layout.arcs, layout.trunkY, trunkSpan, visibleNames, branchByName, taskBranchByTipSha, graph.commits, onHover],
+      [layout.nodes, layout.arcs, layout.trunkY, trunkSpan, visibleNames, visibleStacks, branchByName, taskBranchByTipSha, graph.commits, onHover],
     );
 
     const handleMouseLeave = useCallback(() => {
@@ -549,6 +620,12 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         const t = transformRef.current;
         const cx = (e.clientX - rect.left - t.x) / t.k;
         const cy = (e.clientY - rect.top - t.y) / t.k;
+
+        const stackBranch = hitTestStacks(visibleStacks, branchByName, cx, cy);
+        if (stackBranch?.linkedIssueId) {
+          onClick({ type: "task", branch: stackBranch });
+          return;
+        }
 
         const hit = hitTest(layout.nodes, cx, cy);
         if (!hit) return;
@@ -580,7 +657,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         const commit = graph.commits.find((c) => c.sha === hit.sha);
         if (commit) onClick({ type: "commit", commit });
       },
-      [layout.nodes, branchByName, taskBranchByTipSha, graph.commits, onClick],
+      [layout.nodes, visibleStacks, branchByName, taskBranchByTipSha, graph.commits, onClick],
     );
 
     return (

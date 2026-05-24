@@ -11,6 +11,9 @@ import {
   getLayoutBounds,
   computeFitTransform,
   computeHeadFocusTransform,
+  computeStackCardLayout,
+  STACK_MAX_CARDS,
+  STACK_DX,
   type LayoutBounds,
 } from "../components/workspace/git-arc-layout";
 import { polylinePointAt } from "../components/workspace/git-arc-draw";
@@ -549,5 +552,65 @@ describe("polylinePointAt", () => {
     expect(polylinePointAt([], 0.5)).toEqual([0, 0]);
     expect(polylinePointAt([[5, 5]], 0.5)).toEqual([5, 5]);
     expect(polylinePointAt([[3, 3], [3, 3]], 0.5)).toEqual([3, 3]);
+  });
+});
+
+describe("computeArcLayout tipStacks", () => {
+  function taskBranch(
+    name: string,
+    sha: string,
+    issueId: string | null,
+    identifier: string | null = null,
+  ): GitBranchInfo {
+    return {
+      name, lastCommitSha: sha,
+      isLocal: true, isRemote: true, aheadCount: 0, behindCount: 0,
+      lastCommitMessage: "", lastCommitAt: "2024-01-01T00:00:00Z", lastCommitAuthor: "t",
+      linkedWorkspaceId: null, linkedIssueId: issueId,
+      linkedIssueIdentifier: identifier, linkedIssueTitle: null,
+      linkedIssueStatus: null, linkedIssueWorkMode: null,
+      pr: null, overlays: { hasConflicts: false, isDiverged: false, isBehindRemote: false }, tags: [],
+    };
+  }
+
+  const graph: GitGraphData = {
+    defaultBranch: "main",
+    commits: [mkCommit("c2", ["c1"]), mkCommit("c1", [])],
+    branches: [
+      { name: "main",   laneIndex: 0, color: "#6470DC", tipSha: "c2" },
+      { name: "feat/a", laneIndex: 1, color: "#4FB67E", tipSha: "c2" },
+      { name: "feat/b", laneIndex: 2, color: "#D9A938", tipSha: "c2" },
+    ],
+  };
+
+  it("groups multiple task branches sharing a tip commit", () => {
+    const branches = [
+      taskBranch("main", "c2", null),
+      taskBranch("feat/a", "c2", "i1", "AOA-1"),
+      taskBranch("feat/b", "c2", "i2", "AOA-2"),
+    ];
+    const result = computeArcLayout(graph, branches);
+    expect(result.tipStacks).toHaveLength(1);
+    expect(result.tipStacks[0]!.sha).toBe("c2");
+    expect([...result.tipStacks[0]!.branchNames].sort()).toEqual(["feat/a", "feat/b"]);
+  });
+
+  it("does not create a stack for a single task branch at a commit", () => {
+    const branches = [
+      taskBranch("main", "c2", null),
+      taskBranch("feat/a", "c2", "i1", "AOA-1"),
+    ];
+    expect(computeArcLayout(graph, branches).tipStacks).toHaveLength(0);
+  });
+});
+
+describe("computeStackCardLayout", () => {
+  it("fans up to STACK_MAX_CARDS cards upward and to the right", () => {
+    const stack = { sha: "x", x: 100, y: 200, branchNames: ["a", "b", "c", "d", "e"] };
+    const cards = computeStackCardLayout(stack);
+    expect(cards).toHaveLength(STACK_MAX_CARDS);
+    expect(cards[0]!.x).toBe(100 + STACK_DX);
+    expect(cards[0]!.y).toBeLessThan(200);          // above the commit
+    expect(cards[1]!.y).toBeLessThan(cards[0]!.y);  // each higher than the last
   });
 });

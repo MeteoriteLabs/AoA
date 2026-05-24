@@ -26,6 +26,40 @@ export const OPEN_ARC_STUB = 40;
  * colour lives ONLY on task cards; the trunk LINE keeps the default-branch blue. */
 export const NEUTRAL_GREY = "#7E8AA8";
 
+/** Horizontal/vertical geometry for fanned same-commit task cards. */
+export const STACK_MAX_CARDS = 3;
+export const STACK_DX = 64;       // cards sit this far right of the shared commit
+export const STACK_DY = 40;       // vertical gap between fanned cards
+export const STACK_BASE_DY = 34;  // first card's vertical offset above the commit
+
+export interface TipStack {
+  sha: string;
+  x: number;
+  y: number;
+  /** Task branch names sharing this tip commit (length >= 2). */
+  branchNames: string[];
+}
+
+export interface StackCardPos {
+  branchName: string;
+  x: number;
+  y: number;
+}
+
+/** Positions of the (up to STACK_MAX_CARDS) cards fanned upward from a stack. */
+export function computeStackCardLayout(stack: TipStack): StackCardPos[] {
+  const shown = Math.min(stack.branchNames.length, STACK_MAX_CARDS);
+  const out: StackCardPos[] = [];
+  for (let i = 0; i < shown; i++) {
+    out.push({
+      branchName: stack.branchNames[i]!,
+      x: stack.x + STACK_DX,
+      y: stack.y - STACK_BASE_DY - i * STACK_DY,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -86,6 +120,8 @@ export interface ArcLayoutResult {
   trunkY: number;
   totalWidth: number;
   totalHeight: number;
+  /** Groups of >=2 TASK branches sharing a tip commit (rendered as fanned cards). */
+  tipStacks: TipStack[];
 }
 
 // ---------------------------------------------------------------------------
@@ -392,11 +428,31 @@ export function computeArcLayout(
     };
   });
 
+  // ── Same-commit task stacks ───────────────────────────────────────────────
+  // Group TASK branches (linkedIssueId) by their tip commit. Two or more on the
+  // same commit would collapse into one card; expose them so the component can
+  // fan them out instead.
+  const nodeBySha = new Map(nodes.map((n) => [n.sha, n]));
+  const tasksByTipSha = new Map<string, string[]>();
+  for (const b of branches) {
+    if (!b.linkedIssueId) continue;
+    const list = tasksByTipSha.get(b.lastCommitSha) ?? [];
+    list.push(b.name);
+    tasksByTipSha.set(b.lastCommitSha, list);
+  }
+  const tipStacks: TipStack[] = [];
+  for (const [sha, branchNames] of tasksByTipSha) {
+    if (branchNames.length < 2) continue;
+    const node = nodeBySha.get(sha);
+    if (!node) continue;
+    tipStacks.push({ sha, x: node.x, y: node.y, branchNames });
+  }
+
   const totalWidth =
     PAD_LEFT * 2 + (graph.commits.length > 0 ? maxIdx * X_SPACING : 400);
   const totalHeight = TRUNK_Y * 2 + MAX_ARC_HEIGHT + 80;
 
-  return { nodes, arcs, trunkY: TRUNK_Y, totalWidth, totalHeight };
+  return { nodes, arcs, trunkY: TRUNK_Y, totalWidth, totalHeight, tipStacks };
 }
 
 // ---------------------------------------------------------------------------

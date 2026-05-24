@@ -15,6 +15,7 @@ import {
   computeArcLayout,
   getLayoutBounds,
   computeFitTransform,
+  computeStackCardLayout,
 } from "../src/components/workspace/git-arc-layout";
 import {
   drawTrunk,
@@ -26,6 +27,9 @@ import {
   drawLabelDots,
   drawTagPills,
   drawHeadLabel,
+  drawTipStack,
+  CARD_W,
+  CARD_H,
 } from "../src/components/workspace/git-arc-draw";
 import type {
   GitGraphData,
@@ -166,6 +170,34 @@ function build(
   return { graph, branches: [mainInfo, ...binfos] };
 }
 
+/** Build a graph where `count` task branches all sit on ONE mid-trunk commit,
+ * to exercise same-commit card stacking (fan + "+N more"). */
+function buildStack(count: number): { graph: GitGraphData; branches: GitBranchInfo[] } {
+  _id = 0;
+  const c0 = mkCommit([]);
+  const c1 = mkCommit([c0.sha]);
+  const c2 = mkCommit([c1.sha]); // the shared commit
+  const c3 = mkCommit([c2.sha]); // trunk continues past it (room for the fan)
+  const commits = [c3, c2, c1, c0]; // newest-first
+  const statuses = ["in_progress", "in_review", "blocked", "done", "in_progress"];
+  const fdefs: GitGraphData["branches"] = [
+    { name: "main", laneIndex: 0, color: "#6470DC", tipSha: c3.sha },
+  ];
+  const binfos: GitBranchInfo[] = [mkBranchInfo({ name: "main" }, c3.sha)];
+  for (let i = 0; i < count; i++) {
+    const name = `feat/stacked-${i + 1}`;
+    fdefs.push({ name, laneIndex: i + 1, color: PALETTE[i % PALETTE.length]!, tipSha: c2.sha });
+    binfos.push(
+      mkBranchInfo(
+        { name, status: statuses[i % statuses.length], identifier: `AOA-${40 + i}`, title: `Stacked task ${i + 1}` },
+        c2.sha,
+      ),
+    );
+  }
+  const graph: GitGraphData = { defaultBranch: "main", commits, branches: fdefs };
+  return { graph, branches: binfos };
+}
+
 // ---------------------------------------------------------------------------
 // Render — mirrors GitGraphCanvas.redraw() (static, no flow pulse)
 // ---------------------------------------------------------------------------
@@ -200,7 +232,28 @@ function render(
   visibleNames.add(graph.defaultBranch);
 
   const layout = computeArcLayout(graph, branches);
-  const t = computeFitTransform(getLayoutBounds(layout, visibleNames), cw, ch);
+
+  // Stacks (mirror GitGraphCanvas): filter to visible branches, >=2 members.
+  const visibleStacks = layout.tipStacks
+    .map((s) => ({ ...s, branchNames: s.branchNames.filter((n) => visibleNames.has(n)) }))
+    .filter((s) => s.branchNames.length >= 2);
+  const stackedShas = new Set(visibleStacks.map((s) => s.sha));
+  const stackedBranchNames = new Set(visibleStacks.flatMap((s) => s.branchNames));
+  const arcVisibleNames = new Set(visibleNames);
+  for (const n of stackedBranchNames) arcVisibleNames.delete(n);
+
+  // Fit bounds — expand to include fanned stack-card extents (harness only;
+  // getLayoutBounds doesn't model stacks).
+  const bounds = getLayoutBounds(layout, visibleNames);
+  for (const stack of visibleStacks) {
+    for (const c of computeStackCardLayout(stack)) {
+      bounds.minX = Math.min(bounds.minX, c.x - CARD_W);
+      bounds.maxX = Math.max(bounds.maxX, c.x + CARD_W + 60);
+      bounds.minY = Math.min(bounds.minY, c.y - CARD_H);
+      bounds.maxY = Math.max(bounds.maxY, c.y + CARD_H);
+    }
+  }
+  const t = computeFitTransform(bounds, cw, ch);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
@@ -222,7 +275,7 @@ function render(
   );
 
   drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
-  drawArcLines(ctx, layout.arcs, visibleNames);
+  drawArcLines(ctx, layout.arcs, arcVisibleNames);
 
   const cardBranchNames = new Set<string>();
   for (const node of visibleNodes) {
@@ -230,8 +283,9 @@ function render(
       node.branchName != null
         ? (branchByName.get(node.branchName)?.linkedIssueStatus ?? null)
         : null;
-    drawCommitNode(ctx, node, 0, branchStatus);
-    if (node.isTaskTip) {
+    const isStacked = stackedShas.has(node.sha);
+    drawCommitNode(ctx, node, 0, branchStatus, isStacked);
+    if (node.isTaskTip && !isStacked) {
       let branch = node.branchName ? branchByName.get(node.branchName) : undefined;
       if (!branch?.linkedIssueId) branch = taskByTip.get(node.sha);
       if (branch?.linkedIssueId) {
@@ -242,12 +296,16 @@ function render(
       }
     }
   }
+  // Fanned same-commit task stacks.
+  for (const stack of visibleStacks) {
+    drawTipStack(ctx, stack, branchByName, 0);
+  }
   for (const node of visibleNodes) {
     if (node.tags.length > 0) drawTagPills(ctx, node);
   }
   const defaultTip = visibleNodes.find((n) => n.isDefault && n.branchName != null);
   if (defaultTip) drawHeadLabel(ctx, defaultTip);
-  drawArcLabels(ctx, layout.arcs, visibleNames, cardBranchNames);
+  drawArcLabels(ctx, layout.arcs, arcVisibleNames, cardBranchNames);
 
   ctx.restore();
 }
@@ -391,6 +449,14 @@ const SCENARIOS: Array<{
       ],
       { spread: true },
     ),
+  },
+  {
+    title: "9 — Same-commit stack: 3 task branches on one commit (fanned cards)",
+    data: buildStack(3),
+  },
+  {
+    title: "10 — Same-commit stack: 5 task branches → 3 cards + '+2 more' pill",
+    data: buildStack(5),
   },
 ];
 

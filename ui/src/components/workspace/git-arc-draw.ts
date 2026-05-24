@@ -8,6 +8,7 @@
 
 import type { GitBranchInfo } from "@armyofagents/shared";
 import type { ArcCommitLayout, ArcDefinition } from "./git-arc-layout";
+import { NEUTRAL_GREY, computeStackCardLayout, type TipStack } from "./git-arc-layout";
 
 // ---------------------------------------------------------------------------
 // Path helpers (shared by drawArcLines, drawFlowPulse, hit testing)
@@ -238,96 +239,119 @@ export function statusDotColor(status: string | null, fallback: string): string 
   return fallback;
 }
 
+export interface TaskCardStyle {
+  issueStatus: string | null;
+  laneColor: string;
+  isDone: boolean;
+  branchStatus: string | null;
+}
+
+/** Draw a task card centred at (x,y). Shared by the normal node path and the
+ * same-commit stack. Labels/badges are drawn separately by the caller. */
+export function drawTaskCardAt(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  style: TaskCardStyle,
+  animPhase: number,
+) {
+  const { issueStatus, laneColor, isDone, branchStatus } = style;
+  const cardX = x - CARD_W / 2;
+  const cardY = y - CARD_H / 2;
+  const r = 4;
+
+  ctx.save();
+  ctx.globalAlpha = isDone ? 0.45 : 1;
+
+  const borderColor = statusDotColor(issueStatus, laneColor);
+  const fillColor = "#0f0e0d";
+
+  if (branchStatus === "in_progress") {
+    const pulse = (Math.sin(animPhase) + 1) / 2;
+    ctx.beginPath();
+    ctx.roundRect(cardX - 6, cardY - 6, CARD_W + 12, CARD_H + 12, r + 4);
+    ctx.strokeStyle = borderColor + Math.round(pulse * 0x33).toString(16).padStart(2, "0");
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
+    ctx.strokeStyle = borderColor + Math.round(pulse * 0x66).toString(16).padStart(2, "0");
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  } else if (branchStatus === "in_review") {
+    ctx.beginPath();
+    ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
+    ctx.strokeStyle = "#D9A93866";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  } else if (branchStatus === "blocked") {
+    ctx.beginPath();
+    ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
+    ctx.strokeStyle = "#ef444466";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  } else if (branchStatus === "planning") {
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
+    ctx.strokeStyle = "#D9A93855";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.beginPath();
+  ctx.roundRect(cardX, cardY, CARD_W, CARD_H, r);
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cardX + 10, y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = statusDotColor(issueStatus, laneColor);
+  ctx.fill();
+
+  ctx.strokeStyle = borderColor + "99";
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = "round";
+  const lineX1 = cardX + 18;
+  const lineX2 = cardX + CARD_W - 5;
+  ctx.beginPath(); ctx.moveTo(lineX1, y - 4); ctx.lineTo(lineX2, y - 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lineX1, y);     ctx.lineTo(lineX2, y);     ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lineX1, y + 4); ctx.lineTo(lineX2, y + 4); ctx.stroke();
+  ctx.lineCap = "butt";
+
+  ctx.restore();
+}
+
 export function drawCommitNode(
   ctx: CanvasRenderingContext2D,
   node: ArcCommitLayout,
   animPhase: number,
   branchStatus: string | null,
+  asDot = false,
 ) {
+  if (node.isTaskTip && !asDot) {
+    drawTaskCardAt(
+      ctx,
+      node.x,
+      node.y,
+      {
+        issueStatus: node.issueStatus,
+        laneColor: node.laneColor,
+        isDone: node.isDone,
+        branchStatus,
+      },
+      animPhase,
+    );
+    return;
+  }
+
   const doneAlpha = node.isDone ? 0.45 : 1;
 
-  if (node.isTaskTip) {
-    const cardX = node.x - CARD_W / 2;
-    const cardY = node.y - CARD_H / 2;
-    const r = 4;
-
-    ctx.save();
-    ctx.globalAlpha = doneAlpha;
-
-    // Determine border + fill color based on issue status
-    const borderColor = statusDotColor(node.issueStatus, node.laneColor);
-    const fillColor = "#0f0e0d"; // near-black, matches canvas bg
-
-    // Outer ring(s) based on status
-    if (branchStatus === "in_progress") {
-      // Double animated pulse ring (outer + inner)
-      const pulse = (Math.sin(animPhase) + 1) / 2;
-      // Outer ring
-      ctx.beginPath();
-      ctx.roundRect(cardX - 6, cardY - 6, CARD_W + 12, CARD_H + 12, r + 4);
-      ctx.strokeStyle = borderColor + Math.round(pulse * 0x33).toString(16).padStart(2, "0");
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      // Inner ring
-      ctx.beginPath();
-      ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
-      ctx.strokeStyle = borderColor + Math.round(pulse * 0x66).toString(16).padStart(2, "0");
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    } else if (branchStatus === "in_review") {
-      // Single amber static ring
-      ctx.beginPath();
-      ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
-      ctx.strokeStyle = "#D9A93866";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    } else if (branchStatus === "blocked") {
-      // Static red ring
-      ctx.beginPath();
-      ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
-      ctx.strokeStyle = "#ef444466";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    } else if (branchStatus === "planning") {
-      // Dashed amber ring
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
-      ctx.strokeStyle = "#D9A93855";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // Card background + border
-    ctx.beginPath();
-    ctx.roundRect(cardX, cardY, CARD_W, CARD_H, r);
-    ctx.fillStyle = fillColor;
-    ctx.fill();
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Status dot (left side)
-    const dotColor = statusDotColor(node.issueStatus, node.laneColor);
-    ctx.beginPath();
-    ctx.arc(cardX + 10, node.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = dotColor;
-    ctx.fill();
-
-    // Three micro-lines (right side, representing content preview)
-    ctx.strokeStyle = borderColor + "99";
-    ctx.lineWidth = 1.5;
-    ctx.lineCap = "round";
-    const lineX1 = cardX + 18;
-    const lineX2 = cardX + CARD_W - 5;
-    ctx.beginPath(); ctx.moveTo(lineX1, node.y - 4); ctx.lineTo(lineX2, node.y - 4); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(lineX1, node.y);     ctx.lineTo(lineX2, node.y);     ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(lineX1, node.y + 4); ctx.lineTo(lineX2, node.y + 4); ctx.stroke();
-    ctx.lineCap = "butt";
-
-    ctx.restore();
-  } else if (node.isMerge) {
+  if (node.isMerge) {
     // Diamond for merge commits
     ctx.save();
     ctx.globalAlpha = doneAlpha;
@@ -777,4 +801,77 @@ export function drawSyncBadge(
 
   ctx.textBaseline = "alphabetic";
   ctx.restore();
+}
+
+/** Draw fanned cards for a same-commit task stack: dashed connectors from the
+ * shared commit to each card, up to STACK_MAX_CARDS cards, plus a "+N more"
+ * pill (display-only). */
+export function drawTipStack(
+  ctx: CanvasRenderingContext2D,
+  stack: TipStack,
+  branchByName: Map<string, GitBranchInfo>,
+  animPhase: number,
+) {
+  const cards = computeStackCardLayout(stack);
+
+  // Dashed connectors commit → each card's left edge.
+  ctx.save();
+  ctx.strokeStyle = NEUTRAL_GREY;
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([2, 2]);
+  for (const c of cards) {
+    ctx.beginPath();
+    ctx.moveTo(stack.x, stack.y);
+    ctx.lineTo(c.x - CARD_W / 2, c.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // Cards + compact id label.
+  for (const c of cards) {
+    const b = branchByName.get(c.branchName);
+    const issueStatus = b?.linkedIssueStatus ?? null;
+    drawTaskCardAt(
+      ctx,
+      c.x,
+      c.y,
+      {
+        issueStatus,
+        laneColor: NEUTRAL_GREY,
+        isDone: issueStatus === "done" || issueStatus === "cancelled",
+        branchStatus: issueStatus,
+      },
+      animPhase,
+    );
+    if (b?.linkedIssueIdentifier) {
+      ctx.save();
+      ctx.font = `7px "Courier New", monospace`;
+      ctx.fillStyle = NEUTRAL_GREY;
+      ctx.textBaseline = "middle";
+      ctx.fillText(b.linkedIssueIdentifier, c.x + CARD_W / 2 + 6, c.y);
+      ctx.restore();
+    }
+  }
+
+  // "+N more" pill (display-only — full list is in the Pipeline tab).
+  const extra = stack.branchNames.length - cards.length;
+  if (extra > 0) {
+    const px = stack.x + 50;
+    const py = stack.y + 8;
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(px, py, 54, 15, 7);
+    ctx.fillStyle = "#1e1d1c";
+    ctx.fill();
+    ctx.strokeStyle = "#2e2c2a";
+    ctx.stroke();
+    ctx.font = `9px Inter, sans-serif`;
+    ctx.fillStyle = NEUTRAL_GREY;
+    ctx.textBaseline = "middle";
+    ctx.fillText(`+${extra} more`, px + 7, py + 8);
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
+  }
 }
