@@ -17,7 +17,7 @@
 
 import { Router } from "express";
 import { Octokit } from "@octokit/rest";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, inArray } from "drizzle-orm";
 import {
   executionWorkspaces,
   issues,
@@ -35,7 +35,8 @@ import {
 import { assertCompanyAccess } from "./authz.js";
 import { secretService } from "../services/secrets.js";
 import { getBranches, getCommitGraph, resolveGitRoot } from "../services/git.js";
-import { enrichBranchPr, GitHubPrError, parseGitHubRepoUrl } from "../services/github-pr.js";
+import { enrichBranchPr, GitHubPrError, parseGitHubRepoUrl, resolveGitHubAuth } from "../services/github-pr.js";
+import { getInstallation } from "../services/github-app.js";
 import {
   graphCache,
   enrichCache,
@@ -104,7 +105,7 @@ export function projectGitRoutes(db: Db) {
           branches: [],
           graph: { commits: [], branches: [], defaultBranch: "main" },
           repoUrl: null,
-          hasGitHubPat: false,
+          hasGitHubConnection: false,
           noWorkspaceYet: true,
         };
         res.json(empty);
@@ -117,17 +118,18 @@ export function projectGitRoutes(db: Db) {
           branches: [],
           graph: { commits: [], branches: [], defaultBranch: "main" },
           repoUrl,
-          hasGitHubPat: false,
+          hasGitHubConnection: false,
           noWorkspaceYet: true,
         };
         res.json(empty);
         return;
       }
 
-      // 2. Check PAT existence (read-only — no decryption needed here)
+      // 2. Check PAT or App installation existence (read-only — no decryption needed here)
       const sSvc = secretService(db);
       const patRow = await sSvc.getByName(companyId, GITHUB_PAT_SECRET_NAME);
-      const hasGitHubPat = !!patRow && patRow.status === "active";
+      const installation = await getInstallation(db, companyId);
+      const hasGitHubConnection = !!installation || (!!patRow && patRow.status === "active");
 
       // 3. Fetch branches + graph in parallel
       const [localBranches, commitEntries] = await Promise.all([
@@ -167,7 +169,7 @@ export function projectGitRoutes(db: Db) {
                 workMode: issues.workMode,
               })
               .from(issues)
-              .where(eq(issues.companyId, companyId))
+              .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)))
           : [];
 
       const issueById = new Map(issueRows.map((i) => [i.id, i]));
@@ -244,7 +246,7 @@ export function projectGitRoutes(db: Db) {
         branches: branchInfoList,
         graph,
         repoUrl,
-        hasGitHubPat,
+        hasGitHubConnection,
         noWorkspaceYet: false,
       };
 
@@ -270,29 +272,17 @@ export function projectGitRoutes(db: Db) {
     }
 
     try {
-      // 1. Resolve PAT ONCE — do NOT decrypt per branch
-      const sSvc = secretService(db);
-      const secretRow = await sSvc.getByName(companyId, GITHUB_PAT_SECRET_NAME);
-      if (!secretRow || secretRow.status !== "active") {
-        const empty: GitProjectEnrichResponse = { hasGitHubPat: false, enrichments: [] };
+      // 1. Resolve token ONCE — App installation first, PAT fallback
+      let token: string;
+      try {
+        token = await resolveGitHubAuth(db, companyId, "project-git:enrich");
+      } catch {
+        const empty: GitProjectEnrichResponse = { hasGitHubConnection: false, enrichments: [] };
         res.json(empty);
         return;
       }
 
-      const pat = await sSvc.resolveSecretValue(companyId, secretRow.id, "latest", {
-        consumerType: "system",
-        consumerId: "project-git:enrich",
-        configPath: "github.pat",
-        actorType: "system",
-      }).catch(() => null);
-
-      if (!pat) {
-        const empty: GitProjectEnrichResponse = { hasGitHubPat: false, enrichments: [] };
-        res.json(empty);
-        return;
-      }
-
-      const octokit = new Octokit({ auth: pat });
+      const octokit = new Octokit({ auth: token });
 
       // 2. Resolve repoUrl from project workspace
       const pwRows = await db
@@ -313,7 +303,7 @@ export function projectGitRoutes(db: Db) {
 
       const primaryWs = pwRows.find((r) => r.repoUrl) ?? null;
       if (!primaryWs?.repoUrl) {
-        const empty: GitProjectEnrichResponse = { hasGitHubPat: true, enrichments: [] };
+        const empty: GitProjectEnrichResponse = { hasGitHubConnection: true, enrichments: [] };
         res.json(empty);
         return;
       }
@@ -325,7 +315,7 @@ export function projectGitRoutes(db: Db) {
         owner = parsed.owner;
         repo = parsed.repo;
       } catch {
-        const empty: GitProjectEnrichResponse = { hasGitHubPat: true, enrichments: [] };
+        const empty: GitProjectEnrichResponse = { hasGitHubConnection: true, enrichments: [] };
         res.json(empty);
         return;
       }
@@ -342,7 +332,7 @@ export function projectGitRoutes(db: Db) {
       }
 
       if (branchNames.length === 0) {
-        const empty: GitProjectEnrichResponse = { hasGitHubPat: true, enrichments: [] };
+        const empty: GitProjectEnrichResponse = { hasGitHubConnection: true, enrichments: [] };
         res.json(empty);
         return;
       }
@@ -359,7 +349,7 @@ export function projectGitRoutes(db: Db) {
       );
 
       const response: GitProjectEnrichResponse = {
-        hasGitHubPat: true,
+        hasGitHubConnection: true,
         enrichments: results,
       };
 

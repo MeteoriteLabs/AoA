@@ -126,8 +126,8 @@ export interface GitProjectGraphResponse {
   branches: GitBranchInfo[];
   graph: GitGraphData;
   repoUrl: string | null;
-  /** True when no GitHub PAT is configured — PR/CI fields will remain null. */
-  hasGitHubPat: boolean;
+  /** True when no GitHub PAT or App installation is configured — PR/CI fields will remain null. */
+  hasGitHubConnection: boolean;
   /** True when no project_workspaces row with cwd exists — show empty state. */
   noWorkspaceYet: boolean;
 }
@@ -139,6 +139,6 @@ export interface GitBranchEnrichment {
 }
 
 export interface GitProjectEnrichResponse {
-  hasGitHubPat: boolean;
+  hasGitHubConnection: boolean;
   enrichments: GitBranchEnrichment[];
 }

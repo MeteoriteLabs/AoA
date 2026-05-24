@@ -161,14 +161,14 @@ export function GitCommandCentre({
     queryFn: () => projectGitApi.getEnrich(companyId, projectId),
     refetchInterval: 30_000,
     staleTime: 25_000,
-    enabled: isWorkspacesTabActive && !graphData?.noWorkspaceYet && graphData?.hasGitHubPat,
+    enabled: isWorkspacesTabActive && !graphData?.noWorkspaceYet && graphData?.hasGitHubConnection,
   });
 
   // Repo list for selector pill (only fetched when GitHub is connected)
   const { data: repoList } = useQuery({
     queryKey: ["github-repos", companyId],
     queryFn: () => githubIntegrationApi.getAuthorizedRepos(companyId),
-    enabled: isWorkspacesTabActive && graphData?.hasGitHubPat === true,
+    enabled: isWorkspacesTabActive && graphData?.hasGitHubConnection === true,
     staleTime: 60_000,
   });
 
@@ -388,7 +388,7 @@ export function GitCommandCentre({
         {/* ★ D1: Repo pill is DISPLAY-ONLY — no onClick handler.
             TODO: repo switching requires a new server route before this can be interactive.
             Using cursor-default intentionally (not cursor-pointer) to match the behavior. */}
-        {graphData?.hasGitHubPat && (
+        {graphData?.hasGitHubConnection && (
           <div
             className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 border border-[#2e2c2a]"
             title="Connected GitHub repository"
@@ -407,7 +407,7 @@ export function GitCommandCentre({
             </span>
           </div>
         )}
-        {!graphData?.hasGitHubPat && (
+        {!graphData?.hasGitHubConnection && (
           <span className="text-[11px] text-amber-400/70">
             Connect GitHub →
           </span>
