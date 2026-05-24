@@ -1,7 +1,58 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { eq } from "drizzle-orm";
 import { githubInstallations, type Db, type GitHubInstallation, type NewGitHubInstallation } from "@armyofagents/db";
+
+// ---------------------------------------------------------------------------
+// Signed install-state helpers
+// ---------------------------------------------------------------------------
+
+const INSTALL_STATE_TTL_MS = 10 * 60 * 1000; // 10 min
+
+function installStateSecret(): string {
+  const s = process.env.BETTER_AUTH_SECRET?.trim() || process.env.AOA_AGENT_JWT_SECRET?.trim();
+  if (!s) throw new Error("BETTER_AUTH_SECRET (or AOA_AGENT_JWT_SECRET) must be set to sign the GitHub install state");
+  return s;
+}
+
+/**
+ * Signed, expiring state token binding the GitHub App install flow to a
+ * specific company. Prevents a forged callback from rebinding another
+ * tenant's installation.
+ */
+export function signInstallState(companyId: string, now = Date.now()): string {
+  const payload = Buffer.from(JSON.stringify({ c: companyId, e: now + INSTALL_STATE_TTL_MS }), "utf8").toString("base64url");
+  const sig = createHmac("sha256", installStateSecret()).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+
+/**
+ * Verify a signed state token. Returns the companyId, or null if
+ * invalid / expired / tampered.
+ */
+export function verifyInstallState(state: string, now = Date.now()): string | null {
+  const dot = state.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const payload = state.slice(0, dot);
+  const sig = state.slice(dot + 1);
+  let expected: string;
+  try {
+    expected = createHmac("sha256", installStateSecret()).update(payload).digest("base64url");
+  } catch {
+    return null;
+  }
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { c?: string; e?: number };
+    if (!obj.c || typeof obj.e !== "number" || obj.e < now) return null;
+    return obj.c;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Install URL

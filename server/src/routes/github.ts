@@ -32,6 +32,8 @@ import {
   removeInstallation,
   getInstallation,
   listInstallationRepositories,
+  signInstallState,
+  verifyInstallState,
 } from "../services/github-app.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
@@ -696,7 +698,7 @@ export function githubRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, req.params.companyId);
     try {
-      const url = getInstallUrl(req.params.companyId);
+      const url = getInstallUrl(signInstallState(req.params.companyId));
       res.json({ url });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to build install URL";
@@ -705,14 +707,23 @@ export function githubRoutes(db: Db) {
   });
 
   router.get("/github/callback", async (req, res) => {
-    const { installation_id, setup_action: _setup_action, state: companyId } = req.query as Record<string, string>;
+    const { installation_id, setup_action: _setup_action, state: rawState } = req.query as Record<string, string>;
 
     if (!installation_id || typeof installation_id !== "string") {
       res.status(400).json({ error: "Missing installation_id" });
       return;
     }
-    if (!companyId || typeof companyId !== "string") {
-      res.status(400).json({ error: "Missing state (companyId)" });
+
+    const uiBase = process.env.AOA_AUTH_PUBLIC_BASE_URL ?? "http://localhost:5173";
+
+    if (!rawState || typeof rawState !== "string") {
+      res.redirect(`${uiBase}/settings?tab=github&github=invalid_state`);
+      return;
+    }
+
+    const companyId = verifyInstallState(rawState);
+    if (!companyId) {
+      res.redirect(`${uiBase}/settings?tab=github&github=invalid_state`);
       return;
     }
 
@@ -736,7 +747,6 @@ export function githubRoutes(db: Db) {
 
     await saveInstallation(db, { companyId, installationId: installation_id, accountLogin, accountType });
 
-    const uiBase = process.env.AOA_AUTH_PUBLIC_BASE_URL ?? "http://localhost:5173";
     // Redirect to the company's settings page with the GitHub tab active.
     // companyId is used as the URL prefix (e.g. /acme/settings?tab=github).
     res.redirect(`${uiBase}/${companyId}/settings?tab=github`);
