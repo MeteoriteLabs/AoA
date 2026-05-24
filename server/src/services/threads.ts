@@ -33,7 +33,9 @@ import { logActivity } from "./activity-log.js";
 import { goalService } from "./goals.js";
 import {
   THREAD_PHASES,
+  THREAD_LINK_KINDS,
   type ThreadPhase,
+  type ThreadLinkKind,
   type ThreadVisibility,
   type ThreadOriginSource,
   type ThreadOriginMedium,
@@ -975,6 +977,96 @@ export function threadService(db: Db) {
         });
       }
       return { created };
+    },
+
+    // ── Cross-thread links ────────────────────────────────────────────────────
+
+    /**
+     * Create a typed link between two threads.
+     * Both threads must be visible to the actor.
+     * `kind` must be a valid THREAD_LINK_KINDS value.
+     */
+    createLink: async (
+      companyId: string,
+      fromId: string,
+      toId: string,
+      kind: string,
+      actor: Actor,
+    ) => {
+      if (!THREAD_LINK_KINDS.includes(kind as ThreadLinkKind)) {
+        throw badRequest(`Invalid link kind: ${kind}`);
+      }
+
+      const fromThread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, fromId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!fromThread) throw notFound("Thread not found");
+      await assertCanView(companyId, fromThread, actor);
+
+      const toThread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, toId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!toThread) throw notFound("Target thread not found");
+      await assertCanView(companyId, toThread, actor);
+
+      const [link] = await db
+        .insert(threadLinks)
+        .values({
+          companyId,
+          fromThreadId: fromId,
+          toThreadId: toId,
+          kind,
+          createdBy: actor.userId,
+        })
+        .returning();
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.isHuman ? "user" : "agent",
+        actorId: actor.userId,
+        action: "thread.link.created",
+        entityType: "discussion",
+        entityId: fromId,
+        details: { toId, kind },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.link.created",
+        payload: { fromThreadId: fromId, toThreadId: toId, kind },
+      });
+      return link;
+    },
+
+    /**
+     * List all links where this thread is either the source or destination.
+     */
+    listLinks: async (
+      companyId: string,
+      id: string,
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      return db
+        .select()
+        .from(threadLinks)
+        .where(
+          or(
+            eq(threadLinks.fromThreadId, id),
+            eq(threadLinks.toThreadId, id),
+          ),
+        )
+        .then((rows) => rows);
     },
   };
 }
