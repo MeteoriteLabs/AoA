@@ -16,8 +16,9 @@
 
 import React from "react";
 import { createPortal } from "react-dom";
-import { cn } from "@/lib/utils";
+import { cn, relativeTime } from "@/lib/utils";
 import { issueStatusText, issueStatusTextDefault } from "@/lib/status-colors";
+import { pipelineStageRank, parseMergeMessage, commitBranchContext, type TrunkSummary } from "./git-tooltip-data";
 import type {
   GitBranchInfo,
   GitCommitNode,
@@ -33,15 +34,19 @@ import type {
 export type HoveredNode =
   | { type: "task"; branch: GitBranchInfo }
   | { type: "commit"; commit: GitCommitNode }
-  | { type: "merge"; commit: GitCommitNode }
+  | { type: "merge"; commit: GitCommitNode; defaultBranch?: string }
   | { type: "tag"; name: string; sha: string; date: string }
   | { type: "plain_tip"; branch: GitBranchInfo }
-  | { type: "remote_marker"; branch: GitBranchInfo };
+  | { type: "remote_marker"; branch: GitBranchInfo }
+  | { type: "trunk"; branch: GitBranchInfo | null; summary: TrunkSummary }
+  | { type: "cluster"; branches: GitBranchInfo[]; total: number };
 
 interface GitHoverCardProps {
   node: HoveredNode | null;
   position: { x: number; y: number };
   onOpenTask?: (issueId: string) => void;
+  /** Called when the cluster card's "Open Pipeline" button is clicked. */
+  onOpenPipeline?: () => void;
   /** Called when the cursor enters the card — used to cancel dismiss timer. */
   onMouseEnter?: () => void;
   /** Called when the cursor leaves the card — used to restart dismiss timer. */
@@ -85,16 +90,11 @@ const CI_COLORS: Record<Exclude<GitCIStatus, null>, string> = {
   failing: "text-red-400",
 };
 
-/** Map issue status → pipeline stage (approximate). */
+const STAGE_NAMES: GitPipelineStage[] = ["dirty", "committed", "pushed", "pr_open", "merged"];
+
+/** Map branch → pipeline stage using the single-source pipelineStageRank. */
 function deriveStage(branch: GitBranchInfo): GitPipelineStage {
-  if (branch.pr?.reviewState === "merged") return "merged";
-  if (branch.pr) return "pr_open";
-  if (branch.isRemote && branch.aheadCount === 0) return "pushed";
-  // Fixed: remove `&& !branch.isRemote` — branches that are both local AND remote
-  // (the normal case for feature branches with a remote tracking ref) have isRemote=true,
-  // so the old condition was always false for them, causing "dirty" to show incorrectly.
-  if (branch.aheadCount > 0) return "committed";
-  return "dirty";
+  return STAGE_NAMES[pipelineStageRank(branch)]!;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +227,12 @@ function TaskCard({
       {/* Branch name */}
       <p className="text-[11px] font-mono text-muted-foreground truncate">{branch.name}</p>
 
+      {/* Who (git author) + relative time */}
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="font-medium text-foreground/80">{branch.lastCommitAuthor || "unknown"}</span>
+        {branch.lastCommitAt && <span>· last commit {relativeTime(branch.lastCommitAt)}</span>}
+      </div>
+
       {/* Pipeline progress */}
       <PipelineSteps stage={stage} />
 
@@ -283,6 +289,19 @@ function TaskCard({
           Open task →
         </button>
       )}
+
+      {/* Open PR (separate from Open task) */}
+      {branch.pr && (
+        <a
+          href={branch.pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block w-full mt-1.5 py-1 rounded text-xs text-center border border-white/10 text-muted-foreground hover:text-foreground transition-colors"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Open PR ↗
+        </a>
+      )}
     </div>
   );
 }
@@ -294,8 +313,11 @@ function CommitCard({ commit }: { commit: GitCommitNode }) {
       <p className="text-sm font-medium leading-snug">{commit.message}</p>
       <div className="flex justify-between text-[11px] text-muted-foreground">
         <span>{commit.author}</span>
-        <span>{new Date(commit.committedAt).toLocaleDateString()}</span>
+        <span>{commit.committedAt ? relativeTime(commit.committedAt) : ""}</span>
       </div>
+      {commitBranchContext(commit) && (
+        <p className="text-[11px] text-muted-foreground">on <span className="font-mono text-foreground/70">{commitBranchContext(commit)}</span></p>
+      )}
       {commit.tags.length > 0 && (
         <div className="flex flex-wrap gap-1 pt-0.5">
           {commit.tags.map((tag) => (
@@ -354,11 +376,110 @@ function TagCard({ name, sha, date }: { name: string; sha: string; date: string 
   );
 }
 
+function MergeCard({ commit, defaultBranch }: { commit: GitCommitNode; defaultBranch: string }) {
+  const m = parseMergeMessage(commit.message, defaultBranch);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-[#6470DC]">⑃ Merge</div>
+      {m.source && (
+        <div className="flex items-center gap-1.5 font-mono text-xs">
+          <span className="text-foreground/80">{m.source}</span>
+          <span className="text-muted-foreground">→</span>
+          <span className="text-[#4FB67E]">{m.target}</span>
+        </div>
+      )}
+      <p className="text-sm font-medium leading-snug">{commit.message}</p>
+      <div className="flex justify-between text-[11px] text-muted-foreground">
+        <span>
+          {m.prNumber != null && <span className="text-blue-400 font-mono">PR #{m.prNumber} · </span>}
+          <span className="font-mono">{commit.shortSha}</span>
+        </span>
+        <span>{commit.committedAt ? relativeTime(commit.committedAt) : ""}</span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">by {commit.author || "unknown"}</p>
+    </div>
+  );
+}
+
+function RemoteCard({ branch }: { branch: GitBranchInfo }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-sm font-mono font-medium">{branch.name}</p>
+      <span className="inline-block text-[10px] px-1.5 py-0.5 rounded border border-dashed border-[#5a6172] text-muted-foreground">
+        remote only · not checked out
+      </span>
+      <p className="text-[11px] text-muted-foreground leading-snug truncate mt-1">{branch.lastCommitMessage}</p>
+      <div className="flex justify-between text-[11px] text-muted-foreground">
+        <span>{branch.lastCommitAuthor || "unknown"}</span>
+        <span>{branch.lastCommitAt ? relativeTime(branch.lastCommitAt) : ""}</span>
+      </div>
+      <p className="text-[11px] text-muted-foreground/70 pt-1">Pull to work on it locally</p>
+    </div>
+  );
+}
+
+function TrunkCard({ branch, summary }: { branch: GitBranchInfo | null; summary: TrunkSummary }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2">
+        <span className="font-mono font-medium text-sm text-[#4FB67E]">{branch?.name ?? "main"}</span>
+        <span className="text-[10px] text-muted-foreground">default</span>
+      </div>
+      {summary.latestCommit && (
+        <>
+          <p className="text-[13px] font-medium leading-snug truncate">{summary.latestCommit.message}</p>
+          <div className="flex justify-between text-[11px] text-muted-foreground">
+            <span className="font-mono">{summary.latestCommit.shortSha}</span>
+            <span>{summary.latestCommit.committedAt ? `updated ${relativeTime(summary.latestCommit.committedAt)}` : ""}</span>
+          </div>
+        </>
+      )}
+      <div className="pt-1 mt-1 border-t border-white/10 text-[11px] text-muted-foreground">
+        {summary.commitCount} commits · {summary.contributorCount} contributors · {summary.activeBranchCount} active branches
+      </div>
+    </div>
+  );
+}
+
+function ClusterCard({ branches, total, onOpenPipeline }: { branches: GitBranchInfo[]; total: number; onOpenPipeline?: () => void }) {
+  const shown = branches.slice(0, 8);
+  const dotColor = (s: string | null) =>
+    s === "blocked" ? "#ef4444" : s === "in_review" ? "#D9A938" : s === "in_progress" ? "#4FB67E" : "#5a6172";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">{total} more branches</span>
+        <span className="text-[10px] text-muted-foreground">at this commit</span>
+      </div>
+      <div className="mt-1 max-h-[150px] overflow-auto border-t border-white/10 pt-1.5 space-y-0.5">
+        {shown.map((b) => (
+          <div key={b.name} className="flex items-center gap-2 text-xs py-0.5">
+            <span className="w-1.5 h-1.5 rounded-full flex-none" style={{ background: dotColor(b.linkedIssueStatus) }} />
+            <span className="font-mono text-[11px] truncate">{b.linkedIssueIdentifier ?? b.name}</span>
+            {b.lastCommitAt && <span className="ml-auto text-[10px] text-muted-foreground">{relativeTime(b.lastCommitAt)}</span>}
+          </div>
+        ))}
+        {branches.length > shown.length && (
+          <div className="text-[10px] text-muted-foreground pl-3">…and {branches.length - shown.length} more</div>
+        )}
+      </div>
+      {onOpenPipeline && (
+        <button
+          className="w-full mt-1 py-1 rounded text-xs bg-[#6470DC]/20 hover:bg-[#6470DC]/30 text-[#6470DC] transition-colors"
+          onClick={(e) => { e.stopPropagation(); onOpenPipeline(); }}
+        >
+          Open all {total} in Pipeline →
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
-export function GitHoverCard({ node, position, onOpenTask, onMouseEnter, onMouseLeave }: GitHoverCardProps) {
+export function GitHoverCard({ node, position, onOpenTask, onOpenPipeline, onMouseEnter, onMouseLeave }: GitHoverCardProps) {
   if (!node) return null;
 
   // Clamp to viewport
@@ -378,18 +499,14 @@ export function GitHoverCard({ node, position, onOpenTask, onMouseEnter, onMouse
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
       >
-        {node.type === "task" && (
-          <TaskCard branch={node.branch} onOpenTask={onOpenTask} />
-        )}
-        {(node.type === "commit" || node.type === "merge") && (
-          <CommitCard commit={node.commit} />
-        )}
-        {node.type === "tag" && (
-          <TagCard name={node.name} sha={node.sha} date={node.date} />
-        )}
-        {(node.type === "plain_tip" || node.type === "remote_marker") && (
-          <PlainTipCard branch={node.branch} />
-        )}
+        {node.type === "task" && <TaskCard branch={node.branch} onOpenTask={onOpenTask} />}
+        {node.type === "commit" && <CommitCard commit={node.commit} />}
+        {node.type === "merge" && <MergeCard commit={node.commit} defaultBranch={node.defaultBranch ?? "main"} />}
+        {node.type === "tag" && <TagCard name={node.name} sha={node.sha} date={node.date} />}
+        {node.type === "plain_tip" && <PlainTipCard branch={node.branch} />}
+        {node.type === "remote_marker" && <RemoteCard branch={node.branch} />}
+        {node.type === "trunk" && <TrunkCard branch={node.branch} summary={node.summary} />}
+        {node.type === "cluster" && <ClusterCard branches={node.branches} total={node.total} onOpenPipeline={onOpenPipeline} />}
       </div>
     </div>
   );
