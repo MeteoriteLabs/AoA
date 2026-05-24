@@ -151,4 +151,33 @@ describe("buildHitRegions", () => {
     });
     expect(hitRegionAt(regions, 200, 141)).toEqual({ kind: "plainTip", branchName: "feat/done" });
   });
+
+  it("emits a HEAD-label rect above the default tip (same target as the tip)", () => {
+    const node = mkNode({ sha: "h1", x: 800, y: 200, isTrunk: true, isDefault: true, isBranchTip: true, branchName: "main" });
+    const regions = buildHitRegions({
+      layout: emptyLayout([node]), visibleNames: new Set(["main"]), arcVisibleNames: new Set(),
+      visibleStacks: [], stackedShas: new Set(), branchByName, taskBranchByTipSha: new Map(),
+      trunkSpan: null, defaultBranch: "main",
+    });
+    // drawHeadLabel for a non-task tip: labelY = y - COMMIT_R(5) - 8 = 187.
+    expect(hitRegionAt(regions, 800, 200 - 5 - 8)).toEqual({ kind: "plainTip", branchName: "main" });
+  });
+
+  it("emits an arc-name-label rect for a plain active arc (not done, not card-labelled)", () => {
+    const arc = {
+      branchName: "feat/lbl", direction: "down" as const, branchPointX: 100, mergePointX: 300,
+      apexY: 260, isOpen: false, color: "#7E8AA8", isDone: false,
+      points: [[100, 200], [200, 260], [300, 200]] as Array<[number, number]>,
+    };
+    const layout: ArcLayoutResult = {
+      nodes: [], arcs: [arc], trunkY: 200, totalWidth: 1000, totalHeight: 500, tipStacks: [],
+    };
+    const regions = buildHitRegions({
+      layout, visibleNames: new Set(["feat/lbl"]), arcVisibleNames: new Set(["feat/lbl"]),
+      visibleStacks: [], stackedShas: new Set(), branchByName: new Map([["feat/lbl", mkBranch("feat/lbl", null)]]),
+      taskBranchByTipSha: new Map(), trunkSpan: null, defaultBranch: "main",
+    });
+    // labelX = (100+300)/2 = 200; baseY = apexY + 14 = 274 (down arc).
+    expect(hitRegionAt(regions, 200, 274 - 4)).toEqual({ kind: "plainTip", branchName: "feat/lbl" });
+  });
 });

@@ -98,6 +98,8 @@ const SYNC_EXT = 18;    // node → up on a normal tip (sync marker)
 const TAG_W = 90;       // node → right, covers up to 2 tag pills
 const ARC_THRESHOLD = 8;
 const TRUNK_THRESHOLD = 8;
+const LABEL_CHAR_W = 5.5; // approx px width of a 9px "Courier New" glyph (pure builder has no ctx.measureText)
+const HEAD_W = 24;        // approx px width of the "HEAD" label at 9px monospace
 
 function hasSync(b: GitBranchInfo | null | undefined): boolean {
   return !!b && ((b.aheadCount ?? 0) > 0 || (b.behindCount ?? 0) > 0);
@@ -146,6 +148,9 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
   }
 
   // 3. Nodes (dots/cards) + their tags. Mirror redraw's visibleNodes filter.
+  // Track which branches drew a task card so their arc name label is skipped
+  // below (drawArcLabels suppresses labels for card-labelled branches).
+  const cardBranchNames = new Set<string>();
   for (const node of layout.nodes) {
     const visible = node.isTrunk
       ? visibleNames.has(defaultBranch)
@@ -177,6 +182,7 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
         h: (node.y + CARD_H / 2 + LABEL_EXT) - top,
         target: { kind: "task", branchName: r.taskBranch.name },
       });
+      if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
     } else {
       // Plain dot/diamond. Resolve its target and extend up for a sync marker.
       const tipBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
@@ -219,6 +225,57 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
         target: { kind: "showMore" },
       });
     }
+  }
+
+  // 5. Arc name labels (branch-name text near the apex). Mirrors drawArcLabels:
+  // active (non-done) arcs in arcVisibleNames that aren't already card-labelled.
+  // Pushed late so a label sits above its arc line in hit order.
+  for (const arc of layout.arcs) {
+    if (!arcVisibleNames.has(arc.branchName)) continue;
+    if (arc.isDone) continue;
+    if (cardBranchNames.has(arc.branchName)) continue;
+    const labelX =
+      arc.isOpen || arc.mergePointX == null
+        ? arc.branchPointX + 80
+        : (arc.branchPointX + arc.mergePointX) / 2;
+    const baseY = arc.direction === "up" ? arc.apexY - 8 : arc.apexY + 14;
+    const name =
+      arc.branchName.length > 18 ? arc.branchName.slice(0, 17) + "…" : arc.branchName;
+    const w = name.length * LABEL_CHAR_W + 4;
+    const drawX = labelX - w / 2;
+    const b = branchByName.get(arc.branchName);
+    regions.push({
+      shape: "rect",
+      x: drawX - PAD,
+      y: baseY - 9 - PAD,
+      w: w + 2 * PAD,
+      h: 9 + 2 * PAD,
+      target: b?.linkedIssueId
+        ? { kind: "task", branchName: arc.branchName }
+        : { kind: "plainTip", branchName: arc.branchName },
+    });
+  }
+
+  // 6. HEAD label above the default-branch tip — mirrors drawHeadLabel.
+  const headNode = layout.nodes.find((n) => n.isDefault && n.branchName != null);
+  if (headNode) {
+    const labelY = headNode.isTaskTip
+      ? headNode.y - CARD_H / 2 - 8
+      : headNode.y - COMMIT_R - 8;
+    const tb = headNode.branchName ? branchByName.get(headNode.branchName) : undefined;
+    const headTarget: HitTarget = tb?.linkedIssueId
+      ? { kind: "task", branchName: tb.name }
+      : tb
+        ? { kind: "plainTip", branchName: tb.name }
+        : { kind: "commit", sha: headNode.sha };
+    regions.push({
+      shape: "rect",
+      x: headNode.x - HEAD_W / 2 - PAD,
+      y: labelY - 9 - PAD,
+      w: HEAD_W + 2 * PAD,
+      h: 9 + 2 * PAD,
+      target: headTarget,
+    });
   }
 
   return regions;
