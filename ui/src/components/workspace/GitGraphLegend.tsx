@@ -1,7 +1,13 @@
 import { useState } from "react";
-import { STATUS_COLORS } from "./git-arc-draw";
+import { STATUS_COLORS, MERGE_COLOR } from "./git-arc-draw";
+import { NEUTRAL_GREY } from "./git-arc-layout";
 
-/** Collapsible legend explaining the Map's glyphs and status colors. */
+/** Trunk LINE colour = default-branch blue. Same hex as MERGE_COLOR by default;
+ * the legend distinguishes trunk vs merge by SHAPE (thick line vs diamond). */
+const TRUNK_BLUE = "#6470DC";
+
+/** Collapsible legend explaining the Map's glyphs and status colours.
+ * Mirrors exactly what git-arc-draw renders (see ui/dev-harness/git-map-final.ts). */
 export function GitGraphLegend() {
   // Default collapsed so the legend doesn't cover the graph on arrival.
   const [open, setOpen] = useState(false);
@@ -22,9 +28,33 @@ export function GitGraphLegend() {
         <span className="text-[10px]">{open ? "▾" : "▸"}</span> Legend
       </button>
       {open && (
-        <div className="mt-1 p-2.5 rounded bg-[#141312]/95 border border-[#2e2c2a] text-[11px] text-[#ccc] space-y-2 w-44">
+        <div className="mt-1 p-2.5 rounded bg-[#141312]/95 border border-[#2e2c2a] text-[11px] text-[#ccc] space-y-2 w-52">
+          {/* Structure */}
           <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-wide text-[#7E8AA8]">Task status</div>
+            <div className="text-[10px] uppercase tracking-wide text-[#7E8AA8]">Graph</div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-5 h-[3px] rounded shrink-0" style={{ background: TRUNK_BLUE }} /> Trunk (main)
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-5 h-[2px] rounded shrink-0" style={{ background: NEUTRAL_GREY }} /> Branch
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: NEUTRAL_GREY }} /> Commit
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2.5 h-2.5 rounded-full border border-dashed shrink-0" style={{ borderColor: NEUTRAL_GREY }} /> Branch head (no task)
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2.5 h-2.5 rotate-45 shrink-0" style={{ background: MERGE_COLOR }} /> Merge
+            </div>
+          </div>
+
+          {/* Tasks */}
+          <div className="space-y-1 pt-1 border-t border-[#2e2c2a]">
+            <div className="text-[10px] uppercase tracking-wide text-[#7E8AA8]">Task (status colour)</div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-5 h-3 rounded-sm border shrink-0" style={{ borderColor: STATUS_COLORS.in_progress, background: "#0f0e0d" }} /> Task card
+            </div>
             {statusRows.map((r) => (
               <div key={r.label} className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full inline-block shrink-0" style={{ background: r.color }} />
@@ -32,14 +62,24 @@ export function GitGraphLegend() {
               </div>
             ))}
           </div>
+
+          {/* Stubs + sync */}
           <div className="space-y-1 pt-1 border-t border-[#2e2c2a]">
-            <div className="text-[10px] uppercase tracking-wide text-[#7E8AA8]">Graph</div>
-            <div className="flex items-center gap-2"><span className="inline-block w-5 h-[3px] bg-white rounded shrink-0" /> Trunk (main)</div>
-            <div className="flex items-center gap-2"><span className="inline-block w-5 h-[2px] bg-[#4FB67E] rounded shrink-0" /> Branch arc</div>
-            <div className="flex items-center gap-2"><span className="inline-block w-2.5 h-2.5 rotate-45 bg-[#6470DC] shrink-0" /> Merge commit</div>
-            <div className="flex items-center gap-2"><span className="inline-block w-2.5 h-2.5 rounded-full border border-[#7E8AA8] shrink-0" /> Branch tip</div>
-            <div className="flex items-center gap-2"><span className="inline-block w-5 border-t border-dashed border-[#7E8AA8] shrink-0" /> Open branch (more ahead)</div>
+            <div className="text-[10px] uppercase tracking-wide text-[#7E8AA8]">Markers</div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-5 border-t border-dashed shrink-0" style={{ borderColor: NEUTRAL_GREY }} /> Open branch (more ahead)
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-5 border-t border-dashed shrink-0" style={{ borderColor: NEUTRAL_GREY }} /> From older history
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="shrink-0 font-medium" style={{ color: STATUS_COLORS.in_progress }}>↑</span>
+              <span className="shrink-0 font-medium" style={{ color: STATUS_COLORS.in_review }}>↓</span>
+              ahead / behind remote
+            </div>
           </div>
+
+          {/* Badges */}
           <div className="space-y-1 pt-1 border-t border-[#2e2c2a]">
             <div className="text-[10px] uppercase tracking-wide text-[#7E8AA8]">Badges</div>
             <div className="flex items-center gap-2"><span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#4FB67E] text-[7px] text-white shrink-0">✓</span> CI passing</div>

@@ -13,6 +13,102 @@ import type { ArcCommitLayout, ArcDefinition } from "./git-arc-layout";
 // Path helpers (shared by drawArcLines, drawFlowPulse, hit testing)
 // ---------------------------------------------------------------------------
 
+function segDist(a: [number, number], b: [number, number]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+export interface SmoothSegment {
+  p1: [number, number];
+  cp1: [number, number];
+  cp2: [number, number];
+  p2: [number, number];
+}
+
+/**
+ * Centripetal Catmull-Rom (alpha = 0.5) → cubic Bezier control points for a
+ * polyline. Centripetal parameterization prevents the cusps / self-intersections
+ * ("hooks") that UNIFORM Catmull-Rom produces on sparse, steep arcs. Pure +
+ * testable. Endpoints are duplicated (p0=p1 at start, p3=p2 at end), matching
+ * the previous draw behaviour. Distances are floored to a tiny epsilon so
+ * duplicated/coincident points never divide by zero.
+ */
+export function smoothSegments(
+  points: Array<[number, number]>,
+  alpha = 0.5,
+): SmoothSegment[] {
+  const segs: SmoothSegment[] = [];
+  if (points.length < 2) return segs;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]!;
+    const p1 = points[i]!;
+    const p2 = points[i + 1]!;
+    const p3 = points[i + 2] ?? p2;
+
+    const t01 = Math.max(segDist(p0, p1) ** alpha, 1e-4);
+    const t12 = Math.max(segDist(p1, p2) ** alpha, 1e-4);
+    const t23 = Math.max(segDist(p2, p3) ** alpha, 1e-4);
+
+    const m1x = (p2[0] - p1[0]) + t12 * ((p1[0] - p0[0]) / t01 - (p2[0] - p0[0]) / (t01 + t12));
+    const m1y = (p2[1] - p1[1]) + t12 * ((p1[1] - p0[1]) / t01 - (p2[1] - p0[1]) / (t01 + t12));
+    const m2x = (p2[0] - p1[0]) + t12 * ((p3[0] - p2[0]) / t23 - (p3[0] - p1[0]) / (t12 + t23));
+    const m2y = (p2[1] - p1[1]) + t12 * ((p3[1] - p2[1]) / t23 - (p3[1] - p1[1]) / (t12 + t23));
+
+    segs.push({
+      p1,
+      cp1: [p1[0] + m1x / 3, p1[1] + m1y / 3],
+      cp2: [p2[0] - m2x / 3, p2[1] - m2y / 3],
+      p2,
+    });
+  }
+  return segs;
+}
+
+function cubicAt(
+  p0: [number, number],
+  c1: [number, number],
+  c2: [number, number],
+  p1: [number, number],
+  t: number,
+): [number, number] {
+  const mt = 1 - t;
+  const a = mt * mt * mt;
+  const b = 3 * mt * mt * t;
+  const c = 3 * mt * t * t;
+  const d = t * t * t;
+  return [
+    a * p0[0] + b * c1[0] + c * c2[0] + d * p1[0],
+    a * p0[1] + b * c1[1] + c * c2[1] + d * p1[1],
+  ];
+}
+
+/** Sample the exact curve that strokeSmoothPath draws. Used by unit tests. */
+export function sampleSmoothPath(
+  points: Array<[number, number]>,
+  perSeg = 16,
+): Array<[number, number]> {
+  if (points.length < 2) return points.slice();
+  if (points.length === 2) {
+    const out: Array<[number, number]> = [];
+    for (let i = 0; i <= perSeg; i++) {
+      const t = i / perSeg;
+      out.push([
+        points[0]![0] + (points[1]![0] - points[0]![0]) * t,
+        points[0]![1] + (points[1]![1] - points[0]![1]) * t,
+      ]);
+    }
+    return out;
+  }
+  const out: Array<[number, number]> = [];
+  const segs = smoothSegments(points);
+  out.push(segs[0]!.p1);
+  for (const seg of segs) {
+    for (let i = 1; i <= perSeg; i++) {
+      out.push(cubicAt(seg.p1, seg.cp1, seg.cp2, seg.p2, i / perSeg));
+    }
+  }
+  return out;
+}
+
 /**
  * Stroke a smooth Catmull-Rom curve that PASSES THROUGH every point. Because it
  * passes through (not near) the points, commit dots placed at those points are
@@ -30,16 +126,8 @@ export function strokeSmoothPath(
     ctx.stroke();
     return;
   }
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i - 1] ?? points[i]!;
-    const p1 = points[i]!;
-    const p2 = points[i + 1]!;
-    const p3 = points[i + 2] ?? p2;
-    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
-    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
-    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
-    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
-    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1]);
+  for (const seg of smoothSegments(points)) {
+    ctx.bezierCurveTo(seg.cp1[0], seg.cp1[1], seg.cp2[0], seg.cp2[1], seg.p2[0], seg.p2[1]);
   }
   ctx.stroke();
 }
@@ -80,6 +168,47 @@ export function polylinePointAt(
   return points[points.length - 1]!;
 }
 
+/** Shortest distance from point (px,py) to the segment (ax,ay)-(bx,by). */
+export function pointToSegmentDistance(
+  px: number, py: number,
+  ax: number, ay: number,
+  bx: number, by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/**
+ * Clip a polyline to x >= left. If the path starts left of `left`, the
+ * off-screen head is dropped and a single interpolated entry point is inserted
+ * exactly at x = left. Returns null if fewer than 2 points remain. Assumes the
+ * path is monotonic-ish in x (arc paths are: branch point → nodes → merge/stub).
+ */
+export function clipPolylineLeft(
+  points: Array<[number, number]>,
+  left: number,
+): Array<[number, number]> | null {
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]!;
+    if (p[0] >= left) {
+      if (i > 0 && points[i - 1]![0] < left && out.length === 0) {
+        const a = points[i - 1]!;
+        const dx = p[0] - a[0];
+        const t = dx === 0 ? 0 : (left - a[0]) / dx;
+        out.push([left, a[1] + (p[1] - a[1]) * t]);
+      }
+      out.push(p);
+    }
+  }
+  return out.length >= 2 ? out : null;
+}
+
 // ---------------------------------------------------------------------------
 // Drawing constants
 // ---------------------------------------------------------------------------
@@ -87,6 +216,9 @@ export function polylinePointAt(
 export const COMMIT_R = 5;
 export const CARD_W = 28;
 export const CARD_H = 18;
+
+/** Merge commits render a fixed indigo diamond regardless of branch. */
+export const MERGE_COLOR = "#6470DC";
 
 /** Single source of truth for task-status → color. Used by the canvas
  * (statusDotColor) and the legend, so they never drift apart. */
@@ -133,13 +265,13 @@ export function drawCommitNode(
       // Outer ring
       ctx.beginPath();
       ctx.roundRect(cardX - 6, cardY - 6, CARD_W + 12, CARD_H + 12, r + 4);
-      ctx.strokeStyle = node.laneColor + Math.round(pulse * 0x33).toString(16).padStart(2, "0");
+      ctx.strokeStyle = borderColor + Math.round(pulse * 0x33).toString(16).padStart(2, "0");
       ctx.lineWidth = 1;
       ctx.stroke();
       // Inner ring
       ctx.beginPath();
       ctx.roundRect(cardX - 3, cardY - 3, CARD_W + 6, CARD_H + 6, r + 2);
-      ctx.strokeStyle = node.laneColor + Math.round(pulse * 0x66).toString(16).padStart(2, "0");
+      ctx.strokeStyle = borderColor + Math.round(pulse * 0x66).toString(16).padStart(2, "0");
       ctx.lineWidth = 1.5;
       ctx.stroke();
     } else if (branchStatus === "in_review") {
@@ -206,8 +338,8 @@ export function drawCommitNode(
     ctx.lineTo(node.x, node.y + s);
     ctx.lineTo(node.x - s, node.y);
     ctx.closePath();
-    ctx.fillStyle = node.laneColor + "80";
-    ctx.strokeStyle = node.laneColor;
+    ctx.fillStyle = MERGE_COLOR + "80";
+    ctx.strokeStyle = MERGE_COLOR;
     ctx.lineWidth = 1.5;
     ctx.fill();
     ctx.stroke();
@@ -216,12 +348,12 @@ export function drawCommitNode(
     // Regular commit circle
     ctx.save();
     ctx.globalAlpha = doneAlpha;
-    if (node.isBranchTip && !node.isTaskTip) {
-      // Plain branch tip — slightly larger dashed circle
+    if (!node.isTrunk && node.isBranchTip && !node.isTaskTip) {
+      // Off-trunk plain branch head — slightly larger dashed circle
       ctx.setLineDash([3, 2]);
       ctx.beginPath();
       ctx.arc(node.x, node.y, COMMIT_R + 2, 0, Math.PI * 2);
-    } else if (node.isRemoteOnly) {
+    } else if (!node.isTrunk && node.isRemoteOnly) {
       ctx.setLineDash([3, 2]);
       ctx.beginPath();
       ctx.arc(node.x, node.y, COMMIT_R, 0, Math.PI * 2);
@@ -419,31 +551,63 @@ export function drawArcLines(
   ctx: CanvasRenderingContext2D,
   arcs: ArcDefinition[],
   visibleNames: Set<string>,
+  /** Viewport's left edge in layout space. Arcs whose branch point is left of
+   * this get a dashed "from older history" entry stub instead of a full arc. */
+  viewportLeftInLayout = -Infinity,
 ) {
   for (const arc of arcs) {
     if (!visibleNames.has(arc.branchName)) continue;
     if (arc.points.length < 2) continue;
 
+    // Clip the off-screen-left head if the branch forks from older history.
+    let pts = arc.points;
+    let leftStub = false;
+    if (arc.branchPointX < viewportLeftInLayout) {
+      const clipped = clipPolylineLeft(arc.points, viewportLeftInLayout);
+      if (!clipped) continue; // fully off-screen
+      pts = clipped;
+      leftStub = clipped.length >= 2;
+    }
+
+    // Split into solid (smoothed) head and straight dashed stubs.
+    let head = pts;
+    let leftTail: [[number, number], [number, number]] | null = null;
+    let rightTail: [number, number] | null = null;
+
+    if (leftStub) {
+      leftTail = [head[0]!, head[1]!];
+      head = head.slice(1);
+    }
+    if (arc.isOpen && head.length >= 2) {
+      rightTail = head[head.length - 1]!;
+      head = head.slice(0, -1);
+    }
+
     ctx.save();
     ctx.strokeStyle = arc.color;
     ctx.lineWidth = 2;
     ctx.globalAlpha = arc.isDone ? 0.4 : 0.7;
-    ctx.setLineDash([]);
 
-    if (arc.isOpen) {
-      const solid = arc.points.slice(0, -1);
-      const tail = arc.points[arc.points.length - 1]!;
-      strokeSmoothPath(ctx, solid);
-      const lastSolid = solid[solid.length - 1]!;
-      ctx.setLineDash([4, 4]);
+    ctx.setLineDash([]);
+    if (head.length >= 2) strokeSmoothPath(ctx, head);
+
+    ctx.setLineDash([4, 4]);
+    if (leftTail) {
       ctx.beginPath();
-      ctx.moveTo(lastSolid[0], lastSolid[1]);
-      ctx.lineTo(tail[0], tail[1]);
+      ctx.moveTo(leftTail[0][0], leftTail[0][1]);
+      ctx.lineTo(leftTail[1][0], leftTail[1][1]);
       ctx.stroke();
-      ctx.setLineDash([]);
-    } else {
-      strokeSmoothPath(ctx, arc.points);
     }
+    if (rightTail) {
+      const lastSolid = head[head.length - 1] ?? leftTail?.[1];
+      if (lastSolid) {
+        ctx.beginPath();
+        ctx.moveTo(lastSolid[0], lastSolid[1]);
+        ctx.lineTo(rightTail[0], rightTail[1]);
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
     ctx.restore();
   }
 }
@@ -577,5 +741,40 @@ export function drawFlowPulse(
     ctx.fillStyle = dotColor + "30"; ctx.fill();
   }
 
+  ctx.restore();
+}
+
+/** Draw ahead/behind sync markers (↑N green, ↓N amber) above a branch tip.
+ * Nudged higher on the default tip so it clears the HEAD label. */
+export function drawSyncBadge(
+  ctx: CanvasRenderingContext2D,
+  node: ArcCommitLayout,
+  branch: GitBranchInfo,
+) {
+  const ahead = branch.aheadCount ?? 0;
+  const behind = branch.behindCount ?? 0;
+  if (ahead === 0 && behind === 0) return;
+
+  const aboveCard = node.isTaskTip ? CARD_H / 2 : COMMIT_R;
+  const base = node.isDefault ? 22 : 8; // clear the HEAD label on the default tip
+  const y = node.y - aboveCard - base;
+
+  ctx.save();
+  ctx.font = "bold 9px Inter, sans-serif";
+  ctx.textBaseline = "middle";
+
+  const parts: Array<{ s: string; color: string }> = [];
+  if (ahead > 0) parts.push({ s: `↑${ahead}`, color: "#4FB67E" });
+  if (behind > 0) parts.push({ s: `↓${behind}`, color: "#D9A938" });
+
+  const totalW = parts.reduce((w, p) => w + ctx.measureText(p.s).width, 0) + (parts.length - 1) * 4;
+  let x = node.x - totalW / 2;
+  for (const p of parts) {
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.s, x, y);
+    x += ctx.measureText(p.s).width + 4;
+  }
+
+  ctx.textBaseline = "alphabetic";
   ctx.restore();
 }

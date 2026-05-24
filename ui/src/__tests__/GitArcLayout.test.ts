@@ -371,6 +371,23 @@ describe("computeArcLayout", () => {
     expect(arc.points[arc.points.length - 1]![1]).not.toBe(result.trunkY);
     expect(arc.points.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("renders feature arcs in neutral grey, not the branch palette colour", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const result = computeArcLayout(graph, branches);
+    const arc = result.arcs.find((a) => a.branchName === "feat/x")!;
+    expect(arc.color).toBe("#7E8AA8");
+  });
+
+  it("renders every commit dot (trunk and feature) in neutral grey", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const result = computeArcLayout(graph, branches);
+    for (const n of result.nodes) {
+      expect(n.laneColor).toBe("#7E8AA8");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

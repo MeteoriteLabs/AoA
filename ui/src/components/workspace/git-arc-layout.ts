@@ -22,6 +22,10 @@ const MAX_ARC_HEIGHT = 120;          // maximum arc height (px)
 /** How far an open branch's line extends past its tip before the dashed stub. */
 export const OPEN_ARC_STUB = 40;
 
+/** Single neutral grey for ALL feature-branch lines and commit dots. Status
+ * colour lives ONLY on task cards; the trunk LINE keeps the default-branch blue. */
+export const NEUTRAL_GREY = "#7E8AA8";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -238,7 +242,6 @@ export function computeArcLayout(
   graph: GitGraphData,
   branches: GitBranchInfo[],
 ): ArcLayoutResult {
-  const branchColors = new Map(graph.branches.map((b) => [b.name, b.color]));
   const branchInfoMap = new Map(branches.map((b) => [b.name, b]));
 
   // X assignment: graph.commits[0] is newest → highest X, last is oldest → lowest X
@@ -285,7 +288,7 @@ export function computeArcLayout(
   const shaToArcY = new Map<string, number>();       // sha → pre-computed Y
 
   for (const fb of featureBranches) {
-    const color = branchColors.get(fb.name) ?? "#7E8AA8";
+    const color = NEUTRAL_GREY;
     const direction = directions.get(fb.name) ?? "up";
     const isDone = doneBranches.has(fb.name);
 
@@ -361,8 +364,9 @@ export function computeArcLayout(
     const tipBranchName = tipShaToName.get(commit.sha) ?? null;
     const tipBranchInfo = tipBranchName ? branchInfoMap.get(tipBranchName) : undefined;
 
-    const colorBranchName = arcBranchName ?? graph.defaultBranch;
-    const laneColor = branchColors.get(colorBranchName) ?? "#7E8AA8";
+    // All commit dots render neutral grey. The trunk LINE colour is computed
+    // separately in the component (drawTrunk) and stays the default-branch blue.
+    const laneColor = NEUTRAL_GREY;
 
     const isDone = arcBranchName
       ? doneBranches.has(arcBranchName)

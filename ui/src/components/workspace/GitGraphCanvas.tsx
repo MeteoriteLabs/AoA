@@ -35,12 +35,13 @@ import {
   drawCardBadges,
   drawTagPills,
   drawHeadLabel,
+  drawSyncBadge,
   drawTrunk,
   drawArcLines,
   drawArcLabels,
   drawLabelDots,
   drawFlowPulse,
-  polylinePointAt,
+  pointToSegmentDistance,
 } from "./git-arc-draw";
 
 /**
@@ -109,9 +110,9 @@ function hitTestArc(
   for (const arc of arcs) {
     if (!visibleNames.has(arc.branchName)) continue;
     if (arc.isDone) continue;
-    for (let i = 0; i <= 24; i++) {
-      const [px, py] = polylinePointAt(arc.points, i / 24);
-      const d = Math.hypot(cx - px, cy - py);
+    const pts = arc.points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = pointToSegmentDistance(cx, cy, pts[i]![0], pts[i]![1], pts[i + 1]![0], pts[i + 1]![1]);
       if (d < bestDist) {
         bestDist = d;
         best = arc;
@@ -191,6 +192,13 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     const layoutRef = useRef(layout);
     layoutRef.current = layout;
 
+    // Trunk x-range (layout space) for trunk-line hover.
+    const trunkSpan = useMemo(() => {
+      const xs = layout.nodes.filter((n) => n.isTrunk).map((n) => n.x);
+      if (xs.length === 0) return null;
+      return { minX: Math.min(...xs), maxX: Math.max(...xs) };
+    }, [layout]);
+
     // Reset initial-pan flag whenever graph data changes
     useEffect(() => {
       initialPanApplied.current = false;
@@ -227,6 +235,9 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       const t = transformRef.current;
       const dpr = window.devicePixelRatio || 1;
 
+      // Left viewport edge in layout space (+ a small inset so the stub is visible).
+      const viewportLeftInLayout = (0 - t.x) / t.k + 24;
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.save();
       ctx.setTransform(t.k * dpr, 0, 0, t.k * dpr, t.x * dpr, t.y * dpr);
@@ -245,7 +256,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
 
       // 2. Arc lines (smooth path through commit nodes + dashed open stub)
-      drawArcLines(ctx, layout.arcs, visibleNames);
+      drawArcLines(ctx, layout.arcs, visibleNames, viewportLeftInLayout);
 
       // 3. Flow pulse dots (trunk pulse always shows; arc pulses self-gate on status)
       {
@@ -272,6 +283,12 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
             ? (branchByName.get(node.branchName)?.linkedIssueStatus ?? null)
             : null;
         drawCommitNode(ctx, node, animPhaseRef.current, branchStatus);
+
+        if (node.isBranchTip) {
+          let syncBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
+          if (!syncBranch) syncBranch = taskBranchByTipSha.get(node.sha);
+          if (syncBranch) drawSyncBadge(ctx, node, syncBranch);
+        }
 
         if (node.isTaskTip) {
           let branch = node.branchName ? branchByName.get(node.branchName) : undefined;
@@ -439,10 +456,35 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
             } else {
               onHover(null, { x: e.clientX, y: e.clientY });
             }
-          } else {
-            canvas.style.cursor = "grab";
-            onHover(null, { x: e.clientX, y: e.clientY });
+            return;
           }
+
+          // No arc — check the trunk line (horizontal at layout.trunkY).
+          if (
+            trunkSpan &&
+            Math.abs(cy - layout.trunkY) <= 8 &&
+            cx >= trunkSpan.minX - 8 &&
+            cx <= trunkSpan.maxX + 8
+          ) {
+            let nearest: ArcCommitLayout | null = null;
+            let nd = Infinity;
+            for (const n of layout.nodes) {
+              if (!n.isTrunk) continue;
+              const d = Math.abs(n.x - cx);
+              if (d < nd) { nd = d; nearest = n; }
+            }
+            if (nearest) {
+              const commit = graph.commits.find((c) => c.sha === nearest!.sha);
+              if (commit) {
+                canvas.style.cursor = "pointer";
+                onHover({ type: "commit", commit }, { x: e.clientX, y: e.clientY });
+                return;
+              }
+            }
+          }
+
+          canvas.style.cursor = "grab";
+          onHover(null, { x: e.clientX, y: e.clientY });
           return;
         }
 
@@ -488,7 +530,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           onHover({ type: "commit", commit }, { x: e.clientX, y: e.clientY });
         }
       },
-      [layout.nodes, layout.arcs, visibleNames, branchByName, taskBranchByTipSha, graph.commits, onHover],
+      [layout.nodes, layout.arcs, layout.trunkY, trunkSpan, visibleNames, branchByName, taskBranchByTipSha, graph.commits, onHover],
     );
 
     const handleMouseLeave = useCallback(() => {
