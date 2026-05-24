@@ -5,6 +5,7 @@ import type { ThreadListItem } from "../../api/threads";
 import { cn } from "../../lib/utils";
 import { MessageSquare, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { UnlistedLane } from "./UnlistedLane";
 
 /* ── Phase column config ────────────────────────────────────────────────────── */
 
@@ -72,7 +73,7 @@ export function ThreadBoard({ threads, inboxItems = [], onNewThread }: ThreadBoa
       data-testid="thread-board"
     >
       {/* Unlisted lane — pinned at left (amber background) */}
-      <UnlistedLane inboxItems={inboxItems} />
+      <UnlistedLane inboxItems={inboxItems} onTriaged={() => {}} />
 
       {/* Phase columns */}
       {PHASE_COLUMNS.map(({ phase, label, headerClass }) => (
@@ -85,54 +86,6 @@ export function ThreadBoard({ threads, inboxItems = [], onNewThread }: ThreadBoa
           onNewThread={onNewThread}
         />
       ))}
-    </div>
-  );
-}
-
-/* ── Unlisted Lane ─────────────────────────────────────────────────────────── */
-
-interface UnlistedLaneProps {
-  inboxItems: InboxCardItem[];
-}
-
-function UnlistedLane({ inboxItems }: UnlistedLaneProps) {
-  return (
-    <div
-      className="flex-none w-[220px] rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 flex flex-col"
-      data-testid="unlisted-lane"
-    >
-      {/* Header */}
-      <div className="px-3 py-2.5 border-b border-amber-200 dark:border-amber-800">
-        <p className="text-xs font-semibold text-amber-800 dark:text-amber-300 uppercase tracking-wider">
-          Unlisted
-        </p>
-        <p className="text-[10px] text-amber-700/70 dark:text-amber-400/70 mt-0.5">
-          Needs triage
-        </p>
-      </div>
-
-      {/* Items */}
-      <div className="flex-1 p-2 space-y-2 overflow-y-auto">
-        {inboxItems.length === 0 ? (
-          <p className="text-xs text-amber-700/50 dark:text-amber-400/50 text-center py-4">
-            Nothing to triage
-          </p>
-        ) : (
-          inboxItems.map((item) => (
-            <div
-              key={item.id}
-              className="rounded-md border border-amber-200 dark:border-amber-800 bg-white dark:bg-amber-950/40 p-2"
-            >
-              <p className="text-xs line-clamp-3 text-foreground/80">
-                {item.rawContent}
-              </p>
-              <p className="text-[10px] text-muted-foreground mt-1">
-                {relativeTime(item.createdAt)}
-              </p>
-            </div>
-          ))
-        )}
-      </div>
     </div>
   );
 }
