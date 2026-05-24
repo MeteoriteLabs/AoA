@@ -174,9 +174,13 @@ export async function listInstallationRepositories(
   const token = await mintInstallationToken(installation.installationId);
   const octokit = new Octokit({ auth: token });
 
-  const { data } = await octokit.apps.listReposAccessibleToInstallation({ per_page: 100 });
+  // Paginate — installations on large orgs can have >100 accessible repos, and
+  // this helper is contracted to return ALL of them.
+  const repos = await octokit.paginate(octokit.apps.listReposAccessibleToInstallation, {
+    per_page: 100,
+  });
 
-  return data.repositories.map((r) => ({
+  return repos.map((r) => ({
     name: r.name,
     fullName: r.full_name,
     private: r.private,

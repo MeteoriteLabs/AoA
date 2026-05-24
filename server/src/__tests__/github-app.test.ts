@@ -9,6 +9,12 @@ vi.mock("@octokit/auth-app", () => ({
 // ── mock @octokit/rest ────────────────────────────────────────────────────
 const mockOctokit = vi.hoisted(() => ({
   apps: { listReposAccessibleToInstallation: vi.fn() },
+  // octokit.paginate(endpoint, params) calls the endpoint and flattens the
+  // result; for listReposAccessibleToInstallation that's the `repositories` array.
+  paginate: vi.fn(async (fn: (p: unknown) => Promise<{ data: { repositories?: unknown[] } }>, params: unknown) => {
+    const res = await fn(params);
+    return res.data.repositories ?? [];
+  }),
 }));
 vi.mock("@octokit/rest", () => ({
   Octokit: vi.fn(() => mockOctokit),
