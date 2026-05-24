@@ -1,5 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@armyofagents/db";
+import { eq } from "drizzle-orm";
+import { discussions } from "@armyofagents/db";
 import { z } from "zod";
 import {
   createDiscussionSchema,
@@ -618,6 +620,34 @@ export function discussionRoutes(db: Db) {
         if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
         throw err;
       }
+    },
+  );
+
+  // Plan 3 Task 8: thread-level crew kill-switch.
+  // POST /companies/:companyId/discussions/:discussionId/crew/pause
+  // POST /companies/:companyId/discussions/:discussionId/crew/resume
+  // Role: founder (only founder can halt crew for a thread).
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/crew/pause",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      await db.update(discussions).set({ crewPaused: true, updatedAt: new Date() }).where(eq(discussions.id, discussionId));
+      res.json({ crewPaused: true });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/crew/resume",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      await db.update(discussions).set({ crewPaused: false, updatedAt: new Date() }).where(eq(discussions.id, discussionId));
+      res.json({ crewPaused: false });
     },
   );
 

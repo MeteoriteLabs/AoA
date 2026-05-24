@@ -89,6 +89,11 @@ export const internalAgentConfig = pgTable(
     // Null = use system defaults (enabled=true, requireConfirmation=false, minimumRole=team_member).
     commanderToolPermissions: jsonb("commander_tool_permissions"),
 
+    // Plan 3 Task 8: company-level crew kill-switch.
+    // When true, no crew roles fire for ANY thread in this company.
+    // Thread-level pause is in discussions.crewPaused.
+    crewPaused: boolean("crew_paused").notNull().default(false),
+
     agentId: uuid("agent_id").references(() => agents.id, {
       onDelete: "set null",
     }),

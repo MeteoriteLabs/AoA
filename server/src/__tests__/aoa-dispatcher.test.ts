@@ -46,8 +46,20 @@ vi.mock("@armyofagents/db", () => {
     internalAgentRuns: t("internal_agent_runs"),
     agentWakeupRequests: t("agent_wakeup_requests"),
     agents: t("agents"),
+    // Plan 3 Task 4/8: dispatcher now queries internalAgentConfig for
+    // autonomyLevel + crewPaused before each wakeup run.
+    internalAgentConfig: t("internal_agent_config"),
   };
 });
+// Mock the Plan-3 gate modules so existing dispatcher tests don't need to
+// add internalAgentConfig query slots to their sequence DBs. Tests that
+// specifically exercise the gates do so via crew-autonomy / crew-killswitch.
+vi.mock("../services/internal-agent/aoa-agents/autonomy.js", () => ({
+  isRoleActiveAtAutonomy: () => true, // all roles active in dispatcher contract tests
+}));
+vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
+  isCrewPaused: () => false, // never paused in dispatcher contract tests
+}));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
   runAoaAgent: runAoaMock,
 }));
@@ -384,6 +396,11 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [{ id: "w1", agentId: "a1", companyId: "co-1", payload: { note: "x" } }],
         // slot 3 — Phase-4 reclaim-select: nothing failed-linked
         [],
+        // slot 4 — Plan-3 Task 4/8: resolveCompanyConfig select (per wakeup,
+        // memoized by company). Returns an empty row so crewPaused=false
+        // (default) and autonomyLevel=0 (default). Autonomy+kill-switch gates
+        // are mocked to always pass, so this select is a no-op for the test.
+        [],
       ],
       [
         // update[0] = Phase-3 atomic claim queued→processing → claimed
@@ -420,9 +437,10 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     // (Phase-1 resets orphans → 'pending' which Phase-2's select must see).
     // The orphan select (slot 0) is consumed before the pending select
     // (slot 1), and both before the wakeup select (slot 2) and Phase-4 (slot
-    // 3) — i.e. the SELECT calls keep their original positional order even
-    // though the DRAINS overlap.
-    expect(db._selectOrder).toEqual([0, 1, 2, 3]);
+    // 3). Plan-3 Task 4/8 adds a resolveCompanyConfig select (slot 4) per
+    // wakeup that is always AFTER the wakeup select.
+    // The DRAINS overlap, selects are issued in the original positional order.
+    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4]);
 
     // Phase-4 still runs last (its select slot was consumed; nothing to do).
     expect(db._sets.some(entryFailReclaim)).toBe(false);
