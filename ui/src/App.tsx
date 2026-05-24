@@ -37,6 +37,7 @@ import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { NewThreadDialog } from "./components/NewThreadDialog";
 import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
+import { ThreadsList } from "./pages/ThreadsList";
 import { ThreadDetail } from "./pages/ThreadDetail";
 import { Skills } from "./pages/Skills";
 import { WorkspaceView } from "./pages/WorkspaceView";
@@ -171,9 +172,12 @@ function boardRoutes() {
       <Route path="skills/*" element={<Skills />} />
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
-      <Route path="discussions" element={<Discussions />} />
-      {/* Codex #1: sidebar label stays "Discussions" — individual items use ThreadDetail (Plan 4).
-          DiscussionDetail is preserved but no longer the primary route for discussion/:id. */}
+      {/* Plan 5: Continuum index — ThreadsList is the new index for the Discussions nav item.
+          Codex #1: sidebar label stays "Discussions". Each item is a "Thread".
+          Old Discussions page is preserved as /discussions/legacy for rollback. */}
+      <Route path="discussions" element={<ThreadsList />} />
+      <Route path="discussions/legacy" element={<Discussions />} />
+      {/* Codex #1: individual items use ThreadDetail (Plan 4). */}
       <Route path="discussions/:discussionId" element={<ThreadDetail />} />
       {/* Canonical thread route — same ThreadDetail component, different param name */}
       <Route path="threads/:threadId" element={<ThreadDetail />} />
