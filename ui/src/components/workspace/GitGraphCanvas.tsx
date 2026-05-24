@@ -319,7 +319,10 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           trunkNodes,
           branchByName,
           animPhaseRef.current,
-          visibleNames,
+          // arcVisibleNames (not visibleNames): a stacked branch's arc line is
+          // suppressed, so its flow pulse must be too — otherwise the pulse
+          // animates along the hidden degenerate stub ("dot floating in the air").
+          arcVisibleNames,
           layout.trunkY,
           graph.defaultBranch,
         );
