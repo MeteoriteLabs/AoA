@@ -1,0 +1,644 @@
+import { beforeEach, describe, it, expect, vi } from "vitest";
+
+// ── Mocks ─────────────────────────────────────────────────────────────────────
+
+vi.mock("drizzle-orm", () => ({
+  and: vi.fn((...args: any[]) => args),
+  eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  desc: vi.fn((col: any) => ({ desc: col })),
+  inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
+  isNull: vi.fn((col: any) => ({ isNull: col })),
+}));
+
+vi.mock("@armyofagents/db", () => ({
+  discussions: {
+    id: "discussions_id",
+    companyId: "discussions_company_id",
+    title: "discussions_title",
+    status: "discussions_status",
+    scopeType: "discussions_scope_type",
+    scopeId: "discussions_scope_id",
+    phase: "discussions_phase",
+    visibility: "discussions_visibility",
+    ownerUserId: "discussions_owner_user_id",
+    goalId: "discussions_goal_id",
+    forkedFromId: "discussions_forked_from_id",
+    mergedIntoId: "discussions_merged_into_id",
+    summaryText: "discussions_summary_text",
+    summaryNext: "discussions_summary_next",
+    summaryUpdatedAt: "discussions_summary_updated_at",
+    lastEntryAt: "discussions_last_entry_at",
+    entryCount: "discussions_entry_count",
+    pendingItemCount: "discussions_pending_item_count",
+    createdBy: "discussions_created_by",
+    updatedAt: "discussions_updated_at",
+  },
+  threadParticipants: {
+    id: "tp_id",
+    companyId: "tp_company_id",
+    threadId: "tp_thread_id",
+    principalType: "tp_principal_type",
+    principalId: "tp_principal_id",
+    role: "tp_role",
+  },
+  threadLinks: {
+    id: "tl_id",
+    companyId: "tl_company_id",
+    fromThreadId: "tl_from_thread_id",
+    toThreadId: "tl_to_thread_id",
+    kind: "tl_kind",
+    createdBy: "tl_created_by",
+  },
+  userRoles: {
+    id: "ur_id",
+    companyId: "ur_company_id",
+    userId: "ur_user_id",
+    projectId: "ur_project_id",
+    role: "ur_role",
+  },
+  goals: {
+    id: "goals_id",
+    companyId: "goals_company_id",
+    title: "goals_title",
+    level: "goals_level",
+    status: "goals_status",
+    parentId: "goals_parent_id",
+  },
+  discussionEntries: {
+    id: "de_id",
+    discussionId: "de_discussion_id",
+    inputType: "de_input_type",
+  },
+  discussionExtractedItems: {
+    id: "dei_id",
+    discussionEntryId: "dei_discussion_entry_id",
+    type: "dei_type",
+    title: "dei_title",
+    description: "dei_description",
+    status: "dei_status",
+    resultTaskId: "dei_result_task_id",
+    assigneeAgentId: "dei_assignee_agent_id",
+    assigneeUserId: "dei_assignee_user_id",
+    departmentId: "dei_department_id",
+    suggestedDepartmentId: "dei_suggested_department_id",
+    suggestedProjectId: "dei_suggested_project_id",
+    priority: "dei_priority",
+    suggestedPriority: "dei_suggested_priority",
+    updatedAt: "dei_updated_at",
+  },
+  issues: {
+    id: "issues_id",
+    companyId: "issues_company_id",
+    title: "issues_title",
+    description: "issues_description",
+    status: "issues_status",
+    workMode: "issues_work_mode",
+    assigneeAgentId: "issues_assignee_agent_id",
+    assigneeUserId: "issues_assignee_user_id",
+    projectId: "issues_project_id",
+    priority: "issues_priority",
+    createdByUserId: "issues_created_by_user_id",
+  },
+  projectGoals: {
+    goalId: "pg_goal_id",
+    projectId: "pg_project_id",
+  },
+  projects: {
+    id: "projects_id",
+    name: "projects_name",
+    type: "projects_type",
+  },
+  activityLog: {
+    id: "al_id",
+  },
+}));
+
+vi.mock("../errors.js", () => ({
+  badRequest: (msg: string) => {
+    const err = new Error(msg);
+    (err as any).status = 400;
+    return err;
+  },
+  notFound: (msg: string) => {
+    const err = new Error(msg);
+    (err as any).status = 404;
+    return err;
+  },
+}));
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: vi.fn(),
+}));
+
+vi.mock("../services/goals.js", () => ({
+  goalService: vi.fn(() => ({
+    create: vi.fn().mockResolvedValue({ id: "g1", title: "Launch", projects: [], projectIds: [] }),
+  })),
+}));
+
+vi.mock("../redaction.js", () => ({
+  sanitizeRecord: vi.fn((r: any) => r),
+}));
+
+import { threadService, computeCreateDefaults } from "../services/threads.js";
+import { publishLiveEvent } from "../services/live-events.js";
+import { logActivity } from "../services/activity-log.js";
+
+// ── Local sequence DB helper (mirrors discussions-service.test.ts pattern) ───
+
+function createSequenceDb(selectQueue: any[][]) {
+  let idx = 0;
+
+  function makeSelectChain() {
+    return {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: vi.fn((fn: (rows: any[]) => any) =>
+        Promise.resolve(fn(selectQueue[idx++] ?? [])),
+      ),
+    };
+  }
+
+  function makeInsertChain() {
+    return {
+      values: vi.fn(() => ({
+        returning: vi.fn().mockReturnThis(),
+        onConflictDoNothing: vi.fn().mockReturnThis(),
+        then: vi.fn((fn: (rows: any[]) => any) =>
+          Promise.resolve(fn(selectQueue[idx++] ?? [])),
+        ),
+      })),
+    };
+  }
+
+  function makeUpdateChain() {
+    return {
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockReturnThis(),
+          then: vi.fn((fn: (rows: any[]) => any) =>
+            Promise.resolve(fn(selectQueue[idx++] ?? [])),
+          ),
+        })),
+      })),
+    };
+  }
+
+  return {
+    select: vi.fn(() => makeSelectChain()),
+    insert: vi.fn(() => makeInsertChain()),
+    update: vi.fn(() => makeUpdateChain()),
+    delete: vi.fn(() => ({
+      where: vi.fn().mockResolvedValue(undefined),
+    })),
+  } as any;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// ── Task 2: read path ─────────────────────────────────────────────────────────
+
+describe("threadService.getById", () => {
+  it("returns null when the row is missing", async () => {
+    const db = createSequenceDb([[]]); // first select -> no rows
+    const svc = threadService(db);
+    const result = await svc.getById("co1", "missing", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("throws notFound when the viewer cannot see a private thread", async () => {
+    const db = createSequenceDb([
+      // thread row
+      [{ id: "t1", companyId: "co1", visibility: "private", ownerUserId: "u9", scopeType: null, scopeId: null }],
+      // assertCanView: participants query -> not a participant
+      [],
+      // assertCanView: no scope to check (scopeType null) — next select not called
+    ]);
+    const svc = threadService(db);
+    await expect(
+      svc.getById("co1", "t1", { userId: "u1", role: "team_member", isHuman: true }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("returns the thread for a founder regardless of visibility", async () => {
+    const thread = { id: "t1", companyId: "co1", visibility: "private", ownerUserId: "u9", scopeType: null, scopeId: null };
+    const db = createSequenceDb([[thread]]);
+    const result = await threadService(db).getById("co1", "t1", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(result?.id).toBe("t1");
+  });
+});
+
+describe("threadService.list", () => {
+  it("returns all threads for a founder without filtering", async () => {
+    const threads = [
+      { id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null },
+      { id: "t2", companyId: "co1", ownerUserId: "u1", visibility: "private", scopeType: null, scopeId: null },
+    ];
+    const db = createSequenceDb([threads]);
+    const result = await threadService(db).list("co1", { userId: "u1", role: "founder", isHuman: true });
+    expect(result.length).toBe(2);
+  });
+
+  it("filters out private threads for non-participants", async () => {
+    const threads = [
+      { id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null },
+      { id: "t2", companyId: "co1", ownerUserId: "u9", visibility: "private", scopeType: null, scopeId: null },
+    ];
+    const db = createSequenceDb([
+      threads,      // list query
+      [],           // participants batch (not a participant of either)
+      [],           // roles batch (no dept roles)
+    ]);
+    const result = await threadService(db).list("co1", { userId: "u2", role: "team_member", isHuman: true });
+    // open+owned is visible via isParticipant=false, hasScopeAccess=true (null scope)
+    expect(result.map((r: any) => r.id)).toContain("t1");
+    // private without being participant should be filtered
+    expect(result.map((r: any) => r.id)).not.toContain("t2");
+  });
+});
+
+// ── Task 3: computeCreateDefaults ─────────────────────────────────────────────
+
+describe("computeCreateDefaults", () => {
+  it("human creator owns it; phase=discuss", () => {
+    const d = computeCreateDefaults({
+      origin: { source: "human", medium: "text" },
+      creator: { userId: "u1", isHuman: true },
+      departmentDefaultVisibility: "open",
+    });
+    expect(d.phase).toBe("discuss");
+    expect(d.ownerUserId).toBe("u1");
+    expect(d.visibility).toBe("open");
+    expect(d.originSource).toBe("human");
+  });
+
+  it("non-human creator -> Unclaimed (owner null); inherits dept private default", () => {
+    const d = computeCreateDefaults({
+      origin: { source: "agent", medium: "api" },
+      creator: { userId: "agent1", isHuman: false },
+      departmentDefaultVisibility: "private",
+    });
+    expect(d.ownerUserId).toBeNull();
+    expect(d.visibility).toBe("private");
+  });
+});
+
+// ── Task 4: advancePhase ──────────────────────────────────────────────────────
+
+describe("threadService.advancePhase", () => {
+  it("rejects an illegal forward skip", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+    ]);
+    await expect(
+      threadService(db).advancePhase("co1", "t1", "assign", { userId: "u1", role: "founder", isHuman: true }),
+    ).rejects.toThrow(/cannot advance/i);
+  });
+
+  it("advances phase forward by one step", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [], // update
+    ]);
+    const result = await threadService(db).advancePhase("co1", "t1", "scope", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(result.phase).toBe("scope");
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "thread.phase.changed" }),
+    );
+  });
+
+  it("throws notFound when thread does not exist", async () => {
+    const db = createSequenceDb([[]]); // no rows
+    await expect(
+      threadService(db).advancePhase("co1", "t99", "scope", { userId: "u1", role: "founder", isHuman: true }),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
+// ── Task 4: updateSummary ─────────────────────────────────────────────────────
+
+describe("threadService.updateSummary", () => {
+  it("persists summary and fires live event", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [], // update
+    ]);
+    const result = await threadService(db).updateSummary(
+      "co1",
+      "t1",
+      { text: "Summary text", next: "Next step" },
+      { userId: "u1", role: "founder", isHuman: true },
+    );
+    expect(result).toEqual({ id: "t1" });
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "thread.summary.updated" }),
+    );
+  });
+});
+
+// ── Task 5: claim ─────────────────────────────────────────────────────────────
+
+describe("threadService.claim", () => {
+  it("claim sets owner only when unclaimed", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "open", scopeType: null, scopeId: null }],
+      [], // update discussions
+      [], // participant insert
+    ]);
+    const res = await threadService(db).claim("co1", "t1", {
+      userId: "u1",
+      role: "team_member",
+      isHuman: true,
+    });
+    expect(res.ownerUserId).toBe("u1");
+  });
+
+  it("does not change owner when thread is already owned", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }],
+    ]);
+    const res = await threadService(db).claim("co1", "t1", {
+      userId: "u1",
+      role: "team_member",
+      isHuman: true,
+    });
+    expect(res.ownerUserId).toBe("u9"); // unchanged
+  });
+
+  it("agents cannot claim", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "open", scopeType: null, scopeId: null }],
+    ]);
+    const res = await threadService(db).claim("co1", "t1", {
+      userId: "agent1",
+      role: "team_member",
+      isHuman: false,
+    });
+    expect(res.ownerUserId).toBeNull(); // unchanged
+  });
+});
+
+// ── Task 5: transferOwnership ─────────────────────────────────────────────────
+
+describe("threadService.transferOwnership", () => {
+  it("transfers ownership and demotes previous owner", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [], // update participants (demote)
+      [], // update discussions
+      [], // insert new owner participant
+    ]);
+    const res = await threadService(db).transferOwnership("co1", "t1", "u2", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.ownerUserId).toBe("u2");
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "thread.participant.changed" }),
+    );
+  });
+
+  it("non-owner non-founder gets notFound", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }],
+    ]);
+    await expect(
+      threadService(db).transferOwnership("co1", "t1", "u2", {
+        userId: "u1", // not owner, not founder
+        role: "team_member",
+        isHuman: true,
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
+// ── Task 6: promoteToGoal ─────────────────────────────────────────────────────
+
+describe("threadService.promoteToGoal", () => {
+  it("creates a goal, links it on the thread", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+      // goalService.create does its own queries via the mock — returns { id: "g1" }
+      // but the goal mock returns g1 without consuming from our queue
+      // After create: update discussions.goalId
+      [],
+      // attachProjects: select from projectGoals (called in goalService.create)
+      [],
+    ]);
+    const res = await threadService(db).promoteToGoal(
+      "co1",
+      "t1",
+      { projectIds: ["p1"], level: "company" },
+      { userId: "u1", role: "founder", isHuman: true },
+    );
+    expect(res.goalId).toBe("g1");
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "thread.scope.changed" }),
+    );
+  });
+
+  it("rejects if thread already has a goal", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: "existing-g", scopeType: null, scopeId: null, visibility: "open" }],
+    ]);
+    await expect(
+      threadService(db).promoteToGoal(
+        "co1",
+        "t1",
+        { projectIds: ["p1"], level: "company" },
+        { userId: "u1", role: "founder", isHuman: true },
+      ),
+    ).rejects.toThrow(/already has a goal/i);
+  });
+
+  it("rejects sub-goals of sub-goals (Decision #20)", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+      // goals.parentId query for parentId check -> returns a goal that has a parentId (it is itself a sub-goal)
+      [{ parentId: "g0" }],
+    ]);
+    await expect(
+      threadService(db).promoteToGoal(
+        "co1",
+        "t1",
+        { projectIds: ["p1"], level: "team", parentId: "g-parent" },
+        { userId: "u1", role: "founder", isHuman: true },
+      ),
+    ).rejects.toThrow(/#20/);
+  });
+
+  it("rejects with no projectIds", async () => {
+    const db = createSequenceDb([]);
+    await expect(
+      threadService(db).promoteToGoal(
+        "co1",
+        "t1",
+        { projectIds: [], level: "company" },
+        { userId: "u1", role: "founder", isHuman: true },
+      ),
+    ).rejects.toThrow(/at least one project/i);
+  });
+});
+
+// ── Task 7: fork ──────────────────────────────────────────────────────────────
+
+describe("threadService.fork", () => {
+  it("creates a child thread linked back with kind=fork", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", title: "Parent", scopeType: null, scopeId: null, visibility: "open", ownerUserId: "u1" }],
+      [{ id: "t2" }], // new discussion insert returning
+      [], // thread_links insert
+    ]);
+    const res = await threadService(db).fork("co1", "t1", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.id).toBe("t2");
+    expect(res.forkedFromId).toBe("t1");
+  });
+
+  it("throws notFound when source thread missing", async () => {
+    const db = createSequenceDb([[]]); // no thread
+    await expect(
+      threadService(db).fork("co1", "t99", { userId: "u1", role: "founder", isHuman: true }),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
+// ── Task 7: merge ─────────────────────────────────────────────────────────────
+
+describe("threadService.merge", () => {
+  it("archives source thread and creates merge link", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [], // participants check
+      [], // update discussions (archive)
+      [], // thread_links insert
+    ]);
+    const res = await threadService(db).merge("co1", "t1", "t2", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.mergedInto).toBe("t2");
+  });
+});
+
+// ── Task 8: assignScopeItems ──────────────────────────────────────────────────
+
+describe("threadService.assignScopeItems", () => {
+  it("creates issues for approved items without result_task_id (idempotent)", async () => {
+    const approvedItem = {
+      id: "item1",
+      type: "task",
+      status: "approved",
+      resultTaskId: null,
+      assigneeAgentId: null,
+      assigneeUserId: "u2",
+      departmentId: "p1",
+      suggestedDepartmentId: null,
+      suggestedProjectId: null,
+      priority: "medium",
+      suggestedPriority: null,
+      title: "Build feature",
+      description: "Details",
+      discussionEntryId: "entry1",
+    };
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread
+      [{ id: "entry1" }], // entries query
+      [approvedItem], // extractedItems query
+      [{ id: "issue1" }], // issue insert returning
+      [], // update result_task_id on extracted item
+    ]);
+    const res = await threadService(db).assignScopeItems("co1", "t1", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.created).toBe(1);
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "thread.scope.changed" }),
+    );
+  });
+
+  it("skips items that already have result_task_id (idempotent re-run)", async () => {
+    const alreadyAssigned = {
+      id: "item2",
+      type: "task",
+      status: "approved",
+      resultTaskId: "existing-issue",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      departmentId: null,
+      suggestedDepartmentId: null,
+      suggestedProjectId: null,
+      priority: null,
+      suggestedPriority: null,
+      title: "Done",
+      description: null,
+      discussionEntryId: "entry1",
+    };
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "entry1" }], // entries
+      [alreadyAssigned], // only this item
+    ]);
+    const res = await threadService(db).assignScopeItems("co1", "t1", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.created).toBe(0);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("non-founder gets notFound", async () => {
+    const db = createSequenceDb([]);
+    await expect(
+      threadService(db).assignScopeItems("co1", "t1", {
+        userId: "u1",
+        role: "team_member",
+        isHuman: true,
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("returns 0 when thread has no entries", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [], // entries -> empty
+    ]);
+    const res = await threadService(db).assignScopeItems("co1", "t1", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.created).toBe(0);
+  });
+});
