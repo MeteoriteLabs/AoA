@@ -1,4 +1,4 @@
-import { and, eq, lt, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, lt, inArray, notInArray, sql, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents, internalAgentConfig } from "@armyofagents/db";
 import { listEnabledOutboxAgents } from "./triggers.js";
@@ -10,6 +10,7 @@ import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 import { isRoleActiveAtAutonomy, type CrewRole } from "./autonomy.js";
 import { isCrewPaused } from "./kill-switch.js";
+import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT } from "../cost-caps.js";
 
 export interface DispatchOptions {
   /** Max simultaneous extractions per dispatch tick. */
@@ -214,16 +215,20 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     );
   };
 
-  // Per-company config memoization within this tick (autonomy + kill-switch).
-  const configByCompany = new Map<string, { autonomyLevel: number; crewPaused: boolean }>();
-  async function resolveCompanyConfig(companyId: string): Promise<{ autonomyLevel: number; crewPaused: boolean }> {
+  // Per-company config memoization within this tick (autonomy + kill-switch + model).
+  const configByCompany = new Map<string, { autonomyLevel: number; crewPaused: boolean; model: string }>();
+  async function resolveCompanyConfig(companyId: string): Promise<{ autonomyLevel: number; crewPaused: boolean; model: string }> {
     if (configByCompany.has(companyId)) return configByCompany.get(companyId)!;
     const [cfg] = await db
-      .select({ autonomyLevel: internalAgentConfig.autonomyLevel, crewPaused: internalAgentConfig.crewPaused })
+      .select({ autonomyLevel: internalAgentConfig.autonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model })
       .from(internalAgentConfig)
       .where(eq(internalAgentConfig.companyId, companyId))
       .limit(1);
-    const config = { autonomyLevel: cfg?.autonomyLevel ?? 0, crewPaused: cfg?.crewPaused ?? false };
+    const config = {
+      autonomyLevel: cfg?.autonomyLevel ?? 0,
+      crewPaused: cfg?.crewPaused ?? false,
+      model: (cfg?.model ?? "claude-sonnet-4-20250514") as string,
+    };
     configByCompany.set(companyId, config);
     return config;
   }
@@ -272,6 +277,44 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             return;
           }
 
+          // Plan 3 Task 9: D3 run-rate brake — count crew runs in the rolling
+          // window. CLI subscription runs cost $0 so capExceeded() cannot brake
+          // a runaway loop; count-based gating is the safety net.
+          const windowStart = new Date(Date.now() - DEFAULT_CREW_RATE_LIMIT.windowMinutes * 60_000);
+          const windowRuns = await db
+            .select({ id: internalAgentRuns.id })
+            .from(internalAgentRuns)
+            .where(and(
+              eq(internalAgentRuns.companyId, w.companyId),
+              gt(internalAgentRuns.createdAt, windowStart),
+            ))
+            .then((r: Array<{ id: string }>) => r.length);
+          if (runRateExceeded(windowRuns, DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow)) {
+            await db
+              .update(agentWakeupRequests)
+              .set({ status: "done", finishedAt: new Date() })
+              .where(eq(agentWakeupRequests.id, w.id));
+            logger.child({ subagent: "aoa-dispatcher" }).warn(
+              { agentId: w.agentId, windowRuns, limit: DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow, companyId: w.companyId },
+              "aoa wakeup skipped: run-rate brake (D3)",
+            );
+            return;
+          }
+
+          // Plan 3 Task 9: resolve per-role model (role config > company default).
+          // The resolved model is passed in the payload so runner.ts can use it.
+          const agentRow = await db
+            .select({ runtimeConfig: agents.runtimeConfig, adapterConfig: agents.adapterConfig })
+            .from(agents)
+            .where(eq(agents.id, w.agentId))
+            .then((r: Array<{ runtimeConfig: unknown; adapterConfig: unknown }>) => r[0] ?? null);
+          const agentRc = (agentRow?.runtimeConfig as Record<string, unknown>) ?? {};
+          const agentAdapterCfg = (agentRow?.adapterConfig as Record<string, unknown>) ?? {};
+          const roleModel = resolveRoleModel({
+            roleModel: (agentRc.model ?? agentAdapterCfg.model ?? null) as string | null,
+            companyDefault: companyCfg.model,
+          });
+
           // Atomic claim: queued → processing
           const claimed = await db
             .update(agentWakeupRequests)
@@ -285,6 +328,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               companyId: w.companyId,
               source: "wakeup",
               wakeupId: w.id,
+              resolvedModel: roleModel, // Plan 3 Task 9: pass resolved model to runner
               ...(w.payload ?? {}),
             });
             await db
