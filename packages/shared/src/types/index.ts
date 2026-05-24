@@ -283,9 +283,31 @@ export type {
   GitHubPrMetadata,
   GitHubPrSyncMetadata,
   GitHubPrSyncResponse,
+  GitHubRepoCollaborator,
+  GitHubRepoLabel,
+  GitHubRepoMilestone,
+  GitHubRepoBranch,
+  GitHubAuthorizedRepo,
+  GitHubPrMergeMethod,
+  GitHubPrMergeRequest,
+  GitHubPrActionResponse,
+  GitHubAppStatus,
+  GitHubAuthStatus,
 } from "./github.js";
 
 export type { Environment } from "./environment.js";
+
+export type {
+  GitPrReviewState,
+  GitCIStatus,
+  GitPipelineStage,
+  GitBranchInfo,
+  GitCommitNode,
+  GitGraphData,
+  GitProjectGraphResponse,
+  GitBranchEnrichment,
+  GitProjectEnrichResponse,
+} from "./git-graph.js";
 
 export type {
   JsonSchema,

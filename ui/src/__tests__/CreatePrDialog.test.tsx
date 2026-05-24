@@ -10,6 +10,10 @@ import { ApiError } from "../api/client";
 const mockGetIssue = vi.fn();
 const mockCreatePR = vi.fn();
 const mockSyncWorkspacePR = vi.fn();
+const mockGetCollaborators = vi.fn();
+const mockGetLabels = vi.fn();
+const mockGetMilestones = vi.fn();
+const mockGetBranches = vi.fn();
 const mockPushToast = vi.fn();
 const mockSafety = vi.fn();
 
@@ -21,6 +25,10 @@ vi.mock("../api/github-integration", () => ({
   githubIntegrationApi: {
     createPR: (...args: unknown[]) => mockCreatePR(...args),
     syncWorkspacePR: (...args: unknown[]) => mockSyncWorkspacePR(...args),
+    getCollaborators: (...args: unknown[]) => mockGetCollaborators(...args),
+    getLabels: (...args: unknown[]) => mockGetLabels(...args),
+    getMilestones: (...args: unknown[]) => mockGetMilestones(...args),
+    getBranches: (...args: unknown[]) => mockGetBranches(...args),
   },
 }));
 
@@ -119,6 +127,10 @@ describe("CreatePrDialog", () => {
       githubSyncError: null,
       cached: false,
     });
+    mockGetCollaborators.mockResolvedValue([]);
+    mockGetLabels.mockResolvedValue([]);
+    mockGetMilestones.mockResolvedValue([]);
+    mockGetBranches.mockResolvedValue([{ name: "main", sha: "abc" }]);
   });
 
   it("prefills title/body from the linked task + base from workspace.baseRef", async () => {
@@ -134,7 +146,11 @@ describe("CreatePrDialog", () => {
       expect(screen.getByTestId("pr-title-input")).toHaveValue("Fix auth bug"),
     );
     expect(screen.getByTestId("pr-body-input")).toHaveValue("Users cannot log in.");
-    expect(screen.getByTestId("pr-base-input")).toHaveValue("main");
+    // Base branch is now a Radix Select trigger (a button), not a text input.
+    // It defaults to workspace.baseRef ?? "main" and renders the value as text.
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-base-input")).toHaveTextContent("main"),
+    );
   });
 
   it("renders head branch as read-only from workspace.branchName", async () => {
@@ -394,6 +410,63 @@ describe("CreatePrDialog", () => {
     }));
   });
 
+  it("populates the base-branch dropdown and submits with the selected base", async () => {
+    // Radix Select needs these jsdom shims to open + select.
+    const proto = window.HTMLElement.prototype;
+    proto.scrollIntoView = vi.fn();
+    proto.hasPointerCapture = vi.fn(() => false);
+    proto.setPointerCapture = vi.fn();
+    proto.releasePointerCapture = vi.fn();
+
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
+    mockGetBranches.mockResolvedValue([
+      { name: "main", sha: "a" },
+      { name: "dev", sha: "b" },
+    ]);
+    mockCreatePR.mockResolvedValue({
+      url: "https://github.com/acme/repo/pull/55",
+      number: 55,
+      state: "open",
+      draft: false,
+    });
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-title-input")).toHaveValue("T"),
+    );
+    // Wait for the branches query to resolve so both options exist.
+    await waitFor(() => expect(mockGetBranches).toHaveBeenCalledWith("ws-1"));
+
+    // Open the Radix Select via its trigger.
+    const trigger = screen.getByTestId("pr-base-input");
+    await user.click(trigger);
+
+    // Both branch options are present in the open listbox.
+    const mainOption = await screen.findByRole("option", { name: "main" });
+    const devOption = await screen.findByRole("option", { name: "dev" });
+    expect(mainOption).toBeInTheDocument();
+    expect(devOption).toBeInTheDocument();
+
+    // Select "dev".
+    await user.click(devOption);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-base-input")).toHaveTextContent("dev"),
+    );
+
+    // Submit the form and assert createPR carried base: "dev".
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() =>
+      expect(mockCreatePR).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ base: "dev" }),
+      ),
+    );
+  });
+
   it("uses checking copy while only the safety preflight is running", async () => {
     mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
     mockCreatePR.mockResolvedValue({
@@ -423,5 +496,114 @@ describe("CreatePrDialog", () => {
       warnings: [],
     }));
     await waitFor(() => expect(mockCreatePR).toHaveBeenCalled());
+  });
+});
+
+describe("CreatePrDialog — enhanced fields (reviewers / labels / milestone)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSafety.mockResolvedValue({
+      task: null,
+      activeRun: null,
+      requiresConfirmation: { commit: false, push: false, createPr: false },
+      warnings: [],
+    });
+    mockSyncWorkspacePR.mockResolvedValue({
+      workspaceId: "ws-1",
+      repoUrl: "https://github.com/acme/repo",
+      branchName: "feature/x",
+      baseRef: "main",
+      pr: null,
+      githubLastSyncedAt: "2026-05-16T00:00:00.000Z",
+      githubSyncError: null,
+      cached: false,
+    });
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "My Task", description: "" });
+    mockGetCollaborators.mockResolvedValue([
+      { login: "alice", avatarUrl: "https://avatars.githubusercontent.com/alice" },
+      { login: "bob", avatarUrl: "https://avatars.githubusercontent.com/bob" },
+    ]);
+    mockGetLabels.mockResolvedValue([
+      { id: 1, name: "bug", color: "d73a4a" },
+      { id: 2, name: "enhancement", color: "a2eeef" },
+    ]);
+    mockGetMilestones.mockResolvedValue([
+      { number: 1, title: "v1.0", openIssues: 3, dueOn: null },
+    ]);
+    mockGetBranches.mockResolvedValue([{ name: "main", sha: "abc" }]);
+    mockCreatePR.mockResolvedValue({
+      url: "https://github.com/acme/repo/pull/99",
+      number: 99,
+      state: "open",
+      draft: false,
+    });
+  });
+
+  it("fetches and renders collaborators in reviewer section", async () => {
+    renderDialog();
+    await waitFor(() => expect(mockGetCollaborators).toHaveBeenCalledWith("ws-1"));
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    expect(screen.getByText("bob")).toBeInTheDocument();
+  });
+
+  it("includes selected reviewers in createPR call", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    // Select alice as reviewer
+    const aliceCheckbox = await screen.findByRole("checkbox", { name: /alice/i });
+    await user.click(aliceCheckbox);
+
+    // Submit
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() =>
+      expect(mockCreatePR).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ reviewers: ["alice"] }),
+      ),
+    );
+  });
+
+  it("fetches and renders labels", async () => {
+    renderDialog();
+    expect(await screen.findByText("bug")).toBeInTheDocument();
+    expect(screen.getByText("enhancement")).toBeInTheDocument();
+  });
+
+  it("includes selected labels in createPR call", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    const bugCheckbox = await screen.findByRole("checkbox", { name: /^bug$/i });
+    await user.click(bugCheckbox);
+
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() =>
+      expect(mockCreatePR).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ labels: ["bug"] }),
+      ),
+    );
+  });
+
+  it("fetches and renders milestones in select", async () => {
+    renderDialog();
+    expect(await screen.findByText(/v1\.0/)).toBeInTheDocument();
+  });
+
+  it("does not send reviewers/labels/milestone when none selected", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await screen.findByText("alice"); // wait for data to load
+
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() => expect(mockCreatePR).toHaveBeenCalled());
+    const callArg = mockCreatePR.mock.calls[0][1] as Record<string, unknown>;
+    expect((callArg.reviewers as string[] | undefined) ?? []).toHaveLength(0);
+    expect((callArg.labels as string[] | undefined) ?? []).toHaveLength(0);
+    expect(callArg.milestoneNumber).toBeUndefined();
   });
 });

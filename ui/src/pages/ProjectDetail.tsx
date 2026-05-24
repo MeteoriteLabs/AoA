@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, lazy, Suspense } from "react";
 import { useParams, useNavigate, useLocation, Navigate, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike } from "@armyofagents/shared";
@@ -30,6 +30,12 @@ import { ExecutionWorkspaceCloseDialog } from "../components/workspace/Execution
 import { EmptyState } from "../components/EmptyState";
 import { ProjectEnvironmentSection } from "../components/ProjectEnvironmentSection";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
+
+// Lazy-load GitCommandCentre so D3 (~150KB gzip) is code-split and only
+// downloaded when a user opens a software_development project's Workspaces tab.
+const GitCommandCentre = lazy(() =>
+  import("../components/workspace/GitCommandCentre").then((m) => ({ default: m.GitCommandCentre })),
+);
 
 /* ── Top-level tab types ── */
 
@@ -1044,7 +1050,22 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "workspaces" && project?.id && resolvedCompanyId && (
-        <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} companyPrefix={resolvedPrefix} />
+        project.functionType === "software_development" ? (
+          // Git Command Centre — only for software projects; D3 is lazy-loaded
+          <Suspense fallback={<div className="flex-1 animate-pulse bg-muted/20 rounded m-4" style={{ minHeight: 200 }} />}>
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+              <GitCommandCentre
+                projectId={project.id}
+                companyId={resolvedCompanyId}
+                isWorkspacesTabActive={activeTab === "workspaces"}
+                onSelectIssue={(id) => setSelectedIssueId(id)}
+              />
+            </div>
+          </Suspense>
+        ) : (
+          // For non-software projects, keep the existing workspace list
+          <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} companyPrefix={resolvedPrefix} />
+        )
       )}
 
       {activeTab === "settings" && (
@@ -1075,7 +1096,17 @@ export function ProjectDetail() {
   );
 
   return (
-    <div className="space-y-6">
+    <div
+      className={
+        // The Map (Git Command Centre) needs to fill the viewport without the
+        // page scrolling, so the root becomes a bounded flex column ONLY for the
+        // workspaces tab; its flex-1 canvas wrapper then shrinks to fit. Other
+        // tabs keep the normal block + scroll layout.
+        activeTab === "workspaces"
+          ? "flex flex-col gap-6 h-full min-h-0"
+          : "space-y-6"
+      }
+    >
       {headerContent}
       {tabContent}
       <TaskSlideOver

@@ -17,7 +17,11 @@ const PAT_DOCS_URL = "https://github.com/settings/tokens?type=beta";
 
 /**
  * Settings → Integrations → GitHub card.
- * Stores a per-company GitHub PAT (verified via Octokit on the server).
+ *
+ * Supports two auth modes that coexist:
+ *   1. GitHub App — org-wide, tokens auto-rotate (recommended)
+ *   2. Personal Access Token — fine-grained PAT fallback
+ *
  * The PAT itself is never returned to the UI — the status endpoint only
  * echoes `{configured, githubUser, createdAt}`.
  */
@@ -29,16 +33,43 @@ export function GitHubIntegrationCard() {
   const [patInput, setPatInput] = useState("");
   const [inlineError, setInlineError] = useState<string | null>(null);
 
+  // ── Queries ──────────────────────────────────────────────────────────────
+
   const statusQuery = useQuery({
     queryKey: queryKeys.github.patStatus(selectedCompanyId!),
     queryFn: () => githubIntegrationApi.status(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const invalidateStatus = () => {
+  const appStatusQuery = useQuery({
+    queryKey: ["github", "app-status", selectedCompanyId],
+    queryFn: () => githubIntegrationApi.appStatus(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const installUrlQuery = useQuery({
+    queryKey: ["github", "app-install-url", selectedCompanyId],
+    queryFn: () => githubIntegrationApi.getAppInstallUrl(selectedCompanyId!),
+    enabled: !!selectedCompanyId && appStatusQuery.data?.installed === false,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const authorizedReposQuery = useQuery({
+    queryKey: ["github", "authorized-repos", selectedCompanyId],
+    queryFn: () => githubIntegrationApi.getAuthorizedRepos(selectedCompanyId!),
+    enabled: !!selectedCompanyId && appStatusQuery.data?.installed === true,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
+
+  const invalidateAll = () => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({
       queryKey: queryKeys.github.patStatus(selectedCompanyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: ["github", "app-status", selectedCompanyId],
     });
   };
 
@@ -48,9 +79,9 @@ export function GitHubIntegrationCard() {
     onSuccess: (data) => {
       setPatInput("");
       setInlineError(null);
-      invalidateStatus();
+      invalidateAll();
       pushToast({
-        title: `Connected to GitHub as @${data.githubUser}`,
+        title: `PAT connected as @${data.githubUser}`,
         tone: "success",
       });
     },
@@ -65,8 +96,8 @@ export function GitHubIntegrationCard() {
     mutationFn: () => githubIntegrationApi.removePat(selectedCompanyId!),
     onSuccess: () => {
       setInlineError(null);
-      invalidateStatus();
-      pushToast({ title: "Disconnected from GitHub", tone: "success" });
+      invalidateAll();
+      pushToast({ title: "PAT disconnected", tone: "success" });
     },
     onError: (err) => {
       pushToast({
@@ -76,23 +107,54 @@ export function GitHubIntegrationCard() {
     },
   });
 
+  const disconnectAppMutation = useMutation({
+    mutationFn: () => githubIntegrationApi.disconnectApp(selectedCompanyId!),
+    onSuccess: () => {
+      invalidateAll();
+      pushToast({ title: "GitHub App disconnected", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: err instanceof Error ? err.message : "Failed to disconnect app",
+        tone: "warn",
+      });
+    },
+  });
+
   if (!selectedCompanyId) {
     return null;
   }
 
-  const status = statusQuery.data;
-  const isLoading = statusQuery.isLoading;
-  const isConnected = status?.configured === true;
+  const appInstalled = appStatusQuery.data?.installed === true;
+  const patConnected = statusQuery.data?.configured === true;
+  const isLoading = statusQuery.isLoading || appStatusQuery.isLoading;
 
-  function handleConnect() {
+  function handleConnectWithGitHub() {
+    const url = installUrlQuery.data?.url;
+    if (url) window.location.href = url;
+  }
+
+  function handleConnectPat() {
     const trimmed = patInput.trim();
     if (!trimmed) return;
     setInlineError(null);
     setPatMutation.mutate(trimmed);
   }
 
+  if (isLoading) {
+    return (
+      <div className="rounded-md border border-border px-4 py-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          Loading…
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-md border border-border px-4 py-4 space-y-4">
+    <div className="rounded-md border border-border px-4 py-4 space-y-5">
+      {/* Header */}
       <div className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-muted/30 p-2">
           <Github className="h-5 w-5" aria-hidden="true" />
@@ -100,101 +162,212 @@ export function GitHubIntegrationCard() {
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium">GitHub</div>
           <div className="text-xs text-muted-foreground">
-            Store a Personal Access Token to enable Create PR from workspaces.
+            Connect GitHub to enable PR creation, review sync, and agent GitHub access.
           </div>
         </div>
       </div>
 
-      {isLoading ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Loading status…
+      {/* ── GitHub App section ─────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          GitHub App{" "}
+          <span className="text-brand font-normal normal-case tracking-normal">
+            (recommended)
+          </span>
         </div>
-      ) : isConnected ? (
-        <div className="space-y-3">
-          <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
-            <CheckCircle2
-              className="mt-0.5 h-4 w-4 text-emerald-500"
-              aria-hidden="true"
-            />
-            <div className="flex-1 min-w-0">
-              <div className="font-medium">
-                Connected as{" "}
-                <span className="font-mono">@{status?.githubUser ?? "unknown"}</span>
-              </div>
-              {status?.createdAt && (
-                <div className="text-xs text-muted-foreground">
-                  Saved {new Date(status.createdAt).toLocaleString()}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center justify-end">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => removePatMutation.mutate()}
-              disabled={removePatMutation.isPending}
-            >
-              {removePatMutation.isPending ? "Disconnecting…" : "Disconnect"}
-            </Button>
-          </div>
+        <div className="text-xs text-muted-foreground">
+          Org-wide access. Tokens auto-rotate. No manual PAT needed.
         </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="text-xs text-muted-foreground">
-            Create a fine-grained PAT with{" "}
-            <span className="font-mono">repo</span> and{" "}
-            <span className="font-mono">pull request</span> permissions, then
-            paste it below.
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="password"
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-              value={patInput}
-              onChange={(e) => {
-                setPatInput(e.target.value);
-                if (inlineError) setInlineError(null);
-              }}
-              placeholder="github_pat_…"
-              aria-label="GitHub Personal Access Token"
-              disabled={setPatMutation.isPending}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && patInput.trim()) {
-                  e.preventDefault();
-                  handleConnect();
-                }
-              }}
-            />
-            <Button
-              size="sm"
-              onClick={handleConnect}
-              disabled={!patInput.trim() || setPatMutation.isPending}
-            >
-              {setPatMutation.isPending ? "Connecting…" : "Connect"}
-            </Button>
-          </div>
-          {inlineError && (
-            <div className="flex items-start gap-2 text-sm text-destructive">
-              <AlertCircle
-                className="mt-0.5 h-4 w-4"
+
+        {appInstalled ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+              <CheckCircle2
+                className="h-4 w-4 text-emerald-500 shrink-0"
                 aria-hidden="true"
               />
-              <span>{inlineError}</span>
+              <div className="flex-1 min-w-0">
+                <span className="font-medium">
+                  Connected to{" "}
+                  <span className="font-mono">
+                    @{appStatusQuery.data?.accountLogin}
+                  </span>
+                </span>
+                <span className="text-xs text-muted-foreground ml-1">
+                  ({appStatusQuery.data?.accountType})
+                </span>
+              </div>
             </div>
-          )}
-          <a
-            href={PAT_DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => disconnectAppMutation.mutate()}
+                disabled={disconnectAppMutation.isPending}
+                aria-label="Disconnect App"
+              >
+                {disconnectAppMutation.isPending
+                  ? "Disconnecting…"
+                  : "Disconnect App"}
+              </Button>
+            </div>
+            {authorizedReposQuery.data && authorizedReposQuery.data.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <div className="text-xs font-medium text-muted-foreground">
+                  Authorized repositories ({authorizedReposQuery.data.length})
+                </div>
+                <div className="space-y-1 max-h-36 overflow-y-auto rounded-md border border-border/50 px-2 py-1.5">
+                  {authorizedReposQuery.data.map((repo) => (
+                    <div key={repo.fullName} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono truncate flex-1 min-w-0">{repo.fullName}</span>
+                      {repo.private && (
+                        <span className="shrink-0 rounded px-1 py-0.5 text-[10px] bg-muted text-muted-foreground border border-border/60">
+                          private
+                        </span>
+                      )}
+                      <a
+                        href={repo.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                        aria-label={`Open ${repo.fullName} on GitHub`}
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {authorizedReposQuery.isLoading && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1">
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                Loading repositories…
+              </div>
+            )}
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="default"
+            className="gap-1.5"
+            onClick={handleConnectWithGitHub}
+            disabled={installUrlQuery.isLoading || installUrlQuery.isError}
           >
-            Create a GitHub PAT
-            <ExternalLink className="h-3 w-3" aria-hidden="true" />
-          </a>
+            {installUrlQuery.isLoading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Github className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Connect with GitHub
+          </Button>
+        )}
+      </div>
+
+      {/* Divider */}
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex-1 h-px bg-border" />
+        or
+        <div className="flex-1 h-px bg-border" />
+      </div>
+
+      {/* ── PAT section ────────────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Personal Access Token
+          {appInstalled && (
+            <span className="ml-1.5 font-normal normal-case tracking-normal text-muted-foreground/60">
+              (fallback — App is active)
+            </span>
+          )}
         </div>
-      )}
+
+        {patConnected ? (
+          <div className="space-y-2">
+            <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+              <CheckCircle2
+                className="mt-0.5 h-4 w-4 text-emerald-500"
+                aria-hidden="true"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium">
+                  Connected as{" "}
+                  <span className="font-mono">
+                    @{statusQuery.data?.githubUser ?? "unknown"}
+                  </span>
+                </div>
+                {statusQuery.data?.createdAt && (
+                  <div className="text-xs text-muted-foreground">
+                    Saved {new Date(statusQuery.data.createdAt).toLocaleString()}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => removePatMutation.mutate()}
+                disabled={removePatMutation.isPending}
+              >
+                {removePatMutation.isPending ? "Disconnecting…" : "Disconnect"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-xs text-muted-foreground">
+              Fine-grained PAT with <span className="font-mono">repo</span> and{" "}
+              <span className="font-mono">pull_requests</span> permissions.
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                value={patInput}
+                onChange={(e) => {
+                  setPatInput(e.target.value);
+                  if (inlineError) setInlineError(null);
+                }}
+                placeholder="github_pat_…"
+                aria-label="GitHub Personal Access Token"
+                disabled={setPatMutation.isPending}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && patInput.trim()) {
+                    e.preventDefault();
+                    handleConnectPat();
+                  }
+                }}
+              />
+              <Button
+                size="sm"
+                onClick={handleConnectPat}
+                disabled={!patInput.trim() || setPatMutation.isPending}
+              >
+                {setPatMutation.isPending ? "Connecting…" : "Connect"}
+              </Button>
+            </div>
+            {inlineError && (
+              <div className="flex items-start gap-2 text-sm text-destructive">
+                <AlertCircle
+                  className="mt-0.5 h-4 w-4"
+                  aria-hidden="true"
+                />
+                <span>{inlineError}</span>
+              </div>
+            )}
+            <a
+              href={PAT_DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Create a GitHub PAT
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

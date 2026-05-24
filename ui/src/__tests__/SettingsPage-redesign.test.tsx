@@ -176,6 +176,9 @@ vi.mock("@/api/plugins", () => ({
 vi.mock("@/api/github-integration", () => ({
   githubIntegrationApi: {
     status: vi.fn().mockResolvedValue({ configured: false }),
+    appStatus: vi.fn().mockResolvedValue({ installed: false }),
+    getAppInstallUrl: vi.fn().mockResolvedValue({ url: "https://github.com/apps/test/installations/new" }),
+    disconnectApp: vi.fn().mockResolvedValue({ removed: true }),
     setPat: vi.fn().mockResolvedValue({ configured: true, githubUser: "test-user" }),
     removePat: vi.fn().mockResolvedValue({ configured: false, removed: true }),
     createPR: vi.fn().mockResolvedValue({}),
@@ -450,12 +453,13 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.getByText(/migrating to plugins/i)).toBeInTheDocument();
 
     // The GitHubIntegrationCard's actual rendered content. With a mocked
-    // status of `{ configured: false }`, the unconnected branch shows a PAT
-    // input + "Connect" button + descriptive copy.
+    // status of `{ configured: false }` and App not installed, the card shows
+    // both the "Connect with GitHub" App button and the PAT "Connect" button.
     expect(
       await screen.findByLabelText(/GitHub Personal Access Token/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Connect/i })).toBeInTheDocument();
+    // At least one button matching "Connect" (PAT or App section).
+    expect(screen.getAllByRole("button", { name: /Connect/i }).length).toBeGreaterThan(0);
   });
 
   it("/settings/commander route redirects to /settings?tab=commander", async () => {

@@ -34,7 +34,11 @@ const mockProject = {
   companyId: "comp-1",
   issuePrefix: "TC",
   simpleId: "ENG",
-  functionType: "software_development",
+  // Intentionally NOT "software_development" here: the workspace-list tests
+  // (ENG-99-fix-auth, archive, etc.) rely on ProjectWorkspaces rendering.
+  // For software_development the Workspaces tab renders GitCommandCentre instead.
+  // Individual tests that need software_development override via mockResolvedValue.
+  functionType: null as string | null,
   goalIds: [],
   goalId: null,
   goals: [],
@@ -251,11 +255,11 @@ function renderProjectDetail(initialPath: string) {
 }
 
 beforeEach(() => {
-  // resetAllMocks clears both call history AND implementations.
-  // This makes test order irrelevant: a test that sets list to []
-  // cannot pollute the next test even under full-suite parallelism.
-  vi.resetAllMocks();
-  // Re-establish ALL default implementations after the reset.
+  // clearAllMocks resets call history without wiping implementations set in
+  // vi.mock() factories (goalsApi, agentsApi, issuesApi, etc.).  Any mock
+  // whose implementation varies per-test is explicitly re-established below.
+  vi.clearAllMocks();
+  // Re-establish implementations that individual tests may override.
   executionWorkspacesApiMock.list.mockResolvedValue(mockWorkspaces);
   executionWorkspacesApiMock.update.mockResolvedValue({});
   executionWorkspacesApiMock.getCloseReadiness.mockResolvedValue({
@@ -314,6 +318,7 @@ describe("ProjectDetail — Workspaces tab", () => {
   });
 
   it("renders the Settings tab with Workspace & Runtime content", async () => {
+    projectsApiMock.get.mockResolvedValue({ ...mockProject, functionType: "software_development" });
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/settings");
 
     const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
@@ -328,6 +333,7 @@ describe("ProjectDetail — Workspaces tab", () => {
   });
 
   it("opens workspace source modals from Settings", async () => {
+    projectsApiMock.get.mockResolvedValue({ ...mockProject, functionType: "software_development" });
     const user = userEvent.setup();
     renderProjectDetail("/projects/ENG/settings");
 
@@ -353,6 +359,7 @@ describe("ProjectDetail — Workspaces tab", () => {
     const user = userEvent.setup();
     projectsApiMock.get.mockResolvedValue({
       ...mockProject,
+      functionType: "software_development",
       workspaces: [
         {
           id: "source-1",
@@ -383,6 +390,7 @@ describe("ProjectDetail — Workspaces tab", () => {
   });
 
   it("keeps department overview simple and moves controls out of the profile", async () => {
+    projectsApiMock.get.mockResolvedValue({ ...mockProject, functionType: "software_development" });
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/overview");
 
     expect(await screen.findByPlaceholderText("Add a department description...")).toHaveValue("Engineering department");

@@ -322,3 +322,84 @@ describe("resolveCreateIssueExecutionWorkspaceFields", () => {
     ).toEqual(inherited);
   });
 });
+
+describe("resolveCreateIssueExecutionWorkspaceFields", () => {
+  it("uses an explicit reuse_existing override instead of inherited workspace fields", () => {
+    const resolved = resolveCreateIssueExecutionWorkspaceFields({
+      explicitPatch: {
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: {
+          mode: "reuse_existing",
+          reuseWorkspaceId: "ws-explicit",
+        },
+      },
+      inherited: {
+        executionWorkspaceId: "ws-inherited",
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      },
+      existingIssue: {
+        companyId: "company-1",
+        projectId: "project-1",
+      },
+      isolatedWorkspacesEnabled: true,
+      projectPolicy: { enabled: true, allowIssueOverride: true },
+      reuseWorkspace: {
+        id: "ws-explicit",
+        companyId: "company-1",
+        projectId: "project-1",
+        status: "active",
+      },
+    });
+
+    expect(resolved).toEqual({
+      executionWorkspaceId: "ws-explicit",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "reuse_existing",
+        reuseWorkspaceId: "ws-explicit",
+      },
+    });
+  });
+
+  it("strips explicit create-time overrides when isolated workspaces are disabled", () => {
+    const resolved = resolveCreateIssueExecutionWorkspaceFields({
+      explicitPatch: {
+        executionWorkspacePreference: "isolated_workspace",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      },
+      inherited: null,
+      existingIssue: {
+        companyId: "company-1",
+        projectId: "project-1",
+      },
+      isolatedWorkspacesEnabled: false,
+      projectPolicy: { enabled: true, allowIssueOverride: true },
+      reuseWorkspace: null,
+    });
+
+    expect(resolved).toEqual({});
+  });
+
+  it("falls back to inherited workspace fields when no explicit override exists", () => {
+    const inherited = {
+      executionWorkspaceId: "ws-inherited",
+      executionWorkspacePreference: "reuse_existing" as const,
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    };
+
+    expect(
+      resolveCreateIssueExecutionWorkspaceFields({
+        explicitPatch: {},
+        inherited,
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        reuseWorkspace: null,
+      }),
+    ).toEqual(inherited);
+  });
+});

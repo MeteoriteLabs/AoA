@@ -16,10 +16,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type {
   ExecutionWorkspace,
   GitHubPrCreateResponse,
   GitHubPrMetadata,
+  GitHubRepoCollaborator,
+  GitHubRepoLabel,
+  GitHubRepoMilestone,
+  GitHubRepoBranch,
 } from "@armyofagents/shared";
 import { issuesApi } from "../../api/issues";
 import { githubIntegrationApi } from "../../api/github-integration";
@@ -134,6 +145,9 @@ export function CreatePrDialog({
   const [draft, setDraft] = useState(false);
   const [checkingSafety, setCheckingSafety] = useState(false);
   const [safetyConfirmation, setSafetyConfirmation] = useState<WorkspaceMutationSafety | null>(null);
+  const [selectedReviewers, setSelectedReviewers] = useState<string[]>([]);
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+  const [selectedMilestone, setSelectedMilestone] = useState<number | null>(null);
 
   const issueQuery = useQuery({
     queryKey: queryKeys.issues.detail(issueId),
@@ -141,9 +155,42 @@ export function CreatePrDialog({
     enabled: open,
   });
 
+  const collaboratorsQuery = useQuery({
+    queryKey: ["github", "collaborators", workspace.id],
+    queryFn: () => githubIntegrationApi.getCollaborators(workspace.id),
+    enabled: open && !!workspace.repoUrl,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const labelsQuery = useQuery({
+    queryKey: ["github", "labels", workspace.id],
+    queryFn: () => githubIntegrationApi.getLabels(workspace.id),
+    enabled: open && !!workspace.repoUrl,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const milestonesQuery = useQuery({
+    queryKey: ["github", "milestones", workspace.id],
+    queryFn: () => githubIntegrationApi.getMilestones(workspace.id),
+    enabled: open && !!workspace.repoUrl,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const branchesQuery = useQuery({
+    queryKey: ["github", "branches", workspace.id],
+    queryFn: () => githubIntegrationApi.getBranches(workspace.id),
+    enabled: open && !!workspace.repoUrl,
+    staleTime: 2 * 60 * 1000,
+  });
+
   // Prefill when dialog opens / when the issue loads.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setSelectedReviewers([]);
+      setSelectedLabels([]);
+      setSelectedMilestone(null);
+      return;
+    }
     if (issueQuery.data) {
       setTitle(issueQuery.data.title ?? "");
       setBody(issueQuery.data.description ?? "");
@@ -165,6 +212,9 @@ export function CreatePrDialog({
         // Send head explicitly — critical for local_fs workspaces where
         // workspace.branchName is null in the DB.
         ...(headBranch ? { head: headBranch } : {}),
+        ...(selectedReviewers.length > 0 ? { reviewers: selectedReviewers } : {}),
+        ...(selectedLabels.length > 0 ? { labels: selectedLabels } : {}),
+        ...(selectedMilestone !== null ? { milestoneNumber: selectedMilestone } : {}),
       }),
     onSuccess: (pr) => {
       pushToast({
@@ -312,13 +362,36 @@ export function CreatePrDialog({
                 <Label htmlFor="pr-base" className="text-sm font-medium">
                   Base branch
                 </Label>
-                <Input
-                  id="pr-base"
+                <Select
                   value={base}
-                  onChange={(e) => setBase(e.target.value)}
+                  onValueChange={setBase}
                   disabled={mutation.isPending || checkingSafety}
-                  data-testid="pr-base-input"
-                />
+                >
+                  <SelectTrigger id="pr-base" data-testid="pr-base-input">
+                    <SelectValue placeholder="Select branch…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {branchesQuery.isLoading ? (
+                      <SelectItem value={base}>
+                        <Loader2 className="h-3 w-3 animate-spin inline mr-1" aria-hidden="true" />
+                        Loading branches…
+                      </SelectItem>
+                    ) : branchesQuery.data && branchesQuery.data.length > 0 ? (
+                      <>
+                        {!branchesQuery.data.some((b) => b.name === base) && (
+                          <SelectItem value={base}>{base}</SelectItem>
+                        )}
+                        {branchesQuery.data.map((b: GitHubRepoBranch) => (
+                          <SelectItem key={b.name} value={b.name}>
+                            {b.name}
+                          </SelectItem>
+                        ))}
+                      </>
+                    ) : (
+                      <SelectItem value={base}>{base}</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   The branch to merge into.
                 </p>
@@ -351,6 +424,106 @@ export function CreatePrDialog({
                 Open as draft
               </Label>
             </div>
+
+            {/* Reviewers */}
+            <div className="space-y-2">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Reviewers
+              </Label>
+              {collaboratorsQuery.isLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading collaborators…
+                </div>
+              ) : collaboratorsQuery.isError ? (
+                <p className="text-xs text-destructive">Could not load collaborators.</p>
+              ) : (collaboratorsQuery.data ?? []).length === 0 ? (
+                <p className="text-xs text-muted-foreground">No collaborators found.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {(collaboratorsQuery.data ?? []).map((c: GitHubRepoCollaborator) => (
+                    <label
+                      key={c.login}
+                      className="flex items-center gap-1.5 cursor-pointer text-sm select-none"
+                    >
+                      <Checkbox
+                        checked={selectedReviewers.includes(c.login)}
+                        onCheckedChange={(checked) =>
+                          setSelectedReviewers((prev) =>
+                            checked ? [...prev, c.login] : prev.filter((r) => r !== c.login),
+                          )
+                        }
+                        aria-label={c.login}
+                      />
+                      <img src={c.avatarUrl} alt="" className="h-4 w-4 rounded-full" />
+                      <span>{c.login}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Labels */}
+            <div className="space-y-2">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Labels
+              </Label>
+              {labelsQuery.isLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading labels…
+                </div>
+              ) : labelsQuery.isError ? (
+                <p className="text-xs text-destructive">Could not load labels.</p>
+              ) : (labelsQuery.data ?? []).length === 0 ? (
+                <p className="text-xs text-muted-foreground">No labels found.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {(labelsQuery.data ?? []).map((l: GitHubRepoLabel) => (
+                    <label key={l.id} className="flex items-center gap-1.5 cursor-pointer text-sm select-none">
+                      <Checkbox
+                        checked={selectedLabels.includes(l.name)}
+                        onCheckedChange={(checked) =>
+                          setSelectedLabels((prev) =>
+                            checked ? [...prev, l.name] : prev.filter((n) => n !== l.name),
+                          )
+                        }
+                        aria-label={l.name}
+                      />
+                      <span
+                        className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                        style={{ backgroundColor: `#${l.color}22`, color: `#${l.color}`, border: `1px solid #${l.color}55` }}
+                      >
+                        {l.name}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Milestone */}
+            {(milestonesQuery.data ?? []).length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Milestone
+                </Label>
+                <select
+                  className="w-full rounded-md border border-input bg-transparent h-9 px-2.5 text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  value={selectedMilestone ?? ""}
+                  onChange={(e) =>
+                    setSelectedMilestone(e.target.value ? Number(e.target.value) : null)
+                  }
+                >
+                  <option value="">No milestone</option>
+                  {(milestonesQuery.data ?? []).map((m: GitHubRepoMilestone) => (
+                    <option key={m.number} value={m.number}>
+                      {m.title} ({m.openIssues} open)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Error banner */}
             {error && error.status === 412 && (

@@ -20,6 +20,9 @@ export interface GitHubPrCreateRequest {
    * runtime from git rather than stored in the DB).
    */
   head?: string;
+  reviewers?: string[];         // GitHub logins
+  labels?: string[];            // label names
+  milestoneNumber?: number;     // milestone number (not id)
 }
 
 export interface GitHubPrCreateResponse {
@@ -53,4 +56,77 @@ export interface GitHubPrSyncResponse {
   githubLastSyncedAt: string;
   githubSyncError: string | null;
   cached: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Repo metadata — used to populate CreatePrDialog selects
+// ---------------------------------------------------------------------------
+
+export interface GitHubRepoCollaborator {
+  login: string;
+  avatarUrl: string;
+}
+
+export interface GitHubRepoLabel {
+  id: number;
+  name: string;
+  color: string; // 6-char hex without '#'
+}
+
+export interface GitHubRepoMilestone {
+  number: number;
+  title: string;
+  openIssues: number;
+  dueOn: string | null; // ISO date or null
+}
+
+export interface GitHubRepoBranch {
+  name: string;
+  sha: string;
+}
+
+export interface GitHubAuthorizedRepo {
+  name: string;       // repo short name, e.g. "my-repo"
+  fullName: string;   // "owner/repo"
+  private: boolean;
+  url: string;        // html_url
+}
+
+// ---------------------------------------------------------------------------
+// PR actions
+// ---------------------------------------------------------------------------
+
+export type GitHubPrMergeMethod = "merge" | "squash" | "rebase";
+
+export interface GitHubPrMergeRequest {
+  mergeMethod: GitHubPrMergeMethod;
+}
+
+export interface GitHubPrActionResponse {
+  success: boolean;
+  prState: "open" | "closed" | "merged";
+  prUrl: string;
+}
+
+// ---------------------------------------------------------------------------
+// GitHub App installation status
+// ---------------------------------------------------------------------------
+
+export interface GitHubAppStatus {
+  installed: boolean;
+  accountLogin?: string;
+  accountType?: string;   // "User" | "Organization"
+  createdAt?: string;
+}
+
+export interface GitHubAuthStatus {
+  /** True when a GitHub App installation is active. */
+  appInstalled: boolean;
+  appAccountLogin?: string;
+  appAccountType?: string;
+  /** True when a PAT is stored (may coexist with App). */
+  patConfigured: boolean;
+  patGithubUser?: string;
+  /** Which method is actively used for token resolution. */
+  activeMethod: "app" | "pat" | null;
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Upload,
 } from "lucide-react";
-import type { ExecutionWorkspace, GitHubPrMetadata } from "@armyofagents/shared";
+import type { ExecutionWorkspace, GitHubPrMetadata, GitHubPrMergeMethod } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,6 +23,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -64,6 +65,7 @@ interface GitPanelProps {
 
 const STATUS_POLL_INTERVAL = 10_000; // 10s — server cache is 5s
 const LOG_POLL_INTERVAL = 30_000;
+const PR_POLL_MS = 30_000; // 30s background poll for PR status
 
 const FILE_STATUS_COLORS: Record<string, string> = {
   modified: "text-yellow-400",
@@ -178,6 +180,42 @@ function gitStatusChipLabel({
 // Sub-components
 // ---------------------------------------------------------------------------
 
+function RequestReviewInline({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void;
+  onSubmit: (reviewers: string[]) => Promise<void>;
+}) {
+  const [input, setInput] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function handleSubmit() {
+    const reviewers = input.split(",").map((s) => s.trim()).filter(Boolean);
+    if (reviewers.length === 0) return;
+    setPending(true);
+    try { await onSubmit(reviewers); } finally { setPending(false); }
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 pt-1">
+      <input
+        autoFocus
+        aria-label="Reviewer logins, comma-separated"
+        className="flex-1 rounded-md border border-input bg-transparent px-2 py-1 text-xs outline-none"
+        placeholder="logins, comma-separated"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") void handleSubmit(); if (e.key === "Escape") onClose(); }}
+      />
+      <Button size="sm" variant="default" className="h-7 text-xs" onClick={() => void handleSubmit()} disabled={pending || !input.trim()}>
+        {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Send"}
+      </Button>
+      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onClose}>Cancel</Button>
+    </div>
+  );
+}
+
 function CommitLogSection({ workspaceId, isExpanded }: { workspaceId: string; isExpanded: boolean }) {
   const [open, setOpen] = useState(false);
   const { data } = useQuery({
@@ -284,7 +322,6 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const workspacePermissions = useWorkspacePermissions(workspace.companyId, workspace.projectId);
-  const lastPrSyncAttemptRef = useRef<string | null>(null);
 
   // ── State ──
   const [createPrOpen, setCreatePrOpen] = useState(false);
@@ -296,6 +333,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
     onContinue: () => void;
   } | null>(null);
   const [checkingSafetyFor, setCheckingSafetyFor] = useState<"commit" | "push" | null>(null);
+  const [showRequestReviewDialog, setShowRequestReviewDialog] = useState(false);
 
   // ── Live git status query ──
   const {
@@ -328,16 +366,16 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       : undefined;
 
   const syncPrMutation = useMutation({
-    mutationFn: (force: boolean) =>
+    mutationFn: ({ force }: { force: boolean; silent?: boolean }) =>
       githubIntegrationApi.syncWorkspacePR(workspace.id, { force }),
-    onSuccess: (result) => {
+    onSuccess: (result, { silent }) => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.executionWorkspaces.detail(workspace.id),
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.executionWorkspaces.list(workspace.companyId),
       });
-      if (result.pr) {
+      if (!silent && result.pr) {
         pushToast({
           tone: "success",
           title: "GitHub PR synced",
@@ -345,18 +383,29 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
         });
       }
     },
-    onError: (err: Error) => {
-      pushToast({ tone: "warn", title: "GitHub sync failed", body: err.message });
+    onError: (err: Error, { silent }) => {
+      if (!silent) pushToast({ tone: "warn", title: "GitHub sync failed", body: err.message });
     },
   });
 
   useEffect(() => {
     if (!isExpanded || !workspace.repoUrl || !liveBranch) return;
-    const key = `${workspace.id}:${workspace.repoUrl}:${liveBranch}`;
-    if (lastPrSyncAttemptRef.current === key) return;
-    lastPrSyncAttemptRef.current = key;
-    syncPrMutation.mutate(false);
-  }, [isExpanded, liveBranch, workspace.id, workspace.repoUrl]);
+    // Once the PR reaches a terminal state (merged/closed) there is nothing left
+    // to poll for — stop syncing. This also avoids a recurring lookup that could
+    // briefly miss the PR (deleted branch / fork) and churn the workspace.
+    if (pr?.state === "merged" || pr?.state === "closed") return;
+    // Silent background sync: no toast spam, just keeps workspace.metadata.pr fresh
+    const silentSync = () => syncPrMutation.mutate({ force: false, silent: true });
+    silentSync(); // immediate on expand / key change
+    const id = setInterval(silentSync, PR_POLL_MS);
+    const onFocus = () => silentSync(); // re-sync when user tabs back
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isExpanded, liveBranch, workspace.id, workspace.repoUrl, pr?.state]);
 
   // ── File selection helpers ──
   const committableFiles = useMemo(
@@ -443,6 +492,41 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
     onError: (err: Error) => {
       pushToast({ tone: "error", title: "Push failed", body: err.message });
     },
+  });
+
+  // ── PR action mutations ──
+  const mergePrMutation = useMutation({
+    mutationFn: (mergeMethod: GitHubPrMergeMethod) =>
+      githubIntegrationApi.mergePr(workspace.id, { mergeMethod }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(workspace.companyId) });
+      pushToast({ title: "PR merged successfully", tone: "success" });
+    },
+    onError: (err: Error) =>
+      pushToast({ title: err.message || "Merge failed", tone: "error" }),
+  });
+
+  const closePrMutation = useMutation({
+    mutationFn: () => githubIntegrationApi.closePr(workspace.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(workspace.companyId) });
+      pushToast({ title: "PR closed", tone: "success" });
+    },
+    onError: (err: Error) =>
+      pushToast({ title: err.message || "Close failed", tone: "error" }),
+  });
+
+  const reopenPrMutation = useMutation({
+    mutationFn: () => githubIntegrationApi.reopenPr(workspace.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(workspace.companyId) });
+      pushToast({ title: "PR reopened", tone: "success" });
+    },
+    onError: (err: Error) =>
+      pushToast({ title: err.message || "Reopen failed", tone: "error" }),
   });
 
   // ── Copy branch name ──
@@ -755,22 +839,8 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       </section>
 
       <div className="flex min-w-0 items-center gap-1.5 overflow-hidden" data-testid="git-action-row">
-        {pr ? (
-          <Button
-            asChild
-            size="sm"
-            variant={pr.state === "closed" ? "outline" : "default"}
-            className={cn(
-              "min-w-0 flex-1 px-2",
-              pr.state === "merged" && "border-transparent bg-emerald-600 text-white hover:bg-emerald-500",
-            )}
-          >
-            <a href={pr.url} target="_blank" rel="noopener noreferrer" data-testid="pr-link">
-              <ExternalLink className="h-3.5 w-3.5" />
-              <span className="min-w-0 truncate">View PR #{pr.number}</span>
-            </a>
-          </Button>
-        ) : (
+        {!pr ? (
+          /* ── No PR: full-width Create PR button ── */
           <Button
             size="sm"
             variant="default"
@@ -792,6 +862,133 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
           >
             <Github className="h-3.5 w-3.5" />
             Create PR
+          </Button>
+        ) : pr.state === "open" ? (
+          /* ── PR open: split Merge button ── */
+          <>
+            <div className="flex min-w-0 flex-1 overflow-hidden rounded-md border border-primary">
+              <Button
+                size="sm"
+                variant="default"
+                className="flex-1 rounded-none rounded-l-md border-0 gap-1 px-2"
+                disabled={
+                  mergePrMutation.isPending || closePrMutation.isPending || pr.draft
+                }
+                title={
+                  pr.draft
+                    ? "This PR is a draft — mark it ready for review on GitHub before merging"
+                    : undefined
+                }
+                onClick={() => mergePrMutation.mutate("squash")}
+                data-testid="pr-merge-btn"
+              >
+                {mergePrMutation.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {pr.draft ? "Draft" : "Merge"}
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="shrink-0 rounded-none rounded-r-md border-0 border-l border-primary-foreground/25 px-1.5"
+                    disabled={mergePrMutation.isPending || closePrMutation.isPending}
+                    aria-label="More merge options"
+                    data-testid="pr-merge-dropdown-trigger"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-52">
+                  <DropdownMenuItem
+                    disabled={pr.draft}
+                    onSelect={() => mergePrMutation.mutate("merge")}
+                  >
+                    <GitPullRequest className="h-4 w-4" />
+                    Merge commit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={pr.draft}
+                    onSelect={() => mergePrMutation.mutate("squash")}
+                  >
+                    <GitPullRequest className="h-4 w-4" />
+                    Squash and merge
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={pr.draft}
+                    onSelect={() => mergePrMutation.mutate("rebase")}
+                  >
+                    <GitPullRequest className="h-4 w-4" />
+                    Rebase and merge
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <a href={pr.url} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="h-4 w-4" />
+                      View PR #{pr.number}
+                    </a>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => closePrMutation.mutate()}
+                    disabled={closePrMutation.isPending}
+                  >
+                    {closePrMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : null}
+                    Close PR
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setShowRequestReviewDialog(true)}>
+                    Request Review
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <Button size="icon-xs" variant="ghost" asChild className="shrink-0">
+              <a href={pr.url} target="_blank" rel="noopener noreferrer" aria-label="View PR on GitHub" data-testid="pr-link">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </Button>
+          </>
+        ) : pr.state === "closed" ? (
+          /* ── PR closed: Reopen button ── */
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-w-0 flex-1 gap-1 px-2 border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
+              onClick={() => reopenPrMutation.mutate()}
+              disabled={reopenPrMutation.isPending}
+              data-testid="pr-reopen-btn"
+            >
+              {reopenPrMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              Reopen PR
+            </Button>
+            <Button size="icon-xs" variant="ghost" asChild className="shrink-0">
+              <a href={pr.url} target="_blank" rel="noopener noreferrer" aria-label="View PR on GitHub" data-testid="pr-link">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </Button>
+          </>
+        ) : (
+          /* ── PR merged: purple chip link ── */
+          <Button
+            size="sm"
+            variant="ghost"
+            className="min-w-0 flex-1 gap-1 px-2 bg-purple-500/10 text-purple-400 hover:bg-purple-500/15"
+            asChild
+            data-testid="pr-merged-chip"
+          >
+            <a href={pr.url} target="_blank" rel="noopener noreferrer" data-testid="pr-link">
+              <Check className="h-3.5 w-3.5" />
+              Merged #{pr.number}
+            </a>
           </Button>
         )}
 
@@ -816,7 +1013,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
             )}
             <DropdownMenuItem
               disabled={!workspace.repoUrl || !liveBranch}
-              onSelect={() => syncPrMutation.mutate(true)}
+              onSelect={() => syncPrMutation.mutate({ force: true })}
             >
               {syncPrMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -859,6 +1056,17 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
 
         {workspace.cwd && <OpenInIdeButton cwd={workspace.cwd} compact />}
       </div>
+
+      {pr && showRequestReviewDialog && (
+        <RequestReviewInline
+          onClose={() => setShowRequestReviewDialog(false)}
+          onSubmit={async (reviewers) => {
+            await githubIntegrationApi.requestReview(workspace.id, reviewers);
+            setShowRequestReviewDialog(false);
+            pushToast({ title: "Review requested", tone: "success" });
+          }}
+        />
+      )}
 
       {gitAvailable && (
         <CommitLogSection workspaceId={workspace.id} isExpanded={isExpanded} />

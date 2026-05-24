@@ -5,6 +5,9 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    include: ["d3"],
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

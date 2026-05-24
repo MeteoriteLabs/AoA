@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
+import { createAppAuth } from "@octokit/auth-app";
 import { activityLog, type Db } from "@armyofagents/db";
 import { and, desc, eq } from "drizzle-orm";
 import {
@@ -8,12 +9,32 @@ import {
   GITHUB_PAT_SECRET_NAME,
   type GitHubPrMetadata,
   type GitHubPrSyncResponse,
+  type GitHubPrActionResponse,
 } from "@armyofagents/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { issueService } from "../services/issues.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { createPullRequest, findPullRequestForBranch, GitHubPrError } from "../services/github-pr.js";
+import {
+  createPullRequest,
+  findPullRequestForBranch,
+  GitHubPrError,
+  resolveGitHubAuth,
+  mergeWorkspacePr,
+  closeWorkspacePr,
+  reopenWorkspacePr,
+  requestPrReview,
+  parseGitHubRepoUrl,
+} from "../services/github-pr.js";
+import {
+  getInstallUrl,
+  saveInstallation,
+  removeInstallation,
+  getInstallation,
+  listInstallationRepositories,
+  signInstallState,
+  verifyInstallState,
+} from "../services/github-app.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
@@ -25,6 +46,17 @@ const createPrBodySchema = z.object({
   draft: z.boolean().default(false),
   /** Explicit head branch — used when workspace.branchName is null (local_fs). */
   head: z.string().min(1).optional(),
+  reviewers: z.array(z.string().min(1)).optional(),
+  labels: z.array(z.string().min(1)).optional(),
+  milestoneNumber: z.number().int().positive().optional(),
+});
+
+const mergePrBodySchema = z.object({
+  mergeMethod: z.enum(["merge", "squash", "rebase"]),
+});
+
+const requestReviewBodySchema = z.object({
+  reviewers: z.array(z.string().min(1)).min(1),
 });
 
 async function resolveGithubUserFromConnectActivity(
@@ -240,14 +272,24 @@ export function githubRoutes(db: Db) {
         branchName: ws.branchName,
       });
       const nextBaseRef = ws.baseRef ?? result.baseRef ?? null;
+      // A merged/closed PR is a historical fact. If the branch head-filter
+      // lookup stops matching (deleted branch, fork PR, rename), don't erase a
+      // terminal-state PR just because GitHub returned no match this poll.
+      // Only non-terminal (or absent) PRs get cleared.
+      const existingPr = readGitHubPrMetadata(existingMeta.pr);
+      const preserveTerminalPr =
+        !result.pr &&
+        !!existingPr &&
+        (existingPr.state === "merged" || existingPr.state === "closed");
+      const effectivePr = result.pr ?? (preserveTerminalPr ? existingPr : null);
       const nextMetadata: Record<string, unknown> = {
         ...existingMeta,
         githubLastSyncedAt: now,
         githubSyncError: null,
-        noPrFound: result.pr ? false : true,
+        noPrFound: effectivePr ? false : true,
       };
-      if (result.pr) {
-        nextMetadata.pr = result.pr;
+      if (effectivePr) {
+        nextMetadata.pr = effectivePr;
       } else {
         delete nextMetadata.pr;
       }
@@ -266,7 +308,7 @@ export function githubRoutes(db: Db) {
         repoUrl: ws.repoUrl,
         branchName: ws.branchName,
         baseRef: nextBaseRef,
-        pr: result.pr,
+        pr: effectivePr,
         githubLastSyncedAt: now,
         githubSyncError: null,
         cached: false,
@@ -366,19 +408,9 @@ export function githubRoutes(db: Db) {
               { timeout: 5_000 },
             );
           } catch {
-            // No upstream — need to push. Retrieve PAT for auth.
-            const sSvc = secretService(db);
-            const secret = await sSvc.getByName(issue.companyId, GITHUB_PAT_SECRET_NAME);
-            const pat = secret
-              ? await sSvc.resolveSecretValue(issue.companyId, secret.id, "latest", {
-                  consumerType: "system",
-                  consumerId: "github:auto-push",
-                  actorType: "system",
-                  issueId: issue.id,
-                  configPath: "github.pat",
-                }).catch(() => null)
-              : null;
-            await push(gitRoot, "origin", headBranch, pat ? { pat } : undefined);
+            // No upstream — need to push. Resolve auth (App installation token or PAT).
+            const token = await resolveGitHubAuth(db, issue.companyId, "github:auto-push").catch(() => null);
+            await push(gitRoot, "origin", headBranch, token ? { pat: token } : undefined);
           }
         }
       } catch (pushErr) {
@@ -400,6 +432,9 @@ export function githubRoutes(db: Db) {
         title: parsed.data.title,
         body: parsed.data.body,
         draft: parsed.data.draft,
+        reviewers: parsed.data.reviewers,
+        labels: parsed.data.labels,
+        milestoneNumber: parsed.data.milestoneNumber,
       });
 
       const now = new Date().toISOString();
@@ -457,6 +492,306 @@ export function githubRoutes(db: Db) {
         return;
       }
       throw err;
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Repo metadata — feed CreatePrDialog selects
+  // ---------------------------------------------------------------------------
+
+  router.get("/execution-workspaces/:id/github/collaborators", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
+      const { data } = await octokit.repos.listCollaborators({ owner, repo, per_page: 100 });
+      res.json(data.map((c) => ({ login: c.login, avatarUrl: c.avatar_url })));
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching collaborators" });
+    }
+  });
+
+  router.get("/execution-workspaces/:id/github/labels", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
+      const { data } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
+      res.json(data.map((l) => ({ id: l.id, name: l.name, color: l.color })));
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching labels" });
+    }
+  });
+
+  router.get("/execution-workspaces/:id/github/milestones", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
+      const { data } = await octokit.issues.listMilestones({ owner, repo, state: "open", per_page: 100 });
+      res.json(
+        data.map((m) => ({
+          number: m.number,
+          title: m.title,
+          openIssues: m.open_issues,
+          dueOn: m.due_on ?? null,
+        })),
+      );
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching milestones" });
+    }
+  });
+
+  router.get("/execution-workspaces/:id/github/branches", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
+      const { data } = await octokit.repos.listBranches({ owner, repo, per_page: 100 });
+      res.json(data.map((b) => ({ name: b.name, sha: b.commit.sha })));
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching branches" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // PR actions — merge / close / reopen / request-review
+  // ---------------------------------------------------------------------------
+
+  router.post("/execution-workspaces/:id/github-pr/merge", async (req, res) => {
+    assertBoard(req);
+    const parsed = mergePrBodySchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid body", details: parsed.error.format() }); return; }
+
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      await mergeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, mergeMethod: parsed.data.mergeMethod });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
+
+    const updatedPr = { ...pr, state: "merged" as const };
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: updatedPr } });
+
+    const response: GitHubPrActionResponse = { success: true, prState: "merged", prUrl: pr.url };
+    res.json(response);
+  });
+
+  router.post("/execution-workspaces/:id/github-pr/close", async (req, res) => {
+    assertBoard(req);
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      await closeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "closed" as const } } });
+
+    const response: GitHubPrActionResponse = { success: true, prState: "closed", prUrl: pr.url };
+    res.json(response);
+  });
+
+  router.post("/execution-workspaces/:id/github-pr/reopen", async (req, res) => {
+    assertBoard(req);
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      await reopenWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "open" as const } } });
+
+    const response: GitHubPrActionResponse = { success: true, prState: "open", prUrl: pr.url };
+    res.json(response);
+  });
+
+  router.post("/execution-workspaces/:id/github-pr/request-review", async (req, res) => {
+    assertBoard(req);
+    const parsed = requestReviewBodySchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid body", details: parsed.error.format() }); return; }
+
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      await requestPrReview(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, reviewers: parsed.data.reviewers });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
+    res.json({ success: true });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GitHub App auth — install URL, OAuth callback, disconnect, status
+  // ---------------------------------------------------------------------------
+
+  router.get("/companies/:companyId/github/app/install-url", (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    try {
+      const url = getInstallUrl(signInstallState(req.params.companyId));
+      res.json({ url });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to build install URL";
+      res.status(503).json({ error: msg });
+    }
+  });
+
+  router.get("/github/callback", async (req, res) => {
+    const { installation_id, setup_action: _setup_action, state: rawState } = req.query as Record<string, string>;
+
+    if (!installation_id || typeof installation_id !== "string") {
+      res.status(400).json({ error: "Missing installation_id" });
+      return;
+    }
+
+    const uiBase = process.env.AOA_AUTH_PUBLIC_BASE_URL ?? "http://localhost:5173";
+
+    if (!rawState || typeof rawState !== "string") {
+      res.redirect(`${uiBase}/settings?tab=github&github=invalid_state`);
+      return;
+    }
+
+    const companyId = verifyInstallState(rawState);
+    if (!companyId) {
+      res.redirect(`${uiBase}/settings?tab=github&github=invalid_state`);
+      return;
+    }
+
+    const appId = process.env.GITHUB_APP_ID;
+    const privateKey = process.env.GITHUB_APP_PRIVATE_KEY_PEM;
+    let accountLogin = "unknown";
+    let accountType = "User";
+
+    if (appId && privateKey) {
+      try {
+        const auth = createAppAuth({ appId, privateKey });
+        const { token: appJwt } = await auth({ type: "app" });
+        const octokit = new Octokit({ auth: appJwt });
+        const { data } = await octokit.apps.getInstallation({ installation_id: Number(installation_id) });
+        accountLogin = (data.account as { login?: string })?.login ?? "unknown";
+        accountType = (data.account as { type?: string })?.type ?? "User";
+      } catch {
+        // Non-fatal — save with placeholder account info
+      }
+    }
+
+    await saveInstallation(db, { companyId, installationId: installation_id, accountLogin, accountType });
+
+    // Redirect to the company's settings page with the GitHub tab active.
+    // companyId is used as the URL prefix (e.g. /acme/settings?tab=github).
+    res.redirect(`${uiBase}/${companyId}/settings?tab=github`);
+  });
+
+  router.delete("/companies/:companyId/github/app", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    await removeInstallation(db, req.params.companyId);
+    res.json({ removed: true });
+  });
+
+  router.get("/companies/:companyId/github/app/status", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    const installation = await getInstallation(db, req.params.companyId);
+    if (!installation) {
+      res.json({ installed: false });
+      return;
+    }
+    res.json({
+      installed: true,
+      accountLogin: installation.accountLogin,
+      accountType: installation.accountType,
+      createdAt: installation.createdAt,
+    });
+  });
+
+  /**
+   * List the repositories the GitHub App installation can access. Returns []
+   * when no installation is active for the company.
+   */
+  router.get("/companies/:companyId/github/app/repositories", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    try {
+      const repos = await listInstallationRepositories(db, req.params.companyId);
+      res.json(repos);
+    } catch (err) {
+      if (err instanceof GitHubPrError) {
+        res.status(err.status).json({ error: err.message, hint: err.scopeHint });
+        return;
+      }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching repositories" });
     }
   });
 

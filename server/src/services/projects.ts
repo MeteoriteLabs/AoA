@@ -11,6 +11,7 @@ import {
 } from "@armyofagents/shared";
 import { conflict } from "../errors.js";
 import { isRepoOnlySentinel } from "./heartbeat.js";
+import { invalidateProjectGitCache } from "./project-git-cache.js";
 import { logger } from "../middleware/logger.js";
 import { memoryFoldersService, seedFoldersOnDepartmentCreate } from "./memory-folders.js";
 
@@ -448,6 +449,8 @@ export function projectService(db: Db) {
         return row;
       });
 
+      if (created) invalidateProjectGitCache(project.companyId, projectId);
+
       return created ? toWorkspace(created) : null;
     },
 
@@ -568,6 +571,8 @@ export function projectService(db: Db) {
         return row;
       });
 
+      if (updated) invalidateProjectGitCache(existing.companyId, projectId);
+
       return updated ? toWorkspace(updated) : null;
     },
 
@@ -617,6 +622,10 @@ export function projectService(db: Db) {
 
         return row;
       });
+
+      // Removing a workspace can re-elect a different primary repo, so the
+      // cached graph for the old repo is now stale — invalidate it.
+      if (removed) invalidateProjectGitCache(existing.companyId, projectId);
 
       return removed ? toWorkspace(removed) : null;
     },

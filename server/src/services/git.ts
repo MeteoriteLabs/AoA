@@ -524,3 +524,220 @@ export function setCachedStatus(workspaceId: string, data: GitStatusResult): voi
 export function invalidateStatusCache(workspaceId: string): void {
   statusCache.delete(workspaceId);
 }
+
+// ---------------------------------------------------------------------------
+// Git Command Centre — branch list + commit graph
+// ---------------------------------------------------------------------------
+
+export interface LocalBranchInfo {
+  name: string;
+  isLocal: boolean;
+  isRemote: boolean;
+  tipSha: string;
+  aheadCount: number;
+  behindCount: number;
+  lastCommitMessage: string;
+  lastCommitAt: string;   // ISO 8601
+  lastCommitAuthor: string;
+  tags: string[];
+  overlays: {
+    hasConflicts: boolean;
+    isDiverged: boolean;
+    isBehindRemote: boolean;
+  };
+}
+
+export interface CommitGraphEntry {
+  sha: string;
+  parentShas: string[];
+  message: string;
+  author: string;
+  committedAt: string;   // ISO 8601
+  refs: string[];        // branch names + tags that point here
+}
+
+/**
+ * True for refs that are not real branches and must be dropped from the branch
+ * list. `git for-each-ref --format='%(refname:short)' refs/remotes/origin/HEAD`
+ * yields the bare remote name "origin", so the plain "HEAD" check misses it.
+ */
+export function isSkippableRef(refShort: string): boolean {
+  const isRemote = refShort.startsWith("origin/");
+  const localName = isRemote ? refShort.slice("origin/".length) : refShort;
+  return localName === "HEAD" || refShort === "origin" || refShort.endsWith("/HEAD");
+}
+
+/**
+ * List all local + remote branches with ahead/behind counts, last-commit
+ * metadata, and version tags. Batches tag lookup into a single git call.
+ */
+export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
+  // ── 1. One for-each-ref call for all branches ──────────────────────────
+  const SEP = "\x1f";  // unit separator — safe in git output
+  const FORMAT = [
+    "%(refname)",
+    "%(refname:short)",
+    "%(objectname)",
+    // Ahead/behind vs each branch's OWN upstream (origin/<branch>), not trunk —
+    // matches the GitBranchInfo "remote upstream" contract (unpushed/unpulled).
+    // Empty for branches with no upstream. Forms: "[ahead N, behind M]",
+    // "[ahead N]", "[behind M]", "[gone]", or "".
+    "%(upstream:track)",
+    "%(contents:subject)",
+    "%(authordate:iso-strict)",
+    "%(authorname)",
+  ].join(SEP);
+
+  const raw = await runGit(
+    ["for-each-ref", "refs/heads", "refs/remotes", `--format=${FORMAT}`],
+    gitRoot,
+    { timeout: 15_000 },
+  );
+
+  // ── 2. Batch tag lookup — ONE subprocess, not N ───────────────────────
+  const tagMap = new Map<string, string[]>();  // full sha → tag names
+  try {
+    const tagRaw = await runGit(
+      ["tag", "-l", "--format=%(objectname) %(refname:short)"],
+      gitRoot,
+      { timeout: 10_000 },
+    );
+    for (const line of tagRaw.split("\n")) {
+      const [sha, tagName] = line.split(" ");
+      if (sha && tagName) {
+        const existing = tagMap.get(sha) ?? [];
+        existing.push(tagName);
+        tagMap.set(sha, existing);
+      }
+    }
+  } catch {
+    // Tags are optional — proceed without them
+  }
+
+  // ── 3. Parse for-each-ref output ──────────────────────────────────────
+  const byName = new Map<string, LocalBranchInfo>();
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split(SEP);
+    if (parts.length < 7) continue;
+
+    const [refFull, refShort, sha, track, subject, authorDate, authorName] = parts as [
+      string, string, string, string, string, string, string
+    ];
+
+    // Classify by the full ref namespace, not a hard-coded "origin/" prefix, so
+    // refs from other remotes (e.g. upstream/main) aren't mistaken for locals.
+    const isRemote = refFull.startsWith("refs/remotes/");
+    const localName = isRemote
+      ? refFull.replace(/^refs\/remotes\/[^/]+\//, "") // strip refs/remotes/<remote>/
+      : refShort;
+
+    // Skip HEAD pointers: local "HEAD", origin/HEAD (short "origin"), and any
+    // other remote's HEAD (refs/remotes/<remote>/HEAD).
+    if (isSkippableRef(refShort) || refFull.endsWith("/HEAD")) continue;
+
+    // Parse %(upstream:track), e.g. "[ahead 2, behind 1]" / "[ahead 2]" /
+    // "[behind 1]" / "[gone]" / "" → ahead 0, behind 0 when absent.
+    const ahead = Number((track ?? "").match(/ahead (\d+)/)?.[1] ?? 0);
+    const behind = Number((track ?? "").match(/behind (\d+)/)?.[1] ?? 0);
+
+    const existing = byName.get(localName);
+    if (existing) {
+      // Merge local + remote entries for the same branch
+      if (!isRemote) {
+        existing.isLocal = true;
+        existing.aheadCount = ahead;
+        existing.behindCount = behind;
+        existing.tipSha = sha;
+        existing.lastCommitMessage = subject;
+        existing.lastCommitAt = authorDate;
+        existing.lastCommitAuthor = authorName;
+      } else {
+        existing.isRemote = true;
+      }
+    } else {
+      byName.set(localName, {
+        name: localName,
+        isLocal: !isRemote,
+        isRemote: isRemote,
+        tipSha: sha,
+        aheadCount: ahead,
+        behindCount: behind,
+        lastCommitMessage: subject,
+        lastCommitAt: authorDate,
+        lastCommitAuthor: authorName,
+        tags: tagMap.get(sha) ?? [],
+        overlays: {
+          hasConflicts: false,    // git alone can't detect this reliably
+          isDiverged: ahead > 0 && behind > 0,
+          isBehindRemote: behind > 0 && ahead === 0,
+        },
+      });
+    }
+  }
+
+  return [...byName.values()];
+}
+
+/**
+ * Return a topologically-ordered commit graph for the D3 canvas renderer.
+ * Parses `git log --all --topo-order` output into structured entries.
+ */
+export async function getCommitGraph(
+  gitRoot: string,
+  opts?: { limit?: number; since?: string },
+): Promise<CommitGraphEntry[]> {
+  const limit = opts?.limit ?? 200;
+  const args = [
+    "log",
+    "--all",
+    "--topo-order",
+    `--format=%H\x1f%P\x1f%s\x1f%an\x1f%aI\x1f%D`,
+    `-n`,
+    String(limit),
+  ];
+  if (opts?.since) args.push(`--since=${opts.since}`);
+
+  const raw = await runGit(args, gitRoot, { timeout: 20_000 });
+  const entries: CommitGraphEntry[] = [];
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [sha, parentsRaw, message, author, committedAt, decorations] =
+      line.split("\x1f") as [string, string, string, string, string, string];
+
+    if (!sha) continue;
+
+    const parentShas = parentsRaw
+      ? parentsRaw.split(" ").filter(Boolean)
+      : [];
+
+    // %D: "HEAD -> main, origin/main, tag: v1.2.0" → extract ref names
+    const refs: string[] = [];
+    if (decorations) {
+      for (const part of decorations.split(",")) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("HEAD ->")) {
+          refs.push(trimmed.replace("HEAD ->", "").trim());
+        } else if (trimmed.startsWith("tag:")) {
+          refs.push(trimmed.replace("tag:", "").trim());
+        } else {
+          refs.push(trimmed);
+        }
+      }
+    }
+
+    entries.push({
+      sha,
+      parentShas,
+      message: message ?? "",
+      author: author ?? "",
+      committedAt: committedAt ?? new Date().toISOString(),
+      refs,
+    });
+  }
+
+  return entries;
+}
