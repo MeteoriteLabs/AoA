@@ -24,7 +24,7 @@ export type HitTarget =
   | { kind: "merge"; sha: string }
   | { kind: "tag"; name: string; sha: string }
   | { kind: "trunkLine" }
-  | { kind: "showMore" };
+  | { kind: "showMore"; branchNames: string[] };
 
 export type HitRegion =
   | { shape: "rect"; x: number; y: number; w: number; h: number; target: HitTarget }
@@ -243,7 +243,7 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
       regions.push({
         shape: "rect",
         x: stack.x + 50, y: stack.y + 8, w: 54, h: 15,
-        target: { kind: "showMore" },
+        target: { kind: "showMore", branchNames: [...stack.branchNames, ...(stack.extraNames ?? [])] },
       });
     }
   }

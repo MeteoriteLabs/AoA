@@ -20,6 +20,7 @@ import React, {
 import * as d3 from "d3";
 import type { GitBranchInfo, GitGraphData } from "@armyofagents/shared";
 import type { HoveredNode } from "./GitHoverCard";
+import { buildTrunkSummary, isRemoteOnly, type TrunkSummary } from "./git-tooltip-data";
 import {
   computeArcLayout,
   computeHeadFocusTransform,
@@ -78,12 +79,13 @@ export interface GitGraphCanvasProps {
 // Hit-target resolution (registry HitTarget → HoveredNode)
 // ---------------------------------------------------------------------------
 
-function resolveTarget(
+export function resolveTarget(
   target: HitTarget,
   branchByName: Map<string, GitBranchInfo>,
   graph: GitGraphData,
-  layoutNodes: ArcCommitLayout[],
-  cx: number,
+  _layoutNodes: ArcCommitLayout[],
+  _cx: number,
+  trunkSummary: TrunkSummary,
 ): { hover: HoveredNode | null; showMore: boolean } {
   switch (target.kind) {
     case "task": {
@@ -93,7 +95,8 @@ function resolveTarget(
     }
     case "plainTip": {
       const b = branchByName.get(target.branchName);
-      return { hover: b ? { type: "plain_tip", branch: b } : null, showMore: false };
+      if (!b) return { hover: null, showMore: false };
+      return { hover: { type: isRemoteOnly(b) ? "remote_marker" : "plain_tip", branch: b }, showMore: false };
     }
     case "commit": {
       const c = graph.commits.find((x) => x.sha === target.sha);
@@ -101,7 +104,7 @@ function resolveTarget(
     }
     case "merge": {
       const c = graph.commits.find((x) => x.sha === target.sha);
-      return { hover: c ? { type: "merge", commit: c } : null, showMore: false };
+      return { hover: c ? { type: "merge", commit: c, defaultBranch: graph.defaultBranch } : null, showMore: false };
     }
     case "tag": {
       const c = graph.commits.find((x) => x.sha === target.sha);
@@ -111,18 +114,15 @@ function resolveTarget(
       };
     }
     case "trunkLine": {
-      let nearest: ArcCommitLayout | null = null;
-      let nd = Infinity;
-      for (const n of layoutNodes) {
-        if (!n.isTrunk) continue;
-        const d = Math.abs(n.x - cx);
-        if (d < nd) { nd = d; nearest = n; }
-      }
-      const c = nearest ? graph.commits.find((x) => x.sha === nearest!.sha) : undefined;
-      return { hover: c ? { type: "commit", commit: c } : null, showMore: false };
+      const b = branchByName.get(graph.defaultBranch) ?? null;
+      return { hover: { type: "trunk", branch: b, summary: trunkSummary }, showMore: false };
     }
-    case "showMore":
-      return { hover: null, showMore: true };
+    case "showMore": {
+      const bs = target.branchNames
+        .map((n) => branchByName.get(n))
+        .filter((x): x is GitBranchInfo => !!x);
+      return { hover: { type: "cluster", branches: bs, total: target.branchNames.length }, showMore: true };
+    }
   }
 }
 
@@ -155,6 +155,8 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       }
       return m;
     }, [branches]);
+
+    const trunkSummary = useMemo(() => buildTrunkSummary(graph, branches), [graph, branches]);
 
     // Filter branches.
     // Default ("all") = the trunk + every branch that is NOT done/cancelled
@@ -506,10 +508,10 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           return;
         }
         canvas.style.cursor = "pointer";
-        const { hover } = resolveTarget(target, branchByName, graph, layout.nodes, cx);
+        const { hover } = resolveTarget(target, branchByName, graph, layout.nodes, cx, trunkSummary);
         onHover(hover, { x: e.clientX, y: e.clientY });
       },
-      [regions, branchByName, graph, layout.nodes, onHover],
+      [regions, branchByName, graph, layout.nodes, onHover, trunkSummary],
     );
 
     const handleMouseLeave = useCallback(() => {
@@ -530,11 +532,11 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
 
         const target = hitRegionAt(regions, cx, cy);
         if (!target) return;
-        const { hover, showMore } = resolveTarget(target, branchByName, graph, layout.nodes, cx);
+        const { hover, showMore } = resolveTarget(target, branchByName, graph, layout.nodes, cx, trunkSummary);
         if (showMore) { onShowMore?.(); return; }
         if (hover) onClick(hover);
       },
-      [regions, branchByName, graph, layout.nodes, onClick, onShowMore],
+      [regions, branchByName, graph, layout.nodes, onClick, onShowMore, trunkSummary],
     );
 
     return (

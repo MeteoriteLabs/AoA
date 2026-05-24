@@ -130,7 +130,7 @@ describe("buildHitRegions", () => {
       arcVisibleNames: new Set(), visibleStacks: [stack], stackedShas: new Set(["c1"]),
       branchByName: bb, taskBranchByTipSha: new Map(), trunkSpan: null, defaultBranch: "main",
     });
-    expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore" });
+    expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore", branchNames: ["a", "b", "c", "d", "e"] });
     const cards = computeStackCardLayout(stack);
     expect(hitRegionAt(regions, cards[0]!.x, cards[0]!.y)).toEqual({ kind: "task", branchName: "a" });
   });
@@ -189,7 +189,7 @@ describe("buildHitRegions", () => {
       arcVisibleNames: new Set(), visibleStacks: [stack], stackedShas: new Set(["c1"]),
       branchByName: bb, taskBranchByTipSha: new Map(), trunkSpan: null, defaultBranch: "main",
     });
-    expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore" });
+    expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore", branchNames: ["a", "b", "p1", "p2", "p3"] });
   });
 
   it("emits one tag rect per drawn pill (2nd pill reports the 2nd tag, not tags[0])", () => {
