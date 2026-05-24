@@ -4,7 +4,7 @@
  * Includes a composer at the bottom for creating new entries.
  * Used inside ThreadDetail's center panel (Thread tab).
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { discussionsApi, type DiscussionEntry } from "../../api/discussions";
 import { useToast } from "../../context/ToastContext";
@@ -37,6 +37,12 @@ export function ThreadTab({
   const queryClient = useQueryClient();
   const [composerText, setComposerText] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (entries.length === 0 && !isLoading) {
+      composerRef.current?.focus();
+    }
+  }, [entries.length, isLoading]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
