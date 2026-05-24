@@ -969,6 +969,40 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // ── Plan 6: Per-item routing ───────────────────────────────────────────────
+
+  const routingBodySchema = z.object({
+    departmentId: z.string().uuid().optional(),
+    assigneeAgentId: z.string().uuid().optional(),
+    assigneeUserId: z.string().optional(),
+  });
+
+  // T.R1 PATCH per-item routing (founder-gated)
+  router.patch(
+    "/companies/:companyId/discussions/:discussionId/items/:itemId/routing",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const itemId = req.params.itemId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      const actor = await buildActor(req, companyId);
+
+      const parsed = routingBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid request" });
+        return;
+      }
+
+      try {
+        const result = await tSvc.routeItem(companyId, itemId, parsed.data, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
   // ── Plan 6: Cross-thread links ────────────────────────────────────────────
 
   const createLinkSchema = z.object({

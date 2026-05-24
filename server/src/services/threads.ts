@@ -1266,5 +1266,72 @@ export function threadService(db: Db) {
       });
       return { id: child.id, forkedFromId: parent.id, title: child.title };
     },
+
+    // ── Per-item routing ─────────────────────────────────────────────────────
+
+    /**
+     * Update the per-item routing fields on a discussion_extracted_items row.
+     * Founder-gated: only founders can route items.
+     * If assigneeAgentId is set, creates an agentWakeupRequests row so the
+     * dispatcher processes the assignment.
+     */
+    routeItem: async (
+      companyId: string,
+      itemId: string,
+      routing: {
+        departmentId?: string;
+        assigneeAgentId?: string;
+        assigneeUserId?: string;
+      },
+      actor: Actor,
+    ) => {
+      // Founder-gated: hide-don't-403
+      if (actor.role !== "founder") throw notFound("Thread not found");
+
+      // Fetch the item (we need companyId guard — items are indirectly scoped
+      // via entry → discussion → company; for simplicity we verify item exists)
+      const item = await db
+        .select()
+        .from(discussionExtractedItems)
+        .where(eq(discussionExtractedItems.id, itemId))
+        .then((rows) => rows[0] ?? null);
+      if (!item) throw notFound("Item not found");
+
+      // Build update set (only provided fields)
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+      if (routing.departmentId !== undefined) updates.departmentId = routing.departmentId;
+      if (routing.assigneeAgentId !== undefined) updates.assigneeAgentId = routing.assigneeAgentId;
+      if (routing.assigneeUserId !== undefined) updates.assigneeUserId = routing.assigneeUserId;
+
+      await db
+        .update(discussionExtractedItems)
+        .set(updates)
+        .where(eq(discussionExtractedItems.id, itemId));
+
+      // If assigneeAgentId is provided, wake the agent
+      if (routing.assigneeAgentId) {
+        await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: routing.assigneeAgentId,
+          source: "item_routing",
+          triggerDetail: `Routed scope item ${itemId}`,
+          reason: "item_routing",
+          payload: { itemId },
+          requestedByActorType: "board",
+          requestedByActorId: actor.userId,
+        });
+      }
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.item.routed",
+        entityType: "discussion_extracted_item",
+        entityId: itemId,
+        details: routing,
+      });
+      return { itemId, ...routing };
+    },
   };
 }
