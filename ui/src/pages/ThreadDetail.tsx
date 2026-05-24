@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { threadsApi } from "../api/threads";
-import { Loader2, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { OriginCard } from "../components/threads/OriginCard";
+import { ThreadTab } from "../components/threads/ThreadTab";
+import { ScopeTab } from "../components/threads/ScopeTab";
+import type { ScopeItem } from "../components/threads/scopeGrouping";
 
 /* ─── Mobile tab definitions (mirrors WorkspaceLayout pattern) ─── */
 
@@ -53,6 +57,30 @@ export function ThreadDetail() {
     enabled: !!selectedCompanyId && !!resolvedId,
     retry: false,
   });
+
+  // Flatten extracted items from all entries for the Scope tab
+  const scopeItems = useMemo((): ScopeItem[] => {
+    if (!thread) return [];
+    return thread.entries.flatMap((entry) =>
+      entry.extractedItems.map((item) => ({
+        id: item.id,
+        type: item.type,
+        title: item.title,
+        description: item.description,
+        status: item.status,
+        conflictsWith: item.conflictsWith,
+        suggestedPriority: item.suggestedPriority,
+        suggestedAssigneeId: item.suggestedAssigneeId,
+        suggestedDepartmentId: item.suggestedDepartmentId,
+        suggestedLayer: item.suggestedLayer,
+        layer: item.layer,
+        dedupAction: item.dedupAction,
+        resultTaskId: item.resultTaskId,
+        resultMemoryId: item.resultMemoryId,
+        createdAt: item.createdAt,
+      })),
+    );
+  }, [thread]);
 
   // ── Breadcrumbs ──
   useEffect(() => {
@@ -200,6 +228,17 @@ export function ThreadDetail() {
             {thread.title}
           </h1>
 
+          {/* OriginCard — thread metadata + phase pills */}
+          <div className="shrink-0 p-4 border-b border-border">
+            <OriginCard
+              thread={thread}
+              companyId={selectedCompanyId!}
+              onPhaseChanged={() =>
+                queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, resolvedId] })
+              }
+            />
+          </div>
+
           {/* Thread|Scope tab bar */}
           <div
             role="tablist"
@@ -245,8 +284,14 @@ export function ThreadDetail() {
               className={cn("h-full p-4", centerTab !== "thread" && "hidden")}
               data-testid="thread-tabpanel-thread"
             >
-              {/* ThreadTab content — placeholder until Task 5 */}
-              <ThreadTabContent thread={thread} />
+              <ThreadTab
+                threadId={thread.id}
+                companyId={selectedCompanyId!}
+                entries={thread.entries}
+                isLoading={isLoading}
+                isError={isError}
+                onRetry={refetch}
+              />
             </div>
 
             <div
@@ -256,8 +301,16 @@ export function ThreadDetail() {
               className={cn("h-full p-4", centerTab !== "scope" && "hidden")}
               data-testid="thread-tabpanel-scope"
             >
-              {/* ScopeTab content — placeholder until Task 6 */}
-              <ScopeTabContent thread={thread} />
+              <ScopeTab
+                summaryText={thread.summaryText}
+                summaryNext={thread.summaryNext}
+                items={scopeItems}
+                planSteps={[]}
+                isLoading={isLoading}
+                isError={isError}
+                onRetry={refetch}
+                onItemClick={() => {}}
+              />
             </div>
           </div>
         </div>
@@ -298,78 +351,45 @@ function ThreadLeftRail({ threadId, title }: { threadId: string; title: string }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Thread Tab Content — placeholder, replaced in Task 5
-   ════════════════════════════════════════════════════════════════════════ */
-
-function ThreadTabContent({ thread }: { thread: { entries: unknown[]; id: string } }) {
-  if ((thread.entries as unknown[]).length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
-        <p className="text-sm text-muted-foreground">
-          No posts yet — start the discussion.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {(thread.entries as { id: string; rawContent?: string; createdBy?: string }[]).map((entry) => (
-        <div key={entry.id} className="rounded-lg border border-border bg-card p-3">
-          <p className="text-sm">{entry.rawContent ?? ""}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   Scope Tab Content — placeholder, replaced in Task 6
-   ════════════════════════════════════════════════════════════════════════ */
-
-function ScopeTabContent({ thread }: { thread: { summaryText: string | null } }) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-          Summary
-        </h2>
-        {thread.summaryText ? (
-          <p className="text-sm text-muted-foreground">{thread.summaryText}</p>
-        ) : (
-          <p className="text-sm text-muted-foreground italic">
-            Scribe will summarize once there's enough to go on.
-          </p>
-        )}
-      </div>
-      <div>
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-          Items
-        </h2>
-        <p className="text-sm text-muted-foreground italic">
-          Nothing to scope yet. Scribe surfaces items as the discussion grows.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════
    Thread Viewer Panel — right-side content viewer
    ════════════════════════════════════════════════════════════════════════ */
 
-function ThreadViewerPanel({ thread }: { thread: { title: string } }) {
+interface ThreadViewerPanelProps {
+  thread: { title: string };
+  /** Optional URL to preview in the sandboxed iframe */
+  previewUrl?: string;
+  /** Optional raw HTML to render via srcdoc */
+  previewHtml?: string;
+}
+
+function ThreadViewerPanel({ thread, previewUrl, previewHtml }: ThreadViewerPanelProps) {
+  const hasContent = previewUrl || previewHtml;
+
   return (
-    <div className="p-4">
-      <p className="text-xs text-muted-foreground">
-        Select an item to preview it here.
-      </p>
-      <iframe
-        title={`Viewer for thread: ${thread.title}`}
-        src="about:blank"
-        className="w-full h-full border-0 hidden"
-        sandbox="allow-scripts allow-same-origin"
-      />
+    <div className="flex flex-col h-full">
+      {!hasContent && (
+        <div className="p-4">
+          <p className="text-xs text-muted-foreground">
+            Select an item to preview it here.
+          </p>
+        </div>
+      )}
+      {hasContent && previewHtml && (
+        <iframe
+          title={`Viewer for thread: ${thread.title}`}
+          srcDoc={previewHtml}
+          className="w-full flex-1 border-0"
+          sandbox="allow-same-origin allow-scripts"
+        />
+      )}
+      {hasContent && previewUrl && !previewHtml && (
+        <iframe
+          title={`Viewer for thread: ${thread.title}`}
+          src={previewUrl}
+          className="w-full flex-1 border-0"
+          sandbox="allow-same-origin allow-scripts allow-popups"
+        />
+      )}
     </div>
   );
 }
