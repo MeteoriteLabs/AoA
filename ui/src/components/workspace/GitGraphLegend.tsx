@@ -12,11 +12,13 @@ export function GitGraphLegend() {
   // Default collapsed so the legend doesn't cover the graph on arrival.
   const [open, setOpen] = useState(false);
 
+  // Active states render a coloured dot. Terminal states (done/cancelled)
+  // render a slate glyph instead — see the rows after this map.
   const statusRows: Array<{ color: string; label: string }> = [
+    { color: STATUS_COLORS.todo, label: "Todo" },
     { color: STATUS_COLORS.in_progress, label: "In progress" },
     { color: STATUS_COLORS.in_review, label: "In review" },
     { color: STATUS_COLORS.blocked, label: "Blocked" },
-    { color: STATUS_COLORS.done, label: "Done / cancelled" },
   ];
 
   return (
@@ -61,6 +63,12 @@ export function GitGraphLegend() {
                 {r.label}
               </div>
             ))}
+            <div className="flex items-center gap-2">
+              <span className="inline-flex w-2.5 justify-center shrink-0 text-[#9aa0aa]">✓</span> Done
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex w-2.5 justify-center shrink-0 text-[#9aa0aa]">✕</span> Cancelled
+            </div>
           </div>
 
           {/* Stubs + sync */}

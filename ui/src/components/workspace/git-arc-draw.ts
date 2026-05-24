@@ -224,6 +224,7 @@ export const MERGE_COLOR = "#6470DC";
 /** Single source of truth for task-status → color. Used by the canvas
  * (statusDotColor) and the legend, so they never drift apart. */
 export const STATUS_COLORS = {
+  todo: "#4A90D9",       // azure blue — queued / not started (distinct from grey + indigo)
   in_progress: "#4FB67E",
   in_review: "#D9A938",
   blocked: "#ef4444",
@@ -231,6 +232,9 @@ export const STATUS_COLORS = {
   cancelled: "#7E8AA8",
   planning: "#D9A938",
 } as const;
+
+/** Calm slate used for the done ✓ / cancelled ✕ glyph on the card. */
+export const TERMINAL_MARK_COLOR = "#9aa0aa";
 
 export function statusDotColor(status: string | null, fallback: string): string {
   if (status && status in STATUS_COLORS) {
@@ -308,10 +312,22 @@ export function drawTaskCardAt(
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  ctx.beginPath();
-  ctx.arc(cardX + 10, y, 3, 0, Math.PI * 2);
-  ctx.fillStyle = statusDotColor(issueStatus, laneColor);
-  ctx.fill();
+  // Status marker (left side): done → ✓, cancelled → ✕ (calm slate, no pulse);
+  // everything else → a status-coloured dot.
+  if (issueStatus === "done" || issueStatus === "cancelled") {
+    ctx.font = "bold 10px sans-serif";
+    ctx.fillStyle = TERMINAL_MARK_COLOR;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(issueStatus === "done" ? "✓" : "✕", cardX + 10, y);
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+  } else {
+    ctx.beginPath();
+    ctx.arc(cardX + 10, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = statusDotColor(issueStatus, laneColor);
+    ctx.fill();
+  }
 
   ctx.strokeStyle = borderColor + "99";
   ctx.lineWidth = 1.5;

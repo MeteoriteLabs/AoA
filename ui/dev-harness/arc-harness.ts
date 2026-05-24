@@ -458,6 +458,20 @@ const SCENARIOS: Array<{
     title: "10 — Same-commit stack: 5 task branches → 3 cards + '+2 more' pill",
     data: buildStack(5),
   },
+  {
+    title: "11 — Card status palette: todo(steel) · running(green) · review(amber) · blocked(red) · done(✓) · cancelled(✕)",
+    data: build(
+      [
+        { name: "feat/todo", commits: 1, merged: false, status: "todo", identifier: "AOA-50", title: "Queued task" },
+        { name: "feat/running", commits: 1, merged: false, status: "in_progress", identifier: "AOA-51", title: "Running task" },
+        { name: "feat/review", commits: 1, merged: false, status: "in_review", identifier: "AOA-52", title: "In review" },
+        { name: "fix/blocked", commits: 1, merged: false, status: "blocked", identifier: "AOA-53", title: "Blocked task" },
+        { name: "feat/done", commits: 1, merged: false, status: "done", identifier: "AOA-54", title: "Finished task" },
+        { name: "chore/cancelled", commits: 1, merged: false, status: "cancelled", identifier: "AOA-55", title: "Cancelled task" },
+      ],
+      { spread: true },
+    ),
+  },
 ];
 
 // ---------------------------------------------------------------------------
