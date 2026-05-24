@@ -7,6 +7,8 @@ const mockSaveInstallation = vi.hoisted(() => vi.fn());
 const mockRemoveInstallation = vi.hoisted(() => vi.fn());
 const mockGetInstallation = vi.hoisted(() => vi.fn());
 const mockListInstallationRepositories = vi.hoisted(() => vi.fn());
+const mockSignInstallState = vi.hoisted(() => vi.fn((c: string) => `signed:${c}`));
+const mockVerifyInstallState = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/github-app.js", () => ({
   getInstallUrl: mockGetInstallUrl,
@@ -14,6 +16,8 @@ vi.mock("../services/github-app.js", () => ({
   removeInstallation: mockRemoveInstallation,
   getInstallation: mockGetInstallation,
   listInstallationRepositories: mockListInstallationRepositories,
+  signInstallState: mockSignInstallState,
+  verifyInstallState: mockVerifyInstallState,
 }));
 
 const mockOctokit = vi.hoisted(() => ({
@@ -844,7 +848,12 @@ describe("GET /api/github/callback", () => {
   };
 
   beforeEach(() => {
+    // Clear call history so the not.toHaveBeenCalled() assertions below don't see
+    // calls leaked from earlier tests in this file (no global clearAllMocks here).
+    mockSaveInstallation.mockClear();
     mockSaveInstallation.mockResolvedValue({ ...installationData, id: "inst-1", companyId: "company-1" });
+    // Default: a valid signed state resolves to company-1. Forged-state test overrides to null.
+    mockVerifyInstallState.mockReturnValue("company-1");
   });
 
   it("saves installation and redirects to settings", async () => {
@@ -874,12 +883,25 @@ describe("GET /api/github/callback", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 when state (companyId) is missing", async () => {
+  it("redirects to an invalid_state error when state is missing", async () => {
     const app = createApp(boardActor);
     const res = await request(app)
       .get("/api/github/callback")
       .query({ installation_id: "12345", setup_action: "install" });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain("github=invalid_state");
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
+  });
+
+  it("redirects to invalid_state and does NOT save when the state signature is invalid (forged)", async () => {
+    mockVerifyInstallState.mockReturnValue(null);
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .get("/api/github/callback")
+      .query({ installation_id: "12345", setup_action: "install", state: "forged-or-tampered" });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain("github=invalid_state");
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 });
 
