@@ -274,12 +274,18 @@ export async function getPrReviewState(
     per_page: 100,
   });
 
-  // API returns newest-first — take each reviewer's first occurrence (= latest)
+  // GitHub returns reviews OLDEST-first, so iterate forward and let each
+  // reviewer's latest DECISION win. COMMENTED/PENDING reviews don't change a
+  // standing decision (a trailing comment must not erase an approval);
+  // DISMISSED clears the reviewer's prior decision.
   const latestByReviewer = new Map<string, string>();
   for (const review of reviews) {
     const login = review.user?.login;
-    if (login && !latestByReviewer.has(login)) {
+    if (!login) continue;
+    if (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED") {
       latestByReviewer.set(login, review.state);
+    } else if (review.state === "DISMISSED") {
+      latestByReviewer.delete(login);
     }
   }
 
