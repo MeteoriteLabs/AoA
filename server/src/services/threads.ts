@@ -426,7 +426,7 @@ export function threadService(db: Db) {
         .set({ ownerUserId: newOwner, updatedAt: new Date() })
         .where(eq(discussions.id, id));
 
-      // Add as participant (owner role) — idempotent via unique index A1
+      // Upsert as participant (owner role) — if already a participant, promote their role
       await db
         .insert(threadParticipants)
         .values({
@@ -436,7 +436,10 @@ export function threadService(db: Db) {
           principalId: newOwner,
           role: "owner",
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [threadParticipants.threadId, threadParticipants.principalType, threadParticipants.principalId],
+          set: { role: "owner" },
+        });
 
       await logActivity(db, {
         companyId,
@@ -472,9 +475,8 @@ export function threadService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!thread) throw notFound("Thread not found");
 
-      if (actor.role !== "founder" && thread.ownerUserId !== actor.userId) {
-        throw notFound("Thread not found"); // hide-don't-403
-      }
+      // Codex #5: owner | co_owner | founder may transfer. assertCanEdit enforces this.
+      await assertCanEdit(thread, actor);
 
       // Demote previous owner to collaborator
       if (thread.ownerUserId) {
@@ -496,7 +498,7 @@ export function threadService(db: Db) {
         .set({ ownerUserId: toUserId, updatedAt: new Date() })
         .where(eq(discussions.id, id));
 
-      // Add new owner as participant (owner role) — idempotent
+      // Upsert new owner as participant (owner role) — if already a participant (e.g. co_owner), promote their role
       await db
         .insert(threadParticipants)
         .values({
@@ -506,7 +508,10 @@ export function threadService(db: Db) {
           principalId: toUserId,
           role: "owner",
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [threadParticipants.threadId, threadParticipants.principalType, threadParticipants.principalId],
+          set: { role: "owner" },
+        });
 
       await logActivity(db, {
         companyId,
@@ -627,6 +632,7 @@ export function threadService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!thread) throw notFound("Thread not found");
       await assertCanView(companyId, thread, actor);
+      await assertCanEdit(thread, actor);
 
       if (thread.goalId) throw badRequest("Thread already has a goal");
 
@@ -794,64 +800,77 @@ export function threadService(db: Db) {
         .then((r) => r[0] ?? null);
       if (!thread) throw notFound("Thread not found");
 
-      // Fetch approved items for this thread via the entry join
-      // discussionExtractedItems.discussionEntryId → discussionEntries.id → discussionEntries.discussionId
-      const entries = await db
-        .select({ id: discussionEntries.id })
-        .from(discussionEntries)
-        .where(eq(discussionEntries.discussionId, id));
-
-      const entryIds = entries.map((e) => e.id);
-      if (entryIds.length === 0) return { created: 0 };
-
-      const allItems = await db
-        .select()
-        .from(discussionExtractedItems)
-        .where(
-          and(
-            inArray(discussionExtractedItems.discussionEntryId, entryIds),
-            eq(discussionExtractedItems.status, "approved"),
-          ),
-        );
-
-      // Filter in-memory for resultTaskId IS NULL (idempotent — skip already-created)
-      const pending = allItems.filter((item) => item.resultTaskId == null);
-
       let created = 0;
-      for (const item of pending) {
-        if (item.type === "spin_off_thread") {
-          // spin-off: full wiring is Plan 6, skip for now
-          continue;
+
+      // Wrap the entire create+link loop in a transaction so a crash mid-loop
+      // cannot produce duplicate issues on re-run (idempotency guarantee).
+      await db.transaction(async (tx) => {
+        // Fetch approved items for this thread via the entry join (inside tx)
+        // discussionExtractedItems.discussionEntryId → discussionEntries.id → discussionEntries.discussionId
+        const entries = await tx
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(eq(discussionEntries.discussionId, id));
+
+        const entryIds = entries.map((e) => e.id);
+        if (entryIds.length === 0) return;
+
+        const allItems = await tx
+          .select()
+          .from(discussionExtractedItems)
+          .where(
+            and(
+              inArray(discussionExtractedItems.discussionEntryId, entryIds),
+              eq(discussionExtractedItems.status, "approved"),
+            ),
+          );
+
+        // Filter in-memory for resultTaskId IS NULL (idempotent — skip already-created)
+        const pending = allItems.filter((item) => item.resultTaskId == null);
+
+        for (const item of pending) {
+          if (item.type === "spin_off_thread") {
+            // spin-off: full wiring is Plan 6, skip for now
+            continue;
+          }
+
+          // Only create tasks for task-type items
+          if (item.type !== "task") continue;
+
+          // Create issue with workMode='planning' (D8: suppresses dispatch)
+          const [newIssue] = await tx
+            .insert(issues)
+            .values({
+              companyId,
+              title: item.title,
+              description: item.description ?? null,
+              status: "todo",
+              workMode: "planning", // D8: planning mode prevents auto-dispatch
+              assigneeAgentId: item.assigneeAgentId ?? null,
+              assigneeUserId: item.assigneeUserId ?? null,
+              projectId: item.departmentId ?? item.suggestedDepartmentId ?? item.suggestedProjectId ?? null,
+              priority: item.priority ?? item.suggestedPriority ?? "medium",
+              createdByUserId: actor.userId,
+            })
+            .returning();
+
+          // Link the scope item to the new task (idempotent marker)
+          await tx
+            .update(discussionExtractedItems)
+            .set({ resultTaskId: newIssue.id, updatedAt: new Date() })
+            .where(eq(discussionExtractedItems.id, item.id));
+
+          created++;
         }
 
-        // Only create tasks for task-type items
-        if (item.type !== "task") continue;
-
-        // Create issue with workMode='planning' (D8: suppresses dispatch)
-        const [newIssue] = await db
-          .insert(issues)
-          .values({
-            companyId,
-            title: item.title,
-            description: item.description ?? null,
-            status: "todo",
-            workMode: "planning", // D8: planning mode prevents auto-dispatch
-            assigneeAgentId: item.assigneeAgentId ?? null,
-            assigneeUserId: item.assigneeUserId ?? null,
-            projectId: item.departmentId ?? item.suggestedDepartmentId ?? item.suggestedProjectId ?? null,
-            priority: item.priority ?? item.suggestedPriority ?? "medium",
-            createdByUserId: actor.userId,
-          })
-          .returning();
-
-        // Link the scope item to the new task (idempotent marker)
-        await db
-          .update(discussionExtractedItems)
-          .set({ resultTaskId: newIssue.id, updatedAt: new Date() })
-          .where(eq(discussionExtractedItems.id, item.id));
-
-        created++;
-      }
+        // Codex #7: advance phase to 'assign' after items are created
+        if (created > 0) {
+          await tx
+            .update(discussions)
+            .set({ phase: "assign" })
+            .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)));
+        }
+      });
 
       if (created > 0) {
         await logActivity(db, {

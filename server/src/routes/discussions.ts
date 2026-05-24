@@ -1,11 +1,15 @@
 import { Router } from "express";
 import type { Db } from "@armyofagents/db";
+import { z } from "zod";
 import {
   createDiscussionSchema,
   createDiscussionEntrySchema,
   updateDiscussionSchema,
   approveItemsSchema,
   createAnnotationSchema,
+  THREAD_PHASES,
+  THREAD_PARTICIPANT_PRINCIPAL_TYPES,
+  THREAD_PARTICIPANT_ROLES,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { discussionService, logActivity, permissionService } from "../services/index.js";
@@ -14,6 +18,15 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { threadService } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
+
+// ── Thread lifecycle request-body schemas ────────────────────────────────────
+const phaseSchema = z.object({ phase: z.enum(THREAD_PHASES) });
+const transferSchema = z.object({ toUserId: z.string().min(1) });
+const addParticipantSchema = z.object({
+  principalType: z.enum(THREAD_PARTICIPANT_PRINCIPAL_TYPES),
+  principalId: z.string().min(1),
+  role: z.enum(THREAD_PARTICIPANT_ROLES),
+});
 
 export function discussionRoutes(db: Db) {
   const router = Router();
@@ -498,6 +511,7 @@ export function discussionRoutes(db: Db) {
   // T.1 Advance thread phase
   router.patch(
     "/companies/:companyId/discussions/:discussionId/phase",
+    validate(phaseSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
@@ -534,6 +548,7 @@ export function discussionRoutes(db: Db) {
   // T.3 Transfer thread ownership
   router.post(
     "/companies/:companyId/discussions/:discussionId/transfer",
+    validate(transferSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
@@ -552,6 +567,7 @@ export function discussionRoutes(db: Db) {
   // T.4 Add participant to thread
   router.post(
     "/companies/:companyId/discussions/:discussionId/participants",
+    validate(addParticipantSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;

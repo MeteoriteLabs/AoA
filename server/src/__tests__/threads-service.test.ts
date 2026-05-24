@@ -171,6 +171,7 @@ function createSequenceDb(selectQueue: any[][]) {
       values: vi.fn(() => ({
         returning: vi.fn().mockReturnThis(),
         onConflictDoNothing: vi.fn().mockReturnThis(),
+        onConflictDoUpdate: vi.fn().mockReturnThis(),
         then: vi.fn((fn: (rows: any[]) => any) =>
           Promise.resolve(fn(selectQueue[idx++] ?? [])),
         ),
@@ -191,14 +192,17 @@ function createSequenceDb(selectQueue: any[][]) {
     };
   }
 
-  return {
+  const dbObj: any = {
     select: vi.fn(() => makeSelectChain()),
     insert: vi.fn(() => makeInsertChain()),
     update: vi.fn(() => makeUpdateChain()),
     delete: vi.fn(() => ({
       where: vi.fn().mockResolvedValue(undefined),
     })),
-  } as any;
+    // transaction: pass the same db object as `tx` so the service can call tx.select/insert/update
+    transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => fn(dbObj)),
+  };
+  return dbObj as any;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -436,6 +440,82 @@ describe("threadService.transferOwnership", () => {
   });
 });
 
+describe("threadService.transferOwnership — existing participant", () => {
+  it("updates the existing participant role to owner (does not leave stale role)", async () => {
+    // u2 is already a co_owner participant; transfer should upsert role → owner
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }], // thread
+      // assertCanEdit: actor is founder → returns immediately (no participant query consumed)
+      [], // demote old owner participant update
+      [], // update discussions.ownerUserId
+      [], // upsert participant (co_owner → owner via onConflictDoUpdate)
+    ]);
+    const res = await threadService(db).transferOwnership("co1", "t1", "u2", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.ownerUserId).toBe("u2");
+  });
+
+  it("co_owner can transfer ownership (Fix 5: assertCanEdit allows co_owner)", async () => {
+    // u1 is co_owner, not the ownerUserId (u9) and not founder
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }], // thread
+      // assertCanEdit: not founder, not ownerUserId → queries threadParticipants → co_owner → passes
+      [{ role: "co_owner" }],
+      [], // demote old owner participant update
+      [], // update discussions.ownerUserId
+      [], // upsert participant
+    ]);
+    const res = await threadService(db).transferOwnership("co1", "t1", "u2", {
+      userId: "u1",
+      role: "team_member",
+      isHuman: true,
+    });
+    expect(res.ownerUserId).toBe("u2");
+  });
+});
+
+// ── Task 8 extra: assignScopeItems phase advance ──────────────────────────────
+
+describe("threadService.assignScopeItems — phase advance", () => {
+  it("advances phase to 'assign' inside transaction when items are created", async () => {
+    const approvedItem = {
+      id: "item1",
+      type: "task",
+      status: "approved",
+      resultTaskId: null,
+      assigneeAgentId: null,
+      assigneeUserId: "u2",
+      departmentId: "p1",
+      suggestedDepartmentId: null,
+      suggestedProjectId: null,
+      priority: "high",
+      suggestedPriority: null,
+      title: "Write tests",
+      description: null,
+      discussionEntryId: "entry1",
+    };
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread
+      [{ id: "entry1" }], // entries (inside tx)
+      [approvedItem], // items (inside tx)
+      [{ id: "issue-x" }], // issue insert (inside tx)
+      [], // update resultTaskId (inside tx)
+      [], // update discussions.phase (inside tx, Codex #7)
+    ]);
+    const res = await threadService(db).assignScopeItems("co1", "t1", {
+      userId: "u1",
+      role: "founder",
+      isHuman: true,
+    });
+    expect(res.created).toBe(1);
+    // phase advance happens inside transaction — db.update called with phase='assign'
+    expect(db.update).toHaveBeenCalled();
+  });
+});
+
 // ── Task 6: promoteToGoal ─────────────────────────────────────────────────────
 
 describe("threadService.promoteToGoal", () => {
@@ -616,11 +696,12 @@ describe("threadService.assignScopeItems", () => {
       discussionEntryId: "entry1",
     };
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread
-      [{ id: "entry1" }], // entries query
-      [approvedItem], // extractedItems query
-      [{ id: "issue1" }], // issue insert returning
-      [], // update result_task_id on extracted item
+      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread (outside tx)
+      [{ id: "entry1" }], // entries query (inside tx)
+      [approvedItem], // extractedItems query (inside tx)
+      [{ id: "issue1" }], // issue insert returning (inside tx)
+      [], // update result_task_id on extracted item (inside tx)
+      [], // update discussions.phase to 'assign' (inside tx, Codex #7)
     ]);
     const res = await threadService(db).assignScopeItems("co1", "t1", {
       userId: "u1",
