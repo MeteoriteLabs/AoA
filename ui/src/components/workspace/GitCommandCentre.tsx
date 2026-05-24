@@ -434,6 +434,7 @@ export function GitCommandCentre({
               filter={filter}
               onHover={handleHover}
               onClick={handleClick}
+              onShowMore={() => setViewMode("pipeline")}
             />
             <GitHoverCard
               node={hoveredNode}
