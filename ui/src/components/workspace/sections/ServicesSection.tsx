@@ -156,6 +156,7 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
         const previewOnly = isPreviewOnlyService(service);
         const unavailablePreview = isUnavailablePreviewService(service);
         const controllable = canControlService(service) && workspacePermissions.canControlRuntimeServices;
+        const canOpenPreview = Boolean(service.previewUrl) && !unavailablePreview;
 
         return (
           <div
@@ -190,7 +191,7 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
               <div className="flex items-center gap-1 shrink-0 ml-auto">
                 {isRunning && (
                   <>
-                    {service.url && !unavailablePreview && (
+                    {canOpenPreview && (
                       <Button
                         type="button"
                         variant="ghost"
@@ -264,17 +265,15 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
                 )}
               </div>
             </div>
-            {service.url && (
-              <a
-                href={service.url}
-                target="_blank"
-                rel="noopener noreferrer"
+            {service.localTargetUrl && (
+              <div
                 className="flex min-w-0 items-center gap-1 overflow-hidden pl-4 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-                data-testid={`service-url-${service.id}`}
+                data-testid={`service-local-target-${service.id}`}
               >
                 <ExternalLink className="h-3 w-3 shrink-0" />
-                <span className="truncate font-mono">{service.url}</span>
-              </a>
+                <span className="shrink-0">Local to AoA host</span>
+                <span className="truncate font-mono">{service.localTargetUrl}</span>
+              </div>
             )}
             {error && (
               <div

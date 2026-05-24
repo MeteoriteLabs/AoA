@@ -33,6 +33,10 @@ const runningService = {
   status: "running",
   port: 3000,
   url: "http://localhost:3000",
+  previewUrl: "/preview/services/svc-1/",
+  previewAccess: "local",
+  localTargetUrl: "http://localhost:3000/",
+  healthStatus: "healthy",
   command: "pnpm dev",
   cwd: "/home/agent/workspace",
   provider: "local_process",
@@ -47,6 +51,8 @@ const previewOnlyService = {
   serviceName: "localhost:4173",
   port: 4173,
   url: "http://127.0.0.1:4173/",
+  previewUrl: "/preview/services/svc-preview/",
+  localTargetUrl: "http://127.0.0.1:4173/",
   command: null,
   provider: "adapter_managed",
   providerRef: null,
@@ -179,7 +185,7 @@ describe("ServicesSection", () => {
     expect(screen.getByTestId("section-services-body").className).toContain("py-2");
   });
 
-  it("renders a running service row with name, port, and URL link", async () => {
+  it("renders a running service row with name, port, and host-local debug target", async () => {
     executionWorkspacesApiMock.runtimeServices.mockResolvedValue([runningService]);
 
     renderSection();
@@ -189,9 +195,10 @@ describe("ServicesSection", () => {
     });
     expect(screen.getByText("web-dev-server")).toBeInTheDocument();
     expect(screen.getByText(":3000")).toBeInTheDocument();
-    const link = screen.getByTestId("service-url-svc-1") as HTMLAnchorElement;
-    expect(link).toBeInTheDocument();
-    expect(link.getAttribute("href")).toBe("http://localhost:3000");
+    const localTarget = screen.getByTestId("service-local-target-svc-1");
+    expect(localTarget).toHaveTextContent("Local to AoA host");
+    expect(localTarget).toHaveTextContent("http://localhost:3000/");
+    expect(screen.queryByTestId("service-url-svc-1")).not.toBeInTheDocument();
   });
 
   it("running service shows Stop + Restart buttons (not Start)", async () => {
@@ -236,6 +243,21 @@ describe("ServicesSection", () => {
 
     await user.click(screen.getByTestId("service-open-svc-preview"));
     expect(onOpenBrowser).toHaveBeenCalledWith(previewOnlyService);
+  });
+
+  it("does not offer Open when a service has no AoA preview URL", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([{
+      ...runningService,
+      id: "svc-local-only",
+      previewUrl: null,
+      localTargetUrl: "http://localhost:3000/",
+    }]);
+
+    renderSection();
+
+    await screen.findByTestId("service-row-svc-local-only");
+    expect(screen.queryByTestId("service-open-svc-local-only")).not.toBeInTheDocument();
+    expect(screen.getByTestId("service-local-target-svc-local-only")).toHaveTextContent("Local to AoA host");
   });
 
   it("unavailable preview-only service shows status without Open or process controls", async () => {
@@ -406,15 +428,15 @@ describe("ServicesSection", () => {
     });
   });
 
-  it("URL renders as external link with target='_blank' and rel='noopener noreferrer'", async () => {
+  it("raw local target is displayed as debug text rather than an external link", async () => {
     executionWorkspacesApiMock.runtimeServices.mockResolvedValue([runningService]);
 
     renderSection();
 
-    const link = (await screen.findByTestId("service-url-svc-1")) as HTMLAnchorElement;
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(link.getAttribute("href")).toBe("http://localhost:3000");
+    const localTarget = await screen.findByTestId("service-local-target-svc-1");
+    expect(localTarget.tagName.toLowerCase()).toBe("div");
+    expect(localTarget).toHaveTextContent("Local to AoA host");
+    expect(screen.queryByTestId("service-url-svc-1")).not.toBeInTheDocument();
   });
 
   it("starting service shows disabled Stop button", async () => {
