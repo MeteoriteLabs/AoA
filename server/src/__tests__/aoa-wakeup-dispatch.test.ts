@@ -5,6 +5,7 @@ vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => ({ and: a }),
   eq: (a: unknown, b: unknown) => ({ eq: [a, b] }),
   lt: (a: unknown, b: unknown) => ({ lt: [a, b] }),
+  gt: (a: unknown, b: unknown) => ({ gt: [a, b] }),
   inArray: (a: unknown, b: unknown) => ({ inArray: [a, b] }),
   notInArray: (a: unknown, b: unknown) => ({ notInArray: [a, b] }),
 }));
@@ -15,6 +16,7 @@ vi.mock("@armyofagents/db", () => {
     agents: t("a"),
     discussionEntries: t("de"),
     discussions: t("d"),
+    internalAgentConfig: t("iac"),
     internalAgentRuns: t("iar"),
   };
 });
@@ -102,7 +104,11 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [], // Phase 1 orphan
         [], // Phase 2 outbox
-        [{ id: "w1", agentId: "a1", companyId: "co-1", payload: { note: "x" } }],
+        [{ id: "w1", agentId: "a1", companyId: "co-1", payload: { note: "x" } }], // Phase 3 wakeup rows
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
+        [], // D3 run-rate window count (internalAgentRuns gt)
+        [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
+        [], // Phase 4 failedRunRows
       ],
       [
         [{ id: "w1" }], // claim RETURNING
@@ -126,7 +132,11 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [],
         [],
-        [{ id: "w2", agentId: "a2", companyId: "co-2", payload: null }],
+        [{ id: "w2", agentId: "a2", companyId: "co-2", payload: null }], // Phase 3 wakeup rows
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
+        [], // D3 run-rate window count (internalAgentRuns gt)
+        [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
+        [], // Phase 4 failedRunRows
       ],
       [
         [], // claim returns empty → already claimed
@@ -147,7 +157,11 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [],
         [],
-        [{ id: "w3", agentId: "a3", companyId: "co-3", payload: {} }],
+        [{ id: "w3", agentId: "a3", companyId: "co-3", payload: {} }], // Phase 3 wakeup rows
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
+        [], // D3 run-rate window count (internalAgentRuns gt)
+        [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
+        [], // Phase 4 failedRunRows
       ],
       [
         [{ id: "w3" }], // claim RETURNING
