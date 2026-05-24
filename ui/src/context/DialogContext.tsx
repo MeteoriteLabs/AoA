@@ -31,6 +31,13 @@ export interface DiscussionCaptureDefaults {
   existingDiscussionId?: string;
 }
 
+export interface NewThreadDefaults {
+  title?: string;
+  scopeType?: string;
+  scopeId?: string;
+  initialType?: "idea" | "discussion" | "goal" | "transcript" | "document";
+}
+
 interface DialogContextValue {
   newIssueOpen: boolean;
   newIssueDefaults: NewIssueDefaults;
@@ -55,6 +62,10 @@ interface DialogContextValue {
   discussionCaptureDefaults: DiscussionCaptureDefaults;
   openDiscussionCapture: (defaults?: DiscussionCaptureDefaults) => void;
   closeDiscussionCapture: () => void;
+  newThreadOpen: boolean;
+  newThreadDefaults: NewThreadDefaults;
+  openNewThread: (defaults?: NewThreadDefaults) => void;
+  closeNewThread: () => void;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -71,6 +82,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
   const [discussionCaptureOpen, setDiscussionCaptureOpen] = useState(false);
   const [discussionCaptureDefaults, setDiscussionCaptureDefaults] = useState<DiscussionCaptureDefaults>({});
+  const [newThreadOpen, setNewThreadOpen] = useState(false);
+  const [newThreadDefaults, setNewThreadDefaults] = useState<NewThreadDefaults>({});
 
   const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
     setNewIssueDefaults(defaults);
@@ -130,6 +143,16 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setDiscussionCaptureDefaults({});
   }, []);
 
+  const openNewThread = useCallback((defaults: NewThreadDefaults = {}) => {
+    setNewThreadDefaults(defaults);
+    setNewThreadOpen(true);
+  }, []);
+
+  const closeNewThread = useCallback(() => {
+    setNewThreadOpen(false);
+    setNewThreadDefaults({});
+  }, []);
+
   return (
     <DialogContext.Provider
       value={{
@@ -156,6 +179,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         discussionCaptureDefaults,
         openDiscussionCapture,
         closeDiscussionCapture,
+        newThreadOpen,
+        newThreadDefaults,
+        openNewThread,
+        closeNewThread,
       }}
     >
       {children}
