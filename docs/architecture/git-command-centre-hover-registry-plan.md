@@ -261,11 +261,24 @@ git commit -m "feat(git-graph): hit-region model + resolveNodeRender + hitRegion
 - [ ] **Step 1: Append the failing tests** to `GitArcHit.test.ts`:
 
 ```ts
-// Extend the existing top-of-file imports:
-//   • add `buildHitRegions` to the import from "../components/workspace/git-arc-hit"
-//   • add `ArcLayoutResult, TipStack` to the import from "../components/workspace/git-arc-layout"
-import { buildHitRegions } from "../components/workspace/git-arc-hit";
-import type { ArcLayoutResult, TipStack } from "../components/workspace/git-arc-layout";
+// Replace the import section at the TOP of GitArcHit.test.ts (added in A1) with
+// this complete block — it adds buildHitRegions, computeStackCardLayout (a VALUE
+// import, used below), CARD_W/CARD_H, and the ArcLayoutResult/TipStack types:
+import { describe, it, expect } from "vitest";
+import type { GitBranchInfo } from "@armyofagents/shared";
+import {
+  resolveNodeRender,
+  hitRegionAt,
+  buildHitRegions,
+  type HitRegion,
+} from "../components/workspace/git-arc-hit";
+import {
+  computeStackCardLayout,
+  type ArcCommitLayout,
+  type ArcLayoutResult,
+  type TipStack,
+} from "../components/workspace/git-arc-layout";
+import { CARD_W, CARD_H } from "../components/workspace/git-arc-draw";
 
 function emptyLayout(nodes: ArcCommitLayout[], arcs: never[] = []): ArcLayoutResult {
   return { nodes, arcs: arcs as never, trunkY: 200, totalWidth: 1000, totalHeight: 500, tipStacks: [] };
