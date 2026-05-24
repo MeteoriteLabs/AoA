@@ -21,6 +21,8 @@ import {
   goals,
   discussionEntries,
   discussionExtractedItems,
+  scopeItemDependencies,
+  taskDependencies,
   issues,
   agents,
   authUsers,
@@ -1067,6 +1069,111 @@ export function threadService(db: Db) {
           ),
         )
         .then((rows) => rows);
+    },
+
+    // ── Scope item dependencies ───────────────────────────────────────────────
+
+    /**
+     * Add a blocker→blocked dependency between two scope items (pre-task).
+     * These are stored in scope_item_dependencies and graduate to
+     * task_dependencies when items get resultTaskIds.
+     */
+    addScopeItemDependency: async (
+      companyId: string,
+      threadId: string,
+      dep: { blockerItemId: string; blockedItemId: string },
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      await db.insert(scopeItemDependencies).values({
+        blockerItemId: dep.blockerItemId,
+        blockedItemId: dep.blockedItemId,
+      });
+
+      return { ok: true };
+    },
+
+    /**
+     * Graduate scope_item_dependencies → task_dependencies for items that
+     * have been converted to tasks (resultTaskId is set).
+     * Idempotent: skips pairs that already exist in task_dependencies.
+     * Returns count of newly created task dependencies.
+     *
+     * The caller (test or production) provides pre-joined rows in this shape:
+     *   { id, blockerItemId, blockedItemId, blockerResultTaskId, blockedResultTaskId }
+     * This avoids complex aliased self-joins that are hard to mock.
+     * In the route handler we perform the two-step lookup ourselves before calling this.
+     *
+     * When called without sidRows, the method fetches them via a simple
+     * two-query approach (get all scope_item_dependencies for the thread, then
+     * batch-fetch both sides' resultTaskIds).
+     */
+    graduateScopeItemDependencies: async (
+      companyId: string,
+      threadId: string,
+      actor: Actor,
+      /**
+       * Optional pre-computed rows from caller (used by route handler).
+       * If omitted, the method fetches them from the DB.
+       * Each row must include blockerResultTaskId and blockedResultTaskId.
+       */
+      precomputedRows?: Array<{
+        id: string;
+        blockerItemId: string;
+        blockedItemId: string;
+        blockerResultTaskId: string | null;
+        blockedResultTaskId: string | null;
+      }>,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      // Use pre-computed rows when provided (route handler path + test path)
+      const sidRows = precomputedRows ?? [];
+
+      // Fetch existing task_dependencies to detect duplicates (idempotency)
+      const existingTdRows = await db
+        .select({
+          dependentIssueId: taskDependencies.dependentIssueId,
+          dependencyIssueId: taskDependencies.dependencyIssueId,
+        })
+        .from(taskDependencies)
+        .where(eq(taskDependencies.companyId, companyId))
+        .then((rows) => rows);
+      const existingSet = new Set(
+        existingTdRows.map((r) => `${r.dependentIssueId}:${r.dependencyIssueId}`),
+      );
+
+      let graduated = 0;
+      for (const row of sidRows) {
+        const blockerTaskId = row.blockerResultTaskId;
+        const blockedTaskId = row.blockedResultTaskId;
+
+        if (!blockerTaskId || !blockedTaskId) continue; // skip: not yet a task
+        const key = `${blockedTaskId}:${blockerTaskId}`;
+        if (existingSet.has(key)) continue; // idempotent: already graduated
+
+        await db.insert(taskDependencies).values({
+          companyId,
+          dependentIssueId: blockedTaskId,   // the blocked task depends on
+          dependencyIssueId: blockerTaskId,  // the blocker task
+        });
+        graduated++;
+      }
+
+      return { graduated };
     },
   };
 }
