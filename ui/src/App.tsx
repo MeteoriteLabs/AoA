@@ -34,6 +34,7 @@ import { HumanDetail } from "./pages/HumanDetail";
 import { AoaAgentDetail } from "./pages/AoaAgentDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
+import { NewThreadDialog } from "./components/NewThreadDialog";
 import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
@@ -278,6 +279,18 @@ function MarketplaceTypeRedirect() {
   return <RawNavigate to={`/marketplace${type ? `?type=${type}` : ""}`} replace />;
 }
 
+/** Self-consuming mount shim — mirrors the DiscussionCaptureModal pattern */
+function NewThreadDialogMount() {
+  const { newThreadOpen, newThreadDefaults, closeNewThread } = useDialog();
+  return (
+    <NewThreadDialog
+      open={newThreadOpen}
+      onClose={closeNewThread}
+      defaults={newThreadDefaults}
+    />
+  );
+}
+
 export function App() {
   return (
     <>
@@ -340,6 +353,7 @@ export function App() {
       </Routes>
       <OnboardingWizard />
       <DiscussionCaptureModal />
+      <NewThreadDialogMount />
       <MemoryQuickSwitcher />
     </>
   );
