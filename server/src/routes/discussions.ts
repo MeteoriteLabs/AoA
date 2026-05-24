@@ -12,6 +12,7 @@ import {
   THREAD_PHASES,
   THREAD_PARTICIPANT_PRINCIPAL_TYPES,
   THREAD_PARTICIPANT_ROLES,
+  THREAD_LINK_KINDS,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { discussionService, logActivity, permissionService } from "../services/index.js";
@@ -830,6 +831,57 @@ export function discussionRoutes(db: Db) {
 
       // Should never reach here — zod enum guards all actions
       res.status(400).json({ error: "Unknown triage action" });
+    },
+  );
+
+  // ── Plan 6: Cross-thread links ────────────────────────────────────────────
+
+  const createLinkSchema = z.object({
+    toThreadId: z.string().uuid(),
+    kind: z.enum(THREAD_LINK_KINDS),
+  });
+
+  // T.L1 Create a cross-thread link
+  router.post(
+    "/companies/:companyId/discussions/:fromId/links",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const fromId = req.params.fromId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+
+      const parsed = createLinkSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid request" });
+        return;
+      }
+
+      try {
+        const link = await tSvc.createLink(companyId, fromId, parsed.data.toThreadId, parsed.data.kind, actor);
+        res.status(201).json(link);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.L2 List cross-thread links for a thread (bidirectional)
+  router.get(
+    "/companies/:companyId/discussions/:id/links",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const id = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+
+      try {
+        const links = await tSvc.listLinks(companyId, id, actor);
+        res.json({ links, total: links.length });
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
     },
   );
 
