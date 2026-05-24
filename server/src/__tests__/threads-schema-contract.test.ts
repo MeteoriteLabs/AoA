@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { discussions, discussionEntries } from "@armyofagents/db";
+import { discussions, discussionEntries, discussionExtractedItems } from "@armyofagents/db";
 
 // Helper: get Drizzle column names from a table object.
 function getColumnNames(table: Record<string, unknown>): string[] {
@@ -59,6 +59,22 @@ describe("discussion_entries table — thread additions", () => {
 
   it("preserves existing entry columns", () => {
     for (const c of ["id", "discussionId", "inputType", "rawContent", "extractionStatus"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+});
+
+describe("discussion_extracted_items table — committed routing", () => {
+  const cols = getColumnNames(discussionExtractedItems);
+
+  it("has committed agent|human assignee + department", () => {
+    expect(cols).toContain("assigneeAgentId");
+    expect(cols).toContain("assigneeUserId");
+    expect(cols).toContain("departmentId");
+  });
+
+  it("preserves the suggested* fields + result links", () => {
+    for (const c of ["suggestedDepartmentId", "suggestedAssigneeId", "resultTaskId", "resultMemoryId", "conflictsWith"]) {
       expect(cols, `missing column: ${c}`).toContain(c);
     }
   });
