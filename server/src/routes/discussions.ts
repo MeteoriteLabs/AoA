@@ -977,14 +977,13 @@ export function discussionRoutes(db: Db) {
     assigneeUserId: z.string().optional(),
   });
 
-  // T.R1 PATCH per-item routing (founder-gated)
+  // T.R1 PATCH per-item routing (service-level guard; hide-don't-403)
   router.patch(
     "/companies/:companyId/discussions/:discussionId/items/:itemId/routing",
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const itemId = req.params.itemId as string;
       assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
 
       const parsed = routingBodySchema.safeParse(req.body);
