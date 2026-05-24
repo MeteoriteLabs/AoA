@@ -9,6 +9,7 @@
 import type { GitBranchInfo } from "@armyofagents/shared";
 import type { ArcCommitLayout, ArcDefinition } from "./git-arc-layout";
 import { NEUTRAL_GREY, computeStackCardLayout, type TipStack } from "./git-arc-layout";
+import { placeArcLabels } from "./git-arc-labels";
 
 // ---------------------------------------------------------------------------
 // Path helpers (shared by drawArcLines, drawFlowPulse, hit testing)
@@ -658,59 +659,25 @@ export function drawArcLabels(
   visibleNames: Set<string>,
   /**
    * Branch names that already render a task card. Those cards show the task
-   * identifier + title, so drawing the arc name label too just collides with
-   * the card. Only plain (no-task) branches get an arc name label.
+   * identifier + title, so a separate arc name label would collide — skip them.
    */
   cardBranchNames: Set<string>,
 ) {
+  // Positions come from the shared pure pass so the hit-registry (git-arc-hit)
+  // lands on the exact same de-overlapped spots (single source, no drift).
+  const placed = placeArcLabels(arcs, visibleNames, cardBranchNames);
   ctx.save();
   ctx.font = `9px "Courier New", monospace`;
-
-  // Track placed label rects (in layout space) to avoid two plain-branch
-  // labels landing on the same spot. Simple vertical nudge on collision.
-  const placed: Array<{ x: number; y: number; w: number }> = [];
-
+  ctx.globalAlpha = 0.7;
   for (const arc of arcs) {
-    if (!visibleNames.has(arc.branchName)) continue;
-    if (arc.isDone) continue; // labels only for active arcs
-    if (cardBranchNames.has(arc.branchName)) continue; // card already labels it
-
-    const labelX =
-      arc.isOpen || arc.mergePointX == null
-        ? arc.branchPointX + 80
-        : (arc.branchPointX + arc.mergePointX) / 2;
-    const baseY = arc.direction === "up" ? arc.apexY - 8 : arc.apexY + 14;
-
+    const p = placed.get(arc.branchName);
+    if (!p) continue;
     const name =
-      arc.branchName.length > 18
-        ? arc.branchName.slice(0, 17) + "…"
-        : arc.branchName;
-    const w = ctx.measureText(name).width;
-    const drawX = labelX - w / 2;
-
-    // Nudge vertically if this label would overlap an already-placed one.
-    let labelY = baseY;
-    const step = arc.direction === "up" ? -11 : 11;
-    let guard = 0;
-    while (
-      guard < 6 &&
-      placed.some(
-        (p) =>
-          Math.abs(p.y - labelY) < 10 &&
-          drawX < p.x + p.w + 4 &&
-          drawX + w > p.x - 4,
-      )
-    ) {
-      labelY += step;
-      guard++;
-    }
-    placed.push({ x: drawX, y: labelY, w });
-
-    ctx.globalAlpha = 0.7;
+      arc.branchName.length > 18 ? arc.branchName.slice(0, 17) + "…" : arc.branchName;
     ctx.fillStyle = arc.color;
-    ctx.fillText(name, drawX, labelY);
+    ctx.fillText(name, p.x, p.y);
   }
-
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 

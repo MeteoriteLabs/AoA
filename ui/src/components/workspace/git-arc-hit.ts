@@ -11,6 +11,7 @@ import type { GitBranchInfo } from "@armyofagents/shared";
 import type { ArcCommitLayout, ArcLayoutResult, TipStack } from "./git-arc-layout";
 import { computeStackCardLayout } from "./git-arc-layout";
 import { CARD_W, CARD_H, COMMIT_R, pointToSegmentDistance } from "./git-arc-draw";
+import { placeArcLabels } from "./git-arc-labels";
 
 // ---------------------------------------------------------------------------
 // Model
@@ -98,7 +99,6 @@ const SYNC_EXT = 18;    // node → up on a normal tip (sync marker)
 const TAG_W = 90;       // node → right, covers up to 2 tag pills
 const ARC_THRESHOLD = 8;
 const TRUNK_THRESHOLD = 8;
-const LABEL_CHAR_W = 5.5; // approx px width of a 9px "Courier New" glyph (pure builder has no ctx.measureText)
 const HEAD_W = 24;        // approx px width of the "HEAD" label at 9px monospace
 
 function hasSync(b: GitBranchInfo | null | undefined): boolean {
@@ -230,28 +230,18 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
     }
   }
 
-  // 5. Arc name labels (branch-name text near the apex). Mirrors drawArcLabels:
-  // active (non-done) arcs in arcVisibleNames that aren't already card-labelled.
-  // Pushed late so a label sits above its arc line in hit order.
+  // 5. Arc name labels — positions from the shared placeArcLabels pass so the
+  // hit box lands on the exact de-overlapped spot the draw used (single source).
+  const placedArcLabels = placeArcLabels(layout.arcs, arcVisibleNames, cardBranchNames);
   for (const arc of layout.arcs) {
-    if (!arcVisibleNames.has(arc.branchName)) continue;
-    if (arc.isDone) continue;
-    if (cardBranchNames.has(arc.branchName)) continue;
-    const labelX =
-      arc.isOpen || arc.mergePointX == null
-        ? arc.branchPointX + 80
-        : (arc.branchPointX + arc.mergePointX) / 2;
-    const baseY = arc.direction === "up" ? arc.apexY - 8 : arc.apexY + 14;
-    const name =
-      arc.branchName.length > 18 ? arc.branchName.slice(0, 17) + "…" : arc.branchName;
-    const w = name.length * LABEL_CHAR_W + 4;
-    const drawX = labelX - w / 2;
+    const p = placedArcLabels.get(arc.branchName);
+    if (!p) continue;
     const b = branchByName.get(arc.branchName);
     regions.push({
       shape: "rect",
-      x: drawX - PAD,
-      y: baseY - 9 - PAD,
-      w: w + 2 * PAD,
+      x: p.x - PAD,
+      y: p.y - 9 - PAD,
+      w: p.w + 2 * PAD,
       h: 9 + 2 * PAD,
       target: b?.linkedIssueId
         ? { kind: "task", branchName: arc.branchName }
