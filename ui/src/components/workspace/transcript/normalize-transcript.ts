@@ -216,6 +216,11 @@ function parseSystemActivity(
   };
 }
 
+function parseAoaPreviewDetection(text: string): string | null {
+  const match = compactWhitespace(text).match(/^\[aoa\]\s+(app preview detection\b.*)$/i);
+  return match?.[1] ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Grouping passes
 // ---------------------------------------------------------------------------
@@ -472,6 +477,17 @@ export function normalizeTranscript(
 
     if (entry.kind === "system") {
       if (compactWhitespace(entry.text).toLowerCase() === "turn started") {
+        continue;
+      }
+      const previewDetection = parseAoaPreviewDetection(entry.text);
+      if (previewDetection) {
+        blocks.push({
+          type: "event",
+          ts: entry.ts,
+          label: "preview",
+          tone: "info",
+          text: previewDetection,
+        });
         continue;
       }
       const activity = parseSystemActivity(entry.text);

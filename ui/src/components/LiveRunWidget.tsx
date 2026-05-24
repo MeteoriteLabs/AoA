@@ -79,6 +79,18 @@ function summarizeEntry(entry: TranscriptEntry): { text: string; tone: FeedTone 
   return null;
 }
 
+function summarizeSystemLine(text: string): { text: string; tone: FeedTone } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const previewDetection = trimmed.match(/^\[aoa\]\s+(app preview detection\b.*)$/i);
+  if (previewDetection?.[1]) {
+    return { text: previewDetection[1], tone: "info" };
+  }
+
+  return { text: trimmed, tone: "warn" };
+}
+
 function createFeedItem(
   run: LiveRunForIssue,
   ts: string,
@@ -195,6 +207,28 @@ function parseStderrChunk(
   const items: FeedItem[] = [];
   for (const line of split.slice(-8)) {
     const item = createFeedItem(run, ts, line, "error", nextIdRef.current++);
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+function parseSystemChunk(
+  run: LiveRunForIssue,
+  chunk: string,
+  ts: string,
+  pendingByRun: Map<string, string>,
+  nextIdRef: MutableRefObject<number>,
+): FeedItem[] {
+  const pendingKey = `${run.id}:system`;
+  const combined = `${pendingByRun.get(pendingKey) ?? ""}${chunk}`;
+  const split = combined.split(/\r?\n/);
+  pendingByRun.set(pendingKey, split.pop() ?? "");
+
+  const items: FeedItem[] = [];
+  for (const line of split.slice(-8)) {
+    const summary = summarizeSystemLine(line);
+    if (!summary) continue;
+    const item = createFeedItem(run, ts, summary.text, summary.tone, nextIdRef.current++);
     if (item) items.push(item);
   }
   return items;
@@ -359,6 +393,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
     for (const runId of activeRunIds) {
       stillActive.add(`${runId}:stdout`);
       stillActive.add(`${runId}:stderr`);
+      stillActive.add(`${runId}:system`);
     }
     for (const key of pendingByRunRef.current.keys()) {
       if (!stillActive.has(key)) {
@@ -400,8 +435,9 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
             continue;
           }
           if (row.stream === "system") {
-            const item = createFeedItem(run, row.ts, row.chunk, "warn", nextIdRef.current++);
-            if (item) items.push(item);
+            items.push(
+              ...parseSystemChunk(run, row.chunk, row.ts, pendingByRunRef.current, nextIdRef),
+            );
             continue;
           }
           items.push(
@@ -507,9 +543,14 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         if (event.type === "heartbeat.run.log") {
           const chunk = readString(payload["chunk"]);
           if (!chunk) return;
-          const stream = readString(payload["stream"]) === "stderr" ? "stderr" : "stdout";
+          const streamRaw = readString(payload["stream"]);
+          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           if (stream === "stderr") {
             appendItems(parseStderrChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
+            return;
+          }
+          if (stream === "system") {
+            appendItems(parseSystemChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
             return;
           }
           appendItems(parseStdoutChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));

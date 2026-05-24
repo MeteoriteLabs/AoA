@@ -21,6 +21,7 @@ import {
   createFeedItem,
   parseStdoutChunk,
   parseStderrChunk,
+  parseSystemChunk,
   isRunActive,
   mergeFeedItems,
 } from "../lib/agent-feed";
@@ -110,6 +111,11 @@ export function ActiveAgents() {
               continue;
             }
 
+            if (record.stream === "system") {
+              items.push(...parseSystemChunk(run, chunk, ts, pendingByRunRef.current, nextIdRef));
+              continue;
+            }
+
             // stdout — parse through adapter
             for (const stdoutLine of chunk.split(/\r?\n/).filter((l) => l.trim())) {
               const parsed = adapter.parseStdoutLine(stdoutLine, ts);
@@ -150,6 +156,7 @@ export function ActiveAgents() {
     for (const runId of activeRunIds) {
       stillActive.add(`${runId}:stdout`);
       stillActive.add(`${runId}:stderr`);
+      stillActive.add(`${runId}:system`);
     }
     for (const key of pendingByRunRef.current.keys()) {
       if (!stillActive.has(key)) pendingByRunRef.current.delete(key);
@@ -219,12 +226,17 @@ export function ActiveAgents() {
         if (event.type === "heartbeat.run.log") {
           const chunk = readString(payload["chunk"]);
           if (!chunk) return;
-          const stream = readString(payload["stream"]) === "stderr" ? "stderr" : "stdout";
+          const streamRaw = readString(payload["stream"]);
+          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           if (stream === "stderr") {
             appendItems(run.id, parseStderrChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
-          } else {
-            appendItems(run.id, parseStdoutChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
+            return;
           }
+          if (stream === "system") {
+            appendItems(run.id, parseSystemChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
+            return;
+          }
+          appendItems(run.id, parseStdoutChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
         }
       };
 
