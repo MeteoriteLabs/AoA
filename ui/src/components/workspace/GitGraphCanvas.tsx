@@ -338,7 +338,19 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
             ? (branchByName.get(node.branchName)?.linkedIssueStatus ?? null)
             : null;
         const isStacked = stackedShas.has(node.sha);
-        drawCommitNode(ctx, node, animPhaseRef.current, branchStatus, isStacked);
+
+        // Resolve the task branch at this commit (handles a SHA shared by the
+        // default branch + a task) and whether it passes the ACTIVE filter.
+        let taskBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
+        if (!taskBranch?.linkedIssueId) taskBranch = taskBranchByTipSha.get(node.sha);
+        const taskVisible =
+          !!taskBranch?.linkedIssueId && visibleNames.has(taskBranch.name);
+
+        // A task tip on a TRUNK commit is always in visibleNodes, so it would
+        // draw a card under every filter. Render it as a plain dot unless its
+        // task actually matches the active filter (stacked → handled by the fan).
+        const asDot = isStacked || (node.isTaskTip && !taskVisible);
+        drawCommitNode(ctx, node, animPhaseRef.current, branchStatus, asDot);
 
         if (node.isBranchTip && !isStacked) {
           let syncBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
@@ -346,15 +358,11 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           if (syncBranch) drawSyncBadge(ctx, node, syncBranch);
         }
 
-        if (node.isTaskTip && !isStacked) {
-          let branch = node.branchName ? branchByName.get(node.branchName) : undefined;
-          if (!branch?.linkedIssueId) branch = taskBranchByTipSha.get(node.sha);
-          if (branch?.linkedIssueId) {
-            drawCardLabel(ctx, node, branch);
-            drawCardBadges(ctx, node, branch);
-            drawLabelDots(ctx, node, branch);
-            if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
-          }
+        if (node.isTaskTip && !isStacked && taskVisible && taskBranch?.linkedIssueId) {
+          drawCardLabel(ctx, node, taskBranch);
+          drawCardBadges(ctx, node, taskBranch);
+          drawLabelDots(ctx, node, taskBranch);
+          if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
         }
       }
 
