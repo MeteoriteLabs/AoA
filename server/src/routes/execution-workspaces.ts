@@ -389,7 +389,7 @@ export function executionWorkspaceRoutes(db: Db) {
       : null;
     const resolvedServiceIndex =
       selectedServiceIndex ??
-      (selectedRuntimeService && (action === "start" || action === "restart")
+      (selectedRuntimeService
         ? resolveConfiguredRuntimeServiceIndexForRow({
             services: configuredServices,
             row: selectedRuntimeService,
@@ -495,7 +495,7 @@ export function executionWorkspaceRoutes(db: Db) {
         ?? (effectiveRuntimeServices.some((service) => service.status === "starting" || service.status === "running")
           ? "running"
           : "stopped");
-      const nextRuntimeState = action === "stop" && selectedRuntimeServiceId && selectedServiceIndex === null
+      const nextRuntimeState = action === "stop" && selectedRuntimeServiceId && resolvedServiceIndex === null
         ? {
             desiredState: currentDesiredState,
             serviceStates: existing.config?.serviceStates ?? null,

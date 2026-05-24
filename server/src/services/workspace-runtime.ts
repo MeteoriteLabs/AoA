@@ -1,9 +1,10 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { Db } from "@armyofagents/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
@@ -91,6 +92,7 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
+const execFileAsync = promisify(execFile);
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -444,8 +446,29 @@ async function validateLinkedGitWorktree(input: {
   return { valid: true };
 }
 
-function terminateChildProcess(child: ChildProcess) {
+export function buildRuntimeServiceProcessTreeKillCommand(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } | null {
+  if (platform !== "win32") return null;
+  return { command: "taskkill.exe", args: ["/PID", String(pid), "/T", "/F"] };
+}
+
+async function terminateChildProcess(child: ChildProcess) {
   if (!child.pid) return;
+  const windowsTreeKill = buildRuntimeServiceProcessTreeKillCommand(child.pid);
+  if (windowsTreeKill) {
+    try {
+      await execFileAsync(windowsTreeKill.command, windowsTreeKill.args, {
+        timeout: 5000,
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      // Fall through to the direct child kill when taskkill is unavailable or
+      // the wrapper process exited before we could terminate its tree.
+    }
+  }
   if (process.platform !== "win32") {
     try {
       process.kill(-child.pid, "SIGTERM");
@@ -1638,14 +1661,11 @@ export async function refreshLocalProcessRuntimeServiceRows(input: {
       if (row.provider !== "local_process" || !row.url) return row;
       if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
 
-      const inMemory = runtimeServicesById.get(row.id);
-      const reachable = inMemory?.status === "running"
-        ? true
-        : await probePreviewUrlDeduped({
-            key: row.id,
-            url: row.url,
-            probeUrl,
-          });
+      const reachable = await probePreviewUrlDeduped({
+        key: row.id,
+        url: row.url,
+        probeUrl,
+      });
       const nextStatus = reachable ? "running" : "stopped";
       const nextHealthStatus = reachable ? "healthy" : "unhealthy";
       const nextStoppedAt = reachable ? null : now;
@@ -1802,7 +1822,7 @@ async function startLocalRuntimeService(input: {
   try {
     await waitForReadiness({ service: input.service, url });
   } catch (err) {
-    terminateChildProcess(child);
+    await terminateChildProcess(child);
     throw new Error(
       `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
     );
@@ -1864,7 +1884,7 @@ async function stopRuntimeService(serviceId: string) {
   record.lastUsedAt = new Date().toISOString();
   record.stoppedAt = new Date().toISOString();
   if (record.child && record.child.pid) {
-    terminateChildProcess(record.child);
+    await terminateChildProcess(record.child);
   }
   runtimeServicesById.delete(serviceId);
   if (record.reuseKey) {

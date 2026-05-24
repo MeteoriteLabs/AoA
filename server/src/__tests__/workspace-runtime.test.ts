@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildRuntimeServiceProcessTreeKillCommand,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
   normalizeAdapterManagedRuntimeServices,
@@ -14,6 +15,7 @@ import {
   refreshAdapterManagedPreviewRuntimeServiceRows,
   refreshLocalProcessRuntimeServiceRows,
   resolveRuntimeServiceReadinessOptions,
+  startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -27,6 +29,17 @@ const leasedRunIds = new Set<string>();
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
+
+describe("runtime service process cleanup", () => {
+  it("uses taskkill tree mode for Windows runtime service cleanup", () => {
+    expect(buildRuntimeServiceProcessTreeKillCommand(1234, "win32")).toEqual({
+      command: "taskkill.exe",
+      args: ["/PID", "1234", "/T", "/F"],
+    });
+
+    expect(buildRuntimeServiceProcessTreeKillCommand(1234, "linux")).toBeNull();
+  });
+});
 
 async function createTempRepo() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
@@ -1626,5 +1639,74 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
       healthCheckedAt: now,
       updatedAt: now,
     });
+  });
+
+  it("probes stale local-process URLs even when the process is still registered in memory", async () => {
+    const refs = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(),
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-root-1",
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        cwd: process.cwd(),
+        branchName: null,
+        worktreePath: null,
+        warnings: [],
+        created: false,
+      },
+      executionWorkspaceId: "execution-workspace-1",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"require('http').createServer((_,r)=>r.end('ok')).listen(process.env.PORT, '127.0.0.1')\"",
+              port: { type: "auto" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    try {
+      let probes = 0;
+      const now = new Date("2026-05-17T10:00:00.000Z");
+      const result = await refreshLocalProcessRuntimeServiceRows({
+        rows: [{
+          ...baseRow,
+          id: refs[0]!.id,
+          port: refs[0]!.port,
+          url: `http://127.0.0.1:${refs[0]!.port}/`,
+          status: "running",
+          healthStatus: "healthy",
+          healthCheckedAt: null,
+        } as any],
+        now,
+        probeUrl: async () => {
+          probes += 1;
+          return false;
+        },
+      });
+
+      expect(probes).toBe(1);
+      expect(result.rows[0]).toMatchObject({
+        status: "stopped",
+        healthStatus: "unhealthy",
+        stoppedAt: now,
+        healthCheckedAt: now,
+        updatedAt: now,
+      });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-1",
+        workspaceCwd: process.cwd(),
+      });
+    }
   });
 });

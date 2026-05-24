@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { IncomingMessage } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Db } from "@armyofagents/db";
 import { workspaceRuntimeServices } from "@armyofagents/db";
@@ -17,6 +17,9 @@ const STRIPPED_UPSTREAM_HEADERS = [
   "x-aoa-auth",
   "x-openclaw-auth",
 ] as const;
+
+const PREVIEW_SANDBOX_CSP =
+  "sandbox allow-scripts allow-forms allow-popups allow-downloads";
 
 export const previewProxy = httpProxy.createProxyServer({
   changeOrigin: true,
@@ -36,6 +39,27 @@ previewProxy.on("proxyReqWs", (proxyReq) => {
     proxyReq.removeHeader(header);
   }
   proxyReq.setHeader("x-aoa-preview", "1");
+  proxyReq.on("response", (proxyRes) => {
+    hardenPreviewResponseHeaders(proxyRes.headers, { applySandbox: true });
+  });
+  proxyReq.on("upgrade", (proxyRes) => {
+    hardenPreviewResponseHeaders(proxyRes.headers, { applySandbox: false });
+  });
+});
+
+function hardenPreviewResponseHeaders(
+  headers: IncomingHttpHeaders,
+  opts: { applySandbox: boolean },
+) {
+  delete headers["set-cookie"];
+  delete headers["set-cookie2"];
+  if (opts.applySandbox) {
+    headers["content-security-policy"] = PREVIEW_SANDBOX_CSP;
+  }
+}
+
+previewProxy.on("proxyRes", (proxyRes) => {
+  hardenPreviewResponseHeaders(proxyRes.headers, { applySandbox: true });
 });
 
 async function resolvePreviewRuntimeServiceRow(
@@ -93,7 +117,8 @@ export function buildPreviewTargetUrl(input: {
     ? upstream.pathname.slice(0, -1)
     : upstream.pathname;
   upstream.pathname = `${upstreamBasePath}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
-  upstream.search = requestUrl.search;
+  requestUrl.searchParams.delete("token");
+  upstream.search = requestUrl.searchParams.toString();
   return upstream.href;
 }
 

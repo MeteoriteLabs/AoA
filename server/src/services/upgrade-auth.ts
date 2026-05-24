@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { agentApiKeys, companyMemberships, instanceUserRoles, type Db } from "@armyofagents/db";
+import { agentApiKeys, agents, companyMemberships, instanceUserRoles, type Db } from "@armyofagents/db";
 import type { DeploymentMode } from "@armyofagents/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -94,6 +94,21 @@ export async function authorizeCompanyUpgrade(
     .then((rows) => rows[0] ?? null);
 
   if (!key || key.companyId !== companyId) {
+    return null;
+  }
+
+  const agent = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, key.agentId))
+    .then((rows) => rows[0] ?? null);
+
+  if (
+    !agent ||
+    agent.companyId !== key.companyId ||
+    agent.status === "terminated" ||
+    agent.status === "pending_approval"
+  ) {
     return null;
   }
 

@@ -56,6 +56,12 @@ const mockInstanceSettings = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 const mockStopRuntimeServices = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockBuildWorkspaceRuntimeDesiredStatePatch = vi.hoisted(() =>
+  vi.fn().mockReturnValue({ desiredState: "stopped", serviceStates: null }),
+);
+const mockResolveConfiguredRuntimeServiceIndexForRow = vi.hoisted(() =>
+  vi.fn().mockReturnValue(null),
+);
 const mockCleanupArtifacts = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ cleaned: true, warnings: [] }),
 );
@@ -82,12 +88,12 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
-  buildWorkspaceRuntimeDesiredStatePatch: vi.fn().mockReturnValue({ desiredState: "stopped", serviceStates: null }),
+  buildWorkspaceRuntimeDesiredStatePatch: mockBuildWorkspaceRuntimeDesiredStatePatch,
   stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServices,
   ensurePersistedExecutionWorkspaceAvailable: vi.fn(),
   listConfiguredRuntimeServiceEntries: vi.fn().mockReturnValue([]),
   refreshPersistedRuntimeServiceRows: vi.fn(({ rows }) => rows),
-  resolveConfiguredRuntimeServiceIndexForRow: vi.fn().mockReturnValue(null),
+  resolveConfiguredRuntimeServiceIndexForRow: mockResolveConfiguredRuntimeServiceIndexForRow,
   startRuntimeServicesForWorkspaceControl: vi.fn(),
   cleanupExecutionWorkspaceArtifacts: mockCleanupArtifacts,
 }));
@@ -425,6 +431,8 @@ describe("POST /api/execution-workspaces/:id/runtime-services/stop", () => {
     vi.clearAllMocks();
     mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockStopRuntimeServices.mockResolvedValue(undefined);
+    mockBuildWorkspaceRuntimeDesiredStatePatch.mockReturnValue({ desiredState: "stopped", serviceStates: null });
+    mockResolveConfiguredRuntimeServiceIndexForRow.mockReturnValue(null);
   });
 
   it("accepts a persisted effective runtime service id instead of relying on getById embedding services", async () => {
@@ -476,6 +484,56 @@ describe("POST /api/execution-workspaces/:id/runtime-services/stop", () => {
     expect(mockStopRuntimeServices).toHaveBeenCalledWith(expect.objectContaining({
       executionWorkspaceId: "ws-1",
       runtimeServiceId,
+    }));
+  });
+
+  it("persists stopped desired state for a mappable configured service id", async () => {
+    const existing = buildExistingWorkspace({
+      cwd: "C:/tmp/ws-1",
+      config: {
+        workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        desiredState: "running",
+        serviceStates: { "0": "running" },
+      },
+      metadata: {
+        config: {
+          workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+          desiredState: "running",
+          serviceStates: { "0": "running" },
+        },
+      },
+    });
+    const runtimeServiceId = "00000000-0000-4000-8000-000000000001";
+    const service = buildRuntimeServiceRow({
+      id: runtimeServiceId,
+      command: "pnpm dev",
+      cwd: "C:/tmp/ws-1",
+    });
+    mockSvc.getById.mockResolvedValue(existing);
+    mockSvc.loadEffectiveRuntimeServicesByExecutionWorkspace.mockResolvedValue([service]);
+    mockResolveConfiguredRuntimeServiceIndexForRow.mockReturnValue(0);
+    mockBuildWorkspaceRuntimeDesiredStatePatch.mockReturnValue({
+      desiredState: "stopped",
+      serviceStates: { "0": "stopped" },
+    });
+    mockSvc.update.mockResolvedValue(existing);
+
+    const res = await request(createApp())
+      .post(`/api/execution-workspaces/ws-1/runtime-services/stop`)
+      .send({ runtimeServiceId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockBuildWorkspaceRuntimeDesiredStatePatch).toHaveBeenCalledWith(expect.objectContaining({
+      action: "stop",
+      serviceIndex: 0,
+    }));
+    expect(mockSvc.update).toHaveBeenCalledWith("ws-1", expect.objectContaining({
+      metadata: expect.objectContaining({
+        config: expect.objectContaining({
+          desiredState: "stopped",
+          serviceStates: { "0": "stopped" },
+        }),
+      }),
     }));
   });
 });

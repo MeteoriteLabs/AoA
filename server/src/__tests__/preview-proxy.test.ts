@@ -4,6 +4,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createPreviewRouter } from "../routes/preview.js";
+import { buildPreviewTargetUrl } from "../services/preview-proxy.js";
 
 function startLocalServer(
   handler: http.RequestListener,
@@ -92,6 +93,28 @@ describe("preview proxy route", () => {
     expect(res.text).toContain("/hello?x=1");
   });
 
+  it("strips upstream cookies and applies a sandbox policy to proxied responses", async () => {
+    const upstream = await startLocalServer((_req, res) => {
+      res.setHeader("Set-Cookie", [
+        "aoa_session=evil; Path=/; HttpOnly",
+        "preview_state=dirty; Path=/",
+      ]);
+      res.setHeader("Content-Security-Policy", "default-src *");
+      res.setHeader("content-type", "text/html");
+      res.end("<script>window.previewLoaded = true</script>");
+    });
+    cleanup.push(upstream.close);
+
+    const app = makeApp(makeRuntimeRow({ url: upstream.url }));
+
+    const res = await request(app).get("/preview/services/svc-1/");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(res.headers["content-security-policy"]).toContain("sandbox");
+    expect(res.headers["content-security-policy"]).not.toContain("allow-same-origin");
+  });
+
   it("streams non-json POST bodies without express.json consuming them", async () => {
     const upstream = await startLocalServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -148,5 +171,15 @@ describe("preview proxy route", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Agent key cannot access another company");
+  });
+});
+
+describe("buildPreviewTargetUrl", () => {
+  it("strips AoA query auth tokens before forwarding preview traffic upstream", () => {
+    expect(buildPreviewTargetUrl({
+      serviceUrl: "http://127.0.0.1:5173/",
+      serviceId: "svc-1",
+      originalUrl: "/preview/services/svc-1/ws?token=secret&keep=1",
+    })).toBe("http://127.0.0.1:5173/ws?keep=1");
   });
 });

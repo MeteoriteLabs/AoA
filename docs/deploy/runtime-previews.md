@@ -21,6 +21,8 @@ Runtime preview URLs:
 - Verify the current AoA actor can access the service's company/workspace.
 - Proxy only allowed loopback upstreams in this phase: `localhost`, `127.0.0.1`, and `::1`.
 - Strip AoA cookies and sensitive auth headers before forwarding traffic upstream.
+- Strip upstream `Set-Cookie` headers and apply a CSP sandbox to preview responses so path-based previews cannot write AoA-origin cookies or run as trusted AoA UI.
+- Strip AoA query auth tokens before forwarding HTTP or WebSocket preview traffic upstream.
 - Support normal HTTP traffic and WebSocket/HMR upgrade traffic.
 - Refuse stopped, unavailable, unhealthy, unsafe, or cross-company services.
 
@@ -111,7 +113,7 @@ is better for cookie, storage, service worker, and origin isolation, but it requ
 | Preview returns unavailable | Service is stopped, unhealthy, or no longer reachable | Refresh runtime services, restart configured service, or rerun the agent |
 | Works on the AoA host but not another device | User copied raw `localhost` instead of the AoA preview URL | Open AoA from the second device and use `/preview/services/:serviceId/*` |
 | WebSocket/HMR does not connect | App assumes a different origin or hard-codes a websocket host | Prefer relative HMR config or configure the app for proxied access |
-| App breaks under `/preview/services/...` | App assumes it is mounted at `/` | Use a base path-aware app config or deploy the app to an external preview URL |
+| App breaks under `/preview/services/...` | App assumes it is mounted at `/` or needs same-origin browser storage/API access blocked by the preview sandbox | Use a base path-aware app config or deploy the app to an external preview URL |
 
 ## Verification Checklist
 
