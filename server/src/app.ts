@@ -76,6 +76,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { createPreviewRouter } from "./routes/preview.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
@@ -187,7 +188,6 @@ export async function createApp(
     ["/api/companies/import", "/api/companies/import/preview"],
     express.json({ limit: "20mb", verify: captureRawBody }),
   );
-  app.use(express.json({ verify: captureRawBody }));
   app.use(httpLogger);
   // Strict CSP + tightened cross-origin policies in production deployment
   // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
@@ -217,6 +217,10 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // Runtime previews are a streaming proxy, not JSON API routes. Mount before
+  // the global body parser so POST/PUT/uploads reach the upstream unchanged.
+  app.use("/preview", createPreviewRouter(db));
+  app.use(express.json({ verify: captureRawBody }));
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
