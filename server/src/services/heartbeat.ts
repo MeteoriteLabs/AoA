@@ -24,6 +24,7 @@ import {
   teamMembers,
   teamCoordinations,
   teams,
+  internalAgentRuns,
 } from "@armyofagents/db";
 import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -874,6 +875,43 @@ export async function buildTeamCoordinationSkillEntries(
       trustLevel: c.trustLevel,
     };
   });
+}
+
+// ── Plan 3 Task 7: crew run cancellation helpers ─────────────────────────────
+// These are exported as pure helpers so they can be called from
+// cancelActiveForAgent / cancelBudgetScopeWork AND tested independently
+// without importing the full heartbeatService (which has deep dependencies).
+// They cancel internal_agent_runs rows that are still 'running' for the given
+// scope — mirroring the heartbeat_runs cancel pattern.
+
+/**
+ * Cancel all running internal_agent_runs for a specific agent.
+ * Called by cancelActiveForAgent to reach crew sub-agent runs.
+ */
+export async function cancelCrewRunsForAgent(db: Db, agentId: string): Promise<void> {
+  await db
+    .update(internalAgentRuns)
+    .set({
+      status: "cancelled",
+      errorMessage: "Cancelled due to agent pause",
+      completedAt: new Date(),
+    })
+    .where(and(eq(internalAgentRuns.agentId, agentId), eq(internalAgentRuns.status, "running")));
+}
+
+/**
+ * Cancel all running internal_agent_runs for a company.
+ * Called by cancelBudgetScopeWork (company scope) to reach crew sub-agent runs.
+ */
+export async function cancelCrewRunsForCompany(db: Db, companyId: string): Promise<void> {
+  await db
+    .update(internalAgentRuns)
+    .set({
+      status: "cancelled",
+      errorMessage: "Cancelled due to company budget hard-stop",
+      completedAt: new Date(),
+    })
+    .where(and(eq(internalAgentRuns.companyId, companyId), eq(internalAgentRuns.status, "running")));
 }
 
 export function heartbeatService(db: Db) {
@@ -4835,6 +4873,11 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(run);
       }
 
+      // Plan 3 Task 7: also cancel running internal_agent_runs (crew sub-agents)
+      await cancelCrewRunsForAgent(db, agentId).catch((err: unknown) => {
+        logger.warn({ err, agentId }, "crew run cancellation failed (non-fatal)");
+      });
+
       return runs.length;
     },
 
@@ -4909,6 +4952,10 @@ export function heartbeatService(db: Db) {
         }
         await releaseIssueExecutionAndPromote(run);
       }
+      // Plan 3 Task 7: also cancel running internal_agent_runs (crew sub-agents).
+      await cancelCrewRunsForCompany(db, scope.companyId).catch((err: unknown) => {
+        logger.warn({ err, companyId: scope.companyId }, "crew run cancellation failed (non-fatal)");
+      });
       return runs.length;
     },
 
