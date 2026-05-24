@@ -24,6 +24,7 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...a: unknown[]) => ({ or: a })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
+  gt: vi.fn((a: unknown, b: unknown) => ({ gt: [a, b] })),
   isNull: vi.fn((c: unknown) => ({ isNull: c })),
   inArray: vi.fn((c: unknown, v: unknown) => ({ inArray: [c, v] })),
   notInArray: vi.fn((c: unknown, v: unknown) => ({ notInArray: [c, v] })),
@@ -52,13 +53,19 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 // Mock the Plan-3 gate modules so existing dispatcher tests don't need to
-// add internalAgentConfig query slots to their sequence DBs. Tests that
-// specifically exercise the gates do so via crew-autonomy / crew-killswitch.
+// add internalAgentConfig/agent query slots to their sequence DBs. Tests that
+// specifically exercise the gates do so via crew-autonomy / crew-killswitch /
+// crew-cost-caps.
 vi.mock("../services/internal-agent/aoa-agents/autonomy.js", () => ({
   isRoleActiveAtAutonomy: () => true, // all roles active in dispatcher contract tests
 }));
 vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
   isCrewPaused: () => false, // never paused in dispatcher contract tests
+}));
+vi.mock("../services/internal-agent/cost-caps.js", () => ({
+  runRateExceeded: () => false, // run-rate never exceeded in dispatcher contract tests
+  resolveRoleModel: ({ companyDefault }: { roleModel: string | null; companyDefault: string }) => companyDefault,
+  DEFAULT_CREW_RATE_LIMIT: { maxRunsPerWindow: 10, windowMinutes: 10 },
 }));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
   runAoaAgent: runAoaMock,
@@ -401,6 +408,14 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // (default) and autonomyLevel=0 (default). Autonomy+kill-switch gates
         // are mocked to always pass, so this select is a no-op for the test.
         [],
+        // slot 5 — Plan-3 Task 9: D3 run-rate brake count select.
+        // runRateExceeded is mocked to always return false so 0 runs here is
+        // safe; the select still runs to count internal_agent_runs in the window.
+        [],
+        // slot 6 — Plan-3 Task 9: agent row select for per-role model resolution.
+        // Returns empty so agentRow=null → falls back to company default model.
+        // resolveRoleModel is mocked to return companyDefault directly.
+        [],
       ],
       [
         // update[0] = Phase-3 atomic claim queued→processing → claimed
@@ -438,9 +453,11 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     // The orphan select (slot 0) is consumed before the pending select
     // (slot 1), and both before the wakeup select (slot 2) and Phase-4 (slot
     // 3). Plan-3 Task 4/8 adds a resolveCompanyConfig select (slot 4) per
-    // wakeup that is always AFTER the wakeup select.
+    // wakeup that is always AFTER the wakeup select. Plan-3 Task 9 adds a
+    // run-rate count select (slot 5) and an agent-row select (slot 6), both
+    // per wakeup, memoized by the gate mocks so gating is bypassed in this test.
     // The DRAINS overlap, selects are issued in the original positional order.
-    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4]);
+    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4, 5, 6]);
 
     // Phase-4 still runs last (its select slot was consumed; nothing to do).
     expect(db._sets.some(entryFailReclaim)).toBe(false);
