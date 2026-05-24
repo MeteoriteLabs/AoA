@@ -84,3 +84,142 @@ export function resolveNodeRender(
   const asDot = isStacked || (node.isTaskTip && !taskVisible);
   return { isStacked, taskBranch, taskVisible, asDot };
 }
+
+// ---------------------------------------------------------------------------
+// Region geometry constants (generous so the hit area always covers the glyph)
+// ---------------------------------------------------------------------------
+
+const PAD = 4;
+const BADGE_EXT = 26;   // card → right, covers CI/PR/conflict badges
+const LABEL_EXT = 24;   // card → down, covers the 2 label lines
+const STACK_LABEL_EXT = 36; // stacked card → right, covers the id label
+const SYNC_EXT_DEFAULT = 30; // node → up on the default tip (clears HEAD + sync)
+const SYNC_EXT = 18;    // node → up on a normal tip (sync marker)
+const TAG_W = 90;       // node → right, covers up to 2 tag pills
+const ARC_THRESHOLD = 8;
+const TRUNK_THRESHOLD = 8;
+
+function hasSync(b: GitBranchInfo | null | undefined): boolean {
+  return !!b && ((b.aheadCount ?? 0) > 0 || (b.behindCount ?? 0) > 0);
+}
+
+export interface BuildHitRegionsArgs {
+  layout: ArcLayoutResult;
+  visibleNames: Set<string>;
+  arcVisibleNames: Set<string>;
+  visibleStacks: TipStack[];
+  stackedShas: Set<string>;
+  branchByName: Map<string, GitBranchInfo>;
+  taskBranchByTipSha: Map<string, GitBranchInfo>;
+  trunkSpan: { minX: number; maxX: number } | null;
+  defaultBranch: string;
+}
+
+/** Build the ordered hit-region list. Order = draw order (later = on top), so
+ * hitRegionAt() walks it in reverse and stack cards/pills beat nodes beat lines. */
+export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
+  const {
+    layout, visibleNames, arcVisibleNames, visibleStacks, stackedShas,
+    branchByName, taskBranchByTipSha, trunkSpan, defaultBranch,
+  } = args;
+  const regions: HitRegion[] = [];
+
+  // 1. Trunk line (bottom of the stack).
+  if (trunkSpan) {
+    regions.push({
+      shape: "poly",
+      pts: [[trunkSpan.minX, layout.trunkY], [trunkSpan.maxX, layout.trunkY]],
+      threshold: TRUNK_THRESHOLD,
+      target: { kind: "trunkLine" },
+    });
+  }
+
+  // 2. Arc lines (incl. done/cancelled — they are hittable whenever visible).
+  for (const arc of layout.arcs) {
+    if (!arcVisibleNames.has(arc.branchName)) continue;
+    if (arc.points.length < 2) continue;
+    const b = branchByName.get(arc.branchName);
+    const target: HitTarget = b?.linkedIssueId
+      ? { kind: "task", branchName: arc.branchName }
+      : { kind: "plainTip", branchName: arc.branchName };
+    regions.push({ shape: "poly", pts: arc.points, threshold: ARC_THRESHOLD, target });
+  }
+
+  // 3. Nodes (dots/cards) + their tags. Mirror redraw's visibleNodes filter.
+  for (const node of layout.nodes) {
+    const visible = node.isTrunk
+      ? visibleNames.has(defaultBranch)
+      : node.arcBranchName != null && visibleNames.has(node.arcBranchName);
+    if (!visible) continue;
+
+    const r = resolveNodeRender(node, visibleNames, branchByName, taskBranchByTipSha, stackedShas);
+
+    // Tag pills (separate target — to the right of the node).
+    if (node.tags.length > 0) {
+      regions.push({
+        shape: "rect",
+        x: node.x + COMMIT_R + 4, y: node.y - 8, w: TAG_W, h: 16,
+        target: { kind: "tag", name: node.tags[0]!, sha: node.sha },
+      });
+    }
+
+    if (!r.asDot && r.taskBranch?.linkedIssueId) {
+      // Card UNIT: card box + label (below) + badges (right) + sync (above).
+      const syncUp = hasSync(r.taskBranch)
+        ? (node.isDefault ? SYNC_EXT_DEFAULT : SYNC_EXT)
+        : PAD;
+      const top = node.y - CARD_H / 2 - syncUp;
+      regions.push({
+        shape: "rect",
+        x: node.x - CARD_W / 2 - PAD,
+        y: top,
+        w: CARD_W + PAD + BADGE_EXT,
+        h: (node.y + CARD_H / 2 + LABEL_EXT) - top,
+        target: { kind: "task", branchName: r.taskBranch.name },
+      });
+    } else {
+      // Plain dot/diamond. Resolve its target and extend up for a sync marker.
+      const tipBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
+      const syncUp = hasSync(tipBranch ?? r.taskBranch)
+        ? (node.isDefault ? SYNC_EXT_DEFAULT : SYNC_EXT)
+        : PAD;
+      let target: HitTarget;
+      if (node.isMerge) target = { kind: "merge", sha: node.sha };
+      else if (node.isBranchTip && tipBranch && !tipBranch.linkedIssueId)
+        target = { kind: "plainTip", branchName: tipBranch.name };
+      else target = { kind: "commit", sha: node.sha };
+      const top = node.y - COMMIT_R - syncUp;
+      regions.push({
+        shape: "rect",
+        x: node.x - COMMIT_R - PAD,
+        y: top,
+        w: 2 * (COMMIT_R + PAD),
+        h: (node.y + COMMIT_R + PAD) - top,
+        target,
+      });
+    }
+  }
+
+  // 4. Stacks (top of the stack so they win): each fanned card + the "+N" pill.
+  for (const stack of visibleStacks) {
+    for (const c of computeStackCardLayout(stack)) {
+      regions.push({
+        shape: "rect",
+        x: c.x - CARD_W / 2 - PAD,
+        y: c.y - CARD_H / 2 - PAD,
+        w: CARD_W + PAD + STACK_LABEL_EXT,
+        h: CARD_H + 2 * PAD,
+        target: { kind: "task", branchName: c.branchName },
+      });
+    }
+    if (stack.branchNames.length > computeStackCardLayout(stack).length) {
+      regions.push({
+        shape: "rect",
+        x: stack.x + 50, y: stack.y + 8, w: 54, h: 15,
+        target: { kind: "showMore" },
+      });
+    }
+  }
+
+  return regions;
+}

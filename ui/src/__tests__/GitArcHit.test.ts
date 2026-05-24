@@ -3,9 +3,16 @@ import type { GitBranchInfo } from "@armyofagents/shared";
 import {
   resolveNodeRender,
   hitRegionAt,
+  buildHitRegions,
   type HitRegion,
 } from "../components/workspace/git-arc-hit";
-import type { ArcCommitLayout } from "../components/workspace/git-arc-layout";
+import {
+  computeStackCardLayout,
+  type ArcCommitLayout,
+  type ArcLayoutResult,
+  type TipStack,
+} from "../components/workspace/git-arc-layout";
+import { CARD_W, CARD_H } from "../components/workspace/git-arc-draw";
 
 function mkNode(p: Partial<ArcCommitLayout> & { sha: string }): ArcCommitLayout {
   return {
@@ -67,5 +74,81 @@ describe("hitRegionAt", () => {
   });
   it("returns null when nothing is near", () => {
     expect(hitRegionAt(regions, 400, 400)).toBeNull();
+  });
+});
+
+function emptyLayout(nodes: ArcCommitLayout[], arcs: never[] = []): ArcLayoutResult {
+  return { nodes, arcs: arcs as never, trunkY: 200, totalWidth: 1000, totalHeight: 500, tipStacks: [] };
+}
+
+describe("buildHitRegions", () => {
+  const branchByName = new Map([
+    ["feat/x", mkBranch("feat/x", "i1")],
+    ["main", mkBranch("main", null)],
+  ]);
+  const taskByTip = new Map([["c1", mkBranch("feat/x", "i1")]]);
+
+  it("emits a card rect (task target) that covers the label area BELOW the card", () => {
+    const node = mkNode({ sha: "c1", x: 500, y: 200, isTaskTip: true, isBranchTip: true, branchName: "feat/x", arcBranchName: "feat/x" });
+    const layout = emptyLayout([node]);
+    const regions = buildHitRegions({
+      layout, visibleNames: new Set(["feat/x", "main"]), arcVisibleNames: new Set(["feat/x"]),
+      visibleStacks: [], stackedShas: new Set(), branchByName, taskBranchByTipSha: taskByTip,
+      trunkSpan: null, defaultBranch: "main",
+    });
+    const t = hitRegionAt(regions, 500, 200 + CARD_H / 2 + 16);
+    expect(t).toEqual({ kind: "task", branchName: "feat/x" });
+  });
+
+  it("emits a rect (task) covering the badge band to the RIGHT of the card", () => {
+    const node = mkNode({ sha: "c1", x: 500, y: 200, isTaskTip: true, isBranchTip: true, branchName: "feat/x", arcBranchName: "feat/x" });
+    const regions = buildHitRegions({
+      layout: emptyLayout([node]), visibleNames: new Set(["feat/x"]), arcVisibleNames: new Set(["feat/x"]),
+      visibleStacks: [], stackedShas: new Set(), branchByName, taskBranchByTipSha: taskByTip,
+      trunkSpan: null, defaultBranch: "main",
+    });
+    expect(hitRegionAt(regions, 500 + CARD_W / 2 + 18, 200)).toEqual({ kind: "task", branchName: "feat/x" });
+  });
+
+  it("emits the trunk polyline (trunkLine target) when trunkSpan is given", () => {
+    const regions = buildHitRegions({
+      layout: emptyLayout([]), visibleNames: new Set(["main"]), arcVisibleNames: new Set(),
+      visibleStacks: [], stackedShas: new Set(), branchByName, taskBranchByTipSha: new Map(),
+      trunkSpan: { minX: 100, maxX: 900 }, defaultBranch: "main",
+    });
+    expect(hitRegionAt(regions, 400, 204)).toEqual({ kind: "trunkLine" });
+  });
+
+  it("emits a showMore rect for a stack with extra branches, and task rects for shown cards", () => {
+    const stack: TipStack = { sha: "c1", x: 500, y: 200, branchNames: ["a", "b", "c", "d", "e"] };
+    const bb = new Map([
+      ["a", mkBranch("a", "i-a")], ["b", mkBranch("b", "i-b")], ["c", mkBranch("c", "i-c")],
+      ["d", mkBranch("d", "i-d")], ["e", mkBranch("e", "i-e")],
+    ]);
+    const regions = buildHitRegions({
+      layout: emptyLayout([]), visibleNames: new Set(["a", "b", "c", "d", "e"]),
+      arcVisibleNames: new Set(), visibleStacks: [stack], stackedShas: new Set(["c1"]),
+      branchByName: bb, taskBranchByTipSha: new Map(), trunkSpan: null, defaultBranch: "main",
+    });
+    expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore" });
+    const cards = computeStackCardLayout(stack);
+    expect(hitRegionAt(regions, cards[0]!.x, cards[0]!.y)).toEqual({ kind: "task", branchName: "a" });
+  });
+
+  it("a done branch's arc IS hittable when it is in arcVisibleNames", () => {
+    const arc = {
+      branchName: "feat/done", direction: "up" as const, branchPointX: 100, mergePointX: 300,
+      apexY: 140, isOpen: false, color: "#7E8AA8", isDone: true,
+      points: [[100, 200], [200, 140], [300, 200]] as Array<[number, number]>,
+    };
+    const layout: ArcLayoutResult = {
+      nodes: [], arcs: [arc], trunkY: 200, totalWidth: 1000, totalHeight: 500, tipStacks: [],
+    };
+    const regions = buildHitRegions({
+      layout, visibleNames: new Set(["feat/done"]), arcVisibleNames: new Set(["feat/done"]),
+      visibleStacks: [], stackedShas: new Set(), branchByName: new Map([["feat/done", mkBranch("feat/done", null)]]),
+      taskBranchByTipSha: new Map(), trunkSpan: null, defaultBranch: "main",
+    });
+    expect(hitRegionAt(regions, 200, 141)).toEqual({ kind: "plainTip", branchName: "feat/done" });
   });
 });
