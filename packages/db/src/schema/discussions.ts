@@ -151,12 +151,12 @@ export const discussionExtractedItems = pgTable(
 
     // Item content
     type: text("type").notNull(),
-    // 'decision' | 'task' | 'insight' | 'context' | 'reference' | 'preference'
+    // ExtractionItemType: decision|task|insight|context|reference|preference|artifact|spin_off_thread
     title: text("title").notNull(),
     description: text("description"),
 
     // Suggestions from extraction
-    suggestedPriority: text("suggested_priority"), // 'urgent' | 'high' | 'medium' | 'low'
+    suggestedPriority: text("suggested_priority"), // IssuePriority: 'critical' | 'high' | 'medium' | 'low'
     suggestedAssigneeId: uuid("suggested_assignee_id"),
     suggestedDepartmentId: uuid("suggested_department_id").references(
       () => projects.id,
@@ -197,6 +197,11 @@ export const discussionExtractedItems = pgTable(
 
     // Conflict detection
     conflictsWith: jsonb("conflicts_with"), // array of { entityType, entityId, description }
+
+    // ── Threads v1: committed per-item routing (agent|human discriminator) ──
+    assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    assigneeUserId: text("assignee_user_id"), // TEXT (mirrors issues.assigneeUserId; no FK)
+    departmentId: uuid("department_id").references(() => projects.id, { onDelete: "set null" }),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
