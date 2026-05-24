@@ -1175,5 +1175,96 @@ export function threadService(db: Db) {
 
       return { graduated };
     },
+
+    // ── Spin-off (child thread from a scope item) ─────────────────────────────
+
+    /**
+     * Create a spin-off child thread from a specific scope item.
+     * Unlike fork (which copies the whole thread), spin-off creates a new
+     * thread linked to a specific scope item as its origin.
+     *
+     * Creates:
+     *   1. New discussion with forkedFromId = parentId
+     *   2. threadLinks row with kind="spawned_from_task"
+     *   3. First entry copying the scope item's context
+     */
+    spinOff: async (
+      companyId: string,
+      parentId: string,
+      input: { scopeItemId: string; title?: string },
+      actor: Actor,
+    ) => {
+      const parent = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, parentId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parent) throw notFound("Thread not found");
+      await assertCanView(companyId, parent, actor);
+
+      // Fetch the scope item for title/context
+      const scopeItem = await db
+        .select()
+        .from(discussionExtractedItems)
+        .where(eq(discussionExtractedItems.id, input.scopeItemId))
+        .then((rows) => rows[0] ?? null);
+
+      const childTitle = input.title ?? scopeItem?.title ?? `${parent.title ?? "Thread"} (spin-off)`;
+
+      const [child] = await db
+        .insert(discussions)
+        .values({
+          companyId,
+          title: childTitle,
+          scopeType: parent.scopeType,
+          scopeId: parent.scopeId,
+          phase: "discuss" as const,
+          visibility: parent.visibility,
+          forkedFromId: parent.id,
+          ownerUserId: actor.isHuman ? actor.userId : null,
+          createdBy: actor.userId,
+        })
+        .returning();
+
+      // Create the "spawned_from_task" link
+      await db.insert(threadLinks).values({
+        companyId,
+        fromThreadId: child.id,
+        toThreadId: parent.id,
+        kind: "spawned_from_task",
+        createdBy: actor.userId,
+      });
+
+      // Create first entry copying scope item context (if scope item found)
+      if (scopeItem) {
+        await db.insert(discussionEntries).values({
+          discussionId: child.id,
+          inputType: "write",
+          rawContent: [
+            `Spun off from: ${parent.title ?? parentId}`,
+            scopeItem.description ?? scopeItem.title,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+          createdBy: actor.userId,
+        });
+      }
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.isHuman ? "user" : "agent",
+        actorId: actor.userId,
+        action: "thread.spun_off",
+        entityType: "discussion",
+        entityId: parentId,
+        details: { childId: child.id, scopeItemId: input.scopeItemId },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.scope.changed",
+        payload: { threadId: parentId, childId: child.id },
+      });
+      return { id: child.id, forkedFromId: parent.id, title: child.title };
+    },
   };
 }
