@@ -86,10 +86,17 @@ export async function resolveGitHubAuth(
   companyId: string,
   consumerId: string,
 ): Promise<string> {
-  // 1. Try GitHub App installation
+  // 1. Try a GitHub App installation token. If minting fails (missing/invalid
+  //    app credentials, or a transient error), fall through to the PAT so a
+  //    broken App install can't take down GitHub features for a company that
+  //    also has a working PAT.
   const installation = await getInstallation(db, companyId);
   if (installation) {
-    return mintInstallationToken(installation.installationId);
+    try {
+      return await mintInstallationToken(installation.installationId);
+    } catch {
+      // fall through to PAT resolution below
+    }
   }
 
   // 2. Fall back to PAT
