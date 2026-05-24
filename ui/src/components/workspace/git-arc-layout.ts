@@ -431,7 +431,10 @@ export function computeArcLayout(
     const branchPointX = d.branchPointX;
     const mergePointX = d.mergePointX;
 
-    const lane = Math.min(arcLanes.get(fb.name) ?? 0, MAX_LANES);
+    // Clamp to MAX_LANES-1: MAX_LANES is a lane COUNT (5 lanes => valid indices
+    // 0..4). Clamping to MAX_LANES let a dense pile reach index 5, i.e. a 6th
+    // lane that overflows the budgeted vertical band.
+    const lane = Math.min(arcLanes.get(fb.name) ?? 0, MAX_LANES - 1);
     const arcHeight = computeArcHeight(featureCommitShas.length) + lane * LANE_GAP;
     const apexY = direction === "up" ? TRUNK_Y - arcHeight : TRUNK_Y + arcHeight;
 

@@ -191,4 +191,46 @@ describe("buildHitRegions", () => {
     });
     expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore" });
   });
+
+  it("emits one tag rect per drawn pill (2nd pill reports the 2nd tag, not tags[0])", () => {
+    // Trunk node => visible without arcs. Two tags => drawTagPills paints 2 pills,
+    // each sized to its own text, so the builder must too (the old code emitted a
+    // single 90px rect hardcoded to tags[0], so the 2nd pill reported tags[0]).
+    const node = mkNode({ sha: "c1", x: 500, y: 200, isTrunk: true, branchName: "main", tags: ["v1.0", "v2.0"] });
+    const regions = buildHitRegions({
+      layout: emptyLayout([node]), visibleNames: new Set(["main"]), arcVisibleNames: new Set(),
+      visibleStacks: [], stackedShas: new Set(), branchByName, taskBranchByTipSha: new Map(),
+      trunkSpan: null, defaultBranch: "main",
+    });
+    // pill1: x0 = 500 + COMMIT_R(5) + 4 = 509, w = 4*5.5+10 = 32 -> center ~525
+    expect(hitRegionAt(regions, 525, 200)).toEqual({ kind: "tag", name: "v1.0", sha: "c1" });
+    // pill2: x = 509 + 32 + 4 = 545, w = 32 -> center ~561
+    expect(hitRegionAt(regions, 561, 200)).toEqual({ kind: "tag", name: "v2.0", sha: "c1" });
+  });
+
+  it("a non-tip node that resolves a task via taskBranchByTipSha does NOT suppress its arc-name label", () => {
+    // feat/x has a linkedIssue and an active arc. Its only node is NOT a task tip
+    // (isTaskTip:false) but resolves feat/x via taskBranchByTipSha (the stale
+    // lastCommitSha / Phase-4D case). Before the parity fix this wrongly added
+    // feat/x to cardBranchNames, so placeArcLabels skipped the label (no region)
+    // and re-flowed every later label's y. The label must still be hittable.
+    const arc = {
+      branchName: "feat/x", direction: "down" as const, branchPointX: 100, mergePointX: 300,
+      apexY: 260, isOpen: false, color: "#7E8AA8", isDone: false,
+      points: [[100, 200], [200, 260], [300, 200]] as Array<[number, number]>,
+    };
+    const node = mkNode({ sha: "c1", x: 200, y: 200, isTaskTip: false, arcBranchName: "feat/x", branchName: "feat/x" });
+    const layout: ArcLayoutResult = {
+      nodes: [node], arcs: [arc], trunkY: 200, totalWidth: 1000, totalHeight: 500, tipStacks: [],
+    };
+    const regions = buildHitRegions({
+      layout, visibleNames: new Set(["feat/x"]), arcVisibleNames: new Set(["feat/x"]),
+      visibleStacks: [], stackedShas: new Set(),
+      branchByName: new Map([["feat/x", mkBranch("feat/x", "i1")]]),
+      taskBranchByTipSha: new Map([["c1", mkBranch("feat/x", "i1")]]),
+      trunkSpan: null, defaultBranch: "main",
+    });
+    // labelX = (100+300)/2 = 200; down-arc baseY = apexY + 14 = 274 (label sits below the apex, clear of the card box).
+    expect(hitRegionAt(regions, 200, 274 - 4)).toEqual({ kind: "task", branchName: "feat/x" });
+  });
 });

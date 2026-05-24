@@ -96,7 +96,7 @@ const LABEL_EXT = 24;   // card → down, covers the 2 label lines
 const STACK_LABEL_EXT = 36; // stacked card → right, covers the id label
 const SYNC_EXT_DEFAULT = 30; // node → up on the default tip (clears HEAD + sync)
 const SYNC_EXT = 18;    // node → up on a normal tip (sync marker)
-const TAG_W = 90;       // node → right, covers up to 2 tag pills
+const TAG_CHAR_W = 5.5; // approx px width of a bold 9px "Courier New" glyph (per-pill tag boxes)
 const ARC_THRESHOLD = 8;
 const TRUNK_THRESHOLD = 8;
 const HEAD_W = 24;        // approx px width of the "HEAD" label at 9px monospace
@@ -151,6 +151,9 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
   // Track which branches drew a task card so their arc name label is skipped
   // below (drawArcLabels suppresses labels for card-labelled branches).
   const cardBranchNames = new Set<string>();
+  // Tag-pill hit boxes are collected here and pushed AFTER the stacks section so
+  // their z-order matches draw (drawTagPills runs after stacks, before labels).
+  const tagRegions: HitRegion[] = [];
   for (const node of layout.nodes) {
     const visible = node.isTrunk
       ? visibleNames.has(defaultBranch)
@@ -159,13 +162,20 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
 
     const r = resolveNodeRender(node, visibleNames, branchByName, taskBranchByTipSha, stackedShas);
 
-    // Tag pills (separate target — to the right of the node).
+    // Tag pills: one hit box per drawn pill (drawTagPills paints up to 2, each
+    // sized to its own text), so hovering the 2nd pill reports the 2nd tag — not
+    // tags[0]. Pure builder => approximate the glyph width (generous is fine).
     if (node.tags.length > 0) {
-      regions.push({
-        shape: "rect",
-        x: node.x + COMMIT_R + 4, y: node.y - 8, w: TAG_W, h: 16,
-        target: { kind: "tag", name: node.tags[0]!, sha: node.sha },
-      });
+      let tagX = node.x + COMMIT_R + 4;
+      for (const tag of node.tags.slice(0, 2)) {
+        const pillW = tag.length * TAG_CHAR_W + 10;
+        tagRegions.push({
+          shape: "rect",
+          x: tagX, y: node.y - 8, w: pillW, h: 16,
+          target: { kind: "tag", name: tag, sha: node.sha },
+        });
+        tagX += pillW + 4;
+      }
     }
 
     if (!r.asDot && r.taskBranch?.linkedIssueId) {
@@ -182,7 +192,15 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
         h: (node.y + CARD_H / 2 + LABEL_EXT) - top,
         target: { kind: "task", branchName: r.taskBranch.name },
       });
-      if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
+      // Mirror redraw EXACTLY: only a visible task TIP suppresses its arc-name
+      // label (redraw adds to cardBranchNames under the same predicate). The
+      // enclosing `!asDot` block also fires for non-tip nodes that resolve a
+      // task via taskBranchByTipSha (the stale-lastCommitSha / Phase-4D case);
+      // adding those here diverged cardBranchNames and re-flowed placeArcLabels'
+      // y for every later label, landing hover/click on the wrong branch.
+      if (node.isTaskTip && r.taskVisible && node.arcBranchName) {
+        cardBranchNames.add(node.arcBranchName);
+      }
     } else {
       // Plain dot/diamond. Resolve its target and extend up for a sync marker.
       const tipBranch = node.branchName ? branchByName.get(node.branchName) : undefined;
@@ -229,6 +247,10 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
       });
     }
   }
+
+  // 4b. Tag pills (deferred from the node loop). Drawn after stacks but before
+  // arc labels + HEAD, so push them here to match that paint order.
+  regions.push(...tagRegions);
 
   // 5. Arc name labels — positions from the shared placeArcLabels pass so the
   // hit box lands on the exact de-overlapped spot the draw used (single source).
