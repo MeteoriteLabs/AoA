@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   pgTable,
   uuid,
   text,
@@ -32,6 +33,23 @@ export const discussions = pgTable(
     scopeId: uuid("scope_id"), // FK resolved at app level based on scopeType
 
     tags: jsonb("tags").default([]), // string array for flexible categorization
+
+    // ── Threads v1: thread-container fields ──
+    originSource: text("origin_source"), // ThreadOriginSource: human|agent|external|system
+    originMedium: text("origin_medium"), // ThreadOriginMedium
+    intent: jsonb("intent").default([]), // ThreadIntent[] (multi-tag)
+    phase: text("phase").notNull().default("discuss"), // ThreadPhase: discuss|scope|assign|done
+    goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }), // goal-as-property
+    visibility: text("visibility").notNull().default("open"), // ThreadVisibility: open|private
+    ownerUserId: text("owner_user_id"), // accountable human (TEXT like issues.assigneeUserId); null = Unclaimed
+    autonomyLevel: integer("autonomy_level"), // 1..3; null = fall back to internal_agent_config
+    subtype: text("subtype").notNull().default("normal"), // ThreadSubtype: normal|live
+    forkedFromId: uuid("forked_from_id").references((): AnyPgColumn => discussions.id, { onDelete: "set null" }),
+    mergedIntoId: uuid("merged_into_id").references((): AnyPgColumn => discussions.id, { onDelete: "set null" }),
+    summaryText: text("summary_text"),
+    summaryNext: text("summary_next"),
+    summaryUpdatedAt: timestamp("summary_updated_at", { withTimezone: true }),
+    entrySeq: integer("entry_seq").notNull().default(0), // atomic per-thread entry counter (Plan 7 seq assignment)
 
     // Denormalized metadata
     entryCount: integer("entry_count").notNull().default(0),
