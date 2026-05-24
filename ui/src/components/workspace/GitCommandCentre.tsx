@@ -444,6 +444,17 @@ export function GitCommandCentre({
               onMouseLeave={handleCardMouseLeave}
             />
             <GitGraphLegend />
+            {/* Density hint (Phase 3B) — nudge to the Pipeline list for
+                branch-heavy repos where the Map is an overview, not the detail. */}
+            {branches.length > 20 && (
+              <button
+                className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1e1d1c]/90 border border-[#2e2c2a] text-[11px] text-[#7E8AA8] hover:text-foreground transition-colors"
+                title="Many branches — the Pipeline list is easier to scan"
+                onClick={() => setViewMode("pipeline")}
+              >
+                <span className="font-mono">{branches.length}</span>&nbsp;branches · Open in Pipeline →
+              </button>
+            )}
             {/* Zoom controls — bottom-right corner of canvas */}
             <div className="absolute bottom-3 right-3 flex flex-col gap-0.5 z-10">
               {(
