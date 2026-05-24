@@ -45,6 +45,8 @@ interface ThreadBoardProps {
   /** Inbox items for the Unlisted lane (v1: empty — inboxItems API is Task 3/4) */
   inboxItems?: InboxCardItem[];
   onNewThread: () => void;
+  /** Called after an inbox item is triaged so the parent can refresh */
+  onInboxUpdate?: () => void;
 }
 
 export interface InboxCardItem {
@@ -54,7 +56,7 @@ export interface InboxCardItem {
   createdAt: string;
 }
 
-export function ThreadBoard({ threads, inboxItems = [], onNewThread }: ThreadBoardProps) {
+export function ThreadBoard({ threads, inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
   // Group threads by phase
   const byPhase = useMemo(() => {
     const map = new Map<ThreadPhase, ThreadListItem[]>(
@@ -73,7 +75,12 @@ export function ThreadBoard({ threads, inboxItems = [], onNewThread }: ThreadBoa
       data-testid="thread-board"
     >
       {/* Unlisted lane — pinned at left (amber background) */}
-      <UnlistedLane inboxItems={inboxItems} onTriaged={() => {}} />
+      <UnlistedLane
+        inboxItems={inboxItems}
+        onTriaged={(_itemId, _action) => {
+          onInboxUpdate?.();
+        }}
+      />
 
       {/* Phase columns */}
       {PHASE_COLUMNS.map(({ phase, label, headerClass }) => (

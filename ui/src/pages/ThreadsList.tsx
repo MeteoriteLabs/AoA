@@ -81,7 +81,6 @@ export function ThreadsList() {
   const view: ViewMode = viewParam === "board" ? "board" : "list";
 
   const [phaseFilter, setPhaseFilter] = useState<PhaseFilterValue>("all");
-  const [ownerFilter, setOwnerFilter] = useState<"all" | "mine">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
   // ── Set breadcrumbs ──
@@ -130,7 +129,7 @@ export function ThreadsList() {
     }
 
     return result;
-  }, [threads, phaseFilter, ownerFilter, searchQuery]);
+  }, [threads, phaseFilter, searchQuery]);
 
   // ── Loading ──
   if (isLoading) {
@@ -139,8 +138,6 @@ export function ThreadsList() {
         <ThreadsListHeader
           phaseFilter={phaseFilter}
           setPhaseFilter={setPhaseFilter}
-          ownerFilter={ownerFilter}
-          setOwnerFilter={setOwnerFilter}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           view={view}
@@ -176,8 +173,6 @@ export function ThreadsList() {
         <ThreadsListHeader
           phaseFilter={phaseFilter}
           setPhaseFilter={setPhaseFilter}
-          ownerFilter={ownerFilter}
-          setOwnerFilter={setOwnerFilter}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           view={view}
@@ -222,8 +217,6 @@ export function ThreadsList() {
       <ThreadsListHeader
         phaseFilter={phaseFilter}
         setPhaseFilter={setPhaseFilter}
-        ownerFilter={ownerFilter}
-        setOwnerFilter={setOwnerFilter}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         view={view}
@@ -234,7 +227,11 @@ export function ThreadsList() {
 
       {/* Board view */}
       {view === "board" && (
-        <ThreadBoard threads={filtered} onNewThread={openNewThread} />
+        <ThreadBoard
+          threads={filtered}
+          onNewThread={openNewThread}
+          onInboxUpdate={() => refetch()}
+        />
       )}
 
       {/* List view */}
@@ -276,8 +273,6 @@ export function ThreadsList() {
 interface ThreadsListHeaderProps {
   phaseFilter: PhaseFilterValue;
   setPhaseFilter: (v: PhaseFilterValue) => void;
-  ownerFilter: "all" | "mine";
-  setOwnerFilter: (v: "all" | "mine") => void;
   searchQuery: string;
   setSearchQuery: (v: string) => void;
   view: ViewMode;
@@ -289,8 +284,6 @@ interface ThreadsListHeaderProps {
 function ThreadsListHeader({
   phaseFilter,
   setPhaseFilter,
-  ownerFilter: _ownerFilter,
-  setOwnerFilter: _setOwnerFilter,
   searchQuery,
   setSearchQuery,
   view,
