@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@armyofagents/db";
-import { eq } from "drizzle-orm";
-import { discussions } from "@armyofagents/db";
+import { eq, and } from "drizzle-orm";
+import { discussions, threadInboxItems } from "@armyofagents/db";
 import { z } from "zod";
 import {
   createDiscussionSchema,
@@ -648,6 +648,153 @@ export function discussionRoutes(db: Db) {
       await assertRole(db, req, companyId, "founder");
       await db.update(discussions).set({ crewPaused: false, updatedAt: new Date() }).where(eq(discussions.id, discussionId));
       res.json({ crewPaused: false });
+    },
+  );
+
+  // ── Plan 5: Inbox/Unlisted lane endpoints ─────────────────────────────────
+
+  // T.I1 List pending inbox items (the Unlisted lane)
+  router.get(
+    "/companies/:companyId/discussions/inbox",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const items = await db
+        .select()
+        .from(threadInboxItems)
+        .where(
+          and(
+            eq(threadInboxItems.companyId, companyId),
+            eq(threadInboxItems.status, "pending"),
+          ),
+        );
+
+      res.json({ items, total: items.length });
+    },
+  );
+
+  // T.I2 Triage an inbox item — attach, dismiss, or promote to thread
+  const triageBodySchema = z.object({
+    action: z.enum(["attach", "dismiss", "make_thread"]),
+    threadId: z.string().uuid().optional(),
+  }).refine(
+    (data) => data.action !== "attach" || !!data.threadId,
+    { message: "threadId is required when action is attach", path: ["threadId"] },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/inbox/:itemId/triage",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const itemId = req.params.itemId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const parsed = triageBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid request" });
+        return;
+      }
+
+      const { action, threadId } = parsed.data;
+
+      // Fetch the item to validate it belongs to this company
+      const [item] = await db
+        .select()
+        .from(threadInboxItems)
+        .where(
+          and(
+            eq(threadInboxItems.id, itemId),
+            eq(threadInboxItems.companyId, companyId),
+          ),
+        );
+
+      if (!item) {
+        res.status(404).json({ error: "Inbox item not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+
+      if (action === "dismiss") {
+        await db
+          .update(threadInboxItems)
+          .set({ status: "dismissed" })
+          .where(eq(threadInboxItems.id, itemId));
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "thread.inbox_item.dismissed",
+          entityType: "thread_inbox_item",
+          entityId: itemId,
+          details: {},
+        });
+
+        res.json({ itemId, status: "dismissed" });
+        return;
+      }
+
+      if (action === "attach") {
+        // Attach inbox item to an existing thread (mark as attached)
+        await db
+          .update(threadInboxItems)
+          .set({ status: "attached", suggestedThreadId: threadId })
+          .where(eq(threadInboxItems.id, itemId));
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "thread.inbox_item.attached",
+          entityType: "thread_inbox_item",
+          entityId: itemId,
+          details: { threadId },
+        });
+
+        res.json({ itemId, status: "attached", threadId });
+        return;
+      }
+
+      if (action === "make_thread") {
+        // Create a new discussion from the inbox item's raw content
+        const svc = discussionService(db);
+        const newDiscussion = await svc.create(
+          companyId,
+          {
+            title: item.rawContent.slice(0, 80).replace(/\n/g, " ") || "New thread",
+          },
+          actor.actorId,
+        );
+
+        // Mark inbox item as attached to the new thread
+        await db
+          .update(threadInboxItems)
+          .set({ status: "attached", suggestedThreadId: newDiscussion.id })
+          .where(eq(threadInboxItems.id, itemId));
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "thread.inbox_item.promoted",
+          entityType: "thread_inbox_item",
+          entityId: itemId,
+          details: { newDiscussionId: newDiscussion.id },
+        });
+
+        res.status(201).json({ itemId, status: "attached", threadId: newDiscussion.id, thread: newDiscussion });
+        return;
+      }
+
+      // Should never reach here — zod enum guards all actions
+      res.status(400).json({ error: "Unknown triage action" });
     },
   );
 
