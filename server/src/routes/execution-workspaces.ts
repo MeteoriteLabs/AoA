@@ -14,6 +14,7 @@ import {
   mergeExecutionWorkspaceConfig,
   mergeExecutionWorkspaceMetadataPatch,
   readExecutionWorkspaceConfig,
+  toWorkspaceRuntimeService,
 } from "../services/execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -272,7 +273,7 @@ export function executionWorkspaceRoutes(db: Db) {
       db,
       rows: services,
     });
-    res.json(refreshedServices);
+    res.json(refreshedServices.map(toWorkspaceRuntimeService));
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {

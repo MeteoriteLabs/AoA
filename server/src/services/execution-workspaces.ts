@@ -26,6 +26,11 @@ import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
+import {
+  buildRuntimeServicePreviewUrl,
+  classifyRuntimeServiceTarget,
+  isAllowedPreviewUpstream,
+} from "./preview-url.js";
 import { runGit as runGitService } from "./git.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -329,7 +334,14 @@ export function mergeExecutionWorkspaceConfig(
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
 }
 
-function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+export function toWorkspaceRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+  const target = classifyRuntimeServiceTarget(row.url ?? null);
+  const canProxy =
+    Boolean(row.executionWorkspaceId) &&
+    row.status === "running" &&
+    row.healthStatus !== "unhealthy" &&
+    isAllowedPreviewUpstream(row.url ?? null);
+
   return {
     id: row.id,
     companyId: row.companyId,
@@ -347,9 +359,9 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     cwd: row.cwd ?? null,
     port: row.port ?? null,
     url: row.url ?? null,
-    previewUrl: null,
-    previewAccess: null,
-    localTargetUrl: null,
+    previewUrl: canProxy ? buildRuntimeServicePreviewUrl(row.id) : null,
+    previewAccess: canProxy ? target.access : null,
+    localTargetUrl: target.localTargetUrl,
     provider: row.provider as WorkspaceRuntimeService["provider"],
     providerRef: row.providerRef ?? null,
     ownerAgentId: row.ownerAgentId ?? null,
@@ -576,7 +588,7 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!row) return [];
       const grouped = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
-      return (grouped.get(row.id) ?? []).map(toRuntimeService);
+      return (grouped.get(row.id) ?? []).map(toWorkspaceRuntimeService);
     },
 
     usesInheritedProjectRuntimeServices: async (id: string) => {
@@ -608,7 +620,7 @@ export function executionWorkspaceService(db: Db) {
             eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspace.id),
           ),
         );
-      const runtimeServices = runtimeServiceRows.map(toRuntimeService);
+      const runtimeServices = runtimeServiceRows.map(toWorkspaceRuntimeService);
 
       const linkedIssueRows = await db
         .select({

@@ -59,6 +59,7 @@ const mockStopRuntimeServices = vi.hoisted(() => vi.fn().mockResolvedValue(undef
 const mockCleanupArtifacts = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ cleaned: true, warnings: [] }),
 );
+const mockDbSelectRows = vi.hoisted(() => ({ rows: [] as unknown[] }));
 
 // Capture db.update(...).set(...).where(...) calls for shared-workspace detach assertion
 const mockDbUpdateIssues = vi.hoisted(() => {
@@ -151,6 +152,41 @@ function buildReadiness(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function buildRuntimeServiceRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date();
+  return {
+    id: "svc-1",
+    companyId: "co-1",
+    projectId: "proj-1",
+    projectWorkspaceId: null,
+    executionWorkspaceId: "ws-1",
+    issueId: null,
+    scopeType: "execution_workspace",
+    scopeId: "ws-1",
+    serviceName: "web",
+    status: "running",
+    lifecycle: "shared",
+    reuseKey: "reuse-1",
+    command: "pnpm dev",
+    cwd: "C:\\repo",
+    port: 5173,
+    url: "http://127.0.0.1:5173",
+    provider: "local_process",
+    providerRef: null,
+    ownerAgentId: null,
+    startedByRunId: null,
+    lastUsedAt: now,
+    startedAt: now,
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "healthy",
+    healthCheckedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function createApp() {
   const db = {
     update: mockDbUpdateIssues.update,
@@ -158,7 +194,7 @@ function createApp() {
       const chain: Record<string, unknown> = {};
       chain.from = () => chain;
       chain.where = () => chain;
-      chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([]));
+      chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(mockDbSelectRows.rows));
       return chain;
     }),
   };
@@ -184,6 +220,7 @@ function createApp() {
 describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDbSelectRows.rows = [];
     mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockSvc.loadEffectiveRuntimeServicesByExecutionWorkspace.mockResolvedValue([]);
     mockStopRuntimeServices.mockResolvedValue(undefined);
@@ -336,6 +373,50 @@ describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
         }),
       }),
     );
+  });
+});
+
+describe("GET /api/execution-workspaces/:id/runtime-services", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbSelectRows.rows = [];
+    mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+  });
+
+  it("returns preview fields for proxyable runtime services", async () => {
+    mockSvc.getById.mockResolvedValue(buildExistingWorkspace());
+    mockDbSelectRows.rows = [buildRuntimeServiceRow()];
+
+    const res = await request(createApp())
+      .get(`/api/execution-workspaces/ws-1/runtime-services`);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toEqual(expect.objectContaining({
+      id: "svc-1",
+      url: "http://127.0.0.1:5173",
+      previewUrl: "/preview/services/svc-1/",
+      previewAccess: "local",
+      localTargetUrl: "http://127.0.0.1:5173/",
+      healthCheckedAt: null,
+    }));
+  });
+
+  it("omits preview URLs for unsafe runtime service targets", async () => {
+    mockSvc.getById.mockResolvedValue(buildExistingWorkspace());
+    mockDbSelectRows.rows = [buildRuntimeServiceRow({
+      url: "https://example.com",
+    })];
+
+    const res = await request(createApp())
+      .get(`/api/execution-workspaces/ws-1/runtime-services`);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toEqual(expect.objectContaining({
+      url: "https://example.com",
+      previewUrl: null,
+      previewAccess: null,
+      localTargetUrl: null,
+    }));
   });
 });
 
