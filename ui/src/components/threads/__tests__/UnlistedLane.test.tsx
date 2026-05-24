@@ -21,6 +21,42 @@ vi.mock("../../../context/CompanyContext", () => ({
   }),
 }));
 
+vi.mock("../../../api/threads", () => ({
+  threadsApi: {
+    list: vi.fn().mockResolvedValue({
+      discussions: [
+        {
+          id: "thread-existing-1",
+          title: "Existing thread alpha",
+          status: "active",
+          phase: "discuss",
+          visibility: "open",
+          ownerUserId: null,
+          originSource: null,
+          intent: null,
+          goalId: null,
+          autonomyLevel: null,
+          summaryText: null,
+          summaryNext: null,
+          scopeType: null,
+          scopeId: null,
+          scopeName: null,
+          tags: [],
+          entryCount: 0,
+          pendingItemCount: 0,
+          createdBy: "user-1",
+          createdAt: "2026-01-01T00:00:00Z",
+          lastEntryAt: null,
+          lastEntryInputType: null,
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    }),
+  },
+}));
+
 const makeItem = (overrides = {}) => ({
   id: "item-1",
   rawContent: "Meeting notes from product sync",
@@ -96,5 +132,47 @@ describe("UnlistedLane", () => {
     );
 
     expect(screen.getByText(/nothing to triage/i)).toBeInTheDocument();
+  });
+
+  it("renders 'Add to existing thread' button for each inbox item", () => {
+    const items = [makeItem({ id: "item-1", rawContent: "Needs triage content" })];
+
+    renderWithProviders(
+      <UnlistedLane inboxItems={items} onTriaged={vi.fn()} />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    expect(
+      screen.getByRole("button", { name: /add to existing thread/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows thread select dropdown when 'Add to' is clicked and calls attach on selection", async () => {
+    const user = userEvent.setup();
+    const onTriaged = vi.fn();
+    const items = [makeItem({ id: "item-attach" })];
+
+    renderWithProviders(
+      <UnlistedLane inboxItems={items} onTriaged={onTriaged} />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    // Open the dropdown
+    const addToBtn = screen.getByRole("button", { name: /add to existing thread/i });
+    await user.click(addToBtn);
+
+    // The select should now be visible
+    const select = await screen.findByTestId("add-to-thread-select");
+    expect(select).toBeInTheDocument();
+
+    // Select a thread
+    await user.selectOptions(select, "thread-existing-1");
+
+    await waitFor(() => {
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+        expect.stringContaining("item-attach/triage"),
+        expect.objectContaining({ action: "attach", threadId: "thread-existing-1" }),
+      );
+    });
   });
 });

@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../../context/CompanyContext";
 import { api } from "../../api/client";
+import { threadsApi } from "../../api/threads";
 import { cn } from "../../lib/utils";
 import { Sparkles, ChevronDown, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -81,6 +83,17 @@ function InboxTriageCard({ item, onTriaged }: InboxTriageCardProps) {
   const { selectedCompanyId } = useCompany();
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAddTo, setShowAddTo] = useState(false);
+
+  // Load existing threads for "Add to" dropdown — only when the dropdown is open
+  const { data: threadsData, isFetching: isLoadingThreads } = useQuery({
+    queryKey: ["threads", selectedCompanyId, "list"],
+    queryFn: () => threadsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && showAddTo,
+    staleTime: 30_000,
+  });
+
+  const existingThreads = threadsData?.discussions ?? [];
 
   async function triage(action: TriageAction, threadId?: string) {
     if (!selectedCompanyId) return;
@@ -100,6 +113,13 @@ function InboxTriageCard({ item, onTriaged }: InboxTriageCardProps) {
     } finally {
       setIsPending(false);
     }
+  }
+
+  async function handleAttach(e: React.ChangeEvent<HTMLSelectElement>) {
+    const threadId = e.target.value;
+    if (!threadId) return;
+    setShowAddTo(false);
+    await triage("attach", threadId);
   }
 
   return (
@@ -132,6 +152,36 @@ function InboxTriageCard({ item, onTriaged }: InboxTriageCardProps) {
         <p className="text-[10px] text-destructive">{error}</p>
       )}
 
+      {/* Add to existing thread — dropdown */}
+      {showAddTo && (
+        <div className="relative">
+          {isLoadingThreads ? (
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground py-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading…
+            </div>
+          ) : (
+            <select
+              aria-label="Select thread to attach"
+              className="w-full text-[10px] rounded border border-input bg-background px-1.5 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              defaultValue=""
+              onChange={handleAttach}
+              disabled={isPending}
+              data-testid="add-to-thread-select"
+            >
+              <option value="" disabled>
+                {existingThreads.length === 0 ? "No threads available" : "Pick a thread…"}
+              </option>
+              {existingThreads.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
       {/* Triage actions */}
       <div className="flex items-center gap-1">
         {/* Make thread */}
@@ -149,6 +199,20 @@ function InboxTriageCard({ item, onTriaged }: InboxTriageCardProps) {
             <Sparkles className="h-3 w-3" />
           )}
           Make thread
+        </Button>
+
+        {/* Add to existing thread */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowAddTo((v) => !v)}
+          disabled={isPending}
+          className="h-6 px-2 text-[10px] flex items-center gap-0.5"
+          aria-label="Add to existing thread"
+          data-testid="add-to-thread-button"
+        >
+          Add to
+          <ChevronDown className={cn("h-3 w-3 transition-transform", showAddTo && "rotate-180")} />
         </Button>
 
         {/* Dismiss */}
