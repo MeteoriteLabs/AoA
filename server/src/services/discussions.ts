@@ -330,7 +330,9 @@ export function discussionService(db: Db) {
 
     /**
      * Add an entry to an existing discussion.
-     * Extraction is manual-only — user clicks Reprocess on the detail page.
+     * Entry is created with extractionStatus='pending'. The durable extraction sweeper
+     * (server/src/index.ts, 45 s tick, M2 atomic claim) picks it up automatically.
+     * "Reprocess" in the UI is a manual fast-path that bypasses the sweeper interval.
      * Updates lastEntryAt, publishes discussion.entry.created LiveEvent.
      * Gotcha 1.2: increments entryCount in same operation.
      */
@@ -402,7 +404,9 @@ export function discussionService(db: Db) {
         },
       });
 
-      // Extraction is manual-only — user clicks "Reprocess" to trigger extraction
+      // Extraction will be picked up automatically by the durable extraction sweeper
+      // (server/src/index.ts — polls extractionStatus='pending' every 45 s, M2 atomic claim).
+      // "Reprocess" in the UI is a manual fast-path that bypasses the sweeper interval.
 
       await logActivity(db, {
         companyId,
