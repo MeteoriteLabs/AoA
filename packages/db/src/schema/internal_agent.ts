@@ -222,7 +222,7 @@ export const internalAgentRuns = pgTable(
     triggerSource: text("trigger_source").notNull(), // extensible: 'user_message', 'discussion_entry', etc.
 
     // Execution state
-    status: text("status").notNull().default("running"), // 'running' | 'completed' | 'failed'
+    status: text("status").notNull().default("running"), // 'running' | 'completed' | 'failed' | 'cancelled'
     errorMessage: text("error_message"), // populated on failure
 
     // What the agent did

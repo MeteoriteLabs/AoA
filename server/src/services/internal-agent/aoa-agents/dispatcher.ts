@@ -227,15 +227,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     const config = {
       autonomyLevel: cfg?.autonomyLevel ?? 0,
       crewPaused: cfg?.crewPaused ?? false,
-      model: (cfg?.model ?? "claude-sonnet-4-20250514") as string,
+      model: (cfg?.model ?? "claude-sonnet-4-6") as string,
     };
     configByCompany.set(companyId, config);
     return config;
   }
-  async function resolveAutonomy(companyId: string): Promise<number> {
-    return (await resolveCompanyConfig(companyId)).autonomyLevel;
-  }
-
   const drainPhase3 = async (): Promise<void> => {
     if (wakeupRows.length === 0) return;
     await Promise.allSettled(
@@ -244,9 +240,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           const companyCfg = await resolveCompanyConfig(w.companyId);
 
           // Plan 3 Task 8: kill-switch gate — check company pause first.
-          // Thread-level pause (discussions.crewPaused) is checked via the
-          // payload's threadId/discussionId if present. Company halt always wins.
-          const threadPaused = Boolean((w.payload as Record<string, unknown> | null)?.threadCrewPaused);
+          // Thread-level pause is read live from discussions.crewPaused so a
+          // founder's pause/resume is reflected immediately, even for wakeups
+          // that were already queued before the pause. Payload-based
+          // threadCrewPaused is NOT used — nothing populates it at enqueue
+          // time, so reading it would make the gate permanently inert.
+          const threadPaused = w.payload?.discussionId
+            ? await db
+                .select({ crewPaused: discussions.crewPaused })
+                .from(discussions)
+                .where(eq(discussions.id, w.payload.discussionId as string))
+                .then((rows: Array<{ crewPaused: boolean | null }>) => Boolean(rows[0]?.crewPaused))
+            : false;
           if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
             await db
               .update(agentWakeupRequests)
