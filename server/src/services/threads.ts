@@ -1,0 +1,852 @@
+/**
+ * Thread service — lifecycle, ownership, visibility, phase state machine.
+ *
+ * Threads v1 Plan 2: backend service layer.
+ *
+ * Key architectural constraints:
+ * - RBAC hide-don't-403: private/unclaimed threads throw notFound, never forbidden
+ * - Agents never own threads (resolveOwnerOnAction guards this)
+ * - D8: issues created from scope items use workMode="planning" (suppresses dispatch)
+ * - D20: sub-goals are one level deep (promoteToGoal enforces server-side)
+ * - D4 batched RBAC: list() uses 2 queries, not 2N
+ */
+
+import { and, eq, desc, inArray, isNull } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import {
+  discussions,
+  threadParticipants,
+  threadLinks,
+  userRoles,
+  goals,
+  discussionEntries,
+  discussionExtractedItems,
+  issues,
+} from "@armyofagents/db";
+import { badRequest, notFound } from "../errors.js";
+import { publishLiveEvent } from "./live-events.js";
+import { logActivity } from "./activity-log.js";
+import { goalService } from "./goals.js";
+import {
+  THREAD_PHASES,
+  type ThreadPhase,
+  type ThreadVisibility,
+  type ThreadOriginSource,
+  type ThreadOriginMedium,
+} from "@armyofagents/shared";
+
+// ── Pure helpers (no DB) ─────────────────────────────────────────────────────
+
+/**
+ * Forward by exactly one phase (auto-advance) or any backward jump (founder override).
+ * Unknown phases always return false.
+ */
+export function canAdvancePhase(current: ThreadPhase, target: ThreadPhase): boolean {
+  const ci = THREAD_PHASES.indexOf(current);
+  const ti = THREAD_PHASES.indexOf(target);
+  if (ci < 0 || ti < 0) return false;
+  // Forward: must be exactly one step ahead
+  // Backward: any backward jump allowed (founder override)
+  return ti === ci + 1 || ti < ci;
+}
+
+/**
+ * "Owned by action": returns the userId that should become owner after a
+ * governance action, or null to leave ownership unchanged.
+ * Agents can never become owners.
+ */
+export function resolveOwnerOnAction(
+  thread: { ownerUserId: string | null },
+  actor: { userId: string; isHuman: boolean },
+): string | null {
+  if (thread.ownerUserId != null) return null; // already owned — no change
+  if (!actor.isHuman) return null; // agents never own
+  return actor.userId;
+}
+
+export interface ThreadViewer {
+  role: "founder" | "team_lead" | "team_member";
+  hasScopeAccess: boolean;
+  isParticipant: boolean;
+}
+
+/**
+ * Visibility rules:
+ * - founder: sees everything
+ * - unclaimed (ownerUserId=null): visible only to founder or team_lead with scope access
+ * - private: visible only to participants (regardless of role)
+ * - open: visible to anyone with scope access, or participants
+ */
+export function canViewThread(
+  thread: { ownerUserId: string | null; visibility: ThreadVisibility },
+  viewer: ThreadViewer,
+): boolean {
+  if (viewer.role === "founder") return true;
+  if (thread.ownerUserId == null) {
+    // Unclaimed — only leads with scope can see it
+    return viewer.role === "team_lead" && viewer.hasScopeAccess;
+  }
+  if (thread.visibility === "private") return viewer.isParticipant;
+  // open: scope access OR participant
+  return viewer.hasScopeAccess || viewer.isParticipant;
+}
+
+/**
+ * Compute default fields for a new thread based on origin and creator.
+ */
+export function computeCreateDefaults(input: {
+  origin: { source: ThreadOriginSource; medium: ThreadOriginMedium };
+  creator: { userId: string; isHuman: boolean };
+  departmentDefaultVisibility: ThreadVisibility;
+}): {
+  phase: ThreadPhase;
+  originSource: ThreadOriginSource;
+  originMedium: ThreadOriginMedium;
+  visibility: ThreadVisibility;
+  ownerUserId: string | null;
+} {
+  return {
+    phase: "discuss",
+    originSource: input.origin.source,
+    originMedium: input.origin.medium,
+    visibility: input.departmentDefaultVisibility,
+    ownerUserId: input.creator.isHuman ? input.creator.userId : null,
+  };
+}
+
+// ── Actor type ────────────────────────────────────────────────────────────────
+
+export interface Actor {
+  userId: string;
+  role: "founder" | "team_lead" | "team_member";
+  isHuman: boolean;
+}
+
+// ── Service factory ───────────────────────────────────────────────────────────
+
+export function threadService(db: Db) {
+  // ── Internal RBAC helpers ──
+
+  /**
+   * Assert the actor can view this thread.
+   * Throws notFound (not forbidden) to avoid leaking existence.
+   */
+  async function assertCanView(
+    companyId: string,
+    thread: {
+      id: string;
+      scopeType: string | null;
+      scopeId: string | null;
+      ownerUserId: string | null;
+      visibility: string;
+    },
+    actor: Actor,
+  ): Promise<void> {
+    if (actor.role === "founder") return;
+
+    const participantRows = await db
+      .select({ id: threadParticipants.id })
+      .from(threadParticipants)
+      .where(
+        and(
+          eq(threadParticipants.threadId, thread.id),
+          eq(threadParticipants.principalType, "user"),
+          eq(threadParticipants.principalId, actor.userId),
+        ),
+      );
+    const isParticipant = participantRows.length > 0;
+
+    // Scope access: no scope = globally accessible; scoped = must have role in that project
+    let hasScopeAccess = thread.scopeType == null;
+    if (!hasScopeAccess && thread.scopeId) {
+      const roleRows = await db
+        .select({ id: userRoles.id })
+        .from(userRoles)
+        .where(
+          and(
+            eq(userRoles.companyId, companyId),
+            eq(userRoles.userId, actor.userId),
+            eq(userRoles.projectId, thread.scopeId),
+          ),
+        );
+      hasScopeAccess = roleRows.length > 0;
+    }
+
+    const ok = canViewThread(
+      {
+        ownerUserId: thread.ownerUserId,
+        visibility: thread.visibility as ThreadVisibility,
+      },
+      { role: actor.role, hasScopeAccess, isParticipant },
+    );
+    if (!ok) throw notFound("Thread not found");
+  }
+
+  /**
+   * Assert the actor can edit this thread (owner, co_owner, or founder).
+   * Throws notFound (not forbidden) per hide-don't-403 rule.
+   */
+  function assertCanEdit(
+    thread: { ownerUserId: string | null },
+    actor: Actor,
+  ): void {
+    if (actor.role === "founder") return;
+    if (thread.ownerUserId === actor.userId) return;
+    throw notFound("Thread not found");
+  }
+
+  return {
+    // ── Read path ─────────────────────────────────────────────────────────────
+
+    /**
+     * Get a single thread by id, enforcing visibility.
+     * Returns null if row doesn't exist; throws notFound if exists but not visible.
+     */
+    getById: async (companyId: string, id: string, actor: Actor) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) return null;
+      await assertCanView(companyId, thread, actor);
+      return thread;
+    },
+
+    /**
+     * List threads with optional phase filter.
+     * D4 batched: 1 candidate query + 1 participant batch query + 1 roles query.
+     * Visibility filtering done in-memory after batch queries.
+     */
+    list: async (
+      companyId: string,
+      actor: Actor,
+      filters: { phase?: string } = {},
+    ) => {
+      const conditions: ReturnType<typeof eq>[] = [
+        eq(discussions.companyId, companyId) as ReturnType<typeof eq>,
+      ];
+      if (filters.phase) {
+        conditions.push(eq(discussions.phase, filters.phase) as ReturnType<typeof eq>);
+      }
+
+      const rows = await db
+        .select()
+        .from(discussions)
+        .where(and(...conditions))
+        .orderBy(desc(discussions.lastEntryAt));
+
+      if (actor.role === "founder") return rows;
+
+      const ids = rows.map((r) => r.id);
+      if (ids.length === 0) return [];
+
+      // Batch 1: which threads is this actor a participant of?
+      const myParts = await db
+        .select({ threadId: threadParticipants.threadId })
+        .from(threadParticipants)
+        .where(
+          and(
+            eq(threadParticipants.principalType, "user"),
+            eq(threadParticipants.principalId, actor.userId),
+            inArray(threadParticipants.threadId, ids),
+          ),
+        );
+      const partSet = new Set(myParts.map((p) => p.threadId));
+
+      // Batch 2: which projects does this actor have a role in?
+      const myDepts = await db
+        .select({ projectId: userRoles.projectId })
+        .from(userRoles)
+        .where(
+          and(
+            eq(userRoles.companyId, companyId),
+            eq(userRoles.userId, actor.userId),
+          ),
+        );
+      const deptSet = new Set(
+        myDepts.map((d) => d.projectId).filter(Boolean) as string[],
+      );
+
+      return rows.filter((t) =>
+        canViewThread(
+          {
+            ownerUserId: t.ownerUserId ?? null,
+            visibility: (t.visibility ?? "open") as ThreadVisibility,
+          },
+          {
+            role: actor.role,
+            hasScopeAccess:
+              t.scopeType == null ||
+              (t.scopeId != null && deptSet.has(t.scopeId)),
+            isParticipant: partSet.has(t.id),
+          },
+        ),
+      );
+    },
+
+    // ── Phase state machine ───────────────────────────────────────────────────
+
+    /**
+     * Advance (or rewind) the phase of a thread.
+     * Validates the transition via canAdvancePhase.
+     * Forward-by-one is auto-advance; any backward jump requires founder (calling layer enforces).
+     * Claims ownership on action if unclaimed.
+     */
+    advancePhase: async (
+      companyId: string,
+      id: string,
+      target: ThreadPhase,
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      if (!canAdvancePhase(thread.phase as ThreadPhase, target)) {
+        throw badRequest(
+          `Cannot advance phase ${thread.phase} -> ${target}`,
+        );
+      }
+
+      const newOwner = resolveOwnerOnAction(
+        { ownerUserId: thread.ownerUserId ?? null },
+        { userId: actor.userId, isHuman: actor.isHuman },
+      );
+
+      await db
+        .update(discussions)
+        .set({
+          phase: target,
+          ...(newOwner ? { ownerUserId: newOwner } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(discussions.id, id));
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.isHuman ? "user" : "agent",
+        actorId: actor.userId,
+        action: "thread.phase.changed",
+        entityType: "discussion",
+        entityId: id,
+        details: { phase: target },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.phase.changed",
+        payload: { threadId: id, phase: target },
+      });
+      return { id, phase: target };
+    },
+
+    // ── Summary ───────────────────────────────────────────────────────────────
+
+    updateSummary: async (
+      companyId: string,
+      id: string,
+      summary: { text: string; next: string | null },
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((r) => r[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      await db
+        .update(discussions)
+        .set({
+          summaryText: summary.text,
+          summaryNext: summary.next,
+          summaryUpdatedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)));
+
+      publishLiveEvent({
+        companyId,
+        type: "thread.summary.updated",
+        payload: { threadId: id },
+      });
+      return { id };
+    },
+
+    // ── Ownership ─────────────────────────────────────────────────────────────
+
+    /**
+     * Claim an unclaimed thread. Idempotent — if already owned, returns current owner.
+     * Agents cannot claim (resolveOwnerOnAction guards this).
+     */
+    claim: async (companyId: string, id: string, actor: Actor) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+
+      const newOwner = resolveOwnerOnAction(
+        { ownerUserId: thread.ownerUserId ?? null },
+        { userId: actor.userId, isHuman: actor.isHuman },
+      );
+      if (!newOwner) return { ownerUserId: thread.ownerUserId ?? null };
+
+      await db
+        .update(discussions)
+        .set({ ownerUserId: newOwner, updatedAt: new Date() })
+        .where(eq(discussions.id, id));
+
+      // Add as participant (owner role) — idempotent via unique index A1
+      await db
+        .insert(threadParticipants)
+        .values({
+          companyId,
+          threadId: id,
+          principalType: "user",
+          principalId: newOwner,
+          role: "owner",
+        })
+        .onConflictDoNothing();
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.claimed",
+        entityType: "discussion",
+        entityId: id,
+        details: { ownerUserId: newOwner },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.participant.changed",
+        payload: { threadId: id },
+      });
+      return { ownerUserId: newOwner };
+    },
+
+    /**
+     * Transfer ownership to another user. Only the current owner or founder can transfer.
+     * Demotes previous owner to 'collaborator' in participants.
+     */
+    transferOwnership: async (
+      companyId: string,
+      id: string,
+      toUserId: string,
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+
+      if (actor.role !== "founder" && thread.ownerUserId !== actor.userId) {
+        throw notFound("Thread not found"); // hide-don't-403
+      }
+
+      // Demote previous owner to collaborator
+      if (thread.ownerUserId) {
+        await db
+          .update(threadParticipants)
+          .set({ role: "collaborator" })
+          .where(
+            and(
+              eq(threadParticipants.threadId, id),
+              eq(threadParticipants.principalType, "user"),
+              eq(threadParticipants.principalId, thread.ownerUserId),
+              eq(threadParticipants.role, "owner"),
+            ),
+          );
+      }
+
+      await db
+        .update(discussions)
+        .set({ ownerUserId: toUserId, updatedAt: new Date() })
+        .where(eq(discussions.id, id));
+
+      // Add new owner as participant (owner role) — idempotent
+      await db
+        .insert(threadParticipants)
+        .values({
+          companyId,
+          threadId: id,
+          principalType: "user",
+          principalId: toUserId,
+          role: "owner",
+        })
+        .onConflictDoNothing();
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.ownership.transferred",
+        entityType: "discussion",
+        entityId: id,
+        details: { toUserId },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.participant.changed",
+        payload: { threadId: id },
+      });
+      return { ownerUserId: toUserId };
+    },
+
+    // ── Participants ──────────────────────────────────────────────────────────
+
+    addParticipant: async (
+      companyId: string,
+      id: string,
+      p: {
+        principalType: "user" | "agent";
+        principalId: string;
+        role: string;
+      },
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((r) => r[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+      assertCanEdit(thread, actor);
+
+      await db
+        .insert(threadParticipants)
+        .values({ companyId, threadId: id, ...p })
+        .onConflictDoNothing();
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.participant.added",
+        entityType: "discussion",
+        entityId: id,
+        details: { ...p },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.participant.changed",
+        payload: { threadId: id },
+      });
+      return { ok: true };
+    },
+
+    removeParticipant: async (
+      companyId: string,
+      id: string,
+      participantId: string,
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((r) => r[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+      assertCanEdit(thread, actor);
+
+      await db
+        .delete(threadParticipants)
+        .where(eq(threadParticipants.id, participantId));
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.participant.removed",
+        entityType: "discussion",
+        entityId: id,
+        details: { participantId },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.participant.changed",
+        payload: { threadId: id },
+      });
+      return { ok: true };
+    },
+
+    // ── Promote to goal ───────────────────────────────────────────────────────
+
+    /**
+     * Promote a thread to a goal. Creates the goal, links goalId on the thread.
+     * Enforces Decision #20: sub-goals are one level deep.
+     */
+    promoteToGoal: async (
+      companyId: string,
+      id: string,
+      goalInput: { projectIds: string[]; level: string; parentId?: string },
+      actor: Actor,
+    ) => {
+      if (goalInput.projectIds.length < 1) {
+        throw badRequest("A goal needs at least one project");
+      }
+
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      if (thread.goalId) throw badRequest("Thread already has a goal");
+
+      // Decision #20: enforce one-level sub-goals server-side
+      if (goalInput.parentId) {
+        const parent = await db
+          .select({ parentId: goals.parentId })
+          .from(goals)
+          .where(eq(goals.id, goalInput.parentId))
+          .then((r) => r[0] ?? null);
+        if (parent?.parentId) {
+          throw badRequest("Sub-goals are one level deep (#20)");
+        }
+      }
+
+      const gsvc = goalService(db);
+      const goal = await gsvc.create(companyId, {
+        title: thread.title ?? "Untitled goal",
+        level: goalInput.level as "company" | "team" | "personal",
+        parentId: goalInput.parentId ?? null,
+        projectIds: goalInput.projectIds,
+        status: "planned",
+      });
+
+      await db
+        .update(discussions)
+        .set({ goalId: goal.id, updatedAt: new Date() })
+        .where(eq(discussions.id, id));
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.promoted_to_goal",
+        entityType: "discussion",
+        entityId: id,
+        details: { goalId: goal.id },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.scope.changed",
+        payload: { threadId: id },
+      });
+      return { goalId: goal.id };
+    },
+
+    // ── Fork / merge ──────────────────────────────────────────────────────────
+
+    /**
+     * Fork a thread — creates a child thread linked back via thread_links with kind='fork'.
+     * Child inherits scope and visibility from source.
+     */
+    fork: async (companyId: string, id: string, actor: Actor) => {
+      const src = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!src) throw notFound("Thread not found");
+      await assertCanView(companyId, src, actor);
+
+      const [child] = await db
+        .insert(discussions)
+        .values({
+          companyId,
+          title: `${src.title ?? "Thread"} (fork)`,
+          scopeType: src.scopeType,
+          scopeId: src.scopeId,
+          phase: "discuss",
+          visibility: src.visibility,
+          forkedFromId: src.id,
+          ownerUserId: actor.isHuman ? actor.userId : null,
+          createdBy: actor.userId,
+        })
+        .returning();
+
+      await db.insert(threadLinks).values({
+        companyId,
+        fromThreadId: child.id,
+        toThreadId: src.id,
+        kind: "fork",
+        createdBy: actor.userId,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.forked",
+        entityType: "discussion",
+        entityId: id,
+        details: { childId: child.id },
+      });
+      return { id: child.id, forkedFromId: src.id };
+    },
+
+    /**
+     * Merge fromId into intoId. Archives the source thread.
+     * Full Scope reconciliation is v1.1 (SPEC §10).
+     */
+    merge: async (
+      companyId: string,
+      fromId: string,
+      intoId: string,
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(
+          and(eq(discussions.id, fromId), eq(discussions.companyId, companyId)),
+        )
+        .then((r) => r[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+      assertCanEdit(thread, actor);
+
+      await db
+        .update(discussions)
+        .set({ mergedIntoId: intoId, status: "archived", updatedAt: new Date() })
+        .where(eq(discussions.id, fromId));
+
+      await db.insert(threadLinks).values({
+        companyId,
+        fromThreadId: fromId,
+        toThreadId: intoId,
+        kind: "merge",
+        createdBy: actor.userId,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "thread.merged",
+        entityType: "discussion",
+        entityId: fromId,
+        details: { intoId },
+      });
+      return { mergedInto: intoId };
+    },
+
+    // ── Assign scope items → tasks ────────────────────────────────────────────
+
+    /**
+     * Convert approved Scope items into issues (Tasks).
+     * Founder-gated write (Codex #7).
+     * Issues created with workMode='planning' (D8: suppresses heartbeat dispatch).
+     * Idempotent: items with existing resultTaskId are skipped.
+     *
+     * Note: discussionExtractedItems link to threads via discussionEntries.discussionId.
+     * This queries through that join to find all approved pending items for this thread.
+     */
+    assignScopeItems: async (
+      companyId: string,
+      id: string,
+      actor: Actor,
+    ) => {
+      if (actor.role !== "founder") throw notFound("Thread not found");
+
+      const thread = await db
+        .select()
+        .from(discussions)
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .then((r) => r[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+
+      // Fetch approved items for this thread via the entry join
+      // discussionExtractedItems.discussionEntryId → discussionEntries.id → discussionEntries.discussionId
+      const entries = await db
+        .select({ id: discussionEntries.id })
+        .from(discussionEntries)
+        .where(eq(discussionEntries.discussionId, id));
+
+      const entryIds = entries.map((e) => e.id);
+      if (entryIds.length === 0) return { created: 0 };
+
+      const allItems = await db
+        .select()
+        .from(discussionExtractedItems)
+        .where(
+          and(
+            inArray(discussionExtractedItems.discussionEntryId, entryIds),
+            eq(discussionExtractedItems.status, "approved"),
+          ),
+        );
+
+      // Filter in-memory for resultTaskId IS NULL (idempotent — skip already-created)
+      const pending = allItems.filter((item) => item.resultTaskId == null);
+
+      let created = 0;
+      for (const item of pending) {
+        if (item.type === "spin_off_thread") {
+          // spin-off: full wiring is Plan 6, skip for now
+          continue;
+        }
+
+        // Only create tasks for task-type items
+        if (item.type !== "task") continue;
+
+        // Create issue with workMode='planning' (D8: suppresses dispatch)
+        const [newIssue] = await db
+          .insert(issues)
+          .values({
+            companyId,
+            title: item.title,
+            description: item.description ?? null,
+            status: "todo",
+            workMode: "planning", // D8: planning mode prevents auto-dispatch
+            assigneeAgentId: item.assigneeAgentId ?? null,
+            assigneeUserId: item.assigneeUserId ?? null,
+            projectId: item.departmentId ?? item.suggestedDepartmentId ?? item.suggestedProjectId ?? null,
+            priority: item.priority ?? item.suggestedPriority ?? "medium",
+            createdByUserId: actor.userId,
+          })
+          .returning();
+
+        // Link the scope item to the new task (idempotent marker)
+        await db
+          .update(discussionExtractedItems)
+          .set({ resultTaskId: newIssue.id, updatedAt: new Date() })
+          .where(eq(discussionExtractedItems.id, item.id));
+
+        created++;
+      }
+
+      if (created > 0) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: actor.userId,
+          action: "thread.scope.assigned",
+          entityType: "discussion",
+          entityId: id,
+          details: { count: created },
+        });
+        publishLiveEvent({
+          companyId,
+          type: "thread.scope.changed",
+          payload: { threadId: id, count: created },
+        });
+      }
+      return { created };
+    },
+  };
+}
