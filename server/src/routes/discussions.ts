@@ -8,10 +8,12 @@ import {
   createAnnotationSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { discussionService, logActivity } from "../services/index.js";
+import { discussionService, logActivity, permissionService } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
+import { threadService } from "../services/threads.js";
+import type { Actor } from "../services/threads.js";
 
 export function discussionRoutes(db: Db) {
   const router = Router();
@@ -461,6 +463,143 @@ export function discussionRoutes(db: Db) {
           res.status(err.status).json({ error: err.message });
           return;
         }
+        throw err;
+      }
+    },
+  );
+
+  // ── Thread lifecycle routes (Threads v1 Plan 2) ───────────────────────────
+
+  /**
+   * Build an Actor from request context.
+   * Role is resolved from permissionService for non-founders.
+   * In local_trusted mode (source=local_implicit) or instance admins,
+   * the effective role defaults to "founder".
+   */
+  async function buildActor(req: Parameters<typeof getActorInfo>[0], companyId: string): Promise<Actor> {
+    const info = getActorInfo(req);
+    const isHuman = req.actor.type === "board";
+
+    // local_implicit or instance admin → treat as founder
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return { userId: info.actorId, role: "founder", isHuman };
+    }
+    if (req.actor.type === "agent") {
+      return { userId: info.actorId, role: "team_member", isHuman: false };
+    }
+
+    const perms = permissionService(db);
+    const role = await perms.getEffectiveRole(companyId, info.actorId);
+    return { userId: info.actorId, role, isHuman };
+  }
+
+  const tSvc = threadService(db);
+
+  // T.1 Advance thread phase
+  router.patch(
+    "/companies/:companyId/discussions/:discussionId/phase",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+      try {
+        const result = await tSvc.advancePhase(companyId, discussionId, req.body.phase, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.2 Claim a thread
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/claim",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+      try {
+        const result = await tSvc.claim(companyId, discussionId, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.3 Transfer thread ownership
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/transfer",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+      try {
+        const result = await tSvc.transferOwnership(companyId, discussionId, req.body.toUserId, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.4 Add participant to thread
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/participants",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+      try {
+        const result = await tSvc.addParticipant(companyId, discussionId, req.body, actor);
+        res.status(201).json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.5 Promote thread to goal
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/promote-to-goal",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      const actor = await buildActor(req, companyId);
+      try {
+        const result = await tSvc.promoteToGoal(companyId, discussionId, req.body, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.6 Assign scope items to tasks
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/assign",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      const actor = await buildActor(req, companyId);
+      try {
+        const result = await tSvc.assignScopeItems(companyId, discussionId, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
         throw err;
       }
     },
