@@ -1,5 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { discussions, discussionEntries, discussionExtractedItems, projects } from "@armyofagents/db";
+import {
+  discussions,
+  discussionEntries,
+  discussionExtractedItems,
+  projects,
+  threadParticipants,
+  threadLinks,
+  scopeItemDependencies,
+  threadPlanSteps,
+  threadInboxItems,
+  discussionEntryAttachments,
+} from "@armyofagents/db";
 
 // Helper: get Drizzle column names from a table object.
 function getColumnNames(table: Record<string, unknown>): string[] {
@@ -89,5 +100,49 @@ describe("projects table — per-department thread visibility default", () => {
 
   it("preserves the department/project type discriminator", () => {
     expect(cols).toContain("type");
+  });
+});
+
+describe("threads.ts — new tables", () => {
+  it("thread_participants has principal + role + unique constraint", () => {
+    const cols = getColumnNames(threadParticipants);
+    for (const c of ["id", "companyId", "threadId", "principalType", "principalId", "role", "addedAt"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+
+  it("thread_links has from/to + kind", () => {
+    const cols = getColumnNames(threadLinks);
+    for (const c of ["id", "companyId", "fromThreadId", "toThreadId", "kind", "createdBy"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+
+  it("scope_item_dependencies has blocker/blocked", () => {
+    const cols = getColumnNames(scopeItemDependencies);
+    for (const c of ["id", "blockerItemId", "blockedItemId"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+
+  it("thread_plan_steps has ordering + linked item", () => {
+    const cols = getColumnNames(threadPlanSteps);
+    for (const c of ["id", "threadId", "stepOrder", "title", "collapsed", "linkedItemId"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+
+  it("thread_inbox_items has router fields + status", () => {
+    const cols = getColumnNames(threadInboxItems);
+    for (const c of ["id", "companyId", "rawContent", "routerConfidence", "routerDecision", "suggestedThreadId", "status"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+
+  it("discussion_entry_attachments links assets/artifacts to entries", () => {
+    const cols = getColumnNames(discussionEntryAttachments);
+    for (const c of ["id", "discussionEntryId", "assetId", "artifactId"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
   });
 });

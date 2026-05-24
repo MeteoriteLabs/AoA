@@ -70,6 +70,14 @@ export {
   discussionAnnotations,
 } from "./discussions.js";
 export {
+  threadParticipants,
+  threadLinks,
+  scopeItemDependencies,
+  threadPlanSteps,
+  threadInboxItems,
+  discussionEntryAttachments,
+} from "./threads.js";
+export {
   internalAgentConfig,
   internalAgentConversations,
   internalAgentMessages,
