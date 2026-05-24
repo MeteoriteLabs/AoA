@@ -7,6 +7,7 @@ import {
   integer,
   index,
   jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { companies } from "./companies.js";
@@ -51,6 +52,12 @@ export const discussions = pgTable(
     summaryNext: text("summary_next"),
     summaryUpdatedAt: timestamp("summary_updated_at", { withTimezone: true }),
     entrySeq: integer("entry_seq").notNull().default(0), // atomic per-thread entry counter (Plan 7 seq assignment)
+
+    // Plan 3 Task 8: thread-level crew kill-switch.
+    // When true, no crew roles (Router, Planner, Dispatcher, Memory Keeper) fire
+    // for this thread. Does NOT affect Scribe (extraction) — that is gated
+    // separately by the outbox trigger. Company-level pause is in internal_agent_config.
+    crewPaused: boolean("crew_paused").notNull().default(false),
 
     // Denormalized metadata
     entryCount: integer("entry_count").notNull().default(0),
