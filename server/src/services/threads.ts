@@ -185,13 +185,27 @@ export function threadService(db: Db) {
   /**
    * Assert the actor can edit this thread (owner, co_owner, or founder).
    * Throws notFound (not forbidden) per hide-don't-403 rule.
+   * Codex #5: allowed roles are owner | co_owner | founder.
    */
-  function assertCanEdit(
-    thread: { ownerUserId: string | null },
+  async function assertCanEdit(
+    thread: { id: string; ownerUserId: string | null },
     actor: Actor,
-  ): void {
+  ): Promise<void> {
     if (actor.role === "founder") return;
     if (thread.ownerUserId === actor.userId) return;
+    // Check threadParticipants for co_owner role
+    const participantRows = await db
+      .select({ role: threadParticipants.role })
+      .from(threadParticipants)
+      .where(
+        and(
+          eq(threadParticipants.threadId, thread.id),
+          eq(threadParticipants.principalType, "user"),
+          eq(threadParticipants.principalId, actor.userId),
+        ),
+      );
+    const participantRole = participantRows[0]?.role;
+    if (participantRole === "owner" || participantRole === "co_owner") return;
     throw notFound("Thread not found");
   }
 
@@ -370,6 +384,15 @@ export function threadService(db: Db) {
         })
         .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)));
 
+      await logActivity(db, {
+        companyId,
+        actorType: actor.isHuman ? "user" : "agent",
+        actorId: actor.userId,
+        action: "thread.summary.updated",
+        entityType: "discussion",
+        entityId: id,
+        details: {},
+      });
       publishLiveEvent({
         companyId,
         type: "thread.summary.updated",
@@ -521,7 +544,7 @@ export function threadService(db: Db) {
         .then((r) => r[0] ?? null);
       if (!thread) throw notFound("Thread not found");
       await assertCanView(companyId, thread, actor);
-      assertCanEdit(thread, actor);
+      await assertCanEdit(thread, actor);
 
       await db
         .insert(threadParticipants)
@@ -558,7 +581,7 @@ export function threadService(db: Db) {
         .then((r) => r[0] ?? null);
       if (!thread) throw notFound("Thread not found");
       await assertCanView(companyId, thread, actor);
-      assertCanEdit(thread, actor);
+      await assertCanEdit(thread, actor);
 
       await db
         .delete(threadParticipants)
@@ -719,7 +742,7 @@ export function threadService(db: Db) {
         .then((r) => r[0] ?? null);
       if (!thread) throw notFound("Thread not found");
       await assertCanView(companyId, thread, actor);
-      assertCanEdit(thread, actor);
+      await assertCanEdit(thread, actor);
 
       await db
         .update(discussions)
