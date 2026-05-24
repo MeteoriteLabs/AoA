@@ -226,7 +226,8 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
 
   // 4. Stacks (top of the stack so they win): each fanned card + the "+N" pill.
   for (const stack of visibleStacks) {
-    for (const c of computeStackCardLayout(stack)) {
+    const cards = computeStackCardLayout(stack);
+    for (const c of cards) {
       regions.push({
         shape: "rect",
         x: c.x - CARD_W / 2 - PAD,
@@ -236,14 +237,16 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
         target: { kind: "task", branchName: c.branchName },
       });
     }
-    if (
-      stack.branchNames.length > computeStackCardLayout(stack).length ||
-      (stack.extraNames?.length ?? 0) > 0
-    ) {
+    // "+N more" pill → cluster peek. Carry only the HIDDEN branches (task tips
+    // NOT shown as cards + absorbed plain branches) so the peek count matches the
+    // drawn "+N more" pill exactly (drawTipStack: extra = branchNames.length -
+    // cards.length + extraNames.length).
+    const hidden = [...stack.branchNames.slice(cards.length), ...(stack.extraNames ?? [])];
+    if (hidden.length > 0) {
       regions.push({
         shape: "rect",
         x: stack.x + 50, y: stack.y + 8, w: 54, h: 15,
-        target: { kind: "showMore", branchNames: [...stack.branchNames, ...(stack.extraNames ?? [])] },
+        target: { kind: "showMore", branchNames: hidden },
       });
     }
   }
