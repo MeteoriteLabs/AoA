@@ -85,7 +85,8 @@ vi.mock("../services/workspace-runtime.js", () => ({
   stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServices,
   ensurePersistedExecutionWorkspaceAvailable: vi.fn(),
   listConfiguredRuntimeServiceEntries: vi.fn().mockReturnValue([]),
-  refreshPersistedAdapterManagedPreviewRuntimeServices: vi.fn(({ rows }) => rows),
+  refreshPersistedRuntimeServiceRows: vi.fn(({ rows }) => rows),
+  resolveConfiguredRuntimeServiceIndexForRow: vi.fn().mockReturnValue(null),
   startRuntimeServicesForWorkspaceControl: vi.fn(),
   cleanupExecutionWorkspaceArtifacts: mockCleanupArtifacts,
 }));

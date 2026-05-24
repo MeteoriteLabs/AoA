@@ -12,6 +12,8 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   refreshAdapterManagedPreviewRuntimeServiceRows,
+  refreshLocalProcessRuntimeServiceRows,
+  resolveRuntimeServiceReadinessOptions,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -188,6 +190,18 @@ afterEach(async () => {
   delete process.env.AOA_INSTANCE_ID;
   delete process.env.AOA_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
+});
+
+describe("resolveRuntimeServiceReadinessOptions", () => {
+  it("uses the dev-server-aware readiness timeout when starting services", () => {
+    expect(resolveRuntimeServiceReadinessOptions({
+      service: {
+        name: "web",
+        command: "pnpm dev",
+        readiness: { type: "http" },
+      },
+    })).toEqual({ type: "http", timeoutSec: 90, intervalMs: 500 });
+  });
 });
 
 describe("realizeExecutionWorkspace", () => {
@@ -1556,5 +1570,61 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
     expect(probes).toBe(1);
     expect(first.rows[0]?.healthStatus).toBe("healthy");
     expect(second.rows[0]?.healthStatus).toBe("healthy");
+  });
+});
+
+describe("refreshLocalProcessRuntimeServiceRows", () => {
+  const baseRow = {
+    id: "33333333-3333-4333-8333-333333333333",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    executionWorkspaceId: "execution-workspace-1",
+    issueId: "issue-1",
+    scopeType: "execution_workspace",
+    scopeId: "execution-workspace-1",
+    serviceName: "web",
+    status: "running",
+    lifecycle: "shared",
+    reuseKey: null,
+    command: "pnpm dev",
+    cwd: "/tmp/project",
+    port: 54853,
+    url: "http://127.0.0.1:54853/",
+    provider: "local_process",
+    providerRef: "12345",
+    ownerAgentId: "agent-1",
+    startedByRunId: null,
+    lastUsedAt: new Date("2026-05-16T00:00:00.000Z"),
+    startedAt: new Date("2026-05-16T00:00:00.000Z"),
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "unknown",
+    healthCheckedAt: null,
+    createdAt: new Date("2026-05-16T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-16T00:00:00.000Z"),
+  };
+
+  it("probes stale local-process service URLs", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [baseRow as any],
+      now,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
   });
 });

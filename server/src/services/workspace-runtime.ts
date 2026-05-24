@@ -1324,12 +1324,9 @@ async function waitForReadiness(input: {
   service: Record<string, unknown>;
   url: string | null;
 }) {
-  const readiness = parseObject(input.service.readiness);
-  const readinessType = asString(readiness.type, "");
-  if (readinessType !== "http" || !input.url) return;
-  const timeoutSec = Math.max(1, asNumber(readiness.timeoutSec, 30));
-  const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
-  const deadline = Date.now() + timeoutSec * 1000;
+  const options = resolveRuntimeServiceReadinessOptions({ service: input.service });
+  if (options.type !== "http" || !input.url) return;
+  const deadline = Date.now() + options.timeoutSec * 1000;
   let lastError = "service did not become ready";
   while (Date.now() < deadline) {
     try {
@@ -1339,7 +1336,7 @@ async function waitForReadiness(input: {
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
-    await delay(intervalMs);
+    await delay(options.intervalMs);
   }
   throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
 }
@@ -1621,13 +1618,74 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
   return { rows, updates };
 }
 
-export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input: {
-  db: Db;
+export async function refreshLocalProcessRuntimeServiceRows(input: {
   rows: WorkspaceRuntimeServiceRow[];
-}): Promise<WorkspaceRuntimeServiceRow[]> {
-  const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
-  for (const update of refreshed.updates) {
-    await input.db
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<{ rows: WorkspaceRuntimeServiceRow[]; updates: PreviewRuntimeServiceUpdate[] }> {
+  const now = input.now ?? new Date();
+  const ttlMs = input.ttlMs ?? DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS;
+  const maxConcurrency = input.maxConcurrency ?? DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY;
+  const probeUrl = input.probeUrl ?? ((url: string) => probePreviewUrl(url, { timeoutMs: 750 }));
+  const updates: PreviewRuntimeServiceUpdate[] = [];
+
+  const rows = await mapWithConcurrency(
+    input.rows,
+    maxConcurrency,
+    async (row) => {
+      if (row.provider !== "local_process" || !row.url) return row;
+      if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
+
+      const inMemory = runtimeServicesById.get(row.id);
+      const reachable = inMemory?.status === "running"
+        ? true
+        : await probePreviewUrlDeduped({
+            key: row.id,
+            url: row.url,
+            probeUrl,
+          });
+      const nextStatus = reachable ? "running" : "stopped";
+      const nextHealthStatus = reachable ? "healthy" : "unhealthy";
+      const nextStoppedAt = reachable ? null : now;
+      const changed =
+        row.status !== nextStatus ||
+        row.healthStatus !== nextHealthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt) ||
+        dateTime(row.healthCheckedAt) !== dateTime(now);
+
+      if (!changed) return row;
+
+      const update = {
+        id: row.id,
+        status: nextStatus,
+        healthStatus: nextHealthStatus,
+        stoppedAt: nextStoppedAt,
+        healthCheckedAt: now,
+        updatedAt: now,
+      };
+      updates.push(update);
+      return {
+        ...row,
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
+        updatedAt: update.updatedAt,
+      };
+    },
+  );
+
+  return { rows, updates };
+}
+
+async function persistRuntimeServiceHealthUpdates(
+  db: Db,
+  updates: PreviewRuntimeServiceUpdate[],
+) {
+  for (const update of updates) {
+    await db
       .update(workspaceRuntimeServices)
       .set({
         status: update.status,
@@ -1638,12 +1696,42 @@ export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input
       })
       .where(eq(workspaceRuntimeServices.id, update.id));
   }
+}
+
+export async function refreshPersistedRuntimeServiceRows(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const adapterRows = await refreshAdapterManagedPreviewRuntimeServiceRows(input);
+  const localRows = await refreshLocalProcessRuntimeServiceRows({
+    ...input,
+    rows: adapterRows.rows,
+  });
+  await persistRuntimeServiceHealthUpdates(input.db, [
+    ...adapterRows.updates,
+    ...localRows.updates,
+  ]);
+  return localRows.rows;
+}
+
+export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
+  await persistRuntimeServiceHealthUpdates(input.db, refreshed.updates);
   return refreshed.rows;
 }
 
 async function startLocalRuntimeService(input: {
   db?: Db;
   runId: string;
+  startedByRunId?: string | null;
+  leaseRunId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
@@ -1721,6 +1809,8 @@ async function startLocalRuntimeService(input: {
   }
 
   const envFingerprint = createHash("sha256").update(stableStringify(envConfig)).digest("hex");
+  const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
+  const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   return {
     id: randomUUID(),
     companyId: input.agent.companyId,
@@ -1741,7 +1831,7 @@ async function startLocalRuntimeService(input: {
     provider: "local_process",
     providerRef: child.pid ? String(child.pid) : null,
     ownerAgentId: input.agent.id,
-    startedByRunId: input.runId,
+    startedByRunId,
     lastUsedAt: new Date().toISOString(),
     startedAt: new Date().toISOString(),
     stoppedAt: null,
@@ -1750,7 +1840,7 @@ async function startLocalRuntimeService(input: {
     reused: false,
     db: input.db,
     child,
-    leaseRunIds: new Set([input.runId]),
+    leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
     idleTimer: null,
     envFingerprint,
   };
@@ -1884,6 +1974,8 @@ export async function ensureRuntimeServicesForRun(input: {
       const record = await startLocalRuntimeService({
         db: input.db,
         runId: input.runId,
+        startedByRunId: input.runId,
+        leaseRunId: input.runId,
         agent: input.agent,
         issue: input.issue,
         workspace: input.workspace,
@@ -2164,6 +2256,45 @@ export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<strin
   return looksLikeWorkspaceDevServerCommand(asString(service.command, "")) ? 90 : 30;
 }
 
+export function resolveRuntimeServiceReadinessOptions(input: {
+  service: Record<string, unknown>;
+}): { timeoutSec: number; intervalMs: number; type: string } {
+  const readiness = parseObject(input.service.readiness);
+  return {
+    type: asString(readiness.type, ""),
+    timeoutSec: resolveWorkspaceRuntimeReadinessTimeoutSec(input.service),
+    intervalMs: Math.max(100, asNumber(readiness.intervalMs, 500)),
+  };
+}
+
+export function resolveConfiguredRuntimeServiceIndexForRow(input: {
+  services: Record<string, unknown>[];
+  row: {
+    serviceName: string;
+    command: string | null;
+    cwd: string | null;
+  };
+  workspaceCwd: string | null;
+}): number | null {
+  const normalizedRowCwd = input.row.cwd ? path.resolve(input.row.cwd) : null;
+  let matchIndex: number | null = null;
+  for (let index = 0; index < input.services.length; index += 1) {
+    const service = input.services[index]!;
+    const name = asString(service.name, "service");
+    const command = asString(service.command, "");
+    const serviceCwd = asString(service.cwd, ".");
+    const resolvedServiceCwd = input.workspaceCwd
+      ? path.resolve(input.workspaceCwd, serviceCwd)
+      : null;
+    if (name !== input.row.serviceName) continue;
+    if (input.row.command && command && input.row.command !== command) continue;
+    if (normalizedRowCwd && resolvedServiceCwd && normalizedRowCwd !== resolvedServiceCwd) continue;
+    if (matchIndex !== null) return null;
+    matchIndex = index;
+  }
+  return matchIndex;
+}
+
 function readRuntimeServiceEntries(config: Record<string, unknown>): Record<string, unknown>[] {
   const runtime = parseObject(config.workspaceRuntime);
   const services = runtime.services;
@@ -2317,6 +2448,8 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
     const record = await startLocalRuntimeService({
       db: input.db,
       runId: invocationId,
+      startedByRunId: null,
+      leaseRunId: null,
       agent: input.actor,
       issue: input.issue,
       workspace: input.workspace,
