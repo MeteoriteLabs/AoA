@@ -42,6 +42,10 @@ export const mockDialogContext = {
   discussionCaptureDefaults: {},
   openDiscussionCapture: vi.fn(),
   closeDiscussionCapture: vi.fn(),
+  newThreadOpen: false,
+  newThreadDefaults: {},
+  openNewThread: vi.fn(),
+  closeNewThread: vi.fn(),
 };
 
 // --- Mock breadcrumb context ---
