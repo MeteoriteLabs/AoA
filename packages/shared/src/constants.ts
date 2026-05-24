@@ -299,6 +299,11 @@ export const LIVE_EVENT_TYPES = [
   // Marketplace update (M.4)
   "marketplace.update.completed",
   "marketplace.update.failed",
+  // V2.5: Threads lifecycle
+  "thread.phase.changed",
+  "thread.summary.updated",
+  "thread.participant.changed",
+  "thread.scope.changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
