@@ -32,6 +32,14 @@ export const STACK_DX = 64;       // cards sit this far right of the shared comm
 export const STACK_DY = 40;       // vertical gap between fanned cards
 export const STACK_BASE_DY = 34;  // first card's vertical offset above the commit
 
+/** Multi-lane packing: overlapping same-direction arcs are stacked into lanes
+ * LANE_GAP apart so they don't draw on top of each other. Lane 0 == the
+ * previous single-lane behaviour; each extra lane adds LANE_GAP of arc height.
+ * MAX_LANES caps how high a dense pile can grow (adaptive mode handles the rest
+ * later). (Phase 3A) */
+export const LANE_GAP = 40;
+export const MAX_LANES = 5;
+
 export interface TipStack {
   sha: string;
   x: number;
@@ -265,6 +273,32 @@ export function assignArcDirections(
   return result;
 }
 
+/** Interval-schedule arcs into vertical lanes PER direction so arcs whose
+ * x-ranges overlap land in distinct lanes (the old layout had only up/down, so
+ * concurrent branches drew on top of each other). Greedy: sort by start x, put
+ * each arc in the lowest lane whose previous arc has already ended. Returns the
+ * lane index per branch name. */
+export function assignArcLanes(
+  arcs: Array<{ branchName: string; direction: "up" | "down"; startX: number; endX: number }>,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const dir of ["up", "down"] as const) {
+    const inDir = arcs.filter((a) => a.direction === dir).sort((a, b) => a.startX - b.startX);
+    const laneEnds: number[] = []; // laneEnds[i] = endX of the last arc placed in lane i
+    for (const a of inDir) {
+      let lane = laneEnds.findIndex((end) => end <= a.startX);
+      if (lane === -1) {
+        lane = laneEnds.length;
+        laneEnds.push(a.endX);
+      } else {
+        laneEnds[lane] = a.endX;
+      }
+      result.set(a.branchName, lane);
+    }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Internal Y helpers
 // ---------------------------------------------------------------------------
@@ -342,22 +376,47 @@ export function computeArcLayout(
   const shaToArcBranch = new Map<string, string>(); // sha → feature branch name
   const shaToArcY = new Map<string, number>();       // sha → pre-computed Y
 
-  for (const fb of featureBranches) {
-    const color = NEUTRAL_GREY;
+  // Pass 1: per-branch geometry. The expensive BFS/merge lookups run ONCE here;
+  // pass 2 reuses these to build the arc paths after lanes are assigned.
+  const arcData = featureBranches.map((fb) => {
     const direction = directions.get(fb.name) ?? "up";
-    const isDone = doneBranches.has(fb.name);
-
     const featureCommitShas = getFeatureCommitShas(commitMap, trunkShas, fb.tipSha);
-    const featureShaSet = new Set(featureCommitShas);
-
     const branchPointSha = findBranchPoint(commitMap, trunkShas, fb.tipSha);
     const branchPointX = commitXMap.get(branchPointSha) ?? PAD_LEFT;
-
-    const mergePointSha = findMergePoint(graph.commits, trunkShas, featureShaSet);
+    const mergePointSha = findMergePoint(graph.commits, trunkShas, new Set(featureCommitShas));
     const mergePointX =
       mergePointSha != null ? (commitXMap.get(mergePointSha) ?? null) : null;
+    const xs = featureCommitShas.map((s) => commitXMap.get(s) ?? branchPointX);
+    const tipX = xs.length > 0 ? Math.max(...xs) : branchPointX;
+    const endX =
+      mergePointX != null && mergePointX > branchPointX ? mergePointX : tipX + OPEN_ARC_STUB;
+    return { fb, direction, featureCommitShas, branchPointX, mergePointX, endX };
+  });
 
-    const arcHeight = computeArcHeight(featureCommitShas.length);
+  // Multi-lane: interval-schedule overlapping same-direction arcs into lanes so
+  // they don't draw on top of each other (the old up/down 2-lane ceiling).
+  const arcLanes = assignArcLanes(
+    arcData.map((d) => ({
+      branchName: d.fb.name,
+      direction: d.direction,
+      startX: d.branchPointX,
+      endX: d.endX,
+    })),
+  );
+
+  // Pass 2: build the arc paths using the lane-bumped apex (lane 0 == old apex).
+  for (const d of arcData) {
+    const fb = d.fb;
+    const color = NEUTRAL_GREY;
+    const direction = d.direction;
+    const isDone = doneBranches.has(fb.name);
+
+    const featureCommitShas = d.featureCommitShas;
+    const branchPointX = d.branchPointX;
+    const mergePointX = d.mergePointX;
+
+    const lane = Math.min(arcLanes.get(fb.name) ?? 0, MAX_LANES);
+    const arcHeight = computeArcHeight(featureCommitShas.length) + lane * LANE_GAP;
     const apexY = direction === "up" ? TRUNK_Y - arcHeight : TRUNK_Y + arcHeight;
 
     // Rail starts 60px right of branch point for open arcs

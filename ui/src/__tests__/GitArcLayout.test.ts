@@ -7,6 +7,7 @@ import {
   getFeatureCommitShas,
   computeArcHeight,
   assignArcDirections,
+  assignArcLanes,
   computeArcLayout,
   getLayoutBounds,
   computeFitTransform,
@@ -672,5 +673,32 @@ describe("commitClusters absorb plain branches (Phase 2A/2C)", () => {
     expect(layout.tipStacks[0]!.branchNames.length).toBe(2);
     expect(layout.tipStacks[0]!.extraNames?.length).toBe(3);
     expect(layout.tipStacks[0]!.extraNames).not.toContain("main");
+  });
+});
+
+describe("assignArcLanes (multi-lane packing)", () => {
+  it("overlapping same-direction arcs get distinct lanes", () => {
+    const m = assignArcLanes([
+      { branchName: "a", direction: "down", startX: 0, endX: 100 },
+      { branchName: "b", direction: "down", startX: 50, endX: 150 },
+      { branchName: "c", direction: "down", startX: 80, endX: 200 },
+    ]);
+    expect(new Set([m.get("a"), m.get("b"), m.get("c")]).size).toBe(3);
+  });
+  it("non-overlapping arcs reuse lane 0", () => {
+    const m = assignArcLanes([
+      { branchName: "a", direction: "down", startX: 0, endX: 50 },
+      { branchName: "b", direction: "down", startX: 60, endX: 100 },
+    ]);
+    expect(m.get("a")).toBe(0);
+    expect(m.get("b")).toBe(0);
+  });
+  it("up and down lanes are independent", () => {
+    const m = assignArcLanes([
+      { branchName: "u", direction: "up", startX: 0, endX: 100 },
+      { branchName: "d", direction: "down", startX: 0, endX: 100 },
+    ]);
+    expect(m.get("u")).toBe(0);
+    expect(m.get("d")).toBe(0);
   });
 });
