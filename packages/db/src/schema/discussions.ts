@@ -12,6 +12,7 @@ import { relations } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
+import { agents } from "./agents.js";
 import { issues } from "./issues.js";
 import { memoryItems } from "./memory_items.js";
 import { internalAgentRuns } from "./internal_agent.js";
@@ -114,6 +115,10 @@ export const discussionEntries = pgTable(
       () => internalAgentRuns.id,
       { onDelete: "set null" },
     ),
+
+    // ── Threads v1: nested replies + agent authorship ──
+    parentEntryId: uuid("parent_entry_id").references((): AnyPgColumn => discussionEntries.id, { onDelete: "set null" }),
+    authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
 
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
