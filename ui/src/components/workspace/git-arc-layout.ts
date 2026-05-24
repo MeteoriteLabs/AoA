@@ -330,6 +330,10 @@ function openArcY(
 export function computeArcLayout(
   graph: GitGraphData,
   branches: GitBranchInfo[],
+  /** includeDone: keep done/cancelled branches in the arc + lane layout. Default
+   * false so hidden done branches don't consume lanes or layout cost; the
+   * "Merged" filter passes true to bring them back. (Phase 4A) */
+  opts?: { includeDone?: boolean },
 ): ArcLayoutResult {
   const branchInfoMap = new Map(branches.map((b) => [b.name, b]));
 
@@ -345,16 +349,20 @@ export function computeArcLayout(
   // Trunk SHAs (first-parent walk from default tip)
   const trunkShas = findTrunkShas(graph);
 
-  // Feature branches = everything except default
-  const featureBranches = graph.branches.filter((b) => b.name !== graph.defaultBranch);
-  const directions = assignArcDirections(featureBranches);
-
-  // Helper sets
+  // Done/cancelled branches. Computed up front so they can be excluded from the
+  // arc + lane layout by default (they were being built + taking lanes while
+  // hidden, pushing visible arcs higher). The Merged filter passes includeDone. (Phase 4A)
   const doneBranches = new Set(
     branches
       .filter((b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled")
       .map((b) => b.name),
   );
+
+  // Feature branches = everything except default (and except done, unless asked).
+  const featureBranches = graph.branches.filter(
+    (b) => b.name !== graph.defaultBranch && (opts?.includeDone || !doneBranches.has(b.name)),
+  );
+  const directions = assignArcDirections(featureBranches);
   const remoteOnlyBranches = new Set(
     branches.filter((b) => !b.isLocal && b.isRemote).map((b) => b.name),
   );

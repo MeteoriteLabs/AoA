@@ -188,8 +188,10 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     }, [visibleBranches, graph.defaultBranch]);
 
     const layout = useMemo(
-      () => computeArcLayout(graph, branches),
-      [graph, branches],
+      // Merged filter brings done/cancelled branches back into the layout; every
+      // other view excludes them so they don't consume lanes or layout cost. (Phase 4A)
+      () => computeArcLayout(graph, branches, { includeDone: filter === "merged" }),
+      [graph, branches, filter],
     );
 
     // Always-current layout ref — prevents stale closure in ResizeObserver

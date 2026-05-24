@@ -702,3 +702,33 @@ describe("assignArcLanes (multi-lane packing)", () => {
     expect(m.get("d")).toBe(0);
   });
 });
+
+describe("done-branch aging (Phase 4A)", () => {
+  function g(statuses: Array<string | null>) {
+    const commits = [{ sha: "c0", parentShas: [], shortSha: "c0", message: "m", author: "a", committedAt: new Date().toISOString(), branchNames: [], isMerge: false, tags: [] }];
+    // each feature branch gets a unique commit off c0 so it forms a real arc
+    const gb = [{ name: "main", laneIndex: 0, color: "#000", tipSha: "c0" }];
+    const bs: any[] = [{ name: "main", isLocal: true, isRemote: true, aheadCount: 0, behindCount: 0, lastCommitSha: "c0", lastCommitMessage: "m", lastCommitAt: "", lastCommitAuthor: "a", linkedWorkspaceId: null, linkedIssueId: null, linkedIssueIdentifier: null, linkedIssueTitle: null, linkedIssueStatus: null, linkedIssueWorkMode: null, pr: null, overlays: { hasConflicts: false, isDiverged: false, isBehindRemote: false }, tags: [] }];
+    statuses.forEach((st, i) => {
+      const fsha = "f" + i;
+      commits.unshift({ sha: fsha, parentShas: ["c0"], shortSha: fsha, message: "m", author: "a", committedAt: new Date().toISOString(), branchNames: [], isMerge: false, tags: [] });
+      const name = "feat/" + i;
+      gb.push({ name, laneIndex: i + 1, color: "#000", tipSha: fsha });
+      bs.push({ name, isLocal: true, isRemote: true, aheadCount: 1, behindCount: 0, lastCommitSha: fsha, lastCommitMessage: "m", lastCommitAt: "", lastCommitAuthor: "a", linkedWorkspaceId: null, linkedIssueId: "i" + i, linkedIssueIdentifier: "AOA-" + i, linkedIssueTitle: null, linkedIssueStatus: st, linkedIssueWorkMode: null, pr: null, overlays: { hasConflicts: false, isDiverged: false, isBehindRemote: false }, tags: [] });
+    });
+    return { graph: { commits, branches: gb, defaultBranch: "main" } as any, branches: bs };
+  }
+  it("excludes done/cancelled branches from arcs by default", () => {
+    const { graph, branches } = g(["in_progress", "done", "cancelled"]);
+    const arcs = computeArcLayout(graph, branches).arcs.map((a) => a.branchName);
+    expect(arcs).toContain("feat/0");
+    expect(arcs).not.toContain("feat/1");
+    expect(arcs).not.toContain("feat/2");
+  });
+  it("includes them when includeDone is set (Merged filter)", () => {
+    const { graph, branches } = g(["in_progress", "done"]);
+    const arcs = computeArcLayout(graph, branches, { includeDone: true }).arcs.map((a) => a.branchName);
+    expect(arcs).toContain("feat/0");
+    expect(arcs).toContain("feat/1");
+  });
+});
