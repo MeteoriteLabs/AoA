@@ -4,6 +4,18 @@ import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ScopeTab } from "../ScopeTab";
 import type { ScopeItem } from "../scopeGrouping";
 
+// Task 7 mock: threadsApi used for spinOff + routing calls
+vi.mock("../../../api/threads", () => ({
+  threadsApi: {
+    spinOff: vi.fn().mockResolvedValue({ id: "new-thread" }),
+    routeItem: vi.fn().mockResolvedValue({ itemId: "item-1" }),
+  },
+}));
+
+vi.mock("../../../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+}));
+
 function makeItem(overrides: Partial<ScopeItem> = {}): ScopeItem {
   return {
     id: "item-1",
@@ -21,6 +33,7 @@ function makeItem(overrides: Partial<ScopeItem> = {}): ScopeItem {
     resultTaskId: null,
     resultMemoryId: null,
     createdAt: "2026-01-01T00:00:00Z",
+    dependsOn: [],
     ...overrides,
   };
 }
@@ -244,5 +257,128 @@ describe("ScopeTab", () => {
     );
     // Conflict badge appears (there may be multiple conflict-related elements)
     expect(screen.getAllByText(/conflict/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ── Task 7: conflict card amber styling ───────────────────────────────────
+
+  it("conflict card has amber styling for conflicted items in Needs Input", () => {
+    const items: ScopeItem[] = [
+      makeItem({
+        id: "c1",
+        status: "pending",
+        title: "Conflicted item",
+        conflictsWith: "other-item",
+        dependsOn: [],
+      }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+        companyId="comp-1"
+        discussionId="disc-1"
+        isFounder={false}
+      />,
+    );
+    // The conflicted item row should have an amber conflict class
+    const itemEl = screen.getByTestId("scope-item-c1");
+    expect(itemEl.className).toMatch(/amber/);
+  });
+
+  it("renders 'Spin off' button for each scope item", () => {
+    const items: ScopeItem[] = [
+      makeItem({ id: "s1", status: "pending", title: "Spinnable Task", dependsOn: [] }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+        companyId="comp-1"
+        discussionId="disc-1"
+        isFounder={false}
+      />,
+    );
+    // Each item should have a spin-off button
+    expect(screen.getByTestId("spin-off-s1")).toBeInTheDocument();
+  });
+
+  it("shows dependency badge when item has dependsOn", () => {
+    const items: ScopeItem[] = [
+      makeItem({ id: "d1", status: "pending", title: "Blocked Task", dependsOn: ["item-a", "item-b"] }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+        companyId="comp-1"
+        discussionId="disc-1"
+        isFounder={false}
+      />,
+    );
+    expect(screen.getByTestId("dep-badge-d1")).toBeInTheDocument();
+  });
+
+  it("shows routing UI (department selector) only for founders", () => {
+    const items: ScopeItem[] = [
+      makeItem({ id: "r1", status: "pending", title: "Routable Task", type: "task", dependsOn: [] }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+        companyId="comp-1"
+        discussionId="disc-1"
+        isFounder={true}
+        departments={[{ id: "dept-1", name: "Engineering" }]}
+      />,
+    );
+    // Routing selector should appear for founders
+    expect(screen.getByTestId("routing-dept-r1")).toBeInTheDocument();
+  });
+
+  it("does NOT show routing UI for non-founders", () => {
+    const items: ScopeItem[] = [
+      makeItem({ id: "r2", status: "pending", title: "Task", type: "task", dependsOn: [] }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+        companyId="comp-1"
+        discussionId="disc-1"
+        isFounder={false}
+      />,
+    );
+    expect(screen.queryByTestId("routing-dept-r2")).not.toBeInTheDocument();
   });
 });

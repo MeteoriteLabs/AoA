@@ -17,6 +17,8 @@ export interface ScopeItem {
   resultTaskId: string | null;
   resultMemoryId: string | null;
   createdAt: string;
+  /** IDs of scope items that this item depends on (blockers) */
+  dependsOn?: string[];
 }
 
 export interface NeedsInputItem {
