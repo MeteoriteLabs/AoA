@@ -11,6 +11,12 @@ vi.mock("../../api/threads", () => ({
   },
 }));
 
+vi.mock("../../api/client", () => ({
+  api: {
+    get: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  },
+}));
+
 vi.mock("../../context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "comp-1",

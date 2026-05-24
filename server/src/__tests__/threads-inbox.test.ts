@@ -197,7 +197,7 @@ describe("triage action validation", () => {
     const STATUS_MAP: Record<string, string> = {
       dismiss: "dismissed",
       attach: "attached",
-      make_thread: "pending", // inbox item remains, a new discussion is created
+      make_thread: "attached", // inbox item is marked attached to the new discussion
     };
     expect(STATUS_MAP["dismiss"]).toBe("dismissed");
     expect(STATUS_MAP["attach"]).toBe("attached");
