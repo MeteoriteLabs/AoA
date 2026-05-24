@@ -661,6 +661,8 @@ export function discussionRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
+      const { desc } = await import("drizzle-orm");
+
       const items = await db
         .select()
         .from(threadInboxItems)
@@ -669,7 +671,8 @@ export function discussionRoutes(db: Db) {
             eq(threadInboxItems.companyId, companyId),
             eq(threadInboxItems.status, "pending"),
           ),
-        );
+        )
+        .orderBy(desc(threadInboxItems.createdAt));
 
       res.json({ items, total: items.length });
     },
@@ -716,6 +719,12 @@ export function discussionRoutes(db: Db) {
         return;
       }
 
+      // Fix C3: Prevent re-triaging already-processed items
+      if (item.status !== "pending") {
+        res.status(409).json({ error: "Inbox item has already been triaged" });
+        return;
+      }
+
       const actor = getActorInfo(req);
 
       if (action === "dismiss") {
@@ -740,6 +749,16 @@ export function discussionRoutes(db: Db) {
       }
 
       if (action === "attach") {
+        // Fix C2: Validate target thread belongs to same company
+        const [targetThread] = await db
+          .select({ id: discussions.id })
+          .from(discussions)
+          .where(and(eq(discussions.id, threadId!), eq(discussions.companyId, companyId)));
+        if (!targetThread) {
+          res.status(404).json({ error: "Thread not found" });
+          return;
+        }
+
         // Attach inbox item to an existing thread (mark as attached)
         await db
           .update(threadInboxItems)
@@ -762,21 +781,26 @@ export function discussionRoutes(db: Db) {
       }
 
       if (action === "make_thread") {
-        // Create a new discussion from the inbox item's raw content
-        const svc = discussionService(db);
-        const newDiscussion = await svc.create(
-          companyId,
-          {
-            title: item.rawContent.slice(0, 80).replace(/\n/g, " ") || "New thread",
-          },
-          actor.actorId,
-        );
+        // Fix C1: Wrap create + status update in a transaction to prevent orphaned
+        // discussions if the process crashes between the two DB calls.
+        const newDiscussion = await db.transaction(async (tx) => {
+          const txSvc = discussionService(tx as unknown as typeof db);
+          const created = await txSvc.create(
+            companyId,
+            {
+              title: item.rawContent.slice(0, 80).replace(/\n/g, " ") || "New thread",
+            },
+            actor.actorId,
+          );
 
-        // Mark inbox item as attached to the new thread
-        await db
-          .update(threadInboxItems)
-          .set({ status: "attached", suggestedThreadId: newDiscussion.id })
-          .where(eq(threadInboxItems.id, itemId));
+          // Mark inbox item as attached to the new thread within the same transaction
+          await tx
+            .update(threadInboxItems)
+            .set({ status: "attached", suggestedThreadId: created.id })
+            .where(eq(threadInboxItems.id, itemId));
+
+          return created;
+        });
 
         await logActivity(db, {
           companyId,

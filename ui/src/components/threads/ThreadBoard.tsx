@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { Link } from "@/lib/router";
 import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
 import type { ThreadListItem } from "../../api/threads";
@@ -6,6 +5,7 @@ import { cn } from "../../lib/utils";
 import { MessageSquare, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UnlistedLane } from "./UnlistedLane";
+import { groupThreadsForBoard } from "./boardModel";
 
 /* ── Phase column config ────────────────────────────────────────────────────── */
 
@@ -15,13 +15,6 @@ const PHASE_COLUMNS: Array<{ phase: ThreadPhase; label: string; headerClass: str
   { phase: "assign", label: "Assign", headerClass: "text-violet-700 dark:text-violet-400" },
   { phase: "done", label: "Done", headerClass: "text-green-700 dark:text-green-400" },
 ];
-
-const PHASE_COLORS: Record<ThreadPhase, string> = {
-  discuss: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  scope: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  assign: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
-  done: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-};
 
 function relativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
@@ -57,17 +50,8 @@ export interface InboxCardItem {
 }
 
 export function ThreadBoard({ threads, inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
-  // Group threads by phase
-  const byPhase = useMemo(() => {
-    const map = new Map<ThreadPhase, ThreadListItem[]>(
-      THREAD_PHASES.map((p) => [p, []]),
-    );
-    for (const t of threads) {
-      const list = map.get(t.phase);
-      if (list) list.push(t);
-    }
-    return map;
-  }, [threads]);
+  // Group threads by phase using pure boardModel function
+  const byPhase = groupThreadsForBoard(threads);
 
   return (
     <div
@@ -89,7 +73,7 @@ export function ThreadBoard({ threads, inboxItems = [], onNewThread, onInboxUpda
           phase={phase}
           label={label}
           headerClass={headerClass}
-          threads={byPhase.get(phase) ?? []}
+          threads={byPhase[phase] ?? []}
           onNewThread={onNewThread}
         />
       ))}
@@ -110,6 +94,8 @@ interface PhaseColumnProps {
 function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseColumnProps) {
   return (
     <div
+      role="region"
+      aria-label={label}
       className="flex-none w-[240px] rounded-lg border border-border bg-muted/30 flex flex-col"
       data-testid={`phase-column-${phase}`}
     >
@@ -152,9 +138,8 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
 
 /* ── Board Card ─────────────────────────────────────────────────────────────── */
 
-function BoardCard({ thread, phase }: { thread: ThreadListItem; phase: ThreadPhase }) {
+function BoardCard({ thread, phase: _phase }: { thread: ThreadListItem; phase: ThreadPhase }) {
   const hasPending = thread.pendingItemCount > 0;
-  const phaseColor = PHASE_COLORS[phase];
 
   return (
     <Link
