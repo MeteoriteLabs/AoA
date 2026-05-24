@@ -648,3 +648,29 @@ describe("assignArcDirections stability", () => {
     for (const { name } of base) expect(d2.get(name)).toBe(d1.get(name));
   });
 });
+
+describe("commitClusters absorb plain branches (Phase 2A/2C)", () => {
+  function broom(nTasks: number, nPlain: number) {
+    const commits = [{ sha: "c0", parentShas: [], shortSha: "c0", message: "m", author: "a", committedAt: new Date().toISOString(), branchNames: [], isMerge: false, tags: [] }];
+    const gb = [{ name: "main", laneIndex: 0, color: "#000", tipSha: "c0" }];
+    const bi = (name: string, task: boolean) => ({
+      name, isLocal: true, isRemote: true, aheadCount: 0, behindCount: 0,
+      lastCommitSha: "c0", lastCommitMessage: "m", lastCommitAt: new Date().toISOString(), lastCommitAuthor: "a",
+      linkedWorkspaceId: null, linkedIssueId: task ? "i" + name : null, linkedIssueIdentifier: task ? "AOA-" + name : null,
+      linkedIssueTitle: null, linkedIssueStatus: task ? "in_progress" : null, linkedIssueWorkMode: null,
+      pr: null, overlays: { hasConflicts: false, isDiverged: false, isBehindRemote: false }, tags: [],
+    });
+    const branches = [bi("main", false)];
+    for (let i = 0; i < nTasks; i++) { const n = "feat/t" + i; gb.push({ name: n, laneIndex: gb.length, color: "#000", tipSha: "c0" }); branches.push(bi(n, true)); }
+    for (let i = 0; i < nPlain; i++) { const n = "feat/p" + i; gb.push({ name: n, laneIndex: gb.length, color: "#000", tipSha: "c0" }); branches.push(bi(n, false)); }
+    return { graph: { commits, branches: gb, defaultBranch: "main" } as any, branches: branches as any };
+  }
+  it("a task stack absorbs co-located plain branches into extraNames (not the default branch)", () => {
+    const { graph, branches } = broom(2, 3);
+    const layout = computeArcLayout(graph, branches);
+    expect(layout.tipStacks.length).toBe(1);
+    expect(layout.tipStacks[0]!.branchNames.length).toBe(2);
+    expect(layout.tipStacks[0]!.extraNames?.length).toBe(3);
+    expect(layout.tipStacks[0]!.extraNames).not.toContain("main");
+  });
+});

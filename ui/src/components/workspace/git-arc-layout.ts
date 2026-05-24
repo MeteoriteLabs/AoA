@@ -36,8 +36,13 @@ export interface TipStack {
   sha: string;
   x: number;
   y: number;
-  /** Task branch names sharing this tip commit (length >= 2). */
+  /** Task branch names sharing this tip commit (length >= 2). These get cards. */
   branchNames: string[];
+  /** Non-task (plain) branches at the SAME tip commit. Absorbed into the cluster:
+   * counted in the "+N more" pill and suppressed from individual arc/label render,
+   * so a "broom" of branches at one commit collapses into one fan + pill instead
+   * of spraying labels. (Phase 2A) */
+  extraNames?: string[];
 }
 
 export interface StackCardPos {
@@ -448,18 +453,22 @@ export function computeArcLayout(
   // fan them out instead.
   const nodeBySha = new Map(nodes.map((n) => [n.sha, n]));
   const tasksByTipSha = new Map<string, string[]>();
+  const plainByTipSha = new Map<string, string[]>();
   for (const b of branches) {
-    if (!b.linkedIssueId) continue;
-    const list = tasksByTipSha.get(b.lastCommitSha) ?? [];
+    if (b.name === graph.defaultBranch) continue; // trunk is not a cluster member
+    const map = b.linkedIssueId ? tasksByTipSha : plainByTipSha;
+    const list = map.get(b.lastCommitSha) ?? [];
     list.push(b.name);
-    tasksByTipSha.set(b.lastCommitSha, list);
+    map.set(b.lastCommitSha, list);
   }
   const tipStacks: TipStack[] = [];
   for (const [sha, branchNames] of tasksByTipSha) {
     if (branchNames.length < 2) continue;
     const node = nodeBySha.get(sha);
     if (!node) continue;
-    tipStacks.push({ sha, x: node.x, y: node.y, branchNames });
+    // Absorb plain (non-task) branches at the same commit so they don't spray as
+    // individual arcs/labels (the "broom"). (Phase 2A/2C)
+    tipStacks.push({ sha, x: node.x, y: node.y, branchNames, extraNames: plainByTipSha.get(sha) ?? [] });
   }
 
   const totalWidth =

@@ -180,4 +180,15 @@ describe("buildHitRegions", () => {
     // labelX = (100+300)/2 = 200; baseY = apexY + 14 = 274 (down arc).
     expect(hitRegionAt(regions, 200, 274 - 4)).toEqual({ kind: "plainTip", branchName: "feat/lbl" });
   });
+
+  it("a stack with absorbed plain branches (extraNames) still emits a showMore pill", () => {
+    const stack = { sha: "c1", x: 500, y: 200, branchNames: ["a", "b"], extraNames: ["p1", "p2", "p3"] };
+    const bb = new Map([["a", mkBranch("a", "i-a")], ["b", mkBranch("b", "i-b")]]);
+    const regions = buildHitRegions({
+      layout: emptyLayout([]), visibleNames: new Set(["a", "b"]),
+      arcVisibleNames: new Set(), visibleStacks: [stack], stackedShas: new Set(["c1"]),
+      branchByName: bb, taskBranchByTipSha: new Map(), trunkSpan: null, defaultBranch: "main",
+    });
+    expect(hitRegionAt(regions, 500 + 50 + 27, 200 + 8 + 7)).toEqual({ kind: "showMore" });
+  });
 });

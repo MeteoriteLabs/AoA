@@ -871,8 +871,9 @@ export function drawTipStack(
     }
   }
 
-  // "+N more" pill (display-only — full list is in the Pipeline tab).
-  const extra = stack.branchNames.length - cards.length;
+  // "+N more" pill (display-only — full list is in the Pipeline tab). Includes
+  // absorbed plain branches (extraNames) so the broom count is honest. (Phase 2A)
+  const extra = (stack.branchNames.length - cards.length) + (stack.extraNames?.length ?? 0);
   if (extra > 0) {
     const px = stack.x + 50;
     const py = stack.y + 8;

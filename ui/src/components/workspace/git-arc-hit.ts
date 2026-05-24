@@ -218,7 +218,10 @@ export function buildHitRegions(args: BuildHitRegionsArgs): HitRegion[] {
         target: { kind: "task", branchName: c.branchName },
       });
     }
-    if (stack.branchNames.length > computeStackCardLayout(stack).length) {
+    if (
+      stack.branchNames.length > computeStackCardLayout(stack).length ||
+      (stack.extraNames?.length ?? 0) > 0
+    ) {
       regions.push({
         shape: "rect",
         x: stack.x + 50, y: stack.y + 8, w: 54, h: 15,

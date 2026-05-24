@@ -208,7 +208,11 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     const visibleStacks = useMemo(
       () =>
         layout.tipStacks
-          .map((s) => ({ ...s, branchNames: s.branchNames.filter((n) => visibleNames.has(n)) }))
+          .map((s) => ({
+            ...s,
+            branchNames: s.branchNames.filter((n) => visibleNames.has(n)),
+            extraNames: (s.extraNames ?? []).filter((n) => visibleNames.has(n)),
+          }))
           .filter((s) => s.branchNames.length >= 2),
       [layout.tipStacks, visibleNames],
     );
@@ -220,7 +224,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     // Branch names whose (degenerate) arc + label must be suppressed because the
     // branch is shown as a fanned card instead.
     const stackedBranchNames = useMemo(
-      () => new Set(visibleStacks.flatMap((s) => s.branchNames)),
+      () => new Set(visibleStacks.flatMap((s) => [...s.branchNames, ...(s.extraNames ?? [])])),
       [visibleStacks],
     );
     // visibleNames minus stacked branches — used ONLY for arc lines + arc labels.
