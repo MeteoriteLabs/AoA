@@ -17,7 +17,7 @@
 
 import { Router } from "express";
 import { Octokit } from "@octokit/rest";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, asc } from "drizzle-orm";
 import {
   executionWorkspaces,
   issues,
@@ -89,7 +89,12 @@ export function projectGitRoutes(db: Db) {
             eq(projectWorkspaces.companyId, companyId),
           ),
         )
-        .orderBy(projectWorkspaces.isPrimary); // primary rows sort last (true > false)
+        // Primary first, then oldest — matches services/projects.ts election.
+        .orderBy(
+          desc(projectWorkspaces.isPrimary),
+          asc(projectWorkspaces.createdAt),
+          asc(projectWorkspaces.id),
+        );
 
       const primaryWs = pwRows.find((r) => r.cwd) ?? null;
       const repoUrl = primaryWs?.repoUrl ?? null;
@@ -299,7 +304,12 @@ export function projectGitRoutes(db: Db) {
             eq(projectWorkspaces.companyId, companyId),
           ),
         )
-        .orderBy(projectWorkspaces.isPrimary);
+        // Primary first, then oldest — matches services/projects.ts election.
+        .orderBy(
+          desc(projectWorkspaces.isPrimary),
+          asc(projectWorkspaces.createdAt),
+          asc(projectWorkspaces.id),
+        );
 
       const primaryWs = pwRows.find((r) => r.repoUrl) ?? null;
       if (!primaryWs?.repoUrl) {
