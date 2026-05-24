@@ -267,10 +267,9 @@ export function GitPipelineView({
     }
   };
 
-  const linked = branches.filter((b) => b.linkedIssueId);
-  const unlinked = branches.filter((b) => !b.linkedIssueId);
-
   const { active, done, unlinkedSorted } = useMemo(() => {
+    const linked = branches.filter((b) => b.linkedIssueId);
+    const unlinked = branches.filter((b) => !b.linkedIssueId);
     const activeRaw = linked.filter(
       (b) => b.linkedIssueStatus !== "done" && b.linkedIssueStatus !== "cancelled",
     );
@@ -282,8 +281,7 @@ export function GitPipelineView({
       ),
       unlinkedSorted: sortBranches(unlinked, "activity", "desc"),
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [linked, unlinked, sortKey, sortDir]);
+  }, [branches, sortKey, sortDir]);
 
   // Summary counts
   const runningCount = branches.filter((b) => b.linkedIssueStatus === "in_progress").length;
