@@ -49,7 +49,7 @@ export const threadsApi = {
     ),
 
   transfer: (companyId: string, id: string, toUserId: string) =>
-    api.patch<ThreadDetail>(
+    api.post<ThreadDetail>(
       `/companies/${companyId}/discussions/${id}/transfer`,
       { toUserId },
     ),

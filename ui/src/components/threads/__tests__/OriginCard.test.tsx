@@ -11,6 +11,7 @@ vi.mock("../../../api/threads", () => ({
     advancePhase: vi.fn().mockResolvedValue({}),
     claim: vi.fn().mockResolvedValue({ ownerUserId: "user-1" }),
     transfer: vi.fn().mockResolvedValue({ ownerUserId: "user-2" }),
+    setVisibility: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -187,5 +188,17 @@ describe("OriginCard", () => {
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
     expect(screen.getByTestId("visibility-toggle")).toHaveTextContent(/open/i);
+  });
+
+  it("calls threadsApi.setVisibility with 'private' when toggle is clicked on an open thread", async () => {
+    const thread = makeThread({ visibility: "open" });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("visibility-toggle"));
+    await waitFor(() => {
+      expect(threadsApi.setVisibility).toHaveBeenCalledWith("comp-1", "thread-1", "private");
+    });
   });
 });
