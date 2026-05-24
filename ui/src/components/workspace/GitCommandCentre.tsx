@@ -440,6 +440,7 @@ export function GitCommandCentre({
               node={hoveredNode}
               position={hoverPosition}
               onOpenTask={onSelectIssue}
+              onOpenPipeline={() => setViewMode("pipeline")}
               onMouseEnter={handleCardMouseEnter}
               onMouseLeave={handleCardMouseLeave}
             />
