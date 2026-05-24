@@ -90,7 +90,7 @@ export const discussionEntries = pgTable(
       .references(() => discussions.id, { onDelete: "cascade" }),
 
     // Input
-    inputType: text("input_type").notNull(), // 'paste' | 'write' | 'voice' | 'mcp'
+    inputType: text("input_type").notNull(), // DiscussionEntryInputType: paste|write|voice|mcp|transcript|document|routine|webhook|integration|agent
     rawContent: text("raw_content").notNull(),
     title: text("title"), // nullable, optional per-entry title
 
