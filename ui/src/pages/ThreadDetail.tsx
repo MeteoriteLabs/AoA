@@ -26,7 +26,10 @@ type CenterTab = "thread" | "scope";
    ════════════════════════════════════════════════════════════════════════ */
 
 export function ThreadDetail() {
-  const { threadId } = useParams<{ threadId: string }>();
+  // Accept both threadId (from /threads/:threadId) and discussionId (from /discussions/:discussionId)
+  // since discussions and threads share the same backend table.
+  const { threadId, discussionId } = useParams<{ threadId?: string; discussionId?: string }>();
+  const resolvedId = threadId ?? discussionId;
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -45,9 +48,9 @@ export function ThreadDetail() {
     isError,
     refetch,
   } = useQuery({
-    queryKey: ["threads", selectedCompanyId, threadId],
-    queryFn: () => threadsApi.detail(selectedCompanyId!, threadId!),
-    enabled: !!selectedCompanyId && !!threadId,
+    queryKey: ["threads", selectedCompanyId, resolvedId],
+    queryFn: () => threadsApi.detail(selectedCompanyId!, resolvedId!),
+    enabled: !!selectedCompanyId && !!resolvedId,
     retry: false,
   });
 
