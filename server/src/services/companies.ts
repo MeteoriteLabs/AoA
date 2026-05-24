@@ -4,6 +4,7 @@ import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
 import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-commander.js";
 import { ensureExtractionAgent } from "./internal-agent/aoa-agents/ensure-extraction-agent.js";
+import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -129,6 +130,10 @@ export function companyService(db: Db) {
         });
         await ensureExtractionAgent(db, company.id).catch((err: unknown) => {
           logger.warn({ err, companyId: company.id }, "Discussion Extraction agent seeding failed");
+        });
+        // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
+        await ensureCommandStaff(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
         });
         return company;
       } catch (error) {
