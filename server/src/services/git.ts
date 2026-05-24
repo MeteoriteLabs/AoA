@@ -625,10 +625,10 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
   );
 
   // ── 2. Batch tag lookup — ONE subprocess, not N ───────────────────────
-  const tagMap = new Map<string, string[]>();  // shortSha → tag names
+  const tagMap = new Map<string, string[]>();  // full sha → tag names
   try {
     const tagRaw = await runGit(
-      ["tag", "-l", "--format=%(objectname:short) %(refname:short)"],
+      ["tag", "-l", "--format=%(objectname) %(refname:short)"],
       gitRoot,
       { timeout: 10_000 },
     );
@@ -666,7 +666,6 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
     const [aheadStr, behindStr] = (aheadBehind ?? "0 0").split(" ");
     const ahead = parseInt(aheadStr ?? "0", 10) || 0;
     const behind = parseInt(behindStr ?? "0", 10) || 0;
-    const shortSha = sha.slice(0, 8);
 
     const existing = byName.get(localName);
     if (existing) {
@@ -693,7 +692,7 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
         lastCommitMessage: subject,
         lastCommitAt: authorDate,
         lastCommitAuthor: authorName,
-        tags: tagMap.get(shortSha) ?? [],
+        tags: tagMap.get(sha) ?? [],
         overlays: {
           hasConflicts: false,    // git alone can't detect this reliably
           isDiverged: ahead > 0 && behind > 0,
