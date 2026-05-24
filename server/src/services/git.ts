@@ -557,39 +557,6 @@ export interface CommitGraphEntry {
 }
 
 /**
- * Resolve the name of the remote's default branch (typically "main" or
- * "master"). Falls back to "main" if the symbolic ref is absent.
- *
- * Requires git ≥ 2.31 for the ahead-behind format token used in getBranches.
- */
-async function resolveDefaultBranch(gitRoot: string): Promise<string> {
-  try {
-    const symRef = await runGit(
-      ["symbolic-ref", "refs/remotes/origin/HEAD"],
-      gitRoot,
-      { timeout: 5_000 },
-    );
-    // "refs/remotes/origin/main" → "main"
-    const parts = symRef.split("/");
-    return parts[parts.length - 1] ?? "main";
-  } catch {
-    // Symbolic ref not set — try git remote show (slower)
-    try {
-      const remoteShow = await runGit(
-        ["remote", "show", "origin"],
-        gitRoot,
-        { timeout: 10_000 },
-      );
-      const match = remoteShow.match(/HEAD branch:\s+(\S+)/);
-      if (match?.[1]) return match[1];
-    } catch {
-      // ignore
-    }
-    return "main";
-  }
-}
-
-/**
  * True for refs that are not real branches and must be dropped from the branch
  * list. `git for-each-ref --format='%(refname:short)' refs/remotes/origin/HEAD`
  * yields the bare remote name "origin", so the plain "HEAD" check misses it.
@@ -605,14 +572,16 @@ export function isSkippableRef(refShort: string): boolean {
  * metadata, and version tags. Batches tag lookup into a single git call.
  */
 export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
-  const defaultBranch = await resolveDefaultBranch(gitRoot);
-
   // ── 1. One for-each-ref call for all branches ──────────────────────────
   const SEP = "\x1f";  // unit separator — safe in git output
   const FORMAT = [
     "%(refname:short)",
     "%(objectname)",
-    `%(ahead-behind:origin/${defaultBranch})`,
+    // Ahead/behind vs each branch's OWN upstream (origin/<branch>), not trunk —
+    // matches the GitBranchInfo "remote upstream" contract (unpushed/unpulled).
+    // Empty for branches with no upstream. Forms: "[ahead N, behind M]",
+    // "[ahead N]", "[behind M]", "[gone]", or "".
+    "%(upstream:track)",
     "%(contents:subject)",
     "%(authordate:iso-strict)",
     "%(authorname)",
@@ -652,7 +621,7 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
     const parts = line.split(SEP);
     if (parts.length < 6) continue;
 
-    const [refShort, sha, aheadBehind, subject, authorDate, authorName] = parts as [
+    const [refShort, sha, track, subject, authorDate, authorName] = parts as [
       string, string, string, string, string, string
     ];
 
@@ -663,9 +632,10 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
     // refs/remotes/origin/HEAD → bare "origin").
     if (isSkippableRef(refShort)) continue;
 
-    const [aheadStr, behindStr] = (aheadBehind ?? "0 0").split(" ");
-    const ahead = parseInt(aheadStr ?? "0", 10) || 0;
-    const behind = parseInt(behindStr ?? "0", 10) || 0;
+    // Parse %(upstream:track), e.g. "[ahead 2, behind 1]" / "[ahead 2]" /
+    // "[behind 1]" / "[gone]" / "" → ahead 0, behind 0 when absent.
+    const ahead = Number((track ?? "").match(/ahead (\d+)/)?.[1] ?? 0);
+    const behind = Number((track ?? "").match(/behind (\d+)/)?.[1] ?? 0);
 
     const existing = byName.get(localName);
     if (existing) {
