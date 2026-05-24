@@ -305,7 +305,7 @@ export function ThreadDetail() {
                 summaryText={thread.summaryText}
                 summaryNext={thread.summaryNext}
                 items={scopeItems}
-                planSteps={[]}
+                planSteps={[]} // TODO: add planSteps to ThreadDetail type when backend exposes it
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}
@@ -337,7 +337,8 @@ export function ThreadDetail() {
    Thread Left Rail — navigation index
    ════════════════════════════════════════════════════════════════════════ */
 
-function ThreadLeftRail({ threadId, title }: { threadId: string; title: string }) {
+function ThreadLeftRail({ threadId: _threadId, title }: { threadId: string; title: string }) {
+  // TODO(Plan 5): use threadId for index nav (jump-to-entry, section links)
   return (
     <div className="p-3 space-y-1">
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-2">

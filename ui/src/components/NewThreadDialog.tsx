@@ -96,6 +96,12 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
           ...(scopeType && { scopeType }),
           ...(defaults.scopeId && { scopeId: defaults.scopeId }),
         });
+        if (description.trim()) {
+          await discussionsApi.addEntry(selectedCompanyId, disc.id, {
+            rawContent: description.trim(),
+            inputType: "write",
+          });
+        }
         await threadsApi.promoteToGoal(selectedCompanyId, disc.id, {
           level: goalLevel,
           projectIds: selectedProjectIds,
@@ -103,11 +109,18 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
         return disc;
       }
 
-      return discussionsApi.create(selectedCompanyId, {
+      const thread = await discussionsApi.create(selectedCompanyId, {
         title: title.trim() || `New ${selectedType}`,
         ...(scopeType && { scopeType }),
         ...(defaults.scopeId && { scopeId: defaults.scopeId }),
       });
+      if (description.trim()) {
+        await discussionsApi.addEntry(selectedCompanyId, thread.id, {
+          rawContent: description.trim(),
+          inputType: "write",
+        });
+      }
+      return thread;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(selectedCompanyId ?? "") });
@@ -145,10 +158,10 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
           {/* Type chooser */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+            <label htmlFor="thread-type-group" className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
               Type
             </label>
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Thread type">
+            <div id="thread-type-group" className="flex flex-wrap gap-2" role="group" aria-label="Thread type">
               {THREAD_TYPES.map(({ key, label }) => (
                 <button
                   key={key}
@@ -170,10 +183,11 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
 
           {/* Title */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+            <label htmlFor="thread-title" className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
               Title
             </label>
             <Input
+              id="thread-title"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder={`${THREAD_TYPES.find((t) => t.key === selectedType)?.description ?? ""}...`}
@@ -183,10 +197,11 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
 
           {/* Description */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+            <label htmlFor="thread-description" className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
               Description
             </label>
             <Textarea
+              id="thread-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What's on your mind?"

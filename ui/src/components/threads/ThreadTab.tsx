@@ -61,11 +61,15 @@ export function ThreadTab({
     },
   });
 
-  function handleComposerSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  function submitText() {
     const text = composerText.trim();
     if (!text || addEntryMutation.isPending) return;
     addEntryMutation.mutate(text);
+  }
+
+  function handleComposerSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submitText();
   }
 
   const reprocessMutation = useMutation({
@@ -146,7 +150,7 @@ export function ThreadTab({
           // Ctrl+Enter / Cmd+Enter submits
           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
             e.preventDefault();
-            handleComposerSubmit(e as unknown as React.FormEvent);
+            submitText();
           }
         }}
         disabled={addEntryMutation.isPending}
@@ -181,57 +185,28 @@ export function ThreadTab({
     );
   }
 
-  // Group entries by parentEntryId to support 2-level nesting
-  const topLevelEntries = entries.filter((e) => !(e as { parentEntryId?: string }).parentEntryId);
-  const repliesByParent = entries.reduce(
-    (acc, e) => {
-      const parentId = (e as { parentEntryId?: string }).parentEntryId;
-      if (!parentId) return acc;
-      if (!acc[parentId]) acc[parentId] = [];
-      acc[parentId].push(e);
-      return acc;
-    },
-    {} as Record<string, DiscussionEntry[]>,
-  );
+  // TODO: re-enable nesting when parentEntryId is added to DiscussionEntry
+  // (parentEntryId does not exist on the type; the cast was dead code — all entries are top-level)
 
   return (
     <div className="flex flex-col">
       <div className="space-y-1.5" data-testid="thread-tab-entries">
-        {topLevelEntries.map((entry) => (
-          <div key={entry.id}>
-            <EntryRow
-              entry={entry}
-              onReprocess={() => reprocessMutation.mutate(entry.id)}
-              onAddAnnotation={(content, start, end) =>
-                addAnnotationMutation.mutate({
-                  entryId: entry.id,
-                  data: { content, anchorStart: start, anchorEnd: end },
-                })
-              }
-              isReprocessing={
-                reprocessMutation.isPending && reprocessMutation.variables === entry.id
-              }
-              indentLevel={0}
-            />
-            {/* Nested replies (max 2-deep) */}
-            {(repliesByParent[entry.id] ?? []).map((reply) => (
-              <EntryRow
-                key={reply.id}
-                entry={reply}
-                onReprocess={() => reprocessMutation.mutate(reply.id)}
-                onAddAnnotation={(content, start, end) =>
-                  addAnnotationMutation.mutate({
-                    entryId: reply.id,
-                    data: { content, anchorStart: start, anchorEnd: end },
-                  })
-                }
-                isReprocessing={
-                  reprocessMutation.isPending && reprocessMutation.variables === reply.id
-                }
-                indentLevel={1}
-              />
-            ))}
-          </div>
+        {entries.map((entry) => (
+          <EntryRow
+            key={entry.id}
+            entry={entry}
+            onReprocess={() => reprocessMutation.mutate(entry.id)}
+            onAddAnnotation={(content, start, end) =>
+              addAnnotationMutation.mutate({
+                entryId: entry.id,
+                data: { content, anchorStart: start, anchorEnd: end },
+              })
+            }
+            isReprocessing={
+              reprocessMutation.isPending && reprocessMutation.variables === entry.id
+            }
+            indentLevel={0}
+          />
         ))}
       </div>
       {composer}

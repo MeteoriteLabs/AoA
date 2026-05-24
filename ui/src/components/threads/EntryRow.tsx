@@ -184,9 +184,10 @@ export function EntryRow({
     >
       {/* Compact header row */}
       <button
+        type="button"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
-        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-muted/30 transition-colors rounded-lg"
+        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-muted/30 transition-colors rounded-lg focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
         {expanded ? (
           <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
