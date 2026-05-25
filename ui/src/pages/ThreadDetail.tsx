@@ -224,7 +224,13 @@ export function ThreadDetail() {
           <button
             key={key}
             type="button"
-            onClick={() => setMobileTab(key)}
+            onClick={() => {
+              setMobileTab(key);
+              // The mobile pane-tabs double as the Thread/Scope switcher on
+              // small screens (the center content-tab bar is hidden there), so
+              // keep centerTab in sync to avoid showing the wrong content.
+              if (key === "thread" || key === "scope") setCenterTab(key);
+            }}
             className={cn(
               "flex-1 flex items-center justify-center px-2 py-2.5 text-xs font-medium transition-colors",
               mobileTab === key
@@ -286,11 +292,13 @@ export function ThreadDetail() {
             />
           </div>
 
-          {/* Thread|Scope tab bar */}
+          {/* Thread|Scope tab bar — desktop only; on mobile the pane-tabs above
+              ([Origin|Thread|Scope|Viewer]) are the switcher, so this is hidden
+              to avoid duplicate Thread/Scope tabs. */}
           <div
             role="tablist"
             aria-label="Thread sections"
-            className="flex border-b border-border shrink-0 px-4"
+            className="hidden md:flex border-b border-border shrink-0 px-4"
           >
             {(["thread", "scope"] as CenterTab[]).map((tab) => (
               <button
