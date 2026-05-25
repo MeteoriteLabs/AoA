@@ -94,3 +94,31 @@ describe("groupScopeItems", () => {
     expect(result.artifacts).toHaveLength(1);
   });
 });
+
+import { groupByType, ALL_SCOPE_TYPES } from "../scopeGrouping";
+
+describe("groupByType — surface all eight extracted-item types", () => {
+  it("covers every extracted-item type the schema defines", () => {
+    expect(ALL_SCOPE_TYPES).toEqual([
+      "decision", "task", "insight", "context",
+      "reference", "preference", "artifact", "spin_off_thread",
+    ]);
+  });
+
+  it("buckets every item under its own type (no item silently dropped)", () => {
+    const mk = (id: string, type: string): any => ({
+      id, type, title: id, description: null, status: "approved" as const,
+      conflictsWith: null, suggestedPriority: null, suggestedAssigneeId: null,
+      suggestedDepartmentId: null, suggestedLayer: null, layer: null,
+      dedupAction: null, resultTaskId: null, resultMemoryId: null,
+      createdAt: "1", dependsOn: [],
+    });
+    const items = ALL_SCOPE_TYPES.map((t, i) => mk(`x${i}`, t));
+    const grouped = groupByType(items);
+    for (const t of ALL_SCOPE_TYPES) {
+      expect(grouped[t].length).toBe(1);
+    }
+    const total = Object.values(grouped).reduce((n, arr) => n + arr.length, 0);
+    expect(total).toBe(ALL_SCOPE_TYPES.length);
+  });
+});

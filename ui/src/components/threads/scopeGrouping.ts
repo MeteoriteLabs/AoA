@@ -80,3 +80,23 @@ export function groupScopeItems(items: ScopeItem[]): GroupedScope {
 
   return result;
 }
+
+/** Every extracted-item type the backend can emit
+ *  (discussion_extracted_items.type — schema discussions.ts). */
+export const ALL_SCOPE_TYPES = [
+  "decision", "task", "insight", "context",
+  "reference", "preference", "artifact", "spin_off_thread",
+] as const;
+
+export type ScopeItemType = (typeof ALL_SCOPE_TYPES)[number];
+
+/** Group items by their exact type so EVERY type is surfaced.
+ *  Unknown types fall under their raw string key. */
+export function groupByType(items: ScopeItem[]): Record<string, ScopeItem[]> {
+  const out: Record<string, ScopeItem[]> = {};
+  for (const t of ALL_SCOPE_TYPES) out[t] = [];
+  for (const item of items) {
+    (out[item.type] ??= []).push(item);
+  }
+  return out;
+}
