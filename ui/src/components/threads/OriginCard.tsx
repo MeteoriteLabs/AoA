@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { THREAD_PHASES, type Agent, type ThreadPhase } from "@armyofagents/shared";
 import { threadsApi, type ThreadDetail } from "../../api/threads";
+import { agentsApi } from "../../api/agents";
+import { queryKeys } from "../../lib/queryKeys";
+import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { useToast } from "../../context/ToastContext";
 import {
   AlertDialog,
@@ -17,6 +20,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Lock, Unlock, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getInitials } from "@/lib/initials";
+import type { ThreadPresenceMember } from "../../context/LiveUpdatesProvider";
 import { MentionInput } from "./MentionInput";
 
 /* ─── Constants ─── */
@@ -67,6 +72,19 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
   // The phase the user intends to advance to (pending confirm dialog)
   const [pendingPhase, setPendingPhase] = useState<ThreadPhase | null>(null);
   const [mentionChips, setMentionChips] = useState<string[]>([]);
+
+  // ── Plan 7: live presence/typing + agent "working" indicator ──
+  const { presenceByThread } = useLiveUpdates();
+  const presence = presenceByThread[thread.id] ?? [];
+  const typingMembers = presence.filter((m) => m.typing);
+  // Reuse the agents query (kept fresh by agent.status / heartbeat.run.* live
+  // events) to surface agents currently working — visually distinct from humans.
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const workingAgents = (agents ?? []).filter((a: Agent) => a.status === "running");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, thread.id] });
@@ -183,6 +201,13 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
           )}
         </div>
 
+        {/* Plan 7: live presence + typing + agent working indicator */}
+        <PresenceStrip
+          presence={presence}
+          typingMembers={typingMembers}
+          workingAgents={workingAgents}
+        />
+
         {/* @mention input */}
         <MentionInput
           chips={mentionChips}
@@ -280,5 +305,109 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   PresenceStrip (Plan 7)
+   Live human presence (stacked avatars, max 3 + "+N"), an agent "working"
+   indicator that is VISUALLY DISTINCT from human presence (so founders can
+   tell "Scribe is extracting" from "Maria is here"), and a subtle typing line.
+   A11y (D3): updates announce via aria-live="polite" — never assertive, so
+   screen readers aren't spammed on every keystroke.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const MAX_VISIBLE_AVATARS = 3;
+
+function PresenceStrip({
+  presence,
+  typingMembers,
+  workingAgents,
+}: {
+  presence: ThreadPresenceMember[];
+  typingMembers: ThreadPresenceMember[];
+  workingAgents: Array<{ id: string; name: string }>;
+}) {
+  const hasAnything = presence.length > 0 || workingAgents.length > 0;
+  if (!hasAnything) {
+    // Keep a polite live region mounted so "everyone left" is announced once.
+    return <div aria-live="polite" className="sr-only" data-testid="presence-live" />;
+  }
+
+  const visible = presence.slice(0, MAX_VISIBLE_AVATARS);
+  const overflow = presence.length - visible.length;
+
+  const typingLabel =
+    typingMembers.length === 0
+      ? null
+      : typingMembers.length === 1
+        ? "Someone is typing…"
+        : `${typingMembers.length} people are typing…`;
+
+  const announce = [
+    presence.length > 0
+      ? `${presence.length} ${presence.length === 1 ? "person" : "people"} here`
+      : null,
+    workingAgents.length > 0
+      ? `${workingAgents.length} ${workingAgents.length === 1 ? "agent" : "agents"} working`
+      : null,
+    typingLabel,
+  ]
+    .filter(Boolean)
+    .join(". ");
+
+  return (
+    <div className="flex flex-col gap-1" data-testid="presence-strip">
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Human presence avatars */}
+        {visible.length > 0 && (
+          <div className="flex items-center -space-x-1.5" aria-hidden="true">
+            {visible.map((m) => (
+              <span
+                key={m.userId}
+                title={m.userId}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background bg-muted text-[9px] font-semibold text-muted-foreground"
+              >
+                {getInitials(m.userId) || "?"}
+              </span>
+            ))}
+            {overflow > 0 && (
+              <span
+                title={`${overflow} more`}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background bg-muted/70 text-[9px] font-semibold text-muted-foreground"
+              >
+                +{overflow}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Agent "working" indicator — distinct from human presence */}
+        {workingAgents.length > 0 && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-[var(--token-skill,theme(colors.violet.100))] px-2 py-0.5 text-[10px] font-medium text-violet-800 dark:text-violet-300"
+            data-testid="agent-working-indicator"
+            title={workingAgents.map((a) => a.name).join(", ")}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-violet-500 animate-pulse" aria-hidden="true" />
+            {workingAgents.length === 1
+              ? `${workingAgents[0].name} working`
+              : `${workingAgents.length} agents working`}
+          </span>
+        )}
+      </div>
+
+      {/* Typing line — subtle */}
+      {typingLabel && (
+        <span className="text-[11px] italic text-muted-foreground" data-testid="typing-indicator">
+          {typingLabel}
+        </span>
+      )}
+
+      {/* Polite a11y announcement (never assertive). */}
+      <div aria-live="polite" className="sr-only" data-testid="presence-live">
+        {announce}
+      </div>
+    </div>
   );
 }

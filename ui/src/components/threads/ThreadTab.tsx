@@ -36,10 +36,21 @@ export function ThreadTab({
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const { connectionState } = useLiveUpdates();
+  const { connectionState, sendPresence } = useLiveUpdates();
   const isOffline = connectionState === "offline";
   const [composerText, setComposerText] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Throttle typing heartbeats so we don't poke on every keystroke.
+  const lastTypingSentRef = useRef(0);
+
+  function handleComposerChange(value: string) {
+    setComposerText(value);
+    const now = Date.now();
+    if (value.trim() && now - lastTypingSentRef.current > 2_000) {
+      lastTypingSentRef.current = now;
+      sendPresence(threadId, { typing: true });
+    }
+  }
 
   useEffect(() => {
     if (entries.length === 0 && !isLoading) {
@@ -150,7 +161,7 @@ export function ThreadTab({
       <textarea
         ref={composerRef}
         value={composerText}
-        onChange={(e) => setComposerText(e.target.value)}
+        onChange={(e) => handleComposerChange(e.target.value)}
         placeholder="Write a message..."
         rows={3}
         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"

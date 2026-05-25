@@ -154,3 +154,92 @@ const THREAD_EVENT_PREFIX = "thread.";
 export function isThreadEvent(event: LiveEvent): boolean {
   return event.type.startsWith(THREAD_EVENT_PREFIX);
 }
+
+// ── Threads v1 Plan 7: ephemeral presence + typing ───────────────────────────
+
+/** Default presence TTL — a member is "here" for this long after their last heartbeat. */
+export const PRESENCE_TTL_MS = 15_000;
+
+export interface PresenceEntry {
+  userId: string;
+  lastSeen: number;
+  typing?: boolean;
+}
+
+/**
+ * Pure presence prune: keep only entries seen within ttlMs of `now`. Entries
+ * exactly at the boundary are kept. The typing flag rides along untouched.
+ */
+export function prunePresence(
+  entries: PresenceEntry[],
+  now: number,
+  ttlMs: number,
+): PresenceEntry[] {
+  return entries.filter((e) => now - e.lastSeen <= ttlMs);
+}
+
+/**
+ * Ephemeral, in-memory per-thread presence roster. NOT persisted (no DB) — it
+ * evaporates on restart, which is correct for "who's looking right now".
+ * Keyed by threadId. Updated on a client presence/typing heartbeat and swept by
+ * prunePresence. Broadcast goes through the same envelope-RBAC fan-out as other
+ * thread.* events (the WS handler owns that), so a viewer never sees presence
+ * for a thread they can't see.
+ */
+export class ThreadPresenceStore {
+  private byThread = new Map<string, Map<string, PresenceEntry>>();
+
+  /** Record/refresh a member's presence (and optional typing state) on a thread. */
+  touch(threadId: string, userId: string, now: number, typing = false): void {
+    let members = this.byThread.get(threadId);
+    if (!members) {
+      members = new Map();
+      this.byThread.set(threadId, members);
+    }
+    members.set(userId, { userId, lastSeen: now, typing });
+  }
+
+  /** Current (unpruned) roster for a thread. */
+  list(threadId: string): PresenceEntry[] {
+    const members = this.byThread.get(threadId);
+    return members ? Array.from(members.values()) : [];
+  }
+
+  /**
+   * Sweep one thread's roster against the TTL, dropping stale members.
+   * Returns the surviving roster (also reflected in the store).
+   */
+  sweep(threadId: string, now: number, ttlMs = PRESENCE_TTL_MS): PresenceEntry[] {
+    const members = this.byThread.get(threadId);
+    if (!members) return [];
+    const survivors = prunePresence(Array.from(members.values()), now, ttlMs);
+    if (survivors.length === 0) {
+      this.byThread.delete(threadId);
+      return [];
+    }
+    const next = new Map<string, PresenceEntry>();
+    for (const s of survivors) next.set(s.userId, s);
+    this.byThread.set(threadId, next);
+    return survivors;
+  }
+
+  /** All thread ids that currently have any presence (for the sweep interval). */
+  threadIds(): string[] {
+    return Array.from(this.byThread.keys());
+  }
+
+  /** Drop a member from a thread (e.g. on disconnect). Returns survivors. */
+  remove(threadId: string, userId: string): PresenceEntry[] {
+    const members = this.byThread.get(threadId);
+    if (!members) return [];
+    members.delete(userId);
+    if (members.size === 0) {
+      this.byThread.delete(threadId);
+      return [];
+    }
+    return Array.from(members.values());
+  }
+}
+
+/** Process-wide ephemeral presence store shared by the WS handler. */
+export const threadPresence = new ThreadPresenceStore();
