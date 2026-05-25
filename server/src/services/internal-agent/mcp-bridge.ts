@@ -149,6 +149,11 @@ export async function startBridge(): Promise<void> {
   // Commander actor type: "commander" when invoked via Commander; "board" otherwise.
   const actorType = process.env.AOA_ACTOR_TYPE ?? "board";
 
+  // P2.0: Calling agent's ID and effective autonomy level
+  const agentId = process.env.AOA_AGENT_ID || undefined;
+  const effectiveAutonomyRaw = process.env.AOA_EFFECTIVE_AUTONOMY;
+  const effectiveAutonomy = effectiveAutonomyRaw ? parseInt(effectiveAutonomyRaw, 10) : null;
+
   const { createDb } = await import("@armyofagents/db");
   const { createServiceContainer } = await import("./service-container.js");
   const { createToolRegistry, executeTool } = await import("./tool-registry.js");
@@ -170,6 +175,8 @@ export async function startBridge(): Promise<void> {
     agentKind,
     toolAllowlist,
     actorType,
+    agentId,
+    effectiveAutonomy,
     db,
     services,
   };

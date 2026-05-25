@@ -15,6 +15,7 @@ import { dependencyService } from "../dependencies.js";
 import { secretService } from "../secrets.js";
 import { notificationService } from "../notifications.js";
 import { discussionService } from "../discussions.js";
+import { threadService } from "../threads.js";
 import { companyService } from "../companies.js";
 
 export function createServiceContainer(db: Db): ServiceContainer {
@@ -34,6 +35,7 @@ export function createServiceContainer(db: Db): ServiceContainer {
     secrets: secretService(db),
     notifications: notificationService(db),
     discussions: discussionService(db),
+    threads: threadService(db),
     companies: {
       get: (id: string) => companySvc.getById(id).then((row) => {
         if (!row) return null;

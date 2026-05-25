@@ -14,6 +14,7 @@ import type { dependencyService } from "../dependencies.js";
 import type { secretService } from "../secrets.js";
 import type { notificationService } from "../notifications.js";
 import type { discussionService } from "../discussions.js";
+import type { threadService } from "../threads.js";
 
 // JSON Schema type for tool parameter definitions
 export interface JsonSchema {
@@ -50,6 +51,10 @@ export interface ToolContext {
   toolAllowlist?: readonly string[];
   /** Actor type: "commander" when invoked via Commander; "board" otherwise. */
   actorType?: string;
+  /** Calling agent's ID — exported as AOA_AGENT_ID by the runner. Absent in Commander runs. */
+  agentId?: string;
+  /** Resolved effective autonomy level (0/1/2). Absent → treat as 0 (fail-closed). */
+  effectiveAutonomy?: number | null;
   db: Db;
   services: ServiceContainer;
 }
@@ -80,6 +85,7 @@ export interface ServiceContainer {
   secrets: ReturnType<typeof secretService>;
   notifications: ReturnType<typeof notificationService>;
   discussions: ReturnType<typeof discussionService>;
+  threads: ReturnType<typeof threadService>;
   companies: {
     get: (id: string) => Promise<{ name: string | null; vision: string | null; mission: string | null; issuePrefix: string | null; stage: string | null } | null>;
     update: (id: string, data: Partial<{ vision: string; mission: string }>) => Promise<{ id: string; name: string | null; vision: string | null; mission: string | null }>;
