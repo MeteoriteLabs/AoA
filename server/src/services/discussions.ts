@@ -1,4 +1,4 @@
-import { and, eq, desc, sql, inArray } from "drizzle-orm";
+import { and, eq, desc, sql, inArray, asc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   discussions,
@@ -8,6 +8,7 @@ import {
   agents,
   projects,
   goals,
+  threadPlanSteps,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -198,7 +199,14 @@ export function discussionService(db: Db) {
         annotations: annotationsByEntry.get(e.id) ?? [],
       }));
 
-      return { ...discussion, entries: enrichedEntries };
+      const planSteps = await db
+        .select()
+        .from(threadPlanSteps)
+        .where(eq(threadPlanSteps.threadId, id))
+        .orderBy(asc(threadPlanSteps.stepOrder))
+        .then((rows: typeof threadPlanSteps.$inferSelect[]) => rows);
+
+      return { ...discussion, entries: enrichedEntries, planSteps };
     },
 
     /**
