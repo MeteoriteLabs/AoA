@@ -42,6 +42,8 @@ export interface GoalFieldsProps {
   onParentsChange: (ids: string[]) => void;
   /** Goal ids to hide from the parent picker (e.g. self + descendants when re-parenting). */
   excludeIds?: string[];
+  /** Show only the parent-goals picker (hide status + scope) — used by the re-parent dialog. */
+  parentsOnly?: boolean;
 }
 
 const LABEL_CLS =
@@ -56,6 +58,7 @@ export function GoalFields({
   parentIds,
   onParentsChange,
   excludeIds = [],
+  parentsOnly = false,
 }: GoalFieldsProps) {
   const [parentQuery, setParentQuery] = useState("");
 
@@ -141,6 +144,7 @@ export function GoalFields({
       )}
 
       {/* Scope */}
+      {!parentsOnly && (
       <div>
         <span className={LABEL_CLS}>Scope</span>
         <div className="flex gap-1.5 mb-2">
@@ -215,6 +219,7 @@ export function GoalFields({
           </div>
         )}
       </div>
+      )}
 
       {/* Parent goals */}
       <div>
