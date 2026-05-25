@@ -44,6 +44,11 @@ export function ThreadTab({
   const isDisconnected = isOffline || isReconnecting;
   const [composerText, setComposerText] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Platform-aware send-shortcut hint (Cmd on macOS, Ctrl elsewhere).
+  const sendKey =
+    typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.userAgent)
+      ? "⌘"
+      : "Ctrl";
   // Throttle typing heartbeats so we don't poke on every keystroke.
   const lastTypingSentRef = useRef(0);
 
@@ -196,7 +201,12 @@ export function ThreadTab({
               : "Reconnecting — messages will send when connected"}
           </span>
         ) : (
-          <span />
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px] font-medium leading-none">
+              {sendKey}↵
+            </kbd>
+            to send
+          </span>
         )}
         <Button
           type="submit"
