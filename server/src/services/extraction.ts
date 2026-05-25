@@ -280,7 +280,7 @@ export function extractionService(db: Db) {
 
         // 3. Call LLM
         log.info("Starting LLM extraction");
-        const extractedItems = await callLLM(prompt, debrief.rawContent);
+        const extractedItems = await callLLM(prompt, debrief.rawContent, db, companyId);
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
         // 4-6. Create Brief + BriefItems + update debrief atomically
