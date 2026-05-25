@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "@/lib/router";
+import { useParams, Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
-import { threadsApi } from "../api/threads";
+import { threadsApi, type ThreadListItem } from "../api/threads";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,14 @@ const MOBILE_TABS = [
 
 type MobileTab = (typeof MOBILE_TABS)[number]["key"];
 type CenterTab = "thread" | "scope";
+
+/* Phase → dot color for the left-rail index */
+const PHASE_DOT: Record<string, string> = {
+  discuss: "bg-blue-500",
+  scope: "bg-amber-500",
+  assign: "bg-violet-500",
+  done: "bg-green-500",
+};
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadDetail Page — 3-pane layout (left rail | center | right viewer)
@@ -243,7 +251,7 @@ export function ThreadDetail() {
           data-testid="thread-left-rail"
           aria-label="Thread navigation"
         >
-          <ThreadLeftRail threadId={thread.id} title={thread.title} />
+          <ThreadLeftRail companyId={selectedCompanyId!} currentThreadId={thread.id} />
         </div>
 
         {/* ── Center panel — OriginCard + Thread|Scope tabs ── */}
@@ -434,16 +442,66 @@ function ConnectionPill({ state }: { state: "connecting" | "open" | "reconnectin
    Thread Left Rail — navigation index
    ════════════════════════════════════════════════════════════════════════ */
 
-function ThreadLeftRail({ threadId: _threadId, title }: { threadId: string; title: string }) {
-  // TODO(Plan 5): use threadId for index nav (jump-to-entry, section links)
+function ThreadLeftRail({
+  companyId,
+  currentThreadId,
+}: {
+  companyId: string;
+  currentThreadId: string;
+}) {
+  // Render the thread index so the rail is a real switcher (the §13 "list" lens).
+  const { data } = useQuery({
+    queryKey: ["threads", companyId, "list"],
+    queryFn: () => threadsApi.list(companyId),
+    enabled: !!companyId,
+    retry: false,
+  });
+  const threads = (data?.discussions ?? []) as ThreadListItem[];
+
   return (
-    <div className="p-3 space-y-1">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-2">
-        Thread
-      </p>
-      <div className="rounded-md px-2 py-1.5 text-sm bg-accent text-accent-foreground font-medium truncate">
-        {title}
+    <div className="p-2">
+      <div className="flex items-center justify-between px-2 mb-2">
+        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+          Discussions
+        </p>
+        <span className="text-[10px] text-muted-foreground tabular-nums">{threads.length}</span>
       </div>
+      <nav className="space-y-0.5" aria-label="Thread index">
+        {threads.length === 0 ? (
+          <p className="px-2 py-4 text-center text-xs text-muted-foreground">No threads yet</p>
+        ) : (
+          threads.map((t) => {
+            const isActive = t.id === currentThreadId;
+            return (
+              <Link
+                key={t.id}
+                to={`/discussions/${t.id}`}
+                aria-current={isActive ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                  isActive
+                    ? "bg-accent text-accent-foreground font-medium"
+                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                )}
+              >
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full shrink-0",
+                    PHASE_DOT[t.phase] ?? "bg-muted-foreground",
+                  )}
+                  aria-hidden
+                />
+                <span className="flex-1 truncate">{t.title}</span>
+                {t.pendingItemCount > 0 && (
+                  <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 text-[9px] font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
+                    {t.pendingItemCount}
+                  </span>
+                )}
+              </Link>
+            );
+          })
+        )}
+      </nav>
     </div>
   );
 }
