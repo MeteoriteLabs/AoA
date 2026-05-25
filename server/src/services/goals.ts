@@ -220,6 +220,17 @@ export function goalService(db: Db) {
       },
     ) => {
       const { projectIds, parentIds, ...goalData } = data;
+
+      // D3: validate parent scope BEFORE inserting, so a rejected link can't
+      // leave an orphan goal. A brand-new goal has no descendants yet, so there
+      // is no cycle to check — omit goalId (scope subset is still enforced).
+      if (parentIds && parentIds.length > 0) {
+        await assertParentsValid(db, {
+          parentIds,
+          childProjectIds: projectIds ?? [],
+        });
+      }
+
       const [goal] = await db
         .insert(goals)
         .values({ ...goalData, companyId })
@@ -236,13 +247,8 @@ export function goalService(db: Db) {
         );
       }
 
-      // Multi-parent DAG edges (D3: validate cycle + child⊆parent scope on write).
+      // Multi-parent DAG edges (validation already passed above).
       if (parentIds && parentIds.length > 0) {
-        await assertParentsValid(db, {
-          goalId: goal.id,
-          parentIds,
-          childProjectIds: projectIds ?? [],
-        });
         await db
           .insert(goalParents)
           .values(parentIds.map((parentId) => ({ goalId: goal.id, parentId })))
