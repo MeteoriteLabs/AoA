@@ -169,6 +169,7 @@ export async function processMentions(
   threadId: string,
   entryId: string,
   mentions: Array<{ raw: string; name: string }>,
+  opts?: { hopCount?: number },
 ): Promise<void> {
   for (const mention of mentions) {
     // 1) Check if name resolves to an AoA agent in this company (kind='aoa' only)
@@ -190,7 +191,7 @@ export async function processMentions(
         source: "thread_mention",
         triggerDetail: `@mention in thread ${threadId} entry ${entryId}`,
         reason: "thread_mention",
-        payload: { threadId, entryId, mention: mention.raw },
+        payload: { threadId, entryId, mention: mention.raw, hopCount: opts?.hopCount ?? 0 },
         requestedByActorType: "board",
         requestedByActorId: entryId,
       });
