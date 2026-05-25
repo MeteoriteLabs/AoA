@@ -5,7 +5,9 @@ import { loadDefaultAgentInstructionsBundle } from "../../default-agent-instruct
 // adapterConfig typed as `unknown` to match AgentLike in agent-instructions.ts (contravariance).
 type SeedAgentShape = { id: string; companyId: string; name: string; adapterConfig: unknown };
 
-interface SeedArgs {
+interface SeedRoleArgs {
+  /** Bundle role key — must be registered in default-agent-instructions.ts. */
+  role: "commander" | "router" | "planner" | "dispatcher" | "memory_keeper" | "scribe";
   agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
   // Injected for testability. The real implementation passes agentInstructionsService() with
   // ensureWritableBundle aliased from ensureManagedBundle (see ensure-commander.ts).
@@ -13,18 +15,17 @@ interface SeedArgs {
 }
 
 /**
- * Idempotently seed the Commander instruction bundle. Provisions a managed
- * bundle root via ensureWritableBundle, then writes each default commander
- * file ONLY if it does not already exist (never clobbers user edits — the
- * back-fill/idempotency requirement). Returns the adapterConfig to persist
- * on the agents row so the bundle is linked.
+ * Idempotently seed a role's instruction bundle. Provisions a managed writable
+ * bundle root via ensureWritableBundle, then writes each default file ONLY if it
+ * does not already exist (never clobbers founder edits). Returns the adapterConfig
+ * to persist on the agents row so the bundle is linked.
  */
-export async function seedCommanderInstructionBundle(args: SeedArgs): Promise<Record<string, unknown>> {
-  const { agent, service } = args;
+export async function seedRoleInstructionBundle(args: SeedRoleArgs): Promise<Record<string, unknown>> {
+  const { role, agent, service } = args;
   const { adapterConfig, state } = await service.ensureWritableBundle(agent, { clearLegacyPromptTemplate: true });
   const root = state.rootPath;
   if (!root) return adapterConfig;
-  const files = await loadDefaultAgentInstructionsBundle("commander");
+  const files = await loadDefaultAgentInstructionsBundle(role);
   await fs.mkdir(root, { recursive: true });
   for (const [name, content] of Object.entries(files)) {
     const dest = path.join(root, name);
@@ -32,4 +33,12 @@ export async function seedCommanderInstructionBundle(args: SeedArgs): Promise<Re
     if (!exists) await fs.writeFile(dest, content, "utf8");
   }
   return adapterConfig;
+}
+
+/** Back-compat wrapper — delegates to seedRoleInstructionBundle with role='commander'. */
+export async function seedCommanderInstructionBundle(args: {
+  agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
+  service: SeedRoleArgs["service"];
+}): Promise<Record<string, unknown>> {
+  return seedRoleInstructionBundle({ role: "commander", agent: args.agent, service: args.service });
 }
