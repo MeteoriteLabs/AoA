@@ -38,7 +38,10 @@ const PHASE_DOT: Record<string, string> = {
    ThreadDetail Page — 3-pane layout (left rail | center | right viewer)
    ════════════════════════════════════════════════════════════════════════ */
 
-export function ThreadDetail() {
+export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) {
+  // `embedded` = rendered inside ThreadsWorkspace (the §13 continuum), which
+  // supplies the index rail itself — so we hide our own left rail to avoid
+  // duplicating it. Standalone (routed directly) keeps the full 3-pane.
   // Accept both threadId (from /threads/:threadId) and discussionId (from /discussions/:discussionId)
   // since discussions and threads share the same backend table.
   const { threadId, discussionId } = useParams<{ threadId?: string; discussionId?: string }>();
@@ -248,19 +251,22 @@ export function ThreadDetail() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* ── Left rail — thread navigation index ── */}
-        {/* Desktop: always visible. Mobile: only when mobileTab = "origin" */}
-        <div
-          className={cn(
-            "shrink-0 h-full overflow-auto border-r border-border bg-background",
-            "w-[220px]",
-            // Mobile CSS hidden — mirrors WorkspaceLayout
-            mobileTab !== "origin" ? "hidden md:block" : "block md:block",
-          )}
-          data-testid="thread-left-rail"
-          aria-label="Thread navigation"
-        >
-          <ThreadLeftRail companyId={selectedCompanyId!} currentThreadId={thread.id} />
-        </div>
+        {/* Desktop: always visible. Mobile: only when mobileTab = "origin".
+            Hidden when embedded — ThreadsWorkspace provides the index rail. */}
+        {!embedded && (
+          <div
+            className={cn(
+              "shrink-0 h-full overflow-auto border-r border-border bg-background",
+              "w-[220px]",
+              // Mobile CSS hidden — mirrors WorkspaceLayout
+              mobileTab !== "origin" ? "hidden md:block" : "block md:block",
+            )}
+            data-testid="thread-left-rail"
+            aria-label="Thread navigation"
+          >
+            <ThreadLeftRail companyId={selectedCompanyId!} currentThreadId={thread.id} />
+          </div>
+        )}
 
         {/* ── Center panel — OriginCard + Thread|Scope tabs ── */}
         {/* Mobile: center panel is visible when thread or scope tab is active */}
