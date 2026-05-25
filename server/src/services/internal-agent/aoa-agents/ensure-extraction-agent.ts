@@ -1,6 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers } from "@armyofagents/db";
+import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
+import { agentInstructionsService } from "../../agent-instructions.js";
 
 /** Legacy name — kept for one-time rename migration. New name is "Scribe". */
 export const LEGACY_EXTRACTION_AGENT_NAME = "Discussion Extraction";
@@ -32,6 +34,8 @@ export const SCRIBE_TOOL_ALLOWLIST = ["submit_extracted_items"] as const;
 export const EXTRACTION_AGENT_TOOL_ALLOWLIST = SCRIBE_TOOL_ALLOWLIST;
 
 export async function ensureExtractionAgent(db: Db, companyId: string): Promise<string> {
+  let agentId: string;
+
   // Plan 3 Task 1: look up by SCRIBE_AGENT_NAME first, then fall back to the
   // legacy name for one-time migration. Both are checked so the function works
   // whether or not the rename has run yet.
@@ -73,20 +77,42 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       }
       await db.update(agents).set(updates).where(eq(agents.id, existing.id));
     }
-    return existing.id;
+    agentId = existing.id;
+  } else {
+    const [created] = await db.insert(agents).values({
+      companyId, name: SCRIBE_AGENT_NAME, kind: "aoa", role: "general", status: "idle",
+      adapterType: "process",
+      runtimeConfig: {
+        aoa: { role: "member", instruction: SCRIBE_INSTRUCTION, toolAllowlist: [...SCRIBE_TOOL_ALLOWLIST] },
+        heartbeat: { enabled: false, intervalSec: 0 },
+      },
+    }).returning();
+    await db.insert(aoaAgentTriggers).values({
+      companyId, agentId: created.id, kind: "outbox", enabled: true,
+      config: { source: "discussion_entry_pending" },
+    });
+    agentId = created.id;
   }
 
-  const [created] = await db.insert(agents).values({
-    companyId, name: SCRIBE_AGENT_NAME, kind: "aoa", role: "general", status: "idle",
-    adapterType: "process",
-    runtimeConfig: {
-      aoa: { role: "member", instruction: SCRIBE_INSTRUCTION, toolAllowlist: [...SCRIBE_TOOL_ALLOWLIST] },
-      heartbeat: { enabled: false, intervalSec: 0 },
-    },
-  }).returning();
-  await db.insert(aoaAgentTriggers).values({
-    companyId, agentId: created.id, kind: "outbox", enabled: true,
-    config: { source: "discussion_entry_pending" },
-  });
-  return created.id;
+  // P1.6: seed the Scribe's editable instruction bundle (idempotent; never clobbers
+  // founder edits). Non-fatal: seeding failure must not block role provisioning.
+  try {
+    const row = await db
+      .select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((r: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null }[]) => r[0]);
+    if (row) {
+      const nextAdapterConfig = await seedRoleInstructionBundle({
+        role: "scribe",
+        agent: { id: row.id, companyId: row.companyId, name: row.name, adapterConfig: row.adapterConfig },
+        service: agentInstructionsService(),
+      });
+      await db.update(agents).set({ adapterConfig: nextAdapterConfig, updatedAt: new Date() }).where(eq(agents.id, agentId));
+    }
+  } catch {
+    /* non-fatal — runner falls back to the instruction string */
+  }
+
+  return agentId;
 }
