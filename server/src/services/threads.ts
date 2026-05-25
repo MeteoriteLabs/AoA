@@ -1101,6 +1101,9 @@ export function threadService(db: Db) {
               assigneeAgentId: item.assigneeAgentId ?? null,
               assigneeUserId: item.assigneeUserId ?? null,
               projectId: item.departmentId ?? item.suggestedDepartmentId ?? item.suggestedProjectId ?? null,
+              // B6: approved tasks inherit the item's suggested goal, else the
+              // thread's goal — so they count toward goal progress roll-up.
+              goalId: item.suggestedGoalId ?? thread.goalId ?? null,
               priority: item.priority ?? item.suggestedPriority ?? "medium",
               createdByUserId: actor.userId,
             })
