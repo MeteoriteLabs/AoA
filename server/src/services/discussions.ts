@@ -347,6 +347,7 @@ export function discussionService(db: Db) {
         projectId?: string | null;
         goalId?: string | null;
         sourceInfo?: Record<string, unknown> | null;
+        parentEntryId?: string | null;
       },
       actorId: string,
     ) => {
@@ -364,6 +365,24 @@ export function discussionService(db: Db) {
 
       if (!discussion) {
         throw notFound("Discussion not found");
+      }
+
+      if (data.parentEntryId) {
+        const parent = await db
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.id, data.parentEntryId),
+              eq(discussionEntries.discussionId, discussionId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!parent) {
+          throw badRequest(
+            "parentEntryId must reference an entry in the same discussion",
+          );
+        }
       }
 
       const now = new Date();
@@ -396,6 +415,7 @@ export function discussionService(db: Db) {
             projectId: data.projectId ?? null,
             goalId: data.goalId ?? null,
             sourceInfo: data.sourceInfo ?? null,
+            parentEntryId: data.parentEntryId ?? null,
             extractionStatus: "pending",
             seq: entrySeq,
             createdBy: actorId,
