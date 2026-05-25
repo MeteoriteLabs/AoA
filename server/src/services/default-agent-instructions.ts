@@ -11,6 +11,8 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   dispatcher: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   memory_keeper: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   scribe: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  // Plan 3 — Adjutant (P3.1)
+  adjutant: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -25,6 +27,7 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   dispatcher: "dispatcher",
   memory_keeper: "memory_keeper",
   scribe: "scribe",
+  adjutant: "adjutant",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {

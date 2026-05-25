@@ -9,7 +9,7 @@
  *   At L0/L1 these roles fire no autonomous actions.
  */
 
-export type CrewRole = "scribe" | "memory_keeper" | "curator" | "router" | "planner" | "dispatcher";
+export type CrewRole = "scribe" | "memory_keeper" | "curator" | "router" | "planner" | "dispatcher" | "adjutant";
 
 /** Minimum autonomy level at which each role auto-runs. Core roles are always on (0). */
 const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
@@ -19,6 +19,7 @@ const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   router: 2,
   planner: 2,
   dispatcher: 2,
+  adjutant: 0,      // active at L0 for nudges; advance_phase self-gates at L2 inside the tool
 };
 
 /**
