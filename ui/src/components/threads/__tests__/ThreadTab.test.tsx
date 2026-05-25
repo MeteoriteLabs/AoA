@@ -21,7 +21,6 @@ vi.mock("../../../api/discussions", () => ({
   discussionsApi: {
     addEntry: vi.fn().mockResolvedValue({ id: "entry-new" }),
     reprocessEntry: vi.fn().mockResolvedValue({}),
-    addAnnotation: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -39,6 +38,10 @@ function makeEntry(overrides: Partial<DiscussionEntry> = {}): DiscussionEntry {
     departmentId: null,
     projectId: null,
     goalId: null,
+    parentEntryId: null,
+    authorAgentId: null,
+    authorAgentName: null,
+    authorAgentAvatar: null,
     extractionStatus: "completed",
     createdBy: "user-1",
     createdAt: "2026-01-01T09:00:00Z",

@@ -229,6 +229,7 @@ export function ThreadTab({
             key={entry.id}
             entry={entry}
             onReprocess={() => reprocessMutation.mutate(entry.id)}
+            // onReply + reply nesting wired in P0.7
             isReprocessing={
               reprocessMutation.isPending && reprocessMutation.variables === entry.id
             }
