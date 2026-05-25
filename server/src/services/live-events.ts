@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { LiveEvent, LiveEventType } from "@armyofagents/shared";
+import { canViewThread, type ThreadViewer } from "./threads.js";
 
 // Threads v1 Plan 7: the thread.* event types
 //   thread.entry.created | thread.scope.changed | thread.phase.changed
@@ -45,4 +46,111 @@ export function publishLiveEvent(input: {
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
+}
+
+// ── Threads v1 Plan 7: per-thread scoping + envelope-RBAC fan-out ─────────────
+
+/**
+ * Pure envelope-RBAC filter. Reuses the Plan 2 canViewThread predicate so a
+ * subscriber only survives if they could actually view the thread the event is
+ * about. A non-participant never receives even a poke about a private/Unclaimed
+ * thread.
+ *
+ * Subscribers must carry their own RBAC inputs ({ role, hasScopeAccess,
+ * isParticipant }). See the CRITICAL AMENDMENT in registerThreadSubscriber:
+ * these inputs are recomputed per event at fan-out, never cached.
+ */
+export function filterThreadEventRecipients<T extends ThreadViewer>(
+  thread: { ownerUserId: string | null; visibility: "open" | "private" },
+  subscribers: T[],
+): T[] {
+  return subscribers.filter((s) => canViewThread(thread, s));
+}
+
+/**
+ * Per-thread subscription registry: Map<threadId, Set<connection>>.
+ *
+ * The WS handler (server/src/realtime/live-events-ws.ts) owns the actual socket
+ * connections and registers/unregisters a connection token here when it receives
+ * a `{ subscribe: threadId }` / `{ unsubscribe: threadId }` client message. On a
+ * thread.* event, the handler looks up the subscriber set, recomputes each
+ * connection's { role, hasScopeAccess, isParticipant } against the live thread
+ * row (NOT a cache), runs filterThreadEventRecipients, and sends only to the
+ * survivors.
+ *
+ * Generic over the connection token type so the registry is decoupled from `ws`
+ * and unit-testable.
+ */
+export class ThreadSubscriptionRegistry<Conn> {
+  private byThread = new Map<string, Set<Conn>>();
+  private byConn = new Map<Conn, Set<string>>();
+
+  /** Subscribe a connection to a thread's events. Idempotent. */
+  subscribe(threadId: string, conn: Conn): void {
+    let conns = this.byThread.get(threadId);
+    if (!conns) {
+      conns = new Set();
+      this.byThread.set(threadId, conns);
+    }
+    conns.add(conn);
+
+    let threads = this.byConn.get(conn);
+    if (!threads) {
+      threads = new Set();
+      this.byConn.set(conn, threads);
+    }
+    threads.add(threadId);
+  }
+
+  /** Unsubscribe a connection from a single thread. */
+  unsubscribe(threadId: string, conn: Conn): void {
+    const conns = this.byThread.get(threadId);
+    if (conns) {
+      conns.delete(conn);
+      if (conns.size === 0) this.byThread.delete(threadId);
+    }
+    const threads = this.byConn.get(conn);
+    if (threads) {
+      threads.delete(threadId);
+      if (threads.size === 0) this.byConn.delete(conn);
+    }
+  }
+
+  /** Remove a connection from every thread it was subscribed to (on close). */
+  removeConnection(conn: Conn): void {
+    const threads = this.byConn.get(conn);
+    if (!threads) return;
+    for (const threadId of threads) {
+      const conns = this.byThread.get(threadId);
+      if (conns) {
+        conns.delete(conn);
+        if (conns.size === 0) this.byThread.delete(threadId);
+      }
+    }
+    this.byConn.delete(conn);
+  }
+
+  /** All connections currently subscribed to a thread (empty array if none). */
+  subscribers(threadId: string): Conn[] {
+    const conns = this.byThread.get(threadId);
+    return conns ? Array.from(conns) : [];
+  }
+
+  /** Whether a connection is subscribed to a given thread. */
+  isSubscribed(threadId: string, conn: Conn): boolean {
+    return this.byThread.get(threadId)?.has(conn) ?? false;
+  }
+}
+
+/** A live event that targets a specific thread (its payload carries threadId). */
+export function threadIdOf(event: LiveEvent): string | null {
+  const tid = event.payload?.threadId;
+  return typeof tid === "string" && tid.length > 0 ? tid : null;
+}
+
+const THREAD_EVENT_PREFIX = "thread.";
+
+/** Whether a live event is a per-thread event that needs envelope-RBAC fan-out. */
+export function isThreadEvent(event: LiveEvent): boolean {
+  return event.type.startsWith(THREAD_EVENT_PREFIX);
 }
