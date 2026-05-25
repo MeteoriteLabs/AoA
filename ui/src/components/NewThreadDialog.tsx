@@ -148,7 +148,7 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg max-h-[85dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New Thread</DialogTitle>
           <DialogDescription>
