@@ -292,10 +292,10 @@ describe("v2.5 Discussion Flow QA", () => {
         const db = createDiscussionDb([
           // select discussion exists
           [existingDiscussion],
+          // UPDATE discussions SET entrySeq+1 RETURNING (Plan 7 D1 atomic counter)
+          [{ ...existingDiscussion, entrySeq: i }],
           // insert entry returning
           [entryRow],
-          // update entryCount (returns updated row, consumed by mock)
-          [{ ...existingDiscussion, entryCount: i }],
         ]);
 
         const svc = discussionService(db);
@@ -358,8 +358,9 @@ describe("v2.5 Discussion Flow QA", () => {
 
         const db = createDiscussionDb([
           [disc],
+          // UPDATE discussions SET entrySeq+1 RETURNING (Plan 7 D1 atomic counter)
+          [{ ...disc, entrySeq: i + 1 }],
           [entryRow],
-          [{ ...disc, entryCount: i + 1 }],
         ]);
 
         const svc = discussionService(db);
