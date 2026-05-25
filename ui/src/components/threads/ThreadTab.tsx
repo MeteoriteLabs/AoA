@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { discussionsApi, type DiscussionEntry } from "../../api/discussions";
 import { useToast } from "../../context/ToastContext";
+import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { EntryRow } from "./EntryRow";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, SendHorizonal } from "lucide-react";
@@ -35,6 +36,8 @@ export function ThreadTab({
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const { connectionState } = useLiveUpdates();
+  const isOffline = connectionState === "offline";
   const [composerText, setComposerText] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -64,6 +67,11 @@ export function ThreadTab({
   function submitText() {
     const text = composerText.trim();
     if (!text || addEntryMutation.isPending) return;
+    // Plan 7 (D2): don't fail silently on send while offline — warn instead.
+    if (isOffline) {
+      pushToast({ title: "You're offline — message not sent", tone: "warn" });
+      return;
+    }
     addEntryMutation.mutate(text);
   }
 
@@ -153,15 +161,25 @@ export function ThreadTab({
             submitText();
           }
         }}
-        disabled={addEntryMutation.isPending}
+        disabled={addEntryMutation.isPending || isOffline}
         aria-label="Write a message"
         data-testid="thread-composer-textarea"
       />
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-2">
+        {isOffline ? (
+          <span
+            className="text-[11px] text-muted-foreground"
+            data-testid="thread-composer-offline-hint"
+          >
+            You&apos;re offline — messages can&apos;t be sent right now.
+          </span>
+        ) : (
+          <span />
+        )}
         <Button
           type="submit"
           size="sm"
-          disabled={!composerText.trim() || addEntryMutation.isPending}
+          disabled={!composerText.trim() || addEntryMutation.isPending || isOffline}
           data-testid="thread-composer-submit"
         >
           <SendHorizonal className="h-4 w-4 mr-1.5" />

@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { threadsApi } from "../api/threads";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -57,6 +58,29 @@ export function ThreadDetail() {
     enabled: !!selectedCompanyId && !!resolvedId,
     retry: false,
   });
+
+  // ── Plan 7: live thread updates (refetch-on-poke) + reconnect catch-up ──
+  const { connectionState, subscribeThread, unsubscribeThread, onReconnect } = useLiveUpdates();
+
+  // Subscribe the company WS to this thread on mount; unsubscribe on unmount.
+  // The server's per-thread registry + envelope-RBAC fan-out only then delivers
+  // thread.* pokes for this thread; LiveUpdatesProvider invalidates the query.
+  useEffect(() => {
+    if (!resolvedId) return;
+    subscribeThread(resolvedId);
+    return () => unsubscribeThread(resolvedId);
+  }, [resolvedId, subscribeThread, unsubscribeThread]);
+
+  // On WS reconnect, catch up by refetching the active thread (covers any pokes
+  // missed while disconnected). The catch-up REST endpoint (sinceSeq) backs the
+  // same refresh server-side; refetching the detail query is the simplest
+  // correct client path and keeps RBAC in REST.
+  useEffect(() => {
+    if (!resolvedId || !selectedCompanyId) return;
+    return onReconnect(() => {
+      queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, resolvedId] });
+    });
+  }, [resolvedId, selectedCompanyId, onReconnect, queryClient]);
 
   // Flatten extracted items from all entries for the Scope tab
   const scopeItems = useMemo((): ScopeItem[] => {
@@ -168,6 +192,9 @@ export function ThreadDetail() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden" data-testid="thread-detail">
+      {/* ── Plan 7 (D2): non-blocking connection pill ── */}
+      <ConnectionPill state={connectionState} />
+
       {/* ── Mobile tab bar (visible only on small screens) ── */}
       <div
         className="flex border-b border-border shrink-0 md:hidden"
@@ -329,6 +356,66 @@ export function ThreadDetail() {
           <ThreadViewerPanel thread={thread} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Connection Pill (Plan 7 D2)
+   Subtle, non-blocking banner for reconnecting / offline. Does not cover
+   content. Announced via aria-live="polite" — and only ONCE per transition
+   into a degraded state (not on every reconnect retry), so screen readers
+   aren't spammed.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function ConnectionPill({ state }: { state: "connecting" | "open" | "reconnecting" | "offline" }) {
+  // Only announce when we actually enter a degraded state, and only once per
+  // entry (announceRef gates repeat announcements during retry loops).
+  const announceRef = useRef(false);
+  const [announce, setAnnounce] = useState("");
+
+  useEffect(() => {
+    if (state === "reconnecting" || state === "offline") {
+      if (!announceRef.current) {
+        announceRef.current = true;
+        setAnnounce(state === "offline" ? "You're offline" : "Connection lost. Reconnecting.");
+      }
+    } else {
+      announceRef.current = false;
+      setAnnounce("");
+    }
+  }, [state]);
+
+  if (state === "open" || state === "connecting") {
+    // Keep a polite live region mounted so the "restored" clear is announced.
+    return <div aria-live="polite" className="sr-only">{announce}</div>;
+  }
+
+  const label = state === "offline" ? "You're offline" : "Reconnecting…";
+  return (
+    <div
+      data-testid="thread-connection-pill"
+      className="shrink-0 flex items-center justify-center"
+    >
+      <span
+        className={cn(
+          "my-1 inline-flex items-center gap-1.5 rounded-full px-3 py-0.5 text-[11px] font-medium",
+          state === "offline"
+            ? "bg-destructive/10 text-destructive"
+            : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+        )}
+      >
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            state === "offline" ? "bg-destructive" : "bg-amber-500 animate-pulse",
+          )}
+          aria-hidden="true"
+        />
+        {label}
+      </span>
+      {/* Polite, once-per-entry announcement (gated above). */}
+      <div aria-live="polite" className="sr-only">{announce}</div>
     </div>
   );
 }
