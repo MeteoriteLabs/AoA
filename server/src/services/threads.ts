@@ -192,7 +192,8 @@ export async function processMentions(
       .select({ id: authUsers.id, name: authUsers.name })
       .from(authUsers)
       .innerJoin(companyMemberships, and(
-        eq(companyMemberships.userId, authUsers.id),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, authUsers.id),
         eq(companyMemberships.companyId, companyId),
       ))
       .where(eq(authUsers.name, mention.name))
