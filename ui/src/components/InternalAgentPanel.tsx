@@ -194,6 +194,27 @@ function serverToLocal(m: AgentMessage): LocalMessage {
   };
 }
 
+export function mergeServerMessagesWithTransientLocal(
+  serverMessages: AgentMessage[],
+  localMessages: LocalMessage[],
+): LocalMessage[] {
+  const localById = new Map(localMessages.map((m) => [m.id, m]));
+  const serverIds = new Set(serverMessages.map((m) => m.id));
+  const merged = serverMessages.map((m) => ({
+    ...serverToLocal(m),
+    actionConfirm: localById.get(m.id)?.actionConfirm,
+    optionsPrompt: localById.get(m.id)?.optionsPrompt,
+  }));
+
+  const transientMessages = localMessages.filter(
+    (m) =>
+      !serverIds.has(m.id) &&
+      (m.actionConfirm !== undefined || m.optionsPrompt !== undefined),
+  );
+
+  return [...merged, ...transientMessages];
+}
+
 /* ------------------------------------------------------------------ */
 /*  Panel content (shared between desktop inline & mobile sheet)       */
 /* ------------------------------------------------------------------ */
@@ -338,12 +359,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     if (!conversation) return;
     if (conversation.messages) {
       setMessages((prev) => {
-        const localById = new Map(prev.map((m) => [m.id, m]));
-        return conversation.messages.map((m) => ({
-          ...serverToLocal(m),
-          actionConfirm: localById.get(m.id)?.actionConfirm,
-          optionsPrompt: localById.get(m.id)?.optionsPrompt,
-        }));
+        return mergeServerMessagesWithTransientLocal(
+          conversation.messages ?? [],
+          prev,
+        );
       });
     }
     if (conversation.conversation?.id) {
