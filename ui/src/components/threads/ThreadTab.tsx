@@ -79,11 +79,11 @@ export function ThreadTab({
         inputType: "write",
         parentEntryId,
       }),
-    onSuccess: () => {
+    onSuccess: (_, { parentEntryId }) => {
       invalidate();
       setComposerText("");
       setReplyTo(null);
-      pushToast({ title: replyTo ? "Reply added" : "Entry added", tone: "success" });
+      pushToast({ title: parentEntryId ? "Reply added" : "Entry added", tone: "success" });
     },
     onError: () => {
       pushToast({ title: "Failed to add entry", tone: "warn" });
