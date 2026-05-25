@@ -122,6 +122,15 @@ function plural(count: number, singular: string, pluralForm = `${singular}s`) {
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
+function isUnavailablePreviewRuntimeService(service: WorkspaceRuntimeService): boolean {
+  return (
+    service.provider === "adapter_managed" &&
+    !service.command &&
+    !service.providerRef &&
+    (service.status !== "running" || service.healthStatus === "unhealthy")
+  );
+}
+
 function useCockpitSummaries({
   issueId,
   companyId,
@@ -236,14 +245,16 @@ function useCockpitSummaries({
 
   const servicesSummary = (() => {
     if (!isSoftware || !services || services.length === 0) return null;
-    const running = services.filter((service) => service.status === "running");
-    const failed = services.filter((service) => service.status === "failed");
-    const starting = services.filter((service) => service.status === "starting");
+    const primaryServices = services.filter((service) => !isUnavailablePreviewRuntimeService(service));
+    const running = primaryServices.filter((service) => service.status === "running");
+    const failed = primaryServices.filter((service) => service.status === "failed");
+    const starting = primaryServices.filter((service) => service.status === "starting");
     if (running.length === 1) return `1 running · ${running[0].serviceName}`;
     if (running.length > 1) return `${running.length} running`;
     if (starting.length > 0) return plural(starting.length, "starting service");
     if (failed.length > 0) return plural(failed.length, "failed service");
-    return plural(services.length, "stopped service");
+    if (primaryServices.length > 0) return plural(primaryServices.length, "stopped service");
+    return "No running services";
   })();
 
   const artifactsSummary = (() => {

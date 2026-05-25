@@ -57,6 +57,25 @@ function isUnavailablePreviewService(service: WorkspaceRuntimeService): boolean 
   return isPreviewOnlyService(service) && (service.status !== "running" || service.healthStatus === "unhealthy");
 }
 
+function plural(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function StoppedPreviewSummary({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <div
+      className="flex min-w-0 items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground"
+      data-testid="service-stopped-preview-summary"
+    >
+      <Server className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 truncate">
+        {plural(count, "stopped preview")} from earlier runs
+      </span>
+    </div>
+  );
+}
+
 export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionProps) {
   const queryClient = useQueryClient();
   const workspacePermissions = useWorkspacePermissions(workspace.companyId, workspace.projectId);
@@ -145,9 +164,29 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
     );
   }
 
+  const unavailablePreviewCount = services.filter(isUnavailablePreviewService).length;
+  const primaryServices = services.filter((service) => !isUnavailablePreviewService(service));
+
+  if (primaryServices.length === 0) {
+    return (
+      <div className="min-w-0 max-w-full space-y-2 overflow-hidden px-1" data-testid="section-services-body">
+        <div className="flex min-w-0 max-w-full items-start gap-2 overflow-hidden py-2 text-xs">
+          <Server className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="min-w-0 space-y-0.5 overflow-hidden">
+            <p className="truncate font-medium text-foreground">No running app previews</p>
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              New agent-created localhost apps will appear here.
+            </p>
+          </div>
+        </div>
+        <StoppedPreviewSummary count={unavailablePreviewCount} />
+      </div>
+    );
+  }
+
   return (
     <div className="min-w-0 max-w-full space-y-2 overflow-hidden px-1" data-testid="section-services-body">
-      {services.map((service: WorkspaceRuntimeService) => {
+      {primaryServices.map((service: WorkspaceRuntimeService) => {
         const pendingAction = pendingByService[service.id] ?? null;
         const error = errorByService[service.id] ?? null;
         const isPending = pendingAction !== null;
@@ -286,6 +325,7 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
           </div>
         );
       })}
+      <StoppedPreviewSummary count={unavailablePreviewCount} />
     </div>
   );
 }

@@ -260,31 +260,46 @@ describe("ServicesSection", () => {
     expect(screen.getByTestId("service-local-target-svc-local-only")).toHaveTextContent("Local to AoA host");
   });
 
-  it("unavailable preview-only service shows status without Open or process controls", async () => {
+  it("keeps unavailable preview-only services out of the primary service rows", async () => {
     const onOpenBrowser = vi.fn();
     executionWorkspacesApiMock.runtimeServices.mockResolvedValue([unavailablePreviewService]);
 
     renderSection({ onOpenBrowser });
 
-    const row = await screen.findByTestId("service-row-svc-preview-stopped");
-    expect(row).toHaveTextContent("Preview");
-    expect(row).toHaveTextContent("Unavailable");
+    expect(await screen.findByText("No running app previews")).toBeInTheDocument();
+    expect(screen.getByTestId("service-stopped-preview-summary")).toHaveTextContent("1 stopped preview");
+    expect(screen.queryByTestId("service-row-svc-preview-stopped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-open-svc-preview-stopped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-stop-svc-preview-stopped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-restart-svc-preview-stopped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-start-svc-preview-stopped")).not.toBeInTheDocument();
   });
 
-  it("unhealthy running preview-only service does not offer Open", async () => {
+  it("keeps unhealthy preview-only services out of the primary service rows", async () => {
     const onOpenBrowser = vi.fn();
     executionWorkspacesApiMock.runtimeServices.mockResolvedValue([unhealthyRunningPreviewService]);
 
     renderSection({ onOpenBrowser });
 
-    const row = await screen.findByTestId("service-row-svc-preview-unhealthy");
-    expect(row).toHaveTextContent("Preview");
-    expect(row).toHaveTextContent("Unavailable");
+    expect(await screen.findByText("No running app previews")).toBeInTheDocument();
+    expect(screen.getByTestId("service-stopped-preview-summary")).toHaveTextContent("1 stopped preview");
+    expect(screen.queryByTestId("service-row-svc-preview-unhealthy")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-open-svc-preview-unhealthy")).not.toBeInTheDocument();
+  });
+
+  it("shows running services first and summarizes stopped detected previews quietly", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([
+      runningService,
+      { ...unavailablePreviewService, id: "svc-preview-stopped-a" },
+      { ...unavailablePreviewService, id: "svc-preview-stopped-b" },
+    ]);
+
+    renderSection();
+
+    expect(await screen.findByTestId("service-row-svc-1")).toBeInTheDocument();
+    expect(screen.getByTestId("service-stopped-preview-summary")).toHaveTextContent("2 stopped previews");
+    expect(screen.queryByTestId("service-row-svc-preview-stopped-a")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-row-svc-preview-stopped-b")).not.toBeInTheDocument();
   });
 
   it("stopped service shows Start button only (not Stop/Restart)", async () => {
