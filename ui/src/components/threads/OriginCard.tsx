@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { THREAD_PHASES, type Agent, type ThreadPhase } from "@armyofagents/shared";
 import { threadsApi, type ThreadDetail } from "../../api/threads";
@@ -16,9 +16,29 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Lock, Unlock, User } from "lucide-react";
+import {
+  Lock,
+  Unlock,
+  Lightbulb,
+  Plug,
+  Mic,
+  ClipboardPen,
+  PenLine,
+  MessageSquare,
+  Share2,
+  MoreHorizontal,
+  Flag,
+  Calendar,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ThreadPresenceMember } from "../../context/LiveUpdatesProvider";
 import { MentionInput } from "./MentionInput";
@@ -32,30 +52,60 @@ const PHASE_LABELS: Record<ThreadPhase, string> = {
   done: "Done",
 };
 
-const PHASE_COLORS: Record<ThreadPhase, string> = {
-  discuss: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  scope: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  assign: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
-  done: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-};
-
-const PHASE_ACTIVE_COLORS: Record<ThreadPhase, string> = {
-  discuss: "bg-blue-600 text-white",
-  scope: "bg-amber-600 text-white",
-  assign: "bg-violet-600 text-white",
-  done: "bg-green-600 text-white",
-};
-
 const AUTONOMY_LABELS: Record<number, string> = {
   0: "L0",
   1: "L1",
   2: "L2",
 };
 
+/* ─── Origin type → eyebrow label + icon ─── */
+
+const ORIGIN_META: Record<string, { label: string; Icon: LucideIcon }> = {
+  mcp: { label: "MCP", Icon: Plug },
+  voice: { label: "Voice", Icon: Mic },
+  paste: { label: "Paste", Icon: ClipboardPen },
+  write: { label: "Write", Icon: PenLine },
+  idea: { label: "Idea", Icon: Lightbulb },
+};
+
+function originMeta(originSource: string | null): { label: string; Icon: LucideIcon } {
+  if (!originSource) return { label: "Discussion", Icon: MessageSquare };
+  return ORIGIN_META[originSource.toLowerCase()] ?? { label: originSource, Icon: MessageSquare };
+}
+
+/* ─── Friendly owner name from a raw user id / slug ───
+   Owner ids are text slugs (e.g. the local_trusted "local-board" actor) or
+   UUIDs. Render a human label instead of leaking the raw slug. */
+
+function friendlyUser(id: string): { name: string; initials: string } {
+  if (id === "local-board") return { name: "Local Board", initials: "LB" };
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id)) return { name: "Member", initials: "M" };
+  const name = id
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+  const initials = name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return { name: name || id, initials: initials || "?" };
+}
+
+function formatDate(dateStr: string): string {
+  try {
+    return new Date(dateStr).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    OriginCard
-   Displays thread metadata: title, phase pills, intent chips,
-   participant avatars, autonomy level, owner/visibility.
+   Displays thread metadata: origin type + icon, title, Share/⋯ actions,
+   intent/goal/scope chips, owner/visibility, participants, and a connected
+   phase stepper with the autonomy pill.
    ════════════════════════════════════════════════════════════════════════ */
 
 interface OriginCardProps {
@@ -135,28 +185,122 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
     setPendingPhase(null);
   }
 
+  function handleShare() {
+    try {
+      void navigator.clipboard?.writeText(window.location.href);
+      pushToast({ title: "Link copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Couldn't copy link", tone: "warn" });
+    }
+  }
+
+  function toggleVisibility() {
+    visibilityMutation.mutate(thread.visibility === "open" ? "private" : "open");
+  }
+
+  const { label: originLabel, Icon: OriginIcon } = originMeta(thread.originSource);
+  const owner = thread.ownerUserId ? friendlyUser(thread.ownerUserId) : null;
+  const currentIndex = THREAD_PHASES.indexOf(thread.phase);
+
   return (
     <>
-      <div className="rounded-xl border border-border bg-card p-4 space-y-4" data-testid="origin-card">
-        {/* Title */}
-        <h2 className="text-base font-semibold text-foreground leading-tight">
-          {thread.title}
-        </h2>
+      <div className="rounded-xl border border-border bg-card p-4 space-y-3" data-testid="origin-card">
+        {/* Row 1: origin icon + eyebrow/title + Share/⋯ */}
+        <div className="flex items-start gap-3">
+          <div
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+            style={{
+              backgroundColor: "color-mix(in srgb, var(--entity-brief) 14%, transparent)",
+              color: "var(--entity-brief)",
+            }}
+            aria-hidden
+          >
+            <OriginIcon className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Thread · {originLabel}
+            </p>
+            <h2 className="text-base font-semibold leading-tight text-foreground">
+              {thread.title}
+            </h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[11px]"
+              onClick={handleShare}
+            >
+              <Share2 className="h-3 w-3" />
+              Share
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" className="h-7 w-7" aria-label="More actions">
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleShare}>Copy link</DropdownMenuItem>
+                <DropdownMenuItem onClick={toggleVisibility}>
+                  {thread.visibility === "open" ? "Make private" : "Make open"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
 
-        {/* Meta row: visibility + autonomy + owner */}
-        <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+        {/* Chips row: status · intent · goal · scope · date · visibility */}
+        <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] font-medium capitalize">
+            <span
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                thread.status === "active" ? "bg-green-500" : "bg-muted-foreground",
+              )}
+              aria-hidden
+            />
+            {thread.status}
+          </span>
+
+          {thread.intent?.map((item, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium"
+            >
+              {item}
+            </span>
+          ))}
+
+          {thread.goalId && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-green-500/20 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-400">
+              <Flag className="h-2.5 w-2.5" />
+              Goal linked
+            </span>
+          )}
+
+          {thread.scopeName && (
+            <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-medium">
+              {thread.scopeName}
+            </span>
+          )}
+
+          <span className="inline-flex items-center gap-1 text-[10px]">
+            <Calendar className="h-2.5 w-2.5" />
+            {formatDate(thread.createdAt)}
+          </span>
+
           {/* Visibility badge */}
           <Badge variant="outline" className="text-[10px] capitalize">
             {thread.visibility}
           </Badge>
 
-          {/* Visibility toggle button */}
+          {/* Visibility toggle */}
           <button
             type="button"
             data-testid="visibility-toggle"
-            onClick={() =>
-              visibilityMutation.mutate(thread.visibility === "open" ? "private" : "open")
-            }
+            onClick={toggleVisibility}
             disabled={visibilityMutation.isPending}
             className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] border border-border hover:bg-muted/30 transition-colors"
             aria-label={thread.visibility === "open" ? "Make private" : "Make open"}
@@ -167,26 +311,20 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
               <><Unlock className="h-2.5 w-2.5" /> Make open</>
             )}
           </button>
+        </div>
 
-          {/* Autonomy level */}
-          {thread.autonomyLevel != null && (
-            <span
-              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-[var(--token-skill,theme(colors.violet.100))] text-violet-800 dark:text-violet-300"
-              aria-label={`Autonomy level ${thread.autonomyLevel}`}
-            >
-              {AUTONOMY_LABELS[thread.autonomyLevel] ?? `L${thread.autonomyLevel}`}
-            </span>
-          )}
-
-          {/* Owner / Claim */}
-          {thread.ownerUserId ? (
-            <span className="flex items-center gap-1">
-              <User className="h-3 w-3" />
-              Owner: {thread.ownerUserId}
+        {/* Owner / claim + live presence */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {owner ? (
+            <span className="inline-flex items-center gap-1.5 text-xs">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground">
+                {owner.initials}
+              </span>
+              <span className="font-medium text-foreground">{owner.name}</span>
             </span>
           ) : (
-            <span className="flex items-center gap-2">
-              <span className="text-muted-foreground italic">Unclaimed</span>
+            <span className="inline-flex items-center gap-2 text-xs">
+              <span className="italic text-muted-foreground">Unclaimed</span>
               <Button
                 size="sm"
                 variant="outline"
@@ -198,14 +336,13 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
               </Button>
             </span>
           )}
-        </div>
 
-        {/* Plan 7: live presence + typing + agent working indicator */}
-        <PresenceStrip
-          presence={presence}
-          typingMembers={typingMembers}
-          workingAgents={workingAgents}
-        />
+          <PresenceStrip
+            presence={presence}
+            typingMembers={typingMembers}
+            workingAgents={workingAgents}
+          />
+        </div>
 
         {/* @mention input */}
         <MentionInput
@@ -214,65 +351,73 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
           placeholder="@mention someone..."
         />
 
-        {/* Origin source chip */}
-        {thread.originSource && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide">
-              Source:
-            </span>
-            <Badge variant="secondary" className="text-[10px] capitalize">
-              {thread.originSource}
-            </Badge>
-          </div>
-        )}
-
-        {/* Intent chips */}
-        {thread.intent && thread.intent.length > 0 && (
-          <div className="flex flex-wrap gap-1.5" aria-label="Thread intent">
-            {thread.intent.map((item, i) => (
-              <span
-                key={i}
-                className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground"
-              >
-                {item}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Phase pill bar */}
+        {/* Phase stepper (connected nodes + lines) + autonomy pill */}
         <div
-          className="flex items-center gap-1.5 flex-wrap"
+          className="flex items-center gap-0"
           role="group"
           aria-label="Thread phases"
           data-testid="phase-pills"
         >
-          {THREAD_PHASES.map((phase) => {
-            const isActive = thread.phase === phase;
+          {THREAD_PHASES.map((phase, i) => {
+            const isActive = i === currentIndex;
+            const isDone = i < currentIndex;
             return (
-              <button
-                key={phase}
-                type="button"
-                aria-current={isActive ? "true" : undefined}
-                aria-label={PHASE_LABELS[phase]}
-                onClick={() => handlePhaseClick(phase)}
-                disabled={advancePhaseMutation.isPending}
-                className={cn(
-                  "inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold capitalize transition-colors",
-                  "focus-visible:outline-2 focus-visible:outline-primary",
-                  isActive
-                    ? PHASE_ACTIVE_COLORS[phase]
-                    : cn(
-                        PHASE_COLORS[phase],
-                        "opacity-60 hover:opacity-100 cursor-pointer",
-                      ),
+              <Fragment key={phase}>
+                <button
+                  type="button"
+                  aria-current={isActive ? "true" : undefined}
+                  aria-label={PHASE_LABELS[phase]}
+                  onClick={() => handlePhaseClick(phase)}
+                  disabled={advancePhaseMutation.isPending}
+                  data-testid={`phase-pill-${phase}`}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition-colors",
+                    "focus-visible:outline-2 focus-visible:outline-primary",
+                    isActive
+                      ? "font-semibold text-foreground"
+                      : isDone
+                        ? "font-medium text-green-600 dark:text-green-400"
+                        : "font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-2 w-2 rounded-full border shrink-0",
+                      isActive
+                        ? "border-brand bg-brand"
+                        : isDone
+                          ? "border-green-500 bg-green-500"
+                          : "border-muted-foreground/40",
+                    )}
+                    aria-hidden
+                  />
+                  {PHASE_LABELS[phase]}
+                </button>
+                {i < THREAD_PHASES.length - 1 && (
+                  <span
+                    className={cn(
+                      "h-px w-5 flex-none mx-0.5",
+                      isDone ? "bg-green-500/40" : "bg-border",
+                    )}
+                    aria-hidden
+                  />
                 )}
-                data-testid={`phase-pill-${phase}`}
-              >
-                {PHASE_LABELS[phase]}
-              </button>
+              </Fragment>
             );
           })}
+
+          <div className="flex-1" />
+
+          {/* Autonomy pill */}
+          {thread.autonomyLevel != null && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground"
+              aria-label={`Autonomy level ${thread.autonomyLevel}`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-teal-500" aria-hidden />
+              {AUTONOMY_LABELS[thread.autonomyLevel] ?? `L${thread.autonomyLevel}`}
+            </span>
+          )}
         </div>
       </div>
 
