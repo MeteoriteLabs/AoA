@@ -12,11 +12,12 @@ import { MarketplacePrefsSection } from "@/components/settings/sections/Marketpl
 import { CommanderSection } from "@/components/settings/sections/CommanderSection";
 import { GitHubSection } from "@/components/settings/sections/GitHubSection";
 import { ActivitySection } from "@/components/settings/sections/ActivitySection";
+import { HealthSection } from "@/components/settings/sections/HealthSection";
 import { EnvironmentsSectionWrapper } from "@/components/settings/sections/EnvironmentsSection";
 import { SecretsSectionWrapper } from "@/components/settings/sections/SecretsSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
-  "general", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
+  "general", "health", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
   "activity", "environments", "secrets",
 ];
 
@@ -28,6 +29,8 @@ function renderActiveSection(id: SettingsSectionId) {
   switch (id) {
     case "general":
       return <GeneralSection />;
+    case "health":
+      return <HealthSection />;
     case "commander":
       return <CommanderSection />;
     case "llm":

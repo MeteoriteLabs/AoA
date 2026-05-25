@@ -14,6 +14,7 @@ import {
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
+import { runDoctorLint } from "../checks/lint-runner.js";
 import { printAoaCliBanner } from "../utils/banner.js";
 
 const STATUS_ICON = {
@@ -24,11 +25,24 @@ const STATUS_ICON = {
 
 export async function doctor(opts: {
   config?: string;
+  lint?: boolean;
   repair?: boolean;
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   printAoaCliBanner();
   p.intro(pc.bgCyan(pc.black(" aoa doctor ")));
+
+  if (opts.lint) {
+    const { results, report } = await runDoctorLint(opts);
+    for (const result of results) {
+      printResult(result);
+    }
+    const summary = printSummary(results);
+    if (report.summary.errorCount > 0) {
+      process.exitCode = 1;
+    }
+    return summary;
+  }
 
   const configPath = resolveConfigPath(opts.config);
   const results: CheckResult[] = [];

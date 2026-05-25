@@ -18,6 +18,7 @@ import {
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
+import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -247,6 +248,16 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+    }),
+  );
+  api.use(
+    operationsHealthRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      authReady: opts.authReady,
+      companyDeletionEnabled: opts.companyDeletionEnabled,
+      bindHost: opts.bindHost,
+      allowedHostnames: opts.allowedHostnames,
     }),
   );
   api.use("/companies", companyRoutes(db, { deploymentMode: opts.deploymentMode }));

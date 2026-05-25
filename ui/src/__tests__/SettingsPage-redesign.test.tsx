@@ -270,14 +270,15 @@ describe("SettingsPage redesign — Phase F shell", () => {
     try { localStorage.removeItem("aoa.settings-secondary-collapsed"); } catch { /* noop */ }
   });
 
-  it("renders the SecondarySidebar with all 12 section items", () => {
+  it("renders the SecondarySidebar with all 13 section items", () => {
     renderSettings();
     // Defensive: catch silent drift in section count.
     const totalItems = SETTINGS_SECTIONS.flatMap((g) => g.items).length;
-    expect(totalItems).toBe(12);
+    expect(totalItems).toBe(13);
     // Each label appears in both the desktop sidebar and the mobile sub-nav pill row
     // (CSS media queries that hide one or the other are not evaluated in JSDOM).
     expect(screen.getAllByText("General").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Health").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Activity").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Commander").length).toBeGreaterThan(0);
     expect(screen.getAllByText("LLM providers").length).toBeGreaterThan(0);
