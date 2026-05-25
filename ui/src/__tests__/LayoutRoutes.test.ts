@@ -8,6 +8,10 @@ describe("Layout route padding", () => {
     expect(shouldUseFullBleedMain("/AOA/memory", "AOA")).toBe(true);
     expect(shouldUseFullBleedMain("/AOA/skills", "AOA")).toBe(true);
     expect(shouldUseFullBleedMain("/AOA/workspaces/abc-123", "AOA")).toBe(true);
+    // Threads continuum (browse + detail) is edge-to-edge.
+    expect(shouldUseFullBleedMain("/AOA/discussions", "AOA")).toBe(true);
+    expect(shouldUseFullBleedMain("/AOA/discussions/abc-123", "AOA")).toBe(true);
+    expect(shouldUseFullBleedMain("/AOA/threads/abc-123", "AOA")).toBe(true);
   });
 
   it("does not make nested project tabs full bleed", () => {
