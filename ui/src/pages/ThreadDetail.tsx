@@ -5,8 +5,8 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
-import { threadsApi, type ThreadListItem } from "../api/threads";
-import { RefreshCw } from "lucide-react";
+import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType } from "../api/threads";
+import { RefreshCw, Flag, Link2, Brain, X, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { OriginCard } from "../components/threads/OriginCard";
@@ -50,6 +50,8 @@ export function ThreadDetail() {
 
   const [mobileTab, setMobileTab] = useState<MobileTab>("thread");
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
+  // Right-viewer selection: a clicked Scope item (null → home/shortcuts)
+  const [viewerItem, setViewerItem] = useState<ScopeItem | null>(null);
 
   // Focus ref for center panel heading
   const centerHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -354,7 +356,10 @@ export function ThreadDetail() {
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}
-                onItemClick={() => {}}
+                onItemClick={(item) => {
+                  setViewerItem(item);
+                  setMobileTab("viewer");
+                }}
               />
             </div>
           </div>
@@ -371,7 +376,16 @@ export function ThreadDetail() {
           data-testid="thread-right-viewer"
           aria-label="Thread viewer"
         >
-          <ThreadViewerPanel thread={thread} />
+          <ThreadViewerPanel
+            thread={thread}
+            companyId={selectedCompanyId!}
+            item={viewerItem}
+            onClose={() => setViewerItem(null)}
+            onOpenScope={() => {
+              setCenterTab("scope");
+              setMobileTab("scope");
+            }}
+          />
         </div>
       </div>
     </div>
@@ -510,42 +524,235 @@ function ThreadLeftRail({
    Thread Viewer Panel — right-side content viewer
    ════════════════════════════════════════════════════════════════════════ */
 
+const AUTONOMY_BANNER: Record<number, { label: string; text: string }> = {
+  0: { label: "L0 · Manual", text: "Agents act only when you explicitly ask." },
+  1: { label: "L1 · Assist", text: "Agents suggest; you approve each step." },
+  2: {
+    label: "L2 · Drive",
+    text: "Agents drive Discuss → Scope → Assign autonomously. Assignment needs your confirmation.",
+  },
+};
+
+const ITEM_TYPE_COLORS: Record<string, string> = {
+  task: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  decision: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
+  insight: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  reference: "bg-stone-200 text-stone-800 dark:bg-stone-800/30 dark:text-stone-300",
+  artifact: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
+  context: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+  preference: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
+};
+
 interface ThreadViewerPanelProps {
-  thread: { title: string };
-  /** Optional URL to preview in the sandboxed iframe */
+  thread: ThreadDetailType;
+  companyId: string;
+  /** Currently selected scope item to preview (null → home/shortcuts) */
+  item?: ScopeItem | null;
+  onClose?: () => void;
+  onOpenScope?: () => void;
+  /** Optional URL/HTML to preview in the sandboxed iframe (artifact/reference) */
   previewUrl?: string;
-  /** Optional raw HTML to render via srcdoc */
   previewHtml?: string;
 }
 
-function ThreadViewerPanel({ thread, previewUrl, previewHtml }: ThreadViewerPanelProps) {
-  const hasContent = previewUrl || previewHtml;
+function ThreadViewerPanel({
+  thread,
+  companyId,
+  item,
+  onClose,
+  onOpenScope,
+  previewUrl,
+  previewHtml,
+}: ThreadViewerPanelProps) {
+  const { pushToast } = useToast();
+  const hasIframe = Boolean(previewUrl || previewHtml);
 
-  return (
-    <div className="flex flex-col h-full">
-      {!hasContent && (
-        <div className="p-4">
-          <p className="text-xs text-muted-foreground">
-            Select an item to preview it here.
-          </p>
+  const { data: linksData } = useQuery({
+    queryKey: ["thread-links", companyId, thread.id],
+    queryFn: () => threadsApi.listLinks(companyId, thread.id),
+    enabled: !!companyId,
+    retry: false,
+  });
+  const linkedCount = linksData?.links?.length ?? 0;
+
+  function copyLink() {
+    try {
+      void navigator.clipboard?.writeText(window.location.href);
+      pushToast({ title: "Link copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Couldn't copy link", tone: "warn" });
+    }
+  }
+
+  // ── Iframe preview (artifact/reference URL or HTML) ──
+  if (hasIframe) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Preview
+          </span>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close preview"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
-      )}
-      {hasContent && previewHtml && (
         <iframe
           title={`Viewer for thread: ${thread.title}`}
           srcDoc={previewHtml}
+          src={previewHtml ? undefined : previewUrl}
           className="w-full flex-1 border-0"
-          sandbox="allow-same-origin allow-scripts"
+          sandbox={
+            previewHtml
+              ? "allow-same-origin allow-scripts"
+              : "allow-same-origin allow-scripts allow-popups"
+          }
         />
-      )}
-      {hasContent && previewUrl && !previewHtml && (
-        <iframe
-          title={`Viewer for thread: ${thread.title}`}
-          src={previewUrl}
-          className="w-full flex-1 border-0"
-          sandbox="allow-same-origin allow-scripts allow-popups"
-        />
-      )}
+      </div>
+    );
+  }
+
+  // ── Selected scope item detail ──
+  if (item) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {item.type}
+          </span>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close item"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        <div className="p-4 space-y-3 overflow-auto">
+          <h3 className="text-sm font-semibold leading-snug text-foreground">{item.title}</h3>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
+                ITEM_TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
+              )}
+            >
+              {item.type}
+            </span>
+            <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">
+              {item.status}
+            </span>
+          </div>
+          {item.description && (
+            <p className="text-xs leading-relaxed text-muted-foreground">{item.description}</p>
+          )}
+          {onOpenScope && (
+            <button
+              type="button"
+              onClick={onOpenScope}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+            >
+              Open in Scope <ArrowRight className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Home: Jump-to + Quick actions + autonomy explainer ──
+  const autonomy = thread.autonomyLevel != null ? AUTONOMY_BANNER[thread.autonomyLevel] : null;
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center px-3 h-9 border-b border-border shrink-0">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Viewer
+        </span>
+      </div>
+      <div className="p-3 space-y-4 overflow-auto">
+        {/* Jump to */}
+        <section>
+          <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+            Jump to
+          </p>
+          <div className="space-y-1">
+            {thread.goalId && (
+              <Link
+                to={`/goals/${thread.goalId}`}
+                className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+              >
+                <Flag className="h-3 w-3 shrink-0" />
+                <span className="flex-1">Linked goal</span>
+                <ArrowRight className="h-3 w-3 opacity-60" />
+              </Link>
+            )}
+            {linkedCount > 0 && (
+              <Link
+                to={`/discussions/${thread.id}`}
+                className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+              >
+                <Link2 className="h-3 w-3 shrink-0" />
+                <span className="flex-1">Linked threads</span>
+                <span className="rounded-full bg-muted px-1.5 text-[9px] font-semibold tabular-nums">
+                  {linkedCount}
+                </span>
+              </Link>
+            )}
+            <Link
+              to="/memory"
+              className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+            >
+              <Brain className="h-3 w-3 shrink-0" />
+              <span className="flex-1">Memory</span>
+              <ArrowRight className="h-3 w-3 opacity-60" />
+            </Link>
+          </div>
+        </section>
+
+        {/* Quick actions */}
+        <section>
+          <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+            Quick actions
+          </p>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenScope}
+              className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+            >
+              Open Scope
+            </button>
+            <button
+              type="button"
+              onClick={copyLink}
+              className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+            >
+              Copy link
+            </button>
+          </div>
+        </section>
+
+        {/* Autonomy explainer */}
+        {autonomy && (
+          <div className="rounded-md border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-[11px] leading-relaxed text-teal-700 dark:text-teal-300">
+            <span className="font-semibold">{autonomy.label}</span> · {autonomy.text}
+          </div>
+        )}
+
+        <p className="px-1 text-[11px] text-muted-foreground">
+          Select a Scope item to preview it here.
+        </p>
+      </div>
     </div>
   );
 }
