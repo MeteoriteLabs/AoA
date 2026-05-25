@@ -43,6 +43,7 @@ export function ThreadTab({
   // mid-reconnect. Sending in either state would silently drop the message.
   const isDisconnected = isOffline || isReconnecting;
   const [composerText, setComposerText] = useState("");
+  const [replyTo, setReplyTo] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   // Platform-aware send-shortcut hint (Cmd on macOS, Ctrl elsewhere).
   const sendKey =
@@ -72,12 +73,17 @@ export function ThreadTab({
   };
 
   const addEntryMutation = useMutation({
-    mutationFn: (content: string) =>
-      discussionsApi.addEntry(companyId, threadId, { rawContent: content, inputType: "write" }),
+    mutationFn: ({ content, parentEntryId }: { content: string; parentEntryId: string | null }) =>
+      discussionsApi.addEntry(companyId, threadId, {
+        rawContent: content,
+        inputType: "write",
+        parentEntryId,
+      }),
     onSuccess: () => {
       invalidate();
       setComposerText("");
-      pushToast({ title: "Entry added", tone: "success" });
+      setReplyTo(null);
+      pushToast({ title: replyTo ? "Reply added" : "Entry added", tone: "success" });
     },
     onError: () => {
       pushToast({ title: "Failed to add entry", tone: "warn" });
@@ -97,7 +103,7 @@ export function ThreadTab({
       });
       return;
     }
-    addEntryMutation.mutate(text);
+    addEntryMutation.mutate({ content: text, parentEntryId: replyTo });
   }
 
   function handleComposerSubmit(e: React.FormEvent) {
@@ -155,6 +161,21 @@ export function ThreadTab({
       className="flex flex-col gap-2 pt-3 border-t border-border mt-4"
       data-testid="thread-composer"
     >
+      {replyTo && (
+        <div
+          className="flex items-center justify-between rounded-md bg-muted/50 px-2 py-1 text-[11px] text-muted-foreground"
+          data-testid="thread-composer-reply-context"
+        >
+          <span>Replying to a post</span>
+          <button
+            type="button"
+            className="underline hover:no-underline"
+            onClick={() => setReplyTo(null)}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       <textarea
         ref={composerRef}
         value={composerText}
@@ -218,23 +239,57 @@ export function ThreadTab({
     );
   }
 
-  // TODO: re-enable nesting when parentEntryId is added to DiscussionEntry
-  // (parentEntryId does not exist on the type; the cast was dead code — all entries are top-level)
+  // Group one level deep: top-level entries, each followed by direct replies.
+  // Replies whose parent is not a known top-level id are treated as top-level (orphan safety).
+  const topLevel = entries.filter((e) => !e.parentEntryId);
+  const topLevelIds = new Set(topLevel.map((e) => e.id));
+  const repliesByParent = new Map<string, DiscussionEntry[]>();
+  for (const e of entries) {
+    if (e.parentEntryId && topLevelIds.has(e.parentEntryId)) {
+      const list = repliesByParent.get(e.parentEntryId) ?? [];
+      list.push(e);
+      repliesByParent.set(e.parentEntryId, list);
+    }
+  }
+  const orphans = entries.filter(
+    (e) => e.parentEntryId && !topLevelIds.has(e.parentEntryId),
+  );
+  const roots = [...topLevel, ...orphans];
 
   return (
     <div className="flex flex-col">
       <div className="space-y-1.5" data-testid="thread-tab-entries">
-        {entries.map((entry) => (
-          <EntryRow
-            key={entry.id}
-            entry={entry}
-            onReprocess={() => reprocessMutation.mutate(entry.id)}
-            // onReply + reply nesting wired in P0.7
-            isReprocessing={
-              reprocessMutation.isPending && reprocessMutation.variables === entry.id
-            }
-            indentLevel={0}
-          />
+        {roots.map((entry) => (
+          <div key={entry.id} data-testid={`entry-group-${entry.id}`} className="space-y-1.5">
+            <EntryRow
+              entry={entry}
+              onReprocess={() => reprocessMutation.mutate(entry.id)}
+              onReply={(id) => {
+                setReplyTo(id);
+                composerRef.current?.focus();
+              }}
+              isReprocessing={
+                reprocessMutation.isPending && reprocessMutation.variables === entry.id
+              }
+              indentLevel={0}
+            />
+            {(repliesByParent.get(entry.id) ?? []).map((reply) => (
+              <EntryRow
+                key={reply.id}
+                entry={reply}
+                onReprocess={() => reprocessMutation.mutate(reply.id)}
+                onReply={() => {
+                  // Replies to a reply target the top-level parent (shallow threading)
+                  setReplyTo(entry.id);
+                  composerRef.current?.focus();
+                }}
+                isReprocessing={
+                  reprocessMutation.isPending && reprocessMutation.variables === reply.id
+                }
+                indentLevel={1}
+              />
+            ))}
+          </div>
         ))}
       </div>
       {composer}
