@@ -67,6 +67,10 @@ export interface DiscussionEntry {
   departmentId: string | null;
   projectId: string | null;
   goalId: string | null;
+  parentEntryId: string | null;
+  authorAgentId: string | null;
+  authorAgentName?: string | null;
+  authorAgentAvatar?: string | null;
   extractionStatus: "pending" | "processing" | "completed" | "failed" | "skipped";
   createdBy: string;
   createdAt: string;
