@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -127,6 +127,7 @@ vi.mock("../services/memory.js", () => ({
   })),
 }));
 
+import { eq } from "drizzle-orm";
 import { discussionService } from "../services/discussions.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -260,6 +261,18 @@ describe("discussionService.addEntry — parentEntryId", () => {
         "user:1",
       ),
     ).rejects.toThrow(/same discussion/i);
+
+    // Verify that the parent lookup query included the discussionId predicate,
+    // not just the parentEntryId. This is the cross-discussion isolation guard.
+    const eqMock = eq as unknown as MockInstance;
+    const eqCalls = eqMock.mock.calls as [unknown, unknown][];
+    const discussionIdFilterCall = eqCalls.find(
+      ([col, val]) => col === "entries_discussion_id" && val === "disc-1",
+    );
+    expect(
+      discussionIdFilterCall,
+      "eq(discussionEntries.discussionId, 'disc-1') must be part of the parent-entry lookup query",
+    ).toBeDefined();
   });
 
   it("leaves parentEntryId null for a normal top-level entry", async () => {
@@ -285,6 +298,7 @@ describe("discussionService.addEntry — parentEntryId", () => {
       "user:1",
     );
 
-    expect(captured.insertedEntry?.parentEntryId ?? null).toBeNull();
+    expect(captured.insertedEntry).toBeDefined();
+    expect((captured.insertedEntry as Record<string, unknown>).parentEntryId ?? null).toBeNull();
   });
 });
