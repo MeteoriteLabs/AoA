@@ -27,6 +27,7 @@ import {
   authUsers,
   companyMemberships,
   agentWakeupRequests,
+  aoaAgentTriggers,
   notifications,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
@@ -565,6 +566,36 @@ export function threadService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(discussions.id, id));
+
+      // Emit phase-advance wakeups for agents subscribed to this trigger (P3.4)
+      const phaseAdvanceTriggers = await db
+        .select({
+          agentId: aoaAgentTriggers.agentId,
+          config: aoaAgentTriggers.config,
+        })
+        .from(aoaAgentTriggers)
+        .where(
+          and(
+            eq(aoaAgentTriggers.companyId, companyId),
+            eq(aoaAgentTriggers.kind, "phase-advance"),
+            eq(aoaAgentTriggers.enabled, true),
+          ),
+        );
+
+      for (const trigger of phaseAdvanceTriggers) {
+        await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: trigger.agentId,
+          source: "phase-advance",
+          reason: "thread_phase_advanced",
+          payload: {
+            threadId: id,
+            toPhase: target,
+            role: (trigger.config as Record<string, unknown> | null)?.role as string | undefined,
+          },
+          status: "queued",
+        });
+      }
 
       await logActivity(db, {
         companyId,
