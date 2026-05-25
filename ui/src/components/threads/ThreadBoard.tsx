@@ -29,6 +29,21 @@ function relativeTime(dateStr: string | null | undefined): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
+/** Friendly initials from a raw owner id / slug (local-board → "LB"). */
+function ownerInitials(id: string): string {
+  if (id === "local-board") return "LB";
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id)) return "?";
+  const initials = id
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return initials || "?";
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    ThreadBoard — Kanban-style view of threads by phase
    ════════════════════════════════════════════════════════════════════════ */
@@ -96,7 +111,7 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
     <div
       role="region"
       aria-label={label}
-      className="flex-none w-[240px] rounded-lg border border-border bg-muted/30 flex flex-col"
+      className="flex-1 min-w-[180px] rounded-lg border border-border bg-muted/30 flex flex-col"
       data-testid={`phase-column-${phase}`}
     >
       {/* Header — not clickable for reorder (v1) */}
@@ -178,10 +193,17 @@ function BoardCard({ thread, phase: _phase }: { thread: ThreadListItem; phase: T
           )}
         </div>
 
-        {/* Owner: avatar initial or "–" */}
-        <span className="text-[10px] text-muted-foreground shrink-0">
-          {thread.ownerUserId ? thread.ownerUserId.slice(0, 4) : "–"}
-        </span>
+        {/* Owner: friendly initials avatar or "–" when unclaimed */}
+        {thread.ownerUserId ? (
+          <span
+            title={thread.ownerUserId}
+            className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-muted text-[8px] font-semibold text-muted-foreground shrink-0"
+          >
+            {ownerInitials(thread.ownerUserId)}
+          </span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground shrink-0">–</span>
+        )}
       </div>
 
       {/* Phase chip — only shown in Unlisted lane; hidden in phase columns */}
