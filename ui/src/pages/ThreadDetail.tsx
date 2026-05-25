@@ -6,7 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType } from "../api/threads";
-import { RefreshCw, Flag, Link2, Brain, X, ArrowRight } from "lucide-react";
+import { RefreshCw, Flag, Link2, Brain, X, ArrowRight, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { OriginCard } from "../components/threads/OriginCard";
@@ -55,6 +55,8 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
   // Right-viewer selection: a clicked Scope item (null → home/shortcuts)
   const [viewerItem, setViewerItem] = useState<ScopeItem | null>(null);
+  // Right-viewer collapse (§15: both side rails collapse to an icon strip)
+  const [viewerCollapsed, setViewerCollapsed] = useState(false);
 
   // Focus ref for center panel heading
   const centerHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -379,27 +381,42 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
           </div>
         </div>
 
-        {/* ── Right viewer panel ── */}
+        {/* ── Right viewer panel (collapsible — §15: both rails collapse) ── */}
         <div
           className={cn(
-            "shrink-0 h-full overflow-auto border-l border-border bg-muted/20",
-            "w-[340px]",
+            "shrink-0 h-full overflow-hidden border-l border-border bg-muted/20 transition-[width] duration-200",
+            viewerCollapsed ? "w-[46px]" : "w-[340px]",
             // Mobile: only show when mobileTab = "viewer"
             mobileTab !== "viewer" ? "hidden md:block" : "block",
           )}
           data-testid="thread-right-viewer"
+          data-collapsed={viewerCollapsed ? "true" : "false"}
           aria-label="Thread viewer"
         >
-          <ThreadViewerPanel
-            thread={thread}
-            companyId={selectedCompanyId!}
-            item={viewerItem}
-            onClose={() => setViewerItem(null)}
-            onOpenScope={() => {
-              setCenterTab("scope");
-              setMobileTab("scope");
-            }}
-          />
+          {viewerCollapsed ? (
+            <div className="flex flex-col items-center pt-2">
+              <button
+                type="button"
+                onClick={() => setViewerCollapsed(false)}
+                aria-label="Expand viewer"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                <PanelRightOpen className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <ThreadViewerPanel
+              thread={thread}
+              companyId={selectedCompanyId!}
+              item={viewerItem}
+              onClose={() => setViewerItem(null)}
+              onOpenScope={() => {
+                setCenterTab("scope");
+                setMobileTab("scope");
+              }}
+              onCollapse={() => setViewerCollapsed(true)}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -564,6 +581,7 @@ interface ThreadViewerPanelProps {
   item?: ScopeItem | null;
   onClose?: () => void;
   onOpenScope?: () => void;
+  onCollapse?: () => void;
   /** Optional URL/HTML to preview in the sandboxed iframe (artifact/reference) */
   previewUrl?: string;
   previewHtml?: string;
@@ -575,6 +593,7 @@ function ThreadViewerPanel({
   item,
   onClose,
   onOpenScope,
+  onCollapse,
   previewUrl,
   previewHtml,
 }: ThreadViewerPanelProps) {
@@ -688,10 +707,20 @@ function ThreadViewerPanel({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center px-3 h-9 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Viewer
         </span>
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse viewer"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <PanelRightClose className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
       <div className="p-3 space-y-4 overflow-auto">
         {/* Jump to */}
