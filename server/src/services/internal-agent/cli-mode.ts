@@ -75,6 +75,10 @@ interface McpConfigParams {
   toolAllowlist?: readonly string[];
   /** Actor type threaded into the bridge: "commander" when spawned via Commander. */
   actorType?: string;
+  /** Agent DB ID — set as AOA_AGENT_ID in the bridge so tools can stamp authorAgentId. */
+  agentId?: string;
+  /** Resolved effective autonomy (D10: threadLevel ?? companyLevel). Absent → bridge uses null. */
+  effectiveAutonomy?: number | null;
 }
 
 interface McpConfig {
@@ -134,6 +138,10 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
         ? { AOA_TOOL_ALLOWLIST: params.toolAllowlist.join(",") }
         : {}),
       ...(params.actorType ? { AOA_ACTOR_TYPE: params.actorType } : {}),
+      ...(params.agentId ? { AOA_AGENT_ID: params.agentId } : {}),
+      ...(params.effectiveAutonomy != null
+        ? { AOA_EFFECTIVE_AUTONOMY: String(params.effectiveAutonomy) }
+        : {}),
       ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
     },
   };

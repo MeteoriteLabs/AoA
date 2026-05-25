@@ -136,6 +136,10 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       bridgeEntrypoint: resolveBridgeEntrypoint(),
       agentKind: "aoa",
       toolAllowlist: toolAllowlistFromConfig,
+      agentId,
+      effectiveAutonomy: typeof payload.effectiveAutonomy === "number"
+        ? payload.effectiveAutonomy
+        : null,
     };
     // MX2: the claude {mcpServers} JSON temp file is still written
     // UNCONDITIONALLY (and unlinked in `finally` for every run) so the

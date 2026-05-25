@@ -328,12 +328,27 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             .returning({ id: agentWakeupRequests.id });
           if (claimed.length === 0) return; // already claimed by concurrent tick
 
+          // D10: compute effectiveAutonomy = threadLevel ?? companyLevel
+          const wkPayload = (w.payload ?? {}) as Record<string, unknown>;
+          let effectiveAutonomy: number | null = companyCfg.autonomyLevel;
+          if (typeof wkPayload.threadId === "string") {
+            const thread = await db
+              .select({ autonomyLevel: discussions.autonomyLevel })
+              .from(discussions)
+              .where(eq(discussions.id, wkPayload.threadId))
+              .then((rows: Array<{ autonomyLevel: number | null }>) => rows[0] ?? null);
+            if (thread) {
+              effectiveAutonomy = thread.autonomyLevel ?? companyCfg.autonomyLevel;
+            }
+          }
+
           try {
             await runAoaAgent(db, w.agentId, {
               companyId: w.companyId,
               source: "wakeup",
               wakeupId: w.id,
               resolvedModel: roleModel, // Plan 3 Task 9: pass resolved model to runner
+              effectiveAutonomy,
               ...(w.payload ?? {}),
             });
             await db
