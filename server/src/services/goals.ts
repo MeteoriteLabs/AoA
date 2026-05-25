@@ -214,9 +214,12 @@ export function goalService(db: Db) {
 
     create: async (
       companyId: string,
-      data: Omit<typeof goals.$inferInsert, "companyId"> & { projectIds?: string[] },
+      data: Omit<typeof goals.$inferInsert, "companyId"> & {
+        projectIds?: string[];
+        parentIds?: string[];
+      },
     ) => {
-      const { projectIds, ...goalData } = data;
+      const { projectIds, parentIds, ...goalData } = data;
       const [goal] = await db
         .insert(goals)
         .values({ ...goalData, companyId })
@@ -231,6 +234,19 @@ export function goalService(db: Db) {
             companyId,
           })),
         );
+      }
+
+      // Multi-parent DAG edges (D3: validate cycle + child⊆parent scope on write).
+      if (parentIds && parentIds.length > 0) {
+        await assertParentsValid(db, {
+          goalId: goal.id,
+          parentIds,
+          childProjectIds: projectIds ?? [],
+        });
+        await db
+          .insert(goalParents)
+          .values(parentIds.map((parentId) => ({ goalId: goal.id, parentId })))
+          .onConflictDoNothing();
       }
 
       const [enriched] = await attachProjects(db, [goal]);

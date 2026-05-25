@@ -39,13 +39,18 @@ export function goalRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
-    const { projectIds } = req.body;
-    if (!projectIds || !Array.isArray(projectIds) || projectIds.length === 0) {
-      res.status(400).json({ error: "At least one department or project is required (projectIds)" });
-      return;
+    // Company-wide goals have no projects; scoped goals carry projectIds. The
+    // goal service validates parent scope/cycles and throws HttpError on violation.
+    let goal;
+    try {
+      goal = await svc.create(companyId, req.body);
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
     }
-
-    const goal = await svc.create(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
