@@ -646,7 +646,7 @@ export function discussionRoutes(db: Db) {
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
       await assertRole(db, req, companyId, "founder");
-      await db.update(discussions).set({ crewPaused: true, updatedAt: new Date() }).where(eq(discussions.id, discussionId));
+      await db.update(discussions).set({ crewPaused: true, updatedAt: new Date() }).where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)));
       res.json({ crewPaused: true });
     },
   );
@@ -658,7 +658,7 @@ export function discussionRoutes(db: Db) {
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
       await assertRole(db, req, companyId, "founder");
-      await db.update(discussions).set({ crewPaused: false, updatedAt: new Date() }).where(eq(discussions.id, discussionId));
+      await db.update(discussions).set({ crewPaused: false, updatedAt: new Date() }).where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)));
       res.json({ crewPaused: false });
     },
   );
