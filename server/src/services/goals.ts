@@ -364,5 +364,99 @@ export function goalService(db: Db) {
       ).length;
       return { ...progress, atRisk };
     },
+
+    /** Goals enriched with parentIds + rolled-up progress for the Objectives tree.
+     *  Efficient: 3 queries (goals, goal_parents, issues) + in-memory roll-up. */
+    listForTree: async (companyId: string) => {
+      const goalRows = await db
+        .select()
+        .from(goals)
+        .where(eq(goals.companyId, companyId));
+      const enriched = await attachProjects(db, goalRows);
+      const ids = enriched.map((g) => g.id);
+      if (ids.length === 0) return [];
+
+      const edges = await db
+        .select({ goalId: goalParents.goalId, parentId: goalParents.parentId })
+        .from(goalParents)
+        .where(inArray(goalParents.goalId, ids));
+      const parentsOf = new Map<string, string[]>();
+      const childrenOf = new Map<string, string[]>();
+      for (const e of edges) {
+        const p = parentsOf.get(e.goalId) ?? [];
+        p.push(e.parentId);
+        parentsOf.set(e.goalId, p);
+        const c = childrenOf.get(e.parentId) ?? [];
+        c.push(e.goalId);
+        childrenOf.set(e.parentId, c);
+      }
+
+      const issueRows = await db
+        .select({
+          goalId: issues.goalId,
+          status: issues.status,
+          dueDate: issues.dueDate,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.goalId, ids)));
+      const issuesByGoal = new Map<
+        string,
+        { status: string; dueDate: Date | null }[]
+      >();
+      for (const r of issueRows) {
+        if (!r.goalId) continue;
+        const arr = issuesByGoal.get(r.goalId) ?? [];
+        arr.push({ status: r.status, dueDate: r.dueDate });
+        issuesByGoal.set(r.goalId, arr);
+      }
+
+      const now = Date.now();
+      return enriched.map((g) => {
+        // Descendant set (in-memory BFS over the adjacency; visited-set = DAG-safe).
+        const set = new Set<string>([g.id]);
+        let frontier = [g.id];
+        while (frontier.length > 0) {
+          const next: string[] = [];
+          for (const cur of frontier) {
+            for (const child of childrenOf.get(cur) ?? []) {
+              if (!set.has(child)) {
+                set.add(child);
+                next.push(child);
+              }
+            }
+          }
+          frontier = next;
+        }
+        const statuses: string[] = [];
+        let atRisk = 0;
+        for (const gid of set) {
+          for (const it of issuesByGoal.get(gid) ?? []) {
+            statuses.push(it.status);
+            if (
+              it.status === "blocked" ||
+              (it.dueDate != null &&
+                it.dueDate.getTime() < now &&
+                it.status !== "done" &&
+                it.status !== "cancelled")
+            ) {
+              atRisk++;
+            }
+          }
+        }
+        const progress = computeGoalProgress(statuses);
+        const statusSuggestion = suggestGoalStatus(g.status as GoalStatus, {
+          total: progress.total,
+          done: progress.done,
+          atRisk,
+        });
+        return {
+          ...g,
+          parentIds: parentsOf.get(g.id) ?? [],
+          progress,
+          atRisk,
+          statusSuggestion,
+        };
+      });
+    },
   };
 }
