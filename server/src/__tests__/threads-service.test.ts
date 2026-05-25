@@ -158,6 +158,8 @@ vi.mock("../services/live-events.js", () => ({
 vi.mock("../services/goals.js", () => ({
   goalService: vi.fn(() => ({
     create: vi.fn().mockResolvedValue({ id: "g1", title: "Launch", projects: [], projectIds: [] }),
+    assertParentsValid: vi.fn().mockResolvedValue(undefined),
+    setGoalParents: vi.fn().mockResolvedValue(undefined),
   })),
 }));
 
@@ -582,26 +584,37 @@ describe("threadService.assignScopeItems — phase advance", () => {
 // ── Task 6: promoteToGoal ─────────────────────────────────────────────────────
 
 describe("threadService.promoteToGoal", () => {
-  it("creates a goal, links it on the thread", async () => {
+  it("creates a company-wide goal, links it on the thread", async () => {
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
-      // goalService.create does its own queries via the mock — returns { id: "g1" }
-      // but the goal mock returns g1 without consuming from our queue
-      // After create: update discussions.goalId
-      [],
-      // attachProjects: select from projectGoals (called in goalService.create)
+      // goalService.create + setGoalParents are mocked; the only direct db write
+      // is the discussions.goalId update.
       [],
     ]);
     const res = await threadService(db).promoteToGoal(
       "co1",
       "t1",
-      { projectIds: ["p1"], level: "company" },
+      { scope: { mode: "company", projectIds: [] } },
       { userId: "u1", role: "founder", isHuman: true },
     );
     expect(res.goalId).toBe("g1");
     expect(publishLiveEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "thread.scope.changed" }),
     );
+  });
+
+  it("creates a scoped sub-goal with a parent", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+      [],
+    ]);
+    const res = await threadService(db).promoteToGoal(
+      "co1",
+      "t1",
+      { scope: { mode: "specific", projectIds: ["p1"] }, parentIds: ["g-parent"] },
+      { userId: "u1", role: "founder", isHuman: true },
+    );
+    expect(res.goalId).toBe("g1");
   });
 
   it("rejects if thread already has a goal", async () => {
@@ -612,22 +625,24 @@ describe("threadService.promoteToGoal", () => {
       threadService(db).promoteToGoal(
         "co1",
         "t1",
-        { projectIds: ["p1"], level: "company" },
+        { scope: { mode: "specific", projectIds: ["p1"] } },
         { userId: "u1", role: "founder", isHuman: true },
       ),
     ).rejects.toThrow(/already has a goal/i);
   });
 
-  it("rejects with no projectIds", async () => {
-    const db = createSequenceDb([]);
+  it("rejects a scoped goal with no projects", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+    ]);
     await expect(
       threadService(db).promoteToGoal(
         "co1",
         "t1",
-        { projectIds: [], level: "company" },
+        { scope: { mode: "specific", projectIds: [] } },
         { userId: "u1", role: "founder", isHuman: true },
       ),
-    ).rejects.toThrow(/at least one project/i);
+    ).rejects.toThrow(/at least one/i);
   });
 });
 

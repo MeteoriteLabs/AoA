@@ -860,13 +860,14 @@ export function threadService(db: Db) {
     promoteToGoal: async (
       companyId: string,
       id: string,
-      goalInput: { projectIds: string[]; level: string; parentId?: string },
+      goalInput: {
+        parentIds?: string[];
+        scope?: { mode: "company" | "specific"; projectIds: string[] };
+        // Legacy (pre-B4 callers): top-level projectIds; `level` is ignored.
+        projectIds?: string[];
+      },
       actor: Actor,
     ) => {
-      if (goalInput.projectIds.length < 1) {
-        throw badRequest("A goal needs at least one project");
-      }
-
       const thread = await db
         .select()
         .from(discussions)
@@ -878,12 +879,29 @@ export function threadService(db: Db) {
 
       if (thread.goalId) throw badRequest("Thread already has a goal");
 
+      // Normalize scope: an explicit `scope` wins; else derive from legacy projectIds.
+      const scope = goalInput.scope ?? {
+        mode:
+          (goalInput.projectIds?.length ?? 0) > 0
+            ? ("specific" as const)
+            : ("company" as const),
+        projectIds: goalInput.projectIds ?? [],
+      };
+      if (scope.mode === "specific" && scope.projectIds.length < 1) {
+        throw badRequest("A scoped goal needs at least one department or project");
+      }
+      const parentIds = goalInput.parentIds ?? [];
+
       const gsvc = goalService(db);
+      // D3: validate parent scope before creating, so a failure leaves no orphan goal.
+      await gsvc.assertParentsValid({
+        parentIds,
+        childProjectIds: scope.projectIds,
+      });
+
       const goal = await gsvc.create(companyId, {
         title: thread.title ?? "Untitled goal",
-        level: goalInput.level as "company" | "team" | "personal",
-        parentId: goalInput.parentId ?? null,
-        projectIds: goalInput.projectIds,
+        projectIds: scope.projectIds,
         status: "planned",
       });
 
@@ -891,6 +909,10 @@ export function threadService(db: Db) {
         .update(discussions)
         .set({ goalId: goal.id, updatedAt: new Date() })
         .where(eq(discussions.id, id));
+
+      if (parentIds.length > 0) {
+        await gsvc.setGoalParents(goal.id, parentIds);
+      }
 
       await logActivity(db, {
         companyId,
