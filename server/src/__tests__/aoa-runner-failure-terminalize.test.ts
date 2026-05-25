@@ -108,7 +108,7 @@ import { runAoaAgent } from "../services/internal-agent/aoa-agents/runner.js";
 // drives the discussionEntries atomic-claim path. select() returns the agent
 // row first (db.select().from(agents)...), then the discussionId resolution
 // row (db.select({discussionId}).from(discussionEntries)...).
-function makeDb(opts: { claim: boolean }) {
+function makeDb(opts: { claim: boolean; entryStatusAfterExecute?: string }) {
   const agentRow = {
     id: "a-1",
     companyId: "co-1",
@@ -127,10 +127,16 @@ function makeDb(opts: { claim: boolean }) {
       c.from = () => c;
       c.where = () => c;
       c.then = (resolve: (v: unknown[]) => unknown) => {
-        // n===0 → agent row (no projection). Later select() with a projection
-        // arg → discussionId resolution.
+        // n===0 → agent row (no projection). select({discussionId}) →
+        // discussionId resolution (catch terminalizer). select({status}) →
+        // the post-execute silent-failure guard's entry-status check.
         if (proj && "discussionId" in proj) {
           return Promise.resolve([{ discussionId: "disc-1" }]).then(resolve);
+        }
+        if (proj && "status" in proj) {
+          return Promise.resolve([
+            { status: opts.entryStatusAfterExecute ?? "completed" },
+          ]).then(resolve);
         }
         return Promise.resolve([agentRow]).then(resolve);
       };
@@ -244,6 +250,50 @@ describe("FX1/B1: failed extraction run terminalizes its claimed entry", () => {
       JSON.stringify(s).includes("notification"),
     );
     expect(anyNotif).toBe(false);
+  });
+
+  it("claimed entry + adapter succeeds but never submitted (entry still 'processing') → terminalized failed (silent-failure guard)", async () => {
+    // adapter.execute RESOLVES (default), but the agent never called
+    // submit_extracted_items, so the claimed entry is still 'processing' after
+    // execute returns. The silent-failure guard must throw → the catch
+    // terminalizes the entry + run 'failed' instead of leaving it stuck.
+    const db = makeDb({ claim: true, entryStatusAfterExecute: "processing" });
+
+    await expect(
+      runAoaAgent(db as any, "a-1", {
+        companyId: "co-1",
+        source: "discussion_entry_pending",
+        entryId: "e-1",
+      }),
+    ).resolves.toBeUndefined();
+
+    // Run terminalized → failed (not 'completed' — it produced nothing).
+    const runFail = db._sets.find(
+      (s: any) => s.set?.status === "failed" && "errorMessage" in (s.set ?? {}),
+    );
+    expect(runFail).toBeDefined();
+    const runCompleted = db._sets.find(
+      (s: any) => s.set?.status === "completed",
+    );
+    expect(runCompleted).toBeUndefined();
+
+    // Entry terminalized → failed + sourceInfo.extractionError.
+    const entryFail = db._sets.find(
+      (s: any) =>
+        s.set?.extractionStatus === "failed" && "sourceInfo" in (s.set ?? {}),
+    );
+    expect(entryFail).toBeDefined();
+
+    // LiveEvent with the silent-failure error message.
+    expect(publishLiveEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "discussion.extraction.failed",
+        payload: expect.objectContaining({
+          entryId: "e-1",
+          error: "extraction agent run completed without submitting results",
+        }),
+      }),
+    );
   });
 
   it("not-claimable path (claim returns empty) → entry NOT terminalized, no failed LiveEvent", async () => {

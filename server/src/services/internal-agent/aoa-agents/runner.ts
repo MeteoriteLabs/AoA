@@ -149,6 +149,28 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       authToken: undefined, onSpawn: () => {},
     });
 
+    // Silent-failure guard: a CLI agent can finish its run WITHOUT calling
+    // submit_extracted_items (codex/opencode have no MCP-bridge wiring yet — see
+    // buildMcpConfig/--mcp-config above, claude-only; the claude CLI submit
+    // handshake can also hang). The adapter then returns "successfully" but the
+    // claimed entry is never terminalized → stuck 'processing' forever (silent
+    // loss). If we claimed an entry and it is STILL 'processing' after execute
+    // returned, the agent did not submit — throw so the catch terminalizer below
+    // marks both the entry and the run 'failed' with a clear error instead of
+    // leaving it silently stuck.
+    if (claimedEntryId) {
+      const stillProcessing = await db
+        .select({ status: discussionEntries.extractionStatus })
+        .from(discussionEntries)
+        .where(eq(discussionEntries.id, claimedEntryId))
+        .then((r: Array<{ status: string }>) => r[0]?.status === "processing");
+      if (stillProcessing) {
+        throw new Error(
+          "extraction agent run completed without submitting results",
+        );
+      }
+    }
+
     if (runId) {
       await db.update(internalAgentRuns)
         .set({ status: "completed", durationMs: Date.now() - startedAt, completedAt: new Date() })
