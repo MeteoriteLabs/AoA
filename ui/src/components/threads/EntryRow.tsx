@@ -110,6 +110,8 @@ export function EntryRow({
 }: EntryRowProps) {
   const [expanded, setExpanded] = useState(false);
 
+  const isSystemNotice = (entry.sourceInfo as Record<string, unknown> | null)?.systemNotice === true;
+
   const SourceIcon = SOURCE_ICONS[entry.inputType] ?? MessageSquare;
   const sourceLabel = SOURCE_LABELS[entry.inputType] ?? entry.inputType;
   const itemCount = entry.extractedItems.length;
@@ -134,6 +136,86 @@ export function EntryRow({
       extractionError.toLowerCase().includes("provider")
     : false;
 
+  /* ─── System notice variant (flat, no collapse, no Reply) ─── */
+  if (isSystemNotice) {
+    return (
+      <div
+        className={cn(
+          "rounded-lg border bg-blue-50/50 dark:bg-blue-950/20 border-blue-200/50 dark:border-blue-800/30",
+          indentLevel > 0 && "ml-6 border-l-2 border-l-muted-foreground/20 rounded-l-none",
+        )}
+        data-testid="entry-system-notice"
+        data-entry-id={`entry-row-${entry.id}`}
+      >
+        {/* Header row (no toggle button) */}
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          {/* Author identity */}
+          {isAgent && entry.authorAgentAvatar ? (
+            <img
+              src={entry.authorAgentAvatar}
+              alt=""
+              className="h-5 w-5 rounded-full object-cover shrink-0"
+              aria-hidden
+            />
+          ) : (
+            <span
+              className={cn(
+                "inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold shrink-0",
+                isAgent
+                  ? "bg-primary/15 text-primary"
+                  : "bg-muted text-muted-foreground",
+              )}
+              title={isAgent ? (entry.authorAgentName ?? "Agent") : entry.createdBy}
+              aria-hidden
+            >
+              {displayInitials}
+            </span>
+          )}
+          <span className="text-xs font-medium text-foreground shrink-0">{displayName}</span>
+          <SourceIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">{sourceLabel}</span>
+          <span className="text-xs text-muted-foreground">{relativeTime(entry.createdAt)}</span>
+          {/* System notice badge */}
+          <span className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/30 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300 shrink-0">
+            System notice
+          </span>
+          {itemCount > 0 && (
+            <span className="text-[10px] text-muted-foreground ml-auto">
+              {pendingCount > 0 ? `${pendingCount} pending / ` : ""}
+              {itemCount} items
+            </span>
+          )}
+        </div>
+
+        {/* Always-visible content */}
+        <div className="px-3 pb-3 space-y-3 border-t border-blue-200/50 dark:border-blue-800/30 pt-3">
+          <div className="rounded-md bg-blue-50/80 dark:bg-blue-950/30 p-3">
+            <p className="text-xs whitespace-pre-wrap text-muted-foreground leading-relaxed">
+              {entry.rawContent}
+            </p>
+          </div>
+
+          {/* Action buttons (Reprocess only — no Reply) */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onReprocess}
+              disabled={isReprocessing || entry.extractionStatus === "processing"}
+              className="text-xs"
+            >
+              <RefreshCw
+                className={cn("h-3.5 w-3.5 mr-1", isReprocessing && "animate-spin")}
+              />
+              Reprocess
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ─── Standard collapsible variant ─── */
   return (
     <div
       className={cn(

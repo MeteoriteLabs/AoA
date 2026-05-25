@@ -77,3 +77,61 @@ describe("EntryRow — agent authorship", () => {
     expect(screen.queryByRole("button", { name: /annotate/i })).not.toBeInTheDocument();
   });
 });
+
+describe("EntryRow — system notices", () => {
+  function makeSystemNoticeEntry(overrides: Partial<DiscussionEntry> = {}): DiscussionEntry {
+    return makeEntry({
+      sourceInfo: { systemNotice: true },
+      rawContent: "This is a system notice message.",
+      ...overrides,
+    });
+  }
+
+  it("renders with data-testid entry-system-notice when sourceInfo.systemNotice is true", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeSystemNoticeEntry()}
+        onReprocess={vi.fn()}
+        onReply={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("entry-system-notice")).toBeInTheDocument();
+  });
+
+  it("does not render a Reply button for system notices", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeSystemNoticeEntry()}
+        onReprocess={vi.fn()}
+        onReply={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /reply/i })).not.toBeInTheDocument();
+  });
+
+  it("renders the content without a collapse toggle for system notices", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeSystemNoticeEntry({ rawContent: "System-level event occurred." })}
+        onReprocess={vi.fn()}
+        onReply={vi.fn()}
+      />,
+    );
+    // Content is always visible — no toggle button needed
+    expect(screen.getByText("System-level event occurred.")).toBeInTheDocument();
+    // No aria-expanded toggle button should be present
+    expect(screen.queryByRole("button", { expanded: false })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { expanded: true })).not.toBeInTheDocument();
+  });
+
+  it("renders a System notice label", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeSystemNoticeEntry()}
+        onReprocess={vi.fn()}
+        onReply={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("System notice")).toBeInTheDocument();
+  });
+});
