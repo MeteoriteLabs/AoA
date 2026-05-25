@@ -111,6 +111,27 @@ vi.mock("@armyofagents/db", () => ({
   activityLog: {
     id: "al_id",
   },
+  companyMemberships: {
+    id: "cm_id",
+    companyId: "cm_company_id",
+    principalType: "cm_principal_type",
+    principalId: "cm_principal_id",
+  },
+  scopeItemDependencies: {
+    id: "sid_id",
+    blockerItemId: "sid_blocker",
+    blockedItemId: "sid_blocked",
+  },
+  taskDependencies: {
+    id: "td_id",
+    companyId: "td_company_id",
+    dependentIssueId: "td_dependent",
+    dependencyIssueId: "td_dependency",
+  },
+  agents: { id: "a_id", companyId: "a_company_id", name: "a_name", kind: "a_kind" },
+  authUsers: { id: "au_id", name: "au_name" },
+  agentWakeupRequests: { id: "awr_id" },
+  notifications: { id: "n_id" },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -366,23 +387,28 @@ describe("threadService.updateSummary", () => {
 // ── Task 5: claim ─────────────────────────────────────────────────────────────
 
 describe("threadService.claim", () => {
-  it("claim sets owner only when unclaimed", async () => {
+  it("claim sets owner only when unclaimed (team_lead with scope can view+claim)", async () => {
+    // Fix 1: an unclaimed thread is only viewable by founder or team_lead-with-scope.
+    // A team_lead with scope access (null scope → globally accessible) passes assertCanView.
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "open", scopeType: null, scopeId: null }],
+      [], // assertCanView: participants query (team_lead; null-scope → hasScopeAccess → visible)
       [], // update discussions
       [], // participant insert
     ]);
     const res = await threadService(db).claim("co1", "t1", {
       userId: "u1",
-      role: "team_member",
+      role: "team_lead",
       isHuman: true,
     });
     expect(res.ownerUserId).toBe("u1");
   });
 
   it("does not change owner when thread is already owned", async () => {
+    // Already-owned + open + null scope → viewable by a team_member (hasScopeAccess).
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }],
+      [], // assertCanView: participants query (non-founder; open+null-scope → visible)
     ]);
     const res = await threadService(db).claim("co1", "t1", {
       userId: "u1",
@@ -392,16 +418,36 @@ describe("threadService.claim", () => {
     expect(res.ownerUserId).toBe("u9"); // unchanged
   });
 
-  it("agents cannot claim", async () => {
+  it("agents cannot claim — blocked at the view gate on an unclaimed thread (Fix 1)", async () => {
+    // Agents resolve to role=team_member, and an unclaimed thread is not viewable
+    // by a team_member, so assertCanView throws notFound before resolveOwnerOnAction
+    // (which would also refuse the agent). Agents can never become owners.
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "open", scopeType: null, scopeId: null }],
+      [], // assertCanView: participants query → team_member on unclaimed → notFound
     ]);
-    const res = await threadService(db).claim("co1", "t1", {
-      userId: "agent1",
-      role: "team_member",
-      isHuman: false,
-    });
-    expect(res.ownerUserId).toBeNull(); // unchanged
+    await expect(
+      threadService(db).claim("co1", "t1", {
+        userId: "agent1",
+        role: "team_member",
+        isHuman: false,
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it("throws notFound when a team_member cannot view a private unclaimed thread (Fix 1)", async () => {
+    const db = createSequenceDb([
+      // private + owner null → only founder/lead-with-scope can view; team_member cannot
+      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "private", scopeType: null, scopeId: null }],
+      [], // assertCanView: participants query → not a participant → notFound
+    ]);
+    await expect(
+      threadService(db).claim("co1", "t1", {
+        userId: "u1",
+        role: "team_member",
+        isHuman: true,
+      }),
+    ).rejects.toThrow(/not found/i);
   });
 });
 
@@ -411,6 +457,7 @@ describe("threadService.transferOwnership", () => {
   it("transfers ownership and demotes previous owner", async () => {
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "cm1" }], // Fix 3: recipient membership lookup (u2 is a member)
       [], // update participants (demote)
       [], // update discussions
       [], // insert new owner participant
@@ -424,6 +471,20 @@ describe("threadService.transferOwnership", () => {
     expect(publishLiveEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "thread.participant.changed" }),
     );
+  });
+
+  it("throws notFound when recipient is not a company member (Fix 3)", async () => {
+    const db = createSequenceDb([
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [], // Fix 3: recipient membership lookup → no rows → notFound
+    ]);
+    await expect(
+      threadService(db).transferOwnership("co1", "t1", "stranger", {
+        userId: "u1",
+        role: "founder",
+        isHuman: true,
+      }),
+    ).rejects.toThrow(/not found/i);
   });
 
   it("non-owner non-founder gets notFound", async () => {
@@ -446,6 +507,7 @@ describe("threadService.transferOwnership — existing participant", () => {
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }], // thread
       // assertCanEdit: actor is founder → returns immediately (no participant query consumed)
+      [{ id: "cm1" }], // Fix 3: recipient membership lookup (u2 is a member)
       [], // demote old owner participant update
       [], // update discussions.ownerUserId
       [], // upsert participant (co_owner → owner via onConflictDoUpdate)
@@ -464,6 +526,7 @@ describe("threadService.transferOwnership — existing participant", () => {
       [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }], // thread
       // assertCanEdit: not founder, not ownerUserId → queries threadParticipants → co_owner → passes
       [{ role: "co_owner" }],
+      [{ id: "cm1" }], // Fix 3: recipient membership lookup (u2 is a member)
       [], // demote old owner participant update
       [], // update discussions.ownerUserId
       [], // upsert participant

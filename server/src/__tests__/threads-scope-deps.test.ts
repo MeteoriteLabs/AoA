@@ -137,11 +137,13 @@ describe("threadService.addScopeItemDependency", () => {
       visibility: "open", scopeType: null, scopeId: null,
     };
     const blockerItem = { id: "item-a" };
-    // Queue: [thread lookup, blockerItem lookup]
+    const blockedItem = { id: "item-b" };
+    // Queue: [thread lookup, blockerItem lookup, blockedItem lookup]
     // Founder bypasses all RBAC DB lookups (assertCanView/assertCanEdit return immediately)
     const queues: any[][] = [
       [thread],       // getById (discussions)
       [blockerItem],  // blocker item validation (with innerJoin guard)
+      [blockedItem],  // Fix 4: blocked item validation (with innerJoin guard)
     ];
     let qi = 0;
     const insertValues = vi.fn().mockResolvedValue(undefined);
@@ -174,6 +176,45 @@ describe("threadService.addScopeItemDependency", () => {
     expect(valuesCall).toHaveBeenCalledWith(
       expect.objectContaining({ blockerItemId: "item-a", blockedItemId: "item-b" }),
     );
+  });
+
+  it("throws notFound when blockedItemId is not in this thread (Fix 4)", async () => {
+    const thread = {
+      id: "t1", companyId: "co1", ownerUserId: "u1",
+      visibility: "open", scopeType: null, scopeId: null,
+    };
+    const blockerItem = { id: "item-a" };
+    // blockedItem belongs to a different thread → join returns no rows
+    const queues: any[][] = [
+      [thread],       // getById (discussions)
+      [blockerItem],  // blocker item validation passes
+      [],             // Fix 4: blocked item validation → no rows (foreign thread)
+    ];
+    let qi = 0;
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        then: vi.fn((fn: any) => Promise.resolve(fn(queues[qi++] ?? []))),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
+    } as any;
+
+    const svc = threadService(db);
+    await expect(
+      svc.addScopeItemDependency(
+        "co1", "t1",
+        { blockerItemId: "item-a", blockedItemId: "item-foreign" },
+        founder,
+      ),
+    ).rejects.toThrow(/not found/i);
+    // Must not insert when validation fails
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });
 

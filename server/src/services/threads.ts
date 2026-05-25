@@ -639,6 +639,7 @@ export function threadService(db: Db) {
         .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
 
       const newOwner = resolveOwnerOnAction(
         { ownerUserId: thread.ownerUserId ?? null },
@@ -702,6 +703,22 @@ export function threadService(db: Db) {
 
       // Codex #5: owner | co_owner | founder may transfer. assertCanEdit enforces this.
       await assertCanEdit(thread, actor);
+
+      // Validate the recipient is an active member of this company before
+      // writing ownerUserId — prevents a dangling owner pointing at a
+      // non-member user id. Mirrors the membership join in processMentions.
+      const recipient = await db
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, toUserId),
+          ),
+        )
+        .limit(1);
+      if (recipient.length === 0) throw notFound("Thread not found");
 
       // Demote previous owner to collaborator
       if (thread.ownerUserId) {
@@ -1245,6 +1262,20 @@ export function threadService(db: Db) {
         .where(eq(discussionExtractedItems.id, dep.blockerItemId))
         .then((rows) => rows[0] ?? null);
       if (!blockerItem) throw notFound("Blocker item not found in this thread");
+
+      // Validate that blockedItemId belongs to this same discussion (via entry join).
+      // Without this, an actor with edit rights could point blockedItemId at a
+      // scope item from a different thread.
+      const blockedItem = await db
+        .select({ id: discussionExtractedItems.id })
+        .from(discussionExtractedItems)
+        .innerJoin(discussionEntries, and(
+          eq(discussionEntries.id, discussionExtractedItems.discussionEntryId),
+          eq(discussionEntries.discussionId, threadId),
+        ))
+        .where(eq(discussionExtractedItems.id, dep.blockedItemId))
+        .then((rows) => rows[0] ?? null);
+      if (!blockedItem) throw notFound("Blocked item not found in this thread");
 
       await db.insert(scopeItemDependencies).values({
         blockerItemId: dep.blockerItemId,
