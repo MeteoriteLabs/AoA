@@ -662,6 +662,81 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // T.7 Scope tab read model: summary + plan + grouped items + router recommendation.
+  router.get(
+    "/companies/:companyId/discussions/:discussionId/scope",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+      try {
+        const detail = await svc.getById(companyId, discussionId);
+        if (!detail) { res.status(404).json({ error: "Discussion not found" }); return; }
+        const planSteps = await tSvc.getPlanSteps(companyId, discussionId, actor);
+        const items = (detail.entries ?? []).flatMap(
+          (e: { extractedItems?: unknown[] }) => e.extractedItems ?? [],
+        );
+        const { recommendDepartment } = await import(
+          "../services/internal-agent/aoa-agents/router-recommendation.js"
+        );
+        const { projects } = await import("@armyofagents/db");
+        const { eq: dEq, and: dAnd } = await import("drizzle-orm");
+        let departments: Array<{ id: string; name: string }> = [];
+        try {
+          departments = await db
+            .select({ id: projects.id, name: projects.name })
+            .from(projects)
+            .where(dAnd(dEq(projects.companyId, companyId), dEq(projects.type, "department")));
+        } catch {
+          // fallback: recommendation runs with empty department list
+        }
+        const recommendation = recommendDepartment(items as never[], departments);
+        res.json({
+          summaryText: (detail as any).summaryText ?? null,
+          summaryNext: (detail as any).summaryNext ?? null,
+          planSteps,
+          items,
+          recommendation,
+        });
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  // T.8 Edit the living Plan (owner | co_owner | founder — service-gated).
+  const planBodySchema = z.object({
+    steps: z.array(z.object({
+      title: z.string().min(1),
+      linkedItemId: z.string().uuid().nullable().optional(),
+      collapsed: z.boolean().optional(),
+    })),
+  });
+
+  router.put(
+    "/companies/:companyId/discussions/:discussionId/scope/plan",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+      const parsed = planBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid request" });
+        return;
+      }
+      try {
+        const result = await tSvc.updatePlanSteps(companyId, discussionId, parsed.data.steps, actor);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
   // Plan 3 Task 8: thread-level crew kill-switch.
   // POST /companies/:companyId/discussions/:discussionId/crew/pause
   // POST /companies/:companyId/discussions/:discussionId/crew/resume
