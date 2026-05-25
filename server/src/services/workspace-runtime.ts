@@ -1549,6 +1549,10 @@ function isPreviewHealthCheckStale(
   return now.getTime() - checkedAt >= ttlMs;
 }
 
+function isRuntimeServiceHealthRefreshActive(row: WorkspaceRuntimeServiceRow): boolean {
+  return row.status === "starting" || row.status === "running";
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -1600,6 +1604,7 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
     maxConcurrency,
     async (row) => {
       if (!isAdapterManagedPreviewRuntimeServiceRow(row) || !row.url) return row;
+      if (!isRuntimeServiceHealthRefreshActive(row)) return row;
       if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
 
       const reachable = await probePreviewUrlDeduped({
@@ -1659,6 +1664,7 @@ export async function refreshLocalProcessRuntimeServiceRows(input: {
     maxConcurrency,
     async (row) => {
       if (row.provider !== "local_process" || !row.url) return row;
+      if (!isRuntimeServiceHealthRefreshActive(row)) return row;
       if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
 
       const reachable = await probePreviewUrlDeduped({

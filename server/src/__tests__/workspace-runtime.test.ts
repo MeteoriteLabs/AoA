@@ -1467,8 +1467,9 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
     ]);
   });
 
-  it("marks reachable adapter-managed previews running and healthy", async () => {
+  it("does not resurrect stopped adapter-managed previews even when the URL is reachable", async () => {
     const now = new Date("2026-05-16T10:00:00.000Z");
+    let probes = 0;
     const stoppedRow = {
       ...baseRow,
       status: "stopped",
@@ -1478,6 +1479,29 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
 
     const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
       rows: [stoppedRow as any],
+      now,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(stoppedRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("marks reachable starting adapter-managed previews running and healthy", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+    const startingRow = {
+      ...baseRow,
+      status: "starting",
+      healthStatus: "unknown",
+      stoppedAt: null,
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [startingRow as any],
       now,
       probeUrl: async () => true,
     });
@@ -1639,6 +1663,30 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
       healthCheckedAt: now,
       updatedAt: now,
     });
+  });
+
+  it("does not resurrect stopped local-process services even when the URL is reachable", async () => {
+    let probes = 0;
+    const stoppedRow = {
+      ...baseRow,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: new Date("2026-05-16T09:00:00.000Z"),
+      healthCheckedAt: new Date("2026-05-16T09:00:00.000Z"),
+    };
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [stoppedRow as any],
+      now: new Date("2026-05-17T10:00:00.000Z"),
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(stoppedRow);
+    expect(result.updates).toEqual([]);
   });
 
   it("probes stale local-process URLs even when the process is still registered in memory", async () => {
