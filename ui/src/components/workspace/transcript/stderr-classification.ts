@@ -17,6 +17,7 @@ export function classifyStderr(text: string): StderrSeverity {
   if (
     normalized.startsWith("[aoa] copied shared codex auth.json") ||
     normalized.startsWith("[aoa] loaded agent instructions") ||
+    normalized.startsWith("[aoa] app preview detection") ||
     normalized.includes("codex_core::shell_snapshot") ||
     normalized.includes("codex_core_plugins::manifest: ignoring interface.") ||
     normalized.includes("codex_core_skills::loader: ignoring interface.") ||

@@ -106,9 +106,12 @@ import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
   resetRuntimeServicesForTests,
+  resolveConfiguredRuntimeServiceIndexForRow,
   resolveShell,
+  startRuntimeServicesForWorkspaceControl,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   restartDesiredRuntimeServicesOnStartup,
+  stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
 } from "../services/workspace-runtime.js";
 import {
@@ -326,6 +329,86 @@ describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
     });
     expect(patch.serviceStates).toEqual({ "0": "stopped", "1": "stopped" });
     expect(patch.desiredState).toBe("stopped");
+  });
+});
+
+describe("runtime service row targeting", () => {
+  it("resolves a persisted runtime service row to the matching configured service index", () => {
+    const services = [
+      { name: "api", command: "pnpm dev:api", cwd: "apps/api" },
+      { name: "web", command: "pnpm dev", cwd: "apps/web" },
+    ];
+    const row = makeRuntimeRow({
+      serviceName: "web",
+      command: "pnpm dev",
+      cwd: "/repo/apps/web",
+    });
+
+    expect(resolveConfiguredRuntimeServiceIndexForRow({
+      services,
+      row,
+      workspaceCwd: "/repo",
+    })).toBe(1);
+  });
+
+  it("returns null when a persisted runtime service row maps ambiguously", () => {
+    const services = [
+      { name: "web", command: "pnpm dev" },
+      { name: "web", command: "pnpm dev" },
+    ];
+    const row = makeRuntimeRow({
+      serviceName: "web",
+      command: "pnpm dev",
+      cwd: null,
+    });
+
+    expect(resolveConfiguredRuntimeServiceIndexForRow({
+      services,
+      row,
+      workspaceCwd: "/repo",
+    })).toBeNull();
+  });
+});
+
+describe("startRuntimeServicesForWorkspaceControl", () => {
+  it("does not persist a fake startedByRunId for manual runtime service starts", async () => {
+    const refs = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(),
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-root-1",
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        cwd: process.cwd(),
+        branchName: null,
+        worktreePath: null,
+        warnings: [],
+        created: false,
+      },
+      executionWorkspaceId: "workspace-1",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"require('http').createServer((_,r)=>r.end('ok')).listen(process.env.PORT, '127.0.0.1')\"",
+              port: { type: "auto" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(refs[0]?.startedByRunId).toBeNull();
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "workspace-1",
+      workspaceCwd: process.cwd(),
+    });
   });
 });
 

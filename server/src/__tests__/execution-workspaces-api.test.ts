@@ -105,7 +105,7 @@ function createSequenceDb(selectQueue: any[][]) {
 
 // ── Import the service under test ─────────────────────────────────────────────
 
-import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { executionWorkspaceService, toWorkspaceRuntimeService } from "../services/execution-workspaces.js";
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -222,5 +222,46 @@ describe("executionWorkspaceService", () => {
       expect(results[0]!.status).toBe("active");
       expect(results[1]!.status).toBe("idle");
     });
+  });
+});
+
+describe("toWorkspaceRuntimeService", () => {
+  it("builds preview URLs for healthy project-scoped runtime services", () => {
+    const now = new Date("2026-05-25T10:00:00.000Z");
+
+    const service = toWorkspaceRuntimeService({
+      id: "svc-project-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      scopeType: "project_workspace",
+      scopeId: "project-workspace-1",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      reuseKey: "project-workspace-1:web",
+      command: "pnpm dev",
+      cwd: "/repo",
+      port: 5173,
+      url: "http://127.0.0.1:5173",
+      provider: "local_process",
+      providerRef: "12345",
+      ownerAgentId: null,
+      startedByRunId: null,
+      lastUsedAt: now,
+      startedAt: now,
+      stoppedAt: null,
+      stopPolicy: null,
+      healthStatus: "healthy",
+      healthCheckedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    expect(service.previewUrl).toBe("/preview/services/svc-project-1/");
+    expect(service.previewAccess).toBe("local");
+    expect(service.localTargetUrl).toBe("http://127.0.0.1:5173/");
   });
 });

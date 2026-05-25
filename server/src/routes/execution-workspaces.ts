@@ -14,6 +14,7 @@ import {
   mergeExecutionWorkspaceConfig,
   mergeExecutionWorkspaceMetadataPatch,
   readExecutionWorkspaceConfig,
+  toWorkspaceRuntimeService,
 } from "../services/execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -21,7 +22,8 @@ import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
-  refreshPersistedAdapterManagedPreviewRuntimeServices,
+  refreshPersistedRuntimeServiceRows,
+  resolveConfiguredRuntimeServiceIndexForRow,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
@@ -267,11 +269,11 @@ export function executionWorkspaceRoutes(db: Db) {
           eq(workspaceRuntimeServices.executionWorkspaceId, id),
         ),
       );
-    const refreshedServices = await refreshPersistedAdapterManagedPreviewRuntimeServices({
+    const refreshedServices = await refreshPersistedRuntimeServiceRows({
       db,
       rows: services,
     });
-    res.json(refreshedServices);
+    res.json(refreshedServices.map(toWorkspaceRuntimeService));
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
@@ -382,11 +384,32 @@ export function executionWorkspaceRoutes(db: Db) {
 
     const selectedRuntimeServiceId = target.runtimeServiceId ?? null;
     const selectedServiceIndex = target.serviceIndex ?? null;
+    const selectedRuntimeService = selectedRuntimeServiceId
+      ? effectiveRuntimeServices.find((service) => service.id === selectedRuntimeServiceId) ?? null
+      : null;
+    const resolvedServiceIndex =
+      selectedServiceIndex ??
+      (selectedRuntimeService
+        ? resolveConfiguredRuntimeServiceIndexForRow({
+            services: configuredServices,
+            row: selectedRuntimeService,
+            workspaceCwd,
+          })
+        : null);
     if (
       selectedServiceIndex !== null
       && (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
     ) {
       res.status(422).json({ error: "Selected runtime service is not defined in this execution workspace runtime config" });
+      return;
+    }
+
+    if (
+      selectedRuntimeServiceId
+      && (action === "start" || action === "restart")
+      && resolvedServiceIndex === null
+    ) {
+      res.status(422).json({ error: "Selected runtime service cannot be mapped to a configured service" });
       return;
     }
 
@@ -460,7 +483,7 @@ export function executionWorkspaceRoutes(db: Db) {
           config: { workspaceRuntime: effectiveRuntimeConfig },
           adapterEnv: {},
           onLog,
-          serviceIndex: selectedServiceIndex,
+          serviceIndex: resolvedServiceIndex,
         });
         runtimeServiceCount = startedServices.length;
       } else {
@@ -472,7 +495,7 @@ export function executionWorkspaceRoutes(db: Db) {
         ?? (effectiveRuntimeServices.some((service) => service.status === "starting" || service.status === "running")
           ? "running"
           : "stopped");
-      const nextRuntimeState = selectedRuntimeServiceId && selectedServiceIndex === null
+      const nextRuntimeState = action === "stop" && selectedRuntimeServiceId && resolvedServiceIndex === null
         ? {
             desiredState: currentDesiredState,
             serviceStates: existing.config?.serviceStates ?? null,
@@ -482,7 +505,7 @@ export function executionWorkspaceRoutes(db: Db) {
             currentDesiredState,
             currentServiceStates: existing.config?.serviceStates ?? null,
             action: action as "start" | "stop" | "restart",
-            serviceIndex: selectedServiceIndex,
+            serviceIndex: resolvedServiceIndex,
           });
       const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
         desiredState: nextRuntimeState.desiredState,
@@ -517,7 +540,7 @@ export function executionWorkspaceRoutes(db: Db) {
       details: {
         runtimeServiceCount,
         runtimeServiceId: selectedRuntimeServiceId,
-        serviceIndex: selectedServiceIndex,
+        serviceIndex: resolvedServiceIndex,
       },
     });
 

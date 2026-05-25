@@ -56,9 +56,16 @@ const mockInstanceSettings = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 const mockStopRuntimeServices = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockBuildWorkspaceRuntimeDesiredStatePatch = vi.hoisted(() =>
+  vi.fn().mockReturnValue({ desiredState: "stopped", serviceStates: null }),
+);
+const mockResolveConfiguredRuntimeServiceIndexForRow = vi.hoisted(() =>
+  vi.fn().mockReturnValue(null),
+);
 const mockCleanupArtifacts = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ cleaned: true, warnings: [] }),
 );
+const mockDbSelectRows = vi.hoisted(() => ({ rows: [] as unknown[] }));
 
 // Capture db.update(...).set(...).where(...) calls for shared-workspace detach assertion
 const mockDbUpdateIssues = vi.hoisted(() => {
@@ -81,11 +88,12 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
-  buildWorkspaceRuntimeDesiredStatePatch: vi.fn().mockReturnValue({ desiredState: "stopped", serviceStates: null }),
+  buildWorkspaceRuntimeDesiredStatePatch: mockBuildWorkspaceRuntimeDesiredStatePatch,
   stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServices,
   ensurePersistedExecutionWorkspaceAvailable: vi.fn(),
   listConfiguredRuntimeServiceEntries: vi.fn().mockReturnValue([]),
-  refreshPersistedAdapterManagedPreviewRuntimeServices: vi.fn(({ rows }) => rows),
+  refreshPersistedRuntimeServiceRows: vi.fn(({ rows }) => rows),
+  resolveConfiguredRuntimeServiceIndexForRow: mockResolveConfiguredRuntimeServiceIndexForRow,
   startRuntimeServicesForWorkspaceControl: vi.fn(),
   cleanupExecutionWorkspaceArtifacts: mockCleanupArtifacts,
 }));
@@ -150,6 +158,41 @@ function buildReadiness(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function buildRuntimeServiceRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date();
+  return {
+    id: "svc-1",
+    companyId: "co-1",
+    projectId: "proj-1",
+    projectWorkspaceId: null,
+    executionWorkspaceId: "ws-1",
+    issueId: null,
+    scopeType: "execution_workspace",
+    scopeId: "ws-1",
+    serviceName: "web",
+    status: "running",
+    lifecycle: "shared",
+    reuseKey: "reuse-1",
+    command: "pnpm dev",
+    cwd: "C:\\repo",
+    port: 5173,
+    url: "http://127.0.0.1:5173",
+    provider: "local_process",
+    providerRef: null,
+    ownerAgentId: null,
+    startedByRunId: null,
+    lastUsedAt: now,
+    startedAt: now,
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "healthy",
+    healthCheckedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function createApp() {
   const db = {
     update: mockDbUpdateIssues.update,
@@ -157,7 +200,7 @@ function createApp() {
       const chain: Record<string, unknown> = {};
       chain.from = () => chain;
       chain.where = () => chain;
-      chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([]));
+      chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(mockDbSelectRows.rows));
       return chain;
     }),
   };
@@ -183,6 +226,7 @@ function createApp() {
 describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDbSelectRows.rows = [];
     mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockSvc.loadEffectiveRuntimeServicesByExecutionWorkspace.mockResolvedValue([]);
     mockStopRuntimeServices.mockResolvedValue(undefined);
@@ -338,11 +382,57 @@ describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
   });
 });
 
+describe("GET /api/execution-workspaces/:id/runtime-services", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbSelectRows.rows = [];
+    mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+  });
+
+  it("returns preview fields for proxyable runtime services", async () => {
+    mockSvc.getById.mockResolvedValue(buildExistingWorkspace());
+    mockDbSelectRows.rows = [buildRuntimeServiceRow()];
+
+    const res = await request(createApp())
+      .get(`/api/execution-workspaces/ws-1/runtime-services`);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toEqual(expect.objectContaining({
+      id: "svc-1",
+      url: "http://127.0.0.1:5173",
+      previewUrl: "/preview/services/svc-1/",
+      previewAccess: "local",
+      localTargetUrl: "http://127.0.0.1:5173/",
+      healthCheckedAt: null,
+    }));
+  });
+
+  it("omits preview URLs for unsafe runtime service targets", async () => {
+    mockSvc.getById.mockResolvedValue(buildExistingWorkspace());
+    mockDbSelectRows.rows = [buildRuntimeServiceRow({
+      url: "https://example.com",
+    })];
+
+    const res = await request(createApp())
+      .get(`/api/execution-workspaces/ws-1/runtime-services`);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toEqual(expect.objectContaining({
+      url: "https://example.com",
+      previewUrl: null,
+      previewAccess: null,
+      localTargetUrl: null,
+    }));
+  });
+});
+
 describe("POST /api/execution-workspaces/:id/runtime-services/stop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockStopRuntimeServices.mockResolvedValue(undefined);
+    mockBuildWorkspaceRuntimeDesiredStatePatch.mockReturnValue({ desiredState: "stopped", serviceStates: null });
+    mockResolveConfiguredRuntimeServiceIndexForRow.mockReturnValue(null);
   });
 
   it("accepts a persisted effective runtime service id instead of relying on getById embedding services", async () => {
@@ -394,6 +484,56 @@ describe("POST /api/execution-workspaces/:id/runtime-services/stop", () => {
     expect(mockStopRuntimeServices).toHaveBeenCalledWith(expect.objectContaining({
       executionWorkspaceId: "ws-1",
       runtimeServiceId,
+    }));
+  });
+
+  it("persists stopped desired state for a mappable configured service id", async () => {
+    const existing = buildExistingWorkspace({
+      cwd: "C:/tmp/ws-1",
+      config: {
+        workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        desiredState: "running",
+        serviceStates: { "0": "running" },
+      },
+      metadata: {
+        config: {
+          workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+          desiredState: "running",
+          serviceStates: { "0": "running" },
+        },
+      },
+    });
+    const runtimeServiceId = "00000000-0000-4000-8000-000000000001";
+    const service = buildRuntimeServiceRow({
+      id: runtimeServiceId,
+      command: "pnpm dev",
+      cwd: "C:/tmp/ws-1",
+    });
+    mockSvc.getById.mockResolvedValue(existing);
+    mockSvc.loadEffectiveRuntimeServicesByExecutionWorkspace.mockResolvedValue([service]);
+    mockResolveConfiguredRuntimeServiceIndexForRow.mockReturnValue(0);
+    mockBuildWorkspaceRuntimeDesiredStatePatch.mockReturnValue({
+      desiredState: "stopped",
+      serviceStates: { "0": "stopped" },
+    });
+    mockSvc.update.mockResolvedValue(existing);
+
+    const res = await request(createApp())
+      .post(`/api/execution-workspaces/ws-1/runtime-services/stop`)
+      .send({ runtimeServiceId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockBuildWorkspaceRuntimeDesiredStatePatch).toHaveBeenCalledWith(expect.objectContaining({
+      action: "stop",
+      serviceIndex: 0,
+    }));
+    expect(mockSvc.update).toHaveBeenCalledWith("ws-1", expect.objectContaining({
+      metadata: expect.objectContaining({
+        config: expect.objectContaining({
+          desiredState: "stopped",
+          serviceStates: { "0": "stopped" },
+        }),
+      }),
     }));
   });
 });

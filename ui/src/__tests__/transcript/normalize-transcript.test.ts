@@ -110,6 +110,42 @@ describe("normalizeTranscript", () => {
     expect(blocks[0]).toMatchObject({ type: "diagnostic_group" });
   });
 
+  it("keeps successful app preview detection summaries out of red stderr", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-01-01T00:00:00Z",
+        text: "[aoa] App preview detection (stream) found 1 candidate URL(s), 1 reachable service(s)",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ type: "diagnostic_group" });
+  });
+
+  it("renders app preview detection system logs as info events", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "system",
+        ts: "2026-01-01T00:00:00Z",
+        text: "[aoa] App preview detection (stream) found 1 candidate URL(s), 1 reachable service(s)",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        type: "event",
+        label: "preview",
+        tone: "info",
+        text: "App preview detection (stream) found 1 candidate URL(s), 1 reachable service(s)",
+      }),
+    ]);
+  });
+
   it("converts init entry to event block", () => {
     const entries: TranscriptEntry[] = [
       { kind: "init", ts: "2026-01-01T00:00:00Z", model: "claude-sonnet", sessionId: "s1" },
