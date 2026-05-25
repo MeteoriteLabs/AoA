@@ -165,13 +165,28 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
   const visibilityMutation = useMutation({
     mutationFn: (visibility: "open" | "private") =>
       threadsApi.setVisibility(companyId, thread.id, visibility),
-    onSuccess: () => {
-      invalidate();
-      pushToast({ title: "Visibility updated", tone: "success" });
+    // Optimistic: flip the badge + toggle instantly so the change is obvious and
+    // visibly reversible (click again). Roll back on error.
+    onMutate: async (next) => {
+      const key = ["threads", companyId, thread.id];
+      await queryClient.cancelQueries({ queryKey: key });
+      const prev = queryClient.getQueryData<ThreadDetail>(key);
+      if (prev) queryClient.setQueryData<ThreadDetail>(key, { ...prev, visibility: next });
+      return { prev };
     },
-    onError: () => {
+    onError: (_err, _next, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(["threads", companyId, thread.id], ctx.prev);
+      }
       pushToast({ title: "Failed to update visibility", tone: "warn" });
     },
+    onSuccess: (_data, next) => {
+      pushToast({
+        title: next === "private" ? "Thread is now private" : "Thread is now open",
+        tone: "success",
+      });
+    },
+    onSettled: () => invalidate(),
   });
 
   function handlePhaseClick(phase: ThreadPhase) {
