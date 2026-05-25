@@ -25,47 +25,9 @@ import {
 } from "../services/internal-agent/tool-registry.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
 import { permissionService } from "../services/permissions.js";
-import type { UserRole } from "@armyofagents/shared";
+import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
+import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT } from "@armyofagents/shared";
-
-// ── Pending Confirmation Store ───────────────────────────────────────────────
-// In-memory Map: confirmId → pending tool execution.
-// Populated when Commander emits a ⚡CONFIRM:...⚡ marker and cleared when the
-// user clicks Confirm or Cancel in the UI. Scoped to the server process;
-// cleared on restart (acceptable — pending confirmations are ephemeral).
-
-interface PendingConfirmation {
-  toolName: string;
-  params: unknown;
-  companyId: string;
-  userId: string;
-  /**
-   * Actor that triggered this confirmation. Currently always "commander".
-   * To add a new actor type (e.g. "mcp" for external MCP-triggered confirmations),
-   * widen this to: actorType: "commander" | "mcp"
-   * TypeScript will surface every callsite that needs updating.
-   */
-  actorType: "commander";
-  expiresAt: number;  // Unix ms — TTL timestamp
-}
-
-const pendingConfirmations = new Map<string, PendingConfirmation>();
-
-export const CONFIRMATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
-
-// Remove stale confirmations from users who closed the tab mid-confirmation.
-// unref() prevents this timer from keeping the process alive during shutdown.
-// _confirmationSweep: retained (not dead code) — unref() prevents the timer from
-// keeping the process alive after server shutdown. The interval callback runs every 5 min.
-const _confirmationSweep = setInterval(() => {
-  const now = Date.now();
-  for (const [id, entry] of pendingConfirmations) {
-    if (entry.expiresAt < now) pendingConfirmations.delete(id);
-  }
-}, 5 * 60 * 1000); // sweep every 5 minutes
-if (typeof (_confirmationSweep as any).unref === "function") {
-  (_confirmationSweep as any).unref();
-}
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -75,10 +37,21 @@ const chatMessageSchema = z.object({
   conversationId: z.string().uuid().optional(),
 });
 
-const confirmActionSchema = z.object({
-  confirmId: z.string().uuid(),
-  approved: z.boolean(),
-});
+const confirmActionSchema = z
+  .object({
+    confirmId: z.string().uuid(),
+    decision: z.enum(["allow_once", "allow_always", "deny"]).optional(),
+    approved: z.boolean().optional(),
+  })
+  .refine((value) => value.decision !== undefined || value.approved !== undefined, {
+    message: "Either decision or approved is required",
+  })
+  .transform((value) => ({
+    confirmId: value.confirmId,
+    decision:
+      value.decision ??
+      (value.approved === true ? "allow_once" : "deny"),
+  }));
 
 const updateConfigSchema = z.object({
   executionMode: z.enum(["api", "cli"]).optional(),
@@ -93,6 +66,9 @@ const updateConfigSchema = z.object({
   proactiveIntervalMinutes: z.number().int().min(30).max(1440).optional(),
   cheapModel: z.string().nullable().optional(),
   crewPaused: z.boolean().optional(),
+  runtimeApprovalsEnabled: z.boolean().optional(),
+  runtimeAllowAlwaysEnabled: z.boolean().optional(),
+  vendorCliBypassEnabled: z.boolean().optional(),
 });
 
 const cancelReminderSchema = z.object({
@@ -269,18 +245,6 @@ export function internalAgentRoutes(db: Db) {
               break;
             case "action_confirmation": {
               const confirmId = chunk.runId;
-              // Store the pending execution so /confirm can re-execute directly.
-              pendingConfirmations.set(confirmId, {
-                toolName: chunk.toolName,
-                params: chunk.params,
-                companyId,
-                userId: actor.actorId,
-                // Permissions are re-fetched fresh at confirm time (see /confirm handler).
-                // Do NOT snapshot userRole or enabledCapabilities here — stale values
-                // must not flow into executeTool. [Codex-P1 fix, commit 0a1c9386]
-                actorType: "commander",
-                expiresAt: Date.now() + CONFIRMATION_TTL_MS,
-              });
               const paramsSummary =
                 chunk.params &&
                 typeof chunk.params === "object" &&
@@ -370,42 +334,38 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      const { confirmId, approved } = req.body as { confirmId: string; approved: boolean };
-
-      const pending = pendingConfirmations.get(confirmId);
-      if (!pending) throw notFound(`No pending confirmation for id: ${confirmId}`);
-      // Treat expired entries the same as missing.
-      if (pending.expiresAt < Date.now()) {
-        pendingConfirmations.delete(confirmId);
-        throw notFound(`Confirmation expired for id: ${confirmId}`);
-      }
-
-      if (pending.companyId !== companyId) {
-        // Defense-in-depth: a confirmId from one company can't be replayed against
-        // another company's endpoint. Treat as not-found to avoid leaking existence.
-        throw notFound(`No pending confirmation for id: ${confirmId}`);
-      }
-
-      // Defense-in-depth: only the user who generated the pending action can
-      // approve or reject it. Prevents same-company actors from approving on
-      // behalf of a different user. Treat as not-found to avoid leaking existence.
-      // Note: today only board/user actors reach this handler; if agent-initiated
-      // confirmations are added, revisit the actorId comparison here.
       const actor = getActorInfo(req);
-      if (pending.userId !== actor.actorId) {
-        throw notFound(`No pending confirmation for id: ${confirmId}`);
-      }
+      const { confirmId, decision } = req.body as {
+        confirmId: string;
+        decision: CommanderRuntimeApprovalDecision;
+      };
+      const approvals = runtimeApprovalService(db);
 
-      pendingConfirmations.delete(confirmId);
-
-      if (!approved) {
-        res.json({ confirmId, result: "rejected", entityType: null, entityId: null });
+      if (decision === "deny") {
+        const denied = await approvals.deny(confirmId, companyId, actor.actorId);
+        if (!denied) throw notFound(`No pending confirmation for id: ${confirmId}`);
+        res.json({
+          confirmId,
+          result: "denied",
+          summary: null,
+          error: null,
+          entityType: null,
+          entityId: null,
+        });
         return;
       }
 
-      // Direct re-execution: bypass Commander's LLM and run the tool with the
-      // exact stored params. Industry-standard pattern.
-      //
+      const claimed = await approvals.claimForExecution(
+        confirmId,
+        companyId,
+        actor.actorId,
+        decision,
+      );
+      if (!claimed) {
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+
+
       // Permissions are re-fetched fresh here — do NOT use pending.userRole or
       // pending.enabledCapabilities. Those were snapshotted at prompt time and
       // may be stale if the user's role or company capabilities changed within
@@ -427,33 +387,67 @@ export function internalAgentRoutes(db: Db) {
         currentUserRole = role ?? "team_member";
       }
 
-      const cfgRowsForConfirm = await db
-        .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+      const [cfgForConfirm] = await db
+        .select({
+          enabledCapabilities: internalAgentConfig.enabledCapabilities,
+          commanderToolPermissions: internalAgentConfig.commanderToolPermissions,
+          runtimeApprovalsEnabled: internalAgentConfig.runtimeApprovalsEnabled,
+          runtimeAllowAlwaysEnabled: internalAgentConfig.runtimeAllowAlwaysEnabled,
+        })
         .from(internalAgentConfig)
         .where(eq(internalAgentConfig.companyId, companyId));
       const currentCapabilities =
-        (cfgRowsForConfirm[0]?.enabledCapabilities as string[] | null) ?? [];
+        (cfgForConfirm?.enabledCapabilities as string[] | null) ?? [];
 
       const tools = createToolRegistry();
-      const tool = tools.find((t) => t.name === pending.toolName);
+      const tool = tools.find((t) => t.name === claimed.toolName);
       if (!tool) {
-        throw notFound(`Tool not found: ${pending.toolName}`);
+        await approvals.markFailed(confirmId, companyId, "TOOL_NOT_FOUND");
+        throw notFound(`Tool not found: ${claimed.toolName}`);
       }
 
       const services = createServiceContainer(db);
       const toolContext = {
-        companyId: pending.companyId,
-        userId: pending.userId,
+        companyId: claimed.companyId,
+        userId: claimed.userId,
         userRole: currentUserRole,           // fresh — not pending.userRole
         enabledCapabilities: currentCapabilities, // fresh — not pending.enabledCapabilities
         agentKind: undefined,
         toolAllowlist: [] as string[],
-        actorType: pending.actorType,
+        actorType: "commander",
+        commanderToolPermissions:
+          (cfgForConfirm?.commanderToolPermissions as CommanderToolPermissions | null | undefined) ?? null,
+        runtimeApprovalsEnabled: cfgForConfirm?.runtimeApprovalsEnabled ?? true,
         db,
         services,
       };
 
-      const result = await executeTool(tool, pending.params, toolContext);
+      const result = await executeTool(tool, claimed.params, toolContext);
+      if (result.success) {
+        if (
+          decision === "allow_always" &&
+          (cfgForConfirm?.runtimeAllowAlwaysEnabled ?? true)
+        ) {
+          await approvals.createTrustRule({
+            companyId,
+            userId: claimed.userId,
+            toolName: claimed.toolName,
+            params: claimed.params as Record<string, unknown>,
+            createdByUserId: actor.actorId,
+          });
+        }
+        await approvals.markExecuted(confirmId, companyId, {
+          summary: result.summary ?? "",
+          entityType: null,
+          entityId: null,
+        });
+      } else {
+        await approvals.markFailed(
+          confirmId,
+          companyId,
+          result.error ?? result.summary ?? "Tool execution failed",
+        );
+      }
 
       res.json({
         confirmId,
@@ -501,6 +495,52 @@ export function internalAgentRoutes(db: Db) {
   );
 
   // ── 2.3 Get Conversation ─────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/tool-trust-rules",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const rules = await runtimeApprovalService(db).listTrustRules(
+        companyId,
+        actor.actorId,
+      );
+
+      res.json({
+        rules: rules.map((rule) => ({
+          id: rule.id,
+          toolName: rule.toolName,
+          scope: rule.scope,
+          paramsHashPrefix: rule.paramsHash.slice(0, 8),
+          paramsHashVersion: rule.paramsHashVersion,
+          lastUsedAt: rule.lastUsedAt,
+          expiresAt: rule.expiresAt,
+          createdAt: rule.createdAt,
+        })),
+      });
+    },
+  );
+
+  router.delete(
+    "/companies/:companyId/internal-agent/tool-trust-rules/:ruleId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const ruleId = req.params.ruleId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const revoked = await runtimeApprovalService(db).revokeTrustRule(
+        ruleId,
+        companyId,
+        actor.actorId,
+      );
+      if (!revoked) throw notFound("Trust rule not found");
+
+      res.json({ success: true });
+    },
+  );
+
   router.get(
     "/companies/:companyId/internal-agent/conversation",
     async (req, res) => {

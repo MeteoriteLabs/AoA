@@ -3,9 +3,17 @@
 // Role + capability gating for Commander tool invocations.
 // See finding C13 in docs/superpowers/specs/2026-05-05-sprint-1-security-fixes-design.md.
 
-import type { AgentCapability, UserRole } from "@armyofagents/shared";
-import { ROLE_RANK } from "@armyofagents/shared";
-import type { AgentTool, ToolCategory } from "./types.js";
+import type {
+  AgentCapability,
+  CommanderToolPermission,
+  CommanderToolPermissions,
+  UserRole,
+} from "@armyofagents/shared";
+import {
+  COMMANDER_TOOL_PERMISSION_DEFAULT,
+  ROLE_RANK,
+} from "@armyofagents/shared";
+import type { AgentTool, ToolCategory, ToolContext } from "./types.js";
 
 /**
  * Maps capabilities (as stored in internal_agent_config.enabledCapabilities)
@@ -24,6 +32,22 @@ export const CAPABILITY_TO_CATEGORY: Partial<Record<AgentCapability, ToolCategor
 export type ToolAuthDecision =
   | { allowed: true }
   | { allowed: false; error: "FORBIDDEN_ROLE" | "CAPABILITY_DISABLED" | "NOT_IN_ALLOWLIST"; summary: string };
+
+export type CommanderToolPolicyDecision =
+  | {
+      allowed: true;
+      enabled: true;
+      requiresApproval: boolean;
+      minimumRole: CommanderToolPermission["minimumRole"];
+    }
+  | {
+      allowed: false;
+      enabled: boolean;
+      requiresApproval: boolean;
+      minimumRole: CommanderToolPermission["minimumRole"];
+      error: "FORBIDDEN_ROLE" | "CAPABILITY_DISABLED" | "NOT_IN_ALLOWLIST" | "TOOL_DISABLED";
+      summary: string;
+    };
 
 /**
  * D2: Per-agent tool allowlist for AoA agents (Decision #95 access model).
@@ -79,4 +103,84 @@ export function authorizeToolInvocation(
   }
 
   return { allowed: true };
+}
+
+function getCommanderPermission(
+  toolName: string,
+  permissions?: CommanderToolPermissions | null,
+): CommanderToolPermission {
+  return permissions?.[toolName] ?? COMMANDER_TOOL_PERMISSION_DEFAULT;
+}
+
+function roleBlocked(
+  userRole: string,
+  requiredRole: CommanderToolPermission["minimumRole"],
+): boolean {
+  const userRank = ROLE_RANK[userRole as UserRole];
+  return userRank === undefined || userRank < ROLE_RANK[requiredRole];
+}
+
+export function resolveCommanderToolPolicy(
+  tool: AgentTool,
+  ctx: Pick<
+    ToolContext,
+    | "userRole"
+    | "enabledCapabilities"
+    | "agentKind"
+    | "toolAllowlist"
+    | "commanderToolPermissions"
+    | "runtimeApprovalsEnabled"
+  >,
+): CommanderToolPolicyDecision {
+  const permission = getCommanderPermission(
+    tool.name,
+    ctx.commanderToolPermissions,
+  );
+  const requiresApproval =
+    ctx.runtimeApprovalsEnabled !== false &&
+    (tool.requiresConfirmation || permission.requireConfirmation);
+
+  const baseDecision = authorizeToolInvocation(
+    tool,
+    ctx.userRole,
+    ctx.enabledCapabilities,
+    { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
+  );
+  if (!baseDecision.allowed) {
+    return {
+      ...baseDecision,
+      enabled: permission.enabled,
+      requiresApproval,
+      minimumRole: permission.minimumRole,
+    };
+  }
+
+  if (!permission.enabled) {
+    return {
+      allowed: false,
+      enabled: false,
+      requiresApproval,
+      minimumRole: permission.minimumRole,
+      error: "TOOL_DISABLED",
+      summary: `Tool '${tool.name}' is disabled for Commander`,
+    };
+  }
+
+  if (roleBlocked(ctx.userRole, permission.minimumRole)) {
+    return {
+      allowed: false,
+      enabled: true,
+      requiresApproval,
+      minimumRole: permission.minimumRole,
+      error: "FORBIDDEN_ROLE",
+      summary: `Role '${ctx.userRole}' cannot invoke '${tool.name}' via Commander (requires '${permission.minimumRole}')`,
+    };
+  }
+
+  return {
+    allowed: true,
+    enabled: true,
+    requiresApproval,
+    minimumRole: permission.minimumRole,
+  };
 }

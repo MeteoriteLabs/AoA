@@ -44,6 +44,9 @@ export interface AgentConfig {
   proactiveIntervalMinutes: number;
   lastProactiveRunAt: string | null;
   cheapModel: string | null;
+  runtimeApprovalsEnabled: boolean;
+  runtimeAllowAlwaysEnabled: boolean;
+  vendorCliBypassEnabled: boolean;
 }
 
 export interface AgentRunToolCall {
@@ -130,12 +133,14 @@ export interface SSEEvent {
 
 export interface ConfirmActionResult {
   confirmId: string;
-  result: "rejected" | "executed" | "failed";
+  result: "denied" | "rejected" | "executed" | "failed";
   summary: string | null;
   error: string | null;
   entityType: string | null;
   entityId: string | null;
 }
+
+export type ConfirmActionDecision = "allow_once" | "allow_always" | "deny";
 
 /* ------------------------------------------------------------------ */
 /*  SSE streaming helper (POST-based — NOT EventSource)                */
@@ -232,7 +237,9 @@ export async function* streamAgentChat(
  */
 export function confirmAction(
   companyId: string,
-  body: { confirmId: string; approved: boolean },
+  body:
+    | { confirmId: string; decision: ConfirmActionDecision }
+    | { confirmId: string; approved: boolean },
 ): Promise<ConfirmActionResult> {
   return api.post<ConfirmActionResult>(
     `/companies/${companyId}/internal-agent/confirm`,
@@ -286,8 +293,11 @@ export const internalAgentApi = {
       `/companies/${companyId}/internal-agent/conversation`,
     ),
 
-  confirmAction: (companyId: string, confirmId: string, approved: boolean) =>
-    confirmAction(companyId, { confirmId, approved }),
+  confirmAction: (
+    companyId: string,
+    confirmId: string,
+    decision: ConfirmActionDecision,
+  ) => confirmAction(companyId, { confirmId, decision }),
 
   listSkills: (companyId: string) =>
     api.get<CompanySkillListItem[]>(`/companies/${companyId}/internal-agent/skills`),
@@ -426,5 +436,28 @@ export const toolPermissionsApi = {
     api.patch<{ success: boolean }>(
       `/companies/${companyId}/internal-agent/tool-permissions`,
       permissions,
+    ),
+};
+
+export interface CommanderTrustRule {
+  id: string;
+  toolName: string;
+  scope: "exact_params";
+  paramsHashPrefix: string;
+  paramsHashVersion: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export const commanderTrustRulesApi = {
+  list: (companyId: string) =>
+    api.get<{ rules: CommanderTrustRule[] }>(
+      `/companies/${companyId}/internal-agent/tool-trust-rules`,
+    ),
+
+  revoke: (companyId: string, ruleId: string) =>
+    api.delete<{ success: true }>(
+      `/companies/${companyId}/internal-agent/tool-trust-rules/${ruleId}`,
     ),
 };

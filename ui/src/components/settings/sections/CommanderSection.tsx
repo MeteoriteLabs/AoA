@@ -6,8 +6,15 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { internalAgentApi, toolPermissionsApi } from "@/api/internal-agent";
-import type { CommanderToolPermission } from "@/api/internal-agent";
+import {
+  commanderTrustRulesApi,
+  internalAgentApi,
+  toolPermissionsApi,
+} from "@/api/internal-agent";
+import type {
+  CommanderToolPermission,
+  CommanderTrustRule,
+} from "@/api/internal-agent";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatCents, budgetProgressColor, relativeTime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -159,6 +166,12 @@ export function CommanderSection() {
   const [cheapModel, setCheapModel] = useState<string>("");
   const [proactiveIntervalMinutes, setProactiveIntervalMinutes] =
     useState<number>(240);
+  const [runtimeApprovalsEnabled, setRuntimeApprovalsEnabled] =
+    useState<boolean>(true);
+  const [runtimeAllowAlwaysEnabled, setRuntimeAllowAlwaysEnabled] =
+    useState<boolean>(true);
+  const [vendorCliBypassEnabled, setVendorCliBypassEnabled] =
+    useState<boolean>(true);
 
   // Connection test
   const [connectionStatus, setConnectionStatus] = useState<
@@ -210,6 +223,12 @@ export function CommanderSection() {
     enabled: !!selectedCompanyId && active === "permissions",
   });
 
+  const { data: trustRulesData, isLoading: trustRulesLoading } = useQuery({
+    queryKey: ["commander-tool-trust-rules", selectedCompanyId],
+    queryFn: () => commanderTrustRulesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && active === "trusted-actions",
+  });
+
   const [permissionEdits, setPermissionEdits] = useState<Record<string, Partial<CommanderToolPermission>>>({});
 
   const updatePermissionsMutation = useMutation({
@@ -218,6 +237,16 @@ export function CommanderSection() {
     onSuccess: () => {
       setPermissionEdits({});
       queryClient.invalidateQueries({ queryKey: ["commander-tool-permissions"] });
+    },
+  });
+
+  const revokeTrustRuleMutation = useMutation({
+    mutationFn: (ruleId: string) =>
+      commanderTrustRulesApi.revoke(selectedCompanyId!, ruleId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["commander-tool-trust-rules", selectedCompanyId],
+      });
     },
   });
 
@@ -272,6 +301,9 @@ export function CommanderSection() {
     setContextTokenBudget(config.contextTokenBudget);
     setBudgetMonthlyCents(config.budgetMonthlyCents ?? 5000);
     setCheapModel(config.cheapModel ?? "");
+    setRuntimeApprovalsEnabled(config.runtimeApprovalsEnabled ?? true);
+    setRuntimeAllowAlwaysEnabled(config.runtimeAllowAlwaysEnabled ?? true);
+    setVendorCliBypassEnabled(config.vendorCliBypassEnabled ?? true);
     if (config.proactiveIntervalMinutes != null) {
       setProactiveIntervalMinutes(config.proactiveIntervalMinutes);
     }
@@ -301,6 +333,9 @@ export function CommanderSection() {
     saveMutation.mutate({
       executionMode: "cli",
       cliTool,
+      runtimeApprovalsEnabled,
+      runtimeAllowAlwaysEnabled,
+      vendorCliBypassEnabled,
     });
   }
 
@@ -402,6 +437,12 @@ export function CommanderSection() {
             connectionStatus={connectionStatus}
             connectionError={connectionError}
             handleTestConnection={handleTestConnection}
+            runtimeApprovalsEnabled={runtimeApprovalsEnabled}
+            setRuntimeApprovalsEnabled={setRuntimeApprovalsEnabled}
+            runtimeAllowAlwaysEnabled={runtimeAllowAlwaysEnabled}
+            setRuntimeAllowAlwaysEnabled={setRuntimeAllowAlwaysEnabled}
+            vendorCliBypassEnabled={vendorCliBypassEnabled}
+            setVendorCliBypassEnabled={setVendorCliBypassEnabled}
             saveExecution={saveExecution}
             isPending={saveMutation.isPending}
             saveMessage={saveMessage}
@@ -534,7 +575,111 @@ export function CommanderSection() {
             )}
           </div>
         )}
+        {active === "trusted-actions" && (
+          <TrustedActionsTabContent
+            rules={trustRulesData?.rules ?? []}
+            isLoading={trustRulesLoading}
+            revokeRule={(ruleId) => revokeTrustRuleMutation.mutate(ruleId)}
+            revokingRuleId={
+              revokeTrustRuleMutation.isPending
+                ? revokeTrustRuleMutation.variables
+                : null
+            }
+            error={
+              revokeTrustRuleMutation.isError
+                ? revokeTrustRuleMutation.error.message
+                : null
+            }
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+function TrustedActionsTabContent({
+  rules,
+  isLoading,
+  revokeRule,
+  revokingRuleId,
+  error,
+}: {
+  rules: CommanderTrustRule[];
+  isLoading: boolean;
+  revokeRule: (ruleId: string) => void;
+  revokingRuleId: string | null;
+  error: string | null;
+}) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading trusted actions...
+      </div>
+    );
+  }
+
+  if (rules.length === 0) {
+    return (
+      <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
+        No trusted Commander actions yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        Revoke exact actions that were approved with allow always. Fingerprints
+        identify the saved tool parameters without exposing the original values.
+      </p>
+      <div className="rounded-md border border-border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Tool
+              </th>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Fingerprint
+              </th>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Created
+              </th>
+              <th className="px-3 py-2 text-right font-medium text-xs text-muted-foreground">
+                Action
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rules.map((rule) => (
+              <tr key={rule.id}>
+                <td className="px-3 py-2 font-mono text-xs">{rule.toolName}</td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {rule.paramsHashVersion}:{rule.paramsHashPrefix}
+                </td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">
+                  {relativeTime(rule.createdAt)}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => revokeRule(rule.id)}
+                    disabled={revokingRuleId === rule.id}
+                  >
+                    {revokingRuleId === rule.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Revoke
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
     </div>
   );
 }
@@ -549,6 +694,12 @@ interface ExecutionTabContentProps {
   connectionStatus: "untested" | "loading" | "success" | "failed";
   connectionError: string | null;
   handleTestConnection: () => Promise<void>;
+  runtimeApprovalsEnabled: boolean;
+  setRuntimeApprovalsEnabled: (v: boolean) => void;
+  runtimeAllowAlwaysEnabled: boolean;
+  setRuntimeAllowAlwaysEnabled: (v: boolean) => void;
+  vendorCliBypassEnabled: boolean;
+  setVendorCliBypassEnabled: (v: boolean) => void;
   saveExecution: () => void;
   isPending: boolean;
   saveMessage: string | null;
@@ -560,6 +711,12 @@ function ExecutionTabContent({
   connectionStatus,
   connectionError,
   handleTestConnection,
+  runtimeApprovalsEnabled,
+  setRuntimeApprovalsEnabled,
+  runtimeAllowAlwaysEnabled,
+  setRuntimeAllowAlwaysEnabled,
+  vendorCliBypassEnabled,
+  setVendorCliBypassEnabled,
   saveExecution,
   isPending,
   saveMessage,
@@ -609,6 +766,57 @@ function ExecutionTabContent({
         <p className="text-xs text-muted-foreground mt-1">
           Higher levels available in V3
         </p>
+      </div>
+
+      <div className="rounded-md border border-border p-3 space-y-3 max-w-xl">
+        <p className="text-xs font-medium text-muted-foreground">
+          Runtime Approvals
+        </p>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={runtimeApprovalsEnabled}
+            onChange={(e) => setRuntimeApprovalsEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-input"
+            aria-label="Require AoA runtime approvals"
+          />
+          <span>
+            <span className="font-medium">Require AoA runtime approvals</span>
+            <span className="block text-xs text-muted-foreground">
+              Show approval cards before Commander executes confirmation-gated tools.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={runtimeAllowAlwaysEnabled}
+            onChange={(e) => setRuntimeAllowAlwaysEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-input"
+            aria-label="Allow always for exact repeated actions"
+          />
+          <span>
+            <span className="font-medium">Allow always for exact repeated actions</span>
+            <span className="block text-xs text-muted-foreground">
+              Let users trust the same tool with the same parameters until revoked.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={vendorCliBypassEnabled}
+            onChange={(e) => setVendorCliBypassEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-input"
+            aria-label="Bypass vendor CLI approval prompts"
+          />
+          <span>
+            <span className="font-medium">Bypass vendor CLI approval prompts</span>
+            <span className="block text-xs text-muted-foreground">
+              Use AoA approvals as the primary gate instead of forwarding prompts to the CLI.
+            </span>
+          </span>
+        </label>
       </div>
 
       {/* Test Connection */}

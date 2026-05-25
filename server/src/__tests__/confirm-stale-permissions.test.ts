@@ -5,7 +5,7 @@
  *
  * Scenario:
  *   1. Chat endpoint fires → permissionService returns "founder"
- *      → pendingConfirmations stores confirmId, toolName, params, actorType.
+ *      → SSE forwards the durable confirmId that the CLI/MCP path created.
  *      Permissions (userRole, enabledCapabilities) are NOT snapshotted. [Codex-P1 fix]
  *   2. Role changes: permissionService now returns "team_member"
  *   3. User clicks Confirm → confirm endpoint fires
@@ -96,6 +96,20 @@ vi.mock("../services/internal-agent/service-container.js", () => ({
   createServiceContainer: vi.fn(() => ({})),
 }));
 
+const mockClaimForExecution = vi.hoisted(() => vi.fn());
+const mockMarkExecuted = vi.hoisted(() => vi.fn());
+const mockMarkFailed = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/internal-agent/runtime-approvals.js", () => ({
+  runtimeApprovalService: vi.fn(() => ({
+    deny: vi.fn(),
+    claimForExecution: mockClaimForExecution,
+    createTrustRule: vi.fn(),
+    markExecuted: mockMarkExecuted,
+    markFailed: mockMarkFailed,
+  })),
+}));
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const COMPANY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-000000000001";
 const USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-000000000002";
@@ -145,7 +159,7 @@ function makeApp(db: ReturnType<typeof makeDb>) {
   return app;
 }
 
-// ── Helper: seed pendingConfirmations via the chat SSE endpoint ───────────────
+// ── Helper: emit an action_confirmation chunk through the chat SSE endpoint ───
 async function seedPending(
   app: ReturnType<typeof makeApp>,
   confirmId: string,
@@ -168,6 +182,15 @@ async function seedPending(
 describe("POST /confirm — stale permissions (re-fetch at execute time)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClaimForExecution.mockResolvedValue({
+      id: CONFIRM_1,
+      companyId: COMPANY_ID,
+      userId: USER_A,
+      toolName: "change_goal_status",
+      params: { goalId: "goal-1", status: "achieved" },
+    });
+    mockMarkExecuted.mockResolvedValue({ id: CONFIRM_1, status: "approved" });
+    mockMarkFailed.mockResolvedValue({ id: CONFIRM_1, status: "failed" });
     mockGetActorInfo.mockReturnValue({
       actorType: "user" as const,
       actorId: USER_A,
@@ -224,6 +247,13 @@ describe("POST /confirm — stale permissions (re-fetch at execute time)", () =>
     mockGetEffectiveRole.mockResolvedValue("founder");
 
     const CONFIRM_2 = "22222222-2222-4222-8222-000000000002";
+    mockClaimForExecution.mockResolvedValue({
+      id: CONFIRM_2,
+      companyId: COMPANY_ID,
+      userId: USER_A,
+      toolName: "change_goal_status",
+      params: { goalId: "goal-1", status: "achieved" },
+    });
     await seedPending(app, CONFIRM_2);
 
     // Capabilities are now disabled at company level (empty array).

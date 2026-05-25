@@ -89,6 +89,18 @@ export const internalAgentConfig = pgTable(
     // Null = use system defaults (enabled=true, requireConfirmation=false, minimumRole=team_member).
     commanderToolPermissions: jsonb("commander_tool_permissions"),
 
+    // Runtime approvals govern Commander tool execution. Vendor bypass only
+    // controls whether AoA forwards approvals to the underlying CLI.
+    runtimeApprovalsEnabled: boolean("runtime_approvals_enabled")
+      .notNull()
+      .default(true),
+    runtimeAllowAlwaysEnabled: boolean("runtime_allow_always_enabled")
+      .notNull()
+      .default(true),
+    vendorCliBypassEnabled: boolean("vendor_cli_bypass_enabled")
+      .notNull()
+      .default(true),
+
     // Plan 3 Task 8: company-level crew kill-switch.
     // When true, no crew roles fire for ANY thread in this company.
     // Thread-level pause is in discussions.crewPaused.

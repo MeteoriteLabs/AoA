@@ -26,8 +26,9 @@ import {
   commanderConversationsApi,
   confirmAction,
   type AgentMessage,
-  type SSEEvent,
+  type ConfirmActionDecision,
   type AgentGreeting,
+  type SSEEvent,
 } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -260,6 +261,14 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     enabled: !!companyId,
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
+
+  const { data: agentConfig } = useQuery({
+    queryKey: ["internal-agent-config", companyId],
+    queryFn: () => internalAgentApi.getConfig(companyId),
+    enabled: !!companyId,
+    staleTime: 60 * 1000,
+  });
+  const allowAlwaysEnabled = agentConfig?.runtimeAllowAlwaysEnabled ?? true;
 
   // Load history when switching to a specific conversation
   const { data: historyData } = useQuery({
@@ -563,8 +572,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     async (
       messageId: string,
       confirmId: string,
-      approved: boolean,
+      decision: ConfirmActionDecision,
     ) => {
+      const isDeny = decision === "deny";
       // 1. Optimistic UI: move status to "approving" / "rejected"
       setMessages((prev) =>
         prev.map((m) =>
@@ -573,7 +583,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 ...m,
                 actionConfirm: {
                   ...m.actionConfirm,
-                  status: approved ? "approving" : "rejected",
+                  status: isDeny ? "rejected" : "approving",
                 },
               }
             : m,
@@ -581,7 +591,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       );
 
       try {
-        const result = await confirmAction(companyId, { confirmId, approved });
+        const result = await confirmAction(companyId, { confirmId, decision });
 
         // 2. Settle UI based on server result
         setMessages((prev) =>
@@ -594,7 +604,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                     status:
                       result.result === "executed"
                         ? "approved"
-                        : result.result === "rejected"
+                        : result.result === "rejected" || result.result === "denied"
                           ? "rejected"
                           : "failed",
                     errorMessage: result.error ?? undefined,
@@ -916,19 +926,30 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                         size="sm"
                         variant="default"
                         className="h-7 text-xs"
-                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, true)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, "allow_once")}
                       >
                         <Check className="h-3 w-3 mr-1" />
-                        Confirm
+                        Allow once
                       </Button>
+                      {allowAlwaysEnabled && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, "allow_always")}
+                        >
+                          <Check className="h-3 w-3 mr-1" />
+                          Always allow
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs"
-                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, false)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, "deny")}
                       >
                         <X className="h-3 w-3 mr-1" />
-                        Cancel
+                        Deny
                       </Button>
                     </div>
                   ) : msg.actionConfirm.status === "approving" ? (

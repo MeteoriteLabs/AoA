@@ -73,6 +73,22 @@ vi.mock("../services/internal-agent/service-container.js", () => ({
   createServiceContainer: vi.fn(() => ({})),
 }));
 
+const mockDeny = vi.hoisted(() => vi.fn());
+const mockClaimForExecution = vi.hoisted(() => vi.fn());
+const mockMarkExecuted = vi.hoisted(() => vi.fn());
+const mockMarkFailed = vi.hoisted(() => vi.fn());
+const mockCreateTrustRule = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/internal-agent/runtime-approvals.js", () => ({
+  runtimeApprovalService: vi.fn(() => ({
+    deny: mockDeny,
+    claimForExecution: mockClaimForExecution,
+    markExecuted: mockMarkExecuted,
+    markFailed: mockMarkFailed,
+    createTrustRule: mockCreateTrustRule,
+  })),
+}));
+
 vi.mock("../services/permissions.js", () => ({
   permissionService: vi.fn(() => ({
     getEffectiveRole: vi.fn().mockResolvedValue("team_member"),
@@ -138,7 +154,7 @@ function makeApp(db: ReturnType<typeof makeDb>) {
   return app;
 }
 
-// ── Helper: seed pendingConfirmations via the SSE chat endpoint ───────────────
+// ── Helper: emit an action_confirmation chunk through the SSE chat endpoint ───
 async function seedPending(
   app: ReturnType<typeof makeApp>,
   companyId: string,
@@ -169,6 +185,21 @@ async function seedPending(
 describe("POST /confirm — user ownership check", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDeny.mockResolvedValue({ id: CONFIRM_T2, status: "denied" });
+    mockClaimForExecution.mockImplementation(async (_id, companyId, userId) =>
+      companyId === COMPANY_A && userId === USER_A
+        ? {
+            id: CONFIRM_T1,
+            companyId: COMPANY_A,
+            userId: USER_A,
+            toolName: "list_tasks",
+            params: {},
+          }
+        : null,
+    );
+    mockMarkExecuted.mockResolvedValue({ id: CONFIRM_T1, status: "approved" });
+    mockMarkFailed.mockResolvedValue({ id: CONFIRM_T1, status: "failed" });
+    mockCreateTrustRule.mockResolvedValue({ id: "trust-1" });
     mockGetActorInfo.mockReturnValue({
       actorType: "user" as const,
       actorId: USER_A,
@@ -216,7 +247,7 @@ describe("POST /confirm — user ownership check", () => {
       .send({ confirmId: CONFIRM_T2, approved: false });
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ confirmId: CONFIRM_T2, result: "rejected" });
+    expect(res.body).toMatchObject({ confirmId: CONFIRM_T2, result: "denied" });
   });
 
   it("returns 404 when confirmId belongs to a different company (existing check preserved)", async () => {

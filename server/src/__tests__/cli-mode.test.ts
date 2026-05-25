@@ -692,7 +692,10 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     vi.resetModules();
   });
 
-  async function runChat(cliTool: string) {
+  async function runChat(
+    cliTool: string,
+    configOverrides: Record<string, unknown> = {},
+  ) {
     const cp = await import("node:child_process");
     // CLI detected as available (where/which succeeds).
     vi.mocked(cp.execSync).mockReturnValue(`/usr/local/bin/x\n` as any);
@@ -715,7 +718,7 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
         content: "hello world",
         enabledCapabilities: [],
       } as any,
-      { cliTool, executionMode: "cli" } as any,
+      { cliTool, executionMode: "cli", ...configOverrides } as any,
     )) {
       chunks.push(chunk);
     }
@@ -765,6 +768,15 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     expect(parsed.mcpServers.aoa.command).toBe("node");
   });
 
+  it("claude_cli: omits vendor permission bypass flag when disabled", async () => {
+    const { spawn } = await runChat("claude_cli", {
+      vendorCliBypassEnabled: false,
+    });
+
+    const [, args] = spawn.mock.calls[0];
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
   it("codex: provisions managed CODEX_HOME via MX3 helper and spawns `codex exec --json` (no --mcp-config/-p)", async () => {
     const { spawn, writeCodexMcpConfigToml, ensureCodexAuthInHome } =
       await runChat("codex");
@@ -804,6 +816,15 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
 
     // Spawn env carries CODEX_HOME = the managed dir, merged over process.env.
     expect((opts as any)?.env?.CODEX_HOME).toBe(codexDir);
+  });
+
+  it("codex: omits vendor approval bypass flag when disabled", async () => {
+    const { spawn } = await runChat("codex", {
+      vendorCliBypassEnabled: false,
+    });
+
+    const [, args] = spawn.mock.calls[0];
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   it("opencode: emits an explicit 'not yet supported' error and never spawns", async () => {

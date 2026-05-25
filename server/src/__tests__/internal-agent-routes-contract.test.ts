@@ -113,7 +113,7 @@ describe("internal-agent-routes-contract", () => {
     expect(Array.isArray(router.stack)).toBe(true);
   });
 
-  it("registers exactly 13 route handlers", () => {
+  it("registers exactly 24 route handlers", () => {
     const db = {} as any;
     const router = internalAgentRoutes(db);
 
@@ -122,8 +122,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1) + 1 delete route (Task 5) + 1 Commander skills route (Task 5b) + 2 reorder/reset routes (Batch 2)
-    expect(routeLayers).toHaveLength(22);
+    // 22 existing routes + 2 durable tool-trust rule routes.
+    expect(routeLayers).toHaveLength(24);
   });
 
   it("registers all expected paths and methods", () => {
@@ -155,6 +155,9 @@ describe("internal-agent-routes-contract", () => {
       // tool-permissions routes (Task 6)
       { path: "/companies/:companyId/internal-agent/tool-permissions", method: "get" },
       { path: "/companies/:companyId/internal-agent/tool-permissions", method: "patch" },
+      // durable runtime approval trust rules
+      { path: "/companies/:companyId/internal-agent/tool-trust-rules", method: "get" },
+      { path: "/companies/:companyId/internal-agent/tool-trust-rules/:ruleId", method: "delete" },
       // conversation messages route (Task 8)
       { path: "/companies/:companyId/internal-agent/conversations/:convId/messages", method: "get" },
       // pin + rename routes (Task 1)

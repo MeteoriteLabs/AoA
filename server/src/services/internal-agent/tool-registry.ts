@@ -1,5 +1,8 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import { authorizeToolInvocation } from "./authorize-tool.js";
+import {
+  authorizeToolInvocation,
+  resolveCommanderToolPolicy,
+} from "./authorize-tool.js";
 import { createQueryTools } from "./tools/query-tools.js";
 import { createActionTools } from "./tools/action-tools.js";
 import { createMemoryTools } from "./tools/memory-tools.js";
@@ -118,6 +121,18 @@ export async function executeTool(
   params: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  if (ctx.actorType === "commander") {
+    const commanderPolicy = resolveCommanderToolPolicy(tool, ctx);
+    if (!commanderPolicy.allowed) {
+      return {
+        success: false,
+        data: null,
+        summary: commanderPolicy.summary,
+        error: commanderPolicy.error,
+      };
+    }
+  }
+
   // Role + capability gate (closes C13) + D2 AoA tool allowlist gate
   const decision = authorizeToolInvocation(
     tool,

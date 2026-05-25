@@ -7,29 +7,25 @@ const routeSrc = readFileSync(
   "utf8",
 );
 
-describe("confirmation flow — implementation contract", () => {
-  it("has a pending confirmations Map at module level", () => {
-    expect(routeSrc).toContain("pendingConfirmations");
-    expect(routeSrc).toContain("Map");
+describe("confirmation flow implementation contract", () => {
+  it("/confirm endpoint resolves the durable approval row", () => {
+    expect(routeSrc).toContain("runtimeApprovalService");
+    expect(routeSrc).toContain("claimForExecution");
+    expect(routeSrc).toContain("deny(confirmId");
   });
 
-  it("/confirm endpoint looks up and deletes the pending entry", () => {
-    expect(routeSrc).toContain("pendingConfirmations.get");
-    expect(routeSrc).toContain("pendingConfirmations.delete");
-  });
-
-  it("/confirm calls executeTool when approved", () => {
+  it("/confirm calls executeTool after the durable approval is claimed", () => {
     expect(routeSrc).toContain("executeTool");
-    expect(routeSrc).toContain("approved");
+    expect(routeSrc).toContain("markExecuted");
   });
 
   it("/confirm returns 404 when confirmId not found", () => {
     expect(routeSrc).toContain("notFound");
+    expect(routeSrc).toContain("No pending confirmation for id");
   });
 
-  it("action_confirmation SSE handler stores the pending entry", () => {
-    expect(routeSrc).toContain("pendingConfirmations.set");
-    expect(routeSrc).toContain("toolName");
-    expect(routeSrc).toContain("params");
+  it("action_confirmation SSE handler only forwards durable confirmation ids", () => {
+    expect(routeSrc).toContain('case "action_confirmation"');
+    expect(routeSrc).not.toContain("pendingConfirmations.set");
   });
 });

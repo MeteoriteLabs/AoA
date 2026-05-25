@@ -85,6 +85,8 @@ export {
   internalAgentRuns,
   internalAgentReminders,
 } from "./internal_agent.js";
+export { internalAgentRuntimeApprovals } from "./internal_agent_runtime_approvals.js";
+export { internalAgentToolTrustRules } from "./internal_agent_tool_trust_rules.js";
 export { aoaAgentTriggers } from "./aoa_agent_triggers.js";
 export { workflowTemplates } from "./workflow_templates.js";
 export { notifications } from "./notifications.js";
