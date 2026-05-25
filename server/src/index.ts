@@ -50,6 +50,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
+import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -677,6 +678,17 @@ void db
     ),
   )
   .catch((err) => logger.warn({ err }, "command staff startup backfill failed"));
+
+// Idempotent backfill: migrate the vestigial goals.parentId column into the
+// goal_parents join table (multi-parent DAG; Decision #20 superseded 2026-05-25).
+// Safe on every startup — ON CONFLICT DO NOTHING on the composite PK.
+void backfillGoalParents(db as any)
+  .then((res) => {
+    if (res.inserted > 0) {
+      logger.info({ inserted: res.inserted }, "goal_parents backfill complete");
+    }
+  })
+  .catch((err) => logger.warn({ err }, "goal_parents startup backfill failed"));
 
 // File import queue worker
 void resetStuckJobs(db as any).catch((err) =>

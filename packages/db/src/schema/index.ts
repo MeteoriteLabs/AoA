@@ -20,6 +20,7 @@ export * from "./team_coordinations.js";
 export { sidebarPreferences } from "./sidebar_preferences.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { goals } from "./goals.js";
+export { goalParents } from "./goal_parents.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
