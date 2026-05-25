@@ -35,9 +35,10 @@ export type ToolAuthDecision =
 export function authorizeToolInvocation(
   tool: AgentTool,
   userRole: string,
-  enabledCapabilities: readonly string[],
+  enabledCapabilities: readonly string[] | undefined,
   opts?: { agentKind?: string; toolAllowlist?: readonly string[] },
 ): ToolAuthDecision {
+  const capabilities = enabledCapabilities ?? [];
   // D2: AoA-specific tool allowlist gate (default-deny for kind='aoa').
   // Checked BEFORE role/capability gates so a misconfigured allowlist fails
   // closed rather than silently falling through to the less-restrictive gates.
@@ -69,7 +70,7 @@ export function authorizeToolInvocation(
   // Capability check
   for (const [cap, category] of Object.entries(CAPABILITY_TO_CATEGORY)) {
     if (tool.category !== category) continue;
-    if (!enabledCapabilities.includes(cap)) {
+    if (!capabilities.includes(cap)) {
       return {
         allowed: false,
         error: "CAPABILITY_DISABLED",

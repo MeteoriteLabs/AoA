@@ -3,12 +3,14 @@ import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "AOA_AGENT_JWT_SECRET";
+  const betterAuthEnv = "BETTER_AUTH_SECRET";
   const ttlEnv = "AOA_AGENT_JWT_TTL_SECONDS";
   const issuerEnv = "AOA_AGENT_JWT_ISSUER";
   const audienceEnv = "AOA_AGENT_JWT_AUDIENCE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
+    betterAuth: process.env[betterAuthEnv],
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
@@ -16,6 +18,7 @@ describe("agent local JWT", () => {
 
   beforeEach(() => {
     process.env[secretEnv] = "test-secret";
+    delete process.env[betterAuthEnv];
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
@@ -26,6 +29,8 @@ describe("agent local JWT", () => {
     vi.useRealTimers();
     if (originalEnv.secret === undefined) delete process.env[secretEnv];
     else process.env[secretEnv] = originalEnv.secret;
+    if (originalEnv.betterAuth === undefined) delete process.env[betterAuthEnv];
+    else process.env[betterAuthEnv] = originalEnv.betterAuth;
     if (originalEnv.ttl === undefined) delete process.env[ttlEnv];
     else process.env[ttlEnv] = originalEnv.ttl;
     if (originalEnv.issuer === undefined) delete process.env[issuerEnv];
