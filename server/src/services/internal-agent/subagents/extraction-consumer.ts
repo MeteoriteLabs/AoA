@@ -1,37 +1,38 @@
 import type { Db } from "@armyofagents/db";
-import { runAoaAgent } from "../aoa-agents/runner.js";
+import { extractionService } from "../../extraction.js";
 
 /**
- * Sub-agent #1 extraction consumer — now a thin delegator.
+ * Sub-agent #1 extraction consumer.
  *
- * @deprecated The run-record / atomic-claim / cost / hard-error-boundary
- * mechanics this file used to own (M3 design) were moved WHOLESALE into the
- * AoA runner (`runAoaAgent`, A7 — Plan A / Decision #100). The runner is the
- * single execution path: #99/M2 atomic claim, adapter+bridge execution,
- * internal_agent_runs lifecycle, platform-scoped cost_event, and the
- * never-rethrow isolation guarantee all live there now (and are asserted in
- * `aoa-runner.test.ts`).
+ * Routes discussion-entry extraction through the reliable direct-provider path
+ * (extractionService -> resolveAvailableProvider, Decision A1), NOT the
+ * CLI-adapter agent runner. The agent/CLI path (Decision #100) cannot reliably
+ * submit results in practice: codex/opencode have no MCP bridge wiring yet
+ * (runner.ts:134 injects --mcp-config for claude_local only), and the claude CLI
+ * subprocess does not complete the submit_extracted_items handshake in local /
+ * Windows dev. In both cases the run finishes but the entry is left stuck
+ * 'processing' (silent loss). extractionService is provider-flexible and
+ * terminalizes the entry itself (completed / failed / skipped).
  *
- * The exported name + exact 4-arg signature `(db, companyId, entryId,
- * agentId)` are preserved deliberately: the A6 dispatcher
- * (`aoa-agents/dispatcher.ts`) imports and calls this with 4 args, so
- * collapsing it to a delegator must not change the surface. `agentId` is the
- * `kind='aoa'` extraction agent resolved by `ensureExtractionAgent` (the
- * dispatcher passes it as the 4th arg; older code called this slot
- * `platformAgentId` — same value).
+ * Decision #100 amended 2026-05-25: extraction default = direct-provider; the
+ * agent/CLI extraction path is opt-in until hardened (bridge wiring for
+ * codex/opencode + the claude headless submit hang). See docs/architecture/
+ * decisions.md #100.
  *
- * Never rethrows — isolation is enforced inside `runAoaAgent` (its hard error
- * boundary), so addEntry/chat/the dispatcher tick remain unaffected.
+ * The 4-arg signature `(db, companyId, entryId, agentId)` is preserved because
+ * the dispatcher (aoa-agents/dispatcher.ts) calls it positionally. `agentId` is
+ * unused now — the direct-provider path needs no agent row — so it is prefixed
+ * `_` to mark it intentionally unused.
+ *
+ * Never rethrows: extractFromDiscussionEntry self-terminalizes on error
+ * (asserted by extraction-refactor.test.ts "transitions to failed status on
+ * error"), so addEntry / the dispatcher tick remain unaffected.
  */
 export async function runExtractionConsumer(
   db: Db,
   companyId: string,
   entryId: string,
-  agentId: string,
+  _agentId: string,
 ): Promise<void> {
-  await runAoaAgent(db, agentId, {
-    entryId,
-    companyId,
-    source: "discussion_entry_pending",
-  });
+  await extractionService(db).extractFromDiscussionEntry(companyId, entryId);
 }

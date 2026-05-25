@@ -671,7 +671,21 @@ Implementation: pages opt in by passing `defaultCollapsed={true}` to `LobbyShell
 
 ## Decision #100 — AoA Agents framework: Commander + sub-agents as trigger-driven first-class agents
 
-**Status:** Locked 2026-05-17.
+**Status:** Locked 2026-05-17. **Amended 2026-05-25 (extraction routing).**
+
+**Amendment (2026-05-25):** discussion-entry extraction now defaults to the
+direct-provider path (`extractionService` → `resolveAvailableProvider`, Decision
+A1), NOT the CLI-adapter agent runner. In practice the agent/CLI path could not
+reliably submit results: codex/opencode have no MCP-bridge wiring yet
+(`aoa-agents/runner.ts` injects `--mcp-config` for `claude_local` only) and the
+claude CLI subprocess does not complete the `submit_extracted_items` handshake
+in local / Windows dev — both finish the run but leave the entry stuck
+`processing` (silent loss). The agent/CLI extraction path is now opt-in pending
+hardening (bridge wiring for non-claude adapters + the claude headless submit
+hang). The framework (Commander + crew + the durable dispatcher) is unchanged;
+only `subagents/extraction-consumer.ts`'s execution target moved. This narrows
+the "uniform CLI-adapter execution" clause below for the extraction sub-agent
+only.
 
 - **Uniform CLI-adapter execution:** every AoA agent (`kind='aoa'`: Commander + sub-agents) runs through the existing worker CLI adapter via a no-task runner; structured results persisted by the agent calling internal-agent MCP tools through the bridge (e.g. `submit-extracted-items`), not by parsing adapter stdout (`AdapterExecutionResult` returns no text). No hybrid/`structured_llm` executor. Provider-SDK stays a non-agent primitive (embeddings, transcription) — **Decision #91 honored, not superseded.**
 - **Supersedes DA-27** clauses (b) no queue, (c) no atomic checkout, (d) no adapter abstraction, and the *wakeup* half of (e) — AoA agents use atomic-claim dispatch, the worker adapter, and trigger/wakeup. **Keeps** DA-27 (a) separate `internal_agent_runs` table and the *assignment/task* half of (e) (no founder-managed issue/task lifecycle).
