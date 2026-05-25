@@ -8,6 +8,7 @@ export type TriggerEventInput =
   | { type: "thread.mention"; targetType: "agent" | "user" }
   | { type: "thread.phase.changed" }
   | { type: "routine.tick" }
+  | { type: "sweep.tick" }
   | { type: string; targetType?: string };
 
 /**
@@ -17,6 +18,7 @@ export type TriggerEventInput =
  *  - `mention`     — fires ONLY on @agent mentions (not @human)
  *  - `phase-advance` — fires on thread phase transitions
  *  - `routine`     — fires on scheduled ticks
+ *  - `sweep`       — fires on periodic sweep ticks (one wakeup per active thread)
  *  - `outbox`      — drained by the durable poll, never by event match
  */
 export function triggerMatchesEvent(
@@ -30,6 +32,8 @@ export function triggerMatchesEvent(
       return event.type === "thread.phase.changed";
     case "routine":
       return event.type === "routine.tick";
+    case "sweep":
+      return event.type === "sweep.tick";
     case "outbox":
       return false; // outbox is drained by the durable poll, not event-matched
     default:

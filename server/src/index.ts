@@ -36,6 +36,7 @@ import {
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
+import { runAdjutantSweep } from "./services/internal-agent/aoa-agents/sweep-adjutant.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -718,6 +719,17 @@ setInterval(() => {
     .catch((err) => logger.warn({ err }, "extraction sweep tick failed"))
     .finally(() => { extractionSweepInFlight = false; });
 }, EXTRACTION_SWEEP_INTERVAL_MS);
+
+// Sub-agent #2: periodic adjutant sweep — checks thread health, advances phases or nudges.
+const ADJUTANT_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+let adjutantSweepInFlight = false;
+setInterval(() => {
+  if (adjutantSweepInFlight) return;
+  adjutantSweepInFlight = true;
+  void runAdjutantSweep(db as any)
+    .catch((err) => logger.warn({ err }, "adjutant sweep tick failed"))
+    .finally(() => { adjutantSweepInFlight = false; });
+}, ADJUTANT_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
