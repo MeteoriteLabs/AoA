@@ -5,6 +5,7 @@ import {
   discussionEntries,
   discussionExtractedItems,
   discussionAnnotations,
+  agents,
   projects,
   goals,
 } from "@armyofagents/db";
@@ -142,11 +143,22 @@ export function discussionService(db: Db) {
 
       if (!discussion) return null;
 
-      const entries = await db
-        .select()
+      const entryRows = await db
+        .select({
+          entry: discussionEntries,
+          authorAgentName: agents.name,
+          authorAgentAvatar: agents.icon,
+        })
         .from(discussionEntries)
+        .leftJoin(agents, eq(discussionEntries.authorAgentId, agents.id))
         .where(eq(discussionEntries.discussionId, id))
         .orderBy(discussionEntries.createdAt);
+
+      const entries = entryRows.map((r: { entry: typeof discussionEntries.$inferSelect; authorAgentName: string | null; authorAgentAvatar: string | null }) => ({
+        ...r.entry,
+        authorAgentName: r.authorAgentName ?? null,
+        authorAgentAvatar: r.authorAgentAvatar ?? null,
+      }));
 
       const entryIds = entries.map((e) => e.id);
 

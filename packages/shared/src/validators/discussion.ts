@@ -16,6 +16,8 @@ export const createDiscussionEntrySchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   sourceInfo: z.record(z.unknown()).optional().nullable(),
+  parentEntryId: z.string().uuid().optional().nullable(),
+  authorAgentId: z.string().uuid().optional().nullable(),
 });
 
 export type CreateDiscussionEntry = z.infer<typeof createDiscussionEntrySchema>;
