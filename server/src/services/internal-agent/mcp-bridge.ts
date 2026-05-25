@@ -4,7 +4,7 @@
 // Spawned by CLI tools via MCP config. Exposes all internal agent tools.
 
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import { roleAtLeast } from "@armyofagents/shared";
+import { authorizeToolInvocation } from "./authorize-tool.js";
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
@@ -32,12 +32,21 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
-    if (tool.requiredRole !== undefined && !roleAtLeast(deps.toolContext.userRole, tool.requiredRole)) {
+    const decision = authorizeToolInvocation(
+      tool,
+      deps.toolContext.userRole,
+      deps.toolContext.enabledCapabilities,
+      {
+        agentKind: deps.toolContext.agentKind,
+        toolAllowlist: deps.toolContext.toolAllowlist,
+      },
+    );
+    if (!decision.allowed) {
       return {
         content: [
           {
             type: "text",
-            text: `Tool '${name}' requires role '${tool.requiredRole}' but caller has '${deps.toolContext.userRole}'.`,
+            text: `${decision.error}: ${decision.summary}`,
           },
         ],
         isError: true,
@@ -86,6 +95,18 @@ export function buildToolListResponse(tools: AgentTool[]) {
     description: tool.description,
     inputSchema: tool.parameters,
   }));
+}
+
+export function filterAuthorizedToolsForContext(
+  tools: AgentTool[],
+  ctx: Pick<ToolContext, "userRole" | "enabledCapabilities" | "agentKind" | "toolAllowlist">,
+): AgentTool[] {
+  return tools.filter((tool) => authorizeToolInvocation(
+    tool,
+    ctx.userRole,
+    ctx.enabledCapabilities,
+    { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
+  ).allowed);
 }
 
 // ── Main (runs when executed as script) ─────────────────────────────────────
@@ -178,9 +199,15 @@ export async function startBridge(): Promise<void> {
         id,
       });
     } else if (method === "tools/list") {
+      const visibleTools = filterAuthorizedToolsForContext(tools, {
+        userRole: toolContext.userRole,
+        enabledCapabilities: toolContext.enabledCapabilities,
+        agentKind: toolContext.agentKind,
+        toolAllowlist: toolContext.toolAllowlist,
+      });
       writeResponse({
         jsonrpc: "2.0",
-        result: { tools: buildToolListResponse(tools) },
+        result: { tools: buildToolListResponse(visibleTools) },
         id,
       });
     } else if (method === "tools/call") {

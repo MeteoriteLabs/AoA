@@ -13,6 +13,10 @@ vi.mock("@armyofagents/db", () => {
 import { delegateToSubagentTool } from "../services/internal-agent/tools/delegate-to-subagent.js";
 
 describe("aoa-delegate-tool", () => {
+  it("requires confirmation before delegating work to another AoA agent", () => {
+    expect(delegateToSubagentTool.requiresConfirmation).toBe(true);
+  });
+
   it("resolves target by name and enqueues a wakeup with the instruction", async () => {
     const insertedValues: any[] = [];
     const db: any = {

@@ -92,6 +92,8 @@ interface McpConfig {
   };
 }
 
+const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.75";
+
 /**
  * Provider-neutral inner MCP server spec ({command,args,env}). This shape is
  * already provider-agnostic; later milestones reuse it to wire codex/opencode
@@ -147,7 +149,7 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
   if (params.enabledCapabilities?.includes("browser_use")) {
     config.mcpServers.playwright = {
       command: "npx",
-      args: ["@playwright/mcp@latest", "--headless"],
+      args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
       env: {},
     };
   }

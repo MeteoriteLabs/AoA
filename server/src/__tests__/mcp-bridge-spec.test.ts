@@ -64,4 +64,15 @@ describe("buildMcpBridgeSpec", () => {
       mcpServers: { aoa: buildMcpBridgeSpec(params) },
     });
   });
+
+  it("pins the optional Playwright MCP package when browser_use is enabled", () => {
+    const config = buildMcpConfig({
+      ...params,
+      enabledCapabilities: ["browser_use"],
+    });
+
+    expect(config.mcpServers.playwright?.command).toBe("npx");
+    expect(config.mcpServers.playwright?.args[0]).toMatch(/^@playwright\/mcp@\d+\.\d+\.\d+/);
+    expect(config.mcpServers.playwright?.args[0]).not.toContain("@latest");
+  });
 });
