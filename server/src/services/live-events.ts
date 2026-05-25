@@ -1,6 +1,14 @@
 import { EventEmitter } from "node:events";
 import type { LiveEvent, LiveEventType } from "@armyofagents/shared";
 
+// Threads v1 Plan 7: the thread.* event types
+//   thread.entry.created | thread.scope.changed | thread.phase.changed
+//   thread.summary.updated | thread.participant.changed | thread.link.created
+//   thread.presence
+// are members of LiveEventType (see packages/shared/src/constants.ts
+// LIVE_EVENT_TYPES). Each carries a `threadId` in its payload so the
+// envelope-RBAC fan-out (filterThreadEventRecipients, below) can scope delivery.
+
 type LiveEventPayload = Record<string, unknown>;
 type LiveEventListener = (event: LiveEvent) => void;
 

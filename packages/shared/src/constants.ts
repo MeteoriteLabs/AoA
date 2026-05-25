@@ -304,6 +304,10 @@ export const LIVE_EVENT_TYPES = [
   "thread.summary.updated",
   "thread.participant.changed",
   "thread.scope.changed",
+  // Threads v1 Plan 7: real-time foundations
+  "thread.entry.created",
+  "thread.link.created",
+  "thread.presence",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
