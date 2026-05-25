@@ -47,8 +47,9 @@ vi.mock("@armyofagents/db", () => ({
     dependentIssueId: "td_dependent", dependencyIssueId: "td_dependency",
   },
   issues: { id: "i_id" },
-  agents: { id: "a_id", companyId: "a_company_id", name: "a_name" },
+  agents: { id: "a_id", companyId: "a_company_id", name: "a_name", kind: "a_kind" },
   authUsers: { id: "au_id", name: "au_name" },
+  companyMemberships: { id: "cm_id", companyId: "cm_company_id", userId: "cm_user_id", principalId: "cm_principal_id", principalType: "cm_principal_type" },
   agentWakeupRequests: { id: "awr_id" },
   notifications: { id: "n_id" },
 }));
@@ -135,15 +136,28 @@ describe("threadService.addScopeItemDependency", () => {
       id: "t1", companyId: "co1", ownerUserId: "u1",
       visibility: "open", scopeType: null, scopeId: null,
     };
+    const blockerItem = { id: "item-a" };
+    // Queue: [thread lookup, blockerItem lookup]
+    // Founder bypasses all RBAC DB lookups (assertCanView/assertCanEdit return immediately)
+    const queues: any[][] = [
+      [thread],       // getById (discussions)
+      [blockerItem],  // blocker item validation (with innerJoin guard)
+    ];
+    let qi = 0;
     const insertValues = vi.fn().mockResolvedValue(undefined);
 
     const db = {
       select: vi.fn(() => ({
         from: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
         where: vi.fn().mockReturnThis(),
-        then: vi.fn((fn: any) => Promise.resolve(fn([thread]))),
+        then: vi.fn((fn: any) => Promise.resolve(fn(queues[qi++] ?? []))),
       })),
-      insert: vi.fn(() => ({ values: insertValues })),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
     } as any;
 
     const svc = threadService(db);
@@ -154,7 +168,10 @@ describe("threadService.addScopeItemDependency", () => {
     );
 
     expect(db.insert).toHaveBeenCalledTimes(1);
-    expect(insertValues).toHaveBeenCalledWith(
+    // The values call should include the blocker and blocked item IDs
+    const insertMock = db.insert as vi.Mock;
+    const valuesCall = insertMock.mock.results[0].value.values;
+    expect(valuesCall).toHaveBeenCalledWith(
       expect.objectContaining({ blockerItemId: "item-a", blockedItemId: "item-b" }),
     );
   });

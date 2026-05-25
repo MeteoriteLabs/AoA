@@ -776,6 +776,7 @@ export const NOTIFICATION_TYPES = [
   "marketplace.update_available",
   "marketplace.update_completed",
   "marketplace.update_failed",
+  "thread.mention",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

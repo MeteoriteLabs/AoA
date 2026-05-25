@@ -43,8 +43,9 @@ vi.mock("@armyofagents/db", () => ({
     dependentIssueId: "td_dependent", dependencyIssueId: "td_dependency",
   },
   issues: { id: "i_id" },
-  agents: { id: "a_id", companyId: "a_company_id", name: "a_name" },
+  agents: { id: "a_id", companyId: "a_company_id", name: "a_name", kind: "a_kind" },
   authUsers: { id: "au_id", name: "au_name" },
+  companyMemberships: { id: "cm_id", companyId: "cm_company_id", userId: "cm_user_id", principalId: "cm_principal_id", principalType: "cm_principal_type" },
   agentWakeupRequests: {
     id: "awr_id", companyId: "awr_company_id", agentId: "awr_agent_id",
     source: "awr_source", triggerDetail: "awr_trigger_detail",
@@ -86,14 +87,16 @@ function makeDb({
 }: { updateSetter?: vi.Mock; agentRow?: any } = {}) {
   const updateWhere = vi.fn().mockResolvedValue(undefined);
   const updateSet = vi.fn(() => ({ where: updateWhere }));
+  // item lookup now returns { item: existingItem } shape due to companyId join guard
+  // routeItem no longer does a discussion lookup first — goes straight to item with join
   const queues: any[][] = [
-    [thread],       // getById for assertCanView
-    [existingItem], // fetch item
-    agentRow ? [agentRow] : [], // agent wakeup insert (agent lookup if needed)
+    [{ item: existingItem }],         // fetch item (with companyId join) — now first select
+    agentRow ? [agentRow] : [],       // agent lookup (if needed)
   ];
   let qi = 0;
   const selectChain = {
     from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     then: vi.fn((fn: any) => Promise.resolve(fn(queues[qi++] ?? []))),
   };

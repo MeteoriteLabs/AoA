@@ -353,7 +353,7 @@ function ScopeItemRow({
                 title={`Blocked by ${depCount} item${depCount !== 1 ? "s" : ""}`}
               >
                 <Link2 className="h-2.5 w-2.5" />
-                blocks {depCount}
+                blocked by {depCount}
               </span>
             )}
           </div>

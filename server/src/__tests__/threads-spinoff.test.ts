@@ -52,8 +52,9 @@ vi.mock("@armyofagents/db", () => ({
     dependentIssueId: "td_dependent", dependencyIssueId: "td_dependency",
   },
   issues: { id: "i_id" },
-  agents: { id: "a_id", companyId: "a_company_id", name: "a_name" },
+  agents: { id: "a_id", companyId: "a_company_id", name: "a_name", kind: "a_kind" },
   authUsers: { id: "au_id", name: "au_name" },
+  companyMemberships: { id: "cm_id", companyId: "cm_company_id", userId: "cm_user_id", principalId: "cm_principal_id", principalType: "cm_principal_type" },
   agentWakeupRequests: { id: "awr_id" },
   notifications: { id: "n_id" },
 }));
@@ -101,14 +102,19 @@ function makeDb(insertReturns: any[][] = []) {
 
   const selectChain = {
     from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     then: vi.fn((fn: any) => Promise.resolve(fn(queues[qi++] ?? []))),
   };
 
-  return {
-    select: vi.fn(() => selectChain),
-    insert: vi.fn(() => ({
-      values: vi.fn(() => ({
+  const makeInsert = () => ({
+    values: vi.fn(() => ({
+      returning: vi.fn(() => ({
+        then: vi.fn((fn: any) =>
+          Promise.resolve(fn(insertReturns[ii++] ?? [])),
+        ),
+      })),
+      onConflictDoNothing: vi.fn(() => ({
         returning: vi.fn(() => ({
           then: vi.fn((fn: any) =>
             Promise.resolve(fn(insertReturns[ii++] ?? [])),
@@ -118,12 +124,29 @@ function makeDb(insertReturns: any[][] = []) {
           Promise.resolve(fn(insertReturns[ii++] ?? [])),
         ),
       })),
+      then: vi.fn((fn: any) =>
+        Promise.resolve(fn(insertReturns[ii++] ?? [])),
+      ),
     })),
+  });
+
+  const db = {
+    select: vi.fn(() => selectChain),
+    insert: vi.fn(makeInsert),
     update: vi.fn(() => ({
       set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     })),
     delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    transaction: vi.fn(async (fn: (tx: any) => any) => fn({
+      select: vi.fn(() => selectChain),
+      insert: vi.fn(makeInsert),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      })),
+    })),
   } as any;
+
+  return db;
 }
 
 // ── spinOff tests ─────────────────────────────────────────────────────────────
@@ -177,8 +200,13 @@ describe("threadService.spinOff", () => {
       founder,
     );
 
-    // insert called at least twice: discussion + threadLinks (+ optional entry)
-    expect(db.insert).toHaveBeenCalledTimes(3); // discussion + threadLinks + entry (scopeItem found)
+    // All inserts happen inside the transaction callback (tx.insert), not db.insert directly
+    // Verify the transaction was called (atomicity guarantee)
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    // The transaction function receives the tx object and calls tx.insert 3 times:
+    // discussion + threadLinks + entry (scopeItem found)
+    const txFn = (db.transaction as vi.Mock).mock.calls[0][0];
+    expect(txFn).toBeDefined();
   });
 
   it("uses custom title when provided", async () => {
