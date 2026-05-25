@@ -1553,6 +1553,34 @@ function isRuntimeServiceHealthRefreshActive(row: WorkspaceRuntimeServiceRow): b
   return row.status === "starting" || row.status === "running";
 }
 
+function nextRuntimeServiceHealthState(
+  row: WorkspaceRuntimeServiceRow,
+  reachable: boolean,
+  now: Date,
+): Pick<PreviewRuntimeServiceUpdate, "status" | "healthStatus" | "stoppedAt"> {
+  if (reachable) {
+    return {
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+    };
+  }
+
+  if (row.healthStatus === "unhealthy") {
+    return {
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+    };
+  }
+
+  return {
+    status: row.status,
+    healthStatus: "unhealthy",
+    stoppedAt: row.stoppedAt ?? null,
+  };
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -1612,22 +1640,20 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
         url: row.url,
         probeUrl,
       });
-      const nextStatus = reachable ? "running" : "stopped";
-      const nextHealthStatus = reachable ? "healthy" : "unhealthy";
-      const nextStoppedAt = reachable ? null : now;
+      const nextHealth = nextRuntimeServiceHealthState(row, reachable, now);
       const changed =
-        row.status !== nextStatus ||
-        row.healthStatus !== nextHealthStatus ||
-        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt) ||
+        row.status !== nextHealth.status ||
+        row.healthStatus !== nextHealth.healthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextHealth.stoppedAt) ||
         dateTime(row.healthCheckedAt) !== dateTime(now);
 
       if (!changed) return row;
 
       const update = {
         id: row.id,
-        status: nextStatus,
-        healthStatus: nextHealthStatus,
-        stoppedAt: nextStoppedAt,
+        status: nextHealth.status,
+        healthStatus: nextHealth.healthStatus,
+        stoppedAt: nextHealth.stoppedAt,
         healthCheckedAt: now,
         updatedAt: now,
       };
@@ -1672,22 +1698,20 @@ export async function refreshLocalProcessRuntimeServiceRows(input: {
         url: row.url,
         probeUrl,
       });
-      const nextStatus = reachable ? "running" : "stopped";
-      const nextHealthStatus = reachable ? "healthy" : "unhealthy";
-      const nextStoppedAt = reachable ? null : now;
+      const nextHealth = nextRuntimeServiceHealthState(row, reachable, now);
       const changed =
-        row.status !== nextStatus ||
-        row.healthStatus !== nextHealthStatus ||
-        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt) ||
+        row.status !== nextHealth.status ||
+        row.healthStatus !== nextHealth.healthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextHealth.stoppedAt) ||
         dateTime(row.healthCheckedAt) !== dateTime(now);
 
       if (!changed) return row;
 
       const update = {
         id: row.id,
-        status: nextStatus,
-        healthStatus: nextHealthStatus,
-        stoppedAt: nextStoppedAt,
+        status: nextHealth.status,
+        healthStatus: nextHealth.healthStatus,
+        stoppedAt: nextHealth.stoppedAt,
         healthCheckedAt: now,
         updatedAt: now,
       };

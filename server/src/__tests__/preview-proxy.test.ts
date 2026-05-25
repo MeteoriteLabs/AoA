@@ -93,6 +93,26 @@ describe("preview proxy route", () => {
     expect(res.text).toContain("/hello?x=1");
   });
 
+  it("proxies healthy project-scoped runtime services", async () => {
+    const upstream = await startLocalServer((_req, res) => {
+      res.setHeader("content-type", "text/plain");
+      res.end("project preview");
+    });
+    cleanup.push(upstream.close);
+
+    const app = makeApp(makeRuntimeRow({
+      executionWorkspaceId: null,
+      projectWorkspaceId: "project-workspace-1",
+      scopeType: "project_workspace",
+      url: upstream.url,
+    }));
+
+    const res = await request(app).get("/preview/services/svc-1/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toBe("project preview");
+  });
+
   it("strips upstream cookies and applies a sandbox policy to proxied responses", async () => {
     const upstream = await startLocalServer((_req, res) => {
       res.setHeader("Set-Cookie", [

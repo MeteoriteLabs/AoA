@@ -1438,12 +1438,48 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
     });
   });
 
-  it("marks unreachable adapter-managed previews unavailable", async () => {
+  it("keeps an active adapter-managed preview recoverable after one failed probe", async () => {
     const now = new Date("2026-05-16T10:00:00.000Z");
 
     const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
       rows: [baseRow as any],
       now,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+    expect(result.updates).toEqual([
+      {
+        id: baseRow.id,
+        status: "running",
+        healthStatus: "unhealthy",
+        stoppedAt: null,
+        healthCheckedAt: now,
+        updatedAt: now,
+      },
+    ]);
+  });
+
+  it("marks adapter-managed previews stopped after a consecutive failed probe", async () => {
+    const now = new Date("2026-05-16T10:01:00.000Z");
+    const unhealthyRow = {
+      ...baseRow,
+      healthStatus: "unhealthy",
+      healthCheckedAt: new Date("2026-05-16T10:00:00.000Z"),
+      stoppedAt: null,
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [unhealthyRow as any],
+      now,
+      ttlMs: 30_000,
       probeUrl: async () => false,
     });
 
@@ -1455,16 +1491,6 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
       healthCheckedAt: now,
       updatedAt: now,
     });
-    expect(result.updates).toEqual([
-      {
-        id: baseRow.id,
-        status: "stopped",
-        healthStatus: "unhealthy",
-        stoppedAt: now,
-        healthCheckedAt: now,
-        updatedAt: now,
-      },
-    ]);
   });
 
   it("does not resurrect stopped adapter-managed previews even when the URL is reachable", async () => {
@@ -1744,9 +1770,9 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
 
       expect(probes).toBe(1);
       expect(result.rows[0]).toMatchObject({
-        status: "stopped",
+        status: "running",
         healthStatus: "unhealthy",
-        stoppedAt: now,
+        stoppedAt: null,
         healthCheckedAt: now,
         updatedAt: now,
       });
@@ -1756,5 +1782,31 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
         workspaceCwd: process.cwd(),
       });
     }
+  });
+
+  it("marks local-process services stopped after a consecutive failed probe", async () => {
+    const now = new Date("2026-05-17T10:01:00.000Z");
+    const unhealthyRow = {
+      ...baseRow,
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+      healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+    };
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [unhealthyRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
   });
 });

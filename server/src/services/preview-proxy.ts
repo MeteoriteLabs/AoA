@@ -76,7 +76,7 @@ async function resolvePreviewRuntimeServiceRow(
     return { ok: false as const, status: 404, error: "Preview service not found" };
   }
 
-  if (!row.executionWorkspaceId) {
+  if (!row.executionWorkspaceId && !row.projectWorkspaceId) {
     return { ok: false as const, status: 409, error: "Preview service is not linked to a workspace" };
   }
 

@@ -336,8 +336,9 @@ export function mergeExecutionWorkspaceConfig(
 
 export function toWorkspaceRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
   const target = classifyRuntimeServiceTarget(row.url ?? null);
+  const linkedToWorkspace = Boolean(row.executionWorkspaceId || row.projectWorkspaceId);
   const canProxy =
-    Boolean(row.executionWorkspaceId) &&
+    linkedToWorkspace &&
     row.status === "running" &&
     row.healthStatus !== "unhealthy" &&
     isAllowedPreviewUpstream(row.url ?? null);
