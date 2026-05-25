@@ -69,8 +69,8 @@ export interface DiscussionEntry {
   goalId: string | null;
   parentEntryId: string | null;
   authorAgentId: string | null;
-  authorAgentName?: string | null;
-  authorAgentAvatar?: string | null;
+  authorAgentName: string | null;
+  authorAgentAvatar: string | null;
   extractionStatus: "pending" | "processing" | "completed" | "failed" | "skipped";
   createdBy: string;
   createdAt: string;
