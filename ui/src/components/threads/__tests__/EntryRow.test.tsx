@@ -56,4 +56,24 @@ describe("EntryRow — agent authorship", () => {
     );
     expect(screen.queryByTestId("entry-author-badge-agent")).not.toBeInTheDocument();
   });
+
+  it("calls onReply with the entry id when the Reply button is clicked", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const onReply = vi.fn();
+    renderWithProviders(
+      <EntryRow entry={makeEntry({ id: "e-42" })} onReprocess={vi.fn()} onReply={onReply} />,
+    );
+    // The action bar is in the expanded view — click the header toggle first
+    const toggleBtn = screen.getAllByRole("button")[0];
+    fireEvent.click(toggleBtn);
+    fireEvent.click(screen.getByRole("button", { name: /reply/i }));
+    expect(onReply).toHaveBeenCalledWith("e-42");
+  });
+
+  it("no longer renders an Annotate button", () => {
+    renderWithProviders(
+      <EntryRow entry={makeEntry()} onReprocess={vi.fn()} onReply={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button", { name: /annotate/i })).not.toBeInTheDocument();
+  });
 });
