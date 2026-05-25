@@ -6,6 +6,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Bot,
   ChevronDown,
   ChevronRight,
   ClipboardPen,
@@ -32,6 +33,7 @@ const SOURCE_ICONS: Record<string, typeof ClipboardPen> = {
   write: PenLine,
   voice: Mic,
   mcp: Plug,
+  agent: Bot,
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -39,6 +41,7 @@ const SOURCE_LABELS: Record<string, string> = {
   write: "Write",
   voice: "Voice",
   mcp: "MCP",
+  agent: "Agent",
 };
 
 function ExtractionStatusBadge({ status }: { status: string }) {
@@ -93,7 +96,7 @@ function friendlyAuthor(id: string | null | undefined): { name: string; initials
 export interface EntryRowProps {
   entry: DiscussionEntry;
   onReprocess: () => void;
-  onAddAnnotation: (
+  onAddAnnotation?: (
     content: string,
     anchorStart: number | null,
     anchorEnd: number | null,
@@ -101,6 +104,8 @@ export interface EntryRowProps {
   isReprocessing?: boolean;
   /** Indent level for nested replies (0 = top-level, 1 = reply) */
   indentLevel?: number;
+  /** Reply to this entry — opens the composer targeting this entry as parent. */
+  onReply?: (entryId: string) => void;
 }
 
 export function EntryRow({
@@ -109,6 +114,7 @@ export function EntryRow({
   onAddAnnotation,
   isReprocessing = false,
   indentLevel = 0,
+  onReply,
 }: EntryRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [showAnnotationInput, setShowAnnotationInput] = useState(false);
@@ -121,6 +127,16 @@ export function EntryRow({
   const itemCount = entry.extractedItems.length;
   const pendingCount = entry.extractedItems.filter((i) => i.status === "pending").length;
   const author = friendlyAuthor(entry.createdBy);
+
+  const isAgent = !!entry.authorAgentId;
+  const agentInitials = (entry.authorAgentName ?? "Agent")
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const displayName = isAgent ? (entry.authorAgentName ?? "Agent") : author.name;
+  const displayInitials = isAgent ? (agentInitials || "AG") : author.initials;
 
   const handleTextSelect = useCallback(() => {
     const selection = window.getSelection();
@@ -140,7 +156,7 @@ export function EntryRow({
 
   function submitAnnotation() {
     if (!annotationText.trim()) return;
-    onAddAnnotation(
+    onAddAnnotation?.(
       annotationText.trim(),
       selectedRange?.start ?? null,
       selectedRange?.end ?? null,
@@ -215,14 +231,36 @@ export function EntryRow({
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         )}
         {/* Author identity (avatar + name) */}
-        <span
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground shrink-0"
-          title={entry.createdBy}
-          aria-hidden
-        >
-          {author.initials}
-        </span>
-        <span className="text-xs font-medium text-foreground shrink-0">{author.name}</span>
+        {isAgent && entry.authorAgentAvatar ? (
+          <img
+            src={entry.authorAgentAvatar}
+            alt=""
+            className="h-5 w-5 rounded-full object-cover shrink-0"
+            aria-hidden
+          />
+        ) : (
+          <span
+            className={cn(
+              "inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold shrink-0",
+              isAgent
+                ? "bg-primary/15 text-primary"
+                : "bg-muted text-muted-foreground",
+            )}
+            title={isAgent ? (entry.authorAgentName ?? "Agent") : entry.createdBy}
+            aria-hidden
+          >
+            {displayInitials}
+          </span>
+        )}
+        <span className="text-xs font-medium text-foreground shrink-0">{displayName}</span>
+        {isAgent && (
+          <span
+            data-testid="entry-author-badge-agent"
+            className="inline-flex items-center rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary shrink-0"
+          >
+            Agent
+          </span>
+        )}
         <SourceIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">{sourceLabel}</span>
         <span className="text-xs text-muted-foreground">{relativeTime(entry.createdAt)}</span>
