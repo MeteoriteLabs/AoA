@@ -9,10 +9,13 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import {
   subscribeCompanyLiveEvents,
+  publishLiveEvent,
   ThreadSubscriptionRegistry,
   filterThreadEventRecipients,
   isThreadEvent,
   threadIdOf,
+  threadPresence,
+  PRESENCE_TTL_MS,
 } from "../services/live-events.js";
 import { threadService } from "../services/threads.js";
 import { permissionService } from "../services/permissions.js";
@@ -89,6 +92,23 @@ export function setupLiveEventsWebSocketServer(
   const tSvc = threadService(db);
   const perms = permissionService(db);
 
+  // Plan 7 presence: remember which company a thread belongs to (learned from
+  // the heartbeating connection's context) so the sweep can re-broadcast to the
+  // right company bus. Also track which (thread,user) each connection owns so we
+  // can clear presence on disconnect.
+  const threadCompany = new Map<string, string>();
+  const presenceByConn = new Map<WsSocket, Set<string>>(); // socket -> "threadId userId"
+
+  /** Broadcast a thread's current presence roster through the RBAC fan-out. */
+  function broadcastPresence(companyId: string, threadId: string, now: number) {
+    const members = threadPresence.sweep(threadId, now);
+    publishLiveEvent({
+      companyId,
+      type: "thread.presence",
+      payload: { threadId, members },
+    });
+  }
+
   /**
    * Resolve a board connection's effective role for envelope-RBAC checks.
    * In local_trusted mode the synthetic "board" actor is implicitly trusted
@@ -149,6 +169,29 @@ export function setupLiveEventsWebSocketServer(
     }
   }, 30000);
 
+  // Plan 7: sweep stale presence on a short interval. When a thread's roster
+  // shrinks (a member went silent past the TTL), re-broadcast so viewers see
+  // them disappear. We only emit when the swept roster actually changed to
+  // avoid chatty no-op pokes.
+  const presenceSweepInterval = setInterval(() => {
+    const now = Date.now();
+    for (const threadId of threadPresence.threadIds()) {
+      const before = threadPresence.list(threadId).length;
+      const after = threadPresence.sweep(threadId, now);
+      if (after.length !== before) {
+        const companyId = threadCompany.get(threadId);
+        if (companyId) {
+          publishLiveEvent({
+            companyId,
+            type: "thread.presence",
+            payload: { threadId, members: after },
+          });
+        }
+        if (after.length === 0) threadCompany.delete(threadId);
+      }
+    }
+  }, Math.max(1000, Math.floor(PRESENCE_TTL_MS / 3)));
+
   wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).aoaUpgradeContext;
     if (!context) {
@@ -200,6 +243,28 @@ export function setupLiveEventsWebSocketServer(
         threadRegistry.unsubscribe(msg.unsubscribe, socket);
         return;
       }
+
+      // Plan 7 presence/typing heartbeat. Only humans (board) appear in the
+      // presence roster -- agents have their own "working" indicator
+      // (agent.status). We require an active subscription so a client can't poke
+      // presence for a thread it isn't viewing (the broadcast itself is also
+      // envelope-RBAC filtered at fan-out).
+      if (typeof msg.presence === "string" && msg.presence.length > 0) {
+        const threadId = msg.presence;
+        if (context.actorType !== "board") return;
+        if (!threadRegistry.isSubscribed(threadId, socket)) return;
+        const now = Date.now();
+        threadCompany.set(threadId, context.companyId);
+        threadPresence.touch(threadId, context.actorId, now, msg.typing === true);
+        let owned = presenceByConn.get(socket);
+        if (!owned) {
+          owned = new Set();
+          presenceByConn.set(socket, owned);
+        }
+        owned.add(`${threadId} ${context.actorId}`);
+        broadcastPresence(context.companyId, threadId, now);
+        return;
+      }
     });
 
     socket.on("close", () => {
@@ -208,6 +273,22 @@ export function setupLiveEventsWebSocketServer(
       cleanupByClient.delete(socket);
       aliveByClient.delete(socket);
       threadRegistry.removeConnection(socket);
+
+      // Plan 7: drop this connection's presence and notify the affected threads
+      // so other viewers see them leave promptly (rather than waiting for TTL).
+      const owned = presenceByConn.get(socket);
+      if (owned) {
+        const now = Date.now();
+        for (const key of owned) {
+          const sep = key.indexOf(" ");
+          const threadId = key.slice(0, sep);
+          const userId = key.slice(sep + 1);
+          threadPresence.remove(threadId, userId);
+          const companyId = threadCompany.get(threadId);
+          if (companyId) broadcastPresence(companyId, threadId, now);
+        }
+        presenceByConn.delete(socket);
+      }
     });
 
     socket.on("error", (err: Error) => {
@@ -217,6 +298,7 @@ export function setupLiveEventsWebSocketServer(
 
   wss.on("close", () => {
     clearInterval(pingInterval);
+    clearInterval(presenceSweepInterval);
   });
 
   server.on("upgrade", (req, socket, head) => {

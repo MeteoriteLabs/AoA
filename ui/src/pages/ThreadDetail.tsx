@@ -60,7 +60,8 @@ export function ThreadDetail() {
   });
 
   // ── Plan 7: live thread updates (refetch-on-poke) + reconnect catch-up ──
-  const { connectionState, subscribeThread, unsubscribeThread, onReconnect } = useLiveUpdates();
+  const { connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect } =
+    useLiveUpdates();
 
   // Subscribe the company WS to this thread on mount; unsubscribe on unmount.
   // The server's per-thread registry + envelope-RBAC fan-out only then delivers
@@ -70,6 +71,15 @@ export function ThreadDetail() {
     subscribeThread(resolvedId);
     return () => unsubscribeThread(resolvedId);
   }, [resolvedId, subscribeThread, unsubscribeThread]);
+
+  // Heartbeat presence while the thread is open so other viewers see us "here".
+  // Ephemeral on the server (TTL-swept); we send immediately + every 8s.
+  useEffect(() => {
+    if (!resolvedId) return;
+    sendPresence(resolvedId);
+    const id = window.setInterval(() => sendPresence(resolvedId), 8_000);
+    return () => window.clearInterval(id);
+  }, [resolvedId, sendPresence]);
 
   // On WS reconnect, catch up by refetching the active thread (covers any pokes
   // missed while disconnected). The catch-up REST endpoint (sinceSeq) backs the
