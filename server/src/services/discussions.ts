@@ -348,9 +348,16 @@ export function discussionService(db: Db) {
         goalId?: string | null;
         sourceInfo?: Record<string, unknown> | null;
         parentEntryId?: string | null;
+        authorAgentId?: string | null;
       },
       actorId: string,
     ) => {
+      if (data.authorAgentId && data.inputType !== "agent") {
+        throw badRequest(
+          "inputType must be 'agent' when authorAgentId is set",
+        );
+      }
+
       // Verify discussion exists and belongs to company
       const discussion = await db
         .select()
@@ -416,6 +423,7 @@ export function discussionService(db: Db) {
             goalId: data.goalId ?? null,
             sourceInfo: data.sourceInfo ?? null,
             parentEntryId: data.parentEntryId ?? null,
+            authorAgentId: data.authorAgentId ?? null,
             extractionStatus: "pending",
             seq: entrySeq,
             createdBy: actorId,
