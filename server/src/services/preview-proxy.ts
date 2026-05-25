@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import httpProxy from "http-proxy";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { assertCompanyAccess } from "../routes/authz.js";
+import { stripPreviewQueryAuthParams } from "./preview-auth-query.js";
 import { authorizeCompanyUpgrade } from "./upgrade-auth.js";
 import { isAllowedPreviewUpstream } from "./preview-url.js";
 
@@ -117,7 +118,7 @@ export function buildPreviewTargetUrl(input: {
     ? upstream.pathname.slice(0, -1)
     : upstream.pathname;
   upstream.pathname = `${upstreamBasePath}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
-  requestUrl.searchParams.delete("token");
+  stripPreviewQueryAuthParams(requestUrl);
   upstream.search = requestUrl.searchParams.toString();
   return upstream.href;
 }

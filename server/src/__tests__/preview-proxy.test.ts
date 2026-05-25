@@ -195,11 +195,19 @@ describe("preview proxy route", () => {
 });
 
 describe("buildPreviewTargetUrl", () => {
-  it("strips AoA query auth tokens before forwarding preview traffic upstream", () => {
+  it("preserves app-owned token query parameters when forwarding preview traffic upstream", () => {
     expect(buildPreviewTargetUrl({
       serviceUrl: "http://127.0.0.1:5173/",
       serviceId: "svc-1",
       originalUrl: "/preview/services/svc-1/ws?token=secret&keep=1",
+    })).toBe("http://127.0.0.1:5173/ws?token=secret&keep=1");
+  });
+
+  it("strips AoA-owned query auth before forwarding preview traffic upstream", () => {
+    expect(buildPreviewTargetUrl({
+      serviceUrl: "http://127.0.0.1:5173/",
+      serviceId: "svc-1",
+      originalUrl: "/preview/services/svc-1/ws?aoa_preview_token=secret&keep=1",
     })).toBe("http://127.0.0.1:5173/ws?keep=1");
   });
 });

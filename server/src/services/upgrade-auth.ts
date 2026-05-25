@@ -4,6 +4,7 @@ import { agentApiKeys, agents, companyMemberships, instanceUserRoles, type Db } 
 import type { DeploymentMode } from "@armyofagents/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
+import { getPreviewQueryAuthToken } from "./preview-auth-query.js";
 
 export interface UpgradeActorContext {
   companyId: string;
@@ -46,9 +47,9 @@ export async function authorizeCompanyUpgrade(
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
   },
 ): Promise<UpgradeActorContext | null> {
-  const queryToken = url.searchParams.get("token")?.trim() ?? "";
+  const queryToken = getPreviewQueryAuthToken(url);
   const authToken = parseBearerToken(req.headers.authorization);
-  const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
+  const token = authToken ?? queryToken;
 
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
