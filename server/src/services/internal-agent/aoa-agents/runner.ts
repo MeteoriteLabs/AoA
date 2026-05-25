@@ -12,8 +12,32 @@ import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 import { computeCostCents } from "../cost-model.js";
+import { assembleAgentPersona } from "../commander-context.js";
+import { agentInstructionsService } from "../../agent-instructions.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
+
+type RunnerAgentShape = { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
+
+/**
+ * P1 (ii): resolve the instruction text a crew run uses. Prefer the assembled
+ * 4-file bundle (founder edits take effect live); fall back to the legacy
+ * runtimeConfig.aoa.instruction string. Never throws — assembly failure falls back.
+ */
+export async function resolveAoaInstruction(args: {
+  agent: RunnerAgentShape;
+  fallbackInstruction: string;
+  assemble?: (a: { agent: RunnerAgentShape; service: ReturnType<typeof agentInstructionsService> }) => Promise<string | null>;
+}): Promise<string> {
+  const assemble = args.assemble ?? assembleAgentPersona;
+  try {
+    const persona = await assemble({ agent: args.agent, service: agentInstructionsService() });
+    if (persona && persona.trim().length > 0) return persona;
+  } catch {
+    /* fall through to the legacy string */
+  }
+  return args.fallbackInstruction;
+}
 
 // From Step 1 (authorize-tool.ts + tools/submit-extracted-items.ts): the system
 // session identity an AoA sub-agent run uses so the internal-agent bridge
@@ -83,7 +107,16 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
 
     const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
     const aoaCfg = (rc.aoa ?? {}) as Record<string, unknown>;
-    const instruction = typeof aoaCfg.instruction === "string" ? aoaCfg.instruction : "";
+    const fallbackInstruction = typeof aoaCfg.instruction === "string" ? aoaCfg.instruction : "";
+    const instruction = await resolveAoaInstruction({
+      agent: {
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        adapterConfig: (agent.adapterConfig ?? null) as Record<string, unknown> | null,
+      },
+      fallbackInstruction,
+    });
 
     // D2: read per-agent toolAllowlist from runtimeConfig.aoa.toolAllowlist.
     // The runner always sets agentKind='aoa' so the bridge activates
