@@ -1,5 +1,5 @@
 import type { AgentTool } from "../types.js";
-import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
+import type { ThreadPhase } from "@armyofagents/shared";
 
 export function createAdvancePhaseTool(): AgentTool {
   return {
