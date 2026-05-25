@@ -20,7 +20,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Lock, Unlock, User } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getInitials } from "@/lib/initials";
 import type { ThreadPresenceMember } from "../../context/LiveUpdatesProvider";
 import { MentionInput } from "./MentionInput";
 
@@ -363,12 +362,16 @@ function PresenceStrip({
         {visible.length > 0 && (
           <div className="flex items-center -space-x-1.5" aria-hidden="true">
             {visible.map((m) => (
+              // No display-name source is available in this component (presence
+              // carries only userId). getInitials on a raw UUID produces garbage
+              // fragments ("C3"), so render a neutral placeholder instead and
+              // avoid leaking the UUID via the tooltip.
               <span
                 key={m.userId}
-                title={m.userId}
+                title="Member here"
                 className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background bg-muted text-[9px] font-semibold text-muted-foreground"
               >
-                {getInitials(m.userId) || "?"}
+                ?
               </span>
             ))}
             {overflow > 0 && (

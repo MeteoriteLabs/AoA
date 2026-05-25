@@ -320,6 +320,23 @@ export function threadService(db: Db) {
     throw notFound("Thread not found");
   }
 
+  /**
+   * Get a single thread by id, enforcing visibility (the canonical read path).
+   * Returns null if the row doesn't exist; throws notFound if it exists but the
+   * actor can't view it. Centralizes the fetch + assertCanView so callers don't
+   * re-implement the visibility check (and can't drift on selected columns).
+   */
+  async function getByIdInternal(companyId: string, id: string, actor: Actor) {
+    const thread = await db
+      .select()
+      .from(discussions)
+      .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!thread) return null;
+    await assertCanView(companyId, thread, actor);
+    return thread;
+  }
+
   return {
     // ── Real-time envelope RBAC (Plan 7) ───────────────────────────────────────
 
@@ -401,16 +418,8 @@ export function threadService(db: Db) {
      * Get a single thread by id, enforcing visibility.
      * Returns null if row doesn't exist; throws notFound if exists but not visible.
      */
-    getById: async (companyId: string, id: string, actor: Actor) => {
-      const thread = await db
-        .select()
-        .from(discussions)
-        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
-        .then((rows) => rows[0] ?? null);
-      if (!thread) return null;
-      await assertCanView(companyId, thread, actor);
-      return thread;
-    },
+    getById: async (companyId: string, id: string, actor: Actor) =>
+      getByIdInternal(companyId, id, actor),
 
     /**
      * Plan 7 catch-up: fetch entries with seq > sinceSeq, ordered by seq, for a
@@ -425,13 +434,10 @@ export function threadService(db: Db) {
       sinceSeq: number,
       actor: Actor,
     ) => {
-      const thread = await db
-        .select({ id: discussions.id, scopeType: discussions.scopeType, scopeId: discussions.scopeId, ownerUserId: discussions.ownerUserId, visibility: discussions.visibility })
-        .from(discussions)
-        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
-        .then((rows) => rows[0] ?? null);
+      // Route the RBAC check through getById so visibility (and the columns it
+      // selects) stays centralized — no duplicate fetch that could drift.
+      const thread = await getByIdInternal(companyId, threadId, actor);
       if (!thread) throw notFound("Thread not found");
-      await assertCanView(companyId, thread, actor);
 
       return db
         .select()
@@ -1168,7 +1174,9 @@ export function threadService(db: Db) {
       publishLiveEvent({
         companyId,
         type: "thread.link.created",
-        payload: { fromThreadId: fromId, toThreadId: toId, kind },
+        // threadId routes the event at fan-out (threadIdOf reads payload.threadId).
+        // Use the source thread so subscribers watching it see when it links out.
+        payload: { threadId: fromId, fromThreadId: fromId, toThreadId: toId, kind },
       });
       return link;
     },
