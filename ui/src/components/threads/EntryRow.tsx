@@ -129,14 +129,16 @@ export function EntryRow({
   const author = friendlyAuthor(entry.createdBy);
 
   const isAgent = !!entry.authorAgentId;
-  const agentInitials = (entry.authorAgentName ?? "Agent")
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+  const agentInitials =
+    (entry.authorAgentName ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "AG";
   const displayName = isAgent ? (entry.authorAgentName ?? "Agent") : author.name;
-  const displayInitials = isAgent ? (agentInitials || "AG") : author.initials;
+  const displayInitials = isAgent ? agentInitials : author.initials;
 
   const handleTextSelect = useCallback(() => {
     const selection = window.getSelection();
