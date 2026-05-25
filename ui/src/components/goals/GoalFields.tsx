@@ -33,8 +33,9 @@ export function isCompatibleParent(
 
 export interface GoalFieldsProps {
   companyId: string;
-  status: string;
-  onStatusChange: (status: string) => void;
+  /** Status row is shown only when onStatusChange is provided (thread→goal omits it — always planned). */
+  status?: string;
+  onStatusChange?: (status: string) => void;
   scope: GoalScope;
   onScopeChange: (scope: GoalScope) => void;
   parentIds: string[];
@@ -113,29 +114,31 @@ export function GoalFields({
 
   return (
     <div className="space-y-4" data-testid="goal-fields">
-      {/* Status */}
-      <div>
-        <span className={LABEL_CLS}>Status</span>
-        <div className="flex flex-wrap gap-1.5">
-          {GOAL_STATUSES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              data-testid={`goal-status-${s}`}
-              aria-pressed={status === s}
-              onClick={() => onStatusChange(s)}
-              className={cn(
-                "inline-flex items-center rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors",
-                status === s
-                  ? "bg-foreground text-background"
-                  : "bg-muted text-muted-foreground hover:bg-muted/80",
-              )}
-            >
-              {s.replace("_", " ")}
-            </button>
-          ))}
+      {/* Status (only when the host wants to control it) */}
+      {onStatusChange && (
+        <div>
+          <span className={LABEL_CLS}>Status</span>
+          <div className="flex flex-wrap gap-1.5">
+            {GOAL_STATUSES.map((s) => (
+              <button
+                key={s}
+                type="button"
+                data-testid={`goal-status-${s}`}
+                aria-pressed={status === s}
+                onClick={() => onStatusChange(s)}
+                className={cn(
+                  "inline-flex items-center rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors",
+                  status === s
+                    ? "bg-foreground text-background"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80",
+                )}
+              >
+                {s.replace("_", " ")}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Scope */}
       <div>
