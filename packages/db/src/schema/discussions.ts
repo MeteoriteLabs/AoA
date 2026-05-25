@@ -6,10 +6,11 @@ import {
   timestamp,
   integer,
   index,
+  uniqueIndex,
   jsonb,
   boolean,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
@@ -127,6 +128,11 @@ export const discussionEntries = pgTable(
     parentEntryId: uuid("parent_entry_id").references((): AnyPgColumn => discussionEntries.id, { onDelete: "set null" }),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
 
+    // Plan 7: per-thread monotonic ordering for catch-up (reconnect-refetch).
+    // Assigned atomically from discussions.entrySeq on insert (see
+    // discussionService.addEntry). 0 = legacy rows created before Plan 7.
+    seq: integer("seq").notNull().default(0),
+
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -143,6 +149,12 @@ export const discussionEntries = pgTable(
       table.discussionId,
       table.createdAt,
     ),
+    // Plan 7: backstop the atomic counter — no two entries share a seq per
+    // thread. Partial (WHERE seq <> 0) so legacy rows (all defaulting to 0
+    // before Plan 7 assigned seqs) don't collide and block the migration.
+    threadSeqUniq: uniqueIndex("discussion_entries_thread_seq_uniq")
+      .on(table.discussionId, table.seq)
+      .where(sql`${table.seq} <> 0`),
   }),
 );
 

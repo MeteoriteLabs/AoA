@@ -11,7 +11,7 @@
  * - D4 batched RBAC: list() uses 2 queries, not 2N
  */
 
-import { and, eq, desc, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, desc, asc, gt, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   discussions,
@@ -77,6 +77,17 @@ export interface ThreadViewer {
   role: "founder" | "team_lead" | "team_member";
   hasScopeAccess: boolean;
   isParticipant: boolean;
+}
+
+/**
+ * Plan 7: the next per-thread entry seq given the current max (or null when the
+ * thread has no entries yet). Seqs are 1-based; 0 is reserved for legacy rows.
+ * NOTE: this is the documentation/contract helper. Production assignment uses
+ * the atomic `UPDATE discussions SET entry_seq = entry_seq + 1 RETURNING`
+ * counter (see discussionService.addEntry) to avoid max(seq)+1 races.
+ */
+export function nextSeq(currentMax: number | null): number {
+  return (currentMax ?? 0) + 1;
 }
 
 /**
@@ -399,6 +410,40 @@ export function threadService(db: Db) {
       if (!thread) return null;
       await assertCanView(companyId, thread, actor);
       return thread;
+    },
+
+    /**
+     * Plan 7 catch-up: fetch entries with seq > sinceSeq, ordered by seq, for a
+     * thread the actor can view. Used by the reconnect-refetch path so a client
+     * that missed pokes while disconnected can pull only the gap.
+     * RBAC: enforced via the same getById visibility check (throws notFound when
+     * the thread exists but isn't visible).
+     */
+    entriesSince: async (
+      companyId: string,
+      threadId: string,
+      sinceSeq: number,
+      actor: Actor,
+    ) => {
+      const thread = await db
+        .select({ id: discussions.id, scopeType: discussions.scopeType, scopeId: discussions.scopeId, ownerUserId: discussions.ownerUserId, visibility: discussions.visibility })
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanView(companyId, thread, actor);
+
+      return db
+        .select()
+        .from(discussionEntries)
+        .where(
+          and(
+            eq(discussionEntries.discussionId, threadId),
+            gt(discussionEntries.seq, sinceSeq),
+          ),
+        )
+        .orderBy(asc(discussionEntries.seq))
+        .then((rows) => rows);
     },
 
     /**

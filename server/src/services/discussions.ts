@@ -368,31 +368,41 @@ export function discussionService(db: Db) {
 
       const now = new Date();
 
-      const [entry] = await db
-        .insert(discussionEntries)
-        .values({
-          discussionId,
-          inputType: data.inputType,
-          rawContent: data.rawContent,
-          title: data.title ?? null,
-          departmentId: data.departmentId ?? null,
-          projectId: data.projectId ?? null,
-          goalId: data.goalId ?? null,
-          sourceInfo: data.sourceInfo ?? null,
-          extractionStatus: "pending",
-          createdBy: actorId,
-        })
-        .returning();
+      // Plan 7 (D1): assign a per-thread monotonic seq for catch-up. We bump the
+      // atomic discussions.entrySeq counter with UPDATE ... RETURNING (atomic per
+      // row, so concurrent inserts serialize on the discussions row) instead of
+      // max(seq)+1, which races. The counter bump also carries the denormalized
+      // count update (Gotcha 1.2) so both land in one statement.
+      const entry = await db.transaction(async (tx) => {
+        const [{ entrySeq }] = await tx
+          .update(discussions)
+          .set({
+            entrySeq: sql`${discussions.entrySeq} + 1`,
+            entryCount: sql`${discussions.entryCount} + 1`,
+            lastEntryAt: now,
+            updatedAt: now,
+          })
+          .where(eq(discussions.id, discussionId))
+          .returning({ entrySeq: discussions.entrySeq });
 
-      // Gotcha 1.2: update denormalized counts in same operation
-      await db
-        .update(discussions)
-        .set({
-          entryCount: sql`${discussions.entryCount} + 1`,
-          lastEntryAt: now,
-          updatedAt: now,
-        })
-        .where(eq(discussions.id, discussionId));
+        const [inserted] = await tx
+          .insert(discussionEntries)
+          .values({
+            discussionId,
+            inputType: data.inputType,
+            rawContent: data.rawContent,
+            title: data.title ?? null,
+            departmentId: data.departmentId ?? null,
+            projectId: data.projectId ?? null,
+            goalId: data.goalId ?? null,
+            sourceInfo: data.sourceInfo ?? null,
+            extractionStatus: "pending",
+            seq: entrySeq,
+            createdBy: actorId,
+          })
+          .returning();
+        return inserted;
+      });
 
       publishLiveEvent({
         companyId,
@@ -401,6 +411,19 @@ export function discussionService(db: Db) {
           discussionId,
           entryId: entry.id,
           inputType: data.inputType,
+        },
+      });
+
+      // Plan 7: thread-scoped poke for the live thread view. Carries threadId so
+      // the WS envelope-RBAC fan-out only delivers it to viewers who can see the
+      // thread. The frontend refetches the thread (refetch-on-poke) using seq.
+      publishLiveEvent({
+        companyId,
+        type: "thread.entry.created",
+        payload: {
+          threadId: discussionId,
+          entryId: entry.id,
+          seq: entry.seq,
         },
       });
 

@@ -1053,5 +1053,33 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // Plan 7 catch-up: GET …/discussions/:discussionId/entries?sinceSeq=N
+  // Returns entries with seq > N ordered by seq, for reconnect-refetch.
+  // RBAC enforced inside threadService.entriesSince (hide-don't-403).
+  router.get(
+    "/companies/:companyId/discussions/:discussionId/entries",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = await buildActor(req, companyId);
+
+      const rawSince = req.query.sinceSeq;
+      const parsed = Number.parseInt(
+        Array.isArray(rawSince) ? String(rawSince[0]) : String(rawSince ?? "0"),
+        10,
+      );
+      const sinceSeq = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+
+      try {
+        const entries = await tSvc.entriesSince(companyId, discussionId, sinceSeq, actor);
+        res.json({ entries, total: entries.length, sinceSeq });
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
   return router;
 }

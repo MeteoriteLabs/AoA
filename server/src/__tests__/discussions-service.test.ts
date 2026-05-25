@@ -24,6 +24,7 @@ vi.mock("@armyofagents/db", () => ({
     scopeId: "discussions_scope_id",
     tags: "discussions_tags",
     entryCount: "discussions_entry_count",
+    entrySeq: "discussions_entry_seq",
     pendingItemCount: "discussions_pending_item_count",
     lastEntryAt: "discussions_last_entry_at",
     createdBy: "discussions_created_by",
@@ -42,6 +43,7 @@ vi.mock("@armyofagents/db", () => ({
     sourceInfo: "entries_source_info",
     extractionStatus: "entries_extraction_status",
     extractionRunId: "entries_extraction_run_id",
+    seq: "entries_seq",
     createdBy: "entries_created_by",
     createdAt: "entries_created_at",
   },
@@ -499,13 +501,14 @@ describe("discussionService", () => {
   });
 
   describe("addEntry()", () => {
-    it("increments entryCount and publishes LiveEvent", async () => {
+    it("increments entryCount, assigns seq, and publishes LiveEvents", async () => {
       const db = createSequenceDb([
         // select discussion
         [{ id: "disc-1", companyId: "co-1" }],
-        // insert entry
-        [{ id: "entry-2", discussionId: "disc-1", inputType: "write" }],
-        // update discussion counts (no return)
+        // Plan 7: tx update discussions.entrySeq counter -> returns new seq
+        [{ entrySeq: 1 }],
+        // tx insert entry (now carries seq)
+        [{ id: "entry-2", discussionId: "disc-1", inputType: "write", seq: 1 }],
       ]);
 
       const result = await discussionService(db).addEntry(
@@ -516,13 +519,21 @@ describe("discussionService", () => {
       );
 
       expect(result.id).toBe("entry-2");
+      expect(result.seq).toBe(1);
+      // Legacy company-wide poke for the Discussions list
       expect(publishLiveEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "discussion.entry.created",
           payload: expect.objectContaining({ entryId: "entry-2" }),
         }),
       );
-      expect(db.update).toHaveBeenCalled();
+      // Plan 7: thread-scoped poke carrying threadId + seq
+      expect(publishLiveEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "thread.entry.created",
+          payload: expect.objectContaining({ threadId: "disc-1", seq: 1 }),
+        }),
+      );
     });
 
     it("throws when discussion not found", async () => {
