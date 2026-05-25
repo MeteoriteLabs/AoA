@@ -67,6 +67,25 @@ function getExtractionError(sourceInfo: Record<string, unknown> | null): string 
   return sourceInfo.extractionError;
 }
 
+/** Friendly author name + initials from a raw createdBy id / slug.
+   No display-name source exists on the entry, so derive a readable label. */
+function friendlyAuthor(id: string | null | undefined): { name: string; initials: string } {
+  if (!id) return { name: "Unknown", initials: "?" };
+  if (id === "local-board") return { name: "Local Board", initials: "LB" };
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id)) return { name: "Member", initials: "M" };
+  const name = id
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+  const initials = name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return { name: name || id, initials: initials || "?" };
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    EntryRow
    ════════════════════════════════════════════════════════════════════════ */
@@ -101,6 +120,7 @@ export function EntryRow({
   const sourceLabel = SOURCE_LABELS[entry.inputType] ?? entry.inputType;
   const itemCount = entry.extractedItems.length;
   const pendingCount = entry.extractedItems.filter((i) => i.status === "pending").length;
+  const author = friendlyAuthor(entry.createdBy);
 
   const handleTextSelect = useCallback(() => {
     const selection = window.getSelection();
@@ -194,8 +214,17 @@ export function EntryRow({
         ) : (
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         )}
+        {/* Author identity (avatar + name) */}
+        <span
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground shrink-0"
+          title={entry.createdBy}
+          aria-hidden
+        >
+          {author.initials}
+        </span>
+        <span className="text-xs font-medium text-foreground shrink-0">{author.name}</span>
         <SourceIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-xs font-medium text-muted-foreground">{sourceLabel}</span>
+        <span className="text-xs text-muted-foreground">{sourceLabel}</span>
         <span className="text-xs text-muted-foreground">{relativeTime(entry.createdAt)}</span>
         <ExtractionStatusBadge status={entry.extractionStatus} />
         {itemCount > 0 && (
