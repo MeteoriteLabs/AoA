@@ -11,6 +11,11 @@ import { createAnalysisTools } from "./tools/analysis-tools.js";
 import { submitExtractedItemsTool } from "./tools/submit-extracted-items.js";
 import { delegateToSubagentTool } from "./tools/delegate-to-subagent.js";
 import { useSkillTool } from "./tools/skill-tools.js";
+import { createThreadTools } from "./tools/thread-tools.js";
+import { createPostEntryTool } from "./tools/post-entry-tool.js";
+import { createAdvancePhaseTool } from "./tools/advance-phase-tool.js";
+import { createNotifyOwnerTool } from "./tools/notify-owner-tool.js";
+import { createArtifactTool } from "./tools/create-artifact-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -25,6 +30,12 @@ export function createToolRegistry(): AgentTool[] {
     delegateToSubagentTool,
     ...createAnalysisTools(),
     useSkillTool,
+    // P2 crew collaboration tools
+    ...createThreadTools(),
+    createPostEntryTool(),
+    createAdvancePhaseTool(),
+    createNotifyOwnerTool(),
+    createArtifactTool(),
   ];
 }
 
