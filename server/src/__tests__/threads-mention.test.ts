@@ -17,6 +17,7 @@ vi.mock("@armyofagents/db", () => ({
     id: "agents_id",
     companyId: "agents_company_id",
     name: "agents_name",
+    kind: "agents_kind",
     slug: "agents_slug",
   },
   authUsers: {
@@ -24,6 +25,13 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "auth_company_id",
     name: "auth_name",
     email: "auth_email",
+  },
+  companyMemberships: {
+    id: "cm_id",
+    companyId: "cm_company_id",
+    userId: "cm_user_id",
+    principalId: "cm_principal_id",
+    principalType: "cm_principal_type",
   },
   agentWakeupRequests: {
     id: "awr_id",
@@ -116,6 +124,7 @@ describe("processMentions (dispatch)", () => {
 
     const selectChain = {
       from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
@@ -220,6 +229,7 @@ describe("processMentions (dispatch)", () => {
     let idx = 0;
     const selectChain = {
       from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[idx++] ?? [])),

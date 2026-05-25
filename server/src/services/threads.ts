@@ -26,6 +26,7 @@ import {
   issues,
   agents,
   authUsers,
+  companyMemberships,
   agentWakeupRequests,
   notifications,
 } from "@armyofagents/db";
@@ -160,11 +161,15 @@ export async function processMentions(
   mentions: Array<{ raw: string; name: string }>,
 ): Promise<void> {
   for (const mention of mentions) {
-    // 1) Check if name resolves to an agent in this company
+    // 1) Check if name resolves to an AoA agent in this company (kind='aoa' only)
     const agentRows = await db
       .select({ id: agents.id, name: agents.name })
       .from(agents)
-      .where(and(eq(agents.companyId, companyId), eq(agents.name, mention.name)))
+      .where(and(
+        eq(agents.companyId, companyId),
+        eq(agents.name, mention.name),
+        eq(agents.kind, "aoa"),
+      ))
       .then((rows) => rows);
 
     if (agentRows.length > 0) {
@@ -182,10 +187,14 @@ export async function processMentions(
       continue;
     }
 
-    // 2) Check if name resolves to a human user (by name)
+    // 2) Check if name resolves to a human user (by name) — restricted to company members
     const userRows = await db
       .select({ id: authUsers.id, name: authUsers.name })
       .from(authUsers)
+      .innerJoin(companyMemberships, and(
+        eq(companyMemberships.userId, authUsers.id),
+        eq(companyMemberships.companyId, companyId),
+      ))
       .where(eq(authUsers.name, mention.name))
       .then((rows) => rows);
 
@@ -1024,6 +1033,7 @@ export function threadService(db: Db) {
           kind,
           createdBy: actor.userId,
         })
+        .onConflictDoNothing()
         .returning();
 
       await logActivity(db, {
@@ -1063,9 +1073,12 @@ export function threadService(db: Db) {
         .select()
         .from(threadLinks)
         .where(
-          or(
-            eq(threadLinks.fromThreadId, id),
-            eq(threadLinks.toThreadId, id),
+          and(
+            eq(threadLinks.companyId, companyId),
+            or(
+              eq(threadLinks.fromThreadId, id),
+              eq(threadLinks.toThreadId, id),
+            ),
           ),
         )
         .then((rows) => rows);
@@ -1091,11 +1104,24 @@ export function threadService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!thread) throw notFound("Thread not found");
       await assertCanView(companyId, thread, actor);
+      await assertCanEdit(thread, actor); // write operation requires edit rights
+
+      // Validate that blockerItemId belongs to this discussion (via entry join)
+      const blockerItem = await db
+        .select({ id: discussionExtractedItems.id })
+        .from(discussionExtractedItems)
+        .innerJoin(discussionEntries, and(
+          eq(discussionEntries.id, discussionExtractedItems.discussionEntryId),
+          eq(discussionEntries.discussionId, threadId),
+        ))
+        .where(eq(discussionExtractedItems.id, dep.blockerItemId))
+        .then((rows) => rows[0] ?? null);
+      if (!blockerItem) throw notFound("Blocker item not found in this thread");
 
       await db.insert(scopeItemDependencies).values({
         blockerItemId: dep.blockerItemId,
         blockedItemId: dep.blockedItemId,
-      });
+      }).onConflictDoNothing();
 
       return { ok: true };
     },
@@ -1211,44 +1237,49 @@ export function threadService(db: Db) {
 
       const childTitle = input.title ?? scopeItem?.title ?? `${parent.title ?? "Thread"} (spin-off)`;
 
-      const [child] = await db
-        .insert(discussions)
-        .values({
+      // Wrap all three inserts in a transaction for atomicity — all succeed or all roll back
+      const child = await db.transaction(async (tx) => {
+        const [newChild] = await tx
+          .insert(discussions)
+          .values({
+            companyId,
+            title: childTitle,
+            scopeType: parent.scopeType,
+            scopeId: parent.scopeId,
+            phase: "discuss" as const,
+            visibility: parent.visibility,
+            forkedFromId: parent.id,
+            ownerUserId: actor.isHuman ? actor.userId : null,
+            createdBy: actor.userId,
+          })
+          .returning();
+
+        // Create the "spawned_from_task" link
+        await tx.insert(threadLinks).values({
           companyId,
-          title: childTitle,
-          scopeType: parent.scopeType,
-          scopeId: parent.scopeId,
-          phase: "discuss" as const,
-          visibility: parent.visibility,
-          forkedFromId: parent.id,
-          ownerUserId: actor.isHuman ? actor.userId : null,
-          createdBy: actor.userId,
-        })
-        .returning();
-
-      // Create the "spawned_from_task" link
-      await db.insert(threadLinks).values({
-        companyId,
-        fromThreadId: child.id,
-        toThreadId: parent.id,
-        kind: "spawned_from_task",
-        createdBy: actor.userId,
-      });
-
-      // Create first entry copying scope item context (if scope item found)
-      if (scopeItem) {
-        await db.insert(discussionEntries).values({
-          discussionId: child.id,
-          inputType: "write",
-          rawContent: [
-            `Spun off from: ${parent.title ?? parentId}`,
-            scopeItem.description ?? scopeItem.title,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
+          fromThreadId: newChild.id,
+          toThreadId: parent.id,
+          kind: "spawned_from_task",
           createdBy: actor.userId,
         });
-      }
+
+        // Create first entry copying scope item context (if scope item found)
+        if (scopeItem) {
+          await tx.insert(discussionEntries).values({
+            discussionId: newChild.id,
+            inputType: "write",
+            rawContent: [
+              `Spun off from: ${parent.title ?? parentId}`,
+              scopeItem.description ?? scopeItem.title,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+            createdBy: actor.userId,
+          });
+        }
+
+        return newChild;
+      });
 
       await logActivity(db, {
         companyId,
@@ -1288,20 +1319,27 @@ export function threadService(db: Db) {
       // Founder-gated: hide-don't-403
       if (actor.role !== "founder") throw notFound("Thread not found");
 
-      // Fetch the item (we need companyId guard — items are indirectly scoped
-      // via entry → discussion → company; for simplicity we verify item exists)
+      // Fetch the item with companyId guard — join through entry → discussion
+      // to ensure the item belongs to this company (prevents cross-company mutation)
       const item = await db
-        .select()
+        .select({ item: discussionExtractedItems })
         .from(discussionExtractedItems)
+        .innerJoin(discussionEntries, eq(discussionEntries.id, discussionExtractedItems.discussionEntryId))
+        .innerJoin(discussions, and(
+          eq(discussions.id, discussionEntries.discussionId),
+          eq(discussions.companyId, companyId),
+        ))
         .where(eq(discussionExtractedItems.id, itemId))
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0]?.item ?? null);
       if (!item) throw notFound("Item not found");
 
-      // Build update set (only provided fields)
-      const updates: Record<string, unknown> = { updatedAt: new Date() };
-      if (routing.departmentId !== undefined) updates.departmentId = routing.departmentId;
-      if (routing.assigneeAgentId !== undefined) updates.assigneeAgentId = routing.assigneeAgentId;
-      if (routing.assigneeUserId !== undefined) updates.assigneeUserId = routing.assigneeUserId;
+      // Build update set (only provided fields) — typed to avoid unsound assignments
+      const updates = {
+        updatedAt: new Date(),
+        ...(routing.departmentId !== undefined && { departmentId: routing.departmentId }),
+        ...(routing.assigneeAgentId !== undefined && { assigneeAgentId: routing.assigneeAgentId }),
+        ...(routing.assigneeUserId !== undefined && { assigneeUserId: routing.assigneeUserId }),
+      };
 
       await db
         .update(discussionExtractedItems)
