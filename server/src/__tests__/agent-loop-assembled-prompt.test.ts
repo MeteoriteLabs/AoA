@@ -15,6 +15,7 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
   }),
 }));
 vi.mock("../services/internal-agent/commander-context.js", () => ({
+  assembleAgentPersona: async () => "ROLE: Commander persona",
   loadCommanderPersona: async () => "ROLE: Commander persona",
 }));
 vi.mock("../services/internal-agent/commander-skills.js", () => ({ buildSkillsSection: async () => "", buildCompactSkillList: async () => "" }));

@@ -27,6 +27,7 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
 }));
 
 vi.mock("../services/internal-agent/commander-context.js", () => ({
+  assembleAgentPersona: async () => "P",
   loadCommanderPersona: async () => "P",
 }));
 

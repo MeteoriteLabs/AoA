@@ -10,7 +10,7 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
     getMessagesSince: async () => ([{ role: "user", content: "older Q" }, { role: "assistant", content: "older A" }]),
   }),
 }));
-vi.mock("../services/internal-agent/commander-context.js", () => ({ loadCommanderPersona: async () => "PERSONA" }));
+vi.mock("../services/internal-agent/commander-context.js", () => ({ assembleAgentPersona: async () => "PERSONA", loadCommanderPersona: async () => "PERSONA" }));
 vi.mock("../services/internal-agent/commander-skills.js", () => ({ buildSkillsSection: async () => "", buildCompactSkillList: async () => "" }));
 vi.mock("../services/company-skills.js", () => ({ companySkillService: () => ({ listRuntimeSkillEntries: async () => [], listCompactSkillEntries: async () => [] }) }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({

@@ -6,7 +6,7 @@ import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
 import { agentInstructionsService } from "../agent-instructions.js";
 import { contextAssemblyService } from "./context-assembly.js";
-import { loadCommanderPersona } from "./commander-context.js";
+import { assembleAgentPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 import { summarizeViaCli } from "./cli-summarizer.js";
 import { memoryService } from "../memory.js";
@@ -179,7 +179,7 @@ export function agentLoopService(db: Db) {
             .where(eq(agents.id, commanderAgentId))
             .then((r: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null }[]) => r[0] ?? null);
           const persona = agentRow
-            ? await loadCommanderPersona({ agent: agentRow, service: agentInstructionsService() })
+            ? await assembleAgentPersona({ agent: agentRow, service: agentInstructionsService() })
             : null;
           const skillsSection = await buildCompactSkillList({
             companyId: params.companyId,

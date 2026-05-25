@@ -2,17 +2,19 @@ const BUNDLE_ORDER = ["AGENTS.md", "SOUL.md", "TOOLS.md", "HEARTBEAT.md"] as con
 
 type CommanderAgentShape = { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
 
-interface LoadArgs {
+interface AssembleArgs {
   agent: CommanderAgentShape;
   service: { readFile: (agent: CommanderAgentShape, relativePath: string) => Promise<{ content: string }> };
 }
 
 /**
- * Concatenate the Commander instruction bundle into one persona string
- * (AGENTS → SOUL → TOOLS → HEARTBEAT). Returns null if the bundle cannot be
- * read so the caller can fall back to the SYSTEM_INSTRUCTIONS constant.
+ * Concatenate an agent's instruction bundle into one persona string
+ * (AGENTS → SOUL → TOOLS → HEARTBEAT). Returns null if nothing can be read, so the
+ * caller falls back to runtimeConfig.aoa.instruction (crew) or SYSTEM_INSTRUCTIONS
+ * (Commander). Used by BOTH Commander (agent-loop.ts) and the crew runner
+ * (runner.ts) — P1 (ii).
  */
-export async function loadCommanderPersona(args: LoadArgs): Promise<string | null> {
+export async function assembleAgentPersona(args: AssembleArgs): Promise<string | null> {
   const { agent, service } = args;
   try {
     const parts: string[] = [];
@@ -26,3 +28,6 @@ export async function loadCommanderPersona(args: LoadArgs): Promise<string | nul
     return null;
   }
 }
+
+/** @deprecated alias — prefer assembleAgentPersona. Kept so agent-loop + tests keep working. */
+export const loadCommanderPersona = assembleAgentPersona;
