@@ -19,6 +19,7 @@ export interface ThreadFields {
   autonomyLevel: number | null;
   summaryText: string | null;
   summaryNext: string | null;
+  planSteps?: Array<{ id: string; stepOrder: number; title: string; collapsed: boolean; linkedItemId: string | null }>;
 }
 
 export type ThreadListItem = DiscussionListItem & ThreadFields;
@@ -99,4 +100,16 @@ export const threadsApi = {
       `/companies/${companyId}/discussions/${discussionId}/items/${itemId}/routing`,
       routing,
     ),
+
+  getScope: (companyId: string, id: string) =>
+    api.get<{
+      summaryText: string | null;
+      summaryNext: string | null;
+      planSteps: Array<{ id: string; stepOrder: number; title: string }>;
+      items: unknown[];
+      recommendation: { departmentId: string; departmentName: string; itemCount: number } | null;
+    }>(`/companies/${companyId}/discussions/${id}/scope`),
+
+  updatePlan: (companyId: string, id: string, steps: Array<{ title: string; linkedItemId?: string | null }>) =>
+    api.put<{ count: number }>(`/companies/${companyId}/discussions/${id}/scope/plan`, { steps }),
 };

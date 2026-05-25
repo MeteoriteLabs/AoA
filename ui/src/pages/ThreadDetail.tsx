@@ -368,7 +368,7 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 summaryText={thread.summaryText}
                 summaryNext={thread.summaryNext}
                 items={scopeItems}
-                planSteps={[]} // TODO: add planSteps to ThreadDetail type when backend exposes it
+                planSteps={(thread.planSteps ?? []).map((s) => s.title)}
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}
