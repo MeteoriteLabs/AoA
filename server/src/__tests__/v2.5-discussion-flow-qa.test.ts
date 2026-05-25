@@ -101,6 +101,7 @@ vi.mock("@armyofagents/db", () => ({
     name: "projects_name",
   },
   goals: { id: "goals_id" },
+  agents: { id: "agents_id", name: "agents_name", icon: "agents_icon" },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -1290,7 +1291,11 @@ describe("v2.5 Discussion Flow QA", () => {
         status: "active",
       };
       const entries = [
-        { id: "entry-g1", discussionId: "disc-get", inputType: "paste" },
+        {
+          entry: { id: "entry-g1", discussionId: "disc-get", inputType: "paste" },
+          authorAgentName: null,
+          authorAgentAvatar: null,
+        },
       ];
       const items = [
         { id: "item-g1", discussionEntryId: "entry-g1", type: "task", title: "A task" },
