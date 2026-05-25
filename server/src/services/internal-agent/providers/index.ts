@@ -62,6 +62,40 @@ export async function getProviderApiKey(
   return envValue;
 }
 
+/** Default model per provider — used when falling back to a provider the caller
+ *  didn't configure a model for. */
+const DEFAULT_MODELS: Record<string, string> = {
+  anthropic: "claude-sonnet-4-6",
+  openai: "gpt-4o",
+  google: "gemini-2.0-flash",
+};
+
+/**
+ * Resolve a usable provider for a company: prefer `preferred`, but if it has no
+ * key, fall back to the first provider (anthropic → openai → google) that does.
+ * Throws only if NO provider has a key anywhere (DB secret or env var).
+ */
+export async function resolveAvailableProvider(
+  db: Db,
+  companyId: string,
+  preferred?: string,
+): Promise<{ provider: string; apiKey: string; model: string }> {
+  const order = [preferred, "anthropic", "openai", "google"].filter(
+    (v, i, a): v is string => Boolean(v) && a.indexOf(v) === i,
+  );
+  for (const provider of order) {
+    try {
+      const apiKey = await getProviderApiKey(db, companyId, provider);
+      return { provider, apiKey, model: DEFAULT_MODELS[provider] ?? DEFAULT_MODELS.anthropic };
+    } catch {
+      // No key for this provider — try the next.
+    }
+  }
+  throw new Error(
+    "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.",
+  );
+}
+
 /** Create an LLMProvider instance for the given provider name and API key */
 export function createProvider(provider: string, apiKey: string): LLMProvider {
   switch (provider) {

@@ -3,7 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getProviderApiKey, createProvider } from "./internal-agent/providers/index.js";
+import { getProviderApiKey, createProvider, resolveAvailableProvider } from "./internal-agent/providers/index.js";
 
 export interface ExtractedItem {
   type: "decision" | "task" | "insight" | "context" | "reference" | "preference";
@@ -434,49 +434,27 @@ export function extractionService(db: Db) {
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId));
 
-        const hasEnvKey = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
-
-        if (preCheckConfig?.provider) {
-          try {
-            await getProviderApiKey(db, companyId, preCheckConfig.provider);
-          } catch {
-            if (!hasEnvKey) {
-              const msg = `No API key configured for provider "${preCheckConfig.provider}". Set it in Settings → LLM Providers or as an environment variable.`;
-              log.warn(msg);
-              await db
-                .update(discussionEntries)
-                .set({
-                  extractionStatus: "skipped",
-                  sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
-                })
-                .where(eq(discussionEntries.id, entryId));
-              return;
-            }
-          }
-        } else if (!hasEnvKey) {
-          // No agent config and no env key — try DB-stored provider keys as fallback
-          let foundDbKey = false;
-          for (const provider of ["openai", "anthropic", "google"] as const) {
-            try {
-              await getProviderApiKey(db, companyId, provider);
-              foundDbKey = true;
-              break;
-            } catch {
-              // Key not found for this provider, try next
-            }
-          }
-          if (!foundDbKey) {
-            const msg = "No LLM provider configured. Set up a provider in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
-            log.warn(msg);
-            await db
-              .update(discussionEntries)
-              .set({
-                extractionStatus: "skipped",
-                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
-              })
-              .where(eq(discussionEntries.id, entryId));
-            return;
-          }
+        // Resolve a usable provider: the configured one, or any provider that
+        // actually has a key (DB secret or env var). Adding any one key works.
+        let resolvedProvider: { provider: string; apiKey: string; model: string };
+        try {
+          resolvedProvider = await resolveAvailableProvider(
+            db,
+            companyId,
+            preCheckConfig?.provider ?? undefined,
+          );
+        } catch {
+          const msg =
+            "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
+          log.warn(msg);
+          await db
+            .update(discussionEntries)
+            .set({
+              extractionStatus: "skipped",
+              sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
+            })
+            .where(eq(discussionEntries.id, entryId));
+          return;
         }
 
         // (status was already set to 'processing' by the atomic claim above)
@@ -509,9 +487,9 @@ export function extractionService(db: Db) {
 
         let extractedItems: ExtractedItem[];
 
-        if (agentConfig?.provider) {
+        if (resolvedProvider) {
           // ── Agent-based extraction ────────────────────────────────────
-          log.info("Using agent provider for extraction");
+          log.info(`Using ${resolvedProvider.provider} provider for extraction`);
 
           const [run] = await db
             .insert(internalAgentRuns)
@@ -524,9 +502,11 @@ export function extractionService(db: Db) {
             .returning();
 
           try {
-            const apiKey = await getProviderApiKey(db, companyId, agentConfig.provider);
-            const provider = createProvider(agentConfig.provider, apiKey);
-            const model = agentConfig.model ?? "claude-sonnet-4-6";
+            const provider = createProvider(resolvedProvider.provider, resolvedProvider.apiKey);
+            const model =
+              agentConfig?.provider === resolvedProvider.provider && agentConfig?.model
+                ? agentConfig.model
+                : resolvedProvider.model;
 
             const userContent = threadContext
               ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
