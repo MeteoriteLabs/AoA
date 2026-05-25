@@ -49,6 +49,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
+import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -659,6 +660,23 @@ if (config.heartbeatSchedulerEnabled) {
   runProductivityReviewReconciliation();
   setInterval(runProductivityReviewReconciliation, PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS);
 }
+
+// Idempotent backfill: ensure Command Staff (Router/Planner/Dispatcher/Memory Keeper)
+// exists for all companies. Safe to run on every startup — uses ON CONFLICT DO NOTHING.
+// Pre-existing companies miss this because ensureCommandStaff only runs on company creation.
+void db
+  .select({ id: companies.id })
+  .from(companies)
+  .then((rows) =>
+    Promise.all(
+      rows.map((row) =>
+        ensureCommandStaff(db as any, row.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: row.id }, "command staff backfill failed for company");
+        }),
+      ),
+    ),
+  )
+  .catch((err) => logger.warn({ err }, "command staff startup backfill failed"));
 
 // File import queue worker
 void resetStuckJobs(db as any).catch((err) =>

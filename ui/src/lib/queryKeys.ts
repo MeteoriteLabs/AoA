@@ -175,6 +175,11 @@ export const queryKeys = {
     list: (companyId: string) => ["discussions", companyId] as const,
     detail: (companyId: string, id: string) => ["discussions", companyId, id] as const,
   },
+  threads: {
+    list: (companyId: string) => ["threads", companyId, "list"] as const,
+    detail: (companyId: string, id: string) => ["threads", companyId, id] as const,
+    inbox: (companyId: string) => ["threads-inbox", companyId] as const,
+  },
   agentGreeting: (companyId: string) => ["agent-greeting", companyId] as const,
   agentConversation: (companyId: string) => ["agent-conversation", companyId] as const,
   agentConfig: (companyId: string) => ["agent-config", companyId] as const,

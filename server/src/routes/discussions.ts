@@ -62,6 +62,33 @@ export function discussionRoutes(db: Db) {
     });
   });
 
+  // ── Inbox endpoints (must precede /:discussionId to avoid static-vs-param shadowing) ──
+
+  // T.I1 List pending inbox items (the Unlisted lane)
+  router.get(
+    "/companies/:companyId/discussions/inbox",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const { desc } = await import("drizzle-orm");
+
+      const items = await db
+        .select()
+        .from(threadInboxItems)
+        .where(
+          and(
+            eq(threadInboxItems.companyId, companyId),
+            eq(threadInboxItems.status, "pending"),
+          ),
+        )
+        .orderBy(desc(threadInboxItems.createdAt));
+
+      res.json({ items, total: items.length });
+    },
+  );
+
   // 1.2 Get discussion detail
   router.get(
     "/companies/:companyId/discussions/:discussionId",
@@ -664,31 +691,6 @@ export function discussionRoutes(db: Db) {
   );
 
   // ── Plan 5: Inbox/Unlisted lane endpoints ─────────────────────────────────
-
-  // T.I1 List pending inbox items (the Unlisted lane)
-  router.get(
-    "/companies/:companyId/discussions/inbox",
-    async (req, res) => {
-      const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
-
-      const { desc } = await import("drizzle-orm");
-
-      const items = await db
-        .select()
-        .from(threadInboxItems)
-        .where(
-          and(
-            eq(threadInboxItems.companyId, companyId),
-            eq(threadInboxItems.status, "pending"),
-          ),
-        )
-        .orderBy(desc(threadInboxItems.createdAt));
-
-      res.json({ items, total: items.length });
-    },
-  );
 
   // T.I2 Triage an inbox item — attach, dismiss, or promote to thread
   const triageBodySchema = z.object({
