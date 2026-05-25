@@ -310,6 +310,80 @@ export function threadService(db: Db) {
   }
 
   return {
+    // ── Real-time envelope RBAC (Plan 7) ───────────────────────────────────────
+
+    /**
+     * Resolve the envelope-RBAC inputs for a (thread, viewer) pair WITHOUT
+     * throwing — used by the WS fan-out to decide whether a connection may
+     * receive a thread.* poke. Returns null if the thread row doesn't exist.
+     *
+     * CRITICAL (Plan 7 amendment): the WS handler calls this PER EVENT and does
+     * not cache the result. Caching { role, hasScopeAccess, isParticipant }
+     * would need invalidation when a thread goes private or a participant is
+     * removed — get that wrong and you leak events. At founding-team scale,
+     * recompute per event (cheap).
+     */
+    resolveViewerForThread: async (
+      companyId: string,
+      threadId: string,
+      viewer: { userId: string; role: "founder" | "team_lead" | "team_member" },
+    ): Promise<{
+      thread: { ownerUserId: string | null; visibility: ThreadVisibility };
+      viewer: ThreadViewer;
+    } | null> => {
+      const row = await db
+        .select({
+          ownerUserId: discussions.ownerUserId,
+          visibility: discussions.visibility,
+          scopeType: discussions.scopeType,
+          scopeId: discussions.scopeId,
+        })
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+
+      // Founders see everything — short-circuit the participant/scope queries.
+      if (viewer.role === "founder") {
+        return {
+          thread: { ownerUserId: row.ownerUserId, visibility: row.visibility as ThreadVisibility },
+          viewer: { role: "founder", hasScopeAccess: true, isParticipant: true },
+        };
+      }
+
+      const participantRows = await db
+        .select({ id: threadParticipants.id })
+        .from(threadParticipants)
+        .where(
+          and(
+            eq(threadParticipants.threadId, threadId),
+            eq(threadParticipants.principalType, "user"),
+            eq(threadParticipants.principalId, viewer.userId),
+          ),
+        );
+      const isParticipant = participantRows.length > 0;
+
+      let hasScopeAccess = row.scopeType == null;
+      if (!hasScopeAccess && row.scopeId) {
+        const roleRows = await db
+          .select({ id: userRoles.id })
+          .from(userRoles)
+          .where(
+            and(
+              eq(userRoles.companyId, companyId),
+              eq(userRoles.userId, viewer.userId),
+              eq(userRoles.projectId, row.scopeId),
+            ),
+          );
+        hasScopeAccess = roleRows.length > 0;
+      }
+
+      return {
+        thread: { ownerUserId: row.ownerUserId, visibility: row.visibility as ThreadVisibility },
+        viewer: { role: viewer.role, hasScopeAccess, isParticipant },
+      };
+    },
+
     // ── Read path ─────────────────────────────────────────────────────────────
 
     /**
