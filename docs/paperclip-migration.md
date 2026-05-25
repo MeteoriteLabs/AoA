@@ -63,8 +63,27 @@ These tables exist in the schema but are not used by new code. They are kept to 
 | `debriefs` | `discussions` | @deprecated — new code uses discussions |
 | `briefs` | `discussions` | @deprecated — new code uses discussions |
 | `brief_items` | `discussion_extracted_items` | @deprecated — new code uses extracted items |
+| `discussion_annotations` | posts + replies (`discussion_entries.parentEntryId`) | @deprecated UI — table + API retained for rollback |
 
 Do not write new code that reads or writes these tables. Do not delete them without a deliberate migration plan.
+
+### Inline Annotations → Posts + Replies (Threads Crew P0)
+
+Threads moved from inline margin-note annotations to a **posts + replies** model
+(spec §6, D4/D6). As of Threads Crew **P0**:
+
+- The **Thread surface** UI entry points were removed: the shared
+  `ui/src/components/threads/EntryRow.tsx` no longer renders an Annotate button,
+  highlight selection, or annotation list, and
+  `ui/src/components/threads/ThreadTab.tsx` no longer wires `addAnnotation`.
+  Replies (`discussion_entries.parentEntryId`) replace them.
+- **Retained as a deprecated stub** (rollback-safe, like `debriefs`/`briefs`):
+  the `discussion_annotations` table, `discussionService.addAnnotation`, the
+  `POST /companies/:cid/discussions/:did/entries/:eid/annotations` route, and the
+  `discussionsApi.addAnnotation` client. Do **not** build new features on them.
+- **Follow-up (not done in P0):** the legacy **Discussion surface**
+  `ui/src/pages/DiscussionDetail.tsx` has its own local `ThreadEntryRow` with a
+  separate annotation UI. Removing that is deferred to a later Threads phase.
 
 ---
 
