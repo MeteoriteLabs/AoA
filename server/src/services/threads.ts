@@ -29,6 +29,7 @@ import {
   agentWakeupRequests,
   aoaAgentTriggers,
   notifications,
+  threadPlanSteps,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -1574,6 +1575,59 @@ export function threadService(db: Db) {
         details: routing,
       });
       return { itemId, ...routing };
+    },
+
+    // ── Living Plan (thread_plan_steps) ─────────────────────────────────────
+
+    getPlanSteps: async (companyId: string, id: string, actor: Actor) => {
+      const thread = await getByIdInternal(companyId, id, actor);
+      if (!thread) throw notFound("Thread not found");
+      return db
+        .select()
+        .from(threadPlanSteps)
+        .where(eq(threadPlanSteps.threadId, id))
+        .orderBy(asc(threadPlanSteps.stepOrder))
+        .then((rows: typeof threadPlanSteps.$inferSelect[]) => rows);
+    },
+
+    updatePlanSteps: async (
+      companyId: string,
+      id: string,
+      steps: Array<{ title: string; linkedItemId?: string | null; collapsed?: boolean }>,
+      actor: Actor,
+    ) => {
+      const thread = await getByIdInternal(companyId, id, actor);
+      if (!thread) throw notFound("Thread not found");
+      await assertCanEdit(thread, actor);
+
+      const inserted = await db.transaction(async (tx: Db) => {
+        await tx.delete(threadPlanSteps).where(eq(threadPlanSteps.threadId, id));
+        if (steps.length === 0) return [] as Array<{ id: string }>;
+        return tx
+          .insert(threadPlanSteps)
+          .values(
+            steps.map((s, idx) => ({
+              threadId: id,
+              stepOrder: idx,
+              title: s.title,
+              linkedItemId: s.linkedItemId ?? null,
+              collapsed: s.collapsed ?? false,
+            })),
+          )
+          .returning({ id: threadPlanSteps.id });
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.isHuman ? "user" : "agent",
+        actorId: actor.userId,
+        action: "thread.plan.updated",
+        entityType: "discussion",
+        entityId: id,
+        details: { count: inserted.length },
+      });
+      publishLiveEvent({ companyId, type: "thread.scope.changed", payload: { threadId: id } });
+      return { count: inserted.length };
     },
   };
 }
