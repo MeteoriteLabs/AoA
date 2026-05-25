@@ -290,6 +290,7 @@ describe("WorkspaceRightPanel cockpit contract", () => {
       "cockpit-section-process",
       "cockpit-section-git",
       "cockpit-section-services",
+      "cockpit-section-outputs",
       "cockpit-section-artifacts",
       "cockpit-section-memory",
       "cockpit-section-context",

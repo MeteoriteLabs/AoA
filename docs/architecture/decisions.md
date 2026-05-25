@@ -469,6 +469,12 @@ Paperclip's `paperclipUpsertIssueDocument` tool wraps a markdown body (identifie
 
 ---
 
+## Decision (annotation, 2026-05-25): Task Outputs are an additive output index
+
+AoA keeps `issues.artifactId` as the primary artifact pointer for artifact-as-input, MCP document tools, and existing artifact viewer flows. The new `task_outputs` table is an additive task-level product index for artifacts, detected files, preview URLs, runtime services, branches, and PRs. PRs, preview URLs, runtime services, and branches are task outputs, not artifacts.
+
+---
+
 ## Decision #92 — Defer Phase 6 Hermes wire-field rename to upstream coordination
 
 **Status:** Deferred (locked 2026-04-26)

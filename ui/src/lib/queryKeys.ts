@@ -192,6 +192,10 @@ export const queryKeys = {
     byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
     detail: (id: string) => ["artifacts", "detail", id] as const,
   },
+  taskOutputs: {
+    byIssue: (issueId: string) => ["task-outputs", "issue", issueId] as const,
+    detail: (id: string) => ["task-outputs", "detail", id] as const,
+  },
   mcp: {
     status: (companyId: string) => ["mcp", companyId, "status"] as const,
     keys: (companyId: string) => ["mcp", companyId, "keys"] as const,

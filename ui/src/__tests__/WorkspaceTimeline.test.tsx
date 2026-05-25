@@ -590,6 +590,51 @@ describe("WorkspaceTimeline — input area", () => {
     expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
   });
 
+  it("renders the classic separated chatbar rows", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    const separatedRows = chatbar.querySelectorAll(".border-t");
+
+    expect(separatedRows.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders full composer controls when no agent is assigned", async () => {
+    issuesApiMock.get.mockResolvedValue({ ...mockIssue, assigneeAgentId: null });
+
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar-fallback");
+    expect(chatbar).toHaveTextContent("No agent assigned");
+    expect(screen.getByLabelText("Attach file")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Task progress" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Context usage" })).toBeInTheDocument();
+    expect(screen.getByText("Send")).toBeInTheDocument();
+    expect(screen.queryByText("Comment")).not.toBeInTheDocument();
+    expect(screen.queryByText("comment")).not.toBeInTheDocument();
+  });
+
+  it("sends attachment comments from the no-agent composer", async () => {
+    issuesApiMock.get.mockResolvedValue({ ...mockIssue, assigneeAgentId: null });
+
+    renderTimeline();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-chatbar-fallback")).toBeInTheDocument();
+    });
+
+    const file = new File(["fake"], "fallback-proof.txt", { type: "text/plain" });
+    const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(await screen.findByText("fallback-proof.txt")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => {
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
+    });
+  });
+
   it("selects attachments and sends them with the comment through the combined endpoint", async () => {
     renderTimeline();
 

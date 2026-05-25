@@ -21,6 +21,7 @@ import type { ExecutionWorkspace } from "@armyofagents/shared";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { probePreviewUrl } from "./runtime-service-preview-detection.js";
+import { emitRuntimeServiceTaskOutput } from "./task-output-emitters.js";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -1430,6 +1431,7 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
         updatedAt: values.updatedAt,
       },
     });
+  await emitRuntimeServiceTaskOutput(db, values);
 }
 
 function clearIdleTimer(record: RuntimeServiceRecord) {
@@ -1765,6 +1767,15 @@ export async function refreshPersistedRuntimeServiceRows(input: {
     ...adapterRows.updates,
     ...localRows.updates,
   ]);
+  const changedIds = new Set([
+    ...adapterRows.updates.map((update) => update.id),
+    ...localRows.updates.map((update) => update.id),
+  ]);
+  for (const row of localRows.rows) {
+    if (changedIds.has(row.id)) {
+      await emitRuntimeServiceTaskOutput(input.db, row);
+    }
+  }
   return localRows.rows;
 }
 
@@ -1774,6 +1785,12 @@ export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input
 }): Promise<WorkspaceRuntimeServiceRow[]> {
   const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
   await persistRuntimeServiceHealthUpdates(input.db, refreshed.updates);
+  const changedIds = new Set(refreshed.updates.map((update) => update.id));
+  for (const row of refreshed.rows) {
+    if (changedIds.has(row.id)) {
+      await emitRuntimeServiceTaskOutput(input.db, row);
+    }
+  }
   return refreshed.rows;
 }
 
@@ -2259,6 +2276,24 @@ export async function persistAdapterManagedRuntimeServices(input: {
           updatedAt: new Date(),
         },
       });
+    await emitRuntimeServiceTaskOutput(input.db, {
+      id: ref.id,
+      companyId: ref.companyId,
+      projectId: ref.projectId,
+      issueId: ref.issueId,
+      executionWorkspaceId: ref.executionWorkspaceId,
+      serviceName: ref.serviceName,
+      provider: ref.provider,
+      status: ref.status,
+      healthStatus: ref.healthStatus,
+      url: ref.url,
+      port: ref.port,
+      lifecycle: ref.lifecycle,
+      scopeType: ref.scopeType,
+      providerRef: ref.providerRef,
+      startedByRunId: ref.startedByRunId,
+      ownerAgentId: ref.ownerAgentId,
+    });
   }
 
   return refs;

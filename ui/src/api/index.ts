@@ -18,6 +18,7 @@ export { dashboardApi } from "./dashboard";
 export { heartbeatsApi } from "./heartbeats";
 export { sidebarBadgesApi } from "./sidebarBadges";
 export { artifactsApi } from "./artifacts";
+export { taskOutputsApi } from "./task-outputs";
 export { mcpApi } from "./mcp";
 export { discussionsApi } from "./discussions";
 export { internalAgentApi, streamAgentChat } from "./internal-agent";

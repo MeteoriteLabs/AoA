@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { artifactsApi } from "../../api/artifacts";
 import { outputDetectionApi } from "../../api/output-detection";
+import { taskOutputsApi } from "../../api/task-outputs";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { activityApi, type RunForIssue } from "../../api/activity";
 import { executionWorkspacesApi, type WorkspaceRuntimeService } from "../../api/execution-workspaces";
@@ -9,10 +10,10 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { GitCompareArrows, Eye, Terminal, X, RefreshCw, Globe, Plus, FileText, LayoutGrid } from "lucide-react";
+import { GitBranch, GitCompareArrows, GitPullRequest, Eye, Terminal, X, RefreshCw, Globe, Plus, FileText, LayoutGrid } from "lucide-react";
 import { formatBytes, sourceLabel, fileIcon } from "./workspace-utils";
 import { resolveOutputViewer } from "./output-viewer-registry";
-import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI, TaskOutput } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
 export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "logs";
@@ -500,6 +501,13 @@ function ViewerHome({
     staleTime: 5000,
   });
 
+  const { data: taskOutputs } = useQuery({
+    queryKey: queryKeys.taskOutputs.byIssue(issueId),
+    queryFn: () => taskOutputsApi.listForIssue(issueId),
+    enabled: !!issueId,
+    staleTime: 5000,
+  });
+
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
@@ -511,9 +519,27 @@ function ViewerHome({
   );
   const candidates = (detectedOutputs ?? []).filter((output) => output.status === "pending");
   const latestVersion = artifact?.versions[0] ?? null;
+  const visibleOutputs = taskOutputs ?? [];
 
   return (
     <div className="space-y-4 p-3" data-testid="viewer-home">
+      <ViewerHomeSection title="Task Outputs">
+        {visibleOutputs.length > 0 ? (
+          visibleOutputs.slice(0, 6).map((output) => (
+            <ViewerHomeRow
+              key={output.id}
+              icon={viewerOutputIcon(output.type)}
+              title={output.title}
+              detail={viewerOutputDetail(output)}
+              testId={`viewer-home-task-output-${output.id}`}
+              onClick={() => openTaskOutputFromViewer(output, onOpenResolvedTab)}
+            />
+          ))
+        ) : (
+          <ViewerHomeEmpty>No outputs yet</ViewerHomeEmpty>
+        )}
+      </ViewerHomeSection>
+
       <ViewerHomeSection title="Browser">
         {runningServices.length > 0 ? (
           runningServices.map((service) => (
@@ -602,6 +628,64 @@ function ViewerHome({
       </ViewerHomeSection>
     </div>
   );
+}
+
+function viewerOutputIcon(type: TaskOutput["type"]) {
+  switch (type) {
+    case "preview_url":
+    case "runtime_service":
+      return Globe;
+    case "pull_request":
+      return GitPullRequest;
+    case "branch":
+    case "commit":
+      return GitBranch;
+    default:
+      return FileText;
+  }
+}
+
+function viewerOutputDetail(output: TaskOutput) {
+  if (output.type === "pull_request") return output.status;
+  if (output.type === "preview_url") return output.url;
+  if (output.type === "branch") return output.provider;
+  return output.reviewState === "none" ? output.status : output.reviewState.replace(/_/g, " ");
+}
+
+async function openTaskOutputFromViewer(
+  output: TaskOutput,
+  onOpenResolvedTab?: (tab: WorkspacePreviewTab) => void,
+) {
+  if (!onOpenResolvedTab) return;
+  if ((output.type === "artifact" || output.type === "artifact_version") && output.artifactId) {
+    const artifact = await artifactsApi.get(output.artifactId);
+    const version =
+      artifact.versions.find((item) => item.id === output.artifactVersionId) ??
+      artifact.versions[0];
+    if (!version) return;
+    onOpenResolvedTab({
+      id: `artifact:${artifact.id}:${version.id}`,
+      kind: "artifact",
+      title: artifact.title,
+      artifact,
+      version,
+    });
+    return;
+  }
+  if (output.type === "preview_url" && output.url) {
+    onOpenResolvedTab({
+      id: `browser:task-output:${output.id}`,
+      kind: "browser",
+      title: output.title,
+      url: output.url,
+      serviceId: output.runtimeServiceId,
+      localTargetUrl: output.url,
+    });
+    return;
+  }
+  if (output.url) {
+    window.open(output.url, "_blank", "noopener,noreferrer");
+  }
 }
 
 function ViewerHomeSection({ title, children }: { title: string; children: React.ReactNode }) {

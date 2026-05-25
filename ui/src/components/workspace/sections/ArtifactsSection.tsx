@@ -66,6 +66,7 @@ export function ArtifactsSection({ issueId, onPreviewArtifact, onPreviewOutput }
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.artifacts.byIssue(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskOutputs.byIssue(issueId) });
       pushToast({ title: "Output saved as artifact" });
     },
   });

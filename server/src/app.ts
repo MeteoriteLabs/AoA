@@ -48,6 +48,7 @@ import { briefRoutes } from "./routes/briefs.js";
 import { routineRoutes } from "./routes/routines.js";
 import { dependencyRoutes } from "./routes/dependencies.js";
 import { artifactRoutes } from "./routes/artifacts.js";
+import { taskOutputRoutes } from "./routes/task-outputs.js";
 import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { trustScoreRoutes } from "./routes/trust-scores.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
@@ -282,6 +283,7 @@ export async function createApp(
   api.use(debriefRoutes(db));
   api.use(briefRoutes(db));
   api.use(artifactRoutes(db));
+  api.use(taskOutputRoutes(db));
   api.use(outputDetectionRoutes(db));
   api.use(trustScoreRoutes(db));
   api.use(transcriptionRoutes(db));

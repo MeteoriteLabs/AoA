@@ -33,6 +33,7 @@ import {
 } from "./preview-url.js";
 import { runGit as runGitService } from "./git.js";
 import { isUniqueViolation } from "./db-errors.js";
+import { emitBranchTaskOutput } from "./task-output-emitters.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -466,7 +467,10 @@ export function executionWorkspaceService(db: Db) {
       .values(data)
       .returning()
       .then((rows) => rows[0] ?? null);
-    return row ? toExecutionWorkspace(row) : null;
+    if (!row) return null;
+    const workspace = toExecutionWorkspace(row);
+    await emitBranchTaskOutput(db, workspace);
+    return workspace;
   }
 
   async function update(id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) {
@@ -476,7 +480,10 @@ export function executionWorkspaceService(db: Db) {
       .where(eq(executionWorkspaces.id, id))
       .returning()
       .then((rows) => rows[0] ?? null);
-    return row ? toExecutionWorkspace(row) : null;
+    if (!row) return null;
+    const workspace = toExecutionWorkspace(row);
+    await emitBranchTaskOutput(db, workspace);
+    return workspace;
   }
 
   async function createTaskOwnedIdempotent(data: typeof executionWorkspaces.$inferInsert) {

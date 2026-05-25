@@ -28,6 +28,20 @@ export function createToolRegistry(): AgentTool[] {
   ];
 }
 
+export function filterAuthorizedToolsForContext(
+  tools: AgentTool[],
+  ctx: Pick<ToolContext, "userRole" | "enabledCapabilities" | "agentKind" | "toolAllowlist">,
+): AgentTool[] {
+  return tools.filter((tool) =>
+    authorizeToolInvocation(
+      tool,
+      ctx.userRole,
+      ctx.enabledCapabilities,
+      { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
+    ).allowed,
+  );
+}
+
 const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill", "query_company"]);
 
 const INTENT_KEYWORDS: Record<string, string[]> = {

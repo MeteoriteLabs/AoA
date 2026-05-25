@@ -4,7 +4,8 @@
 // Spawned by CLI tools via MCP config. Exposes all internal agent tools.
 
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import { roleAtLeast } from "@armyofagents/shared";
+import { authorizeToolInvocation } from "./authorize-tool.js";
+import { filterAuthorizedToolsForContext } from "./tool-registry.js";
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
@@ -32,12 +33,18 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
-    if (tool.requiredRole !== undefined && !roleAtLeast(deps.toolContext.userRole, tool.requiredRole)) {
+    const decision = authorizeToolInvocation(
+      tool,
+      deps.toolContext.userRole,
+      deps.toolContext.enabledCapabilities ?? [],
+      { agentKind: deps.toolContext.agentKind, toolAllowlist: deps.toolContext.toolAllowlist ?? [] },
+    );
+    if (!decision.allowed) {
       return {
         content: [
           {
             type: "text",
-            text: `Tool '${name}' requires role '${tool.requiredRole}' but caller has '${deps.toolContext.userRole}'.`,
+            text: decision.summary,
           },
         ],
         isError: true,
@@ -178,9 +185,15 @@ export async function startBridge(): Promise<void> {
         id,
       });
     } else if (method === "tools/list") {
+      const visibleTools = filterAuthorizedToolsForContext(tools, {
+        userRole,
+        enabledCapabilities,
+        agentKind,
+        toolAllowlist,
+      });
       writeResponse({
         jsonrpc: "2.0",
-        result: { tools: buildToolListResponse(tools) },
+        result: { tools: buildToolListResponse(visibleTools) },
         id,
       });
     } else if (method === "tools/call") {

@@ -21,7 +21,7 @@ export const delegateToSubagentTool: AgentTool = {
   },
   category: "action",
   requiredRole: "founder",
-  requiresConfirmation: false,
+  requiresConfirmation: true,
   execute: async (params: unknown, ctx) => {
     const { agentName, instruction } = (params ?? {}) as {
       agentName?: unknown;

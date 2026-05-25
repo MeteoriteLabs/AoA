@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createToolCallHandler } from "../services/internal-agent/mcp-bridge.js";
+import { filterAuthorizedToolsForContext } from "../services/internal-agent/tool-registry.js";
 import type { AgentTool, ToolContext } from "../services/internal-agent/types.js";
 
 function makeTool(overrides: Partial<AgentTool>): AgentTool {
@@ -104,5 +105,39 @@ describe("createToolCallHandler — requiredRole", () => {
     });
     const result = await handler("lead_tool_2", {});
     expect(result.isError).toBe(false);
+  });
+
+  it("blocks capability-gated tools before returning confirmation markers", async () => {
+    const tool = makeTool({
+      name: "wake_agent",
+      category: "action",
+      requiresConfirmation: true,
+    });
+    const handler = createToolCallHandler({
+      tools: [tool],
+      executeTool: async () => ({ success: true, data: null, summary: "done" }),
+      toolContext: makeCtx("founder"),
+    });
+    const result = await handler("wake_agent", {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("requires capability");
+    expect(result.content[0].text).not.toContain("CONFIRM");
+  });
+
+  it("filters tools/list visibility through role, capability, and AoA allowlist gates", () => {
+    const tools = [
+      makeTool({ name: "query_tasks", category: "query" }),
+      makeTool({ name: "wake_agent", category: "action", requiredRole: "founder" }),
+      makeTool({ name: "founder_report", category: "query", requiredRole: "founder" }),
+    ];
+
+    const visible = filterAuthorizedToolsForContext(tools, {
+      userRole: "founder",
+      enabledCapabilities: ["system_actions"],
+      agentKind: "aoa",
+      toolAllowlist: ["query_tasks", "wake_agent"],
+    });
+
+    expect(visible.map((tool) => tool.name)).toEqual(["query_tasks", "wake_agent"]);
   });
 });

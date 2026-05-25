@@ -52,6 +52,7 @@ export { briefItems } from "./brief_items.js";
 export { taskDependencies } from "./task_dependencies.js";
 export { agentProjects } from "./agent_projects.js";
 export { artifacts, artifactVersions } from "./artifacts.js";
+export { taskOutputs } from "./task_outputs.js";
 export { memoryItemVersions } from "./memory_item_versions.js";
 export { memoryFeedbackPatterns } from "./memory_feedback_patterns.js";
 export { memoryRelations } from "./memory_relations.js";
