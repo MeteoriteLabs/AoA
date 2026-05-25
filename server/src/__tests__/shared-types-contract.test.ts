@@ -42,8 +42,12 @@ describe("v2.5 discussion constants", () => {
     expect(DISCUSSION_SCOPE_TYPES).toEqual(["department", "project", "goal"]);
   });
 
-  it("DISCUSSION_ENTRY_INPUT_TYPES has 4 values", () => {
-    expect(DISCUSSION_ENTRY_INPUT_TYPES).toEqual(["paste", "write", "voice", "mcp"]);
+  it("DISCUSSION_ENTRY_INPUT_TYPES has 10 values", () => {
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toHaveLength(10);
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("paste");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("write");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("voice");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("mcp");
   });
 
   it("EXTRACTION_STATUSES has 5 values", () => {
@@ -82,8 +86,8 @@ describe("v2.5 internal agent constants", () => {
     expect(TRIGGER_SOURCES).toHaveLength(6);
   });
 
-  it("NOTIFICATION_TYPES has 11 values", () => {
-    expect(NOTIFICATION_TYPES).toHaveLength(11);
+  it("NOTIFICATION_TYPES has 12 values", () => {
+    expect(NOTIFICATION_TYPES).toHaveLength(12);
   });
 
   it("IA_RUN_STATUSES has 3 values", () => {

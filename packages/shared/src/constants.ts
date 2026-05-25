@@ -477,6 +477,8 @@ export const BRIEF_ITEM_TYPES = [
   "context",
   "reference",
   "preference",
+  "artifact",
+  "spin_off_thread",
 ] as const;
 export type BriefItemType = (typeof BRIEF_ITEM_TYPES)[number];
 
