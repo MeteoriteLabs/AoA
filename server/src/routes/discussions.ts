@@ -1064,12 +1064,20 @@ export function discussionRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = await buildActor(req, companyId);
 
-      const rawSince = req.query.sinceSeq;
-      const parsed = Number.parseInt(
-        Array.isArray(rawSince) ? String(rawSince[0]) : String(rawSince ?? "0"),
-        10,
-      );
-      const sinceSeq = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+      const rawSince = Array.isArray(req.query.sinceSeq)
+        ? req.query.sinceSeq[0]
+        : req.query.sinceSeq;
+      // Absent → default to 0 (full catch-up). Present → must be a non-negative
+      // integer; reject floats/garbage with 400 instead of silently truncating.
+      let sinceSeq = 0;
+      if (rawSince !== undefined && rawSince !== "") {
+        const seq = Number(rawSince);
+        if (!Number.isInteger(seq) || seq < 0) {
+          res.status(400).json({ error: "sinceSeq must be a non-negative integer" });
+          return;
+        }
+        sinceSeq = seq;
+      }
 
       try {
         const entries = await tSvc.entriesSince(companyId, discussionId, sinceSeq, actor);

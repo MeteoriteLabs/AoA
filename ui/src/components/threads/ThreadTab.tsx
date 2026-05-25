@@ -38,6 +38,10 @@ export function ThreadTab({
   const queryClient = useQueryClient();
   const { connectionState, sendPresence } = useLiveUpdates();
   const isOffline = connectionState === "offline";
+  const isReconnecting = connectionState === "reconnecting";
+  // Composer is unusable whenever the socket is gone — both fully offline and
+  // mid-reconnect. Sending in either state would silently drop the message.
+  const isDisconnected = isOffline || isReconnecting;
   const [composerText, setComposerText] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
   // Throttle typing heartbeats so we don't poke on every keystroke.
@@ -78,9 +82,14 @@ export function ThreadTab({
   function submitText() {
     const text = composerText.trim();
     if (!text || addEntryMutation.isPending) return;
-    // Plan 7 (D2): don't fail silently on send while offline — warn instead.
-    if (isOffline) {
-      pushToast({ title: "You're offline — message not sent", tone: "warn" });
+    // Plan 7 (D2): don't fail silently on send while disconnected — warn instead.
+    if (isDisconnected) {
+      pushToast({
+        title: isOffline
+          ? "You're offline — message not sent"
+          : "Reconnecting — message not sent",
+        tone: "warn",
+      });
       return;
     }
     addEntryMutation.mutate(text);
@@ -172,17 +181,19 @@ export function ThreadTab({
             submitText();
           }
         }}
-        disabled={addEntryMutation.isPending || isOffline}
+        disabled={addEntryMutation.isPending || isDisconnected}
         aria-label="Write a message"
         data-testid="thread-composer-textarea"
       />
       <div className="flex items-center justify-between gap-2">
-        {isOffline ? (
+        {isDisconnected ? (
           <span
             className="text-[11px] text-muted-foreground"
             data-testid="thread-composer-offline-hint"
           >
-            You&apos;re offline — messages can&apos;t be sent right now.
+            {isOffline
+              ? "You're offline"
+              : "Reconnecting — messages will send when connected"}
           </span>
         ) : (
           <span />
@@ -190,7 +201,7 @@ export function ThreadTab({
         <Button
           type="submit"
           size="sm"
-          disabled={!composerText.trim() || addEntryMutation.isPending || isOffline}
+          disabled={!composerText.trim() || addEntryMutation.isPending || isDisconnected}
           data-testid="thread-composer-submit"
         >
           <SendHorizonal className="h-4 w-4 mr-1.5" />
