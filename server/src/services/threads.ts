@@ -7,7 +7,7 @@
  * - RBAC hide-don't-403: private/unclaimed threads throw notFound, never forbidden
  * - Agents never own threads (resolveOwnerOnAction guards this)
  * - D8: issues created from scope items use workMode="planning" (suppresses dispatch)
- * - D20: sub-goals are one level deep (promoteToGoal enforces server-side)
+ * - Goals are a multi-parent DAG (Decision #20 superseded 2026-05-25); integrity enforced on write (cycles + child⊆parent scope)
  * - D4 batched RBAC: list() uses 2 queries, not 2N
  */
 
@@ -18,7 +18,6 @@ import {
   threadParticipants,
   threadLinks,
   userRoles,
-  goals,
   discussionEntries,
   discussionExtractedItems,
   scopeItemDependencies,
@@ -855,7 +854,8 @@ export function threadService(db: Db) {
 
     /**
      * Promote a thread to a goal. Creates the goal, links goalId on the thread.
-     * Enforces Decision #20: sub-goals are one level deep.
+     * Goals are a multi-parent DAG (Decision #20 superseded 2026-05-25); the
+     * goal service enforces cycle + child⊆parent scope integrity on write.
      */
     promoteToGoal: async (
       companyId: string,
@@ -877,18 +877,6 @@ export function threadService(db: Db) {
       await assertCanEdit(thread, actor);
 
       if (thread.goalId) throw badRequest("Thread already has a goal");
-
-      // Decision #20: enforce one-level sub-goals server-side
-      if (goalInput.parentId) {
-        const parent = await db
-          .select({ parentId: goals.parentId })
-          .from(goals)
-          .where(eq(goals.id, goalInput.parentId))
-          .then((r) => r[0] ?? null);
-        if (parent?.parentId) {
-          throw badRequest("Sub-goals are one level deep (#20)");
-        }
-      }
 
       const gsvc = goalService(db);
       const goal = await gsvc.create(companyId, {

@@ -618,22 +618,6 @@ describe("threadService.promoteToGoal", () => {
     ).rejects.toThrow(/already has a goal/i);
   });
 
-  it("rejects sub-goals of sub-goals (Decision #20)", async () => {
-    const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
-      // goals.parentId query for parentId check -> returns a goal that has a parentId (it is itself a sub-goal)
-      [{ parentId: "g0" }],
-    ]);
-    await expect(
-      threadService(db).promoteToGoal(
-        "co1",
-        "t1",
-        { projectIds: ["p1"], level: "team", parentId: "g-parent" },
-        { userId: "u1", role: "founder", isHuman: true },
-      ),
-    ).rejects.toThrow(/#20/);
-  });
-
   it("rejects with no projectIds", async () => {
     const db = createSequenceDb([]);
     await expect(

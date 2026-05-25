@@ -40,7 +40,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
 | 18 | Agents can only self-transition: todo → in_progress → in_review | Only humans mark done/cancelled. Deliberate control point. |
 | 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all migrations. |
-| 20 | Sub-goals limited to one level deep | Avoids complexity. Goal → sub-goals, no deeper nesting. |
+| 20 | ~~Sub-goals limited to one level deep~~ **(SUPERSEDED 2026-05-25)** | Superseded by the multi-parent goals model — goals form a freely-nested, multi-parent DAG; integrity (cycles + child⊆parent scope) enforced on write. See `docs/superpowers/plans/2026-05-25-threads-goals-followup.md` B0. |
 | 21 | Task dependencies use a separate `task_dependencies` table, not parentId | parentId = subtasks (hierarchy). Dependencies = blocking relationships (different concept). Separate table, separate logic. |
 | 22 | Cancelled dependency notifies but does NOT auto-cancel dependents | Too aggressive. Founder decides what to do with orphaned tasks. |
 | 23 | All dependencies must be met before a task can be worked on | AND logic, not OR. If Task C depends on A and B, both A and B must be done. |
