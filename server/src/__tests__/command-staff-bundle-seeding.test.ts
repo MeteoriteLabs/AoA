@@ -4,9 +4,11 @@ vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => ({ op: "and", a }),
   eq: (a: unknown, b: unknown) => ({ op: "eq", a, b }),
 }));
+// Task #39 fix: include internalAgentConfig so resolveCrewAdapterForCompany
+// (P1-B fix's new dependency in ensure-command-staff.ts) can resolve.
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) => new Proxy({}, { get: (_x, p) => (typeof p === "string" ? Symbol(`${n}.${p}`) : undefined) });
-  return { agents: t("agents"), aoaAgentTriggers: t("aoaAgentTriggers") };
+  return { agents: t("agents"), aoaAgentTriggers: t("aoaAgentTriggers"), internalAgentConfig: t("internalAgentConfig") };
 });
 
 // Spy the seeder so we assert it is called per role with the right role key.

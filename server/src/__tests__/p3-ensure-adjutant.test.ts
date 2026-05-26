@@ -10,12 +10,15 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 // Mock Drizzle table references as Proxies
+// Task #39 fix: include internalAgentConfig so resolveCrewAdapterForCompany
+// (introduced as ensure-adjutant's new dependency in P1-B fix) can resolve.
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) =>
     new Proxy({}, { get: (_x, p) => (typeof p === "string" ? Symbol(`${n}.${p}`) : undefined) });
   return {
     agents: t("agents"),
     aoaAgentTriggers: t("aoaAgentTriggers"),
+    internalAgentConfig: t("internalAgentConfig"),
   };
 });
 
@@ -73,19 +76,23 @@ describe("P3.1 Adjutant role", () => {
             }),
           }),
         }),
+        // Task #39 fix: `.limit(1)` must be `await`-able directly.
+        // The previous mock returned { then: vi.fn().mockResolvedValue(...) }
+        // but await calls .then(onFulfilled, onRejected) and the mock
+        // ignored the callbacks → unresolved promise → 5s timeout.
+        // Returning mockResolvedValue from .limit() makes the chain a real
+        // Thenable that resolves with the array.
         select: vi.fn().mockReturnValue({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockReturnValue({
-                then: vi.fn().mockResolvedValue([
-                  {
-                    id: "adj-1",
-                    companyId: "company-1",
-                    name: "Adjutant",
-                    adapterConfig: null,
-                  },
-                ]),
-              }),
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: "adj-1",
+                  companyId: "company-1",
+                  name: "Adjutant",
+                  adapterConfig: null,
+                },
+              ]),
             }),
           }),
         }),

@@ -5,14 +5,19 @@ const { eqMock, andMock, seedMock } = vi.hoisted(() => ({
   seedMock: vi.fn().mockResolvedValue({ seeded: true }),
 }));
 vi.mock("drizzle-orm", () => ({ and: andMock, eq: eqMock }));
-vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)=>typeof p==="string"?Symbol(`${n}.${p}`):undefined}); return { agents:t("agents"), aoaAgentTriggers:t("agt") }; });
+// Task #39 fix: resolveCrewAdapterForCompany (introduced by P1-B fix) reads
+// internalAgentConfig from @armyofagents/db; mocks must expose that table or
+// import-time resolution throws "No internalAgentConfig export".
+vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)=>typeof p==="string"?Symbol(`${n}.${p}`):undefined}); return { agents:t("agents"), aoaAgentTriggers:t("agt"), internalAgentConfig:t("iac") }; });
 vi.mock("../services/internal-agent/aoa-agents/seed-commander-bundle.js", () => ({
   seedRoleInstructionBundle: (...a: unknown[]) => seedMock(...a),
   seedCommanderInstructionBundle: vi.fn(),
 }));
 vi.mock("../services/agent-instructions.js", () => ({ agentInstructionsService: () => ({}) }));
 import { ensureExtractionAgent, EXTRACTION_AGENT_NAME, EXTRACTION_AGENT_TOOL_ALLOWLIST } from "../services/internal-agent/aoa-agents/ensure-extraction-agent.js";
-function sel(rows:unknown[]){const c:any={};c.from=()=>c;c.where=()=>c;c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(rows).then(r);return c;}
+// Task #39 fix: chain helper now includes `.limit(N)` so the resolveCrewAdapterForCompany
+// path (P1-B fix's new SELECT) doesn't blow up with "db.select(...).from(...).where(...).limit is not a function".
+function sel(rows:unknown[]){const c:any={};c.from=()=>c;c.where=()=>c;c.limit=()=>c;c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(rows).then(r);return c;}
 describe("ensureExtractionAgent", () => {
   beforeEach(() => { eqMock.mockClear(); andMock.mockClear(); seedMock.mockClear(); });
   it("creates kind='aoa' member + enabled outbox trigger + seeded instruction + toolAllowlist", async () => {
