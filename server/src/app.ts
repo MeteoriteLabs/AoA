@@ -67,6 +67,7 @@ import { teamRoutes } from "./routes/team.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { internalAgentRoutes } from "./routes/internal-agent.js";
+import { internalSweepsDevRoutes } from "./routes/internal-sweeps-dev.js";
 import { workflowTemplateRoutes } from "./routes/workflow-templates.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
@@ -283,6 +284,14 @@ export async function createApp(
   api.use(notificationRoutes(db));
   api.use(workflowTemplateRoutes(db));
   api.use(internalAgentRoutes(db));
+  // Dev-only manual sweep triggers (Adjutant 15-min, Memory Keeper 4-hr).
+  // Mounted ONLY when uiMode='vite-dev' (i.e. AOA_UI_DEV_MIDDLEWARE=true).
+  // Production never sets this env var, so the routes never load there.
+  // Used by UAT to avoid waiting for the natural sweep cadence — see
+  // routes/internal-sweeps-dev.ts header for the full rationale.
+  if (opts.uiMode === "vite-dev") {
+    api.use(internalSweepsDevRoutes(db));
+  }
   api.use(mcpServerRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
