@@ -37,6 +37,7 @@ import {
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
 import { runAdjutantSweep } from "./services/internal-agent/aoa-agents/sweep-adjutant.js";
+import { runMemoryKeeperSweep, MK_SWEEP_DEBOUNCE_MS } from "./services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -749,6 +750,25 @@ setInterval(() => {
     .catch((err) => logger.warn({ err }, "adjutant sweep tick failed"))
     .finally(() => { adjutantSweepInFlight = false; });
 }, ADJUTANT_SWEEP_INTERVAL_MS);
+
+// Sub-agent #3: periodic Memory Keeper sweep (T1.4 part 1).
+// 4hr cadence — eng-review D10's cost analysis showed naive 30-min sweeping
+// scales to ~$240/day for a company with 50 active threads. 4hr is the cost-
+// vs-freshness sweet spot for memory pattern detection: founders edit memory
+// items once a week on average; missing a pattern by ≤4hr is fine. Event-
+// driven entry.added wakeups (T1.4 part 2) will layer on top for faster
+// reaction; this sweep is the safety floor that catches aging patterns on
+// quiet threads. MK_SWEEP_DEBOUNCE_MS matches this cadence (4hr) so each
+// active thread gets exactly one MK wakeup per cycle.
+const MEMORY_KEEPER_SWEEP_INTERVAL_MS = MK_SWEEP_DEBOUNCE_MS; // 4 hours
+let memoryKeeperSweepInFlight = false;
+setInterval(() => {
+  if (memoryKeeperSweepInFlight) return;
+  memoryKeeperSweepInFlight = true;
+  void runMemoryKeeperSweep(db as any)
+    .catch((err) => logger.warn({ err }, "memory keeper sweep tick failed"))
+    .finally(() => { memoryKeeperSweepInFlight = false; });
+}, MEMORY_KEEPER_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

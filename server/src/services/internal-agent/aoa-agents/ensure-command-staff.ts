@@ -24,7 +24,13 @@ export const COMMAND_STAFF_ROLES = [
   { key: "router", name: "Router", trigger: "mention" },
   { key: "planner", name: "Planner", trigger: "phase-advance" },
   { key: "dispatcher", name: "Dispatcher", trigger: "phase-advance" },
-  { key: "memory_keeper", name: "Memory Keeper", trigger: "outbox" },
+  // T1.4 part 1 (v1-completion plan F4): Memory Keeper was kind='outbox'
+  // but the dispatcher's outbox drain is hardcoded to the extraction agent —
+  // MK never ran. Switched to 'sweep' so the periodic memory-keeper sweep
+  // driver (sweep-memory-keeper.ts) wakes MK every 4hr per active thread.
+  // Existing rows are migrated below in ensureRole (kind='outbox' → 'sweep').
+  // T1.4 part 2 will additionally seed an 'event' trigger for entry.added.
+  { key: "memory_keeper", name: "Memory Keeper", trigger: "sweep" },
 ] as const;
 
 export type CommandStaffRoleKey = (typeof COMMAND_STAFF_ROLES)[number]["key"];
@@ -130,6 +136,29 @@ async function ensureRole(db: Db, companyId: string, role: (typeof COMMAND_STAFF
     }
     agentId = existing.id;
     existingRc = existing.runtimeConfig;
+  }
+
+  // T1.4 part 1 — Memory Keeper trigger migration. Pre-T1.4 seeds wrote
+  // kind='outbox' which was dead code (the dispatcher's outbox drain is
+  // hardcoded to the extraction agent — MK never ran). Migrate any existing
+  // outbox row for this agent to kind='sweep' with config.role='memory_keeper'
+  // so the new sweep-memory-keeper.ts driver picks it up. Guarded on
+  // kind='outbox' so the UPDATE is a no-op on fresh post-T1.4 rows; safe to
+  // run on every ensureRole call (idempotent).
+  if (!inserted && role.key === "memory_keeper") {
+    await db
+      .update(aoaAgentTriggers)
+      .set({
+        kind: "sweep",
+        config: { role: "memory_keeper" },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(aoaAgentTriggers.agentId, agentId),
+          eq(aoaAgentTriggers.kind, "outbox"),
+        ),
+      );
   }
 
   // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig.
