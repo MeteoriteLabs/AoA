@@ -22,6 +22,7 @@ import { createDiscussionDb } from "./helpers/mock-db.js";
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  asc: vi.fn((col: any) => ({ asc: col })),
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({ sql: true, strings, values })),
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
@@ -102,6 +103,11 @@ vi.mock("@armyofagents/db", () => ({
   },
   goals: { id: "goals_id" },
   agents: { id: "agents_id", name: "agents_name", icon: "agents_icon" },
+  threadPlanSteps: {
+    id: "tps_id",
+    threadId: "tps_thread_id",
+    stepOrder: "tps_step_order",
+  },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -1313,6 +1319,8 @@ describe("v2.5 Discussion Flow QA", () => {
         items,
         // select annotations (inArray entryIds)
         annotations,
+        // select plan steps (P5.2)
+        [],
       ]);
 
       const svc = discussionService(db);
@@ -1345,6 +1353,8 @@ describe("v2.5 Discussion Flow QA", () => {
       const db = createDiscussionDb([
         [disc],
         // entries → empty
+        [],
+        // plan steps → empty (P5.2)
         [],
       ]);
 

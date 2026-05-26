@@ -131,7 +131,9 @@ vi.mock("@armyofagents/db", () => ({
   agents: { id: "a_id", companyId: "a_company_id", name: "a_name", kind: "a_kind" },
   authUsers: { id: "au_id", name: "au_name" },
   agentWakeupRequests: { id: "awr_id" },
+  aoaAgentTriggers: { agentId: "aat_agent_id", companyId: "aat_company_id", kind: "aat_kind", enabled: "aat_enabled", config: "aat_config" },
   notifications: { id: "n_id" },
+  threadPlanSteps: { id: "tps_id", threadId: "tps_thread_id", stepOrder: "tps_step_order" },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -345,6 +347,7 @@ describe("threadService.advancePhase", () => {
     const db = createSequenceDb([
       [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [], // update
+      [], // aoaAgentTriggers select (phase-advance subscribers — P3.4)
     ]);
     const result = await threadService(db).advancePhase("co1", "t1", "scope", {
       userId: "u1",

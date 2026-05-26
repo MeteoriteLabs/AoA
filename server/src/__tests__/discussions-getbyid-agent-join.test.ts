@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  asc: vi.fn((col: any) => ({ asc: col })),
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({
     sql: true,
@@ -96,6 +97,11 @@ vi.mock("@armyofagents/db", () => ({
   },
   goals: {
     id: "goals_id",
+  },
+  threadPlanSteps: {
+    id: "tps_id",
+    threadId: "tps_thread_id",
+    stepOrder: "tps_step_order",
   },
 }));
 
@@ -226,6 +232,8 @@ describe("discussionService.getById — agent join serialization", () => {
       // 3. extracted items — empty
       [],
       // 4. annotations — empty
+      [],
+      // 5. plan steps (P5.2) — empty
       [],
     ]);
 
