@@ -149,7 +149,7 @@ describe("F4: runAoaAgent unlinks the mcp-config temp file after every run", () 
     adapterExecute.mockRejectedValueOnce(new Error("boom"));
     await expect(
       runAoaAgent(makeDb() as any, "a-1", { companyId: "co-1", source: "wakeup" }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: expect.stringMatching(/succeeded|failed/) }); // T1.0
     expect(unlinkMock).toHaveBeenCalledTimes(1);
   });
 
@@ -158,6 +158,6 @@ describe("F4: runAoaAgent unlinks the mcp-config temp file after every run", () 
     unlinkMock.mockRejectedValueOnce(new Error("ENOENT"));
     await expect(
       runAoaAgent(makeDb() as any, "a-1", { companyId: "co-1", source: "wakeup" }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: expect.stringMatching(/succeeded|failed/) }); // T1.0
   });
 });

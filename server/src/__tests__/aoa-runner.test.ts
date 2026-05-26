@@ -73,7 +73,11 @@ it("claude-family: --mcp-config tmp file kept (byte-identical) AND mcpBridge als
 it("failure isolated: adapter throws → never rethrows", async () => {
   execMock.mockRejectedValueOnce(new Error("boom"));
   const db:any = { select:()=>ch([{ id:"ext-1", companyId:"co-1", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]), insert:()=>ch([{id:"run-2"}]), update:()=>ch([{id:"e2"}]) };
-  await expect(runAoaAgent(db,"ext-1",{ companyId:"co-1", source:"discussion_entry_pending", entryId:"e2" })).resolves.toBeUndefined();
+  // T1.0: runner now returns AoaRunResult instead of void. Adapter threw,
+  // so we expect status='failed' with the thrown message.
+  const r1 = await runAoaAgent(db,"ext-1",{ companyId:"co-1", source:"discussion_entry_pending", entryId:"e2" });
+  expect(r1.status).toBe("failed");
+  expect(r1.errorMessage).toBe("boom");
 });
 it("not claimable (concurrent): atomic claim empty → adapter NOT called, returns", async () => {
   execMock.mockClear();
@@ -84,6 +88,13 @@ it("not claimable (concurrent): atomic claim empty → adapter NOT called, retur
     insert:()=>ch([{ id:"run-9" }]),
     update:()=> (upd++ === 0 ? claimChain : ch([{ id:"run-9" }])), // 1st update = the claim (empty ⇒ abort)
   };
-  await expect(runAoaAgent(db,"ext-1",{ companyId:"co-1", source:"discussion_entry_pending", entryId:"e9" })).resolves.toBeUndefined();
+  // T1.0: not-claimable returns succeeded (it's a concurrent race, not a
+  // failure — another run owns this entry). Pre-T1.0 this was undefined.
+  // P1-C: claim gate requires source="outbox". Other sources skip the claim
+  // (and therefore the not-claimable abort path). Using "outbox" preserves
+  // the test's original intent: claim attempted, empty result → adapter NOT
+  // called, function returns early.
+  const r9 = await runAoaAgent(db,"ext-1",{ companyId:"co-1", source:"outbox", entryId:"e9" });
+  expect(r9.status).toBe("succeeded");
   expect(execMock).not.toHaveBeenCalled();
 });

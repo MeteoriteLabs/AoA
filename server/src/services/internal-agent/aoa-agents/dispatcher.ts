@@ -350,7 +350,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           }
 
           try {
-            await runAoaAgent(db, w.agentId, {
+            // T1.0: runAoaAgent now returns AoaRunResult. The wakeup row
+            // reflects the actual outcome (succeeded/failed) the runner
+            // reports, not just whether it threw. Cost/usage already
+            // persisted to internal_agent_runs by the runner itself.
+            const result = await runAoaAgent(db, w.agentId, {
               companyId: w.companyId,
               source: "wakeup",
               wakeupId: w.id,
@@ -358,11 +362,17 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               effectiveAutonomy,
               ...(w.payload ?? {}),
             });
-            // P2 fix: distinct terminal status. 'done' was overloaded for
-            // success+skip+rate-limit, masking failures behind a uniform value.
+            // P2 + T1.0: status reflects what the runner actually saw.
+            // 'succeeded' = adapter exited cleanly with no errorMessage.
+            // 'failed' = adapter exitCode != 0, errorMessage set, or a
+            // runner guard tripped (e.g. silent-failure guard from T1.5).
             await db
               .update(agentWakeupRequests)
-              .set({ status: "succeeded", finishedAt: new Date() })
+              .set({
+                status: result.status,
+                error: result.errorMessage ?? null,
+                finishedAt: new Date(),
+              })
               .where(eq(agentWakeupRequests.id, w.id));
           } catch (err: unknown) {
             await db

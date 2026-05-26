@@ -14,6 +14,8 @@ import { logger } from "../../../middleware/logger.js";
 import { computeCostCents } from "../cost-model.js";
 import { assembleAgentPersona } from "../commander-context.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
+import type { AoaRunResult } from "./aoa-run-result.js";
+import { buildAoaRunResultFromAdapter } from "./aoa-run-result.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
 
@@ -58,7 +60,7 @@ const SUBAGENT_SESSION_USER_ID = "aoa-subagent";
 const SUBAGENT_SESSION_USER_ROLE = "founder"; // verified: submit_extracted_items requiredRole === "founder" (rank 2)
 const SUBAGENT_ENABLED_CAPABILITIES = ["discussion_processing"]; // verified: gates category "discussion"
 
-export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPayload): Promise<void> {
+export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPayload): Promise<AoaRunResult> {
   const log = logger.child({ svc: "aoa-runner", agentId, companyId: payload.companyId });
   const startedAt = Date.now();
   let runId: string | null = null;
@@ -69,7 +71,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   let claimedEntryId: string | null = null;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
-    if (!agent) { log.warn("aoa agent missing; skip"); return; }
+    if (!agent) {
+      log.warn("aoa agent missing; skip");
+      // T1.0: even no-op early returns expose a status to the dispatcher
+      // so the wakeup row reflects what happened. "agent gone" is a failed
+      // run from the wakeup's perspective (something asked for an agent
+      // that doesn't exist anymore — orphan wakeup).
+      return { status: "failed", errorMessage: "aoa agent missing" };
+    }
 
     const inserted = await db.insert(internalAgentRuns).values({
       companyId: payload.companyId, agentId, // Finding R1: per-agent attribution
@@ -106,7 +115,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             .where(eq(internalAgentRuns.id, runId));
         }
         log.info("entry not claimable (already processing/terminal) — skipping");
-        return;
+        // T1.0: concurrent claim race is not a true failure (another run
+        // owns this entry, will handle it). Return succeeded so the
+        // dispatcher doesn't count it toward the failure-storm brake (T1.9).
+        // The internal_agent_runs row is still marked failed above so the
+        // operator sees the skip for this specific run attempt.
+        return { status: "succeeded" };
       }
       // Claim succeeded — this run now OWNS the entry. Record it so a later
       // failure can terminalize it (FX1/B1).
@@ -182,7 +196,10 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       : { ...baseConfig };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
-    await adapter.execute({
+    // T1.0: capture the adapter result so we can build AoaRunResult.
+    // Adapters populate `usage`, `costUsd`, `exitCode`, `errorMessage` on
+    // their AdapterExecutionResult — that data was previously discarded.
+    const adapterResult = await adapter.execute({
       runId: runId ?? `aoa-${agentId}`,
       agent,
       runtime: agent.runtimeConfig ?? {},
@@ -216,27 +233,56 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       }
     }
 
+    // T1.0 + T1.1: determine status from the adapter's actual outcome.
+    // buildAoaRunResultFromAdapter is the pure function that owns this logic
+    // — exhaustively unit-tested in aoa-run-result.test.ts so we don't
+    // duplicate the success/failure decision here AND in the catch path.
+    const runResult = buildAoaRunResultFromAdapter(adapterResult);
+    const adapterUsage = runResult.usage;
+    const costCents = runResult.costCents;
+
     if (runId) {
       await db.update(internalAgentRuns)
-        .set({ status: "completed", durationMs: Date.now() - startedAt, completedAt: new Date() })
+        .set({
+          status: runResult.status === "failed" ? "failed" : "completed",
+          errorMessage: runResult.errorMessage ?? null,
+          tokenUsage: adapterUsage ? {
+            inputTokens: adapterUsage.inputTokens,
+            outputTokens: adapterUsage.outputTokens,
+            ...(typeof adapterUsage.cachedInputTokens === "number"
+              ? { cachedInputTokens: adapterUsage.cachedInputTokens }
+              : {}),
+          } : null,
+          costCents,
+          durationMs: Date.now() - startedAt,
+          completedAt: new Date(),
+        })
         .where(eq(internalAgentRuns.id, runId));
     }
-    // Plan 3 Task 6: real cost accounting. CLI subscription runs report 0
-    // tokens (no per-token billing); SDK-mode runs will populate usage once
-    // providers/index.ts is extended (DONE_WITH_CONCERNS: providers/index.ts
-    // does not currently return token usage from SDK calls — it returns the
-    // provider instance, not a response object. Cost accounting for SDK-mode
-    // crew runs is deferred pending provider response shape extension.)
+    // Plan 3 Task 6 + T1.1: real cost accounting from adapter result.
+    // Previously hardcoded to 0 tokens / $0 even when the adapter reported
+    // real usage. Now uses the values returned in AdapterExecutionResult.
+    // Providers without per-run billing (CLI subscriptions) still report
+    // zero — that's correct and intentional.
     await costService(db).createEvent(payload.companyId, {
-      agentId, provider: "anthropic",
-      model: process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514",
-      inputTokens: 0, outputTokens: 0,
-      // CLI subscription: no per-token billing → always $0. If/when the
-      // adapter begins returning token usage, replace with:
-      //   computeCostCents(provider, model, usage.inputTokens, usage.outputTokens)
-      costCents: computeCostCents("anthropic", process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514", 0, 0),
+      agentId,
+      provider: adapterResult.provider ?? "anthropic",
+      model: adapterResult.model ?? process.env.EXTRACTION_MODEL ?? "claude-sonnet-4-20250514",
+      inputTokens: adapterUsage?.inputTokens ?? 0,
+      outputTokens: adapterUsage?.outputTokens ?? 0,
+      // Prefer the adapter's authoritative cost. Fall back to model-based
+      // computation only when the adapter doesn't report cost (e.g. legacy
+      // adapter returning UsageSummary without costUsd).
+      costCents: costCents ?? computeCostCents(
+        adapterResult.provider ?? "anthropic",
+        adapterResult.model ?? process.env.EXTRACTION_MODEL ?? "claude-sonnet-4-20250514",
+        adapterUsage?.inputTokens ?? 0,
+        adapterUsage?.outputTokens ?? 0,
+      ),
       occurredAt: new Date(),
     });
+
+    return runResult;
   } catch (err) {
     log.error({ err }, "aoa run failed (isolated)");
     const errMessage = err instanceof Error ? err.message : String(err);
@@ -298,6 +344,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         }
       } catch { /* terminalizer is best-effort; never escape the run boundary */ }
     }
+    // T1.0: return a failed AoaRunResult so the dispatcher sets the wakeup
+    // row to status='failed'. Before T1.0 we swallowed silently and the
+    // dispatcher inferred 'succeeded' from the absence of a thrown
+    // exception — masking every crew failure as a successful wakeup.
+    return { status: "failed", errorMessage: errMessage };
   } finally {
     if (cfgPath) {
       try {

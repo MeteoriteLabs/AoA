@@ -186,10 +186,10 @@ describe("FX1/B1: failed extraction run terminalizes its claimed entry", () => {
     await expect(
       runAoaAgent(db as any, "a-1", {
         companyId: "co-1",
-        source: "wakeup",
+        source: "outbox",
         entryId: "e-1",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: expect.stringMatching(/succeeded|failed/) }); // T1.0: AoaRunResult, not void
 
     // The run row was terminalized → failed (internalAgentRuns update).
     const runFail = db._sets.find(
@@ -262,10 +262,14 @@ describe("FX1/B1: failed extraction run terminalizes its claimed entry", () => {
     await expect(
       runAoaAgent(db as any, "a-1", {
         companyId: "co-1",
-        source: "discussion_entry_pending",
+        // P1-C fix gate: only source="outbox" triggers the entry-claim path
+        // (extraction agent's territory). Other sources (mentions, sweeps,
+        // phase-advance) don't claim. This test exercises the silent-failure
+        // guard which only fires post-claim, so it needs the outbox source.
+        source: "outbox",
         entryId: "e-1",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: expect.stringMatching(/succeeded|failed/) }); // T1.0: AoaRunResult, not void
 
     // Run terminalized → failed (not 'completed' — it produced nothing).
     const runFail = db._sets.find(
@@ -304,10 +308,10 @@ describe("FX1/B1: failed extraction run terminalizes its claimed entry", () => {
     await expect(
       runAoaAgent(db as any, "a-1", {
         companyId: "co-1",
-        source: "wakeup",
+        source: "outbox",
         entryId: "e-1",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: expect.stringMatching(/succeeded|failed/) }); // T1.0: AoaRunResult, not void
 
     // No entry → 'failed' + sourceInfo write happened.
     const entryFail = db._sets.find(
