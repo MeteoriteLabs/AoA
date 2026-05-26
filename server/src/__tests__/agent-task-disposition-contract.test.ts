@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 
 describe("default agent task disposition contract", () => {
   it("is present in generated onboarding AGENTS.md files", async () => {
-    const root = path.resolve(process.cwd(), "src/onboarding-assets");
+    // Use import.meta.dirname (= server/src/__tests__) to get a stable path
+    // regardless of which directory vitest is invoked from.
+    const root = path.resolve(import.meta.dirname, "../onboarding-assets");
     const files = [
       "cxo/AGENTS.md",
       "default/AGENTS.md",
