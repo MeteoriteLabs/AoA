@@ -1,5 +1,7 @@
 import { Router } from "express";
+import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
+import { agents, aoaAgentTriggers, agentWakeupRequests } from "@armyofagents/db";
 import { runAdjutantSweep } from "../services/internal-agent/aoa-agents/sweep-adjutant.js";
 import { runMemoryKeeperSweep } from "../services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import { logger } from "../middleware/logger.js";
@@ -66,6 +68,53 @@ export function internalSweepsDevRoutes(db: Db): Router {
       const message = err instanceof Error ? err.message : String(err);
       log.error({ err }, "manual memory keeper sweep failed");
       res.status(500).json({ ok: false, sweep: "memory-keeper", error: message });
+    }
+  });
+
+  // GET /api/internal/triggers/:companyId — dev-only diagnostic. Returns the
+  // current trigger configuration for a company's crew agents. Used by UAT
+  // pre-flight to verify T1.4's outbox→sweep migration landed for Memory
+  // Keeper, and to assert each crew agent has the right kind+config.
+  router.get("/internal/triggers/:companyId", async (req, res) => {
+    const companyId = req.params.companyId;
+    try {
+      const rows = await db
+        .select({
+          name: agents.name,
+          agentId: aoaAgentTriggers.agentId,
+          kind: aoaAgentTriggers.kind,
+          enabled: aoaAgentTriggers.enabled,
+          config: aoaAgentTriggers.config,
+        })
+        .from(aoaAgentTriggers)
+        .innerJoin(agents, eq(agents.id, aoaAgentTriggers.agentId))
+        .where(eq(aoaAgentTriggers.companyId, companyId));
+      res.json({ companyId, triggers: rows });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // GET /api/internal/wakeups/:agentId?limit=10 — dev-only diagnostic. Returns
+  // the most recent wakeup rows for an agent, so UAT can assert
+  // status='succeeded'/'failed'/'skipped_*' after a triggering action.
+  router.get("/internal/wakeups/:agentId", async (req, res) => {
+    const agentId = req.params.agentId;
+    const limit = Math.min(parseInt(String(req.query.limit ?? "10"), 10) || 10, 100);
+    try {
+      const rows = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId))
+        .orderBy(agentWakeupRequests.createdAt)
+        .limit(limit);
+      // Reverse so newest-first (drizzle's orderBy doesn't take desc helper
+      // here without an extra import; cheaper to slice in JS).
+      res.json({ agentId, wakeups: rows.slice(-limit).reverse() });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
     }
   });
 
