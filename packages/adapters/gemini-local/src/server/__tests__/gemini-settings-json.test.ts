@@ -161,4 +161,40 @@ describe("writeGeminiMcpSettingsJson (T2.2)", () => {
       expect(written.theme).toBeUndefined();
     });
   });
+
+  describe("concurrency (codex finding P1)", () => {
+    it("10 parallel writes converge to ONE valid JSON file (no torn content, no temp leftovers)", async () => {
+      // Same regression guard as opencode T2.1.1: under concurrent writes
+      // the pre-fix read-modify-write could tear the file or clobber other
+      // mcpServers.* entries. Atomic temp+rename guarantees an all-or-
+      // nothing landing. See opencode-config-json.test.ts for the full
+      // rationale — this is the same bug class.
+      const N = 10;
+      const writes = Array.from({ length: N }, (_, i) =>
+        writeGeminiMcpSettingsJson(tmpDir, {
+          ...BRIDGE_SPEC,
+          env: { ...BRIDGE_SPEC.env, AOA_WRITER_INDEX: String(i) },
+        }),
+      );
+      await Promise.all(writes);
+
+      const text = await fs.readFile(path.join(tmpDir, ".gemini", "settings.json"), "utf8");
+      const written = JSON.parse(text); // (a) valid JSON — parse must NOT throw
+      // (b) The aoa block exists with the expected static fields.
+      expect(written.mcpServers.aoa.command).toBe("node");
+      expect(written.mcpServers.aoa.args).toEqual(["/path/to/mcp-bridge.js"]);
+      // (c) The env is ONE variant verbatim — last-writer-wins, not a torn merge.
+      const idxStr = written.mcpServers.aoa.env.AOA_WRITER_INDEX;
+      expect(typeof idxStr).toBe("string");
+      const idx = Number(idxStr);
+      expect(Number.isInteger(idx)).toBe(true);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(N);
+
+      // (d) No temp files left behind in .gemini/.
+      const remaining = await fs.readdir(path.join(tmpDir, ".gemini"));
+      const tempFiles = remaining.filter((f) => f.startsWith("settings.json.tmp-"));
+      expect(tempFiles).toEqual([]);
+    });
+  });
 });

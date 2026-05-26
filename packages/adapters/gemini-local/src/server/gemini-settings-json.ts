@@ -100,5 +100,51 @@ export async function writeGeminiMcpSettingsJson(
   };
 
   // 2-space indent + trailing newline (same as opencode T2.1).
-  await fs.writeFile(target, JSON.stringify(next, null, 2) + "\n", "utf8");
+  //
+  // T2.2.1 (codex finding P1): atomic write. See opencode-config-json.ts
+  // for the full rationale — same bug class, same fix. We write into the
+  // `.gemini/` dir (already created above) so the temp file is on the same
+  // filesystem as the target, which is what fs.rename() needs to be atomic.
+  // Windows requires the EPERM/EBUSY retry loop because concurrent renames
+  // against the same target briefly fail with the destination locked —
+  // POSIX never sees this.
+  const body = JSON.stringify(next, null, 2) + "\n";
+  const tempName = `settings.json.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const tempPath = path.join(geminiDir, tempName);
+  await fs.writeFile(tempPath, body, "utf8");
+  try {
+    await renameWithRetry(tempPath, target);
+  } catch (err) {
+    // Best-effort cleanup so a failing rename doesn't leak a temp file.
+    await fs.unlink(tempPath).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * fs.rename() with retry on Windows EPERM/EBUSY. Identical contract to the
+ * opencode adapter's renameWithRetry — POSIX rename is atomic and never
+ * throws these codes for same-fs moves, so on Linux/Mac the loop exits on
+ * attempt 1. Inlined rather than imported from a shared package because
+ * (a) only 2 call sites and (b) this package must not depend on the
+ * opencode-local package. If a 3rd call site emerges, factor out to
+ * @armyofagents/adapter-utils.
+ */
+async function renameWithRetry(src: string, dst: string, maxAttempts = 10): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      await fs.rename(src, dst);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        throw err;
+      }
+      // Jittered backoff so retrying writers don't wake in lockstep.
+      await new Promise((r) => setTimeout(r, 5 + Math.random() * 10));
+    }
+  }
+  throw lastErr;
 }
