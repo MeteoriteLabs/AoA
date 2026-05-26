@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMcpConfig } from "../services/internal-agent/cli-mode.js";
+import { buildMcpConfig, PLAYWRIGHT_MCP_PACKAGE } from "../services/internal-agent/cli-mode.js";
 
 const baseParams = {
   companyId: "c1",
@@ -25,7 +25,7 @@ describe("buildMcpConfig: browser_use capability", () => {
     });
     expect(config.mcpServers).toHaveProperty("playwright");
     expect(config.mcpServers.playwright!.command).toBe("npx");
-    expect(config.mcpServers.playwright!.args).toContain("@playwright/mcp@latest");
+    expect(config.mcpServers.playwright!.args).toContain(PLAYWRIGHT_MCP_PACKAGE);
     expect(config.mcpServers.playwright!.args).toContain("--headless");
   });
 

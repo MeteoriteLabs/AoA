@@ -19,9 +19,10 @@ const neverExecute = async () => ({ success: true, data: {}, summary: "" });
 // Minimal valid ToolContext for testing the confirmation gate.
 // userRole must be a recognised role string so the role enforcement gate
 // (which runs before requiresConfirmation) does not block these calls.
-// The tools created by makeTool() have requiredRole: "team_member", so any
-// valid role passes.
-const baseCtx = { userRole: "team_member" } as any;
+// The tools created by makeTool() have category: "action", which requires the
+// "system_actions" capability (see authorize-tool.ts CAPABILITY_TO_CATEGORY).
+// Include it so the capability gate passes and requiresConfirmation is reached.
+const baseCtx = { userRole: "team_member", enabledCapabilities: ["system_actions"] } as any;
 
 describe("createToolCallHandler: requiresConfirmation gate", () => {
   it("executes tools with requiresConfirmation: false normally", async () => {

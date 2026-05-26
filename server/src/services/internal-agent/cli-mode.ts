@@ -96,7 +96,7 @@ interface McpConfig {
   };
 }
 
-const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.75";
+export const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.75";
 
 /**
  * Provider-neutral inner MCP server spec ({command,args,env}). This shape is
