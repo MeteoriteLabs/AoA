@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers, agentWakeupRequests } from "@armyofagents/db";
 import { runAdjutantSweep } from "../services/internal-agent/aoa-agents/sweep-adjutant.js";
@@ -107,11 +107,9 @@ export function internalSweepsDevRoutes(db: Db): Router {
         .select()
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.agentId, agentId))
-        .orderBy(agentWakeupRequests.createdAt)
+        .orderBy(desc(agentWakeupRequests.createdAt))
         .limit(limit);
-      // Reverse so newest-first (drizzle's orderBy doesn't take desc helper
-      // here without an extra import; cheaper to slice in JS).
-      res.json({ agentId, wakeups: rows.slice(-limit).reverse() });
+      res.json({ agentId, wakeups: rows });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: message });
