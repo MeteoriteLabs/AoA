@@ -17,6 +17,8 @@ import { agentInstructionsService } from "../../agent-instructions.js";
 import type { AoaRunResult } from "./aoa-run-result.js";
 import { buildAoaRunResultFromAdapter } from "./aoa-run-result.js";
 import { buildTriggerPrompt } from "./aoa-trigger-prompt.js";
+import { deriveEnabledCapabilities } from "./derive-capabilities.js";
+import { createToolRegistry } from "../tool-registry.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
 
@@ -59,7 +61,27 @@ export async function resolveAoaInstruction(args: {
 //    capability gates this category.
 const SUBAGENT_SESSION_USER_ID = "aoa-subagent";
 const SUBAGENT_SESSION_USER_ROLE = "founder"; // verified: submit_extracted_items requiredRole === "founder" (rank 2)
+
+// T1.3 (eng-review D4) — Per-agent capability derivation REPLACES this constant
+// in the mcpParams construction below. Kept exported (legacy const) for any
+// external callers that may still reference it, but the runner itself now
+// computes capabilities from the agent's toolAllowlist via
+// `deriveEnabledCapabilities`. Before T1.3: every crew agent was capped at
+// "discussion_processing", causing CAPABILITY_DISABLED on create_artifact
+// (Maker), advance_phase (Adjutant), create_task (Dispatcher),
+// suggest_memory (Memory Keeper). See derive-capabilities.ts header for
+// the full rationale.
+/** @deprecated v1.0 — use `deriveEnabledCapabilities(toolAllowlist, registry)` instead. */
 const SUBAGENT_ENABLED_CAPABILITIES = ["discussion_processing"]; // verified: gates category "discussion"
+// Suppress "declared but never used" — the constant is intentionally kept for
+// back-compat / documentation of the prior behavior; downstream may import it.
+void SUBAGENT_ENABLED_CAPABILITIES;
+
+// T1.3: build the registry ONCE at module load. createToolRegistry()
+// returns AgentTool[] with static name+category — the heavy callbacks
+// (execute, services) are not invoked here. Subsequent runner calls reuse
+// this. Keeps the per-wakeup cost down to a few Map lookups.
+const TOOL_REGISTRY_FOR_CAPABILITY_DERIVATION = createToolRegistry();
 
 export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPayload): Promise<AoaRunResult> {
   const log = logger.child({ svc: "aoa-runner", agentId, companyId: payload.companyId });
@@ -149,13 +171,31 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const toolAllowlistFromConfig = Array.isArray(aoaCfg.toolAllowlist)
       ? (aoaCfg.toolAllowlist as string[])
       : [];
+
+    // T1.3 (eng-review D4): derive enabledCapabilities PER-AGENT from the
+    // agent's toolAllowlist. Pre-T1.3 every crew run got the blanket
+    // ["discussion_processing"] constant — that failed-closed on
+    // create_artifact (Maker), advance_phase (Adjutant), create_task
+    // (Dispatcher), and suggest_memory (Memory Keeper) because those tools
+    // require categories the constant didn't grant. Per-agent derivation
+    // keeps the COARSE capability gate as a real second line of defense:
+    // if Router's allowlist is ever broadened in a future regression, it
+    // STILL won't have system_actions — its derived capability set is
+    // ["discussion_processing"] only. Pure function — exhaustively unit-
+    // tested in derive-capabilities.test.ts.
+    const enabledCapabilities = deriveEnabledCapabilities(
+      toolAllowlistFromConfig,
+      TOOL_REGISTRY_FOR_CAPABILITY_DERIVATION,
+    );
+
     // MX2: the bridge params are identical for both the claude {mcpServers}
     // envelope and the provider-neutral spec — build them once.
     const mcpParams = {
       companyId: payload.companyId,
       userId: SUBAGENT_SESSION_USER_ID,
       userRole: SUBAGENT_SESSION_USER_ROLE,
-      enabledCapabilities: SUBAGENT_ENABLED_CAPABILITIES,
+      // T1.3: per-agent capability set (was: SUBAGENT_ENABLED_CAPABILITIES).
+      enabledCapabilities,
       bridgeEntrypoint: resolveBridgeEntrypoint(),
       agentKind: "aoa",
       toolAllowlist: toolAllowlistFromConfig,
