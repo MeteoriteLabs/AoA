@@ -83,7 +83,15 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // in ONE statement. Empty RETURNING ⇒ already claimed ⇒ abort (mirrors
     // extraction.ts:389-402). Without this the dispatcher re-runs the same
     // pending entry every tick.
-    if (payload.entryId) {
+    //
+    // P1-C fix: gate this claim on `payload.source === 'outbox'` so it only
+    // fires for the extraction trigger (Scribe). Without the gate, mention-
+    // and phase-advance-driven agents (Maker, Router, etc.) would attempt to
+    // claim the entry's extraction lock, fail (because the entry is in
+    // terminal state — completed/failed — for any extraction the Scribe
+    // already finished), and abort before running any actual agent logic.
+    // For non-outbox sources the entry is *context*, not work to claim.
+    if (payload.entryId && payload.source === "outbox") {
       const claimed = await db.update(discussionEntries)
         .set({ extractionStatus: "processing", extractionRunId: runId })
         .where(and(
