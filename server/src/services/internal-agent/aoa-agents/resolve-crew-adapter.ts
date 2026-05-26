@@ -22,7 +22,7 @@ import { internalAgentConfig } from "@armyofagents/db";
  * adapter_config — those are seeded separately by seedRoleInstructionBundle.
  */
 export interface CrewAdapter {
-  adapterType: "codex_local" | "claude_local" | "gemini_local";
+  adapterType: "codex_local" | "claude_local" | "gemini_local" | "opencode_local";
   adapterConfig: Record<string, unknown>;
 }
 
@@ -40,6 +40,18 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
         adapterType: "gemini_local",
         adapterConfig: {
           model: "gemini-2.5-pro",
+        },
+      };
+    // T2.0: opencode is its own first-class CLI (uses OpenAI under the hood
+    // but with its own subprocess + MCP wiring via opencode.json, NOT codex's
+    // config.toml — see Task 2.1 for the MCP writer). Pre-T2.0 a company
+    // configured with provider='opencode' silently fell through to
+    // codex_local — wrong CLI, wrong MCP delivery path, broken crew runs.
+    case "opencode":
+      return {
+        adapterType: "opencode_local",
+        adapterConfig: {
+          model: "gpt-5.3-codex",
         },
       };
     case "openai":
