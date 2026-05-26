@@ -5,6 +5,7 @@ import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-in
 import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-commander.js";
 import { ensureExtractionAgent } from "./internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
+import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -134,6 +135,11 @@ export function companyService(db: Db) {
         // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
         await ensureCommandStaff(db, company.id).catch((err: unknown) => {
           logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
+        });
+        // Plan 3 P3.1: seed the Adjutant role (phase-advance keystone, sweep trigger).
+        // Without this, runAdjutantSweep finds no trigger and the phase loop is dead.
+        await ensureAdjutant(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
         });
         return company;
       } catch (error) {

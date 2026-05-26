@@ -51,6 +51,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
+import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 
 type BetterAuthSessionUser = {
@@ -664,21 +665,25 @@ if (config.heartbeatSchedulerEnabled) {
 }
 
 // Idempotent backfill: ensure Command Staff (Router/Planner/Dispatcher/Memory Keeper)
-// exists for all companies. Safe to run on every startup — uses ON CONFLICT DO NOTHING.
-// Pre-existing companies miss this because ensureCommandStaff only runs on company creation.
+// and Adjutant exist for all companies. Safe to run on every startup — uses
+// ON CONFLICT DO NOTHING. Pre-existing companies miss this because the seeders
+// only run on company creation.
 void db
   .select({ id: companies.id })
   .from(companies)
   .then((rows) =>
     Promise.all(
-      rows.map((row) =>
+      rows.flatMap((row) => [
         ensureCommandStaff(db as any, row.id).catch((err: unknown) => {
           logger.warn({ err, companyId: row.id }, "command staff backfill failed for company");
         }),
-      ),
+        ensureAdjutant(db as any, row.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: row.id }, "adjutant backfill failed for company");
+        }),
+      ]),
     ),
   )
-  .catch((err) => logger.warn({ err }, "command staff startup backfill failed"));
+  .catch((err) => logger.warn({ err }, "crew startup backfill failed"));
 
 // Idempotent backfill: migrate the vestigial goals.parentId column into the
 // goal_parents join table (multi-parent DAG; Decision #20 superseded 2026-05-25).
