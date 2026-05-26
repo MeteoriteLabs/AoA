@@ -65,9 +65,12 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
     defaults.initialType ?? "idea",
   );
   const [title, setTitle] = useState(defaults.title ?? "");
+  const [titleTouched, setTitleTouched] = useState(false);
   const [description, setDescription] = useState("");
   const [scope, setScope] = useState<GoalScope>({ mode: "company", projectIds: [] });
   const [parentIds, setParentIds] = useState<string[]>([]);
+
+  const titleEmpty = title.trim().length === 0;
 
   const target = resolveCreateTarget(selectedType);
 
@@ -82,7 +85,7 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
       if (target.backend === "thread+goal") {
         // Codex #2: create discussion first, then promoteToGoal
         const disc = await discussionsApi.create(selectedCompanyId, {
-          title: title.trim() || "New Goal Thread",
+          title: title.trim(),
           ...(scopeType && { scopeType }),
           ...(defaults.scopeId && { scopeId: defaults.scopeId }),
         });
@@ -100,7 +103,7 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
       }
 
       const thread = await discussionsApi.create(selectedCompanyId, {
-        title: title.trim() || `New ${selectedType}`,
+        title: title.trim(),
         ...(scopeType && { scopeType }),
         ...(defaults.scopeId && { scopeId: defaults.scopeId }),
       });
@@ -125,6 +128,8 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setTitleTouched(true);
+    if (titleEmpty) return;
     createMutation.mutate();
   }
 
@@ -169,15 +174,20 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
           {/* Title */}
           <div>
             <label htmlFor="thread-title" className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
-              Title
+              Title <span className="text-destructive">*</span>
             </label>
             <Input
               id="thread-title"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => { setTitle(e.target.value); setTitleTouched(true); }}
               placeholder={`${THREAD_TYPES.find((t) => t.key === selectedType)?.description ?? ""}...`}
               autoFocus
+              aria-invalid={titleTouched && titleEmpty}
+              className={cn(titleTouched && titleEmpty && "border-destructive focus-visible:ring-destructive")}
             />
+            {titleTouched && titleEmpty && (
+              <p className="text-xs text-destructive mt-1">Title is required.</p>
+            )}
           </div>
 
           {/* Description */}
