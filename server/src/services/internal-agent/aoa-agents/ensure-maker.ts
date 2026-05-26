@@ -3,6 +3,11 @@ import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
+import {
+  resolveCrewAdapterForCompany,
+  needsAdapterBackfill,
+  mergeAdapterConfig,
+} from "./resolve-crew-adapter.js";
 
 /**
  * Plan 4 — Maker role seed (8th crew agent per design § 3).
@@ -39,6 +44,10 @@ const MAKER_TOOL_ALLOWLIST: string[] = [
 const MAKER_NAME = "Maker";
 
 async function ensureMakerRole(db: Db, companyId: string): Promise<string> {
+  // Resolve the right CLI adapter for this company's configured provider
+  // (P1-B fix — see ensure-adjutant.ts for context).
+  const crewAdapter = await resolveCrewAdapterForCompany(db, companyId);
+
   // Atomic insert with ON CONFLICT DO NOTHING (agents_aoa_name_per_company_idx).
   const [inserted] = await db
     .insert(agents)
@@ -48,7 +57,8 @@ async function ensureMakerRole(db: Db, companyId: string): Promise<string> {
       kind: "aoa",
       role: "general",
       status: "idle",
-      adapterType: "process",
+      adapterType: crewAdapter.adapterType,
+      adapterConfig: crewAdapter.adapterConfig,
       runtimeConfig: {
         aoa: { role: "member", instruction: ROLE_INSTRUCTION, toolAllowlist: MAKER_TOOL_ALLOWLIST },
         heartbeat: { enabled: false, intervalSec: 0 },
@@ -103,18 +113,35 @@ async function ensureMakerRole(db: Db, companyId: string): Promise<string> {
     existingRc = existing.runtimeConfig;
   }
 
-  // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
-  // so pre-D2 rows aren't stranded by default-deny.
+  // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig.
+  // P1-B backfill: upgrade adapter_type='process' (no command) rows to the
+  // resolved CLI adapter (Maker is new so this only fires after a previous
+  // version of ensure-maker.ts seeded it with the broken adapter).
   if (!inserted) {
     const rc = existingRc ?? {};
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
+    const updates: Record<string, unknown> = {};
+
     if (!Array.isArray(aoaCfg.toolAllowlist)) {
-      const updatedRc = {
+      updates.runtimeConfig = {
         ...rc,
         aoa: { ...aoaCfg, toolAllowlist: MAKER_TOOL_ALLOWLIST },
       };
+    }
+
+    const [current] = await db
+      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    if (current && needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null)) {
+      updates.adapterType = crewAdapter.adapterType;
+      updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+    }
+
+    if (Object.keys(updates).length > 0) {
       await db.update(agents)
-        .set({ runtimeConfig: updatedRc, updatedAt: new Date() })
+        .set({ ...updates, updatedAt: new Date() })
         .where(eq(agents.id, agentId));
     }
   }

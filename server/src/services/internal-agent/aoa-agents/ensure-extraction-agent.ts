@@ -3,6 +3,11 @@ import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
+import {
+  resolveCrewAdapterForCompany,
+  needsAdapterBackfill,
+  mergeAdapterConfig,
+} from "./resolve-crew-adapter.js";
 
 /** Legacy name — kept for one-time rename migration. New name is "Scribe". */
 export const LEGACY_EXTRACTION_AGENT_NAME = "Discussion Extraction";
@@ -55,17 +60,31 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
 
   const existing = existingByScribe ?? existingByLegacy;
 
+  // Resolve the right CLI adapter for this company's configured provider
+  // (P1-B fix — see ensure-adjutant.ts for context).
+  const crewAdapter = await resolveCrewAdapterForCompany(db, companyId);
+
   if (existing) {
     // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
     // so pre-D2 rows aren't stranded by default-deny. Use a targeted update that
     // preserves all other runtimeConfig fields (heartbeat, instruction, role).
+    // P1-B backfill: upgrade adapter_type='process' (no command) rows to the
+    // resolved CLI adapter — these rows are unrunnable until upgraded.
     const rc = (existing.runtimeConfig as Record<string, unknown>) ?? {};
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
     const needsAllowlist = !Array.isArray(aoaCfg.toolAllowlist);
     // Plan 3 Task 1: one-time rename from legacy to Scribe.
     const needsRename = existing.name === LEGACY_EXTRACTION_AGENT_NAME;
 
-    if (needsAllowlist || needsRename) {
+    // P1-B: check if adapter needs upgrade
+    const [current] = await db
+      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, existing.id))
+      .limit(1);
+    const needsAdapter = current ? needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null) : false;
+
+    if (needsAllowlist || needsRename || needsAdapter) {
       const updates: Record<string, unknown> = { updatedAt: new Date() };
       if (needsAllowlist) {
         const updatedAoa: Record<string, unknown> = { ...aoaCfg, toolAllowlist: [...SCRIBE_TOOL_ALLOWLIST] };
@@ -75,13 +94,18 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
         // One-time rename: "Discussion Extraction" → "Scribe"
         updates.name = SCRIBE_AGENT_NAME;
       }
+      if (needsAdapter && current) {
+        updates.adapterType = crewAdapter.adapterType;
+        updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+      }
       await db.update(agents).set(updates).where(eq(agents.id, existing.id));
     }
     agentId = existing.id;
   } else {
     const [created] = await db.insert(agents).values({
       companyId, name: SCRIBE_AGENT_NAME, kind: "aoa", role: "general", status: "idle",
-      adapterType: "process",
+      adapterType: crewAdapter.adapterType,
+      adapterConfig: crewAdapter.adapterConfig,
       runtimeConfig: {
         aoa: { role: "member", instruction: SCRIBE_INSTRUCTION, toolAllowlist: [...SCRIBE_TOOL_ALLOWLIST] },
         heartbeat: { enabled: false, intervalSec: 0 },

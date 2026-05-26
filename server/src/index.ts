@@ -53,6 +53,8 @@ import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
 import { ensureMaker } from "./services/internal-agent/aoa-agents/ensure-maker.js";
+import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
+import { ensureExtractionAgent } from "./services/internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 
 type BetterAuthSessionUser = {
@@ -683,6 +685,14 @@ void db
         }),
         ensureMaker(db as any, row.id).catch((err: unknown) => {
           logger.warn({ err, companyId: row.id }, "maker backfill failed for company");
+        }),
+        // P1-B: also backfill Commander + Scribe so the adapter upgrade applies
+        // to existing companies. These previously only ran on company creation.
+        ensureCommanderAgent(db as any, row.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: row.id }, "commander backfill failed for company");
+        }),
+        ensureExtractionAgent(db as any, row.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: row.id }, "extraction agent (scribe) backfill failed for company");
         }),
       ]),
     ),

@@ -3,6 +3,11 @@ import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
+import {
+  resolveCrewAdapterForCompany,
+  needsAdapterBackfill,
+  mergeAdapterConfig,
+} from "./resolve-crew-adapter.js";
 
 /**
  * Plan 3 Task 1 — Adjutant role seed + ROLE_MIN_AUTONOMY.
@@ -32,6 +37,11 @@ const ADJUTANT_TOOL_ALLOWLIST: string[] = [
 const ADJUTANT_NAME = "Adjutant";
 
 async function ensureAdjutantRole(db: Db, companyId: string): Promise<string> {
+  // Resolve the right CLI adapter for this company's configured provider.
+  // Earlier seeds hardcoded adapterType='process' with no command, which
+  // made the crew unrunnable (P1-B in uat-threads-crew-v1-findings.md).
+  const crewAdapter = await resolveCrewAdapterForCompany(db, companyId);
+
   // Atomic insert with ON CONFLICT DO NOTHING (agents_aoa_name_per_company_idx).
   const [inserted] = await db
     .insert(agents)
@@ -41,14 +51,15 @@ async function ensureAdjutantRole(db: Db, companyId: string): Promise<string> {
       kind: "aoa",
       role: "general",
       status: "idle",
-      adapterType: "process",
+      adapterType: crewAdapter.adapterType,
+      adapterConfig: crewAdapter.adapterConfig,
       runtimeConfig: {
         aoa: { role: "member", instruction: ROLE_INSTRUCTION, toolAllowlist: ADJUTANT_TOOL_ALLOWLIST },
         heartbeat: { enabled: false, intervalSec: 0 },
       },
     })
     .onConflictDoNothing()
-    .returning({ id: agents.id, runtimeConfig: agents.runtimeConfig });
+    .returning({ id: agents.id, runtimeConfig: agents.runtimeConfig, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig });
 
   let agentId: string;
   let existingRc: Record<string, unknown> | undefined;
@@ -68,7 +79,7 @@ async function ensureAdjutantRole(db: Db, companyId: string): Promise<string> {
   } else {
     // Conflict: another concurrent caller inserted first. Fetch the winner.
     const [existing] = await db
-      .select({ id: agents.id, runtimeConfig: agents.runtimeConfig })
+      .select({ id: agents.id, runtimeConfig: agents.runtimeConfig, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents)
       .where(
         and(
@@ -89,16 +100,34 @@ async function ensureAdjutantRole(db: Db, companyId: string): Promise<string> {
 
   // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
   // so pre-D2 rows aren't stranded by default-deny.
+  // P1-B backfill: upgrade adapter_type='process' (no command) rows to the
+  // resolved CLI adapter. These rows are unrunnable until upgraded.
   if (!inserted) {
     const rc = existingRc ?? {};
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
+    const updates: Record<string, unknown> = {};
+
     if (!Array.isArray(aoaCfg.toolAllowlist)) {
-      const updatedRc = {
+      updates.runtimeConfig = {
         ...rc,
         aoa: { ...aoaCfg, toolAllowlist: ADJUTANT_TOOL_ALLOWLIST },
       };
+    }
+
+    // Fetch the current adapter so we can upgrade-in-place if needed.
+    const [current] = await db
+      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    if (current && needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null)) {
+      updates.adapterType = crewAdapter.adapterType;
+      updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+    }
+
+    if (Object.keys(updates).length > 0) {
       await db.update(agents)
-        .set({ runtimeConfig: updatedRc, updatedAt: new Date() })
+        .set({ ...updates, updatedAt: new Date() })
         .where(eq(agents.id, agentId));
     }
   }

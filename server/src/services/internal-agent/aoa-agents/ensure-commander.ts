@@ -4,6 +4,11 @@ import { agents, internalAgentConfig, companySkills } from "@armyofagents/db";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import { seedCommanderInstructionBundle } from "./seed-commander-bundle.js";
 import { seedDefaultCommanderSkills } from "../../marketplace-install/default-skill-seeder.js";
+import {
+  resolveCrewAdapterForCompany,
+  needsAdapterBackfill,
+  mergeAdapterConfig,
+} from "./resolve-crew-adapter.js";
 
 export const COMMANDER_AGENT_NAME = "Commander";
 
@@ -57,13 +62,18 @@ export const COMMANDER_TOOL_ALLOWLIST = [
  *  Discriminator: kind='aoa' + runtimeConfig.aoa.role='lead' (NOT agents.role
  *  — that is special-cased). */
 export async function ensureCommanderAgent(db: Db, companyId: string): Promise<string> {
+  // Resolve the right CLI adapter for this company's configured provider
+  // (P1-B fix — see ensure-adjutant.ts for context).
+  const crewAdapter = await resolveCrewAdapterForCompany(db, companyId);
+
   // Attempt atomic insert. ON CONFLICT (company_id, name) WHERE kind='aoa'
   // silently no-ops if another process beat us to it.
   const [inserted] = await db
     .insert(agents)
     .values({
       companyId, name: COMMANDER_AGENT_NAME, kind: "aoa", role: "general", status: "idle",
-      adapterType: "process",
+      adapterType: crewAdapter.adapterType,
+      adapterConfig: crewAdapter.adapterConfig,
       runtimeConfig: {
         aoa: { role: "lead", toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST] },
         heartbeat: { enabled: false, intervalSec: 0 },
@@ -100,18 +110,34 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     existingRc = existing.runtimeConfig;
   }
 
-  // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
-  // so pre-D2 rows aren't stranded by default-deny.
+  // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig.
+  // P1-B backfill: upgrade adapter_type='process' (no command) rows to the
+  // resolved CLI adapter — these rows are unrunnable until upgraded.
   if (!inserted) {
     const rc = existingRc ?? {};
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
+    const updates: Record<string, unknown> = {};
+
     if (!Array.isArray(aoaCfg.toolAllowlist)) {
-      const updatedRc = {
+      updates.runtimeConfig = {
         ...rc,
         aoa: { ...aoaCfg, toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST] },
       };
+    }
+
+    const [current] = await db
+      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    if (current && needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null)) {
+      updates.adapterType = crewAdapter.adapterType;
+      updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+    }
+
+    if (Object.keys(updates).length > 0) {
       await db.update(agents)
-        .set({ runtimeConfig: updatedRc, updatedAt: new Date() })
+        .set({ ...updates, updatedAt: new Date() })
         .where(eq(agents.id, agentId));
     }
   }
