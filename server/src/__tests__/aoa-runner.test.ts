@@ -27,7 +27,7 @@ function ch(ret:unknown[]){const c:any={};c.values=()=>c;c.set=()=>c;c.where=()=
 it("happy: bridge attached via adapterConfig.args, run completed, cost emitted, agentId stamped", async () => {
   const insertedRuns:any[]=[];
   const db:any = {
-    select:()=>ch([{ id:"ext-1", companyId:"co-1", adapterType:"process", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction" } } }]),
+    select:()=>ch([{ id:"ext-1", companyId:"co-1", name:"Scribe", adapterType:"process", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
     insert:()=>({ values:(v:any)=>{ insertedRuns.push(v); return { returning:()=>Promise.resolve([{id:"run-1"}]) }; } }),
     update:()=>ch([{ id:"e1" }]), // claim returns non-empty (claimed)
   };
@@ -56,7 +56,7 @@ it("happy: bridge attached via adapterConfig.args, run completed, cost emitted, 
 it("claude-family: --mcp-config tmp file kept (byte-identical) AND mcpBridge also set", async () => {
   execMock.mockClear();
   const db:any = {
-    select:()=>ch([{ id:"cl-1", companyId:"co-1", adapterType:"claude_local", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction" } } }]),
+    select:()=>ch([{ id:"cl-1", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
     insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-c"}]) }) }),
     update:()=>ch([{ id:"e1" }]),
   };
@@ -72,7 +72,7 @@ it("claude-family: --mcp-config tmp file kept (byte-identical) AND mcpBridge als
 });
 it("failure isolated: adapter throws → never rethrows", async () => {
   execMock.mockRejectedValueOnce(new Error("boom"));
-  const db:any = { select:()=>ch([{ id:"ext-1", companyId:"co-1", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]), insert:()=>ch([{id:"run-2"}]), update:()=>ch([{id:"e2"}]) };
+  const db:any = { select:()=>ch([{ id:"ext-1", companyId:"co-1", name:"Scribe", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]), insert:()=>ch([{id:"run-2"}]), update:()=>ch([{id:"e2"}]) };
   // T1.0: runner now returns AoaRunResult instead of void. Adapter threw,
   // so we expect status='failed' with the thrown message.
   const r1 = await runAoaAgent(db,"ext-1",{ companyId:"co-1", source:"discussion_entry_pending", entryId:"e2" });
@@ -84,7 +84,7 @@ it("not claimable (concurrent): atomic claim empty → adapter NOT called, retur
   const claimChain:any = { set:()=>claimChain, where:()=>claimChain, returning:()=>Promise.resolve([]) }; // claim RETURNING empty
   let upd=0;
   const db:any = {
-    select:()=>ch([{ id:"ext-1", companyId:"co-1", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]),
+    select:()=>ch([{ id:"ext-1", companyId:"co-1", name:"Scribe", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]),
     insert:()=>ch([{ id:"run-9" }]),
     update:()=> (upd++ === 0 ? claimChain : ch([{ id:"run-9" }])), // 1st update = the claim (empty ⇒ abort)
   };

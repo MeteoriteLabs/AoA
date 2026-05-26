@@ -16,6 +16,7 @@ import { assembleAgentPersona } from "../commander-context.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import type { AoaRunResult } from "./aoa-run-result.js";
 import { buildAoaRunResultFromAdapter } from "./aoa-run-result.js";
+import { buildTriggerPrompt } from "./aoa-trigger-prompt.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
 
@@ -185,15 +186,46 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const adapter = getServerAdapter(agent.adapterType);
     const baseConfig = { ...(agent.adapterConfig ?? {}) } as Record<string, unknown>;
     const prevArgs = Array.isArray(baseConfig.args) ? (baseConfig.args as string[]) : [];
+
+    // T1.2 (codex F1): build a concrete role-aware trigger prompt so the LLM
+    // has something to act on. Before this, every crew run got the adapter's
+    // default 14-word placeholder ("You are agent <uuid> (<Name>). Continue
+    // your AoA work.") with NO mention of the trigger, thread, inviting
+    // entry, or what tool to call. Result: claude/codex ran 30s, read the
+    // bundle, exited without calling any MCP tool. T1.2 puts the trigger
+    // context + role action directive in the user prompt itself.
+    //
+    // Role lookup keys off runtimeConfig.aoa.role (the seed key like 'scribe'
+    // / 'maker' / 'adjutant') NOT agent.name (codex F7 — marketplace install
+    // can rename on conflict). Falls back to a slugified agent.name when the
+    // role key is absent (unknown name → generic directive in the prompt).
+    // aoaCfg is already defined above (line ~132) as `(rc.aoa ?? {}) as Record<string, unknown>`.
+    const agentRoleKey =
+      typeof aoaCfg.role === "string" && aoaCfg.role.length > 0
+        ? aoaCfg.role
+        : agent.name.toLowerCase().replace(/\s+/g, "_");
+    const triggerPrompt = buildTriggerPrompt({
+      instruction,
+      payload,
+      agentName: agent.name,
+      agentRoleKey,
+    });
+
     // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
     // it for codex/opencode/etc. leaked an invalid flag into their argv (the
     // reason codex AoA agents got zero MCP tools). claude_local is the ONLY
     // claude CLI adapter (registry.ts) — do not broaden. claude-family path is
     // kept BYTE-IDENTICAL to pre-MX2: ["--mcp-config", cfgPath, ...prevArgs].
+    //
+    // T1.2: every adapter (claude/codex/opencode/gemini) honors
+    // `config.promptTemplate` via their `renderTemplate(promptTemplate, ...)`
+    // call site, so passing the built trigger prompt as promptTemplate flows
+    // through uniformly. The prompt has no {{...}} tokens — renderTemplate
+    // returns it verbatim.
     const isClaudeFamily = agent.adapterType === "claude_local";
     const config = isClaudeFamily
-      ? { ...baseConfig, args: ["--mcp-config", cfgPath, ...prevArgs] }
-      : { ...baseConfig };
+      ? { ...baseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
+      : { ...baseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
     // T1.0: capture the adapter result so we can build AoaRunResult.

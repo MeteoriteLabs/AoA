@@ -112,8 +112,9 @@ function makeDb(opts: { claim: boolean; entryStatusAfterExecute?: string }) {
   const agentRow = {
     id: "a-1",
     companyId: "co-1",
+    name: "Scribe",
     adapterType: "process",
-    runtimeConfig: {},
+    runtimeConfig: { aoa: { role: "scribe" } },
     adapterConfig: {},
   };
   const sets: any[] = [];

@@ -160,11 +160,16 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     .limit(200)
     .then((r: Array<{ id: string; companyId: string }>) => r);
 
-  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; payload: Record<string, unknown> | null }> = await db
+  // T1.2 (codex F6): also read agentWakeupRequests.source so the dispatcher
+  // can pass the ORIGINAL trigger source through to runAoaAgent — previously
+  // hardcoded "wakeup" in the runAoaAgent call below, which made the prompt's
+  // trigger-context block lie about what actually triggered the run.
+  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; payload: Record<string, unknown> | null }> = await db
     .select({
       id: agentWakeupRequests.id,
       agentId: agentWakeupRequests.agentId,
       companyId: agentWakeupRequests.companyId,
+      source: agentWakeupRequests.source,
       payload: agentWakeupRequests.payload,
     })
     .from(agentWakeupRequests)
@@ -359,7 +364,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // persisted to internal_agent_runs by the runner itself.
             const result = await runAoaAgent(db, w.agentId, {
               companyId: w.companyId,
-              source: "wakeup",
+              // T1.2 (codex F6): pass the wakeup's ORIGINAL source (e.g.
+              // 'thread_mention', 'sweep.adjutant', 'phase-advance') NOT the
+              // hardcoded 'wakeup'. The runner's role-aware trigger prompt
+              // shows the LLM exactly what triggered this run.
+              source: w.source,
               wakeupId: w.id,
               resolvedModel: roleModel, // Plan 3 Task 9: pass resolved model to runner
               effectiveAutonomy,

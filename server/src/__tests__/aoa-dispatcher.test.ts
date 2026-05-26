@@ -399,8 +399,12 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [],
         // slot 1 — Phase-2 pending-drain: a gated-in pending entry
         [{ id: "e1", companyId: "co-1" }],
-        // slot 2 — Phase-3 wakeup-select: a queued aoa wakeup
-        [{ id: "w1", agentId: "a1", companyId: "co-1", payload: { note: "x" } }],
+        // slot 2 — Phase-3 wakeup-select: a queued aoa wakeup.
+        // T1.2 (codex F6): the dispatcher now selects + passes through the
+        // wakeup's original source (was hardcoded "wakeup" in runAoaAgent
+        // call). Fixture must include source for the codex-F6 assertion
+        // below to be meaningful.
+        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { note: "x" } }],
         // slot 3 — Phase-4 reclaim-select: nothing failed-linked
         [],
         // slot 4 — Plan-3 Task 4/8: resolveCompanyConfig select (per wakeup,
@@ -436,7 +440,8 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     expect(runAoaMock).toHaveBeenCalledWith(
       db,
       "a1",
-      expect.objectContaining({ companyId: "co-1", source: "wakeup", wakeupId: "w1", note: "x" }),
+      // T1.2 (codex F6): original wakeup source flows through (was hardcoded "wakeup").
+      expect.objectContaining({ companyId: "co-1", source: "thread_mention", wakeupId: "w1", note: "x" }),
     );
     expect(phase3RanWhilePhase2Blocked).toBe(true);
     expect(phase2Resolved).toBe(false); // Phase-2 genuinely still in-flight

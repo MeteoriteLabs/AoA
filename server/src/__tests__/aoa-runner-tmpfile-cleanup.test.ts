@@ -103,8 +103,9 @@ function makeDb() {
   const agentRow = {
     id: "a-1",
     companyId: "co-1",
+    name: "Scribe",
     adapterType: "process",
-    runtimeConfig: {},
+    runtimeConfig: { aoa: { role: "scribe" } },
     adapterConfig: {},
   };
   const selectChain: any = {};

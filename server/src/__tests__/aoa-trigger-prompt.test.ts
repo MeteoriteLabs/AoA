@@ -1,0 +1,225 @@
+// T1.2 — pure-function tests for buildTriggerPrompt (role-aware crew
+// trigger prompt). Pins the per-role action directive table in code so
+// a future edit can't quietly regress (e.g. switching Scribe's directive
+// to "post_entry" and breaking extraction silently).
+//
+// Codex F1: prompt regression broke Maker → no posts. Codex F2: Scribe
+// regression risk if the prompt's directive doesn't match its tool. Codex
+// F6: dispatcher must pass wakeup.source through (covered in dispatcher
+// integration tests; here we just assert the prompt CONTAINS whatever
+// source is passed). Codex F7: role lookup is case-insensitive on the
+// runtimeConfig.aoa.role key, not agent.name.
+
+import { describe, expect, it } from "vitest";
+import { buildTriggerPrompt } from "../services/internal-agent/aoa-agents/aoa-trigger-prompt.js";
+
+const BASE_INSTRUCTION = "## Persona\nYou are a focused, terse agent.\n";
+
+describe("buildTriggerPrompt (T1.2)", () => {
+  describe("role-specific action directive", () => {
+    it("scribe → submit_extracted_items directive (NOT post_entry)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "outbox", entryId: "e1" },
+        agentName: "Scribe",
+        agentRoleKey: "scribe",
+      });
+      expect(out).toContain("submit_extracted_items");
+      // CRITICAL REGRESSION GUARD: must NOT tell Scribe to post_entry.
+      // Doing so would break extraction (Scribe's allowlist doesn't have
+      // post_entry; even if it did, calling it would skip extraction).
+      expect(out).not.toContain("post_entry");
+    });
+
+    it("maker → post_entry directive with parentEntryId reference", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention", entryId: "e1", mention: "@Maker" },
+        agentName: "Maker",
+        agentRoleKey: "maker",
+      });
+      expect(out).toContain("post_entry");
+      expect(out).toContain("parentEntryId");
+    });
+
+    it("adjutant → advance_phase OR notify_owner", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep.adjutant" },
+        agentName: "Adjutant",
+        agentRoleKey: "adjutant",
+      });
+      expect(out).toContain("advance_phase");
+      expect(out).toContain("notify_owner");
+    });
+
+    it("router → post_entry with department recommendation", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "phase-advance" },
+        agentName: "Router",
+        agentRoleKey: "router",
+      });
+      expect(out).toContain("post_entry");
+      expect(out).toContain("department");
+    });
+
+    it("planner → post_entry with plan", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "phase-advance" },
+        agentName: "Planner",
+        agentRoleKey: "planner",
+      });
+      expect(out).toContain("post_entry");
+      expect(out).toContain("plan");
+    });
+
+    it("dispatcher → create_task + assign_task + add_task_dependency", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "phase-advance" },
+        agentName: "Dispatcher",
+        agentRoleKey: "dispatcher",
+      });
+      expect(out).toContain("create_task");
+      expect(out).toContain("assign_task");
+      expect(out).toContain("add_task_dependency");
+    });
+
+    it("memory_keeper → suggest_memory (propose-only)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "event" },
+        agentName: "Memory Keeper",
+        agentRoleKey: "memory_keeper",
+      });
+      expect(out).toContain("suggest_memory");
+      expect(out).toContain("propose-only");
+    });
+
+    it("commander → post_entry with synthesis", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention", mention: "@Commander" },
+        agentName: "Commander",
+        agentRoleKey: "commander",
+      });
+      expect(out).toContain("post_entry");
+      expect(out).toContain("synthesis");
+    });
+
+    it("unknown role → generic directive (no crash)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention" },
+        agentName: "MysteryAgent",
+        agentRoleKey: "mystery",
+      });
+      expect(out).toContain("use the tools in your allowlist");
+    });
+
+    it("case-insensitive role lookup (per codex F7 — runtimeConfig may have mixed case)", () => {
+      const lower = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "outbox" },
+        agentName: "X", agentRoleKey: "scribe",
+      });
+      const upper = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "outbox" },
+        agentName: "X", agentRoleKey: "SCRIBE",
+      });
+      const mixed = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "outbox" },
+        agentName: "X", agentRoleKey: "Scribe",
+      });
+      // All three should resolve to the same directive
+      expect(lower).toContain("submit_extracted_items");
+      expect(upper).toContain("submit_extracted_items");
+      expect(mixed).toContain("submit_extracted_items");
+    });
+  });
+
+  describe("trigger context block", () => {
+    it("includes trigger source verbatim (codex F6 dispatcher pass-through)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention" },
+        agentName: "Maker", agentRoleKey: "maker",
+      });
+      expect(out).toContain("Trigger source: thread_mention");
+    });
+
+    it("includes threadId, entryId, mention when present", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: {
+          companyId: "co", source: "thread_mention",
+          threadId: "thr-1", entryId: "entry-42", mention: "@Maker",
+        },
+        agentName: "Maker", agentRoleKey: "maker",
+      });
+      expect(out).toContain("Thread: thr-1");
+      expect(out).toContain("Inviting entry: entry-42");
+      expect(out).toContain("Mention: @Maker");
+    });
+
+    it("omits absent fields (no 'undefined' lines confusing the LLM)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep" }, // no threadId, no entry, no mention
+        agentName: "Adjutant", agentRoleKey: "adjutant",
+      });
+      expect(out).not.toContain("undefined");
+      expect(out).not.toContain("Thread:");
+      expect(out).not.toContain("Inviting entry:");
+      expect(out).not.toContain("Mention:");
+    });
+
+    it("includes routed role when present", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "phase-advance", role: "dispatcher" },
+        agentName: "Dispatcher", agentRoleKey: "dispatcher",
+      });
+      expect(out).toContain("Routed role: dispatcher");
+    });
+  });
+
+  describe("structure", () => {
+    it("instruction bundle precedes the trigger context block", () => {
+      const out = buildTriggerPrompt({
+        instruction: "## INSTRUCTION_MARKER\n",
+        payload: { companyId: "co", source: "outbox" },
+        agentName: "Scribe", agentRoleKey: "scribe",
+      });
+      const instructionIdx = out.indexOf("INSTRUCTION_MARKER");
+      const wakeupIdx = out.indexOf("## This wakeup");
+      expect(instructionIdx).toBeGreaterThanOrEqual(0);
+      expect(wakeupIdx).toBeGreaterThan(instructionIdx);
+    });
+
+    it("agent name appears in the directive sentence", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention" },
+        agentName: "Maker", agentRoleKey: "maker",
+      });
+      expect(out).toContain("You are Maker");
+    });
+
+    it("escape hatch for uncertainty (surfaces feedback to the human)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention" },
+        agentName: "Maker", agentRoleKey: "maker",
+      });
+      // Match the actual prompt language: "surfaces feedback to the human"
+      // (was "ask the human" but that copy got reworded to not mention
+      // post_entry by name — the Scribe regression test forbids that)
+      expect(out).toMatch(/surfaces? feedback to the human/i);
+    });
+  });
+});

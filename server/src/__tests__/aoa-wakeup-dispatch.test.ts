@@ -104,7 +104,11 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [], // Phase 1 orphan
         [], // Phase 2 outbox
-        [{ id: "w1", agentId: "a1", companyId: "co-1", payload: { note: "x" } }], // Phase 3 wakeup rows
+        // T1.2 (codex F6): the dispatcher now selects `source` from
+        // agentWakeupRequests and passes it through to runAoaAgent unchanged
+        // (previously hardcoded "wakeup", losing the real trigger context).
+        // Test fixtures must include source so the pass-through is observable.
+        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { note: "x" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 run-rate window count (internalAgentRuns gt)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -120,7 +124,10 @@ describe("aoa-wakeup-dispatch", () => {
 
     expect(runAoaMock).toHaveBeenCalledWith(db, "a1", expect.objectContaining({
       companyId: "co-1",
-      source: "wakeup",
+      // T1.2 (codex F6): the ORIGINAL wakeup source flows through, not the
+      // pre-T1.2 hardcoded "wakeup". Asserting against the actual fixture
+      // ("thread_mention") is what pins this fix against future regressions.
+      source: "thread_mention",
       wakeupId: "w1",
       note: "x",
     }));
@@ -132,7 +139,7 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [],
         [],
-        [{ id: "w2", agentId: "a2", companyId: "co-2", payload: null }], // Phase 3 wakeup rows
+        [{ id: "w2", agentId: "a2", companyId: "co-2", source: "sweep.adjutant", payload: null }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 run-rate window count (internalAgentRuns gt)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -157,7 +164,7 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [],
         [],
-        [{ id: "w3", agentId: "a3", companyId: "co-3", payload: {} }], // Phase 3 wakeup rows
+        [{ id: "w3", agentId: "a3", companyId: "co-3", source: "phase-advance", payload: {} }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 run-rate window count (internalAgentRuns gt)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -174,7 +181,8 @@ describe("aoa-wakeup-dispatch", () => {
 
     expect(runAoaMock).toHaveBeenCalledWith(db, "a3", expect.objectContaining({
       companyId: "co-3",
-      source: "wakeup",
+      // T1.2 (codex F6): original source flows through (was hardcoded "wakeup").
+      source: "phase-advance",
       wakeupId: "w3",
     }));
 
