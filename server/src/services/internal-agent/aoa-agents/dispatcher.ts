@@ -286,9 +286,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             return;
           }
 
-          // Plan 3 Task 9: D3 run-rate brake — count crew runs in the rolling
-          // window. CLI subscription runs cost $0 so capExceeded() cannot brake
-          // a runaway loop; count-based gating is the safety net.
+          // T1.1: rate-brake counts only PAID runs (costCents > 0). Fast-
+          // failing $0 runs (e.g. broken adapter exiting in <1s) don't
+          // contribute to the LLM-spend safety net — the brake's actual
+          // purpose. A separate failure-storm brake (T1.9) catches runaway
+          // failure loops independently of cost. Codex finding #3+#5.
           const windowStart = new Date(Date.now() - DEFAULT_CREW_RATE_LIMIT.windowMinutes * 60_000);
           const windowRuns = await db
             .select({ id: internalAgentRuns.id })
@@ -296,6 +298,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             .where(and(
               eq(internalAgentRuns.companyId, w.companyId),
               gt(internalAgentRuns.createdAt, windowStart),
+              gt(internalAgentRuns.costCents, 0), // T1.1: only paid runs
             ))
             .then((r: Array<{ id: string }>) => r.length);
           if (runRateExceeded(windowRuns, DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow)) {
