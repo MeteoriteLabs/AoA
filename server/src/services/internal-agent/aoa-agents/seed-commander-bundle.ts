@@ -7,7 +7,7 @@ type SeedAgentShape = { id: string; companyId: string; name: string; adapterConf
 
 interface SeedRoleArgs {
   /** Bundle role key — must be registered in default-agent-instructions.ts. */
-  role: "commander" | "router" | "planner" | "dispatcher" | "memory_keeper" | "scribe" | "adjutant";
+  role: "commander" | "router" | "planner" | "dispatcher" | "memory_keeper" | "scribe" | "adjutant" | "maker";
   agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
   // Injected for testability. The real implementation passes agentInstructionsService() with
   // ensureWritableBundle aliased from ensureManagedBundle (see ensure-commander.ts).

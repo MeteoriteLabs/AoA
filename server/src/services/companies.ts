@@ -6,6 +6,7 @@ import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-command
 import { ensureExtractionAgent } from "./internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
+import { ensureMaker } from "./internal-agent/aoa-agents/ensure-maker.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -140,6 +141,11 @@ export function companyService(db: Db) {
         // Without this, runAdjutantSweep finds no trigger and the phase loop is dead.
         await ensureAdjutant(db, company.id).catch((err: unknown) => {
           logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
+        });
+        // Plan 4: seed the Maker role (artifact generator on @mention or phase-advance).
+        // Eighth crew agent per design § 3.
+        await ensureMaker(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "Maker agent seeding failed");
         });
         return company;
       } catch (error) {

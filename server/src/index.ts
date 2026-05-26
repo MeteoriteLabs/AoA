@@ -52,6 +52,7 @@ import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
+import { ensureMaker } from "./services/internal-agent/aoa-agents/ensure-maker.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 
 type BetterAuthSessionUser = {
@@ -679,6 +680,9 @@ void db
         }),
         ensureAdjutant(db as any, row.id).catch((err: unknown) => {
           logger.warn({ err, companyId: row.id }, "adjutant backfill failed for company");
+        }),
+        ensureMaker(db as any, row.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: row.id }, "maker backfill failed for company");
         }),
       ]),
     ),
