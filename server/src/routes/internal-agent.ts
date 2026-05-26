@@ -85,7 +85,12 @@ const updateConfigSchema = z.object({
   provider: z.enum(["anthropic", "openai", "google"]).optional(),
   model: z.string().optional(),
   cliTool: z.string().nullable().optional(),
-  autonomyLevel: z.number().int().min(0).max(0).optional(), // v2.5: only 0
+  // Threads crew (Discussions feature) opens autonomyLevel to L2 — the design
+  // ceiling for the crew (task + route + execute). Goals and identity/domain
+  // memory remain founder-gated even at L2 (Decisions #15/#16/#52). Broader
+  // "master autonomy" surface for non-crew agents stays at 0 until those
+  // controls land. See design doc § 4 — autonomy dial.
+  autonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.string()).optional(),
   notificationPreference: z.enum(["silent", "digest", "realtime"]).optional(),
   contextTokenBudget: z.number().int().min(2000).max(32000).optional(),
@@ -697,9 +702,13 @@ export function internalAgentRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       await assertRole(db, req, companyId, "founder");
 
-      // Validate autonomy level (v2.5: only 0)
-      if (req.body.autonomyLevel != null && req.body.autonomyLevel !== 0) {
-        throw badRequest("Autonomy levels 1-3 are not yet available in v2.5");
+      // Validate autonomy level. Threads crew (Discussions feature) opens
+      // L0-L2 — the design ceiling per § 4 (task + route + execute). Goals
+      // and identity/domain memory remain founder-gated even at L2
+      // (Decisions #15/#16/#52). L3 is reserved for future "master autonomy"
+      // surface and remains blocked.
+      if (req.body.autonomyLevel != null && (req.body.autonomyLevel < 0 || req.body.autonomyLevel > 2)) {
+        throw badRequest("autonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
       }
 
       const [updated] = await db
