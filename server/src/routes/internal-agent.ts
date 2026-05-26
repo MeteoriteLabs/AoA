@@ -494,6 +494,28 @@ export function internalAgentRoutes(db: Db) {
     },
   );
 
+  // ── Runtime Settings ───────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/runtime-settings",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({
+          runtimeApprovalsEnabled: internalAgentConfig.runtimeApprovalsEnabled,
+          runtimeAllowAlwaysEnabled: internalAgentConfig.runtimeAllowAlwaysEnabled,
+        })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      res.json({
+        runtimeApprovalsEnabled: config?.runtimeApprovalsEnabled ?? true,
+        runtimeAllowAlwaysEnabled: config?.runtimeAllowAlwaysEnabled ?? true,
+      });
+    },
+  );
+
   // ── 2.3 Get Conversation ─────────────────────────────────────────────
   router.get(
     "/companies/:companyId/internal-agent/tool-trust-rules",

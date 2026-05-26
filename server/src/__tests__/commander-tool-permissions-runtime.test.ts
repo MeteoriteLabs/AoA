@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   resolveCommanderToolPolicy,
 } from "../services/internal-agent/authorize-tool.js";
-import { executeTool } from "../services/internal-agent/tool-registry.js";
+import {
+  executeTool,
+  filterAuthorizedToolsForContext,
+} from "../services/internal-agent/tool-registry.js";
 import type { AgentTool, ToolContext } from "../services/internal-agent/types.js";
 
 function fakeTool(overrides: Partial<AgentTool> = {}): AgentTool {
@@ -126,6 +129,23 @@ describe("resolveCommanderToolPolicy", () => {
 });
 
 describe("executeTool Commander policy enforcement", () => {
+  it("omits disabled Commander tools from advertised tool lists", () => {
+    const visible = fakeTool({ name: "query_tasks" });
+    const disabled = fakeTool({ name: "create_task" });
+
+    const filtered = filterAuthorizedToolsForContext([visible, disabled], ctx({
+      commanderToolPermissions: {
+        create_task: {
+          enabled: false,
+          requireConfirmation: true,
+          minimumRole: "team_member",
+        },
+      },
+    }));
+
+    expect(filtered.map((tool) => tool.name)).toEqual(["query_tasks"]);
+  });
+
   it("blocks disabled Commander tools before execution", async () => {
     const tool = fakeTool();
     const result = await executeTool(tool, {}, ctx({

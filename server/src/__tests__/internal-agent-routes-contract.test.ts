@@ -113,7 +113,7 @@ describe("internal-agent-routes-contract", () => {
     expect(Array.isArray(router.stack)).toBe(true);
   });
 
-  it("registers exactly 24 route handlers", () => {
+  it("registers exactly 25 route handlers", () => {
     const db = {} as any;
     const router = internalAgentRoutes(db);
 
@@ -122,8 +122,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 22 existing routes + 2 durable tool-trust rule routes.
-    expect(routeLayers).toHaveLength(24);
+    // 22 existing routes + 2 durable tool-trust rule routes + 1 runtime settings route.
+    expect(routeLayers).toHaveLength(25);
   });
 
   it("registers all expected paths and methods", () => {
@@ -144,6 +144,7 @@ describe("internal-agent-routes-contract", () => {
       { path: "/companies/:companyId/internal-agent/conversation", method: "delete" },
       { path: "/companies/:companyId/internal-agent/config", method: "get" },
       { path: "/companies/:companyId/internal-agent/config", method: "patch" },
+      { path: "/companies/:companyId/internal-agent/runtime-settings", method: "get" },
       { path: "/companies/:companyId/internal-agent/greeting", method: "get" },
       { path: "/companies/:companyId/internal-agent/runs", method: "get" },
       { path: "/companies/:companyId/internal-agent/reminders", method: "get" },
@@ -330,6 +331,24 @@ describe("internal-agent pin/rename routes source contract (Task 1)", () => {
 });
 
 // ── DELETE /conversations/:convId source contract (Task 5) ────────────────────
+describe("internal-agent runtime settings source contract", () => {
+  const routeSrc = readFileSync(
+    resolve(__dirname, "../routes/internal-agent.ts"),
+    "utf8",
+  );
+
+  it("runtime settings route is company-access scoped but not founder-only", () => {
+    const routeStart = routeSrc.indexOf("/internal-agent/runtime-settings");
+    const nextRouteStart = routeSrc.indexOf("/internal-agent/tool-trust-rules", routeStart);
+    const routeBlock = routeSrc.slice(routeStart, nextRouteStart);
+
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeBlock).toContain("assertCompanyAccess");
+    expect(routeBlock).not.toContain("assertRole");
+    expect(routeBlock).toContain("runtimeAllowAlwaysEnabled");
+  });
+});
+
 describe("internal-agent DELETE conversation route source contract (Task 5)", () => {
   const routeSrc = readFileSync(
     resolve(__dirname, "../routes/internal-agent.ts"),

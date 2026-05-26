@@ -55,6 +55,11 @@ export interface AgentRunToolCall {
   success: boolean;
 }
 
+export interface AgentRuntimeSettings {
+  runtimeApprovalsEnabled: boolean;
+  runtimeAllowAlwaysEnabled: boolean;
+}
+
 export interface AgentRun {
   id: string;
   triggerType: "conversation" | "proactive" | "event" | "sub_agent";
@@ -304,6 +309,11 @@ export const internalAgentApi = {
 
   getConfig: (companyId: string) =>
     api.get<AgentConfig>(`/companies/${companyId}/internal-agent/config`),
+
+  getRuntimeSettings: (companyId: string) =>
+    api.get<AgentRuntimeSettings>(
+      `/companies/${companyId}/internal-agent/runtime-settings`,
+    ),
 
   updateConfig: (companyId: string, data: UpdateInternalAgentConfig) =>
     api.patch<AgentConfig>(`/companies/${companyId}/internal-agent/config`, data),

@@ -314,13 +314,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
 
-  const { data: agentConfig } = useQuery({
-    queryKey: ["internal-agent-config", companyId],
-    queryFn: () => internalAgentApi.getConfig(companyId),
+  const { data: runtimeSettings } = useQuery({
+    queryKey: ["internal-agent-runtime-settings", companyId],
+    queryFn: () => internalAgentApi.getRuntimeSettings(companyId),
     enabled: !!companyId,
     staleTime: 60 * 1000,
   });
-  const allowAlwaysEnabled = agentConfig?.runtimeAllowAlwaysEnabled ?? true;
+  const allowAlwaysEnabled = runtimeSettings?.runtimeAllowAlwaysEnabled ?? true;
 
   // Load history when switching to a specific conversation
   const { data: historyData } = useQuery({

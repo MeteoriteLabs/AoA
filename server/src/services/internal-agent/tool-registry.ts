@@ -33,16 +33,29 @@ export function createToolRegistry(): AgentTool[] {
 
 export function filterAuthorizedToolsForContext(
   tools: AgentTool[],
-  ctx: Pick<ToolContext, "userRole" | "enabledCapabilities" | "agentKind" | "toolAllowlist">,
+  ctx: Pick<
+    ToolContext,
+    | "userRole"
+    | "enabledCapabilities"
+    | "agentKind"
+    | "toolAllowlist"
+    | "actorType"
+    | "commanderToolPermissions"
+    | "runtimeApprovalsEnabled"
+  >,
 ): AgentTool[] {
-  return tools.filter((tool) =>
-    authorizeToolInvocation(
+  return tools.filter((tool) => {
+    if (ctx.actorType === "commander") {
+      return resolveCommanderToolPolicy(tool, ctx).allowed;
+    }
+
+    return authorizeToolInvocation(
       tool,
       ctx.userRole,
       ctx.enabledCapabilities,
       { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
-    ).allowed,
-  );
+    ).allowed;
+  });
 }
 
 const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill", "query_company"]);

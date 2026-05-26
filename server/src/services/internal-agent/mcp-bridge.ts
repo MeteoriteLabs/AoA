@@ -213,12 +213,7 @@ export async function startBridge(): Promise<void> {
         id,
       });
     } else if (method === "tools/list") {
-      const visibleTools = filterAuthorizedToolsForContext(tools, {
-        userRole,
-        enabledCapabilities,
-        agentKind,
-        toolAllowlist,
-      });
+      const visibleTools = filterAuthorizedToolsForContext(tools, toolContext);
       writeResponse({
         jsonrpc: "2.0",
         result: { tools: buildToolListResponse(visibleTools) },
