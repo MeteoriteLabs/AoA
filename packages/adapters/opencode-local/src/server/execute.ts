@@ -22,6 +22,7 @@ import {
 } from "@armyofagents/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { writeOpenCodeMcpConfigJson } from "./opencode-config-json.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -115,6 +116,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   await ensureOpenCodeSkillsInjected(onLog);
+
+  // T2.1: deliver the internal-agent MCP bridge to opencode via its native
+  // discovery mechanism — a `mcp.aoa` block in opencode.json in the CWD.
+  // Pre-T2.1, opencode crew agents spawned with no MCP tools (same failure
+  // mode codex had pre-MX2): the LLM ran 30s, exited without calling any
+  // tool, and the wakeup logged "succeeded" while having done nothing.
+  // writeOpenCodeMcpConfigJson is idempotent and preserves any unrelated
+  // top-level config (theme, model, other mcp servers) — see its header.
+  if (ctx.mcpBridge) {
+    await writeOpenCodeMcpConfigJson(cwd, ctx.mcpBridge);
+    await onLog("stderr", "[aoa] Wired opencode MCP bridge via opencode.json\n");
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
