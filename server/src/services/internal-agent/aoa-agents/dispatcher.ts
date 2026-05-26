@@ -253,9 +253,12 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
                 .then((rows: Array<{ crewPaused: boolean | null }>) => Boolean(rows[0]?.crewPaused))
             : false;
           if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
+            // P2 fix: distinct terminal status so the wakeup table tells you
+            // WHY a wakeup ended, not just that it ended. Was collapsed into
+            // 'done' which made silent failures invisible.
             await db
               .update(agentWakeupRequests)
-              .set({ status: "done", finishedAt: new Date() })
+              .set({ status: "skipped_paused", finishedAt: new Date() })
               .where(eq(agentWakeupRequests.id, w.id));
             logger.child({ subagent: "aoa-dispatcher" }).info(
               { agentId: w.agentId, companyId: w.companyId, threadPaused },
@@ -269,11 +272,12 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // (scribe, memory_keeper, curator) are always active (min = 0).
           const payloadRole = (w.payload as Record<string, unknown> | null)?.role as string | undefined;
           if (payloadRole && !isRoleActiveAtAutonomy(payloadRole as CrewRole, companyCfg.autonomyLevel)) {
-            // Skip the run: mark wakeup 'done' (not 'failed') — it was correctly
-            // queued but autonomy level prevents execution for agentic roles.
+            // P2 fix: distinct terminal status (was 'done'). The wakeup was
+            // correctly queued but the autonomy level prevents execution for
+            // agentic roles. Mark explicitly so the wakeup table is debuggable.
             await db
               .update(agentWakeupRequests)
-              .set({ status: "done", finishedAt: new Date() })
+              .set({ status: "skipped_autonomy", finishedAt: new Date() })
               .where(eq(agentWakeupRequests.id, w.id));
             logger.child({ subagent: "aoa-dispatcher" }).info(
               { agentId: w.agentId, role: payloadRole, companyId: w.companyId },
@@ -295,9 +299,12 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             ))
             .then((r: Array<{ id: string }>) => r.length);
           if (runRateExceeded(windowRuns, DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow)) {
+            // P2 fix: distinct terminal status (was 'done'). Rate-limit skips
+            // were the dominant cause of "wakeup vanished" symptoms before
+            // P1-B was fixed — now they're visible in the wakeup table.
             await db
               .update(agentWakeupRequests)
-              .set({ status: "done", finishedAt: new Date() })
+              .set({ status: "skipped_rate_limit", finishedAt: new Date() })
               .where(eq(agentWakeupRequests.id, w.id));
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, windowRuns, limit: DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow, companyId: w.companyId },
@@ -351,9 +358,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               effectiveAutonomy,
               ...(w.payload ?? {}),
             });
+            // P2 fix: distinct terminal status. 'done' was overloaded for
+            // success+skip+rate-limit, masking failures behind a uniform value.
             await db
               .update(agentWakeupRequests)
-              .set({ status: "done", finishedAt: new Date() })
+              .set({ status: "succeeded", finishedAt: new Date() })
               .where(eq(agentWakeupRequests.id, w.id));
           } catch (err: unknown) {
             await db
