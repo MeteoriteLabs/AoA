@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, and, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers, agentWakeupRequests } from "@armyofagents/db";
+import { agents, aoaAgentTriggers, agentWakeupRequests, internalAgentRuns } from "@armyofagents/db";
 import { runAdjutantSweep } from "../services/internal-agent/aoa-agents/sweep-adjutant.js";
 import { runMemoryKeeperSweep } from "../services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import { logger } from "../middleware/logger.js";
@@ -93,6 +93,41 @@ export function internalSweepsDevRoutes(db: Db): Router {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: message });
+    }
+  });
+
+  // GET /api/internal/runs/:companyId?minutes=10 — dev-only diagnostic. Returns
+  // recent internal_agent_runs rows for a company. UAT uses this to debug the
+  // rate-brake's "skipped_rate_limit" verdict by seeing what runs accumulated
+  // in the window.
+  router.get("/internal/runs/:companyId", async (req, res) => {
+    const companyId = req.params.companyId;
+    const minutes = Math.min(parseInt(String(req.query.minutes ?? "10"), 10) || 10, 1440);
+    const cutoff = new Date(Date.now() - minutes * 60_000);
+    try {
+      const rows = await db
+        .select({
+          id: internalAgentRuns.id,
+          agentId: internalAgentRuns.agentId,
+          status: internalAgentRuns.status,
+          triggerType: internalAgentRuns.triggerType,
+          triggerSource: internalAgentRuns.triggerSource,
+          costCents: internalAgentRuns.costCents,
+          durationMs: internalAgentRuns.durationMs,
+          createdAt: internalAgentRuns.createdAt,
+          errorMessage: internalAgentRuns.errorMessage,
+        })
+        .from(internalAgentRuns)
+        .where(and(
+          eq(internalAgentRuns.companyId, companyId),
+          gt(internalAgentRuns.createdAt, cutoff),
+        ))
+        .orderBy(desc(internalAgentRuns.createdAt))
+        .limit(50);
+      const paidCount = rows.filter((r: { costCents: number | null }) => (r.costCents ?? 0) > 0).length;
+      res.json({ companyId, windowMinutes: minutes, paidRunsInWindow: paidCount, totalRunsInWindow: rows.length, runs: rows });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
