@@ -28,6 +28,7 @@ import {
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+import { writeGeminiMcpSettingsJson } from "./gemini-settings-json.js";
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -101,6 +102,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  // T2.2: deliver the internal-agent MCP bridge to gemini via its native
+  // discovery mechanism — a `mcpServers.aoa` block in .gemini/settings.json
+  // inside the workspace cwd. Pre-T2.2, gemini crew agents spawned with no
+  // MCP tools (same failure mode codex had pre-MX2 and opencode had
+  // pre-T2.1): the LLM ran 30s, exited without calling any tool, wakeup
+  // logged "succeeded" while having done nothing. Writing to the WORKSPACE-
+  // scope `.gemini/` (not user-global `~/.gemini/`) bounds the pollution
+  // radius to the adapter-controlled workspace. Idempotent, preserves
+  // unrelated keys, strips prior aoa block before splicing — see
+  // gemini-settings-json.ts header.
+  if (ctx.mcpBridge) {
+    await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge);
+    await onLog("stdout", "[aoa] Wired gemini MCP bridge via .gemini/settings.json\n");
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
