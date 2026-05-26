@@ -55,6 +55,15 @@ vi.mock("@armyofagents/db", () => ({
     relatedEntityType: "n_related_entity_type",
     relatedEntityId: "n_related_entity_id",
   },
+  // UAT iteration 2: processMentions now looks up the agent's mention-
+  // trigger config to include role in the wakeup payload (so the dispatcher
+  // autonomy gate can read it).
+  aoaAgentTriggers: {
+    id: "aat_id",
+    agentId: "aat_agent_id",
+    kind: "aat_kind",
+    config: "aat_config",
+  },
 }));
 
 // Import the pure function (no DB) directly
@@ -106,26 +115,33 @@ describe("processMentions (dispatch)", () => {
   function makeMockDb({
     agentRow,
     authRow,
+    triggerRole,
   }: {
     agentRow?: any;
     authRow?: any;
+    /** Role string returned from the aoaAgentTriggers lookup when agentRow resolves. */
+    triggerRole?: string;
   }) {
     const insertValues = vi.fn().mockReturnThis();
     const insertChain = { values: insertValues };
 
-    // We use a queue for the select calls
-    const selectQueue: any[][] = [
-      // First select: agent lookup
-      agentRow ? [agentRow] : [],
-      // Second select: user lookup (if no agent found)
-      authRow ? [authRow] : [],
-    ];
+    // Queue mirrors the actual sequence of selects in processMentions():
+    //   1. agent lookup (always)
+    //   2. if agent found: aoaAgentTriggers lookup (UAT iter 2 fix)
+    //   3. if no agent: user lookup
+    const selectQueue: any[][] = agentRow
+      ? [
+          [agentRow],
+          triggerRole != null ? [{ config: { role: triggerRole } }] : [{ config: null }],
+        ]
+      : [[], authRow ? [authRow] : []];
     let selectIdx = 0;
 
     const selectChain = {
       from: vi.fn().mockReturnThis(),
       innerJoin: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
       ),
@@ -163,6 +179,50 @@ describe("processMentions (dispatch)", () => {
         source: "thread_mention",
       }),
     );
+  });
+
+  it("UAT iter 2 regression: populates payload.role from aoaAgentTriggers.config.role so the dispatcher autonomy gate can evaluate crew-role @mentions (router/planner/dispatcher → require L2). Without this, every @Router/@Planner mention bypassed the gate", async () => {
+    const { db, insertValues } = makeMockDb({
+      agentRow: { id: "agent-router", name: "Router" },
+      triggerRole: "router",
+    });
+
+    await processMentions(
+      db,
+      "company-1",
+      "thread-1",
+      "entry-1",
+      [{ raw: "@Router", name: "Router" }],
+    );
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          threadId: "thread-1",
+          entryId: "entry-1",
+          mention: "@Router",
+          role: "router",
+        }),
+      }),
+    );
+  });
+
+  it("UAT iter 2: when the agent has no mention-trigger config, payload.role is omitted (not 'undefined' string) so the dispatcher's payloadRole truthy-check skips the gate cleanly", async () => {
+    const { db, insertValues } = makeMockDb({
+      agentRow: { id: "agent-1", name: "Bot" },
+      // triggerRole intentionally undefined → trigger row has config: null
+    });
+
+    await processMentions(
+      db,
+      "company-1",
+      "thread-1",
+      "entry-1",
+      [{ raw: "@Bot", name: "Bot" }],
+    );
+
+    const call = insertValues.mock.calls[0]?.[0];
+    expect(call.payload).not.toHaveProperty("role");
   });
 
   it("creates a notifications row when mention resolves to a human user", async () => {
@@ -211,26 +271,21 @@ describe("processMentions (dispatch)", () => {
     const insertValues = vi.fn().mockReturnThis();
     const insertChain = { values: insertValues };
 
-    const agentRows = [
-      [{ id: "agent-1", name: "Bot" }], // first mention → agent
-      [], // second mention → no agent
-    ];
-    const authRows = [
-      [], // no auth for first (already resolved as agent)
-      [{ id: "user-2", name: "alice" }], // auth for second
-    ];
-    // selectQueue interleaves agent+auth lookups per mention
+    // selectQueue mirrors processMentions() select order:
+    //   @Bot → agent lookup (found) → aoaAgentTriggers lookup (UAT iter 2)
+    //   @alice → agent lookup (not found) → user lookup
     const selectQueue = [
-      agentRows[0], // @Bot → agent lookup
-      // no auth lookup needed since agent found
-      agentRows[1], // @alice → agent lookup (not found)
-      authRows[1], // @alice → user lookup (found)
+      [{ id: "agent-1", name: "Bot" }], // @Bot → agent lookup (found)
+      [{ config: null }], // @Bot → triggers lookup (no role configured)
+      [], // @alice → agent lookup (not found)
+      [{ id: "user-2", name: "alice" }], // @alice → user lookup (found)
     ];
     let idx = 0;
     const selectChain = {
       from: vi.fn().mockReturnThis(),
       innerJoin: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[idx++] ?? [])),
       ),

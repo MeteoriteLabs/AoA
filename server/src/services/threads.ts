@@ -186,6 +186,26 @@ export async function processMentions(
       .then((rows) => rows);
 
     if (agentRows.length > 0) {
+      // UAT iteration 2 fix: look up the agent's mention-trigger role so the
+      // dispatcher autonomy gate (which reads payload.role) can correctly
+      // gate agentic crew roles (router/planner/dispatcher require L2).
+      // Without this, every @Router/@Planner/@Dispatcher mention bypassed
+      // the autonomy gate because no payload.role was set. The role lives
+      // in aoaAgentTriggers.config.role — runtimeConfig.aoa.role is the
+      // literal string "member" (a template default, not the actual key).
+      const triggerRows = await db
+        .select({ config: aoaAgentTriggers.config })
+        .from(aoaAgentTriggers)
+        .where(and(
+          eq(aoaAgentTriggers.agentId, agentRows[0].id),
+          eq(aoaAgentTriggers.kind, "mention"),
+        ))
+        .limit(1)
+        .then((rows: Array<{ config: Record<string, unknown> | null }>) => rows);
+      const agentRole = (triggerRows[0]?.config as Record<string, unknown> | null | undefined)?.role as
+        | string
+        | undefined;
+
       // Create a wakeup request so the dispatcher Phase 3 picks it up
       await db.insert(agentWakeupRequests).values({
         companyId,
@@ -193,7 +213,14 @@ export async function processMentions(
         source: "thread_mention",
         triggerDetail: `@mention in thread ${threadId} entry ${entryId}`,
         reason: "thread_mention",
-        payload: { threadId, entryId, mention: mention.raw, hopCount: opts?.hopCount ?? 0 },
+        payload: {
+          threadId,
+          entryId,
+          mention: mention.raw,
+          hopCount: opts?.hopCount ?? 0,
+          // Include role so dispatcher's autonomy gate can evaluate it.
+          ...(agentRole ? { role: agentRole } : {}),
+        },
         requestedByActorType: "board",
         requestedByActorId: entryId,
       });

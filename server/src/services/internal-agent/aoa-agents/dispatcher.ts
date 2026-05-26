@@ -250,11 +250,19 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // that were already queued before the pause. Payload-based
           // threadCrewPaused is NOT used — nothing populates it at enqueue
           // time, so reading it would make the gate permanently inert.
-          const threadPaused = w.payload?.discussionId
+          //
+          // UAT iteration 2 fix: the wakeup payload uses `threadId` (set by
+          // the mention parser in threads.ts, sweep-adjutant, sweep-memory-
+          // keeper, notify-owner-tool) — NOT `discussionId`. Reading
+          // `discussionId` made this gate silently inert because the lookup
+          // key never matched. `threads` and `discussions` are the same
+          // table; `threadId` IS the discussion's primary key.
+          const threadIdInPayload = (w.payload as Record<string, unknown> | null)?.threadId;
+          const threadPaused = typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
             ? await db
                 .select({ crewPaused: discussions.crewPaused })
                 .from(discussions)
-                .where(eq(discussions.id, w.payload.discussionId as string))
+                .where(eq(discussions.id, threadIdInPayload))
                 .then((rows: Array<{ crewPaused: boolean | null }>) => Boolean(rows[0]?.crewPaused))
             : false;
           if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
@@ -275,6 +283,16 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
           // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
           // (scribe, memory_keeper, curator) are always active (min = 0).
+          //
+          // UAT iteration 2 contract: ALL wakeup enqueue sites populate
+          // payload.role with the crew role key (router/planner/maker/...).
+          // - Sweeps: sweep-adjutant + sweep-memory-keeper already do this.
+          // - Mentions: threads.ts processMentions now does this too (looks
+          //   up aoaAgentTriggers.config.role). Without that, every @Router
+          //   / @Planner / @Dispatcher mention bypassed the gate.
+          // runtimeConfig.aoa.role is NOT the source — that field is always
+          // the literal string "member" (a template default, never
+          // specialized per agent). Don't read it.
           const payloadRole = (w.payload as Record<string, unknown> | null)?.role as string | undefined;
           if (payloadRole && !isRoleActiveAtAutonomy(payloadRole as CrewRole, companyCfg.autonomyLevel)) {
             // P2 fix: distinct terminal status (was 'done'). The wakeup was
