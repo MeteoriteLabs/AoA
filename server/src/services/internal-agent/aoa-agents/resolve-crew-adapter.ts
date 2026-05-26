@@ -33,6 +33,18 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
         adapterType: "claude_local",
         adapterConfig: {
           model: "claude-sonnet-4-5-20250929",
+          // UAT iteration-2 root cause (P0): claude_local CLI in --print
+          // (non-interactive) mode hits a permission gate on every MCP tool
+          // call. With no TTY to answer the prompt, claude silently skips
+          // the tool call and completes the run "successfully" — producing
+          // a clean wakeup row but ZERO actual work (no post_entry, no
+          // create_artifact, etc.). codex_local has the equivalent
+          // `dangerouslyBypassApprovalsAndSandbox: true` (line ~63) and
+          // works correctly; claude_local needs the matching flag for
+          // crew runs. The bridge's D2 default-deny allowlist remains the
+          // real security gate — this flag only bypasses the local CLI's
+          // interactive prompt, not AoA's authz.
+          dangerouslySkipPermissions: true,
         },
       };
     case "google":
@@ -82,18 +94,37 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
 
 /**
  * Decide whether an existing agent row needs an adapter backfill.
- * Returns true when adapter_type='process' AND no command is set — the
- * specific shape produced by the legacy ensure-*.ts seeds. Genuine
- * process-with-command agents (generic shell processes) are left alone.
+ *
+ * Returns true in two cases:
+ *
+ * 1) **Legacy unrunnable `process` rows** (the original P1-B trigger):
+ *    `adapter_type='process'` with no `command`. The legacy ensure-*.ts
+ *    seeds wrote this exact shape; the process adapter throws on dispatch.
+ *    Genuine process-with-command agents (generic shell processes) are
+ *    left alone.
+ *
+ * 2) **claude_local crew agents missing `dangerouslySkipPermissions`**
+ *    (UAT iteration-2 fix): the pre-fix resolveCrewAdapterFor for
+ *    provider='anthropic' didn't set this flag, so claude crew runs
+ *    silently no-op on every MCP tool call (permission gate hangs in
+ *    --print mode). Backfill upgrades existing rows on startup so we
+ *    don't need to manually edit every agent's adapterConfig.
  */
 export function needsAdapterBackfill(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
 ): boolean {
-  if (adapterType !== "process") return false;
-  const cmd = adapterConfig?.command;
-  if (typeof cmd === "string" && cmd.trim().length > 0) return false;
-  return true;
+  // Case 1: legacy process rows without a command.
+  if (adapterType === "process") {
+    const cmd = adapterConfig?.command;
+    if (typeof cmd === "string" && cmd.trim().length > 0) return false;
+    return true;
+  }
+  // Case 2: claude_local crew rows missing the permission-skip flag.
+  if (adapterType === "claude_local") {
+    return adapterConfig?.dangerouslySkipPermissions !== true;
+  }
+  return false;
 }
 
 /**
