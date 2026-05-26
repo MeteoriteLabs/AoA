@@ -376,6 +376,8 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                   setViewerItem(item);
                   setMobileTab("viewer");
                 }}
+                companyId={selectedCompanyId ?? undefined}
+                discussionId={resolvedId ?? undefined}
               />
             </div>
           </div>
