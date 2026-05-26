@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { desc, eq, and, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers, agentWakeupRequests, internalAgentRuns } from "@armyofagents/db";
+import { agents, aoaAgentTriggers, agentWakeupRequests, internalAgentRuns, discussionExtractedItems, discussionEntries } from "@armyofagents/db";
 import { runAdjutantSweep } from "../services/internal-agent/aoa-agents/sweep-adjutant.js";
 import { runMemoryKeeperSweep } from "../services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import { logger } from "../middleware/logger.js";
@@ -148,6 +148,36 @@ export function internalSweepsDevRoutes(db: Db): Router {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: message });
+    }
+  });
+
+  // GET /api/internal/items/:discussionId?status=pending — dev-only diagnostic.
+  // Returns extracted items for a thread, defaulting to pending. UAT uses this
+  // to find item IDs to bulk-approve before triggering Adjutant for ARC B.
+  router.get("/internal/items/:discussionId", async (req, res) => {
+    const discussionId = req.params.discussionId;
+    const status = (req.query.status as string | undefined) ?? "pending";
+    try {
+      const rows = await db
+        .select({
+          id: discussionExtractedItems.id,
+          type: discussionExtractedItems.type,
+          title: discussionExtractedItems.title,
+          status: discussionExtractedItems.status,
+          discussionEntryId: discussionExtractedItems.discussionEntryId,
+          createdAt: discussionExtractedItems.createdAt,
+        })
+        .from(discussionExtractedItems)
+        .innerJoin(discussionEntries, eq(discussionEntries.id, discussionExtractedItems.discussionEntryId))
+        .where(and(
+          eq(discussionEntries.discussionId, discussionId),
+          eq(discussionExtractedItems.status, status),
+        ))
+        .orderBy(desc(discussionExtractedItems.createdAt))
+        .limit(200);
+      res.json({ discussionId, status, items: rows });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

@@ -65,3 +65,15 @@ ui/src/aoa-marketplace-snapshot.json
 
 # Arc-layout visual harness build artifact (rebuild with esbuild — see arc-harness.ts header)
 ui/dev-harness/*.bundle.js
+
+# Adjutant self-written diagnostic reports — the agent writes these via
+# its own write_file tool when it can't complete a task. Interesting as a
+# debugging signal but not source. UAT iteration 2 generated ~30 of these
+# while diagnosing the zombie-process race.
+ADJUTANT-*.md
+server/ADJUTANT-*.md
+server/adjutant-*.md
+server/adjutant-*.mjs
+server/adjutant-*.ts
+server/check-thread*.ts
+server/diagnose-*.ts
