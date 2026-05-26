@@ -249,8 +249,13 @@ export function agentLoopService(db: Db) {
             : {}),
         };
 
+        const effectiveConfig = {
+          ...config,
+          cliTool: (config as { cliTool?: string | null }).cliTool ?? "claude_cli",
+        };
+
         let accumulatedAssistant = "";
-        for await (const chunk of cliService.chat(cliParams, config)) {
+        for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
           yield chunk;
         }

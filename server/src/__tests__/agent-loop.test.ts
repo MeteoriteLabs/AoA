@@ -221,4 +221,18 @@ describe("agentLoopService.chat — assistant persistence (MX-chatpersist)", () 
     // cli-mode is never even invoked when unconfigured.
     expect(cliChat).not.toHaveBeenCalled();
   });
+
+  it("defaults legacy null cliTool configs to claude_cli before dispatch", async () => {
+    scriptStream([
+      { type: "text", delta: "Hi" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+    const svc = agentLoopService(dbWithConfig({ cliTool: null, executionMode: "cli" }));
+    await drain(svc);
+
+    expect(cliChat).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.any(String) }),
+      expect.objectContaining({ cliTool: "claude_cli" }),
+    );
+  });
 });

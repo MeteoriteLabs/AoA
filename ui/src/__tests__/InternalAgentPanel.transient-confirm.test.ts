@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mergeServerMessagesWithTransientLocal } from "../components/InternalAgentPanel";
+import {
+  completedToolLabel,
+  mergeServerMessagesWithTransientLocal,
+  settleRunningToolCalls,
+  type LocalMessage,
+} from "../components/InternalAgentPanel";
 import type { AgentMessage } from "../api/internal-agent";
 
 function message(id: string, role: "user" | "assistant", content: string): AgentMessage {
@@ -57,5 +62,85 @@ describe("mergeServerMessagesWithTransientLocal", () => {
     );
 
     expect(merged.map((m) => m.id)).toEqual(["server-user-1"]);
+  });
+
+  it("preserves a local assistant error that is not persisted by the server", () => {
+    const merged = mergeServerMessagesWithTransientLocal(
+      [message("server-user-1", "user", "Ping")],
+      [
+        {
+          id: "local-assistant-error",
+          role: "assistant",
+          content: "No CLI tool configured.",
+          streamingDone: true,
+          createdAt: "2026-05-26T00:00:01.000Z",
+        },
+      ],
+    );
+
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toMatchObject({
+      id: "local-assistant-error",
+      role: "assistant",
+      content: "No CLI tool configured.",
+    });
+  });
+
+  it("does not duplicate local assistant content once the server has the same assistant message", () => {
+    const merged = mergeServerMessagesWithTransientLocal(
+      [
+        message("server-user-1", "user", "Ping"),
+        message("server-assistant-1", "assistant", "Pong"),
+      ],
+      [
+        {
+          id: "local-assistant-1",
+          role: "assistant",
+          content: "Pong",
+          streamingDone: true,
+          createdAt: "2026-05-26T00:00:01.000Z",
+        },
+      ],
+    );
+
+    expect(merged.map((m) => m.id)).toEqual(["server-user-1", "server-assistant-1"]);
+  });
+});
+
+describe("settleRunningToolCalls", () => {
+  it("marks stale running tool rows done for the matching assistant message", () => {
+    const messages: LocalMessage[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        streamingDone: false,
+        createdAt: "2026-05-26T00:00:01.000Z",
+        toolCalls: [
+          { id: 1, name: "ToolSearch", status: "running" },
+          { id: 2, name: "mcp__aoa__create_task", status: "running" },
+        ],
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "",
+        streamingDone: false,
+        createdAt: "2026-05-26T00:00:02.000Z",
+        toolCalls: [{ id: 3, name: "mcp__aoa__create_goal", status: "running" }],
+      },
+    ];
+
+    const settled = settleRunningToolCalls(messages, "assistant-1");
+
+    expect(settled[0].toolCalls?.map((tc) => tc.status)).toEqual(["done", "done"]);
+    expect(settled[1].toolCalls?.map((tc) => tc.status)).toEqual(["running"]);
+  });
+});
+
+describe("completedToolLabel", () => {
+  it("does not describe completed tools as still running", () => {
+    expect(completedToolLabel("mcp__aoa__create_task")).toBe("Used mcp aoa create task");
+    expect(completedToolLabel("query_tasks")).not.toMatch(/running/i);
   });
 });

@@ -103,6 +103,7 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
 
     const marker = `⚡CONFIRM:${JSON.stringify({
       toolName: name,
+      params,
       confirmId: approval.id,
       action: "runtime_tool_approval",
       description: tool.description,

@@ -22,6 +22,156 @@ describe("codex_local parser", () => {
     });
     expect(parsed.errorMessage).toBe("model access denied");
   });
+
+  it("extracts action confirmation chunks from Codex tool_result items", () => {
+    const payload = {
+      toolName: "create_task",
+      params: { title: "Codex approval parser UAT", priority: "low" },
+      confirmId: "confirm-codex-1",
+    };
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "item_tool_result_1",
+          type: "tool_result",
+          tool_use_id: "tool_call_1",
+          content: `⚡CONFIRM:${JSON.stringify(payload)}⚡ This action requires approval.`,
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Awaiting your approval on the `create_task` action." },
+      }),
+    ].join("\n");
+
+    const parsed = parseCodexJsonl(stdout);
+
+    expect(parsed.sessionId).toBe("thread-123");
+    expect(parsed.summary).toBe("Awaiting your approval on the `create_task` action.");
+    expect(parsed.chunks).toContainEqual({
+      type: "action_confirmation",
+      toolName: "create_task",
+      params: { title: "Codex approval parser UAT", priority: "low" },
+      runId: "confirm-codex-1",
+    });
+  });
+
+  it("extracts action confirmation chunks from Codex mcp_tool_call result content", () => {
+    const payload = {
+      toolName: "create_task",
+      params: { title: "UAT Raw Codex JSONL approval shape", priority: "low" },
+      confirmId: "464e78bb-667f-4654-9ba9-3c4e7274667b",
+      action: "runtime_tool_approval",
+      description: "Create a new task with title, optional description, priority, department, goal, and assignee.",
+    };
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_1",
+        type: "mcp_tool_call",
+        server: "aoa",
+        tool: "create_task",
+        arguments: { title: "UAT Raw Codex JSONL approval shape", priority: "low" },
+        result: {
+          content: [
+            {
+              type: "text",
+              text: `⚡CONFIRM:${JSON.stringify(payload)}⚡ This action requires your approval before I can proceed.`,
+            },
+          ],
+          structured_content: null,
+        },
+        error: null,
+        status: "completed",
+      },
+    });
+
+    const parsed = parseCodexJsonl(stdout);
+
+    expect(parsed.chunks).toContainEqual({
+      type: "action_confirmation",
+      toolName: "create_task",
+      params: { title: "UAT Raw Codex JSONL approval shape", priority: "low" },
+      runId: "464e78bb-667f-4654-9ba9-3c4e7274667b",
+    });
+  });
+
+  it("extracts action confirmation when Codex tool_result content is an array of text blocks", () => {
+    const payload = { toolName: "create_task", params: { title: "Array content" }, confirmId: "confirm-array" };
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "tool_result",
+        tool_use_id: "tool_call_array",
+        content: [{ type: "text", text: `⚡CONFIRM:${JSON.stringify(payload)}⚡` }],
+      },
+    });
+
+    const parsed = parseCodexJsonl(stdout);
+    expect(parsed.chunks).toContainEqual({
+      type: "action_confirmation",
+      toolName: "create_task",
+      params: { title: "Array content" },
+      runId: "confirm-array",
+    });
+  });
+
+  it("does not expose malformed confirmation marker text as a user-visible assistant summary", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "tool_result",
+        tool_use_id: "tool_call_bad",
+        content: "⚡CONFIRM:{not-json}⚡",
+        is_error: true,
+      },
+    });
+
+    const parsed = parseCodexJsonl(stdout);
+    expect(parsed.chunks.some((chunk: any) => chunk.type === "action_confirmation")).toBe(false);
+    expect(parsed.summary).toBe("");
+  });
+
+  it("extracts multiple Codex confirmation markers in stream order", () => {
+    const first = { toolName: "create_task", params: { title: "First" }, confirmId: "confirm-first" };
+    const second = { toolName: "create_task", params: { title: "Second" }, confirmId: "confirm-second" };
+    const stdout = [
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_result",
+          tool_use_id: "tool_call_first",
+          content: `⚡CONFIRM:${JSON.stringify(first)}⚡`,
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_result",
+          tool_use_id: "tool_call_second",
+          content: `⚡CONFIRM:${JSON.stringify(second)}⚡`,
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseCodexJsonl(stdout);
+    expect(parsed.chunks.filter((chunk: any) => chunk.type === "action_confirmation")).toEqual([
+      {
+        type: "action_confirmation",
+        toolName: "create_task",
+        params: { title: "First" },
+        runId: "confirm-first",
+      },
+      {
+        type: "action_confirmation",
+        toolName: "create_task",
+        params: { title: "Second" },
+        runId: "confirm-second",
+      },
+    ]);
+  });
 });
 
 describe("codex_local stale session detection", () => {

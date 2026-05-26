@@ -732,7 +732,7 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     };
   }
 
-  it("claude_cli: spawns `claude` with the exact pre-MX4 --mcp-config/-p args (BYTE-UNCHANGED)", async () => {
+  it("claude_cli: spawns `claude` with print-mode flags before the positional prompt", async () => {
     const { spawn, writeFile, writeCodexMcpConfigToml, ensureCodexAuthInHome } =
       await runChat("claude_cli");
 
@@ -745,18 +745,19 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     const [binary, args] = spawn.mock.calls[0];
     expect(binary).toBe("claude");
 
-    // Args: ["--mcp-config", <.json path>, "--dangerously-skip-permissions", "-p", <content>, "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
+    // Keep the prompt last. On Windows/cmd.exe, putting flags after the prompt
+    // makes Claude treat those flags as prompt text, dropping stream-json events.
     expect(args[0]).toBe("--mcp-config");
     expect(typeof args[1]).toBe("string");
     expect(args[1]).toMatch(/\.json$/);
     expect(args[2]).toBe("--dangerously-skip-permissions");
-    expect(args[3]).toBe("-p");
+    expect(args[3]).toBe("--print");
+    expect(args[4]).toBe("--output-format");
+    expect(args[5]).toBe("stream-json");
+    expect(args[6]).toBe("--include-partial-messages");
+    expect(args[7]).toBe("--verbose");
     // content (possibly shell-escaped on win32); assert it carries the message
-    expect(String(args[4])).toContain("hello world");
-    expect(args[5]).toBe("--output-format");
-    expect(args[6]).toBe("stream-json");
-    expect(args[7]).toBe("--include-partial-messages");
-    expect(args[8]).toBe("--verbose");
+    expect(String(args[8])).toContain("hello world");
     expect(args).toHaveLength(9);
     expect(args).not.toContain("exec");
 
@@ -996,6 +997,55 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(stored.codexSessionId).toBe("codex-sess-aaa");
   });
 
+  it("codex action_confirmation: yields approval chunks parsed from tool_result markers before assistant text", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const payload = {
+      toolName: "create_task",
+      params: { title: "Codex SSE approval UAT", priority: "low" },
+      confirmId: "confirm-codex-sse-1",
+    };
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-codex-sse" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_result",
+          tool_use_id: "tool_call_1",
+          content: `⚡CONFIRM:${JSON.stringify(payload)}⚡ Requires approval.`,
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Awaiting your approval." },
+      }),
+    ].join("\n");
+    const proc = makeOneShotProcess({ stdout });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    const chunks = await drainChat(service, "codex", "create a task");
+
+    expect(chunks).toEqual(expect.arrayContaining([
+      {
+        type: "action_confirmation",
+        toolName: "create_task",
+        params: { title: "Codex SSE approval UAT", priority: "low" },
+        runId: "confirm-codex-sse-1",
+      },
+      { type: "text", delta: "Awaiting your approval." },
+    ]));
+    const text = chunks
+      .filter((c) => c.type === "text")
+      .map((c) => c.delta)
+      .join("");
+    expect(text).not.toContain("CONFIRM:");
+    expect(text).not.toContain("thread.started");
+  });
+
   it("codex turn-2: a follow-up on the same session spawns a FRESH `codex exec --json … resume <storedId> -` and refreshes the stored sessionId", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
@@ -1037,6 +1087,58 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(text2).toContain("Follow-up answer from codex.");
     const afterT2 = service.getSessionStore().get("comp1:user1");
     expect(afterT2.codexSessionId).toBe("codex-sess-bbb");
+  });
+
+  it("codex resume action_confirmation: resumed turns still surface approval chunks", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const payload = {
+      toolName: "create_task",
+      params: { title: "Codex resumed approval UAT", priority: "low" },
+      confirmId: "confirm-codex-resume-1",
+    };
+    const resumedApprovalJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "codex-sess-resumed" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "tool_result",
+          tool_use_id: "tool_call_resume",
+          content: `⚡CONFIRM:${JSON.stringify(payload)}⚡ Requires approval.`,
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Awaiting resumed approval." },
+      }),
+    ].join("\n");
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({ stdout: resumedApprovalJsonl });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+
+    await drainChat(service, "codex", "first message");
+    const chunks2 = await drainChat(service, "codex", "second message");
+
+    const [, args] = vi.mocked(cp.spawn).mock.calls[1];
+    const resumeIdx = (args as string[]).indexOf("resume");
+    expect(resumeIdx).toBeGreaterThan(-1);
+    expect((args as string[])[resumeIdx + 1]).toBe("codex-sess-aaa");
+    expect(chunks2).toEqual(expect.arrayContaining([
+      {
+        type: "action_confirmation",
+        toolName: "create_task",
+        params: { title: "Codex resumed approval UAT", priority: "low" },
+        runId: "confirm-codex-resume-1",
+      },
+      { type: "text", delta: "Awaiting resumed approval." },
+    ]));
   });
 
   it("codex unknown-session: a resume whose output matches isCodexUnknownSessionError retries FRESH (no `resume`), no hang, no 'CLI session ended'", async () => {
@@ -1116,7 +1218,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(text).not.toContain('"type"');
   });
 
-  it("claude_cli stays UNCHANGED: persistent-process spawn + `-p` argv (prompt NOT on stdin) + stream-json accumulation + done shape; no codex sessionId", async () => {
+  it("claude_cli uses print-mode argv (prompt NOT on stdin) + stream-json accumulation + done shape; no codex sessionId", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
     // Persistent claude process: streamProcessOutput attaches its listeners
@@ -1156,7 +1258,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
 
     const chunks1 = await drainChat(service, "claude_cli", "first");
 
-    // Persistent process: claude takes the prompt in `-p` argv and is NOT
+    // Persistent process: claude takes the prompt in argv and is NOT
     // written to stdin on turn-1.
     expect(persistent.stdin.write).not.toHaveBeenCalled();
     expect(vi.mocked(cp.spawn)).toHaveBeenCalledTimes(1);
@@ -1166,12 +1268,12 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "--mcp-config",
       expect.stringMatching(/\.json$/),
       "--dangerously-skip-permissions",
-      "-p",
-      expect.stringContaining("first"),
+      "--print",
       "--output-format",
       "stream-json",
       "--include-partial-messages",
       "--verbose",
+      expect.stringContaining("first"),
     ]);
     // Stream-json accumulation: StreamJsonParser extracts text from stream_event
     // text_delta events (NOT plain-text parseCliOutput).

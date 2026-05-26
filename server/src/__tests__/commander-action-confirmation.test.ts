@@ -68,7 +68,7 @@ describe("createToolCallHandler: requiresConfirmation gate", () => {
     expect(result.isError).toBeFalsy();
   });
 
-  it("does not serialize params into the CONFIRM marker authority payload", async () => {
+  it("includes params in the marker for display while persisting DB params as authority", async () => {
     const tool = makeTool("create_task", true);
     const createPending = vi.fn().mockResolvedValue({ id: "approval-2" });
     const handler = createToolCallHandler({
@@ -84,7 +84,7 @@ describe("createToolCallHandler: requiresConfirmation gate", () => {
 
     const result = await handler("create_task", params);
 
-    expect(result.content[0].text).not.toContain(JSON.stringify(params));
+    expect(result.content[0].text).toContain(JSON.stringify(params));
     expect(createPending).toHaveBeenCalledWith(expect.objectContaining({ params }));
   });
 

@@ -112,6 +112,11 @@ function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? `Running ${name.replaceAll("_", " ")}...`;
 }
 
+export function completedToolLabel(name: string): string {
+  const label = TOOL_LABELS[name] ?? name.replace(/_+/g, " ");
+  return `Used ${label.replace(/\.\.\.$/, "").replace(/^Running\s+/i, "")}`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Confirmation card entity-line derivation                           */
 /* ------------------------------------------------------------------ */
@@ -156,13 +161,13 @@ export function deriveConfirmEntityLine(action: string): string {
 /*  Message types for local rendering                                  */
 /* ------------------------------------------------------------------ */
 
-interface ToolCallEntry {
+export interface ToolCallEntry {
   id: number;
   name: string;
   status: "running" | "done";
 }
 
-interface LocalMessage {
+export interface LocalMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
@@ -209,10 +214,36 @@ export function mergeServerMessagesWithTransientLocal(
   const transientMessages = localMessages.filter(
     (m) =>
       !serverIds.has(m.id) &&
-      (m.actionConfirm !== undefined || m.optionsPrompt !== undefined),
+      (
+        m.actionConfirm !== undefined ||
+        m.optionsPrompt !== undefined ||
+        (
+          m.role === "assistant" &&
+          m.content.trim().length > 0 &&
+          !serverMessages.some(
+            (serverMessage) =>
+              serverMessage.role === "assistant" &&
+              (serverMessage.content ?? "") === m.content,
+          )
+        )
+      ),
   );
 
   return [...merged, ...transientMessages];
+}
+
+export function settleRunningToolCalls(messages: LocalMessage[], messageId: string): LocalMessage[] {
+  return messages.map((m) => {
+    if (m.id !== messageId || !m.toolCalls?.some((tc) => tc.status === "running")) {
+      return m;
+    }
+    return {
+      ...m,
+      toolCalls: m.toolCalls.map((tc) => (
+        tc.status === "running" ? { ...tc, status: "done" as const } : tc
+      )),
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -454,7 +485,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           setMessages((prev) =>
-            prev.map((m) =>
+            settleRunningToolCalls(prev, assistantId).map((m) =>
               m.id === assistantId
                 ? { ...m, content: m.content || "Sorry, something went wrong. Please try again.", streamingDone: true }
                 : m,
@@ -464,7 +495,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       } finally {
         // Mark streaming done on the assistant message (fix #1: switch to markdown)
         setMessages((prev) =>
-          prev.map((m) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
             m.id === assistantId ? { ...m, streamingDone: true } : m,
           ),
         );
@@ -512,6 +543,20 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         // Show thinking indicator — content stays empty until real content arrives
         break;
 
+      case "error": {
+        const message =
+          (event.data as { message?: string }).message ??
+          "Commander hit an error. Please try again.";
+        setMessages((prev) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
+            m.id === assistantId && !m.content
+              ? { ...m, content: message, streamingDone: true }
+              : m,
+          ),
+        );
+        break;
+      }
+
       case "tool_call": {
         const name = (event.data as { name?: string }).name ?? "unknown";
         const callId = ++toolCallIdRef.current;
@@ -552,7 +597,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           description: string;
         };
         setMessages((prev) =>
-          prev.map((m) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
             m.id === assistantId
               ? {
                   ...m,
@@ -581,8 +626,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       }
 
       case "done":
-      case "error":
-        // Stream finished
+        setMessages((prev) => settleRunningToolCalls(prev, assistantId));
         break;
     }
   }
@@ -882,7 +926,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                       ) : (
                         <Wrench className="h-3 w-3" />
                       )}
-                      <span>{toolLabel(tc.name)}</span>
+                      <span>{tc.status === "running" ? toolLabel(tc.name) : completedToolLabel(tc.name)}</span>
                     </div>
                   ))}
                 </div>

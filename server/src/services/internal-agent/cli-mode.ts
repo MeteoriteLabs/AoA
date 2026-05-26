@@ -348,10 +348,11 @@ async function resolveCliInvocation(
             "--mcp-config", configPath,
             "--system-prompt-file", safeSystemPromptPath,
             ...claudeBypassArgs,
-            "-p", systemSplitArgs.safeRawContent,
+            "--print",
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--verbose",
+            systemSplitArgs.safeRawContent,
           ],
           mcpArtifactPath: configPath,
         };
@@ -362,10 +363,11 @@ async function resolveCliInvocation(
         args: [
           "--mcp-config", configPath,
           ...claudeBypassArgs,
-          "-p", safeContent,
+          "--print",
           "--output-format", "stream-json",
           "--include-partial-messages",
           "--verbose",
+          safeContent,
         ],
         mcpArtifactPath: configPath,
       };
@@ -741,7 +743,6 @@ async function* streamProcessOutput(
   // Branch parser: claude_cli uses the structured stream-json parser;
   // codex / opencode stay on the existing text-format marker-in-prose path.
   const streamParser = useStreamJson ? new StreamJsonParser() : null;
-
   function processLines(text: string) {
     if (streamParser) {
       // StreamJsonParser handles its own internal buffering — just push text.
@@ -933,6 +934,10 @@ async function* runCodexTurn(
   if (errorMessage) {
     yield { type: "error", message: errorMessage };
     return;
+  }
+
+  for (const chunk of parsed.chunks ?? []) {
+    yield chunk;
   }
 
   // v1: emit the full parsed assistant reply as a single text chunk
