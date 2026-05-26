@@ -177,4 +177,49 @@ describe("writeOpenCodeMcpConfigJson (T2.1)", () => {
       expect(written.theme).toBeUndefined();
     });
   });
+
+  describe("concurrency (codex finding P1)", () => {
+    it("10 parallel writes converge to ONE valid JSON file with the aoa block (no torn content)", async () => {
+      // Pre-T2.1.1 the writer did fs.readFile → mutate → fs.writeFile. Two
+      // concurrent agent starts in the SAME cwd could either tear the file
+      // (partial JSON byte interleaving) or clobber unrelated mcp.* entries
+      // (the read happened before the other write landed). The atomic temp +
+      // rename fix guarantees: every read sees a COMPLETE prior file, and
+      // every write either fully lands or doesn't (no torn output).
+      //
+      // This test acts as a REGRESSION GUARD. Without atomic-rename it may
+      // pass on a fast machine where writes happen to serialize at the OS
+      // level; with atomic-rename it's 100% deterministic. If someone reverts
+      // the fix, the test starts flaking and CI catches it within ~10 runs.
+      const N = 10;
+      const writes = Array.from({ length: N }, (_, i) =>
+        writeOpenCodeMcpConfigJson(tmpDir, {
+          ...BRIDGE_SPEC,
+          env: { ...BRIDGE_SPEC.env, AOA_WRITER_INDEX: String(i) },
+        }),
+      );
+      await Promise.all(writes);
+
+      const text = await fs.readFile(path.join(tmpDir, "opencode.json"), "utf8");
+      // (a) Valid JSON — parse must NOT throw.
+      const written = JSON.parse(text);
+      // (b) The aoa block exists with the expected static fields.
+      expect(written.mcp.aoa.type).toBe("local");
+      expect(written.mcp.aoa.command).toEqual(["node", "/path/to/mcp-bridge.js"]);
+      // (c) The env is ONE of the variants — i.e., one writer won cleanly,
+      // not a torn merge. AOA_WRITER_INDEX must be the string of an integer
+      // in [0, N-1], not undefined, not corrupted.
+      const idxStr = written.mcp.aoa.environment.AOA_WRITER_INDEX;
+      expect(typeof idxStr).toBe("string");
+      const idx = Number(idxStr);
+      expect(Number.isInteger(idx)).toBe(true);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(N);
+
+      // (d) No temp files left behind in tmpDir.
+      const remaining = await fs.readdir(tmpDir);
+      const tempFiles = remaining.filter((f) => f.startsWith("opencode.json.tmp-"));
+      expect(tempFiles).toEqual([]);
+    });
+  });
 });

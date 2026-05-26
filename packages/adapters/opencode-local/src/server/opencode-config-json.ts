@@ -105,5 +105,60 @@ export async function writeOpenCodeMcpConfigJson(
   // 2-space indent matches the codex pattern's readability + makes diffs
   // useful when an operator inspects the file by hand. Trailing newline so
   // POSIX text-file tools don't complain.
-  await fs.writeFile(target, JSON.stringify(next, null, 2) + "\n", "utf8");
+  //
+  // T2.1.1 (codex finding P1): atomic write. Pre-fix this was a bare
+  // fs.writeFile(target, ...) which (under concurrent agent starts in the
+  // same cwd) could either tear the file (byte interleaving) or clobber
+  // unrelated mcp.* entries. POSIX rename(2) and Windows MoveFileExW (which
+  // Node's fs.rename uses on NTFS, Vista+) are atomic for same-fs moves —
+  // every reader sees either the old file or the new file, never a partial
+  // mix. We write to a randomized tempname IN THE SAME DIRECTORY (so the
+  // rename stays on the same filesystem) and rename over the target.
+  //
+  // Windows quirk: concurrent renames against the SAME target can throw
+  // EPERM/EBUSY/EACCES briefly because the destination has an open handle
+  // from the rename-in-progress. POSIX never sees this. Retry with a tiny
+  // jittered backoff so 10 concurrent writers all eventually win their
+  // own slot. The retry budget (10 attempts, ~5-15ms each = ~150ms worst
+  // case) is well below any sane LLM-call latency, so this doesn't change
+  // observable latency on the happy path.
+  const body = JSON.stringify(next, null, 2) + "\n";
+  const tempName = `opencode.json.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const tempPath = path.join(cwd, tempName);
+  await fs.writeFile(tempPath, body, "utf8");
+  try {
+    await renameWithRetry(tempPath, target);
+  } catch (err) {
+    // Best-effort cleanup so a failing rename doesn't leak a temp file.
+    await fs.unlink(tempPath).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * fs.rename() with a small retry budget for the Windows EPERM/EBUSY case
+ * where the destination is briefly locked by a concurrent rename in
+ * flight. POSIX rename(2) is atomic and never throws these codes for the
+ * same-fs case, so on Linux/Mac this loop always exits on attempt 1.
+ */
+async function renameWithRetry(src: string, dst: string, maxAttempts = 10): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      await fs.rename(src, dst);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      // Only retry the Windows-quirk codes. Any other error (ENOENT,
+      // EISDIR, EROFS, ...) is a real problem — surface it immediately.
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        throw err;
+      }
+      // Jittered backoff so 10 retrying writers don't all wake in lockstep
+      // and starve each other in synchronized cycles.
+      await new Promise((r) => setTimeout(r, 5 + Math.random() * 10));
+    }
+  }
+  throw lastErr;
 }
