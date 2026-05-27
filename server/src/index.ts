@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -19,6 +19,9 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  agents,
+  marketplaceCatalogCache,
+  marketplaceCompanySettings,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -51,7 +54,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
-import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
+import { DEFAULT_BACKUP_RETENTION, MARKETPLACE_SETTINGS_DEFAULTS } from "@armyofagents/shared";
 import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
 import { ensureMaker } from "./services/internal-agent/aoa-agents/ensure-maker.js";
@@ -59,6 +62,8 @@ import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensur
 import { ensureExtractionAgent } from "./services/internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
+import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
+import { agentInstructionsService } from "./services/agent-instructions.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -257,7 +262,7 @@ async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
   }
 }
 
-let db;
+let db: ReturnType<typeof import("@armyofagents/db").createDb> | undefined;
 let embeddedPostgres: EmbeddedPostgresInstance | null = null;
 let embeddedPostgresStartedByThisProcess = false;
 let migrationSummary: MigrationSummary = "skipped";
@@ -684,32 +689,49 @@ if (config.heartbeatSchedulerEnabled) {
 // and Adjutant exist for all companies. Safe to run on every startup — uses
 // ON CONFLICT DO NOTHING. Pre-existing companies miss this because the seeders
 // only run on company creation.
+// T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
 void db
   .select({ id: companies.id })
   .from(companies)
-  .then((rows) =>
-    Promise.all(
-      rows.flatMap((row) => [
-        ensureCommandStaff(db as any, row.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: row.id }, "command staff backfill failed for company");
-        }),
-        ensureAdjutant(db as any, row.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: row.id }, "adjutant backfill failed for company");
-        }),
-        ensureMaker(db as any, row.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: row.id }, "maker backfill failed for company");
-        }),
-        // P1-B: also backfill Commander + Scribe so the adapter upgrade applies
-        // to existing companies. These previously only ran on company creation.
-        ensureCommanderAgent(db as any, row.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: row.id }, "commander backfill failed for company");
-        }),
-        ensureExtractionAgent(db as any, row.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: row.id }, "extraction agent (scribe) backfill failed for company");
-        }),
-      ]),
-    ),
-  )
+  .then(async (rows) => {
+    for (const row of rows) {
+      // T3.5: skip ensure-*.ts if marketplace already governs this company's crew
+      const [marketplaceInstalled] = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, row.id),
+            eq(agents.kind, "aoa"),
+            sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
+          ),
+        )
+        .limit(1);
+
+      if (marketplaceInstalled) {
+        logger.debug({ companyId: row.id }, "crew startup backfill: skipping — marketplace governs");
+        continue;
+      }
+
+      await Promise.all([
+        ensureCommandStaff(db as any, row.id).catch((err: unknown) =>
+          logger.warn({ err, companyId: row.id }, "command staff backfill failed"),
+        ),
+        ensureAdjutant(db as any, row.id).catch((err: unknown) =>
+          logger.warn({ err, companyId: row.id }, "adjutant backfill failed"),
+        ),
+        ensureMaker(db as any, row.id).catch((err: unknown) =>
+          logger.warn({ err, companyId: row.id }, "maker backfill failed"),
+        ),
+        ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
+          logger.warn({ err, companyId: row.id }, "commander backfill failed"),
+        ),
+        ensureExtractionAgent(db as any, row.id).catch((err: unknown) =>
+          logger.warn({ err, companyId: row.id }, "extraction agent backfill failed"),
+        ),
+      ]);
+    }
+  })
   .catch((err) => logger.warn({ err }, "crew startup backfill failed"));
 
 // Idempotent backfill: migrate the vestigial goals.parentId column into the
@@ -729,6 +751,52 @@ void backfillGoalParents(db as any)
 // on marketplace (T3.5) and the crew-updater can exclude legacy rows (T3.4).
 void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
   logger.warn({ err }, "crew templateOrigin backfill failed"),
+);
+
+// T3.5 / T3.x: Check all marketplace-installed crew agents for catalog updates.
+// auto policy + within window → apply immediately (silent).
+// notify policy → record pending_update + send updateAvailable notification.
+const CREW_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+async function runCrewUpdateCheck(): Promise<void> {
+  try {
+    const catalogRows = await (db as any)
+      .select()
+      .from(marketplaceCatalogCache)
+      .where(eq(marketplaceCatalogCache.id, 1))
+      .limit(1);
+    if (catalogRows.length === 0) return;
+    const catalogData = (catalogRows[0].catalogJson as { items?: unknown }).items;
+    if (!Array.isArray(catalogData)) return;
+
+    const allCompanies = await (db as any).select({ id: companies.id }).from(companies);
+    for (const company of allCompanies) {
+      const settingsRow = await (db as any)
+        .select({ settings: marketplaceCompanySettings.settings })
+        .from(marketplaceCompanySettings)
+        .where(eq(marketplaceCompanySettings.companyId, company.id))
+        .limit(1);
+      const settings = {
+        ...MARKETPLACE_SETTINGS_DEFAULTS,
+        ...((settingsRow[0]?.settings as object) ?? {}),
+      };
+      await checkCrewUpdates({
+        db: db as any,
+        companyId: company.id,
+        catalogItems: catalogData as any,
+        settings,
+        instructionsService: agentInstructionsService(),
+      });
+    }
+  } catch (err) {
+    logger.warn({ err }, "crew update check failed");
+  }
+}
+
+void runCrewUpdateCheck();
+setInterval(
+  () => void runCrewUpdateCheck().catch((err) => logger.warn({ err }, "crew update check interval failed")),
+  CREW_UPDATE_CHECK_INTERVAL_MS,
 );
 
 // File import queue worker

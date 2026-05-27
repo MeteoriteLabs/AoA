@@ -1,4 +1,4 @@
-import { eq, count, isNull } from "drizzle-orm";
+import { and, eq, count, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
@@ -124,29 +124,47 @@ export function companyService(db: Db) {
         // root-folder seed above — so a seed failure never breaks company
         // create (the dispatcher's lazy ensureExtractionAgent is the
         // idempotent safety-net).
-        await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
-        });
-        await ensureCommanderAgent(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "Commander agent seeding failed");
-        });
-        await ensureExtractionAgent(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "Discussion Extraction agent seeding failed");
-        });
-        // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
-        await ensureCommandStaff(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
-        });
-        // Plan 3 P3.1: seed the Adjutant role (phase-advance keystone, sweep trigger).
-        // Without this, runAdjutantSweep finds no trigger and the phase loop is dead.
-        await ensureAdjutant(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
-        });
-        // Plan 4: seed the Maker role (artifact generator on @mention or phase-advance).
-        // Eighth crew agent per design § 3.
-        await ensureMaker(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "Maker agent seeding failed");
-        });
+        //
+        // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
+        // A brand-new company that gets a marketplace install immediately after
+        // creation must not have its agents overwritten by the legacy seeders.
+        const [mktInstalled] = await db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(
+            and(
+              eq(agents.companyId, company.id),
+              eq(agents.kind, "aoa"),
+              sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
+            ),
+          )
+          .limit(1);
+
+        if (!mktInstalled) {
+          await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
+          });
+          await ensureCommanderAgent(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Commander agent seeding failed");
+          });
+          await ensureExtractionAgent(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Discussion Extraction agent seeding failed");
+          });
+          // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
+          await ensureCommandStaff(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
+          });
+          // Plan 3 P3.1: seed the Adjutant role (phase-advance keystone, sweep trigger).
+          // Without this, runAdjutantSweep finds no trigger and the phase loop is dead.
+          await ensureAdjutant(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
+          });
+          // Plan 4: seed the Maker role (artifact generator on @mention or phase-advance).
+          // Eighth crew agent per design § 3.
+          await ensureMaker(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Maker agent seeding failed");
+          });
+        }
         return company;
       } catch (error) {
         if (!isIssuePrefixConflict(error)) throw error;
