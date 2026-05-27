@@ -58,6 +58,7 @@ import { ensureMaker } from "./services/internal-agent/aoa-agents/ensure-maker.j
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
 import { ensureExtractionAgent } from "./services/internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
+import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -721,6 +722,14 @@ void backfillGoalParents(db as any)
     }
   })
   .catch((err) => logger.warn({ err }, "goal_parents startup backfill failed"));
+
+// Idempotent backfill: stamp @legacy templateOrigin onto pre-marketplace crew
+// agents (kind='aoa', templateOrigin IS NULL). Runs once per deploy; second run
+// updates 0 rows. Required so boot-time ensure guards can skip companies already
+// on marketplace (T3.5) and the crew-updater can exclude legacy rows (T3.4).
+void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
+  logger.warn({ err }, "crew templateOrigin backfill failed"),
+);
 
 // File import queue worker
 void resetStuckJobs(db as any).catch((err) =>
