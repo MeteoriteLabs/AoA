@@ -9,7 +9,7 @@
  * - Amber conflict card styling for conflicted items in Needs Input
  * - "Spin off →" button per item
  */
-import { groupScopeItems, groupByType, ALL_SCOPE_TYPES, type ScopeItem } from "./scopeGrouping";
+import { groupScopeItems, type ScopeItem } from "./scopeGrouping";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { RefreshCw, GitBranch, Link2 } from "lucide-react";
@@ -43,10 +43,6 @@ export interface ScopeTabProps {
   isFounder?: boolean;
   /** Available departments for routing dropdown */
   departments?: Department[];
-  /** When true, renders an "All Items by Type" section at the bottom */
-  showAllTypes?: boolean;
-  /** Router recommendation banner data */
-  recommendation?: { departmentId: string; departmentName: string; itemCount: number } | null;
 }
 
 export function ScopeTab({
@@ -62,8 +58,6 @@ export function ScopeTab({
   discussionId,
   isFounder = false,
   departments = [],
-  showAllTypes = false,
-  recommendation = null,
 }: ScopeTabProps) {
   // ── Loading skeleton ──
   if (isLoading) {
@@ -126,17 +120,6 @@ export function ScopeTab({
         )}
       </section>
 
-      {/* ── Router Recommendation ── */}
-      {recommendation && (
-        <div
-          data-testid="scope-router-recommendation"
-          className="rounded-lg border border-teal-300 bg-teal-50 dark:bg-teal-900/10 px-3 py-2 text-xs text-teal-900 dark:text-teal-200"
-        >
-          Router suggests routing to <span className="font-semibold">{recommendation.departmentName}</span>{" "}
-          ({recommendation.itemCount} task{recommendation.itemCount !== 1 ? "s" : ""}). You decide.
-        </div>
-      )}
-
       {/* ── Plan ── */}
       <section data-testid="scope-plan">
         <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -158,133 +141,91 @@ export function ScopeTab({
       </section>
 
       {/* ── Items ── */}
-      {!showAllTypes && (
-        <section data-testid="scope-items">
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            Items
-          </h3>
+      <section data-testid="scope-items">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+          Items
+        </h3>
 
-          {!hasAnyItems ? (
-            <p className="text-sm text-muted-foreground italic">
-              Nothing to scope yet. Scribe surfaces items as the discussion grows.
-            </p>
-          ) : (
-            <div className="space-y-4">
-              {/* Needs Input group */}
-              {grouped.needsInput.length > 0 && (
-                <ItemGroup label="Needs Input" count={grouped.needsInput.length}>
-                  {grouped.needsInput.map(({ item, hasConflict }) => (
-                    <ScopeItemRow
-                      key={item.id}
-                      item={item}
-                      hasConflict={hasConflict}
-                      onClick={() => onItemClick(item)}
-                      companyId={companyId}
-                      discussionId={discussionId}
-                      isFounder={isFounder}
-                      departments={departments}
-                    />
-                  ))}
-                </ItemGroup>
-              )}
+        {!hasAnyItems ? (
+          <p className="text-sm text-muted-foreground italic">
+            Nothing to scope yet. Scribe surfaces items as the discussion grows.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {/* Needs Input group */}
+            {grouped.needsInput.length > 0 && (
+              <ItemGroup label="Needs Input" count={grouped.needsInput.length}>
+                {grouped.needsInput.map(({ item, hasConflict }) => (
+                  <ScopeItemRow
+                    key={item.id}
+                    item={item}
+                    hasConflict={hasConflict}
+                    onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
+                  />
+                ))}
+              </ItemGroup>
+            )}
 
-              {/* Confirmed group */}
-              {grouped.confirmed.length > 0 && (
-                <ItemGroup label="Confirmed" count={grouped.confirmed.length}>
-                  {grouped.confirmed.map((item) => (
-                    <ScopeItemRow
-                      key={item.id}
-                      item={item}
-                      hasConflict={false}
-                      onClick={() => onItemClick(item)}
-                      companyId={companyId}
-                      discussionId={discussionId}
-                      isFounder={isFounder}
-                      departments={departments}
-                    />
-                  ))}
-                </ItemGroup>
-              )}
+            {/* Confirmed group */}
+            {grouped.confirmed.length > 0 && (
+              <ItemGroup label="Confirmed" count={grouped.confirmed.length}>
+                {grouped.confirmed.map((item) => (
+                  <ScopeItemRow
+                    key={item.id}
+                    item={item}
+                    hasConflict={false}
+                    onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
+                  />
+                ))}
+              </ItemGroup>
+            )}
 
-              {/* References group */}
-              {grouped.references.length > 0 && (
-                <ItemGroup label="References" count={grouped.references.length}>
-                  {grouped.references.map((item) => (
-                    <ScopeItemRow
-                      key={item.id}
-                      item={item}
-                      hasConflict={false}
-                      onClick={() => onItemClick(item)}
-                      companyId={companyId}
-                      discussionId={discussionId}
-                      isFounder={isFounder}
-                      departments={departments}
-                    />
-                  ))}
-                </ItemGroup>
-              )}
+            {/* References group */}
+            {grouped.references.length > 0 && (
+              <ItemGroup label="References" count={grouped.references.length}>
+                {grouped.references.map((item) => (
+                  <ScopeItemRow
+                    key={item.id}
+                    item={item}
+                    hasConflict={false}
+                    onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
+                  />
+                ))}
+              </ItemGroup>
+            )}
 
-              {/* Artifacts group */}
-              {grouped.artifacts.length > 0 && (
-                <ItemGroup label="Artifacts" count={grouped.artifacts.length}>
-                  {grouped.artifacts.map((item) => (
-                    <ScopeItemRow
-                      key={item.id}
-                      item={item}
-                      hasConflict={false}
-                      onClick={() => onItemClick(item)}
-                      companyId={companyId}
-                      discussionId={discussionId}
-                      isFounder={isFounder}
-                      departments={departments}
-                    />
-                  ))}
-                </ItemGroup>
-              )}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* ── All Items by Type (showAllTypes mode) ── */}
-      {showAllTypes && (() => {
-        const byType = groupByType(items);
-        const nonEmpty = ALL_SCOPE_TYPES.filter((t) => byType[t].length > 0);
-        if (nonEmpty.length === 0) {
-          return (
-            <section data-testid="scope-items">
-              <p className="text-sm text-muted-foreground italic">
-                Nothing to scope yet. Scribe surfaces items as the discussion grows.
-              </p>
-            </section>
-          );
-        }
-        return (
-          <section data-testid="scope-items-by-type">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              All Items by Type
-            </h3>
-            <div className="space-y-4">
-              {nonEmpty.map((t) => (
-                <ItemGroup key={t} label={t} count={byType[t].length}>
-                  {byType[t].map((item) => (
-                    <ScopeItemRow
-                      key={item.id}
-                      item={item}
-                      hasConflict={false}
-                      onClick={() => onItemClick(item)}
-                      companyId={companyId}
-                      discussionId={discussionId}
-                      isFounder={isFounder}
-                      departments={departments}
-                    />
-                  ))}
-                </ItemGroup>
-              ))}
-            </div>
-          </section>
-        );
-      })()}
+            {/* Artifacts group */}
+            {grouped.artifacts.length > 0 && (
+              <ItemGroup label="Artifacts" count={grouped.artifacts.length}>
+                {grouped.artifacts.map((item) => (
+                  <ScopeItemRow
+                    key={item.id}
+                    item={item}
+                    hasConflict={false}
+                    onClick={() => onItemClick(item)}
+                    companyId={companyId}
+                    discussionId={discussionId}
+                    isFounder={isFounder}
+                    departments={departments}
+                  />
+                ))}
+              </ItemGroup>
+            )}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -327,7 +268,6 @@ const TYPE_COLORS: Record<string, string> = {
   artifact: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
   context: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
   preference: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
-  spin_off_thread: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300",
 };
 
 function ScopeItemRow({

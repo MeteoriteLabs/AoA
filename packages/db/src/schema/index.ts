@@ -53,6 +53,7 @@ export { briefItems } from "./brief_items.js";
 export { taskDependencies } from "./task_dependencies.js";
 export { agentProjects } from "./agent_projects.js";
 export { artifacts, artifactVersions } from "./artifacts.js";
+export { taskOutputs } from "./task_outputs.js";
 export { memoryItemVersions } from "./memory_item_versions.js";
 export { memoryFeedbackPatterns } from "./memory_feedback_patterns.js";
 export { memoryRelations } from "./memory_relations.js";
@@ -85,6 +86,8 @@ export {
   internalAgentRuns,
   internalAgentReminders,
 } from "./internal_agent.js";
+export { internalAgentRuntimeApprovals } from "./internal_agent_runtime_approvals.js";
+export { internalAgentToolTrustRules } from "./internal_agent_tool_trust_rules.js";
 export { aoaAgentTriggers } from "./aoa_agent_triggers.js";
 export { workflowTemplates } from "./workflow_templates.js";
 export { notifications } from "./notifications.js";

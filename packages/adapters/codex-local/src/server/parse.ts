@@ -1,8 +1,116 @@
+import { randomUUID } from "node:crypto";
 import { asString, asNumber, parseObject, parseJson } from "@armyofagents/adapter-utils/server-utils";
+
+const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/s;
+
+type CodexParsedChunk = {
+  type: "action_confirmation";
+  toolName: string;
+  params: unknown;
+  runId: string;
+};
+
+function extractConfirmPayload(text: string): string | null {
+  const exactMatch = CONFIRM_RE.exec(text);
+  if (exactMatch) return exactMatch[1];
+
+  const markerIndex = text.indexOf("CONFIRM:");
+  if (markerIndex < 0) return null;
+
+  const firstBrace = text.indexOf("{", markerIndex + "CONFIRM:".length);
+  if (firstBrace < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = firstBrace; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(firstBrace, i + 1);
+    }
+  }
+
+  return null;
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function readToolResultContentCandidate(item: Record<string, unknown>): unknown {
+  const direct = item.content ?? item.output;
+  if (direct !== undefined) return direct;
+
+  const result = parseObject(item.result);
+  return result.content ?? result.output ?? result.result ?? item.result;
+}
+
+function normalizeToolResultText(item: Record<string, unknown>): string {
+  const value = readToolResultContentCandidate(item);
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => {
+        const record = parseObject(entry);
+        if (asString(record.type, "") === "text") {
+          return asString(record.text, "");
+        }
+        return typeof entry === "string" ? entry : "";
+      })
+      .join("");
+  }
+  return stringifyUnknown(value);
+}
+
+function parseActionConfirmation(item: Record<string, unknown>): CodexParsedChunk | null {
+  const text = normalizeToolResultText(item);
+  const confirmPayload = extractConfirmPayload(text);
+  if (!confirmPayload) return null;
+
+  try {
+    const payload = parseObject(JSON.parse(confirmPayload));
+    const toolName = asString(payload.toolName, "");
+    if (!toolName) return null;
+    return {
+      type: "action_confirmation",
+      toolName,
+      params: payload.params,
+      runId: asString(payload.confirmId, "") || randomUUID(),
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
+  const chunks: CodexParsedChunk[] = [];
   let errorMessage: string | null = null;
   const usage = {
     inputTokens: 0,
@@ -34,6 +142,9 @@ export function parseCodexJsonl(stdout: string) {
       if (asString(item.type, "") === "agent_message") {
         const text = asString(item.text, "");
         if (text) messages.push(text);
+      } else if (asString(item.type, "") === "tool_result" || asString(item.type, "") === "mcp_tool_call") {
+        const chunk = parseActionConfirmation(item);
+        if (chunk) chunks.push(chunk);
       }
       continue;
     }
@@ -56,6 +167,7 @@ export function parseCodexJsonl(stdout: string) {
   return {
     sessionId,
     summary: messages.join("\n\n").trim(),
+    chunks,
     usage,
     errorMessage,
   };

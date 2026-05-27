@@ -97,6 +97,22 @@ export type {
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
 export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
+export type {
+  TaskOutput,
+  TaskOutputType,
+  TaskOutputStatus,
+  TaskOutputReviewState,
+} from "./task-output.js";
+export type {
+  HealthCategory,
+  HealthFinding,
+  HealthFindingAction,
+  HealthReport,
+  HealthReportSummary,
+  HealthScope,
+  HealthSeverity,
+  HealthStatus,
+} from "./health.js";
 export type { MemoryItemVersion } from "./memory-version.js";
 export type { PendingMemoryVersionReview } from "./memory-version.js";
 export type { PendingMemoryArchiveReview, PendingMemoryQueue } from "./memory-pending.js";

@@ -5,7 +5,7 @@ import { heartbeatRuns, issues } from "@armyofagents/db";
 import { confirmDetectedOutputSchema } from "@armyofagents/shared";
 import type { DetectedOutput, DetectedOutputForUI } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { artifactService, logActivity } from "../services/index.js";
+import { artifactService, logActivity, taskOutputService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
@@ -16,6 +16,7 @@ import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 export function outputDetectionRoutes(db: Db) {
   const router = Router();
   const artifactSvc = artifactService(db);
+  const taskOutputSvc = taskOutputService(db);
   registerIssueParamNormalizer(router, db, ["issueId"]);
 
   // ── List detected outputs for a task (aggregated from all runs) ──────
@@ -156,8 +157,27 @@ export function outputDetectionRoutes(db: Db) {
 
       let confirmedArtifactId: string;
       let confirmedVersionId: string;
+      let issueForOutput: { artifactId: string | null; projectId: string | null } | null = null;
+
+      if (issueId) {
+        issueForOutput = await db
+          .select({ artifactId: issues.artifactId, projectId: issues.projectId })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+      }
 
       if (artifactId) {
+        const existingArtifact = await artifactSvc.getById(artifactId);
+        if (!existingArtifact) {
+          res.status(404).json({ error: "Artifact not found" });
+          return;
+        }
+        if (existingArtifact.companyId !== run.companyId) {
+          res.status(403).json({ error: "Artifact does not belong to this company" });
+          return;
+        }
+
         // Add version to existing artifact
         const version = await artifactSvc.addVersion(artifactId, {
           source: "agent",
@@ -181,20 +201,38 @@ export function outputDetectionRoutes(db: Db) {
         confirmedVersionId = artifact.versions[0]?.id ?? artifact.id;
 
         // Link to task if issue has no artifact yet
-        if (issueId) {
-          const issue = await db
-            .select({ artifactId: issues.artifactId })
-            .from(issues)
-            .where(eq(issues.id, issueId))
-            .then((rows) => rows[0] ?? null);
-
-          if (issue && !issue.artifactId) {
-            await db
-              .update(issues)
-              .set({ artifactId: confirmedArtifactId, updatedAt: new Date() })
-              .where(eq(issues.id, issueId));
-          }
+        if (issueId && issueForOutput && !issueForOutput.artifactId) {
+          await db
+            .update(issues)
+            .set({ artifactId: confirmedArtifactId, updatedAt: new Date() })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
         }
+      }
+
+      if (issueId && issueForOutput) {
+        await taskOutputSvc.upsertForIssue(run.companyId, issueId, {
+          type: artifactId ? "artifact_version" : "artifact",
+          provider: "aoa",
+          externalId: `detected-output:${runId}:${index}`,
+          artifactId: confirmedArtifactId,
+          artifactVersionId: confirmedVersionId,
+          assetId: output.assetId,
+          title: output.filename,
+          status: "active",
+          reviewState: "needs_review",
+          isPrimary: !artifactId && !issueForOutput.artifactId,
+          healthStatus: "unknown",
+          summary: output.label ?? null,
+          metadata: {
+            path: output.path,
+            contentType: output.contentType,
+            byteSize: output.byteSize,
+            sha256: output.sha256,
+            source: output.source,
+          },
+          createdByRunId: runId,
+          createdByAgentId: run.agentId,
+        });
       }
 
       // Update the JSONB array item

@@ -32,6 +32,8 @@ export { briefService, type BriefFilters } from "./briefs.js";
 export { extractionService } from "./extraction.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { artifactService } from "./artifacts.js";
+export { taskOutputService } from "./task-outputs.js";
+export { taskOutputBackfillService } from "./task-output-backfill.js";
 export { outputDetectionService } from "./output-detection.js";
 export { trustScoreService } from "./trust-scores.js";
 export { memoryFeedbackService, type MemoryFeedbackFilters } from "./memory-feedback.js";

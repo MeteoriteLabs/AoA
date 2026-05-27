@@ -6,6 +6,7 @@ import {
   Activity,
   Database,
   FlaskConical,
+  HeartPulse,
   Lock,
   LogOut,
   Puzzle,
@@ -18,9 +19,9 @@ import { SecondarySidebar, type SecondarySidebarSection } from "@/components/Sec
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { BackupsTab } from "@/components/settings/BackupsTab";
 import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
+import { InstanceHealthTab } from "@/components/settings/InstanceHealthTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { feedbackApi } from "@/api/feedback";
-import { pluginsApi } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
@@ -127,6 +128,7 @@ export function InstanceSettingsPage() {
   const settingsSections: SecondarySidebarSection[] = useMemo(() => {
     const items = [
       { key: "general", label: "General", icon: <SettingsIcon className="size-4" /> },
+      { key: "health", label: "Health", icon: <HeartPulse className="size-4" /> },
       { key: "privacy", label: "Privacy", icon: <Shield className="size-4" /> },
       { key: "backups", label: "Backups", icon: <Database className="size-4" /> },
       { key: "heartbeats", label: "Heartbeats", icon: <Activity className="size-4" /> },
@@ -277,6 +279,10 @@ export function InstanceSettingsPage() {
           </TabsContent>
 
           {/* ── Privacy tab ──────────────────────────────────────────── */}
+          <TabsContent value="health" className="mt-6">
+            <InstanceHealthTab />
+          </TabsContent>
+
           <TabsContent value="privacy" className="mt-6">
             <PrivacyPanel
               generalQuery={generalQuery}
@@ -348,9 +354,9 @@ export function InstanceSettingsPage() {
             <div className="space-y-4">
               <div className="bg-indigo-950/30 border border-indigo-900/40 rounded-lg px-4 py-3 text-xs text-indigo-300">
                 Plugin installation and configuration is available in each company's{" "}
-                <strong>Settings → Plugins</strong> tab.
+                <strong>Settings → Plugins</strong> tab. Worker diagnostics are now in{" "}
+                <strong>Instance settings → Health</strong>.
               </div>
-              <PluginDiagnosticsPanel />
             </div>
           </TabsContent>
         </Tabs>
@@ -360,51 +366,6 @@ export function InstanceSettingsPage() {
 }
 
 // ── Plugin diagnostics panel ──────────────────────────────────────────────────
-
-function PluginDiagnosticsPanel() {
-  const { data: allPlugins } = useQuery({
-    queryKey: ["instance-plugins-health"],
-    queryFn: () => pluginsApi.list(),   // existing GET /api/plugins endpoint
-    refetchInterval: 30_000,
-  });
-
-  if (!allPlugins?.length) {
-    return <p className="text-xs text-zinc-500 py-2">No plugins installed on this instance.</p>;
-  }
-
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Worker health</p>
-      {allPlugins.map((plugin) => (
-        <div
-          key={plugin.id}
-          className="flex items-center gap-3 px-3 py-2.5 bg-zinc-900 border border-zinc-800 rounded-lg"
-        >
-          <span
-            className={`w-2 h-2 rounded-full flex-shrink-0 ${
-              plugin.status === "ready" ? "bg-green-400" : "bg-red-400"
-            }`}
-          />
-          <span className="text-xs text-zinc-300 flex-1 truncate">
-            {plugin.manifestJson?.displayName ?? plugin.pluginKey}
-            {plugin.companyId && (
-              <span className="text-zinc-600 ml-1">({plugin.companyId.slice(0, 8)}…)</span>
-            )}
-          </span>
-          <span className="text-[10px] text-zinc-600 whitespace-nowrap">{plugin.status}</span>
-          {plugin.lastError && (
-            <span
-              className="text-[10px] text-red-400 truncate max-w-[160px]"
-              title={plugin.lastError}
-            >
-              {plugin.lastError}
-            </span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ── Privacy panel (wraps PrivacyTab + bundle-history fetch) ─────────────────
 

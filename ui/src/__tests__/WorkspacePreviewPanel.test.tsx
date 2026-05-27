@@ -57,6 +57,10 @@ const mockRunningService = [
     status: "running",
     port: 3000,
     url: "http://localhost:3000",
+    previewUrl: "/preview/services/svc-1/",
+    previewAccess: "local",
+    localTargetUrl: "http://localhost:3000/",
+    healthStatus: "healthy",
     command: "npm run dev",
     cwd: "/tmp/workspace",
     provider: "local_process",
@@ -234,7 +238,8 @@ describe("WorkspacePreviewPanel tab deck", () => {
         id: "browser:svc-1",
         kind: "browser",
         title: "web",
-        url: "http://localhost:3000",
+        url: "/preview/services/svc-1/",
+        localTargetUrl: "http://localhost:3000/",
       },
       {
         id: "logs:issue-1",
@@ -259,7 +264,8 @@ describe("WorkspacePreviewPanel tab deck", () => {
     expect(screen.getByRole("tab", { name: /web/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: /logs/i })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByTestId("preview-browser-tab")).toBeInTheDocument();
-    expect(screen.getByTestId("preview-browser-iframe")).toHaveAttribute("src", "http://localhost:3000");
+    expect(screen.getByTestId("preview-browser-iframe")).toHaveAttribute("src", "/preview/services/svc-1/");
+    expect(screen.getByTestId("preview-browser-local-target")).toHaveTextContent("Local target: http://localhost:3000/");
 
     fireEvent.click(screen.getByTestId("preview-tab-close-browser:svc-1"));
     expect(onCloseTab).toHaveBeenCalledWith("browser:svc-1");
@@ -324,7 +330,12 @@ describe("WorkspacePreviewPanel tab deck", () => {
 
     fireEvent.click(screen.getByTestId("viewer-home-service-svc-1"));
     expect(onOpenResolvedTab).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "browser", id: "browser:svc-1", url: "http://localhost:3000" }),
+      expect.objectContaining({
+        kind: "browser",
+        id: "browser:svc-1",
+        url: "/preview/services/svc-1/",
+        localTargetUrl: "http://localhost:3000/",
+      }),
     );
 
     fireEvent.click(screen.getByTestId("viewer-home-artifact-art-1"));
@@ -340,6 +351,8 @@ describe("WorkspacePreviewPanel tab deck", () => {
         id: "svc-1",
         serviceName: "web",
         url: "http://localhost:3000",
+        previewUrl: "/preview/services/svc-1/",
+        localTargetUrl: "http://localhost:3000/",
         healthStatus: "healthy",
       },
       {
@@ -347,6 +360,8 @@ describe("WorkspacePreviewPanel tab deck", () => {
         id: "svc-2",
         serviceName: "docs",
         url: "http://localhost:4173",
+        previewUrl: "/preview/services/svc-2/",
+        localTargetUrl: "http://localhost:4173/",
         healthStatus: "healthy",
       },
     ]);
@@ -372,7 +387,12 @@ describe("WorkspacePreviewPanel tab deck", () => {
     await waitFor(() => expect(screen.getByTestId("viewer-home-service-svc-2")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("viewer-home-service-svc-2"));
     expect(onOpenResolvedTab).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "browser", id: "browser:svc-2", url: "http://localhost:4173" }),
+      expect.objectContaining({
+        kind: "browser",
+        id: "browser:svc-2",
+        url: "/preview/services/svc-2/",
+        localTargetUrl: "http://localhost:4173/",
+      }),
     );
   });
 
@@ -383,6 +403,7 @@ describe("WorkspacePreviewPanel tab deck", () => {
         id: "svc-unhealthy",
         serviceName: "broken-preview",
         url: "http://localhost:5173",
+        previewUrl: "/preview/services/svc-unhealthy/",
         healthStatus: "unhealthy",
       },
     ]);
@@ -686,8 +707,9 @@ describe("WorkspacePreviewPanel tab deck", () => {
     await waitFor(() => expect(screen.getByTestId("preview-browser-service-svc-1")).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId("preview-browser-service-svc-1"));
-    expect(screen.getByTestId("preview-browser-iframe")).toHaveAttribute("src", "http://localhost:3000");
-    expect(screen.getByTestId("preview-browser-url-input")).toHaveValue("http://localhost:3000");
+    expect(screen.getByTestId("preview-browser-iframe")).toHaveAttribute("src", "/preview/services/svc-1/");
+    expect(screen.getByTestId("preview-browser-url-input")).toHaveValue("/preview/services/svc-1/");
+    expect(screen.getByTestId("preview-browser-local-target")).toHaveTextContent("Local target: http://localhost:3000/");
   });
 });
 
@@ -716,8 +738,8 @@ describe("WorkspacePreviewPanel — Preview mode (dev server)", () => {
     });
 
     const iframe = screen.getByTestId("preview-iframe") as HTMLIFrameElement;
-    expect(iframe.src).toBe("http://localhost:3000/");
-    expect(screen.getByText("http://localhost:3000")).toBeInTheDocument();
+    expect(iframe.getAttribute("src")).toBe("/preview/services/svc-1/");
+    expect(screen.getByText("/preview/services/svc-1/")).toBeInTheDocument();
     expect(screen.getByTestId("preview-refresh")).toBeInTheDocument();
   });
 

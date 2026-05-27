@@ -311,8 +311,15 @@ async function resolveCliInvocation(
   // C-systemsplit: when provided, claude_cli uses --system + -p split instead
   // of the legacy single -p path.  Strings are pre-escaped by the caller.
   systemSplitArgs?: SystemSplitArgs,
+  vendorCliBypassEnabled = true,
 ): Promise<CliInvocation | null> {
   const isWin = platform() === "win32";
+  const claudeBypassArgs = vendorCliBypassEnabled
+    ? ["--dangerously-skip-permissions"]
+    : [];
+  const codexBypassArgs = vendorCliBypassEnabled
+    ? ["--dangerously-bypass-approvals-and-sandbox"]
+    : [];
   switch (cliTool) {
     case "claude_cli": {
       // BYTE-UNCHANGED from pre-MX4: claude {mcpServers:{aoa:spec}} wrapper
@@ -350,11 +357,12 @@ async function resolveCliInvocation(
           args: [
             "--mcp-config", configPath,
             "--system-prompt-file", safeSystemPromptPath,
-            "--dangerously-skip-permissions",
-            "-p", systemSplitArgs.safeRawContent,
+            ...claudeBypassArgs,
+            "--print",
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--verbose",
+            systemSplitArgs.safeRawContent,
           ],
           mcpArtifactPath: configPath,
         };
@@ -364,11 +372,12 @@ async function resolveCliInvocation(
         binary: "claude",
         args: [
           "--mcp-config", configPath,
-          "--dangerously-skip-permissions",
-          "-p", safeContent,
+          ...claudeBypassArgs,
+          "--print",
           "--output-format", "stream-json",
           "--include-partial-messages",
           "--verbose",
+          safeContent,
         ],
         mcpArtifactPath: configPath,
       };
@@ -401,8 +410,8 @@ async function resolveCliInvocation(
       // this flag Codex's approval gate cancels every MCP tool call since
       // there is no interactive console to approve them.
       const codexArgs = resumeCodexSessionId
-        ? ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "resume", resumeCodexSessionId, "-"]
-        : ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"];
+        ? ["exec", "--json", ...codexBypassArgs, "resume", resumeCodexSessionId, "-"]
+        : ["exec", "--json", ...codexBypassArgs, "-"];
       return {
         binary: "codex",
         args: codexArgs,
@@ -450,7 +459,11 @@ export function cliModeService(db: Db) {
   return {
     async *chat(
       params: ChatInput,
-      config: { cliTool: string | null; executionMode: string },
+      config: {
+        cliTool: string | null;
+        executionMode: string;
+        vendorCliBypassEnabled?: boolean;
+      },
     ): AsyncGenerator<AgentStreamChunk> {
       // 1. Validate CLI tool config
       if (!config.cliTool) {
@@ -500,6 +513,7 @@ export function cliModeService(db: Db) {
             prompt: params.content,
             isWin,
             resumeSessionId: session?.codexSessionId ?? null,
+            vendorCliBypassEnabled: config.vendorCliBypassEnabled ?? true,
             onSessionId: (sid) => {
               const existing = sessionStore.get(sessionKey);
               if (existing) {
@@ -598,6 +612,7 @@ export function cliModeService(db: Db) {
             safeContent,
             undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)
             systemSplitArgs,
+            config.vendorCliBypassEnabled ?? true,
           );
           if (!invocation) {
             yield {
@@ -738,7 +753,6 @@ async function* streamProcessOutput(
   // Branch parser: claude_cli uses the structured stream-json parser;
   // codex / opencode stay on the existing text-format marker-in-prose path.
   const streamParser = useStreamJson ? new StreamJsonParser() : null;
-
   function processLines(text: string) {
     if (streamParser) {
       // StreamJsonParser handles its own internal buffering — just push text.
@@ -824,6 +838,7 @@ interface RunCodexTurnArgs {
   prompt: string;
   isWin: boolean;
   resumeSessionId: string | null;
+  vendorCliBypassEnabled: boolean;
   /** Called with the parsed codex sessionId so the caller can persist it. */
   onSessionId: (sessionId: string | null) => void;
 }
@@ -854,6 +869,8 @@ async function* runCodexTurn(
       args.mcpParams,
       args.prompt, // codex prompt is delivered over stdin, NOT argv
       safeResume,
+      undefined,
+      args.vendorCliBypassEnabled,
     );
     if (!invocation) {
       // codex is a wired CLI — resolveCliInvocation never returns null for
@@ -927,6 +944,10 @@ async function* runCodexTurn(
   if (errorMessage) {
     yield { type: "error", message: errorMessage };
     return;
+  }
+
+  for (const chunk of parsed.chunks ?? []) {
+    yield chunk;
   }
 
   // v1: emit the full parsed assistant reply as a single text chunk

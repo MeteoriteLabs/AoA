@@ -18,6 +18,7 @@ interface ChatbarControlsProps {
   onModelChange?: (model: string | null) => void;
   onSend: () => void;
   onAttach?: () => void;
+  showModelLabel?: boolean;
   sendDisabled: boolean;
   sendPending: boolean;
 }
@@ -28,6 +29,7 @@ export function ChatbarControls({
   selectedModel,
   onSend,
   onAttach,
+  showModelLabel = true,
   sendDisabled,
   sendPending,
 }: ChatbarControlsProps) {
@@ -53,9 +55,11 @@ export function ChatbarControls({
         </button>
 
         {/* Read-only model label — CLI adapters manage model selection themselves */}
-        <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
-          {displayModel}
-        </span>
+        {showModelLabel && (
+          <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
+            {displayModel}
+          </span>
+        )}
       </div>
 
       {/* Spacer */}

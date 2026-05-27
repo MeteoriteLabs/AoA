@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
@@ -24,6 +20,11 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentPanelProvider } from "../context/AgentPanelContext";
+
+const NewAgentDialog = lazy(() => import("./NewAgentDialog").then((m) => ({ default: m.NewAgentDialog })));
+const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((m) => ({ default: m.NewGoalDialog })));
+const NewIssueDialog = lazy(() => import("./NewIssueDialog").then((m) => ({ default: m.NewIssueDialog })));
+const NewProjectDialog = lazy(() => import("./NewProjectDialog").then((m) => ({ default: m.NewProjectDialog })));
 
 export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
   const normalizedPath = pathname.split(/[?#]/, 1)[0] ?? pathname;
@@ -46,7 +47,14 @@ export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string)
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, setCollapsed, toggleCollapse } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const {
+    newAgentOpen,
+    newGoalOpen,
+    newIssueOpen,
+    newProjectOpen,
+    openNewIssue,
+    openOnboarding,
+  } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
@@ -276,10 +284,12 @@ export function Layout() {
 
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
+      <Suspense fallback={null}>
+        {newIssueOpen && <NewIssueDialog />}
+        {newProjectOpen && <NewProjectDialog />}
+        {newGoalOpen && <NewGoalDialog />}
+        {newAgentOpen && <NewAgentDialog />}
+      </Suspense>
       <ToastViewport />
       <KeyboardShortcutsCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
     </div>

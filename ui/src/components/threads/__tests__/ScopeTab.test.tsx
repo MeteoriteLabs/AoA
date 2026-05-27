@@ -3,7 +3,6 @@ import { screen } from "@testing-library/react";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ScopeTab } from "../ScopeTab";
 import type { ScopeItem } from "../scopeGrouping";
-import { ALL_SCOPE_TYPES } from "../scopeGrouping";
 
 // Task 7 mock: threadsApi used for spinOff + routing calls
 vi.mock("../../../api/threads", () => ({
@@ -381,45 +380,5 @@ describe("ScopeTab", () => {
       />,
     );
     expect(screen.queryByTestId("routing-dept-r2")).not.toBeInTheDocument();
-  });
-
-  it("surfaces every extracted-item type with a labeled section when showAllTypes is set", () => {
-    const items = ALL_SCOPE_TYPES.map((t, i) =>
-      makeItem({ id: `t${i}`, type: t, status: "approved", title: `${t} item` }),
-    );
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null} summaryNext={null} items={items} planSteps={[]}
-        isLoading={false} isError={false} onRetry={vi.fn()} onItemClick={vi.fn()}
-        showAllTypes
-      />,
-    );
-    for (const t of ALL_SCOPE_TYPES) {
-      expect(screen.getByText(`${t} item`)).toBeInTheDocument();
-    }
-  });
-
-  it("renders the router recommendation banner when provided", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null} summaryNext={null} items={[]} planSteps={[]}
-        isLoading={false} isError={false} onRetry={vi.fn()} onItemClick={vi.fn()}
-        recommendation={{ departmentId: "eng", departmentName: "Engineering", itemCount: 3 }}
-      />,
-    );
-    expect(screen.getByTestId("scope-router-recommendation")).toBeInTheDocument();
-    expect(screen.getByTestId("scope-router-recommendation")).toHaveTextContent(/Engineering/);
-  });
-
-  it("renders real plan steps from the backend", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null} summaryNext={null} items={[]}
-        planSteps={["Spec the API", "Build it", "Test it"]}
-        isLoading={false} isError={false} onRetry={vi.fn()} onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Spec the API")).toBeInTheDocument();
-    expect(screen.getByText("Test it")).toBeInTheDocument();
   });
 });

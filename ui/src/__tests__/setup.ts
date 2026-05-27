@@ -49,3 +49,21 @@ class IntersectionObserverStub {
   disconnect() {}
 }
 window.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver;
+
+// jsdom does not implement canvas. Components that use canvas for decorative
+// generated images should stay testable without installing native canvas deps.
+HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
+  arc: vi.fn(),
+  beginPath: vi.fn(),
+  clearRect: vi.fn(),
+  fill: vi.fn(),
+  fillRect: vi.fn(),
+  restore: vi.fn(),
+  save: vi.fn(),
+  scale: vi.fn(),
+  setLineDash: vi.fn(),
+  stroke: vi.fn(),
+  translate: vi.fn(),
+})) as unknown as HTMLCanvasElement["getContext"];
+
+HTMLCanvasElement.prototype.toDataURL = vi.fn(() => "data:image/png;base64,test");

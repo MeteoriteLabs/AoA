@@ -200,6 +200,9 @@ export interface WorkspaceRuntimeService {
   cwd: string | null;
   port: number | null;
   url: string | null;
+  previewUrl: string | null;
+  previewAccess: "local" | "company" | "external" | null;
+  localTargetUrl: string | null;
   provider: "local_process" | "adapter_managed";
   providerRef: string | null;
   ownerAgentId: string | null;

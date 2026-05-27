@@ -42,6 +42,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
 } from "./services/workspace-runtime.js";
+import { handlePreviewProxyUpgrade } from "./services/preview-proxy.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
@@ -545,6 +546,16 @@ const runtimeApiHost =
 process.env.AOA_LISTEN_HOST = runtimeListenHost;
 process.env.AOA_LISTEN_PORT = String(listenPort);
 process.env.AOA_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+
+server.on("upgrade", (req, socket, head) => {
+  void handlePreviewProxyUpgrade(db as any, req, socket, head, {
+    deploymentMode: config.deploymentMode,
+    resolveSessionFromHeaders,
+  }).catch((err) => {
+    logger.warn({ err, path: req.url }, "preview websocket upgrade failed");
+    socket.destroy();
+  });
+});
 
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,

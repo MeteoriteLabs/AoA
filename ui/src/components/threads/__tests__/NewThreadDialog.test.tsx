@@ -33,12 +33,6 @@ vi.mock("../../../api/projects", () => ({
   },
 }));
 
-vi.mock("../../../api/goals", () => ({
-  goalsApi: {
-    list: vi.fn().mockResolvedValue([]),
-  },
-}));
-
 describe("NewThreadDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -63,15 +57,15 @@ describe("NewThreadDialog", () => {
     expect(screen.getByRole("button", { name: /^document$/i })).toBeInTheDocument();
   });
 
-  it("does NOT show goal fields when type is 'Idea'", () => {
+  it("does NOT show project field when type is 'Idea'", () => {
     renderWithProviders(
       <NewThreadDialog open={true} onClose={vi.fn()} />,
     );
-    // Idea is the default — no goal scope/parent fields shown
-    expect(screen.queryByTestId("goal-fields")).not.toBeInTheDocument();
+    // Idea is the default — no project-required field shown
+    expect(screen.queryByTestId("thread-goal-project-field")).not.toBeInTheDocument();
   });
 
-  it("reveals goal fields when type is switched to 'Goal'", async () => {
+  it("reveals project field when type is switched to 'Goal'", async () => {
     const user = userEvent.setup();
     renderWithProviders(
       <NewThreadDialog open={true} onClose={vi.fn()} />,
@@ -79,7 +73,7 @@ describe("NewThreadDialog", () => {
     const goalBtn = screen.getByRole("button", { name: /goal/i });
     await user.click(goalBtn);
     await waitFor(() => {
-      expect(screen.getByTestId("goal-fields")).toBeInTheDocument();
+      expect(screen.getByTestId("thread-goal-project-field")).toBeInTheDocument();
     });
   });
 

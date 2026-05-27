@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { artifactsApi } from "../../api/artifacts";
 import { outputDetectionApi } from "../../api/output-detection";
+import { taskOutputsApi } from "../../api/task-outputs";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { activityApi, type RunForIssue } from "../../api/activity";
 import { executionWorkspacesApi, type WorkspaceRuntimeService } from "../../api/execution-workspaces";
@@ -9,10 +10,10 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { GitCompareArrows, Eye, Terminal, X, RefreshCw, Globe, Plus, FileText, LayoutGrid } from "lucide-react";
+import { GitBranch, GitCompareArrows, GitPullRequest, Eye, Terminal, X, RefreshCw, Globe, Plus, FileText, LayoutGrid } from "lucide-react";
 import { formatBytes, sourceLabel, fileIcon } from "./workspace-utils";
 import { resolveOutputViewer } from "./output-viewer-registry";
-import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI, TaskOutput } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
 export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "logs";
@@ -30,6 +31,7 @@ export type WorkspacePreviewTab =
       title: string;
       url: string;
       serviceId?: string | null;
+      localTargetUrl?: string | null;
     }
   | {
       id: string;
@@ -341,6 +343,9 @@ function BrowserTabView({
   const [iframeKey, setIframeKey] = useState(0);
   const [currentUrl, setCurrentUrl] = useState(tab.url === "about:blank" ? "" : tab.url);
   const [draftUrl, setDraftUrl] = useState(tab.url === "about:blank" ? "" : tab.url);
+  const [currentLocalTargetUrl, setCurrentLocalTargetUrl] = useState<string | null>(
+    tab.localTargetUrl ?? null,
+  );
   const isSoftware = functionType === "software_development";
 
   const { data: services } = useQuery({
@@ -351,21 +356,23 @@ function BrowserTabView({
   });
 
   const runningServices = (services ?? []).filter(
-    (service) => service.status === "running" && service.healthStatus !== "unhealthy" && service.url,
+    (service) => service.status === "running" && service.healthStatus !== "unhealthy" && service.previewUrl,
   );
 
   function normalizeUrl(value: string) {
     const trimmed = value.trim();
     if (!trimmed) return "";
+    if (trimmed.startsWith("/")) return trimmed;
     if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
     return `http://${trimmed}`;
   }
 
-  function navigateTo(value: string) {
+  function navigateTo(value: string, localTargetUrl: string | null = null) {
     const nextUrl = normalizeUrl(value);
     if (!nextUrl) return;
     setDraftUrl(nextUrl);
     setCurrentUrl(nextUrl);
+    setCurrentLocalTargetUrl(localTargetUrl);
     setIframeKey((key) => key + 1);
   }
 
@@ -408,6 +415,14 @@ function BrowserTabView({
           </Button>
         )}
       </form>
+      {currentLocalTargetUrl && (
+        <div
+          className="min-w-0 shrink-0 border-b border-border px-3 py-1 text-[11px] text-muted-foreground"
+          data-testid="preview-browser-local-target"
+        >
+          <span className="truncate font-mono">Local target: {currentLocalTargetUrl}</span>
+        </div>
+      )}
       {currentUrl ? (
         <iframe
           key={iframeKey}
@@ -428,13 +443,13 @@ function BrowserTabView({
                       key={service.id}
                       type="button"
                       className="flex w-full min-w-0 items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2 text-left hover:bg-accent/50"
-                      onClick={() => service.url && navigateTo(service.url)}
+                      onClick={() => service.previewUrl && navigateTo(service.previewUrl, service.localTargetUrl ?? null)}
                       data-testid={`preview-browser-service-${service.id}`}
                     >
                       <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-medium">{service.serviceName}</div>
-                        {service.url && <div className="truncate text-xs text-muted-foreground">{service.url}</div>}
+                        {service.previewUrl && <div className="truncate text-xs text-muted-foreground">{service.previewUrl}</div>}
                       </div>
                     </button>
                   ))
@@ -486,6 +501,13 @@ function ViewerHome({
     staleTime: 5000,
   });
 
+  const { data: taskOutputs } = useQuery({
+    queryKey: queryKeys.taskOutputs.byIssue(issueId),
+    queryFn: () => taskOutputsApi.listForIssue(issueId),
+    enabled: !!issueId,
+    staleTime: 5000,
+  });
+
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
@@ -493,13 +515,31 @@ function ViewerHome({
   });
 
   const runningServices = (services ?? []).filter(
-    (service) => service.status === "running" && service.healthStatus !== "unhealthy" && service.url,
+    (service) => service.status === "running" && service.healthStatus !== "unhealthy" && service.previewUrl,
   );
   const candidates = (detectedOutputs ?? []).filter((output) => output.status === "pending");
   const latestVersion = artifact?.versions[0] ?? null;
+  const visibleOutputs = taskOutputs ?? [];
 
   return (
     <div className="space-y-4 p-3" data-testid="viewer-home">
+      <ViewerHomeSection title="Task Outputs">
+        {visibleOutputs.length > 0 ? (
+          visibleOutputs.slice(0, 6).map((output) => (
+            <ViewerHomeRow
+              key={output.id}
+              icon={viewerOutputIcon(output.type)}
+              title={output.title}
+              detail={viewerOutputDetail(output)}
+              testId={`viewer-home-task-output-${output.id}`}
+              onClick={() => openTaskOutputFromViewer(output, onOpenResolvedTab)}
+            />
+          ))
+        ) : (
+          <ViewerHomeEmpty>No outputs yet</ViewerHomeEmpty>
+        )}
+      </ViewerHomeSection>
+
       <ViewerHomeSection title="Browser">
         {runningServices.length > 0 ? (
           runningServices.map((service) => (
@@ -507,16 +547,17 @@ function ViewerHome({
               key={service.id}
               icon={Globe}
               title={service.serviceName}
-              detail={service.url ?? ""}
+              detail={service.previewUrl ?? ""}
               testId={`viewer-home-service-${service.id}`}
               onClick={() => {
-                if (!service.url) return;
+                if (!service.previewUrl) return;
                 onOpenResolvedTab?.({
                   id: `browser:${service.id}`,
                   kind: "browser",
                   title: service.serviceName,
-                  url: service.url,
+                  url: service.previewUrl,
                   serviceId: service.id,
+                  localTargetUrl: service.localTargetUrl ?? null,
                 });
               }}
             />
@@ -587,6 +628,64 @@ function ViewerHome({
       </ViewerHomeSection>
     </div>
   );
+}
+
+function viewerOutputIcon(type: TaskOutput["type"]) {
+  switch (type) {
+    case "preview_url":
+    case "runtime_service":
+      return Globe;
+    case "pull_request":
+      return GitPullRequest;
+    case "branch":
+    case "commit":
+      return GitBranch;
+    default:
+      return FileText;
+  }
+}
+
+function viewerOutputDetail(output: TaskOutput) {
+  if (output.type === "pull_request") return output.status;
+  if (output.type === "preview_url") return output.url;
+  if (output.type === "branch") return output.provider;
+  return output.reviewState === "none" ? output.status : output.reviewState.replace(/_/g, " ");
+}
+
+async function openTaskOutputFromViewer(
+  output: TaskOutput,
+  onOpenResolvedTab?: (tab: WorkspacePreviewTab) => void,
+) {
+  if (!onOpenResolvedTab) return;
+  if ((output.type === "artifact" || output.type === "artifact_version") && output.artifactId) {
+    const artifact = await artifactsApi.get(output.artifactId);
+    const version =
+      artifact.versions.find((item) => item.id === output.artifactVersionId) ??
+      artifact.versions[0];
+    if (!version) return;
+    onOpenResolvedTab({
+      id: `artifact:${artifact.id}:${version.id}`,
+      kind: "artifact",
+      title: artifact.title,
+      artifact,
+      version,
+    });
+    return;
+  }
+  if (output.type === "preview_url" && output.url) {
+    onOpenResolvedTab({
+      id: `browser:task-output:${output.id}`,
+      kind: "browser",
+      title: output.title,
+      url: output.url,
+      serviceId: output.runtimeServiceId,
+      localTargetUrl: output.url,
+    });
+    return;
+  }
+  if (output.url) {
+    window.open(output.url, "_blank", "noopener,noreferrer");
+  }
 }
 
 function ViewerHomeSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -931,17 +1030,19 @@ function PreviewView({
     refetchInterval: 10000,
   });
 
-  const runningService = runtimeServices?.find((s) => s.status === "running" && s.url);
+  const runningService = runtimeServices?.find(
+    (s) => s.status === "running" && s.healthStatus !== "unhealthy" && s.previewUrl,
+  );
 
   // Dev server iframe for software departments
   if (!preferArtifact && functionType === "software_development" && workspaceId) {
-    if (runningService?.url) {
+    if (runningService?.previewUrl) {
       return (
         <div className="flex flex-col h-full" data-testid="preview-devserver">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
             <Globe className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="flex-1 text-xs font-mono text-muted-foreground truncate">
-              {runningService.url}
+              {runningService.previewUrl}
             </span>
             <Button
               variant="ghost"
@@ -956,7 +1057,7 @@ function PreviewView({
           </div>
           <iframe
             key={iframeKey}
-            src={runningService.url}
+            src={runningService.previewUrl}
             className="flex-1 w-full border-0"
             title="Dev server preview"
             data-testid="preview-iframe"

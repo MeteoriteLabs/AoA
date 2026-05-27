@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link } from "@/lib/router";
+import { useParams } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
-import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType } from "../api/threads";
-import { RefreshCw, Flag, Link2, Brain, X, ArrowRight, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { threadsApi } from "../api/threads";
+import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { OriginCard } from "../components/threads/OriginCard";
@@ -26,22 +26,11 @@ const MOBILE_TABS = [
 type MobileTab = (typeof MOBILE_TABS)[number]["key"];
 type CenterTab = "thread" | "scope";
 
-/* Phase → dot color for the left-rail index */
-const PHASE_DOT: Record<string, string> = {
-  discuss: "bg-blue-500",
-  scope: "bg-amber-500",
-  assign: "bg-violet-500",
-  done: "bg-green-500",
-};
-
 /* ════════════════════════════════════════════════════════════════════════
    ThreadDetail Page — 3-pane layout (left rail | center | right viewer)
    ════════════════════════════════════════════════════════════════════════ */
 
-export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) {
-  // `embedded` = rendered inside ThreadsWorkspace (the §13 continuum), which
-  // supplies the index rail itself — so we hide our own left rail to avoid
-  // duplicating it. Standalone (routed directly) keeps the full 3-pane.
+export function ThreadDetail() {
   // Accept both threadId (from /threads/:threadId) and discussionId (from /discussions/:discussionId)
   // since discussions and threads share the same backend table.
   const { threadId, discussionId } = useParams<{ threadId?: string; discussionId?: string }>();
@@ -53,10 +42,6 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
 
   const [mobileTab, setMobileTab] = useState<MobileTab>("thread");
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
-  // Right-viewer selection: a clicked Scope item (null → home/shortcuts)
-  const [viewerItem, setViewerItem] = useState<ScopeItem | null>(null);
-  // Right-viewer collapse (§15: both side rails collapse to an icon strip)
-  const [viewerCollapsed, setViewerCollapsed] = useState(false);
 
   // Focus ref for center panel heading
   const centerHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -229,13 +214,7 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
           <button
             key={key}
             type="button"
-            onClick={() => {
-              setMobileTab(key);
-              // The mobile pane-tabs double as the Thread/Scope switcher on
-              // small screens (the center content-tab bar is hidden there), so
-              // keep centerTab in sync to avoid showing the wrong content.
-              if (key === "thread" || key === "scope") setCenterTab(key);
-            }}
+            onClick={() => setMobileTab(key)}
             className={cn(
               "flex-1 flex items-center justify-center px-2 py-2.5 text-xs font-medium transition-colors",
               mobileTab === key
@@ -253,22 +232,19 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* ── Left rail — thread navigation index ── */}
-        {/* Desktop: always visible. Mobile: only when mobileTab = "origin".
-            Hidden when embedded — ThreadsWorkspace provides the index rail. */}
-        {!embedded && (
-          <div
-            className={cn(
-              "shrink-0 h-full overflow-auto border-r border-border bg-background",
-              "w-[220px]",
-              // Mobile CSS hidden — mirrors WorkspaceLayout
-              mobileTab !== "origin" ? "hidden md:block" : "block md:block",
-            )}
-            data-testid="thread-left-rail"
-            aria-label="Thread navigation"
-          >
-            <ThreadLeftRail companyId={selectedCompanyId!} currentThreadId={thread.id} />
-          </div>
-        )}
+        {/* Desktop: always visible. Mobile: only when mobileTab = "origin" */}
+        <div
+          className={cn(
+            "shrink-0 h-full overflow-auto border-r border-border bg-background",
+            "w-[220px]",
+            // Mobile CSS hidden — mirrors WorkspaceLayout
+            mobileTab !== "origin" ? "hidden md:block" : "block md:block",
+          )}
+          data-testid="thread-left-rail"
+          aria-label="Thread navigation"
+        >
+          <ThreadLeftRail threadId={thread.id} title={thread.title} />
+        </div>
 
         {/* ── Center panel — OriginCard + Thread|Scope tabs ── */}
         {/* Mobile: center panel is visible when thread or scope tab is active */}
@@ -300,13 +276,11 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
             />
           </div>
 
-          {/* Thread|Scope tab bar — desktop only; on mobile the pane-tabs above
-              ([Origin|Thread|Scope|Viewer]) are the switcher, so this is hidden
-              to avoid duplicate Thread/Scope tabs. */}
+          {/* Thread|Scope tab bar */}
           <div
             role="tablist"
             aria-label="Thread sections"
-            className="hidden md:flex border-b border-border shrink-0 px-4"
+            className="flex border-b border-border shrink-0 px-4"
           >
             {(["thread", "scope"] as CenterTab[]).map((tab) => (
               <button
@@ -368,57 +342,28 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 summaryText={thread.summaryText}
                 summaryNext={thread.summaryNext}
                 items={scopeItems}
-                planSteps={(thread.planSteps ?? []).map((s) => s.title)}
+                planSteps={[]} // TODO: add planSteps to ThreadDetail type when backend exposes it
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}
-                onItemClick={(item) => {
-                  setViewerItem(item);
-                  setMobileTab("viewer");
-                }}
-                companyId={selectedCompanyId ?? undefined}
-                discussionId={resolvedId ?? undefined}
+                onItemClick={() => {}}
               />
             </div>
           </div>
         </div>
 
-        {/* ── Right viewer panel (collapsible — §15: both rails collapse) ── */}
+        {/* ── Right viewer panel ── */}
         <div
           className={cn(
-            "shrink-0 h-full overflow-hidden border-l border-border bg-muted/20 transition-[width] duration-200",
-            viewerCollapsed ? "w-[46px]" : "w-[340px]",
+            "shrink-0 h-full overflow-auto border-l border-border bg-muted/20",
+            "w-[340px]",
             // Mobile: only show when mobileTab = "viewer"
             mobileTab !== "viewer" ? "hidden md:block" : "block",
           )}
           data-testid="thread-right-viewer"
-          data-collapsed={viewerCollapsed ? "true" : "false"}
           aria-label="Thread viewer"
         >
-          {viewerCollapsed ? (
-            <div className="flex flex-col items-center pt-2">
-              <button
-                type="button"
-                onClick={() => setViewerCollapsed(false)}
-                aria-label="Expand viewer"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              >
-                <PanelRightOpen className="h-4 w-4" />
-              </button>
-            </div>
-          ) : (
-            <ThreadViewerPanel
-              thread={thread}
-              companyId={selectedCompanyId!}
-              item={viewerItem}
-              onClose={() => setViewerItem(null)}
-              onOpenScope={() => {
-                setCenterTab("scope");
-                setMobileTab("scope");
-              }}
-              onCollapse={() => setViewerCollapsed(true)}
-            />
-          )}
+          <ThreadViewerPanel thread={thread} />
         </div>
       </div>
     </div>
@@ -489,66 +434,16 @@ function ConnectionPill({ state }: { state: "connecting" | "open" | "reconnectin
    Thread Left Rail — navigation index
    ════════════════════════════════════════════════════════════════════════ */
 
-function ThreadLeftRail({
-  companyId,
-  currentThreadId,
-}: {
-  companyId: string;
-  currentThreadId: string;
-}) {
-  // Render the thread index so the rail is a real switcher (the §13 "list" lens).
-  const { data } = useQuery({
-    queryKey: ["threads", companyId, "list"],
-    queryFn: () => threadsApi.list(companyId),
-    enabled: !!companyId,
-    retry: false,
-  });
-  const threads = (data?.discussions ?? []) as ThreadListItem[];
-
+function ThreadLeftRail({ threadId: _threadId, title }: { threadId: string; title: string }) {
+  // TODO(Plan 5): use threadId for index nav (jump-to-entry, section links)
   return (
-    <div className="p-2">
-      <div className="flex items-center justify-between px-2 mb-2">
-        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-          Discussions
-        </p>
-        <span className="text-[10px] text-muted-foreground tabular-nums">{threads.length}</span>
+    <div className="p-3 space-y-1">
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-2">
+        Thread
+      </p>
+      <div className="rounded-md px-2 py-1.5 text-sm bg-accent text-accent-foreground font-medium truncate">
+        {title}
       </div>
-      <nav className="space-y-0.5" aria-label="Thread index">
-        {threads.length === 0 ? (
-          <p className="px-2 py-4 text-center text-xs text-muted-foreground">No threads yet</p>
-        ) : (
-          threads.map((t) => {
-            const isActive = t.id === currentThreadId;
-            return (
-              <Link
-                key={t.id}
-                to={`/discussions/${t.id}`}
-                aria-current={isActive ? "page" : undefined}
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
-                  isActive
-                    ? "bg-accent text-accent-foreground font-medium"
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
-              >
-                <span
-                  className={cn(
-                    "h-1.5 w-1.5 rounded-full shrink-0",
-                    PHASE_DOT[t.phase] ?? "bg-muted-foreground",
-                  )}
-                  aria-hidden
-                />
-                <span className="flex-1 truncate">{t.title}</span>
-                {t.pendingItemCount > 0 && (
-                  <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 text-[9px] font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
-                    {t.pendingItemCount}
-                  </span>
-                )}
-              </Link>
-            );
-          })
-        )}
-      </nav>
     </div>
   );
 }
@@ -557,247 +452,42 @@ function ThreadLeftRail({
    Thread Viewer Panel — right-side content viewer
    ════════════════════════════════════════════════════════════════════════ */
 
-const AUTONOMY_BANNER: Record<number, { label: string; text: string }> = {
-  0: { label: "L0 · Manual", text: "Agents act only when you explicitly ask." },
-  1: { label: "L1 · Assist", text: "Agents suggest; you approve each step." },
-  2: {
-    label: "L2 · Drive",
-    text: "Agents drive Discuss → Scope → Assign autonomously. Assignment needs your confirmation.",
-  },
-};
-
-const ITEM_TYPE_COLORS: Record<string, string> = {
-  task: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  decision: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
-  insight: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  reference: "bg-stone-200 text-stone-800 dark:bg-stone-800/30 dark:text-stone-300",
-  artifact: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
-  context: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  preference: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
-};
-
 interface ThreadViewerPanelProps {
-  thread: ThreadDetailType;
-  companyId: string;
-  /** Currently selected scope item to preview (null → home/shortcuts) */
-  item?: ScopeItem | null;
-  onClose?: () => void;
-  onOpenScope?: () => void;
-  onCollapse?: () => void;
-  /** Optional URL/HTML to preview in the sandboxed iframe (artifact/reference) */
+  thread: { title: string };
+  /** Optional URL to preview in the sandboxed iframe */
   previewUrl?: string;
+  /** Optional raw HTML to render via srcdoc */
   previewHtml?: string;
 }
 
-function ThreadViewerPanel({
-  thread,
-  companyId,
-  item,
-  onClose,
-  onOpenScope,
-  onCollapse,
-  previewUrl,
-  previewHtml,
-}: ThreadViewerPanelProps) {
-  const { pushToast } = useToast();
-  const hasIframe = Boolean(previewUrl || previewHtml);
-
-  const { data: linksData } = useQuery({
-    queryKey: ["thread-links", companyId, thread.id],
-    queryFn: () => threadsApi.listLinks(companyId, thread.id),
-    enabled: !!companyId,
-    retry: false,
-  });
-  const linkedCount = linksData?.links?.length ?? 0;
-
-  function copyLink() {
-    try {
-      void navigator.clipboard?.writeText(window.location.href);
-      pushToast({ title: "Link copied", tone: "success" });
-    } catch {
-      pushToast({ title: "Couldn't copy link", tone: "warn" });
-    }
-  }
-
-  // ── Iframe preview (artifact/reference URL or HTML) ──
-  if (hasIframe) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Preview
-          </span>
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close preview"
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-        <iframe
-          title={`Viewer for thread: ${thread.title}`}
-          srcDoc={previewHtml}
-          src={previewHtml ? undefined : previewUrl}
-          className="w-full flex-1 border-0"
-          sandbox={
-            previewHtml
-              ? "allow-same-origin allow-scripts"
-              : "allow-same-origin allow-scripts allow-popups"
-          }
-        />
-      </div>
-    );
-  }
-
-  // ── Selected scope item detail ──
-  if (item) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {item.type}
-          </span>
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close item"
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-        <div className="p-4 space-y-3 overflow-auto">
-          <h3 className="text-sm font-semibold leading-snug text-foreground">{item.title}</h3>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={cn(
-                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                ITEM_TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
-              )}
-            >
-              {item.type}
-            </span>
-            <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">
-              {item.status}
-            </span>
-          </div>
-          {item.description && (
-            <p className="text-xs leading-relaxed text-muted-foreground">{item.description}</p>
-          )}
-          {onOpenScope && (
-            <button
-              type="button"
-              onClick={onOpenScope}
-              className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-            >
-              Open in Scope <ArrowRight className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // ── Home: Jump-to + Quick actions + autonomy explainer ──
-  const autonomy = thread.autonomyLevel != null ? AUTONOMY_BANNER[thread.autonomyLevel] : null;
+function ThreadViewerPanel({ thread, previewUrl, previewHtml }: ThreadViewerPanelProps) {
+  const hasContent = previewUrl || previewHtml;
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Viewer
-        </span>
-        {onCollapse && (
-          <button
-            type="button"
-            onClick={onCollapse}
-            aria-label="Collapse viewer"
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <PanelRightClose className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      <div className="p-3 space-y-4 overflow-auto">
-        {/* Jump to */}
-        <section>
-          <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-            Jump to
+      {!hasContent && (
+        <div className="p-4">
+          <p className="text-xs text-muted-foreground">
+            Select an item to preview it here.
           </p>
-          <div className="space-y-1">
-            {thread.goalId && (
-              <Link
-                to={`/goals/${thread.goalId}`}
-                className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-              >
-                <Flag className="h-3 w-3 shrink-0" />
-                <span className="flex-1">Linked goal</span>
-                <ArrowRight className="h-3 w-3 opacity-60" />
-              </Link>
-            )}
-            {linkedCount > 0 && (
-              <Link
-                to={`/discussions/${thread.id}`}
-                className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-              >
-                <Link2 className="h-3 w-3 shrink-0" />
-                <span className="flex-1">Linked threads</span>
-                <span className="rounded-full bg-muted px-1.5 text-[9px] font-semibold tabular-nums">
-                  {linkedCount}
-                </span>
-              </Link>
-            )}
-            <Link
-              to="/memory"
-              className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-            >
-              <Brain className="h-3 w-3 shrink-0" />
-              <span className="flex-1">Memory</span>
-              <ArrowRight className="h-3 w-3 opacity-60" />
-            </Link>
-          </div>
-        </section>
-
-        {/* Quick actions */}
-        <section>
-          <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-            Quick actions
-          </p>
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              type="button"
-              onClick={onOpenScope}
-              className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-            >
-              Open Scope
-            </button>
-            <button
-              type="button"
-              onClick={copyLink}
-              className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-            >
-              Copy link
-            </button>
-          </div>
-        </section>
-
-        {/* Autonomy explainer */}
-        {autonomy && (
-          <div className="rounded-md border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-[11px] leading-relaxed text-teal-700 dark:text-teal-300">
-            <span className="font-semibold">{autonomy.label}</span> · {autonomy.text}
-          </div>
-        )}
-
-        <p className="px-1 text-[11px] text-muted-foreground">
-          Select a Scope item to preview it here.
-        </p>
-      </div>
+        </div>
+      )}
+      {hasContent && previewHtml && (
+        <iframe
+          title={`Viewer for thread: ${thread.title}`}
+          srcDoc={previewHtml}
+          className="w-full flex-1 border-0"
+          sandbox="allow-same-origin allow-scripts"
+        />
+      )}
+      {hasContent && previewUrl && !previewHtml && (
+        <iframe
+          title={`Viewer for thread: ${thread.title}`}
+          src={previewUrl}
+          className="w-full flex-1 border-0"
+          sandbox="allow-same-origin allow-scripts allow-popups"
+        />
+      )}
     </div>
   );
 }

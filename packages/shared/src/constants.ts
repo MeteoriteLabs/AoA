@@ -770,6 +770,29 @@ export const COMMANDER_TOOL_PERMISSION_DEFAULT: CommanderToolPermission = {
   minimumRole: "team_member",
 };
 
+export const COMMANDER_RUNTIME_APPROVAL_STATUSES = [
+  "pending",
+  "executing",
+  "approved",
+  "denied",
+  "expired",
+  "failed",
+  "cancelled",
+] as const;
+export type CommanderRuntimeApprovalStatus =
+  (typeof COMMANDER_RUNTIME_APPROVAL_STATUSES)[number];
+
+export const COMMANDER_RUNTIME_APPROVAL_DECISIONS = [
+  "allow_once",
+  "allow_always",
+  "deny",
+] as const;
+export type CommanderRuntimeApprovalDecision =
+  (typeof COMMANDER_RUNTIME_APPROVAL_DECISIONS)[number];
+
+export const COMMANDER_TOOL_TRUST_SCOPES = ["exact_params"] as const;
+export type CommanderToolTrustScope = (typeof COMMANDER_TOOL_TRUST_SCOPES)[number];
+
 export const NOTIFICATION_TYPES = [
   "discussion.extraction_complete",
   "discussion.extraction_failed",

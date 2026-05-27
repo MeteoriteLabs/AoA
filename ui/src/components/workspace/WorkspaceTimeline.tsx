@@ -452,7 +452,7 @@ export function WorkspaceTimeline({
           />
 
           {/* Textarea */}
-          <div>
+          <div className="border-t border-border/50">
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
@@ -478,23 +478,25 @@ export function WorkspaceTimeline({
             onChange={handleFilesSelected}
           />
           {selectedFiles.length > 0 && (
-            <div className="flex flex-wrap gap-1 px-3 pb-1">
-              {selectedFiles.map((file, index) => (
-                <button
-                  key={`${file.name}-${file.size}-${index}`}
-                  type="button"
-                  onClick={() => removeSelectedFile(index)}
-                  className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
-                  title="Remove attachment"
-                >
-                  {file.name}
-                </button>
-              ))}
+            <div className="border-t border-border/50 px-3 py-1.5">
+              <div className="flex flex-wrap gap-1">
+                {selectedFiles.map((file, index) => (
+                  <button
+                    key={`${file.name}-${file.size}-${index}`}
+                    type="button"
+                    onClick={() => removeSelectedFile(index)}
+                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    title="Remove attachment"
+                  >
+                    {file.name}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
           {/* Controls row */}
-          <div>
+          <div className="border-t border-border/50">
             <ChatbarControls
               adapterType={agentAdapterType}
               defaultModel={agentDefaultModel}
@@ -512,10 +514,17 @@ export function WorkspaceTimeline({
       {/* Fallback when no agent assigned */}
       {!assignedAgent && (
         <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
-          <div className="px-3 py-1.5 text-xs text-muted-foreground">
-            No agent assigned
-          </div>
-          <div>
+          <ChatbarStatusRow
+            agentName="No agent assigned"
+            adapterType="process"
+            tokensUsed={null}
+            contextLimit={null}
+            todoProgress={todoData.total > 0 ? { completed: todoData.completed, total: todoData.total } : null}
+            todoItems={todoData.total > 0 ? todoData.todos : null}
+            runState={chatbarRunState}
+            runDurationLabel={null}
+          />
+          <div className="border-t border-border/50">
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
@@ -531,15 +540,43 @@ export function WorkspaceTimeline({
               }}
             />
           </div>
-          <div className="px-3 py-1.5 flex justify-end">
-            <Button
-              size="sm"
-              className="h-7 text-xs px-3"
-              disabled={!canSend || sendMessage.isPending}
-              onClick={handleSend}
-            >
-              Comment
-            </Button>
+          <input
+            ref={fileInputRef}
+            data-testid="workspace-chatbar-file-input"
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFilesSelected}
+          />
+          {selectedFiles.length > 0 && (
+            <div className="border-t border-border/50 px-3 py-1.5">
+              <div className="flex flex-wrap gap-1">
+                {selectedFiles.map((file, index) => (
+                  <button
+                    key={`${file.name}-${file.size}-${index}`}
+                    type="button"
+                    onClick={() => removeSelectedFile(index)}
+                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    title="Remove attachment"
+                  >
+                    {file.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="border-t border-border/50">
+            <ChatbarControls
+              adapterType="comment"
+              defaultModel={null}
+              selectedModel={modelOverride}
+              onModelChange={setModelOverride}
+              onAttach={handleAttach}
+              onSend={handleSend}
+              showModelLabel={false}
+              sendDisabled={!canSend || sendMessage.isPending}
+              sendPending={sendMessage.isPending}
+            />
           </div>
         </div>
       )}

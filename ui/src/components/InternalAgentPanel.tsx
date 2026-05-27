@@ -26,8 +26,9 @@ import {
   commanderConversationsApi,
   confirmAction,
   type AgentMessage,
-  type SSEEvent,
+  type ConfirmActionDecision,
   type AgentGreeting,
+  type SSEEvent,
 } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -111,6 +112,11 @@ function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? `Running ${name.replaceAll("_", " ")}...`;
 }
 
+export function completedToolLabel(name: string): string {
+  const label = TOOL_LABELS[name] ?? name.replace(/_+/g, " ");
+  return `Used ${label.replace(/\.\.\.$/, "").replace(/^Running\s+/i, "")}`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Confirmation card entity-line derivation                           */
 /* ------------------------------------------------------------------ */
@@ -155,13 +161,13 @@ export function deriveConfirmEntityLine(action: string): string {
 /*  Message types for local rendering                                  */
 /* ------------------------------------------------------------------ */
 
-interface ToolCallEntry {
+export interface ToolCallEntry {
   id: number;
   name: string;
   status: "running" | "done";
 }
 
-interface LocalMessage {
+export interface LocalMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
@@ -191,6 +197,53 @@ function serverToLocal(m: AgentMessage): LocalMessage {
     streamingDone: true,
     createdAt: m.createdAt,
   };
+}
+
+export function mergeServerMessagesWithTransientLocal(
+  serverMessages: AgentMessage[],
+  localMessages: LocalMessage[],
+): LocalMessage[] {
+  const localById = new Map(localMessages.map((m) => [m.id, m]));
+  const serverIds = new Set(serverMessages.map((m) => m.id));
+  const merged = serverMessages.map((m) => ({
+    ...serverToLocal(m),
+    actionConfirm: localById.get(m.id)?.actionConfirm,
+    optionsPrompt: localById.get(m.id)?.optionsPrompt,
+  }));
+
+  const transientMessages = localMessages.filter(
+    (m) =>
+      !serverIds.has(m.id) &&
+      (
+        m.actionConfirm !== undefined ||
+        m.optionsPrompt !== undefined ||
+        (
+          m.role === "assistant" &&
+          m.content.trim().length > 0 &&
+          !serverMessages.some(
+            (serverMessage) =>
+              serverMessage.role === "assistant" &&
+              (serverMessage.content ?? "") === m.content,
+          )
+        )
+      ),
+  );
+
+  return [...merged, ...transientMessages];
+}
+
+export function settleRunningToolCalls(messages: LocalMessage[], messageId: string): LocalMessage[] {
+  return messages.map((m) => {
+    if (m.id !== messageId || !m.toolCalls?.some((tc) => tc.status === "running")) {
+      return m;
+    }
+    return {
+      ...m,
+      toolCalls: m.toolCalls.map((tc) => (
+        tc.status === "running" ? { ...tc, status: "done" as const } : tc
+      )),
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -261,6 +314,14 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
 
+  const { data: runtimeSettings } = useQuery({
+    queryKey: ["internal-agent-runtime-settings", companyId],
+    queryFn: () => internalAgentApi.getRuntimeSettings(companyId),
+    enabled: !!companyId,
+    staleTime: 60 * 1000,
+  });
+  const allowAlwaysEnabled = runtimeSettings?.runtimeAllowAlwaysEnabled ?? true;
+
   // Load history when switching to a specific conversation
   const { data: historyData } = useQuery({
     queryKey: ["conversation-messages", companyId, conversationId],
@@ -329,12 +390,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     if (!conversation) return;
     if (conversation.messages) {
       setMessages((prev) => {
-        const localById = new Map(prev.map((m) => [m.id, m]));
-        return conversation.messages.map((m) => ({
-          ...serverToLocal(m),
-          actionConfirm: localById.get(m.id)?.actionConfirm,
-          optionsPrompt: localById.get(m.id)?.optionsPrompt,
-        }));
+        return mergeServerMessagesWithTransientLocal(
+          conversation.messages ?? [],
+          prev,
+        );
       });
     }
     if (conversation.conversation?.id) {
@@ -426,7 +485,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           setMessages((prev) =>
-            prev.map((m) =>
+            settleRunningToolCalls(prev, assistantId).map((m) =>
               m.id === assistantId
                 ? { ...m, content: m.content || "Sorry, something went wrong. Please try again.", streamingDone: true }
                 : m,
@@ -436,7 +495,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       } finally {
         // Mark streaming done on the assistant message (fix #1: switch to markdown)
         setMessages((prev) =>
-          prev.map((m) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
             m.id === assistantId ? { ...m, streamingDone: true } : m,
           ),
         );
@@ -484,6 +543,20 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         // Show thinking indicator — content stays empty until real content arrives
         break;
 
+      case "error": {
+        const message =
+          (event.data as { message?: string }).message ??
+          "Commander hit an error. Please try again.";
+        setMessages((prev) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
+            m.id === assistantId && !m.content
+              ? { ...m, content: message, streamingDone: true }
+              : m,
+          ),
+        );
+        break;
+      }
+
       case "tool_call": {
         const name = (event.data as { name?: string }).name ?? "unknown";
         const callId = ++toolCallIdRef.current;
@@ -524,7 +597,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           description: string;
         };
         setMessages((prev) =>
-          prev.map((m) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
             m.id === assistantId
               ? {
                   ...m,
@@ -553,8 +626,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       }
 
       case "done":
-      case "error":
-        // Stream finished
+        setMessages((prev) => settleRunningToolCalls(prev, assistantId));
         break;
     }
   }
@@ -563,8 +635,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     async (
       messageId: string,
       confirmId: string,
-      approved: boolean,
+      decision: ConfirmActionDecision,
     ) => {
+      const isDeny = decision === "deny";
       // 1. Optimistic UI: move status to "approving" / "rejected"
       setMessages((prev) =>
         prev.map((m) =>
@@ -573,7 +646,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 ...m,
                 actionConfirm: {
                   ...m.actionConfirm,
-                  status: approved ? "approving" : "rejected",
+                  status: isDeny ? "rejected" : "approving",
                 },
               }
             : m,
@@ -581,7 +654,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       );
 
       try {
-        const result = await confirmAction(companyId, { confirmId, approved });
+        const result = await confirmAction(companyId, { confirmId, decision });
 
         // 2. Settle UI based on server result
         setMessages((prev) =>
@@ -594,7 +667,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                     status:
                       result.result === "executed"
                         ? "approved"
-                        : result.result === "rejected"
+                        : result.result === "rejected" || result.result === "denied"
                           ? "rejected"
                           : "failed",
                     errorMessage: result.error ?? undefined,
@@ -853,7 +926,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                       ) : (
                         <Wrench className="h-3 w-3" />
                       )}
-                      <span>{toolLabel(tc.name)}</span>
+                      <span>{tc.status === "running" ? toolLabel(tc.name) : completedToolLabel(tc.name)}</span>
                     </div>
                   ))}
                 </div>
@@ -916,19 +989,30 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                         size="sm"
                         variant="default"
                         className="h-7 text-xs"
-                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, true)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, "allow_once")}
                       >
                         <Check className="h-3 w-3 mr-1" />
-                        Confirm
+                        Allow once
                       </Button>
+                      {allowAlwaysEnabled && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, "allow_always")}
+                        >
+                          <Check className="h-3 w-3 mr-1" />
+                          Always allow
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs"
-                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, false)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, "deny")}
                       >
                         <X className="h-3 w-3 mr-1" />
-                        Cancel
+                        Deny
                       </Button>
                     </div>
                   ) : msg.actionConfirm.status === "approving" ? (

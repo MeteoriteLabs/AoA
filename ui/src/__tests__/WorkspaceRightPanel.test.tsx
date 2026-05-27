@@ -290,6 +290,7 @@ describe("WorkspaceRightPanel cockpit contract", () => {
       "cockpit-section-process",
       "cockpit-section-git",
       "cockpit-section-services",
+      "cockpit-section-outputs",
       "cockpit-section-artifacts",
       "cockpit-section-memory",
       "cockpit-section-context",
@@ -387,6 +388,33 @@ describe("WorkspaceRightPanel cockpit contract", () => {
     expect(screen.queryByText("Branch, changes, PR")).not.toBeInTheDocument();
     expect(screen.queryByText("Task scope and inputs")).not.toBeInTheDocument();
     expect(screen.getByTestId("cockpit-section-summary-context")).toBeEmptyDOMElement();
+  });
+
+  it("summarizes only stopped detected previews as no running services", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValueOnce([
+      {
+        id: "svc-preview-stopped",
+        serviceName: "localhost:50163",
+        status: "stopped",
+        port: 50163,
+        url: "http://127.0.0.1:50163/",
+        previewUrl: null,
+        localTargetUrl: "http://127.0.0.1:50163/",
+        healthStatus: "unhealthy",
+        command: null,
+        cwd: "/tmp/ws",
+        provider: "adapter_managed",
+        providerRef: null,
+        lifecycle: "ephemeral",
+        startedAt: "2026-05-16T10:00:00Z",
+        stoppedAt: "2026-05-16T10:05:00Z",
+      },
+    ]);
+
+    renderRightPanel({ functionType: "software_development" });
+
+    expect(await screen.findByText("No running services")).toBeInTheDocument();
+    expect(screen.queryByText("1 stopped service")).not.toBeInTheDocument();
   });
 
   it("renders the cockpit header with ticket identifier, actions, and collapse", async () => {

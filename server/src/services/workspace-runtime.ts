@@ -1,9 +1,10 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { Db } from "@armyofagents/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
@@ -20,6 +21,7 @@ import type { ExecutionWorkspace } from "@armyofagents/shared";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { probePreviewUrl } from "./runtime-service-preview-detection.js";
+import { emitRuntimeServiceTaskOutput } from "./task-output-emitters.js";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -91,6 +93,7 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
+const execFileAsync = promisify(execFile);
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -444,8 +447,29 @@ async function validateLinkedGitWorktree(input: {
   return { valid: true };
 }
 
-function terminateChildProcess(child: ChildProcess) {
+export function buildRuntimeServiceProcessTreeKillCommand(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } | null {
+  if (platform !== "win32") return null;
+  return { command: "taskkill.exe", args: ["/PID", String(pid), "/T", "/F"] };
+}
+
+async function terminateChildProcess(child: ChildProcess) {
   if (!child.pid) return;
+  const windowsTreeKill = buildRuntimeServiceProcessTreeKillCommand(child.pid);
+  if (windowsTreeKill) {
+    try {
+      await execFileAsync(windowsTreeKill.command, windowsTreeKill.args, {
+        timeout: 5000,
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      // Fall through to the direct child kill when taskkill is unavailable or
+      // the wrapper process exited before we could terminate its tree.
+    }
+  }
   if (process.platform !== "win32") {
     try {
       process.kill(-child.pid, "SIGTERM");
@@ -1324,12 +1348,9 @@ async function waitForReadiness(input: {
   service: Record<string, unknown>;
   url: string | null;
 }) {
-  const readiness = parseObject(input.service.readiness);
-  const readinessType = asString(readiness.type, "");
-  if (readinessType !== "http" || !input.url) return;
-  const timeoutSec = Math.max(1, asNumber(readiness.timeoutSec, 30));
-  const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
-  const deadline = Date.now() + timeoutSec * 1000;
+  const options = resolveRuntimeServiceReadinessOptions({ service: input.service });
+  if (options.type !== "http" || !input.url) return;
+  const deadline = Date.now() + options.timeoutSec * 1000;
   let lastError = "service did not become ready";
   while (Date.now() < deadline) {
     try {
@@ -1339,7 +1360,7 @@ async function waitForReadiness(input: {
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
-    await delay(intervalMs);
+    await delay(options.intervalMs);
   }
   throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
 }
@@ -1410,6 +1431,7 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
         updatedAt: values.updatedAt,
       },
     });
+  await emitRuntimeServiceTaskOutput(db, values);
 }
 
 function clearIdleTimer(record: RuntimeServiceRecord) {
@@ -1529,6 +1551,38 @@ function isPreviewHealthCheckStale(
   return now.getTime() - checkedAt >= ttlMs;
 }
 
+function isRuntimeServiceHealthRefreshActive(row: WorkspaceRuntimeServiceRow): boolean {
+  return row.status === "starting" || row.status === "running";
+}
+
+function nextRuntimeServiceHealthState(
+  row: WorkspaceRuntimeServiceRow,
+  reachable: boolean,
+  now: Date,
+): Pick<PreviewRuntimeServiceUpdate, "status" | "healthStatus" | "stoppedAt"> {
+  if (reachable) {
+    return {
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+    };
+  }
+
+  if (row.healthStatus === "unhealthy") {
+    return {
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+    };
+  }
+
+  return {
+    status: row.status,
+    healthStatus: "unhealthy",
+    stoppedAt: row.stoppedAt ?? null,
+  };
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -1580,6 +1634,7 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
     maxConcurrency,
     async (row) => {
       if (!isAdapterManagedPreviewRuntimeServiceRow(row) || !row.url) return row;
+      if (!isRuntimeServiceHealthRefreshActive(row)) return row;
       if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
 
       const reachable = await probePreviewUrlDeduped({
@@ -1587,22 +1642,20 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
         url: row.url,
         probeUrl,
       });
-      const nextStatus = reachable ? "running" : "stopped";
-      const nextHealthStatus = reachable ? "healthy" : "unhealthy";
-      const nextStoppedAt = reachable ? null : now;
+      const nextHealth = nextRuntimeServiceHealthState(row, reachable, now);
       const changed =
-        row.status !== nextStatus ||
-        row.healthStatus !== nextHealthStatus ||
-        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt) ||
+        row.status !== nextHealth.status ||
+        row.healthStatus !== nextHealth.healthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextHealth.stoppedAt) ||
         dateTime(row.healthCheckedAt) !== dateTime(now);
 
       if (!changed) return row;
 
       const update = {
         id: row.id,
-        status: nextStatus,
-        healthStatus: nextHealthStatus,
-        stoppedAt: nextStoppedAt,
+        status: nextHealth.status,
+        healthStatus: nextHealth.healthStatus,
+        stoppedAt: nextHealth.stoppedAt,
         healthCheckedAt: now,
         updatedAt: now,
       };
@@ -1621,13 +1674,70 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
   return { rows, updates };
 }
 
-export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input: {
-  db: Db;
+export async function refreshLocalProcessRuntimeServiceRows(input: {
   rows: WorkspaceRuntimeServiceRow[];
-}): Promise<WorkspaceRuntimeServiceRow[]> {
-  const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
-  for (const update of refreshed.updates) {
-    await input.db
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<{ rows: WorkspaceRuntimeServiceRow[]; updates: PreviewRuntimeServiceUpdate[] }> {
+  const now = input.now ?? new Date();
+  const ttlMs = input.ttlMs ?? DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS;
+  const maxConcurrency = input.maxConcurrency ?? DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY;
+  const probeUrl = input.probeUrl ?? ((url: string) => probePreviewUrl(url, { timeoutMs: 750 }));
+  const updates: PreviewRuntimeServiceUpdate[] = [];
+
+  const rows = await mapWithConcurrency(
+    input.rows,
+    maxConcurrency,
+    async (row) => {
+      if (row.provider !== "local_process" || !row.url) return row;
+      if (!isRuntimeServiceHealthRefreshActive(row)) return row;
+      if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
+
+      const reachable = await probePreviewUrlDeduped({
+        key: row.id,
+        url: row.url,
+        probeUrl,
+      });
+      const nextHealth = nextRuntimeServiceHealthState(row, reachable, now);
+      const changed =
+        row.status !== nextHealth.status ||
+        row.healthStatus !== nextHealth.healthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextHealth.stoppedAt) ||
+        dateTime(row.healthCheckedAt) !== dateTime(now);
+
+      if (!changed) return row;
+
+      const update = {
+        id: row.id,
+        status: nextHealth.status,
+        healthStatus: nextHealth.healthStatus,
+        stoppedAt: nextHealth.stoppedAt,
+        healthCheckedAt: now,
+        updatedAt: now,
+      };
+      updates.push(update);
+      return {
+        ...row,
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
+        updatedAt: update.updatedAt,
+      };
+    },
+  );
+
+  return { rows, updates };
+}
+
+async function persistRuntimeServiceHealthUpdates(
+  db: Db,
+  updates: PreviewRuntimeServiceUpdate[],
+) {
+  for (const update of updates) {
+    await db
       .update(workspaceRuntimeServices)
       .set({
         status: update.status,
@@ -1638,12 +1748,57 @@ export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input
       })
       .where(eq(workspaceRuntimeServices.id, update.id));
   }
+}
+
+export async function refreshPersistedRuntimeServiceRows(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const adapterRows = await refreshAdapterManagedPreviewRuntimeServiceRows(input);
+  const localRows = await refreshLocalProcessRuntimeServiceRows({
+    ...input,
+    rows: adapterRows.rows,
+  });
+  await persistRuntimeServiceHealthUpdates(input.db, [
+    ...adapterRows.updates,
+    ...localRows.updates,
+  ]);
+  const changedIds = new Set([
+    ...adapterRows.updates.map((update) => update.id),
+    ...localRows.updates.map((update) => update.id),
+  ]);
+  for (const row of localRows.rows) {
+    if (changedIds.has(row.id)) {
+      await emitRuntimeServiceTaskOutput(input.db, row);
+    }
+  }
+  return localRows.rows;
+}
+
+export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
+  await persistRuntimeServiceHealthUpdates(input.db, refreshed.updates);
+  const changedIds = new Set(refreshed.updates.map((update) => update.id));
+  for (const row of refreshed.rows) {
+    if (changedIds.has(row.id)) {
+      await emitRuntimeServiceTaskOutput(input.db, row);
+    }
+  }
   return refreshed.rows;
 }
 
 async function startLocalRuntimeService(input: {
   db?: Db;
   runId: string;
+  startedByRunId?: string | null;
+  leaseRunId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
@@ -1714,13 +1869,15 @@ async function startLocalRuntimeService(input: {
   try {
     await waitForReadiness({ service: input.service, url });
   } catch (err) {
-    terminateChildProcess(child);
+    await terminateChildProcess(child);
     throw new Error(
       `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
     );
   }
 
   const envFingerprint = createHash("sha256").update(stableStringify(envConfig)).digest("hex");
+  const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
+  const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   return {
     id: randomUUID(),
     companyId: input.agent.companyId,
@@ -1741,7 +1898,7 @@ async function startLocalRuntimeService(input: {
     provider: "local_process",
     providerRef: child.pid ? String(child.pid) : null,
     ownerAgentId: input.agent.id,
-    startedByRunId: input.runId,
+    startedByRunId,
     lastUsedAt: new Date().toISOString(),
     startedAt: new Date().toISOString(),
     stoppedAt: null,
@@ -1750,7 +1907,7 @@ async function startLocalRuntimeService(input: {
     reused: false,
     db: input.db,
     child,
-    leaseRunIds: new Set([input.runId]),
+    leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
     idleTimer: null,
     envFingerprint,
   };
@@ -1774,7 +1931,7 @@ async function stopRuntimeService(serviceId: string) {
   record.lastUsedAt = new Date().toISOString();
   record.stoppedAt = new Date().toISOString();
   if (record.child && record.child.pid) {
-    terminateChildProcess(record.child);
+    await terminateChildProcess(record.child);
   }
   runtimeServicesById.delete(serviceId);
   if (record.reuseKey) {
@@ -1884,6 +2041,8 @@ export async function ensureRuntimeServicesForRun(input: {
       const record = await startLocalRuntimeService({
         db: input.db,
         runId: input.runId,
+        startedByRunId: input.runId,
+        leaseRunId: input.runId,
         agent: input.agent,
         issue: input.issue,
         workspace: input.workspace,
@@ -2117,6 +2276,24 @@ export async function persistAdapterManagedRuntimeServices(input: {
           updatedAt: new Date(),
         },
       });
+    await emitRuntimeServiceTaskOutput(input.db, {
+      id: ref.id,
+      companyId: ref.companyId,
+      projectId: ref.projectId,
+      issueId: ref.issueId,
+      executionWorkspaceId: ref.executionWorkspaceId,
+      serviceName: ref.serviceName,
+      provider: ref.provider,
+      status: ref.status,
+      healthStatus: ref.healthStatus,
+      url: ref.url,
+      port: ref.port,
+      lifecycle: ref.lifecycle,
+      scopeType: ref.scopeType,
+      providerRef: ref.providerRef,
+      startedByRunId: ref.startedByRunId,
+      ownerAgentId: ref.ownerAgentId,
+    });
   }
 
   return refs;
@@ -2162,6 +2339,45 @@ export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<strin
     return Math.max(1, explicitTimeoutSec);
   }
   return looksLikeWorkspaceDevServerCommand(asString(service.command, "")) ? 90 : 30;
+}
+
+export function resolveRuntimeServiceReadinessOptions(input: {
+  service: Record<string, unknown>;
+}): { timeoutSec: number; intervalMs: number; type: string } {
+  const readiness = parseObject(input.service.readiness);
+  return {
+    type: asString(readiness.type, ""),
+    timeoutSec: resolveWorkspaceRuntimeReadinessTimeoutSec(input.service),
+    intervalMs: Math.max(100, asNumber(readiness.intervalMs, 500)),
+  };
+}
+
+export function resolveConfiguredRuntimeServiceIndexForRow(input: {
+  services: Record<string, unknown>[];
+  row: {
+    serviceName: string;
+    command: string | null;
+    cwd: string | null;
+  };
+  workspaceCwd: string | null;
+}): number | null {
+  const normalizedRowCwd = input.row.cwd ? path.resolve(input.row.cwd) : null;
+  let matchIndex: number | null = null;
+  for (let index = 0; index < input.services.length; index += 1) {
+    const service = input.services[index]!;
+    const name = asString(service.name, "service");
+    const command = asString(service.command, "");
+    const serviceCwd = asString(service.cwd, ".");
+    const resolvedServiceCwd = input.workspaceCwd
+      ? path.resolve(input.workspaceCwd, serviceCwd)
+      : null;
+    if (name !== input.row.serviceName) continue;
+    if (input.row.command && command && input.row.command !== command) continue;
+    if (normalizedRowCwd && resolvedServiceCwd && normalizedRowCwd !== resolvedServiceCwd) continue;
+    if (matchIndex !== null) return null;
+    matchIndex = index;
+  }
+  return matchIndex;
 }
 
 function readRuntimeServiceEntries(config: Record<string, unknown>): Record<string, unknown>[] {
@@ -2317,6 +2533,8 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
     const record = await startLocalRuntimeService({
       db: input.db,
       runId: invocationId,
+      startedByRunId: null,
+      leaseRunId: null,
       agent: input.actor,
       issue: input.issue,
       workspace: input.workspace,

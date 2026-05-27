@@ -218,6 +218,37 @@ describe("StreamJsonParser", () => {
     }
   });
 
+  it("user event with unicode lightning marker emits action_confirmation chunk", () => {
+    const markerPayload = {
+      toolName: "create_task",
+      confirmId: "33333333-3333-4333-8333-333333333333",
+    };
+    const content = `\u26a1CONFIRM:${JSON.stringify(markerPayload)}\u26a1 Tool needs approval.`;
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            content: [{ type: "text", text: content }],
+            is_error: false,
+            tool_use_id: "toolu_confirm_unicode",
+          },
+        ],
+      },
+    });
+
+    const chunks = parseOnce(line);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      type: "action_confirmation",
+      toolName: "create_task",
+      runId: "33333333-3333-4333-8333-333333333333",
+    });
+  });
+
   // Test 11: user event with malformed marker JSON falls through to plain tool_result
   it("user event with malformed marker JSON falls through to plain tool_result (no throw)", () => {
     const content = "⚡CONFIRM:{not valid json}⚡";

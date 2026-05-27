@@ -101,6 +101,8 @@ Clicking a node switches timeline below to that task.
 
 ### Right Panel — Context Sections (Collapsible)
 
+2026-05-25 update: the right panel now includes an **Outputs** section above Artifacts. Outputs is the task-level summary for artifacts, previews, runtime services, branches, and PRs. Artifacts remains the versioned deliverable section and is not removed.
+
 **Universal sections (all departments):**
 1. **Artifacts** — produced outputs with versions. Click to preview in center-right pane.
 2. **Context** — dependency outputs (working now) + memory placeholder "coming soon" (until MCP memory skill built)

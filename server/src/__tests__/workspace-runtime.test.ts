@@ -6,12 +6,16 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildRuntimeServiceProcessTreeKillCommand,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
   normalizeAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   refreshAdapterManagedPreviewRuntimeServiceRows,
+  refreshLocalProcessRuntimeServiceRows,
+  resolveRuntimeServiceReadinessOptions,
+  startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -25,6 +29,17 @@ const leasedRunIds = new Set<string>();
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
+
+describe("runtime service process cleanup", () => {
+  it("uses taskkill tree mode for Windows runtime service cleanup", () => {
+    expect(buildRuntimeServiceProcessTreeKillCommand(1234, "win32")).toEqual({
+      command: "taskkill.exe",
+      args: ["/PID", "1234", "/T", "/F"],
+    });
+
+    expect(buildRuntimeServiceProcessTreeKillCommand(1234, "linux")).toBeNull();
+  });
+});
 
 async function createTempRepo() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
@@ -188,6 +203,18 @@ afterEach(async () => {
   delete process.env.AOA_INSTANCE_ID;
   delete process.env.AOA_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
+});
+
+describe("resolveRuntimeServiceReadinessOptions", () => {
+  it("uses the dev-server-aware readiness timeout when starting services", () => {
+    expect(resolveRuntimeServiceReadinessOptions({
+      service: {
+        name: "web",
+        command: "pnpm dev",
+        readiness: { type: "http" },
+      },
+    })).toEqual({ type: "http", timeoutSec: 90, intervalMs: 500 });
+  });
 });
 
 describe("realizeExecutionWorkspace", () => {
@@ -1411,12 +1438,48 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
     });
   });
 
-  it("marks unreachable adapter-managed previews unavailable", async () => {
+  it("keeps an active adapter-managed preview recoverable after one failed probe", async () => {
     const now = new Date("2026-05-16T10:00:00.000Z");
 
     const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
       rows: [baseRow as any],
       now,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+    expect(result.updates).toEqual([
+      {
+        id: baseRow.id,
+        status: "running",
+        healthStatus: "unhealthy",
+        stoppedAt: null,
+        healthCheckedAt: now,
+        updatedAt: now,
+      },
+    ]);
+  });
+
+  it("marks adapter-managed previews stopped after a consecutive failed probe", async () => {
+    const now = new Date("2026-05-16T10:01:00.000Z");
+    const unhealthyRow = {
+      ...baseRow,
+      healthStatus: "unhealthy",
+      healthCheckedAt: new Date("2026-05-16T10:00:00.000Z"),
+      stoppedAt: null,
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [unhealthyRow as any],
+      now,
+      ttlMs: 30_000,
       probeUrl: async () => false,
     });
 
@@ -1428,20 +1491,11 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
       healthCheckedAt: now,
       updatedAt: now,
     });
-    expect(result.updates).toEqual([
-      {
-        id: baseRow.id,
-        status: "stopped",
-        healthStatus: "unhealthy",
-        stoppedAt: now,
-        healthCheckedAt: now,
-        updatedAt: now,
-      },
-    ]);
   });
 
-  it("marks reachable adapter-managed previews running and healthy", async () => {
+  it("does not resurrect stopped adapter-managed previews even when the URL is reachable", async () => {
     const now = new Date("2026-05-16T10:00:00.000Z");
+    let probes = 0;
     const stoppedRow = {
       ...baseRow,
       status: "stopped",
@@ -1451,6 +1505,29 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
 
     const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
       rows: [stoppedRow as any],
+      now,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(stoppedRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("marks reachable starting adapter-managed previews running and healthy", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+    const startingRow = {
+      ...baseRow,
+      status: "starting",
+      healthStatus: "unknown",
+      stoppedAt: null,
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [startingRow as any],
       now,
       probeUrl: async () => true,
     });
@@ -1556,5 +1633,180 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
     expect(probes).toBe(1);
     expect(first.rows[0]?.healthStatus).toBe("healthy");
     expect(second.rows[0]?.healthStatus).toBe("healthy");
+  });
+});
+
+describe("refreshLocalProcessRuntimeServiceRows", () => {
+  const baseRow = {
+    id: "33333333-3333-4333-8333-333333333333",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    executionWorkspaceId: "execution-workspace-1",
+    issueId: "issue-1",
+    scopeType: "execution_workspace",
+    scopeId: "execution-workspace-1",
+    serviceName: "web",
+    status: "running",
+    lifecycle: "shared",
+    reuseKey: null,
+    command: "pnpm dev",
+    cwd: "/tmp/project",
+    port: 54853,
+    url: "http://127.0.0.1:54853/",
+    provider: "local_process",
+    providerRef: "12345",
+    ownerAgentId: "agent-1",
+    startedByRunId: null,
+    lastUsedAt: new Date("2026-05-16T00:00:00.000Z"),
+    startedAt: new Date("2026-05-16T00:00:00.000Z"),
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "unknown",
+    healthCheckedAt: null,
+    createdAt: new Date("2026-05-16T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-16T00:00:00.000Z"),
+  };
+
+  it("probes stale local-process service URLs", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [baseRow as any],
+      now,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it("does not resurrect stopped local-process services even when the URL is reachable", async () => {
+    let probes = 0;
+    const stoppedRow = {
+      ...baseRow,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: new Date("2026-05-16T09:00:00.000Z"),
+      healthCheckedAt: new Date("2026-05-16T09:00:00.000Z"),
+    };
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [stoppedRow as any],
+      now: new Date("2026-05-17T10:00:00.000Z"),
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(stoppedRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("probes stale local-process URLs even when the process is still registered in memory", async () => {
+    const refs = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(),
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-root-1",
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        cwd: process.cwd(),
+        branchName: null,
+        worktreePath: null,
+        warnings: [],
+        created: false,
+      },
+      executionWorkspaceId: "execution-workspace-1",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"require('http').createServer((_,r)=>r.end('ok')).listen(process.env.PORT, '127.0.0.1')\"",
+              port: { type: "auto" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    try {
+      let probes = 0;
+      const now = new Date("2026-05-17T10:00:00.000Z");
+      const result = await refreshLocalProcessRuntimeServiceRows({
+        rows: [{
+          ...baseRow,
+          id: refs[0]!.id,
+          port: refs[0]!.port,
+          url: `http://127.0.0.1:${refs[0]!.port}/`,
+          status: "running",
+          healthStatus: "healthy",
+          healthCheckedAt: null,
+        } as any],
+        now,
+        probeUrl: async () => {
+          probes += 1;
+          return false;
+        },
+      });
+
+      expect(probes).toBe(1);
+      expect(result.rows[0]).toMatchObject({
+        status: "running",
+        healthStatus: "unhealthy",
+        stoppedAt: null,
+        healthCheckedAt: now,
+        updatedAt: now,
+      });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-1",
+        workspaceCwd: process.cwd(),
+      });
+    }
+  });
+
+  it("marks local-process services stopped after a consecutive failed probe", async () => {
+    const now = new Date("2026-05-17T10:01:00.000Z");
+    const unhealthyRow = {
+      ...baseRow,
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+      healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+    };
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [unhealthyRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
   });
 });

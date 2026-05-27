@@ -5,6 +5,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Users } from "lucide-react";
 import { agentsApi } from "../api/agents";
 import { teamApi } from "../api/team";
+import { trustScoresApi } from "../api/trust-scores";
+import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -70,6 +72,23 @@ export function TeamPage() {
     queryKey: selectedCompanyId ? ["aoa-agents", selectedCompanyId] : ["aoa-agents", "none"],
     queryFn: () => agentsApi.listAoa(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+
+  const commanderTrustQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.trustScores.list(selectedCompanyId)
+      : ["trust-scores", "none"],
+    queryFn: () => trustScoresApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const commanderLiveRunsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.liveRuns(selectedCompanyId)
+      : ["live-runs", "none"],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId) && activeTab === "commander",
+    refetchInterval: 10_000, // poll only while Commander tab is active
   });
 
   useEffect(() => {
@@ -160,7 +179,10 @@ export function TeamPage() {
     (activeTab === "org" && orgTreeQuery.isLoading) ||
     (activeTab === "agents" && agentsQuery.isLoading) ||
     (activeTab === "humans" && isTeamLoading) ||
-    (activeTab === "commander" && commanderAgentsQuery.isLoading);
+    (activeTab === "commander" &&
+      (commanderAgentsQuery.isLoading ||
+        commanderTrustQuery.isLoading ||
+        commanderLiveRunsQuery.isLoading));
 
   return (
     <TooltipProvider>
@@ -213,6 +235,8 @@ export function TeamPage() {
           {!isLoading && activeTab === "commander" && (
             <CommanderTeamTab
               agents={commanderAgentsQuery.data ?? []}
+              trustScores={commanderTrustQuery.data ?? []}
+              liveRuns={commanderLiveRunsQuery.data ?? []}
               permissions={{ isFounder: role === "founder" }}
               onMutationSuccess={invalidateAll}
             />

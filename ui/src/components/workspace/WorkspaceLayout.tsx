@@ -193,13 +193,14 @@ export function WorkspaceLayout({
   }, [openPreviewTab, selectedIssueId]);
 
   const handleOpenBrowser = useCallback((service: WorkspaceRuntimeService) => {
-    if (!service.url) return;
+    if (!service.previewUrl) return;
     openPreviewTab({
       id: `browser:${service.id}`,
       kind: "browser",
       title: service.serviceName || "Browser",
-      url: service.url,
+      url: service.previewUrl,
       serviceId: service.id,
+      localTargetUrl: service.localTargetUrl ?? null,
     }, "right-panel");
   }, [openPreviewTab]);
 

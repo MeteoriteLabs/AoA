@@ -3079,7 +3079,7 @@ export function heartbeatService(db: Db) {
         })
         .where(eq(heartbeatRuns.id, runId));
 
-      const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      const onLog = async (stream: "stdout" | "stderr" | "system", chunk: string) => {
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, chunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, chunk);
 
@@ -3434,7 +3434,7 @@ export function heartbeatService(db: Db) {
           });
 
           await onLog(
-            "stderr",
+            "system",
             `[aoa] App preview detection (${source}) found ${previewCandidateUrls.length} candidate URL(s), ${detectedRuntimeServices.length} reachable service(s)\n`,
           );
 

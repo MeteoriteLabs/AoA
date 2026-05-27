@@ -32,8 +32,10 @@ import { heartbeatsApi } from "../../api/heartbeats";
 import { issuesApi } from "../../api/issues";
 import { memoryRetrievalsApi } from "../../api/memoryRetrievals";
 import { outputDetectionApi } from "../../api/output-detection";
+import { taskOutputsApi } from "../../api/task-outputs";
 import { queryKeys } from "../../lib/queryKeys";
 import { ArtifactsSection } from "./sections/ArtifactsSection";
+import { OutputsSection } from "./sections/OutputsSection";
 import { ProcessSection } from "./sections/ProcessSection";
 import { MemorySection } from "./sections/MemorySection";
 import { ServicesSection } from "./sections/ServicesSection";
@@ -98,7 +100,7 @@ interface WorkspaceRightPanelProps {
 }
 
 interface CockpitSectionDef {
-  id: "process" | "git" | "services" | "artifacts" | "memory" | "context" | "access";
+  id: "process" | "git" | "services" | "outputs" | "artifacts" | "memory" | "context" | "access";
   title: string;
   icon: LucideIcon;
   softwareOnly?: boolean;
@@ -108,6 +110,7 @@ const WORKSPACE_COCKPIT_SECTIONS: CockpitSectionDef[] = [
   { id: "process", title: "Process", icon: Workflow },
   { id: "git", title: "Git", icon: GitBranch, softwareOnly: true },
   { id: "services", title: "Services", icon: Server, softwareOnly: true },
+  { id: "outputs", title: "Outputs", icon: FileBox },
   { id: "artifacts", title: "Artifacts", icon: FileBox },
   { id: "memory", title: "Memory", icon: Brain },
   { id: "context", title: "Context", icon: Paperclip },
@@ -120,6 +123,15 @@ type CockpitSummaryMap = Partial<Record<CockpitSectionDef["id"], string | null>>
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`) {
   return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function isUnavailablePreviewRuntimeService(service: WorkspaceRuntimeService): boolean {
+  return (
+    service.provider === "adapter_managed" &&
+    !service.command &&
+    !service.providerRef &&
+    (service.status !== "running" || service.healthStatus === "unhealthy")
+  );
 }
 
 function useCockpitSummaries({
@@ -196,6 +208,13 @@ function useCockpitSummaries({
     staleTime: 5000,
   });
 
+  const { data: taskOutputs } = useQuery({
+    queryKey: queryKeys.taskOutputs.byIssue(issueId),
+    queryFn: () => taskOutputsApi.listForIssue(issueId),
+    enabled: Boolean(issueId),
+    staleTime: 5000,
+  });
+
   const { data: memoryRetrievals } = useQuery({
     queryKey: queryKeys.memory.retrievalsForIssue(companyId, issueId),
     queryFn: () => memoryRetrievalsApi.listForIssue(companyId, issueId, { limit: 100 }),
@@ -236,14 +255,16 @@ function useCockpitSummaries({
 
   const servicesSummary = (() => {
     if (!isSoftware || !services || services.length === 0) return null;
-    const running = services.filter((service) => service.status === "running");
-    const failed = services.filter((service) => service.status === "failed");
-    const starting = services.filter((service) => service.status === "starting");
+    const primaryServices = services.filter((service) => !isUnavailablePreviewRuntimeService(service));
+    const running = primaryServices.filter((service) => service.status === "running");
+    const failed = primaryServices.filter((service) => service.status === "failed");
+    const starting = primaryServices.filter((service) => service.status === "starting");
     if (running.length === 1) return `1 running · ${running[0].serviceName}`;
     if (running.length > 1) return `${running.length} running`;
     if (starting.length > 0) return plural(starting.length, "starting service");
     if (failed.length > 0) return plural(failed.length, "failed service");
-    return plural(services.length, "stopped service");
+    if (primaryServices.length > 0) return plural(primaryServices.length, "stopped service");
+    return "No running services";
   })();
 
   const artifactsSummary = (() => {
@@ -252,6 +273,13 @@ function useCockpitSummaries({
     if (artifact) parts.push("1 artifact");
     if (candidates.length > 0) parts.push(plural(candidates.length, "candidate"));
     return parts.length > 0 ? parts.join(" · ") : null;
+  })();
+
+  const outputsSummary = (() => {
+    if (!taskOutputs || taskOutputs.length === 0) return null;
+    const primary = taskOutputs.find((output) => output.isPrimary);
+    if (primary) return `${plural(taskOutputs.length, "output")} Â· ${primary.title}`;
+    return plural(taskOutputs.length, "output");
   })();
 
   const memorySummary = (() => {
@@ -266,6 +294,7 @@ function useCockpitSummaries({
     process: processSummary,
     git: gitSummary,
     services: servicesSummary,
+    outputs: outputsSummary,
     artifacts: artifactsSummary,
     memory: memorySummary,
     context: null,
@@ -424,6 +453,9 @@ export function WorkspaceRightPanel({
                   <ProcessSection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
                 )}
                 {section.id === "context" && <ContextCockpitSection workspace={workspace} />}
+                {section.id === "outputs" && (
+                  <OutputsSection issueId={issueId} onPreviewArtifact={onPreviewArtifact} onOpenBrowser={onOpenBrowser} />
+                )}
                 {section.id === "artifacts" && (
                   <ArtifactsSection issueId={issueId} onPreviewArtifact={onPreviewArtifact} onPreviewOutput={onPreviewOutput} />
                 )}

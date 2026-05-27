@@ -170,6 +170,7 @@ Versioned deliverables: documents, presentations, code, design, reports.
 - **Founder picks winner** for branching — no auto-merge. (Decisions #43, #45)
 - **Agent output capture:** workspace diff → adapter hinting → founder confirmation during review. Files copied from workspace to storage, never moved. (Decision #67)
 - **Artifact-as-input:** downstream tasks auto-receive artifacts from dependency tasks as context (spec→design→code→test pipelines). Content truncated at 2000 chars per artifact. (Decision #71)
+- **Task Outputs:** `task_outputs` is the unified product index for artifacts, detected files, preview URLs, runtime services, branches, and PRs. It does not replace `issues.artifactId`; that field remains the primary artifact pointer for artifact-as-input and existing viewer flows.
 - **Refinement loop:** review state supports adding artifact versions. Founder can refine on external LLMs and push back via MCP, upload, or paste. (Decisions #69, #70)
 
 ### Task Dependencies
@@ -350,6 +351,7 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 |-------|---------|
 | `artifacts` | `type`: document/presentation/code/design/report/other. `status`: draft/active/archived. `currentVersionId` |
 | `artifact_versions` | Immutable. `versionNumber`, `source` (agent/founder/mcp/teammate/external), `parentVersionId` (branching) |
+| `task_outputs` | Additive task-level output index for artifacts, detected files, preview URLs, runtime services, branches, and PRs. Does not replace `issues.artifactId` |
 | `documents` | Document system (separate from artifacts; MCP document tools map here) |
 | `document_revisions` | Document revision history |
 | `assets` | File assets. All file types, 50MB limit |

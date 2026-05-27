@@ -96,6 +96,8 @@ export const queryKeys = {
     profile: ["auth", "profile"] as const,
   },
   health: ["health"] as const,
+  companyHealth: (companyId: string) => ["health", "company", companyId] as const,
+  instanceHealth: ["health", "instance"] as const,
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
@@ -195,6 +197,10 @@ export const queryKeys = {
   artifacts: {
     byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
     detail: (id: string) => ["artifacts", "detail", id] as const,
+  },
+  taskOutputs: {
+    byIssue: (issueId: string) => ["task-outputs", "issue", issueId] as const,
+    detail: (id: string) => ["task-outputs", "detail", id] as const,
   },
   mcp: {
     status: (companyId: string) => ["mcp", companyId, "status"] as const,

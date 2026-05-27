@@ -1,5 +1,6 @@
 // server/src/services/internal-agent/types.ts
 import type { Db } from "@armyofagents/db";
+import type { CommanderToolPermissions } from "@armyofagents/shared";
 import type { issueService } from "../issues.js";
 import type { goalService } from "../goals.js";
 import type { agentService } from "../agents.js";
@@ -55,6 +56,14 @@ export interface ToolContext {
   agentId?: string;
   /** Resolved effective autonomy level (0/1/2). Absent → treat as 0 (fail-closed). */
   effectiveAutonomy?: number | null;
+  /** Current Commander conversation id, when available. */
+  conversationId?: string | null;
+  /** Current internal agent run id, when available. */
+  runId?: string | null;
+  /** Commander per-tool policy overrides from internal_agent_config. */
+  commanderToolPermissions?: CommanderToolPermissions | null;
+  /** Company-level switch for AoA runtime approval prompts. */
+  runtimeApprovalsEnabled?: boolean;
   db: Db;
   services: ServiceContainer;
 }

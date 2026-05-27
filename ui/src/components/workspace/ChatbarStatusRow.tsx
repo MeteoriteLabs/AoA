@@ -76,9 +76,9 @@ export function ChatbarStatusRow({
         <TooltipProvider delayDuration={200}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="p-0.5 rounded inline-flex">
+              <button type="button" className="p-0.5 rounded inline-flex" aria-label="Context usage">
                 <ContextDonutIcon ratio={contextRatio ?? 0} className="h-4 w-4" empty={contextRatio == null} />
-              </span>
+              </button>
             </TooltipTrigger>
             <TooltipContent side="top" className="text-xs">
               {contextRatio != null

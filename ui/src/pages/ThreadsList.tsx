@@ -7,7 +7,6 @@ import { useDialog } from "../context/DialogContext";
 import { threadsApi, type ThreadListItem } from "../api/threads";
 import type { InboxCardItem } from "../components/threads/ThreadBoard";
 import { api } from "../api/client";
-import { queryKeys } from "../lib/queryKeys";
 import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
 import {
   MessageSquare,
@@ -103,14 +102,14 @@ export function ThreadsList() {
     isError,
     refetch,
   } = useQuery({
-    queryKey: queryKeys.threads.list(selectedCompanyId ?? ""),
+    queryKey: ["threads", selectedCompanyId, "list"],
     queryFn: () => threadsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     retry: false,
   });
 
   const { data: inboxData } = useQuery({
-    queryKey: queryKeys.threads.inbox(selectedCompanyId ?? ""),
+    queryKey: ["threads-inbox", selectedCompanyId],
     queryFn: () => api.get<{ items: InboxCardItem[]; total: number }>(`/companies/${selectedCompanyId}/discussions/inbox`),
     enabled: !!selectedCompanyId,
     retry: false,

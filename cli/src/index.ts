@@ -51,8 +51,8 @@ program
   .description("Run diagnostic checks on your AoA setup")
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--lint", "Run read-only setup checks for CI")
   .option("--repair", "Attempt to repair issues automatically")
-  .alias("--fix")
   .option("-y, --yes", "Skip repair confirmation prompts")
   .action(async (opts) => {
     await doctor(opts);

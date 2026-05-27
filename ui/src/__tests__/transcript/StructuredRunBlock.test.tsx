@@ -101,6 +101,39 @@ describe("StructuredRunBlock", () => {
     expect(screen.queryByText(/stderr/i)).toBeNull();
   });
 
+  it("renders app preview detection summaries as quiet diagnostics", async () => {
+    const content = [
+      JSON.stringify({
+        ts: "2026-01-01T00:00:00Z",
+        stream: "stderr",
+        chunk: "[aoa] App preview detection (stream) found 1 candidate URL(s), 1 reachable service(s)",
+      }),
+    ].join("\n");
+    (heartbeatsApi.log as any).mockResolvedValue({ runId: "test-run-1", store: "local_file", logRef: "run.ndjson", content });
+
+    renderComponent();
+
+    expect(await screen.findByText("Diagnostics (1 line)")).toBeTruthy();
+    expect(screen.queryByText("Error details (1 line)")).toBeNull();
+  });
+
+  it("renders app preview detection system logs as info events", async () => {
+    const content = [
+      JSON.stringify({
+        ts: "2026-01-01T00:00:00Z",
+        stream: "system",
+        chunk: "[aoa] App preview detection (stream) found 1 candidate URL(s), 1 reachable service(s)",
+      }),
+    ].join("\n");
+    (heartbeatsApi.log as any).mockResolvedValue({ runId: "test-run-1", store: "local_file", logRef: "run.ndjson", content });
+
+    renderComponent();
+
+    expect(await screen.findByText("preview")).toBeTruthy();
+    expect(screen.getByText("App preview detection (stream) found 1 candidate URL(s), 1 reachable service(s)")).toBeTruthy();
+    expect(screen.queryByText("Error details (1 line)")).toBeNull();
+  });
+
   it("labels real stderr as error details", async () => {
     const content = JSON.stringify({
       ts: "2026-01-01T00:00:00Z",

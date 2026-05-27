@@ -1,10 +1,8 @@
-// server/src/services/internal-agent/mcp-bridge.ts
-//
-// Standalone MCP stdio server for CLI execution mode.
-// Spawned by CLI tools via MCP config. Exposes all internal agent tools.
-
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import { authorizeToolInvocation } from "./authorize-tool.js";
+import type { CommanderToolPermissions } from "@armyofagents/shared";
+import { resolveCommanderToolPolicy } from "./authorize-tool.js";
+import { filterAuthorizedToolsForContext } from "./tool-registry.js";
+import { runtimeApprovalService } from "./runtime-approvals.js";
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
@@ -12,11 +10,50 @@ interface ToolCallHandlerDeps {
   tools: AgentTool[];
   executeTool: (tool: AgentTool, params: unknown, ctx: ToolContext) => Promise<ToolResult>;
   toolContext: ToolContext;
+  runtimeApprovals?: Pick<
+    ReturnType<typeof runtimeApprovalService>,
+    "createPending" | "findTrustedExact"
+  >;
 }
 
 interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+}
+
+function normalizeToolArgs(args: unknown): Record<string, unknown> {
+  return typeof args === "object" && args !== null
+    ? (args as Record<string, unknown>)
+    : {};
+}
+
+async function executeAndFormat(
+  tool: AgentTool,
+  args: unknown,
+  deps: ToolCallHandlerDeps,
+): Promise<McpToolResult> {
+  try {
+    const result = await deps.executeTool(tool, args, deps.toolContext);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: result.success,
+            data: result.data,
+            summary: result.summary,
+            ...(result.error ? { error: result.error } : {}),
+          }),
+        },
+      ],
+      isError: !result.success,
+    };
+  } catch (err: any) {
+    return {
+      content: [{ type: "text", text: `Tool execution error: ${err?.message ?? "Unknown"}` }],
+      isError: true,
+    };
+  }
 }
 
 export function createToolCallHandler(deps: ToolCallHandlerDeps) {
@@ -32,62 +69,54 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
-    const decision = authorizeToolInvocation(
-      tool,
-      deps.toolContext.userRole,
-      deps.toolContext.enabledCapabilities,
-      {
-        agentKind: deps.toolContext.agentKind,
-        toolAllowlist: deps.toolContext.toolAllowlist,
-      },
-    );
-    if (!decision.allowed) {
+    const policy = resolveCommanderToolPolicy(tool, deps.toolContext);
+    if (!policy.allowed) {
       return {
-        content: [
-          {
-            type: "text",
-            text: `${decision.error}: ${decision.summary}`,
-          },
-        ],
+        content: [{ type: "text", text: policy.summary }],
         isError: true,
       };
     }
 
-    if (tool.requiresConfirmation) {
-      const confirmId = crypto.randomUUID();
-      const marker = `⚡CONFIRM:${JSON.stringify({ toolName: name, params: args, confirmId })}⚡ This action requires your approval before I can proceed. Please tell me to confirm or cancel, or modify the parameters.`;
-      return {
-        content: [{ type: "text", text: marker }],
-        isError: false,
-      };
+    if (!policy.requiresApproval) {
+      return executeAndFormat(tool, args, deps);
     }
 
-    try {
-      const result = await deps.executeTool(tool, args, deps.toolContext);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              success: result.success,
-              data: result.data,
-              summary: result.summary,
-              ...(result.error ? { error: result.error } : {}),
-            }),
-          },
-        ],
-        isError: !result.success,
-      };
-    } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Tool execution error: ${err?.message ?? "Unknown"}` }],
-        isError: true,
-      };
+    const params = normalizeToolArgs(args);
+    const approvalSvc = deps.runtimeApprovals ?? runtimeApprovalService(deps.toolContext.db);
+    const trusted = await approvalSvc.findTrustedExact({
+      companyId: deps.toolContext.companyId,
+      userId: deps.toolContext.userId,
+      toolName: name,
+      params,
+    });
+
+    if (trusted) {
+      return executeAndFormat(tool, args, deps);
     }
+
+    const approval = await approvalSvc.createPending({
+      companyId: deps.toolContext.companyId,
+      conversationId: deps.toolContext.conversationId ?? null,
+      runId: deps.toolContext.runId ?? null,
+      userId: deps.toolContext.userId,
+      toolName: name,
+      params,
+    });
+
+    const marker = `⚡CONFIRM:${JSON.stringify({
+      toolName: name,
+      params,
+      confirmId: approval.id,
+      action: "runtime_tool_approval",
+      description: tool.description,
+    })}⚡ This action requires your approval before I can proceed.`;
+
+    return {
+      content: [{ type: "text", text: marker }],
+      isError: false,
+    };
   };
 }
-
-// ── MCP Protocol Helpers ────────────────────────────────────────────────────
 
 export function buildToolListResponse(tools: AgentTool[]) {
   return tools.map((tool) => ({
@@ -97,18 +126,6 @@ export function buildToolListResponse(tools: AgentTool[]) {
   }));
 }
 
-export function filterAuthorizedToolsForContext(
-  tools: AgentTool[],
-  ctx: Pick<ToolContext, "userRole" | "enabledCapabilities" | "agentKind" | "toolAllowlist">,
-): AgentTool[] {
-  return tools.filter((tool) => authorizeToolInvocation(
-    tool,
-    ctx.userRole,
-    ctx.enabledCapabilities,
-    { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
-  ).allowed);
-}
-
 // ── Main (runs when executed as script) ─────────────────────────────────────
 
 export async function startBridge(): Promise<void> {
@@ -116,9 +133,6 @@ export async function startBridge(): Promise<void> {
 
   const companyId = process.env.AOA_SESSION_COMPANY_ID;
   const userId = process.env.AOA_SESSION_USER_ID;
-  // C13: fail closed if the bridge is spawned without an explicit role
-  // env var. Defaulting to "founder" here previously meant any direct
-  // CLI invocation that forgot to set the env got founder-level access.
   const userRole = process.env.AOA_SESSION_USER_ROLE;
   if (!userRole) {
     process.stderr.write("MCP Bridge: Missing AOA_SESSION_USER_ROLE env var\n");
@@ -130,23 +144,17 @@ export async function startBridge(): Promise<void> {
     process.exit(1);
   }
 
-  // C13: capability set is comma-separated. Empty string → empty array
-  // (which means every capability-gated tool will reject).
-  const enabledCapabilitiesRaw = process.env.AOA_SESSION_ENABLED_CAPABILITIES ?? "";
-  const enabledCapabilities = enabledCapabilitiesRaw
+  const enabledCapabilities = (process.env.AOA_SESSION_ENABLED_CAPABILITIES ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // D2: AoA agent kind + tool allowlist. Absent → undefined (non-AoA path).
   const agentKind = process.env.AOA_AGENT_KIND || undefined;
-  const toolAllowlistRaw = process.env.AOA_TOOL_ALLOWLIST ?? "";
-  const toolAllowlist = toolAllowlistRaw
+  const toolAllowlist = (process.env.AOA_TOOL_ALLOWLIST ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // Commander actor type: "commander" when invoked via Commander; "board" otherwise.
   const actorType = process.env.AOA_ACTOR_TYPE ?? "board";
 
   // P2.0: Calling agent's ID and effective autonomy level
@@ -154,7 +162,8 @@ export async function startBridge(): Promise<void> {
   const effectiveAutonomyRaw = process.env.AOA_EFFECTIVE_AUTONOMY;
   const effectiveAutonomy = effectiveAutonomyRaw ? parseInt(effectiveAutonomyRaw, 10) : null;
 
-  const { createDb } = await import("@armyofagents/db");
+  const { createDb, internalAgentConfig } = await import("@armyofagents/db");
+  const { eq } = await import("drizzle-orm");
   const { createServiceContainer } = await import("./service-container.js");
   const { createToolRegistry, executeTool } = await import("./tool-registry.js");
 
@@ -167,6 +176,12 @@ export async function startBridge(): Promise<void> {
   const services = createServiceContainer(db);
   const tools = createToolRegistry();
 
+  const config = await db
+    .select()
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .then((rows) => rows[0] ?? null);
+
   const toolContext: ToolContext = {
     companyId,
     userId,
@@ -177,6 +192,9 @@ export async function startBridge(): Promise<void> {
     actorType,
     agentId,
     effectiveAutonomy,
+    commanderToolPermissions:
+      (config?.commanderToolPermissions as CommanderToolPermissions | null | undefined) ?? null,
+    runtimeApprovalsEnabled: config?.runtimeApprovalsEnabled ?? true,
     db,
     services,
   };
@@ -206,12 +224,7 @@ export async function startBridge(): Promise<void> {
         id,
       });
     } else if (method === "tools/list") {
-      const visibleTools = filterAuthorizedToolsForContext(tools, {
-        userRole: toolContext.userRole,
-        enabledCapabilities: toolContext.enabledCapabilities,
-        agentKind: toolContext.agentKind,
-        toolAllowlist: toolContext.toolAllowlist,
-      });
+      const visibleTools = filterAuthorizedToolsForContext(tools, toolContext);
       writeResponse({
         jsonrpc: "2.0",
         result: { tools: buildToolListResponse(visibleTools) },
@@ -221,7 +234,7 @@ export async function startBridge(): Promise<void> {
       const result = await handleToolCall(params.name, params.arguments ?? {});
       writeResponse({ jsonrpc: "2.0", result, id });
     } else if (method === "notifications/initialized") {
-      // No response needed for notifications
+      // No response needed for notifications.
     } else {
       writeResponse({
         jsonrpc: "2.0",
@@ -240,7 +253,6 @@ export async function startBridge(): Promise<void> {
   }
 }
 
-// Auto-start if run as script
 const isMainModule = process.argv[1]?.endsWith("mcp-bridge.js") ||
   process.argv[1]?.endsWith("mcp-bridge.ts");
 if (isMainModule) {

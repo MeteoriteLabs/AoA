@@ -229,6 +229,16 @@ export {
 } from "./artifact.js";
 
 export {
+  taskOutputTypeSchema,
+  taskOutputStatusSchema,
+  taskOutputReviewStateSchema,
+  upsertTaskOutputSchema,
+  mutableTaskOutputSchema,
+  type UpsertTaskOutput,
+  type MutableTaskOutput,
+} from "./task-output.js";
+
+export {
   createMcpApiKeySchema,
   updateMcpSettingsSchema,
   type CreateMcpApiKey,

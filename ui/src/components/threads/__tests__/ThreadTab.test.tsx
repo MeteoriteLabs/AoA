@@ -21,6 +21,7 @@ vi.mock("../../../api/discussions", () => ({
   discussionsApi: {
     addEntry: vi.fn().mockResolvedValue({ id: "entry-new" }),
     reprocessEntry: vi.fn().mockResolvedValue({}),
+    addAnnotation: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -38,10 +39,6 @@ function makeEntry(overrides: Partial<DiscussionEntry> = {}): DiscussionEntry {
     departmentId: null,
     projectId: null,
     goalId: null,
-    parentEntryId: null,
-    authorAgentId: null,
-    authorAgentName: null,
-    authorAgentAvatar: null,
     extractionStatus: "completed",
     createdBy: "user-1",
     createdAt: "2026-01-01T09:00:00Z",
@@ -129,81 +126,5 @@ describe("ThreadTab", () => {
     );
     // Entry should render with the source indicator
     expect(screen.getByText("Pasted content")).toBeInTheDocument();
-  });
-
-  it("nests a reply under its parent one level deep", () => {
-    const entries = [
-      makeEntry({ id: "parent", rawContent: "Parent post" }),
-      makeEntry({ id: "child", rawContent: "Child reply", parentEntryId: "parent" }),
-    ];
-    renderWithProviders(
-      <ThreadTab
-        threadId="thread-1"
-        companyId="comp-1"
-        entries={entries}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-      />,
-    );
-    const parentRow = screen.getByTestId("entry-row-parent");
-    const childRow = screen.getByTestId("entry-row-child");
-    // Child is indented (ml-6 from indentLevel=1)
-    expect(childRow.className).toContain("ml-6");
-    // Child is inside the parent's group wrapper
-    const group = screen.getByTestId("entry-group-parent");
-    expect(group).toContainElement(childRow);
-    expect(group).toContainElement(parentRow);
-  });
-
-  it("does not render a reply as its own top-level row", () => {
-    const entries = [
-      makeEntry({ id: "parent", rawContent: "Parent post" }),
-      makeEntry({ id: "child", rawContent: "Child reply", parentEntryId: "parent" }),
-    ];
-    renderWithProviders(
-      <ThreadTab
-        threadId="thread-1"
-        companyId="comp-1"
-        entries={entries}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-      />,
-    );
-    // Exactly one top-level group (the parent); the child is nested inside it
-    expect(screen.getAllByTestId(/^entry-group-/)).toHaveLength(1);
-  });
-
-  it("posts with parentEntryId after Reply is clicked", async () => {
-    const { fireEvent, waitFor } = await import("@testing-library/react");
-    const { discussionsApi } = await import("../../../api/discussions");
-    const entries = [makeEntry({ id: "parent", rawContent: "Parent post" })];
-    renderWithProviders(
-      <ThreadTab
-        threadId="thread-1"
-        companyId="comp-1"
-        entries={entries}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-      />,
-    );
-    // Expand parent row and click Reply
-    const entryRow = screen.getByTestId("entry-row-parent");
-    fireEvent.click(entryRow.querySelector("button")!);
-    fireEvent.click(screen.getByRole("button", { name: /reply/i }));
-    // Type in the composer
-    fireEvent.change(screen.getByTestId("thread-composer-textarea"), {
-      target: { value: "my reply" },
-    });
-    fireEvent.click(screen.getByTestId("thread-composer-submit"));
-    await waitFor(() =>
-      expect(discussionsApi.addEntry).toHaveBeenCalledWith(
-        "comp-1",
-        "thread-1",
-        expect.objectContaining({ rawContent: "my reply", parentEntryId: "parent" }),
-      ),
-    );
   });
 });

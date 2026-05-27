@@ -1,4 +1,5 @@
 export { healthRoutes } from "./health.js";
+export { operationsHealthRoutes } from "./operations-health.js";
 export { companyRoutes } from "./companies.js";
 export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";
@@ -18,6 +19,7 @@ export { searchRoutes } from "./search.js";
 export { debriefRoutes } from "./debriefs.js";
 export { briefRoutes } from "./briefs.js";
 export { artifactRoutes } from "./artifacts.js";
+export { taskOutputRoutes } from "./task-outputs.js";
 export { outputDetectionRoutes } from "./output-detection.js";
 export { trustScoreRoutes } from "./trust-scores.js";
 export { memoryFeedbackRoutes } from "./memory-feedback.js";

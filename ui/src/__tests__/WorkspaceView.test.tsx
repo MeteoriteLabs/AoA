@@ -452,6 +452,10 @@ describe("WorkspaceView — three-panel layout", () => {
         status: "running",
         port: 3100,
         url: "http://localhost:3100",
+        previewUrl: "/preview/services/svc-1/",
+        previewAccess: "local",
+        localTargetUrl: "http://localhost:3100/",
+        healthStatus: "healthy",
         command: "pnpm dev",
         cwd: "/tmp/workspaces/ENG-42",
         provider: "local_process",
@@ -474,7 +478,7 @@ describe("WorkspaceView — three-panel layout", () => {
     expect(screen.getByTestId("workspace-left-panel")).toHaveAttribute("data-collapsed", "true");
     expect(screen.getByTestId("workspace-right-panel")).toHaveAttribute("data-collapsed", "false");
     expect(screen.getByRole("tab", { name: /web/i })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByTestId("preview-browser-iframe")).toHaveAttribute("src", "http://localhost:3100");
+    expect(screen.getByTestId("preview-browser-iframe")).toHaveAttribute("src", "/preview/services/svc-1/");
   });
 
   it("uses the center header control to show and hide the preview panel without clearing tabs", async () => {

@@ -18,6 +18,7 @@ import {
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
+import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -47,6 +48,7 @@ import { briefRoutes } from "./routes/briefs.js";
 import { routineRoutes } from "./routes/routines.js";
 import { dependencyRoutes } from "./routes/dependencies.js";
 import { artifactRoutes } from "./routes/artifacts.js";
+import { taskOutputRoutes } from "./routes/task-outputs.js";
 import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { trustScoreRoutes } from "./routes/trust-scores.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
@@ -77,6 +79,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { createPreviewRouter } from "./routes/preview.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
@@ -188,7 +191,6 @@ export async function createApp(
     ["/api/companies/import", "/api/companies/import/preview"],
     express.json({ limit: "20mb", verify: captureRawBody }),
   );
-  app.use(express.json({ verify: captureRawBody }));
   app.use(httpLogger);
   // Strict CSP + tightened cross-origin policies in production deployment
   // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
@@ -218,6 +220,10 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // Runtime previews are a streaming proxy, not JSON API routes. Mount before
+  // the global body parser so POST/PUT/uploads reach the upstream unchanged.
+  app.use("/preview", createPreviewRouter(db));
+  app.use(express.json({ verify: captureRawBody }));
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
@@ -246,6 +252,16 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
+  api.use(
+    operationsHealthRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      authReady: opts.authReady,
+      companyDeletionEnabled: opts.companyDeletionEnabled,
+      bindHost: opts.bindHost,
+      allowedHostnames: opts.allowedHostnames,
+    }),
+  );
   api.use("/companies", companyRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
@@ -268,6 +284,7 @@ export async function createApp(
   api.use(debriefRoutes(db));
   api.use(briefRoutes(db));
   api.use(artifactRoutes(db));
+  api.use(taskOutputRoutes(db));
   api.use(outputDetectionRoutes(db));
   api.use(trustScoreRoutes(db));
   api.use(transcriptionRoutes(db));

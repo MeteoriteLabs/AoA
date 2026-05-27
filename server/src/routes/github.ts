@@ -35,6 +35,7 @@ import {
   signInstallState,
   verifyInstallState,
 } from "../services/github-app.js";
+import { emitPullRequestTaskOutput } from "../services/task-output-emitters.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
@@ -302,6 +303,15 @@ export function githubRoutes(db: Db) {
         update.baseRef = nextBaseRef;
       }
       await wsSvc.update(ws.id, update);
+      if (effectivePr) {
+        await emitPullRequestTaskOutput(db, {
+          companyId: ws.companyId,
+          issueId: ws.sourceIssueId,
+          executionWorkspaceId: ws.id,
+          repoUrl: ws.repoUrl,
+          pr: effectivePr,
+        });
+      }
 
       const response: GitHubPrSyncResponse = {
         workspaceId: ws.id,
@@ -463,6 +473,13 @@ export function githubRoutes(db: Db) {
         update.baseRef = parsed.data.base;
       }
       await wsSvc.update(ws.id, update);
+      await emitPullRequestTaskOutput(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        executionWorkspaceId: ws.id,
+        repoUrl: ws.repoUrl,
+        pr: prMetadata,
+      });
 
       await issueSvcInstance.addComment(
         issue.id,
@@ -614,6 +631,13 @@ export function githubRoutes(db: Db) {
 
     const updatedPr = { ...pr, state: "merged" as const };
     await wsSvc.update(ws.id, { metadata: { ...meta, pr: updatedPr } });
+    await emitPullRequestTaskOutput(db, {
+      companyId: ws.companyId,
+      issueId: ws.sourceIssueId,
+      executionWorkspaceId: ws.id,
+      repoUrl: ws.repoUrl,
+      pr: updatedPr,
+    });
 
     const response: GitHubPrActionResponse = { success: true, prState: "merged", prUrl: pr.url };
     res.json(response);
@@ -637,7 +661,15 @@ export function githubRoutes(db: Db) {
       if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
       throw err;
     }
-    await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "closed" as const } } });
+    const updatedPr = { ...pr, state: "closed" as const };
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: updatedPr } });
+    await emitPullRequestTaskOutput(db, {
+      companyId: ws.companyId,
+      issueId: ws.sourceIssueId,
+      executionWorkspaceId: ws.id,
+      repoUrl: ws.repoUrl,
+      pr: updatedPr,
+    });
 
     const response: GitHubPrActionResponse = { success: true, prState: "closed", prUrl: pr.url };
     res.json(response);
@@ -661,7 +693,15 @@ export function githubRoutes(db: Db) {
       if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
       throw err;
     }
-    await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "open" as const } } });
+    const updatedPr = { ...pr, state: "open" as const };
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: updatedPr } });
+    await emitPullRequestTaskOutput(db, {
+      companyId: ws.companyId,
+      issueId: ws.sourceIssueId,
+      executionWorkspaceId: ws.id,
+      repoUrl: ws.repoUrl,
+      pr: updatedPr,
+    });
 
     const response: GitHubPrActionResponse = { success: true, prState: "open", prUrl: pr.url };
     res.json(response);

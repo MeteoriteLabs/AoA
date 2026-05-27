@@ -95,6 +95,9 @@ export interface WorkspaceRuntimeService {
   status: string;
   port: number | null;
   url: string | null;
+  previewUrl?: string | null;
+  previewAccess?: "local" | "company" | "external" | null;
+  localTargetUrl?: string | null;
   command: string | null;
   cwd: string | null;
   provider: string;

@@ -24,6 +24,48 @@ const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/s;
 
 // ── Parser ─────────────────────────────────────────────────────────────────────
 
+function extractConfirmPayload(text: string): string | null {
+  const exactMatch = CONFIRM_RE.exec(text);
+  if (exactMatch) return exactMatch[1];
+
+  const markerIndex = text.indexOf("CONFIRM:");
+  if (markerIndex < 0) return null;
+
+  const firstBrace = text.indexOf("{", markerIndex + "CONFIRM:".length);
+  if (firstBrace < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = firstBrace; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(firstBrace, i + 1);
+    }
+  }
+
+  return null;
+}
+
 export class StreamJsonParser {
   private buffer: string = "";
 
@@ -182,10 +224,10 @@ function handleUserEvent(event: Record<string, unknown>): AgentStreamChunk[] {
           : "";
 
     // Check for ⚡CONFIRM:…⚡ marker
-    const confirmMatch = CONFIRM_RE.exec(fullText);
-    if (confirmMatch) {
+    const confirmPayload = extractConfirmPayload(fullText);
+    if (confirmPayload) {
       try {
-        const payload = JSON.parse(confirmMatch[1]) as {
+        const payload = JSON.parse(confirmPayload) as {
           toolName?: string;
           params?: unknown;
           confirmId?: string;

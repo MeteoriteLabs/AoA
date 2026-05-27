@@ -134,6 +134,9 @@ describe("codex execute target", () => {
     const workspace = path.join(root, "workspace");
     const commandBase = path.join(root, "agent");
     const capturePath = path.join(root, "capture.json");
+    const codexHome = path.join(root, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
     await fs.mkdir(workspace, { recursive: true });
     const commandPath = await writeFakeCodexCommand(commandBase);
 
@@ -182,6 +185,11 @@ describe("codex execute target", () => {
       expect(capture.prompt).toContain("Start a localhost preview app.");
       expect(capture.prompt).not.toContain("AOA_PREVIEW_URL=<full localhost URL>");
     } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
       await fs.rm(root, { recursive: true, force: true });
     }
   });
