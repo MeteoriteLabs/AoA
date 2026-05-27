@@ -36,6 +36,7 @@ export const updateDiscussionSchema = z.object({
   title: z.string().optional().nullable(),
   status: z.enum(DISCUSSION_STATUSES).optional(),
   tags: z.array(z.string()).optional(),
+  autonomyLevel: z.number().int().min(0).max(3).nullable().optional(),
 });
 
 export type UpdateDiscussion = z.infer<typeof updateDiscussionSchema>;

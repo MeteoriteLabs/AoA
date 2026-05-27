@@ -316,6 +316,7 @@ export function discussionService(db: Db) {
         scopeType?: string | null;
         scopeId?: string | null;
         tags?: string[];
+        autonomyLevel?: number | null;
       },
     ) => {
       // Validate scope if being changed
@@ -475,9 +476,17 @@ export function discussionService(db: Db) {
         },
       });
 
-      // Extraction will be picked up automatically by the durable extraction sweeper
-      // (server/src/index.ts — polls extractionStatus='pending' every 45 s, M2 atomic claim).
-      // "Reprocess" in the UI is a manual fast-path that bypasses the sweeper interval.
+      // Trigger extraction directly (fire-and-forget) so the UI sees items within
+      // seconds rather than waiting up to 45 s for the durable sweeper interval.
+      // The sweeper remains as a durability backstop for entries that slip through
+      // (e.g. server restart immediately after insert).
+      import("./extraction.js")
+        .then(({ extractionService }) => {
+          extractionService(db)
+            .extractFromDiscussionEntry(companyId, entry.id)
+            .catch(() => {}); // errors surfaced internally via extractionStatus='failed'
+        })
+        .catch(() => {}); // module load error — swallow; sweeper will pick it up
 
       await logActivity(db, {
         companyId,

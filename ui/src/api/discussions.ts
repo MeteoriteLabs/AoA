@@ -92,6 +92,8 @@ export interface DiscussionDetail {
   createdAt: string;
   updatedAt: string;
   entries: DiscussionEntry[];
+  crewPaused: boolean;
+  autonomyLevel: number | null;
 }
 
 // TODO: Verify ApproveItemsResponse shape matches backend — spec shows object arrays

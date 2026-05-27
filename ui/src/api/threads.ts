@@ -16,9 +16,10 @@ export interface ThreadFields {
   originSource: string | null;
   intent: string[] | null;
   goalId: string | null;
-  autonomyLevel: number | null;
   summaryText: string | null;
   summaryNext: string | null;
+  // crewPaused and autonomyLevel come from DiscussionDetail (the base type),
+  // but are thread-specific semantics so documented here.
 }
 
 export type ThreadListItem = DiscussionListItem & ThreadFields;
@@ -98,5 +99,23 @@ export const threadsApi = {
     api.patch<{ itemId: string }>(
       `/companies/${companyId}/discussions/${discussionId}/items/${itemId}/routing`,
       routing,
+    ),
+
+  pauseCrew: (companyId: string, id: string) =>
+    api.post<{ crewPaused: true }>(
+      `/companies/${companyId}/discussions/${id}/crew/pause`,
+      {},
+    ),
+
+  resumeCrew: (companyId: string, id: string) =>
+    api.post<{ crewPaused: false }>(
+      `/companies/${companyId}/discussions/${id}/crew/resume`,
+      {},
+    ),
+
+  setAutonomyLevel: (companyId: string, id: string, autonomyLevel: number | null) =>
+    api.patch<ThreadDetail>(
+      `/companies/${companyId}/discussions/${id}`,
+      { autonomyLevel },
     ),
 };

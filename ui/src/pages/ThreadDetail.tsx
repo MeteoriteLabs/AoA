@@ -228,6 +228,34 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
     onError: () => pushToast({ title: "Failed to advance phase", tone: "warn" }),
   });
 
+  const pauseCrewMutation = useMutation({
+    mutationFn: () => threadsApi.pauseCrew(selectedCompanyId!, resolvedId!),
+    onSuccess: () => {
+      invalidateThread();
+      pushToast({ title: "Crew paused", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to pause crew", tone: "warn" }),
+  });
+
+  const resumeCrewMutation = useMutation({
+    mutationFn: () => threadsApi.resumeCrew(selectedCompanyId!, resolvedId!),
+    onSuccess: () => {
+      invalidateThread();
+      pushToast({ title: "Crew resumed", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to resume crew", tone: "warn" }),
+  });
+
+  const setAutonomyMutation = useMutation({
+    mutationFn: (level: number | null) =>
+      threadsApi.setAutonomyLevel(selectedCompanyId!, resolvedId!, level),
+    onSuccess: () => invalidateThread(),
+    onError: () => pushToast({ title: "Failed to update autonomy", tone: "warn" }),
+  });
+
+  // Autonomy dropdown state
+  const [autonomyOpen, setAutonomyOpen] = useState(false);
+
   // Rename modal handlers
   function openRename() {
     setRenameTitle(thread?.title ?? "");
@@ -432,21 +460,59 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
 
               {/* Controls: autonomy pill + phase advance + pause */}
               <div className="flex items-center gap-1.5 shrink-0">
-                {/* Autonomy pill */}
-                {autonomyInfo && (
+                {/* Autonomy pill — click opens level picker */}
+                <div className="relative">
                   <button
                     type="button"
-                    title="Autonomy level (click to change — stub)"
-                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold"
-                    style={{ color: autonomyInfo.color, background: autonomyInfo.bgColor }}
+                    title="Change autonomy level"
+                    onClick={() => setAutonomyOpen((v) => !v)}
+                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity hover:opacity-80"
+                    style={
+                      autonomyInfo
+                        ? { color: autonomyInfo.color, background: autonomyInfo.bgColor }
+                        : { color: "hsl(0 0% 60%)", background: "hsl(0 0% 14%)" }
+                    }
                   >
                     <span
                       className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ background: autonomyInfo.color }}
+                      style={{ background: autonomyInfo?.color ?? "hsl(0 0% 40%)" }}
                     />
-                    {autonomyInfo.label}
+                    {autonomyInfo?.label ?? "Auto off"}
+                    <ChevronDown className="h-2.5 w-2.5 opacity-60" />
                   </button>
-                )}
+
+                  {autonomyOpen && (
+                    <div
+                      className="absolute right-0 top-full mt-1 z-50 min-w-[130px] rounded-lg border border-border shadow-lg py-1"
+                      style={{ background: "var(--card, #161a20)" }}
+                    >
+                      {([
+                        [null, "Off",    "hsl(0 0% 40%)", "hsl(0 0% 14%)"],
+                        [1,    "Manual", "#D9A938",        "rgba(217,169,56,0.15)"],
+                        [2,    "Semi",   "#60a5fa",        "rgba(96,165,250,0.15)"],
+                        [3,    "Auto",   "#4FB67E",        "rgba(79,182,126,0.15)"],
+                      ] as Array<[number | null, string, string, string]>).map(([lvl, label, color, bg]) => {
+                        const isActive = (thread.autonomyLevel ?? null) === lvl;
+                        return (
+                          <button
+                            key={String(lvl)}
+                            type="button"
+                            onClick={() => {
+                              setAutonomyOpen(false);
+                              if (!isActive) setAutonomyMutation.mutate(lvl);
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium transition-colors hover:bg-muted/30"
+                            style={{ color: isActive ? color : "hsl(0 0% 70%)" }}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color }} />
+                            {label}
+                            {isActive && <span className="ml-auto text-[9px] opacity-60">✓</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
                 {/* Phase advance button */}
                 {phaseButtonLabel && nextPhase && (
@@ -465,13 +531,27 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                   </button>
                 )}
 
-                {/* Pause/resume stub */}
+                {/* Pause/resume crew — solid button, wired to crewPaused */}
                 <button
                   type="button"
-                  title="Pause crew (stub)"
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+                  title={thread.crewPaused ? "Resume crew" : "Pause crew"}
+                  onClick={() =>
+                    thread.crewPaused
+                      ? resumeCrewMutation.mutate()
+                      : pauseCrewMutation.mutate()
+                  }
+                  disabled={pauseCrewMutation.isPending || resumeCrewMutation.isPending}
+                  className="w-7 h-7 rounded-full flex items-center justify-center transition-colors disabled:opacity-40"
+                  style={
+                    thread.crewPaused
+                      ? { background: "#b82d1c", color: "#fff" }
+                      : { background: "hsl(0 0% 20%)", color: "hsl(0 0% 70%)", border: "1px solid hsl(0 0% 28%)" }
+                  }
                 >
-                  <Pause className="h-3.5 w-3.5" />
+                  {thread.crewPaused
+                    ? <Play className="h-3 w-3 ml-0.5" />
+                    : <Pause className="h-3.5 w-3.5" />
+                  }
                 </button>
               </div>
             </div>
