@@ -8,6 +8,8 @@ export { installAgent } from "./agent-installer.js";
 export type { InstallAgentOpts, InstallAgentResult } from "./agent-installer.js";
 export { installTeam } from "./team-installer.js";
 export type { InstallTeamOpts, InstallTeamResult, PluginInstallerFn } from "./team-installer.js";
+export { uninstallTeam } from "./team-uninstaller.js";
+export type { UninstallTeamOpts, UninstallTeamResult } from "./team-uninstaller.js";
 export { installMarketplacePlugin } from "./plugin-installer.js";
 export type {
   InstallMarketplacePluginOpts,

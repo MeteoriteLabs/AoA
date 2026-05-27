@@ -30,6 +30,7 @@ import {
   installAgent,
   installTeam,
   installMarketplacePlugin,
+  uninstallTeam,
   findOperationById,
   updateOperation,
   type Installers,
@@ -406,6 +407,31 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       return;
     }
     res.json(op);
+  });
+
+  // DELETE /api/companies/:companyId/marketplace/teams/:teamId
+  router.delete("/teams/:teamId", async (req, res) => {
+    assertBoard(req);
+    const companyId = (req.params as Record<string, string>).companyId;
+    if (!companyId) {
+      res.status(400).json({ error: "Company context required" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+
+    const { teamId } = req.params;
+    try {
+      const result = await uninstallTeam({ db, companyId, teamId });
+      res.json({ success: true, deletedAgentIds: result.deletedAgentIds });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) {
+        res.status(404).json({ error: message });
+        return;
+      }
+      logger.error({ err, companyId, teamId }, "team uninstall failed");
+      res.status(500).json({ error: "Uninstall failed" });
+    }
   });
 
   return router;
