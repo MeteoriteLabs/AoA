@@ -724,7 +724,7 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 summaryText={thread.summaryText}
                 summaryNext={thread.summaryNext}
                 items={scopeItems}
-                planSteps={(thread.planSteps ?? []).map((s) => s.title)}
+                planSteps={(((thread as unknown as { planSteps?: Array<{ title: string }> }).planSteps) ?? []).map((s) => s.title)}
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}

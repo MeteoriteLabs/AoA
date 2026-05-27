@@ -1627,7 +1627,7 @@ export function threadService(db: Db) {
       if (!thread) throw notFound("Thread not found");
       await assertCanEdit(thread, actor);
 
-      const inserted = await db.transaction(async (tx: Db) => {
+      const inserted = await db.transaction(async (tx) => {
         await tx.delete(threadPlanSteps).where(eq(threadPlanSteps.threadId, id));
         if (steps.length === 0) return [] as Array<{ id: string }>;
         return tx
