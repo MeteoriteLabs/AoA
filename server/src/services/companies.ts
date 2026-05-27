@@ -128,17 +128,26 @@ export function companyService(db: Db) {
         // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
         // A brand-new company that gets a marketplace install immediately after
         // creation must not have its agents overwritten by the legacy seeders.
-        const [mktInstalled] = await db
-          .select({ id: agents.id })
-          .from(agents)
-          .where(
-            and(
-              eq(agents.companyId, company.id),
-              eq(agents.kind, "aoa"),
-              sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
-            ),
-          )
-          .limit(1);
+        // Wrapped in try/catch: a transient DB error here must not cause the entire
+        // company creation to 500 — the company row is already committed and the
+        // ensures are non-fatal. On failure, default to running the ensures so the
+        // company is never left without a crew.
+        let mktInstalled: { id: string } | undefined;
+        try {
+          [mktInstalled] = await db
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, company.id),
+                eq(agents.kind, "aoa"),
+                sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
+              ),
+            )
+            .limit(1);
+        } catch (err: unknown) {
+          logger.warn({ err, companyId: company.id }, "marketplace gate check failed — defaulting to legacy crew ensures");
+        }
 
         if (!mktInstalled) {
           await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {

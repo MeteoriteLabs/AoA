@@ -42,6 +42,11 @@ vi.mock("drizzle-orm", () => ({
   and: (...args: unknown[]) => ({ op: "and", args }),
   count: () => ({ op: "count" }),
   isNull: (a: unknown) => ({ op: "isNull", a }),
+  // T3.5 gate uses sql`` template tag — provide a tagged-template stub.
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...vals: unknown[]) => ({ op: "sql", strings, vals }),
+    {},
+  ),
 }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) =>
@@ -124,11 +129,23 @@ const NEW_COMPANY_ID = "co-new-9";
 // the happy path is `db.insert(companies).values(...).returning()` → returns
 // the freshly-created company row (with id). The 3 ensure-seeds are mocked,
 // so no further DB ops are exercised by this test.
+//
+// T3.5 addition: createCompanyWithUniquePrefix now calls
+// db.select().from(agents).where(...).limit(1) to check whether a marketplace-
+// governed crew already exists. Returning [] simulates a fresh legacy company
+// so the legacy ensure-*.ts path still runs and the wiring assertions hold.
 function makeDb() {
   return {
     insert: () => ({
       values: () => ({
         returning: () => Promise.resolve([{ id: NEW_COMPANY_ID, name: "Acme" }]),
+      }),
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]), // no marketplace-installed agents → legacy path
+        }),
       }),
     }),
   } as any;

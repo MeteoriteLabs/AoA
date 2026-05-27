@@ -26,8 +26,17 @@ describe("companyService issue prefix allocation", () => {
         },
       ]);
     const values = vi.fn(() => ({ returning }));
+    // T3.5: createCompanyWithUniquePrefix calls db.select().from(agents).where().limit(1)
+    // to check for marketplace-installed crew. Return [] so the legacy ensure path runs.
     const db = {
       insert: vi.fn(() => ({ values })),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue([]),
+          })),
+        })),
+      })),
     };
 
     const company = await companyService(db as never).create({

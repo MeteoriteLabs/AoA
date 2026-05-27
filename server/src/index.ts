@@ -695,41 +695,54 @@ void db
   .from(companies)
   .then(async (rows) => {
     for (const row of rows) {
-      // T3.5: skip ensure-*.ts if marketplace already governs this company's crew
-      const [marketplaceInstalled] = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(
-          and(
-            eq(agents.companyId, row.id),
-            eq(agents.kind, "aoa"),
-            sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
+      // Wrap each company independently: a failure for one company must never
+      // abort the backfill for the remaining companies.
+      try {
+        // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
+        // Wrapped so a transient DB error defaults to running the ensures (safe:
+        // ensures are idempotent and non-fatal on legacy companies).
+        let marketplaceInstalled: { id: string } | undefined;
+        try {
+          [marketplaceInstalled] = await db
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, row.id),
+                eq(agents.kind, "aoa"),
+                sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
+              ),
+            )
+            .limit(1);
+        } catch (err: unknown) {
+          logger.warn({ err, companyId: row.id }, "marketplace gate check failed — defaulting to legacy crew ensures");
+        }
+
+        if (marketplaceInstalled) {
+          logger.debug({ companyId: row.id }, "crew startup backfill: skipping — marketplace governs");
+          continue;
+        }
+
+        await Promise.all([
+          ensureCommandStaff(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "command staff backfill failed"),
           ),
-        )
-        .limit(1);
-
-      if (marketplaceInstalled) {
-        logger.debug({ companyId: row.id }, "crew startup backfill: skipping — marketplace governs");
-        continue;
+          ensureAdjutant(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "adjutant backfill failed"),
+          ),
+          ensureMaker(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "maker backfill failed"),
+          ),
+          ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "commander backfill failed"),
+          ),
+          ensureExtractionAgent(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "extraction agent backfill failed"),
+          ),
+        ]);
+      } catch (err: unknown) {
+        logger.warn({ err, companyId: row.id }, "crew startup backfill failed for company");
       }
-
-      await Promise.all([
-        ensureCommandStaff(db as any, row.id).catch((err: unknown) =>
-          logger.warn({ err, companyId: row.id }, "command staff backfill failed"),
-        ),
-        ensureAdjutant(db as any, row.id).catch((err: unknown) =>
-          logger.warn({ err, companyId: row.id }, "adjutant backfill failed"),
-        ),
-        ensureMaker(db as any, row.id).catch((err: unknown) =>
-          logger.warn({ err, companyId: row.id }, "maker backfill failed"),
-        ),
-        ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
-          logger.warn({ err, companyId: row.id }, "commander backfill failed"),
-        ),
-        ensureExtractionAgent(db as any, row.id).catch((err: unknown) =>
-          logger.warn({ err, companyId: row.id }, "extraction agent backfill failed"),
-        ),
-      ]);
     }
   })
   .catch((err) => logger.warn({ err }, "crew startup backfill failed"));
@@ -771,22 +784,28 @@ async function runCrewUpdateCheck(): Promise<void> {
 
     const allCompanies = await (db as any).select({ id: companies.id }).from(companies);
     for (const company of allCompanies) {
-      const settingsRow = await (db as any)
-        .select({ settings: marketplaceCompanySettings.settings })
-        .from(marketplaceCompanySettings)
-        .where(eq(marketplaceCompanySettings.companyId, company.id))
-        .limit(1);
-      const settings = {
-        ...MARKETPLACE_SETTINGS_DEFAULTS,
-        ...((settingsRow[0]?.settings as object) ?? {}),
-      };
-      await checkCrewUpdates({
-        db: db as any,
-        companyId: company.id,
-        catalogItems: catalogData as any,
-        settings,
-        instructionsService: agentInstructionsService(),
-      });
+      // Per-company isolation: a failure for one company must not abort the
+      // update check for the remaining companies.
+      try {
+        const settingsRow = await (db as any)
+          .select({ settings: marketplaceCompanySettings.settings })
+          .from(marketplaceCompanySettings)
+          .where(eq(marketplaceCompanySettings.companyId, company.id))
+          .limit(1);
+        const settings = {
+          ...MARKETPLACE_SETTINGS_DEFAULTS,
+          ...((settingsRow[0]?.settings as object) ?? {}),
+        };
+        await checkCrewUpdates({
+          db: db as any,
+          companyId: company.id,
+          catalogItems: catalogData as any,
+          settings,
+          instructionsService: agentInstructionsService(),
+        });
+      } catch (err) {
+        logger.warn({ err, companyId: company.id }, "crew update check failed for company");
+      }
     }
   } catch (err) {
     logger.warn({ err }, "crew update check failed");
