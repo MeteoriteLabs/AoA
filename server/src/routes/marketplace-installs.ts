@@ -40,6 +40,7 @@ import { derivePackages } from "../services/derivePackages.js";
 import type { PluginLoaderLike } from "../services/marketplace-install/plugin-installer.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 import { permissionService } from "../services/permissions.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
@@ -418,6 +419,9 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       return;
     }
     assertCompanyAccess(req, companyId);
+    // Uninstalling a team permanently deletes all its agents — founder-only,
+    // same as DELETE /agents/:id. assertRole throws 403 for team_lead / team_member.
+    await assertRole(db, req, companyId, "founder");
 
     const { teamId } = req.params;
     try {

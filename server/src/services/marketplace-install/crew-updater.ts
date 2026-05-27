@@ -175,9 +175,15 @@ export async function checkCrewUpdates(opts: {
       }
     }
 
-    // Notify path: record pending update + fire notification
+    // Notify path: record pending update + fire notification only on first detection.
+    // onConflictDoNothing().returning() returns the newly-inserted row when the
+    // (companyId, catalogItemId) pair is new, and returns [] when the row already
+    // exists.  Gating the notification on a non-empty return prevents the same
+    // founder from receiving duplicate "update available" notifications every time
+    // checkCrewUpdates runs (every boot + every catalog sync cycle).
+    let pendingInserted = false;
     try {
-      await db
+      const inserted = await db
         .insert(marketplacePendingUpdates)
         .values({
           companyId,
@@ -188,23 +194,24 @@ export async function checkCrewUpdates(opts: {
           latestVersion: catalogItem.version,
           status: "pending",
         })
-        .onConflictDoUpdate({
-          target: [marketplacePendingUpdates.companyId, marketplacePendingUpdates.catalogItemId],
-          set: { latestVersion: catalogItem.version, status: "pending", updatedAt: new Date() },
-        });
+        .onConflictDoNothing()
+        .returning({ id: marketplacePendingUpdates.id });
+      pendingInserted = inserted.length > 0;
     } catch (err) {
       logger.error({ err }, "marketplace: failed to record pending update");
     }
-    try {
-      await marketplaceNotifications.updateAvailable(
-        db,
-        companyId,
-        catalogItem.name,
-        agent.templateVersion ?? "0.0.0",
-        catalogItem.version,
-      );
-    } catch (err) {
-      logger.error({ err }, "marketplace: updateAvailable notification failed");
+    if (pendingInserted) {
+      try {
+        await marketplaceNotifications.updateAvailable(
+          db,
+          companyId,
+          catalogItem.name,
+          agent.templateVersion ?? "0.0.0",
+          catalogItem.version,
+        );
+      } catch (err) {
+        logger.error({ err }, "marketplace: updateAvailable notification failed");
+      }
     }
   }
 }
