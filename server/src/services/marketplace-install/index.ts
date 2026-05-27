@@ -10,6 +10,8 @@ export { installTeam } from "./team-installer.js";
 export type { InstallTeamOpts, InstallTeamResult, PluginInstallerFn } from "./team-installer.js";
 export { uninstallTeam } from "./team-uninstaller.js";
 export type { UninstallTeamOpts, UninstallTeamResult } from "./team-uninstaller.js";
+export { applyCrewAgentUpdate, checkCrewUpdates } from "./crew-updater.js";
+export type { CrewAgentRow } from "./crew-updater.js";
 export { installMarketplacePlugin } from "./plugin-installer.js";
 export type {
   InstallMarketplacePluginOpts,
