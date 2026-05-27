@@ -174,6 +174,30 @@ describe("CommanderGovernanceTab — oversight table", () => {
     expect(screen.queryByRole("button", { name: /pause/i })).toBeNull();
   });
 
+  it("shows founder-only notice for non-founders", () => {
+    const agent = makeAgent({ id: "a1", status: "idle" });
+    renderWithProviders(
+      <CommanderGovernanceTab
+        agents={[agent]}
+        trustScores={[]}
+        isFounder={false}
+      />,
+    );
+    expect(screen.getByText("founder-only")).toBeTruthy();
+  });
+
+  it("hides founder-only notice for founders", () => {
+    const agent = makeAgent({ id: "a1", status: "idle" });
+    renderWithProviders(
+      <CommanderGovernanceTab
+        agents={[agent]}
+        trustScores={[]}
+        isFounder={true}
+      />,
+    );
+    expect(screen.queryByText("founder-only")).toBeNull();
+  });
+
   it("calls agentsApi.pause when Pause button is clicked", async () => {
     const user = userEvent.setup();
     const agent = makeAgent({ id: "a1", status: "running" });

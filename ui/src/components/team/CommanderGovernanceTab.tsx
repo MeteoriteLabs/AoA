@@ -392,8 +392,8 @@ export function CommanderGovernanceTab({
         </table>
       </div>
 
-      {/* Founder-only notice */}
-      {isFounder && (
+      {/* Founder-only notice — shown to non-founders to explain read-only controls */}
+      {!isFounder && (
         <p className="flex items-center gap-2 text-[11px] text-muted-foreground/50 border border-border/40 rounded-lg px-3.5 py-2.5">
           <span>🔒</span>
           Budget edits, pause/resume, can-hire toggles, and quick-approvals are{" "}
