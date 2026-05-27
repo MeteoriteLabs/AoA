@@ -38,11 +38,9 @@ describe("EntryRow — agent authorship", () => {
           authorAgentAvatar: null,
         })}
         onReprocess={vi.fn()}
-        onReply={vi.fn()}
       />,
     );
-    expect(screen.getByText("Scribe")).toBeInTheDocument();
-    expect(screen.getAllByText(/agent/i).length).toBeGreaterThan(0); // badge
+    expect(screen.getAllByText("Scribe").length).toBeGreaterThan(0); // name + role badge
     expect(screen.getByTestId("entry-author-badge-agent")).toBeInTheDocument();
   });
 
@@ -51,28 +49,45 @@ describe("EntryRow — agent authorship", () => {
       <EntryRow
         entry={makeEntry({ createdBy: "jane-doe" })}
         onReprocess={vi.fn()}
-        onReply={vi.fn()}
       />,
     );
     expect(screen.queryByTestId("entry-author-badge-agent")).not.toBeInTheDocument();
   });
 
-  it("calls onReply with the entry id when the Reply button is clicked", async () => {
-    const { fireEvent } = await import("@testing-library/react");
-    const onReply = vi.fn();
+  it("right-aligns the bubble when currentUserId matches entry.createdBy", () => {
     renderWithProviders(
-      <EntryRow entry={makeEntry({ id: "e-42" })} onReprocess={vi.fn()} onReply={onReply} />,
+      <EntryRow
+        entry={makeEntry({ id: "e-42", createdBy: "user-1" })}
+        currentUserId="user-1"
+        onReprocess={vi.fn()}
+      />,
     );
-    // The action bar is in the expanded view — click the header toggle first
-    const toggleBtn = screen.getAllByRole("button")[0];
-    fireEvent.click(toggleBtn);
-    fireEvent.click(screen.getByRole("button", { name: /reply/i }));
-    expect(onReply).toHaveBeenCalledWith("e-42");
+    const row = screen.getByTestId("entry-row-e-42");
+    expect(row.getAttribute("data-entry-type")).toBe("me");
   });
 
-  it("no longer renders an Annotate button", () => {
+  it("left-aligns the bubble when currentUserId does not match", () => {
     renderWithProviders(
-      <EntryRow entry={makeEntry()} onReprocess={vi.fn()} onReply={vi.fn()} />,
+      <EntryRow
+        entry={makeEntry({ id: "e-43", createdBy: "user-1" })}
+        currentUserId="user-99"
+        onReprocess={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId("entry-row-e-43");
+    expect(row.getAttribute("data-entry-type")).toBe("human");
+  });
+
+  it("does not render a Reply button", () => {
+    renderWithProviders(
+      <EntryRow entry={makeEntry()} onReprocess={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button", { name: /reply/i })).not.toBeInTheDocument();
+  });
+
+  it("does not render an Annotate button", () => {
+    renderWithProviders(
+      <EntryRow entry={makeEntry()} onReprocess={vi.fn()} />,
     );
     expect(screen.queryByRole("button", { name: /annotate/i })).not.toBeInTheDocument();
   });
@@ -92,7 +107,6 @@ describe("EntryRow — system notices", () => {
       <EntryRow
         entry={makeSystemNoticeEntry()}
         onReprocess={vi.fn()}
-        onReply={vi.fn()}
       />,
     );
     expect(screen.getByTestId("entry-system-notice")).toBeInTheDocument();
@@ -103,7 +117,6 @@ describe("EntryRow — system notices", () => {
       <EntryRow
         entry={makeSystemNoticeEntry()}
         onReprocess={vi.fn()}
-        onReply={vi.fn()}
       />,
     );
     expect(screen.queryByRole("button", { name: /reply/i })).not.toBeInTheDocument();
@@ -114,7 +127,6 @@ describe("EntryRow — system notices", () => {
       <EntryRow
         entry={makeSystemNoticeEntry({ rawContent: "System-level event occurred." })}
         onReprocess={vi.fn()}
-        onReply={vi.fn()}
       />,
     );
     // Content is always visible — no toggle button needed
@@ -129,7 +141,6 @@ describe("EntryRow — system notices", () => {
       <EntryRow
         entry={makeSystemNoticeEntry()}
         onReprocess={vi.fn()}
-        onReply={vi.fn()}
       />,
     );
     expect(screen.getByText("System notice")).toBeInTheDocument();

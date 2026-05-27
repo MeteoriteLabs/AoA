@@ -1,14 +1,22 @@
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ScopeTab } from "../ScopeTab";
 import type { ScopeItem } from "../scopeGrouping";
+import { ALL_SCOPE_TYPES } from "../scopeGrouping";
 
-// Task 7 mock: threadsApi used for spinOff + routing calls
 vi.mock("../../../api/threads", () => ({
   threadsApi: {
     spinOff: vi.fn().mockResolvedValue({ id: "new-thread" }),
     routeItem: vi.fn().mockResolvedValue({ itemId: "item-1" }),
+  },
+}));
+
+vi.mock("../../../api/discussions", () => ({
+  discussionsApi: {
+    approveItems: vi.fn().mockResolvedValue({}),
+    rejectItems: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -39,169 +47,6 @@ function makeItem(overrides: Partial<ScopeItem> = {}): ScopeItem {
 }
 
 describe("ScopeTab", () => {
-  it("renders summary text when provided", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText="This thread is about improving onboarding."
-        summaryNext={null}
-        items={[]}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("This thread is about improving onboarding.")).toBeInTheDocument();
-  });
-
-  it("shows summary empty state when no summaryText", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={[]}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText(/scribe will summarize/i)).toBeInTheDocument();
-  });
-
-  it("shows plan empty state when planSteps is empty", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={[]}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText(/no plan yet/i)).toBeInTheDocument();
-  });
-
-  it("renders plan steps in an ordered list", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={[]}
-        planSteps={["Step one", "Step two", "Step three"]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Step one")).toBeInTheDocument();
-    expect(screen.getByText("Step two")).toBeInTheDocument();
-    expect(screen.getByText("Step three")).toBeInTheDocument();
-  });
-
-  it("shows items empty state when no items", () => {
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={[]}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText(/nothing to scope yet/i)).toBeInTheDocument();
-  });
-
-  it("renders pending items in the Needs Input group", () => {
-    const items: ScopeItem[] = [
-      makeItem({ id: "p1", status: "pending", title: "Pending task A" }),
-    ];
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={items}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Pending task A")).toBeInTheDocument();
-    expect(screen.getByText(/needs input/i)).toBeInTheDocument();
-  });
-
-  it("renders approved tasks in Confirmed group", () => {
-    const items: ScopeItem[] = [
-      makeItem({ id: "a1", status: "approved", title: "Confirmed task B" }),
-    ];
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={items}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Confirmed task B")).toBeInTheDocument();
-    // Multiple elements may match "confirmed" (section header + type badge) — just check presence
-    expect(screen.getAllByText(/confirmed/i).length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("renders approved reference in References group", () => {
-    const items: ScopeItem[] = [
-      makeItem({ id: "ref1", status: "approved", type: "reference", title: "Ref doc" }),
-    ];
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={items}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Ref doc")).toBeInTheDocument();
-    expect(screen.getByText(/references/i)).toBeInTheDocument();
-  });
-
-  it("renders approved artifact in Artifacts group", () => {
-    const items: ScopeItem[] = [
-      makeItem({ id: "art1", status: "approved", type: "artifact", title: "My artifact" }),
-    ];
-    renderWithProviders(
-      <ScopeTab
-        summaryText={null}
-        summaryNext={null}
-        items={items}
-        planSteps={[]}
-        isLoading={false}
-        isError={false}
-        onRetry={vi.fn()}
-        onItemClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("My artifact")).toBeInTheDocument();
-    expect(screen.getByText(/artifacts/i)).toBeInTheDocument();
-  });
-
   it("shows loading skeleton when isLoading", () => {
     renderWithProviders(
       <ScopeTab
@@ -234,14 +79,60 @@ describe("ScopeTab", () => {
     expect(screen.getByTestId("scope-tab-error")).toBeInTheDocument();
   });
 
-  it("shows conflict badge on items with conflictsWith", () => {
+  it("shows empty state when no pending items", () => {
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={[]}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/nothing to decide yet/i)).toBeInTheDocument();
+  });
+
+  it("renders plan steps when planSteps is non-empty", () => {
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={[]}
+        planSteps={["Step one", "Step two", "Step three"]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Step one")).toBeInTheDocument();
+    expect(screen.getByText("Step two")).toBeInTheDocument();
+    expect(screen.getByText("Step three")).toBeInTheDocument();
+  });
+
+  it("renders plan steps from the backend", () => {
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={[]}
+        planSteps={["Spec the API", "Build it", "Test it"]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Spec the API")).toBeInTheDocument();
+    expect(screen.getByText("Test it")).toBeInTheDocument();
+  });
+
+  it("shows Needs Decision section with pending items (collapsed by default)", () => {
     const items: ScopeItem[] = [
-      makeItem({
-        id: "c1",
-        status: "pending",
-        title: "Conflicted item",
-        conflictsWith: "other-item",
-      }),
+      makeItem({ id: "p1", status: "pending", title: "Pending task A" }),
     ];
     renderWithProviders(
       <ScopeTab
@@ -255,20 +146,109 @@ describe("ScopeTab", () => {
         onItemClick={vi.fn()}
       />,
     );
-    // Conflict badge appears (there may be multiple conflict-related elements)
-    expect(screen.getAllByText(/conflict/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId("scope-needs-decision")).toBeInTheDocument();
+    // Type accordion button exists but is collapsed
+    const accordion = screen.getByRole("button", { name: /tasks/i });
+    expect(accordion).toHaveAttribute("aria-expanded", "false");
   });
 
-  // ── Task 7: conflict card amber styling ───────────────────────────────────
+  it("expands type accordion to reveal pending items", async () => {
+    const user = userEvent.setup();
+    const items: ScopeItem[] = [
+      makeItem({ id: "p1", status: "pending", title: "Pending task A" }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /tasks/i }));
+    expect(screen.getByText("Pending task A")).toBeInTheDocument();
+  });
 
-  it("conflict card has amber styling for conflicted items in Needs Input", () => {
+  it("shows Approved section when items are approved", async () => {
+    const user = userEvent.setup();
+    const items: ScopeItem[] = [
+      makeItem({ id: "a1", status: "approved", title: "Approved task B" }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    // Approved section header should be visible
+    expect(screen.getByTestId("scope-approved")).toBeInTheDocument();
+    // Expand it
+    await user.click(screen.getByRole("button", { name: /approved/i }));
+    expect(screen.getByText("Approved task B")).toBeInTheDocument();
+  });
+
+  it("shows approved references under type label in Approved section", async () => {
+    const user = userEvent.setup();
+    const items: ScopeItem[] = [
+      makeItem({ id: "ref1", status: "approved", type: "reference", title: "Ref doc" }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /approved/i }));
+    expect(screen.getByText("Ref doc")).toBeInTheDocument();
+    expect(screen.getByText("References")).toBeInTheDocument();
+  });
+
+  it("shows approved artifacts under type label in Approved section", async () => {
+    const user = userEvent.setup();
+    const items: ScopeItem[] = [
+      makeItem({ id: "art1", status: "approved", type: "artifact", title: "My artifact" }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /approved/i }));
+    expect(screen.getByText("My artifact")).toBeInTheDocument();
+    expect(screen.getByText("Artifacts")).toBeInTheDocument();
+  });
+
+  it("conflict card has amber styling for conflicted items", async () => {
+    const user = userEvent.setup();
     const items: ScopeItem[] = [
       makeItem({
         id: "c1",
         status: "pending",
         title: "Conflicted item",
         conflictsWith: "other-item",
-        dependsOn: [],
       }),
     ];
     renderWithProviders(
@@ -283,17 +263,45 @@ describe("ScopeTab", () => {
         onItemClick={vi.fn()}
         companyId="comp-1"
         discussionId="disc-1"
-        isFounder={false}
       />,
     );
-    // The conflicted item row should have an amber conflict class
+    // Expand the Tasks accordion first so item card renders
+    await user.click(screen.getByRole("button", { name: /tasks/i }));
     const itemEl = screen.getByTestId("scope-item-c1");
+    // Amber conflict border is applied
     expect(itemEl.className).toMatch(/amber/);
   });
 
-  it("renders 'Spin off' button for each scope item", () => {
+  it("shows conflict badge text on conflicted items", async () => {
+    const user = userEvent.setup();
     const items: ScopeItem[] = [
-      makeItem({ id: "s1", status: "pending", title: "Spinnable Task", dependsOn: [] }),
+      makeItem({
+        id: "c1",
+        status: "pending",
+        title: "Conflicted item",
+        conflictsWith: "other-item",
+      }),
+    ];
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={items}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /tasks/i }));
+    expect(screen.getAllByText(/conflict/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows 'Spin off' button only for spin_off_thread type items", async () => {
+    const user = userEvent.setup();
+    const items: ScopeItem[] = [
+      makeItem({ id: "s1", status: "pending", type: "spin_off_thread", title: "Branch Task", dependsOn: [] }),
     ];
     renderWithProviders(
       <ScopeTab
@@ -307,14 +315,14 @@ describe("ScopeTab", () => {
         onItemClick={vi.fn()}
         companyId="comp-1"
         discussionId="disc-1"
-        isFounder={false}
       />,
     );
-    // Each item should have a spin-off button
+    await user.click(screen.getByRole("button", { name: /branches/i }));
     expect(screen.getByTestId("spin-off-s1")).toBeInTheDocument();
   });
 
-  it("shows dependency badge when item has dependsOn", () => {
+  it("shows dependency badge when item has dependsOn", async () => {
+    const user = userEvent.setup();
     const items: ScopeItem[] = [
       makeItem({ id: "d1", status: "pending", title: "Blocked Task", dependsOn: ["item-a", "item-b"] }),
     ];
@@ -330,15 +338,15 @@ describe("ScopeTab", () => {
         onItemClick={vi.fn()}
         companyId="comp-1"
         discussionId="disc-1"
-        isFounder={false}
       />,
     );
+    await user.click(screen.getByRole("button", { name: /tasks/i }));
     expect(screen.getByTestId("dep-badge-d1")).toBeInTheDocument();
   });
 
-  it("shows routing UI (department selector) only for founders", () => {
+  it("does not render routing UI (removed in v1.1 redesign)", () => {
     const items: ScopeItem[] = [
-      makeItem({ id: "r1", status: "pending", title: "Routable Task", type: "task", dependsOn: [] }),
+      makeItem({ id: "r1", status: "pending", title: "Task", type: "task", dependsOn: [] }),
     ];
     renderWithProviders(
       <ScopeTab
@@ -356,14 +364,14 @@ describe("ScopeTab", () => {
         departments={[{ id: "dept-1", name: "Engineering" }]}
       />,
     );
-    // Routing selector should appear for founders
-    expect(screen.getByTestId("routing-dept-r1")).toBeInTheDocument();
+    expect(screen.queryByTestId("routing-dept-r1")).not.toBeInTheDocument();
   });
 
-  it("does NOT show routing UI for non-founders", () => {
-    const items: ScopeItem[] = [
-      makeItem({ id: "r2", status: "pending", title: "Task", type: "task", dependsOn: [] }),
-    ];
+  it("renders items of all scope types in Approved section", async () => {
+    const user = userEvent.setup();
+    const items = ALL_SCOPE_TYPES.map((t, i) =>
+      makeItem({ id: `t${i}`, type: t, status: "approved", title: `${t} item` }),
+    );
     renderWithProviders(
       <ScopeTab
         summaryText={null}
@@ -374,11 +382,12 @@ describe("ScopeTab", () => {
         isError={false}
         onRetry={vi.fn()}
         onItemClick={vi.fn()}
-        companyId="comp-1"
-        discussionId="disc-1"
-        isFounder={false}
+        showAllTypes
       />,
     );
-    expect(screen.queryByTestId("routing-dept-r2")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /approved/i }));
+    for (const t of ALL_SCOPE_TYPES) {
+      expect(screen.getByText(`${t} item`)).toBeInTheDocument();
+    }
   });
 });

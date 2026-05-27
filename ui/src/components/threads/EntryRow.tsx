@@ -1,394 +1,467 @@
 /**
- * EntryRow — shared between DiscussionDetail and ThreadTab.
- * Renders a single discussion entry in a compact collapsible style.
- * Extracted from DiscussionDetail.tsx's ThreadEntryRow.
+ * EntryRow — group-chat message bubbles and agent cards.
+ * Current user → right-aligned bubble.
+ * Other humans → left-aligned bubble.
+ * Agents → left-aligned card with role-colored left border.
+ * System notices → centered divider.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
-import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  ClipboardPen,
-  Loader2,
-  MessageCirclePlus,
-  MessageSquare,
-  Mic,
-  PenLine,
-  Plug,
-  RefreshCw,
-  XCircle,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { CheckCircle2, Database, Loader2, XCircle } from "lucide-react";
 import { relativeTime } from "@/lib/utils";
-import type { DiscussionEntry, Annotation } from "../../api/discussions";
 import { Link } from "@/lib/router";
+import type { DiscussionEntry } from "../../api/discussions";
 
-/* ─── Constants ─── */
+/* ─── Agent role → color ─── */
 
-const SOURCE_ICONS: Record<string, typeof ClipboardPen> = {
-  paste: ClipboardPen,
-  write: PenLine,
-  voice: Mic,
-  mcp: Plug,
-};
+const ROLE_COLORS: Array<[RegExp, string]> = [
+  [/scribe/i,     "#6470DC"],  // --data-indigo
+  [/adjutant/i,   "#D9A938"],  // --data-amber
+  [/router/i,     "#3FA8C7"],  // --data-teal
+  [/planner/i,    "#5AA87E"],  // --data-emerald
+  [/dispatcher/i, "#7E8AA8"],  // --data-slate
+];
 
-const SOURCE_LABELS: Record<string, string> = {
-  paste: "Paste",
-  write: "Write",
-  voice: "Voice",
-  mcp: "MCP",
-};
+function agentRoleColor(name: string | null | undefined): string {
+  for (const [re, c] of ROLE_COLORS) if (re.test(name ?? "")) return c;
+  return "#7E8AA8";
+}
 
-function ExtractionStatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    pending: "bg-muted text-muted-foreground",
-    processing: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-    completed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-    failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-    skipped: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  };
+/* ─── Helpers ─── */
+
+function toInitials(id: string | null | undefined, fallback = "?"): string {
+  if (!id) return fallback;
+  if (id === "local-board") return "LB";
+  if (/^[0-9a-f]{8}-/i.test(id)) return "M";
   return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium capitalize",
-        styles[status] ?? styles.pending,
-      )}
-    >
-      {status === "processing" && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-      {status}
-    </span>
+    id.replace(/[-_]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || fallback
   );
 }
 
-function getExtractionError(sourceInfo: Record<string, unknown> | null): string | null {
-  if (!sourceInfo || typeof sourceInfo.extractionError !== "string") return null;
-  return sourceInfo.extractionError;
+function toDisplayName(id: string | null | undefined): string {
+  if (!id) return "Unknown";
+  if (id === "local-board") return "Local Board";
+  if (/^[0-9a-f]{8}-/i.test(id)) return "Member";
+  return id.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+}
+
+/* ─── Inline robot icon ─── */
+
+function RobotIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden="true">
+      <rect x="3" y="9" width="14" height="9" rx="2" />
+      <rect x="7" y="5.5" width="6" height="4" rx="1" />
+      <line x1="10" y1="5.5" x2="10" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="10" cy="2.2" r="1" />
+      <circle cx="7.5" cy="13" r="1.3" />
+      <circle cx="12.5" cy="13" r="1.3" />
+      <rect x="8" y="16" width="4" height="1" rx="0.5" />
+    </svg>
+  );
+}
+
+/* ─── Chip row ─── */
+
+function ChipRow({
+  taskCount,
+  memCount,
+  pendingCount,
+  extractionStatus,
+  extractionError,
+  errorMentionsProvider,
+}: {
+  taskCount: number;
+  memCount: number;
+  pendingCount: number;
+  extractionStatus: string;
+  extractionError: string | null;
+  errorMentionsProvider: boolean;
+}) {
+  const hasChips =
+    taskCount > 0 ||
+    memCount > 0 ||
+    pendingCount > 0 ||
+    extractionStatus === "processing" ||
+    extractionStatus === "failed";
+
+  if (!hasChips) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5 pt-1">
+      {extractionStatus === "processing" && (
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full text-muted-foreground"
+          style={{ border: "1px solid hsl(0 0% 25%)", background: "hsl(0 0% 12%)" }}
+        >
+          <Loader2 className="h-2.5 w-2.5 animate-spin" />
+          Extracting…
+        </span>
+      )}
+      {extractionStatus === "failed" && (
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
+          style={{
+            color: "#e87070",
+            border: "1px solid rgba(220,80,80,0.3)",
+            background: "rgba(220,80,80,0.08)",
+          }}
+          title={extractionError ?? "Extraction failed"}
+        >
+          <XCircle className="h-2.5 w-2.5" />
+          Extraction failed
+          {errorMentionsProvider && (
+            <Link to="/settings?tab=llm" className="underline hover:no-underline ml-1">
+              Settings
+            </Link>
+          )}
+        </span>
+      )}
+      {taskCount > 0 && (
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full"
+          style={{
+            color: "#4FB67E",
+            border: "1px solid rgba(79,182,126,0.35)",
+            background: "rgba(79,182,126,0.08)",
+          }}
+        >
+          <CheckCircle2 className="h-2.5 w-2.5" />
+          {taskCount} Task{taskCount !== 1 ? "s" : ""}
+        </span>
+      )}
+      {memCount > 0 && (
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full"
+          style={{
+            color: "#6470DC",
+            border: "1px solid rgba(100,112,220,0.35)",
+            background: "rgba(100,112,220,0.08)",
+          }}
+        >
+          <Database className="h-2.5 w-2.5" />
+          {memCount} Memory
+        </span>
+      )}
+      {pendingCount > 0 && (
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full"
+          style={{
+            color: "#D9A938",
+            border: "1px solid rgba(217,169,56,0.35)",
+            background: "rgba(217,169,56,0.08)",
+          }}
+        >
+          {pendingCount} pending
+        </span>
+      )}
+    </div>
+  );
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   EntryRow
+   EntryRow — public component
    ════════════════════════════════════════════════════════════════════════ */
 
 export interface EntryRowProps {
   entry: DiscussionEntry;
+  /** Viewer's own user ID — determines which side to align the bubble. */
+  currentUserId?: string | null;
   onReprocess: () => void;
-  onAddAnnotation: (
-    content: string,
-    anchorStart: number | null,
-    anchorEnd: number | null,
-  ) => void;
   isReprocessing?: boolean;
-  /** Indent level for nested replies (0 = top-level, 1 = reply) */
-  indentLevel?: number;
 }
 
 export function EntryRow({
   entry,
+  currentUserId,
   onReprocess,
-  onAddAnnotation,
   isReprocessing = false,
-  indentLevel = 0,
 }: EntryRowProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [showAnnotationInput, setShowAnnotationInput] = useState(false);
-  const [annotationText, setAnnotationText] = useState("");
-  const [selectedRange, setSelectedRange] = useState<{ start: number; end: number } | null>(null);
-  const contentRef = useRef<HTMLParagraphElement>(null);
-
-  const SourceIcon = SOURCE_ICONS[entry.inputType] ?? MessageSquare;
-  const sourceLabel = SOURCE_LABELS[entry.inputType] ?? entry.inputType;
-  const itemCount = entry.extractedItems.length;
-  const pendingCount = entry.extractedItems.filter((i) => i.status === "pending").length;
-
-  const handleTextSelect = useCallback(() => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !contentRef.current) return;
-    if (!contentRef.current.contains(selection.anchorNode)) return;
-    const range = selection.getRangeAt(0);
-    const preRange = document.createRange();
-    preRange.setStart(contentRef.current, 0);
-    preRange.setEnd(range.startContainer, range.startOffset);
-    const start = preRange.toString().length;
-    const end = start + range.toString().length;
-    if (end > start) {
-      setSelectedRange({ start, end });
-      setShowAnnotationInput(true);
-    }
-  }, []);
-
-  function submitAnnotation() {
-    if (!annotationText.trim()) return;
-    onAddAnnotation(
-      annotationText.trim(),
-      selectedRange?.start ?? null,
-      selectedRange?.end ?? null,
+  // System notice → centered divider
+  if ((entry.sourceInfo as Record<string, unknown> | null)?.systemNotice === true) {
+    return (
+      <div
+        className="flex items-center gap-3 my-2 px-1"
+        data-testid="entry-system-notice"
+        data-entry-id={`entry-row-${entry.id}`}
+      >
+        <div className="flex-1 h-px bg-border/60" />
+        <span
+          className="text-[11px] text-muted-foreground/70 whitespace-nowrap rounded-full px-3 py-0.5 shrink-0"
+          style={{ background: "hsl(0 0% 14% / 0.6)" }}
+        >
+          {entry.rawContent}
+        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40 shrink-0">
+          System notice
+        </span>
+        <div className="flex-1 h-px bg-border/60" />
+      </div>
     );
-    setAnnotationText("");
-    setShowAnnotationInput(false);
-    setSelectedRange(null);
   }
 
-  // Rendered content with annotation highlights
-  const renderedContent = useMemo(() => {
-    if (!entry.annotations || entry.annotations.length === 0) return null;
-    const anchored = entry.annotations.filter(
-      (a) => a.anchorStart != null && a.anchorEnd != null,
-    );
-    if (anchored.length === 0) return null;
+  const isAgent = !!entry.authorAgentId;
+  const isMe = !isAgent && !!currentUserId && entry.createdBy === currentUserId;
 
-    const text = entry.rawContent;
-    const charMap: Annotation[][] = new Array(text.length);
-    for (let i = 0; i < text.length; i++) charMap[i] = [];
-    for (const ann of anchored) {
-      const start = Math.max(0, ann.anchorStart!);
-      const end = Math.min(text.length, ann.anchorEnd!);
-      for (let i = start; i < end; i++) charMap[i].push(ann);
-    }
+  const approved = entry.extractedItems.filter((i) => i.status === "approved");
+  const taskCount = approved.filter((i) => i.resultTaskId).length;
+  const memCount = approved.filter((i) => i.resultMemoryId).length;
+  const pendingCount = entry.extractedItems.filter(
+    (i) => i.status === "pending" || i.status === "edited",
+  ).length;
 
-    const segments: { text: string; annotations: Annotation[] }[] = [];
-    let segStart = 0;
-    for (let i = 1; i <= text.length; i++) {
-      const prevAnns = charMap[i - 1];
-      const currAnns = i < text.length ? charMap[i] : [];
-      const same =
-        prevAnns.length === currAnns.length &&
-        prevAnns.every((a, idx) => a.id === currAnns[idx]?.id);
-      if (!same || i === text.length) {
-        segments.push({ text: text.slice(segStart, i), annotations: prevAnns });
-        segStart = i;
-      }
-    }
-    return segments;
-  }, [entry.rawContent, entry.annotations]);
-
-  const generalAnnotations = useMemo(
-    () => (entry.annotations ?? []).filter((a) => a.anchorStart == null),
-    [entry.annotations],
-  );
-
-  const extractionError = getExtractionError(entry.sourceInfo);
+  const extractionError =
+    typeof (entry.sourceInfo as Record<string, unknown> | null)?.extractionError === "string"
+      ? ((entry.sourceInfo as Record<string, unknown>).extractionError as string)
+      : null;
   const errorMentionsProvider = extractionError
-    ? extractionError.toLowerCase().includes("api key") ||
-      extractionError.toLowerCase().includes("provider")
+    ? /api key|provider/i.test(extractionError)
     : false;
+
+  if (isAgent) {
+    return (
+      <AgentCard
+        entry={entry}
+        taskCount={taskCount}
+        memCount={memCount}
+        pendingCount={pendingCount}
+        extractionError={extractionError}
+        errorMentionsProvider={errorMentionsProvider}
+      />
+    );
+  }
+
+  if (isMe) {
+    return (
+      <MeBubble
+        entry={entry}
+        taskCount={taskCount}
+        memCount={memCount}
+        pendingCount={pendingCount}
+      />
+    );
+  }
+
+  return (
+    <HumanBubble
+      entry={entry}
+      taskCount={taskCount}
+      memCount={memCount}
+      pendingCount={pendingCount}
+      extractionError={extractionError}
+      errorMentionsProvider={errorMentionsProvider}
+    />
+  );
+}
+
+/* ── Me bubble (right-aligned) ── */
+
+function MeBubble({
+  entry,
+  taskCount,
+  memCount,
+  pendingCount,
+}: {
+  entry: DiscussionEntry;
+  taskCount: number;
+  memCount: number;
+  pendingCount: number;
+}) {
+  return (
+    <div
+      className="flex flex-col items-end gap-1"
+      data-testid={`entry-row-${entry.id}`}
+      data-entry-type="me"
+    >
+      <div className="flex items-center gap-1.5 pr-1">
+        <span className="text-[11px] font-semibold text-muted-foreground">
+          {toDisplayName(entry.createdBy)}
+        </span>
+        <span className="text-[11px] text-muted-foreground/50">
+          {relativeTime(entry.createdAt)}
+        </span>
+      </div>
+      <div className="flex items-end gap-2">
+        <div className="flex flex-col items-end gap-1.5 max-w-[78%]">
+          <div
+            className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            style={{
+              color: "#eeeeee",
+              background: "hsl(221 20% 27%)",
+              border: "1px solid hsl(221 18% 34%)",
+              borderRadius: "16px 16px 4px 16px",
+            }}
+          >
+            {entry.rawContent}
+          </div>
+          <ChipRow
+            taskCount={taskCount}
+            memCount={memCount}
+            pendingCount={pendingCount}
+            extractionStatus={entry.extractionStatus}
+            extractionError={null}
+            errorMentionsProvider={false}
+          />
+        </div>
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
+          style={{ background: "hsl(221 22% 34%)" }}
+          title={entry.createdBy ?? "Me"}
+        >
+          {toInitials(entry.createdBy, "Me")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Human bubble (left-aligned) ── */
+
+function HumanBubble({
+  entry,
+  taskCount,
+  memCount,
+  pendingCount,
+  extractionError,
+  errorMentionsProvider,
+}: {
+  entry: DiscussionEntry;
+  taskCount: number;
+  memCount: number;
+  pendingCount: number;
+  extractionError: string | null;
+  errorMentionsProvider: boolean;
+}) {
+  return (
+    <div
+      className="flex items-end gap-2"
+      data-testid={`entry-row-${entry.id}`}
+      data-entry-type="human"
+    >
+      <div
+        className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
+        style={{ background: "hsl(220 14% 28%)" }}
+        title={toDisplayName(entry.createdBy)}
+      >
+        {toInitials(entry.createdBy, "?")}
+      </div>
+      <div className="flex flex-col gap-1 flex-1 min-w-0 max-w-[80%]">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-muted-foreground">
+            {toDisplayName(entry.createdBy)}
+          </span>
+          <span className="text-[11px] text-muted-foreground/50">
+            {relativeTime(entry.createdAt)}
+          </span>
+        </div>
+        <div
+          className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
+          style={{
+            color: "#eeeeee",
+            background: "hsl(220 12% 21%)",
+            border: "1px solid hsl(220 10% 27%)",
+            borderRadius: "16px 16px 16px 4px",
+          }}
+        >
+          {entry.rawContent}
+        </div>
+        <ChipRow
+          taskCount={taskCount}
+          memCount={memCount}
+          pendingCount={pendingCount}
+          extractionStatus={entry.extractionStatus}
+          extractionError={extractionError}
+          errorMentionsProvider={errorMentionsProvider}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ── Agent card (left-aligned, role-colored left border) ── */
+
+function AgentCard({
+  entry,
+  taskCount,
+  memCount,
+  pendingCount,
+  extractionError,
+  errorMentionsProvider,
+}: {
+  entry: DiscussionEntry;
+  taskCount: number;
+  memCount: number;
+  pendingCount: number;
+  extractionError: string | null;
+  errorMentionsProvider: boolean;
+}) {
+  const color = agentRoleColor(entry.authorAgentName);
+  const agentName = entry.authorAgentName ?? "Agent";
+  const roleLabel = agentName.split(/\s+/)[0];
 
   return (
     <div
-      className={cn(
-        "rounded-lg border border-border bg-card",
-        indentLevel > 0 && "ml-6 border-l-2 border-l-muted-foreground/20 rounded-l-none",
-      )}
+      className="flex items-start gap-2 max-w-[90%]"
       data-testid={`entry-row-${entry.id}`}
+      data-entry-type="agent"
     >
-      {/* Compact header row */}
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        aria-expanded={expanded}
-        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-muted/30 transition-colors rounded-lg focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      {/* Robot avatar */}
+      <div
+        className="w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 mt-0.5"
+        style={{ background: color }}
+        title={agentName}
       >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-        )}
-        <SourceIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-xs font-medium text-muted-foreground">{sourceLabel}</span>
-        <span className="text-xs text-muted-foreground">{relativeTime(entry.createdAt)}</span>
-        <ExtractionStatusBadge status={entry.extractionStatus} />
-        {itemCount > 0 && (
-          <span className="text-[10px] text-muted-foreground ml-auto">
-            {pendingCount > 0 ? `${pendingCount} pending / ` : ""}
-            {itemCount} items
+        <RobotIcon />
+      </div>
+
+      {/* Card */}
+      <div
+        className="flex flex-col gap-2.5 px-3.5 py-3 flex-1 min-w-0"
+        style={{
+          background: "var(--card-2, #1d2128)",
+          borderLeft: `3px solid ${color}`,
+          borderRadius: "4px 14px 14px 14px",
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold" style={{ color: "#eeeeee" }}>
+            {agentName}
           </span>
-        )}
-        {/* Entry content preview (collapsed) */}
-        {!expanded && (
-          <span className="text-xs text-muted-foreground truncate max-w-[200px] ml-1">
-            {entry.rawContent.slice(0, 60)}
-            {entry.rawContent.length > 60 ? "..." : ""}
+          <span
+            className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0"
+            data-testid="entry-author-badge-agent"
+            style={{ color, background: `${color}25` }}
+          >
+            {roleLabel}
           </span>
-        )}
-      </button>
-
-      {/* Expanded content */}
-      {expanded && (
-        <div className="px-3 pb-3 space-y-3 border-t border-border pt-3">
-          {/* Raw content */}
-          <div className="rounded-md bg-muted/30 p-3">
-            <p
-              ref={contentRef}
-              onMouseUp={handleTextSelect}
-              className="text-sm whitespace-pre-wrap text-muted-foreground leading-relaxed select-text cursor-text"
-            >
-              {renderedContent
-                ? renderedContent.map((seg, i) =>
-                    seg.annotations.length > 0 ? (
-                      <span
-                        key={i}
-                        className="bg-yellow-200/60 dark:bg-yellow-800/40 border-b border-yellow-400 dark:border-yellow-600 cursor-help"
-                        title={seg.annotations.map((a) => a.content).join("\n---\n")}
-                      >
-                        {seg.text}
-                      </span>
-                    ) : (
-                      <span key={i}>{seg.text}</span>
-                    ),
-                  )
-                : entry.rawContent}
-            </p>
-          </div>
-
-          {/* General annotations */}
-          {generalAnnotations.length > 0 && (
-            <div className="space-y-1">
-              {generalAnnotations.map((ann) => (
-                <div
-                  key={ann.id}
-                  className="flex items-start gap-2 rounded-md bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 p-2"
-                >
-                  <MessageCirclePlus className="h-3.5 w-3.5 text-yellow-600 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <p className="text-xs text-yellow-800 dark:text-yellow-300">{ann.content}</p>
-                    <span className="text-[10px] text-yellow-600/80">
-                      {new Date(ann.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Annotation input */}
-          {showAnnotationInput && (
-            <div className="flex items-start gap-2 rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50/50 dark:bg-yellow-950/20 p-3">
-              <MessageCirclePlus className="h-4 w-4 text-yellow-600 shrink-0 mt-1" />
-              <div className="flex-1 space-y-2">
-                {selectedRange && (
-                  <p className="text-[10px] text-yellow-700 dark:text-yellow-400">
-                    Annotating: &ldquo;
-                    {entry.rawContent.slice(
-                      selectedRange.start,
-                      Math.min(selectedRange.end, selectedRange.start + 80),
-                    )}
-                    {selectedRange.end - selectedRange.start > 80 ? "..." : ""}
-                    &rdquo;
-                  </p>
-                )}
-                <Textarea
-                  value={annotationText}
-                  onChange={(e) => setAnnotationText(e.target.value)}
-                  placeholder={
-                    selectedRange
-                      ? "Add a note about this selection..."
-                      : "Add a general note to this entry..."
-                  }
-                  className="min-h-[60px] text-sm resize-y bg-white dark:bg-background"
-                  autoFocus
-                />
-                <div className="flex justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setShowAnnotationInput(false);
-                      setAnnotationText("");
-                      setSelectedRange(null);
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={submitAnnotation}
-                    disabled={!annotationText.trim()}
-                  >
-                    Add Note
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Processing / failed / skipped status messages */}
-          {entry.extractionStatus === "processing" && (
-            <div className="flex items-center gap-2 rounded-md bg-muted/50 p-3">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">Extracting items...</span>
-            </div>
-          )}
-
-          {entry.extractionStatus === "failed" && (
-            <div className="flex flex-col gap-1 rounded-md bg-red-50 dark:bg-red-950/30 p-3">
-              <div className="flex items-center gap-2">
-                <XCircle className="h-4 w-4 text-red-600 shrink-0" />
-                <span className="text-sm text-red-700 dark:text-red-400">Extraction failed</span>
-              </div>
-              {extractionError && (
-                <p className="text-xs text-red-600/80 dark:text-red-400/80 ml-6">
-                  {extractionError}
-                  {errorMentionsProvider && (
-                    <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
-                      Go to Settings
-                    </Link>
-                  )}
-                </p>
-              )}
-            </div>
-          )}
-
-          {entry.extractionStatus === "skipped" && (
-            <div className="flex flex-col gap-1 rounded-md bg-amber-50 dark:bg-amber-950/30 p-3">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
-                <span className="text-sm text-amber-700 dark:text-amber-400">
-                  Extraction skipped
-                </span>
-              </div>
-              {extractionError && (
-                <p className="text-xs text-amber-600/80 dark:text-amber-400/80 ml-6">
-                  {extractionError}
-                  {errorMentionsProvider && (
-                    <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
-                      Go to Settings
-                    </Link>
-                  )}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSelectedRange(null);
-                setShowAnnotationInput((p) => !p);
-              }}
-              className={cn("text-xs", showAnnotationInput && "bg-accent")}
-            >
-              <MessageCirclePlus className="h-3.5 w-3.5 mr-1" />
-              Annotate
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onReprocess}
-              disabled={isReprocessing || entry.extractionStatus === "processing"}
-              className="text-xs"
-            >
-              <RefreshCw
-                className={cn("h-3.5 w-3.5 mr-1", isReprocessing && "animate-spin")}
-              />
-              Reprocess
-            </Button>
-          </div>
+          <span className="text-[11px] text-muted-foreground/50 ml-auto">
+            {relativeTime(entry.createdAt)}
+          </span>
         </div>
-      )}
+
+        {/* Body */}
+        <p
+          className="text-sm leading-relaxed break-words whitespace-pre-wrap"
+          style={{ color: "#eeeeee" }}
+        >
+          {entry.rawContent}
+        </p>
+
+        {/* Chips */}
+        <ChipRow
+          taskCount={taskCount}
+          memCount={memCount}
+          pendingCount={pendingCount}
+          extractionStatus={entry.extractionStatus}
+          extractionError={extractionError}
+          errorMentionsProvider={errorMentionsProvider}
+        />
+      </div>
     </div>
   );
 }

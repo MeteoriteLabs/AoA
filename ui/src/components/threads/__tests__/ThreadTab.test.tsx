@@ -1,8 +1,13 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll } from "vitest";
 import { screen } from "@testing-library/react";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ThreadTab } from "../ThreadTab";
 import type { DiscussionEntry } from "../../../api/discussions";
+
+// jsdom does not implement scrollIntoView
+beforeAll(() => {
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+});
 
 vi.mock("../../../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -21,7 +26,6 @@ vi.mock("../../../api/discussions", () => ({
   discussionsApi: {
     addEntry: vi.fn().mockResolvedValue({ id: "entry-new" }),
     reprocessEntry: vi.fn().mockResolvedValue({}),
-    addAnnotation: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -39,6 +43,10 @@ function makeEntry(overrides: Partial<DiscussionEntry> = {}): DiscussionEntry {
     departmentId: null,
     projectId: null,
     goalId: null,
+    parentEntryId: null,
+    authorAgentId: null,
+    authorAgentName: null,
+    authorAgentAvatar: null,
     extractionStatus: "completed",
     createdBy: "user-1",
     createdAt: "2026-01-01T09:00:00Z",
@@ -79,7 +87,7 @@ describe("ThreadTab", () => {
         onRetry={vi.fn()}
       />,
     );
-    expect(screen.getByText(/no posts yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
   });
 
   it("shows loading skeleton when isLoading is true", () => {
@@ -110,7 +118,7 @@ describe("ThreadTab", () => {
     expect(screen.getByTestId("thread-tab-error")).toBeInTheDocument();
   });
 
-  it("renders input source labels (write, paste, voice, mcp)", () => {
+  it("renders entry content regardless of inputType", () => {
     const entries = [
       makeEntry({ id: "e1", inputType: "paste", rawContent: "Pasted content" }),
     ];
@@ -124,7 +132,74 @@ describe("ThreadTab", () => {
         onRetry={vi.fn()}
       />,
     );
-    // Entry should render with the source indicator
     expect(screen.getByText("Pasted content")).toBeInTheDocument();
+  });
+
+  it("nests a reply under its parent with pl-10 indentation", () => {
+    const entries = [
+      makeEntry({ id: "parent", rawContent: "Parent post" }),
+      makeEntry({ id: "child", rawContent: "Child reply", parentEntryId: "parent" }),
+    ];
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={entries}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    const childRow = screen.getByTestId("entry-row-child");
+    // Child is wrapped in a pl-10 indent div
+    expect(childRow.closest(".pl-10")).not.toBeNull();
+    // Child is inside the parent's group wrapper
+    const group = screen.getByTestId("entry-group-parent");
+    expect(group).toContainElement(childRow);
+  });
+
+  it("does not render a reply as its own top-level row", () => {
+    const entries = [
+      makeEntry({ id: "parent", rawContent: "Parent post" }),
+      makeEntry({ id: "child", rawContent: "Child reply", parentEntryId: "parent" }),
+    ];
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={entries}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    // Exactly one top-level group (the parent); the child is nested inside it
+    expect(screen.getAllByTestId(/^entry-group-/)).toHaveLength(1);
+  });
+
+  it("sends a top-level message via the composer", async () => {
+    const { fireEvent, waitFor } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("thread-composer-textarea"), {
+      target: { value: "hello world" },
+    });
+    fireEvent.click(screen.getByTestId("thread-composer-submit"));
+    await waitFor(() =>
+      expect(discussionsApi.addEntry).toHaveBeenCalledWith(
+        "comp-1",
+        "thread-1",
+        expect.objectContaining({ rawContent: "hello world", parentEntryId: null }),
+      ),
+    );
   });
 });
