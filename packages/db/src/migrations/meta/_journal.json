@@ -799,6 +799,13 @@
       "when": 1779716554395,
       "tag": "0113_abandoned_scream",
       "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1779875031670,
+      "tag": "0114_new_scarecrow",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,12 @@
 // Pure scope-item grouping helper (no React dependency)
 // All items are ExtractedItems from discussion entries.
 
+import { BRIEF_ITEM_TYPES } from "@armyofagents/shared";
+
+/** Canonical list of valid scope item types. Re-exports BRIEF_ITEM_TYPES so
+ *  callers and tests can enumerate every type without duplicating the list. */
+export const ALL_SCOPE_TYPES = BRIEF_ITEM_TYPES;
+
 export interface ScopeItem {
   id: string;
   type: string;
