@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { useState } from "react";
 import { PackageInstallModal } from "../PackageInstallModal";
 import { marketplaceApi } from "@/api/marketplace";
+import { useCompany } from "@/context/CompanyContext";
 import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
 
@@ -22,11 +23,13 @@ vi.mock("@/api/marketplace", async () => {
 });
 
 vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({
-    selectedCompanyId: "c1",
-    companies: [{ id: "c1", name: "Acme", status: "active" }],
-  }),
+  useCompany: vi.fn(),
 }));
+
+const defaultCompanyCtx = {
+  selectedCompanyId: "c1",
+  companies: [{ id: "c1", name: "Acme", status: "active" }],
+};
 
 const pkg = {
   id: "anthropic/skills",
@@ -64,7 +67,10 @@ function wrap(ui: React.ReactElement) {
 }
 
 describe("PackageInstallModal", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useCompany).mockReturnValue(defaultCompanyCtx as any);
+  });
 
   it("posts packageId and catalogItemIds", async () => {
     vi.mocked(marketplaceApi.install).mockResolvedValueOnce({ operationId: "op-1", status: "pending" });
@@ -115,5 +121,16 @@ describe("PackageInstallModal", () => {
 
     await waitFor(() => expect(screen.getByText("Company Skills")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("Installed skills")).toBeInTheDocument());
+  });
+
+  it("disables Install and shows no-company hint when there are no active companies", () => {
+    vi.mocked(useCompany).mockReturnValue({ selectedCompanyId: null, companies: [] } as any);
+
+    wrap(<PackageInstallModal pkg={pkg as any} memberItems={memberItems} open onOpenChange={() => {}} />);
+
+    expect(
+      screen.getByText(/No organization available — create or join a company to install skills\./),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Install all/ })).toBeDisabled();
   });
 });

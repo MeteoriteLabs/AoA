@@ -34,12 +34,16 @@ export function PackageInstallModal({
   const installMutation = useInstallOperation({ companyId: companyId ?? "" });
   const { show, update, trackOperation } = useInstallToast();
 
+  const activeCompanies = useMemo(
+    () => companies.filter((c) => c.status !== "archived"),
+    [companies],
+  );
+
   useEffect(() => {
-    if (!companyId) {
-      const active = companies.filter((c) => c.status !== "archived");
-      if (active.length === 1) setCompanyId(active[0].id);
+    if (!companyId && activeCompanies.length === 1) {
+      setCompanyId(activeCompanies[0].id);
     }
-  }, [companyId, companies]);
+  }, [companyId, activeCompanies]);
 
   const skillCount = useMemo(
     () => memberItems.filter((item) => item.type === "skill").length,
@@ -95,6 +99,12 @@ export function PackageInstallModal({
           </div>
 
           <CompanyPicker value={companyId} onChange={setCompanyId} />
+
+          {activeCompanies.length === 0 && (
+            <div className="text-sm text-destructive">
+              No organization available — create or join a company to install skills.
+            </div>
+          )}
 
           <div className="max-h-[38vh] min-w-0 space-y-1.5 overflow-y-auto overflow-x-hidden pr-1">
             {memberItems.map((item) => (
