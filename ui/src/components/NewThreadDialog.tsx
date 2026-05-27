@@ -74,6 +74,8 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
 
   const target = resolveCreateTarget(selectedType);
 
+  const canCreate = title.trim().length > 0 || description.trim().length > 0;
+
   // Load projects for goal type
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId ?? ""),
@@ -272,11 +274,16 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
           )}
 
           {/* Actions */}
+          {!canCreate && (
+            <p className="text-xs text-destructive -mt-1">
+              Add a title or description before creating.
+            </p>
+          )}
           <div className="flex items-center justify-end gap-2 pt-2">
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending}>
+            <Button type="submit" disabled={!canCreate || createMutation.isPending}>
               {createMutation.isPending && (
                 <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
               )}

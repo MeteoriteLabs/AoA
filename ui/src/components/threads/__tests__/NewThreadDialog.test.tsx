@@ -94,4 +94,36 @@ describe("NewThreadDialog", () => {
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+
+  it("disables Create Thread and shows hint when both title and description are empty", () => {
+    renderWithProviders(
+      <NewThreadDialog open={true} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: /create thread/i })).toBeDisabled();
+    expect(
+      screen.getByText(/add a title or description before creating/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Create Thread once a title is typed", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <NewThreadDialog open={true} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: /create thread/i })).toBeDisabled();
+    await user.type(screen.getByLabelText(/title/i), "My thread");
+    expect(screen.getByRole("button", { name: /create thread/i })).toBeEnabled();
+    expect(
+      screen.queryByText(/add a title or description before creating/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("enables Create Thread once a description is typed (no title)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <NewThreadDialog open={true} onClose={vi.fn()} />,
+    );
+    await user.type(screen.getByPlaceholderText(/what's on your mind/i), "Some content");
+    expect(screen.getByRole("button", { name: /create thread/i })).toBeEnabled();
+  });
 });
