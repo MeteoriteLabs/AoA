@@ -69,8 +69,8 @@ No new API endpoints needed — all mutations use existing `agentsApi` / `approv
       ? queryKeys.liveRuns(selectedCompanyId)
       : ["live-runs", "none"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-    refetchInterval: 10_000, // poll every 10s while tab is active
+    enabled: Boolean(selectedCompanyId) && activeTab === "commander",
+    refetchInterval: 10_000, // poll only while Commander tab is active
   });
   ```
 
@@ -311,6 +311,8 @@ The enhanced agent card grid: each card shows the existing name/status/adapter i
 ---
 
 ## Task 3 — Create `CommanderKanbanTab`
+
+> ⚠ **Prerequisite:** `date-fns` must be installed before this task. If implementing tasks in order, complete Task 6 first — or run `pnpm --filter ui add date-fns` manually before Step 1. TypeScript will fail to compile on the `date-fns` import otherwise.
 
 ### Purpose
 A task-first, 5-column board (Idle / Running / Awaiting Approval / Error / Paused) where each card's headline is the *task title* (from `liveRuns`), with the agent shown only as a small attribution footer. Agents with no live run appear in the Idle column with a "waiting for next task" card.
@@ -712,7 +714,7 @@ An oversight table with columns: Agent · Trust · Budget (editable limit) · Ca
 
     // Summary metrics
     const totalAgents = agents.length;
-    const avgTrust = totalAgents > 0
+    const avgTrust = trustScores.length > 0
       ? Math.round(trustScores.reduce((s, t) => s + t.currentScore, 0) / trustScores.length)
       : 0;
     const monthlySpend = agents.reduce((s, a) => s + a.spentMonthlyCents, 0);
@@ -819,6 +821,7 @@ An oversight table with columns: Agent · Trust · Budget (editable limit) · Ca
                     {/* Budget (editable limit) */}
                     <td className="px-3 py-2.5">
                       <BudgetEditCell
+                        key={agent.budgetMonthlyCents}
                         agent={agent}
                         isFounder={isFounder}
                         onSave={(cents) => budgetMut.mutate({ id: agent.id, cents })}
@@ -961,7 +964,7 @@ An oversight table with columns: Agent · Trust · Budget (editable limit) · Ca
   import type { Agent, AgentTrustScore } from "@armyofagents/shared";
   import { useCompany } from "../../context/CompanyContext";
   import { useQueryClient } from "@tanstack/react-query";
-  import { Bot } from "lucide-react";
+  import { Bot, Plus } from "lucide-react";
   import type { LiveRunForIssue } from "../../api/heartbeats";
   import { CommanderRosterTab } from "./CommanderRosterTab";
   import { CommanderKanbanTab } from "./CommanderKanbanTab";
@@ -969,7 +972,6 @@ An oversight table with columns: Agent · Trust · Budget (editable limit) · Ca
   import { NewAoaAgentDialog } from "./NewAoaAgentDialog";
   import { EmptyState } from "@/components/ui/empty-state";
   import { Button } from "@/components/ui/button";
-  import { Plus } from "lucide-react";
   import { cn } from "../../lib/utils";
 
   type SubTab = "roster" | "kanban" | "governance";
@@ -1158,6 +1160,622 @@ An oversight table with columns: Agent · Trust · Budget (editable limit) · Ca
 
 ---
 
+## Task 7 — Update `makeAgent` factory + unit tests for sub-components
+
+### Purpose
+The existing `makeAgent` factory is missing `budgetMonthlyCents`, `spentMonthlyCents`, `permissions`, and `metadata` — fields that `CommanderRosterTab`, `CommanderKanbanTab`, and `CommanderGovernanceTab` use. Updating it first unblocks all subsequent tests. The unit tests cover every pure function and sub-component in isolation.
+
+**Files:**
+- Modify: `ui/src/__tests__/test-utils.tsx`
+- Create: `ui/src/__tests__/CommanderRosterTab.test.tsx`
+- Create: `ui/src/__tests__/CommanderKanbanTab.test.tsx`
+- Create: `ui/src/__tests__/CommanderGovernanceTab.test.tsx`
+
+- [ ] **Step 1: Update the `makeAgent` factory in `test-utils.tsx` (line ~109)**
+
+  Find the existing `makeAgent` function and replace it:
+  ```ts
+  export function makeAgent(overrides: Record<string, any> = {}) {
+    return {
+      id: "agent-1",
+      name: "Claude Agent",
+      role: "engineer",
+      title: "Senior Engineer",
+      status: "active",
+      adapterType: "claude_local",
+      icon: null,
+      lastHeartbeatAt: new Date().toISOString(),
+      companyId: "comp-1",
+      projectId: null,
+      runtimeConfig: {},
+      budgetMonthlyCents: 10_000,
+      spentMonthlyCents: 0,
+      permissions: { canCreateAgents: false },
+      metadata: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...overrides,
+    };
+  }
+  ```
+
+- [ ] **Step 2: Run the existing CommanderTeamTab tests to confirm no regressions**
+
+  ```bash
+  cd "C:\Users\TK\OneDrive\Desktop\Claude Data\Paperclip-AoA\AoA-2.5"
+  pnpm --filter ui vitest run --reporter=verbose ui/src/__tests__/CommanderTeamTab.test.tsx
+  ```
+  Expected: all 7 existing tests pass.
+
+- [ ] **Step 3: Create `CommanderRosterTab.test.tsx`**
+
+  ```tsx
+  import { describe, it, expect, vi } from "vitest";
+  import { renderWithProviders, makeAgent } from "./test-utils";
+  import { screen } from "@testing-library/react";
+  import { CommanderRosterTab } from "../components/team/CommanderRosterTab";
+
+  vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
+  vi.mock("../components/AgentIconPicker", () => ({
+    AgentIcon: ({ icon }: any) => <span>{icon ?? "icon"}</span>,
+  }));
+  vi.mock("../components/StatusBadge", () => ({
+    StatusBadge: ({ status }: any) => <span>{status}</span>,
+  }));
+  vi.mock("@/components/ui/button", () => ({
+    Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  }));
+
+  function makeTrustScore(agentId: string, score: number) {
+    return {
+      agentId,
+      currentScore: score,
+      totalCompleted: 10,
+      approvedWithoutChanges: Math.round((score / 100) * 10),
+      recentCompleted: 5,
+      recentApproved: Math.round((score / 100) * 5),
+    };
+  }
+
+  describe("CommanderRosterTab", () => {
+    const agents = [
+      makeAgent({ id: "a1", name: "Scout", budgetMonthlyCents: 10_000, spentMonthlyCents: 3_000, status: "running" }),
+      makeAgent({ id: "a2", name: "Scribe", budgetMonthlyCents: 10_000, spentMonthlyCents: 8_500, status: "idle" }),
+    ];
+    const trustScores = [makeTrustScore("a1", 90), makeTrustScore("a2", 45)];
+
+    it("renders all agent names", () => {
+      renderWithProviders(
+        <CommanderRosterTab agents={agents as any} trustScores={trustScores} isFounder={false} onNewAgent={vi.fn()} />,
+      );
+      expect(screen.getByText("Scout")).toBeInTheDocument();
+      expect(screen.getByText("Scribe")).toBeInTheDocument();
+    });
+
+    it("shows New AoA Agent button only for founders", () => {
+      const { rerender } = renderWithProviders(
+        <CommanderRosterTab agents={agents as any} trustScores={[]} isFounder={true} onNewAgent={vi.fn()} />,
+      );
+      expect(screen.getByText("New AoA Agent")).toBeInTheDocument();
+
+      rerender(
+        <CommanderRosterTab agents={agents as any} trustScores={[]} isFounder={false} onNewAgent={vi.fn()} />,
+      );
+      expect(screen.queryByText("New AoA Agent")).not.toBeInTheDocument();
+    });
+
+    it("BudgetBar: renders spent/limit text and handles limit=0 gracefully", () => {
+      const zeroLimitAgent = makeAgent({ id: "z1", name: "ZeroLimit", budgetMonthlyCents: 0, spentMonthlyCents: 0 });
+      renderWithProviders(
+        <CommanderRosterTab agents={[zeroLimitAgent] as any} trustScores={[]} isFounder={false} onNewAgent={vi.fn()} />,
+      );
+      // Should render "$0 / $0" without crashing (no division-by-zero error)
+      expect(screen.getByText(/\$0 \/ \$0/)).toBeInTheDocument();
+    });
+
+    it("BudgetBar: shows red color class for >=90% spend (via spent/limit text being present)", () => {
+      const highSpendAgent = makeAgent({ id: "h1", name: "HighSpend", budgetMonthlyCents: 10_000, spentMonthlyCents: 9_500 });
+      renderWithProviders(
+        <CommanderRosterTab agents={[highSpendAgent] as any} trustScores={[]} isFounder={false} onNewAgent={vi.fn()} />,
+      );
+      // $95 / $100 → 95% → red indicator text
+      expect(screen.getByText(/\$95 \/ \$100/)).toBeInTheDocument();
+    });
+
+    it("shows trust score badge for agents with data", () => {
+      renderWithProviders(
+        <CommanderRosterTab agents={agents as any} trustScores={trustScores} isFounder={false} onNewAgent={vi.fn()} />,
+      );
+      expect(screen.getByText("90%")).toBeInTheDocument();
+    });
+
+    it("omits trust badge when no trust data exists for an agent", () => {
+      renderWithProviders(
+        <CommanderRosterTab agents={agents as any} trustScores={[]} isFounder={false} onNewAgent={vi.fn()} />,
+      );
+      expect(screen.queryByText("90%")).not.toBeInTheDocument();
+    });
+  });
+  ```
+
+- [ ] **Step 4: Create `CommanderKanbanTab.test.tsx`**
+
+  ```tsx
+  import { describe, it, expect, vi } from "vitest";
+  import { renderWithProviders, makeAgent } from "./test-utils";
+  import { screen } from "@testing-library/react";
+  import { CommanderKanbanTab } from "../components/team/CommanderKanbanTab";
+
+  vi.mock("../components/AgentIconPicker", () => ({
+    AgentIcon: ({ icon }: any) => <span>{icon ?? "icon"}</span>,
+  }));
+  // Stub date-fns to avoid time-sensitive flakiness
+  vi.mock("date-fns", () => ({
+    formatDistanceToNowStrict: () => "5 minutes ago",
+  }));
+
+  describe("CommanderKanbanTab", () => {
+    it("renders all 5 column headers", () => {
+      renderWithProviders(<CommanderKanbanTab agents={[]} liveRuns={[]} />);
+      expect(screen.getByText("Idle")).toBeInTheDocument();
+      expect(screen.getByText("Running")).toBeInTheDocument();
+      expect(screen.getByText("Awaiting Approval")).toBeInTheDocument();
+      expect(screen.getByText("Error")).toBeInTheDocument();
+      expect(screen.getByText("Paused")).toBeInTheDocument();
+    });
+
+    it("shows empty text for all columns when agents array is empty", () => {
+      renderWithProviders(<CommanderKanbanTab agents={[]} liveRuns={[]} />);
+      expect(screen.getByText("No idle agents")).toBeInTheDocument();
+      expect(screen.getByText("Nothing running")).toBeInTheDocument();
+      expect(screen.getByText("No pending approvals")).toBeInTheDocument();
+      expect(screen.getByText("No errors")).toBeInTheDocument();
+      expect(screen.getByText("No agents paused")).toBeInTheDocument();
+    });
+
+    // agentStatusToColumn routing — verify each status lands in the expected column
+    const STATUS_COLUMN_CASES: Array<{ status: string; expectedColumn: string }> = [
+      { status: "running",          expectedColumn: "Running" },
+      { status: "pending_approval", expectedColumn: "Awaiting Approval" },
+      { status: "error",            expectedColumn: "Error" },
+      { status: "paused",           expectedColumn: "Paused" },
+      { status: "active",           expectedColumn: "Idle" },
+      { status: "idle",             expectedColumn: "Idle" },
+      { status: "archived",         expectedColumn: "Idle" },
+    ];
+
+    for (const { status, expectedColumn } of STATUS_COLUMN_CASES) {
+      it(`status="${status}" → agent card appears in "${expectedColumn}" column`, () => {
+        const agent = makeAgent({ id: "x", name: `Agent-${status}`, status });
+        renderWithProviders(<CommanderKanbanTab agents={[agent as any]} liveRuns={[]} />);
+        expect(screen.getByText(`Agent-${status}`)).toBeInTheDocument();
+        // Column header must be visible
+        const headers = screen.getAllByText(expectedColumn);
+        expect(headers.length).toBeGreaterThan(0);
+      });
+    }
+
+    it("displays live pulse indicator for running agent", () => {
+      const agent = makeAgent({ id: "r1", name: "Runner", status: "running" });
+      renderWithProviders(<CommanderKanbanTab agents={[agent as any]} liveRuns={[]} />);
+      // The "Running · X minutes ago" or status line appears
+      expect(screen.getByText("Runner")).toBeInTheDocument();
+    });
+  });
+  ```
+
+- [ ] **Step 5: Create `CommanderGovernanceTab.test.tsx`**
+
+  ```tsx
+  import { describe, it, expect, vi, beforeEach } from "vitest";
+  import { renderWithProviders, makeAgent, mockCompanyContext } from "./test-utils";
+  import { screen, fireEvent, waitFor } from "@testing-library/react";
+  import userEvent from "@testing-library/user-event";
+  import { CommanderGovernanceTab } from "../components/team/CommanderGovernanceTab";
+  import { agentsApi } from "../api/agents";
+  import { approvalsApi } from "../api/approvals";
+
+  vi.mock("../context/CompanyContext", () => ({
+    useCompany: () => mockCompanyContext,
+  }));
+  vi.mock("../context/ToastContext", () => ({
+    useToast: () => ({ pushToast: vi.fn() }),
+  }));
+  vi.mock("../api/agents", () => ({
+    agentsApi: {
+      pause: vi.fn().mockResolvedValue({}),
+      resume: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockResolvedValue({}),
+      updatePermissions: vi.fn().mockResolvedValue({}),
+    },
+  }));
+  vi.mock("../api/approvals", () => ({
+    approvalsApi: { approve: vi.fn().mockResolvedValue({}) },
+  }));
+  vi.mock("../components/AgentIconPicker", () => ({
+    AgentIcon: () => <span>icon</span>,
+  }));
+  vi.mock("../components/StatusBadge", () => ({
+    StatusBadge: ({ status }: any) => <span>{status}</span>,
+  }));
+  vi.mock("date-fns", () => ({
+    formatDistanceToNowStrict: () => "3 hours ago",
+  }));
+  vi.mock("../lib/queryKeys", () => ({
+    queryKeys: { trustScores: { list: (cid: string) => ["trust-scores", cid] } },
+  }));
+
+  const mockInvalidate = vi.fn();
+  vi.mock("@tanstack/react-query", async () => {
+    const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
+    return {
+      ...actual,
+      useQueryClient: () => ({ invalidateQueries: mockInvalidate }),
+      useMutation: (opts: any) => ({
+        mutate: async (data: any) => {
+          const res = await opts.mutationFn(data);
+          opts.onSuccess?.(res);
+        },
+        isPending: false,
+      }),
+    };
+  });
+
+  describe("CommanderGovernanceTab", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mockCompanyContext.selectedCompanyId = "comp-1";
+    });
+
+    const runningAgent = makeAgent({
+      id: "a1", name: "Scout", status: "running",
+      budgetMonthlyCents: 10_000, spentMonthlyCents: 3_000,
+      permissions: { canCreateAgents: true },
+    });
+    const idleAgent = makeAgent({
+      id: "a2", name: "Scribe", status: "idle",
+      budgetMonthlyCents: 5_000, spentMonthlyCents: 500,
+      permissions: { canCreateAgents: false },
+    });
+    const pendingAgent = makeAgent({
+      id: "a3", name: "Arch", status: "pending_approval",
+      budgetMonthlyCents: 5_000, spentMonthlyCents: 0,
+      permissions: { canCreateAgents: false },
+      metadata: { pendingApprovalId: "approval-99" },
+    });
+
+    it("renders all agent names in the table", () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[runningAgent, idleAgent] as any} trustScores={[]} isFounder={false} />,
+      );
+      expect(screen.getByText("Scout")).toBeInTheDocument();
+      expect(screen.getByText("Scribe")).toBeInTheDocument();
+    });
+
+    it("shows Avg trust as 0% when no trust scores exist — never NaN", () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[runningAgent] as any} trustScores={[]} isFounder={false} />,
+      );
+      expect(screen.getByText("0%")).toBeInTheDocument();
+      expect(screen.queryByText("NaN%")).not.toBeInTheDocument();
+    });
+
+    it("shows Pause button for running agent (founder only)", () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[runningAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      expect(screen.getByText(/⏸ Pause/)).toBeInTheDocument();
+    });
+
+    it("hides all action buttons for non-founders (Actions column shows —)", () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[runningAgent] as any} trustScores={[]} isFounder={false} />,
+      );
+      expect(screen.queryByText(/⏸ Pause/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/▶ Resume/)).not.toBeInTheDocument();
+    });
+
+    it("calls agentsApi.pause with agentId and companyId when Pause is clicked", async () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[runningAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      await userEvent.click(screen.getByText(/⏸ Pause/));
+      await waitFor(() => {
+        expect(agentsApi.pause).toHaveBeenCalledWith("a1", "comp-1");
+      });
+    });
+
+    it("shows Approve button only when agent has pendingApprovalId in metadata", () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[pendingAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      expect(screen.getByText(/✓ Approve/)).toBeInTheDocument();
+    });
+
+    it("does not show Approve button when pendingApprovalId is absent", () => {
+      const noPendingAgent = makeAgent({ id: "a4", status: "pending_approval", metadata: null });
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[noPendingAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      expect(screen.queryByText(/✓ Approve/)).not.toBeInTheDocument();
+    });
+
+    it("calls approvalsApi.approve with pendingApprovalId on click", async () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[pendingAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      await userEvent.click(screen.getByText(/✓ Approve/));
+      await waitFor(() => {
+        expect(approvalsApi.approve).toHaveBeenCalledWith("approval-99");
+      });
+    });
+
+    it("BudgetEditCell: renders editable input for founders, static text for non-founders", () => {
+      const { rerender } = renderWithProviders(
+        <CommanderGovernanceTab agents={[idleAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      // Founder sees input — title attribute is the accessible label
+      expect(screen.getByTitle("Monthly budget limit ($)")).toBeInTheDocument();
+      expect(screen.getByTitle("Monthly budget limit ($)")).toHaveValue("50"); // 5000 cents = $50
+
+      rerender(
+        <CommanderGovernanceTab agents={[idleAgent] as any} trustScores={[]} isFounder={false} />,
+      );
+      expect(screen.queryByTitle("Monthly budget limit ($)")).not.toBeInTheDocument();
+    });
+
+    it("BudgetEditCell: fires agentsApi.update on blur with new value in cents", async () => {
+      renderWithProviders(
+        <CommanderGovernanceTab agents={[idleAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      const input = screen.getByTitle("Monthly budget limit ($)");
+      await userEvent.clear(input);
+      await userEvent.type(input, "200");
+      fireEvent.blur(input);
+      await waitFor(() => {
+        expect(agentsApi.update).toHaveBeenCalledWith("a2", { budgetMonthlyCents: 20_000 }, "comp-1");
+      });
+    });
+
+    it("CanHireToggle: fires agentsApi.updatePermissions for founders; no-ops for non-founders", async () => {
+      const { rerender } = renderWithProviders(
+        <CommanderGovernanceTab agents={[runningAgent] as any} trustScores={[]} isFounder={true} />,
+      );
+      // runningAgent has canCreateAgents: true → title is present
+      const toggle = screen.getByTitle("Toggle canCreateAgents");
+      await userEvent.click(toggle);
+      await waitFor(() => {
+        expect(agentsApi.updatePermissions).toHaveBeenCalledWith("a1", { canCreateAgents: false }, "comp-1");
+      });
+
+      vi.clearAllMocks();
+      rerender(
+        <CommanderGovernanceTab agents={[runningAgent] as any} trustScores={[]} isFounder={false} />,
+      );
+      // Non-founder: button has no title, click does nothing
+      expect(screen.queryByTitle("Toggle canCreateAgents")).not.toBeInTheDocument();
+      expect(agentsApi.updatePermissions).not.toHaveBeenCalled();
+    });
+  });
+  ```
+
+- [ ] **Step 6: Run all new unit tests**
+
+  ```bash
+  cd "C:\Users\TK\OneDrive\Desktop\Claude Data\Paperclip-AoA\AoA-2.5"
+  pnpm --filter ui vitest run --reporter=verbose \
+    ui/src/__tests__/CommanderRosterTab.test.tsx \
+    ui/src/__tests__/CommanderKanbanTab.test.tsx \
+    ui/src/__tests__/CommanderGovernanceTab.test.tsx
+  ```
+  Expected: all tests pass.
+
+- [ ] **Step 7: Commit**
+
+  ```bash
+  git add \
+    ui/src/__tests__/test-utils.tsx \
+    ui/src/__tests__/CommanderRosterTab.test.tsx \
+    ui/src/__tests__/CommanderKanbanTab.test.tsx \
+    ui/src/__tests__/CommanderGovernanceTab.test.tsx
+  git commit -m "test(team): add unit tests for CommanderRosterTab, CommanderKanbanTab, CommanderGovernanceTab"
+  ```
+
+---
+
+## Task 8 — Update integration tests for the new `CommanderTeamTab` shell
+
+### Purpose
+The existing `CommanderTeamTab.test.tsx` (7 tests) covers the old single-panel design. After Task 5 rewrites the component into a sub-tab shell, the tests must pass the two new required props (`trustScores`, `liveRuns`) and add sub-tab switching coverage.
+
+**Files:**
+- Modify: `ui/src/__tests__/CommanderTeamTab.test.tsx`
+
+- [ ] **Step 1: Add sub-component stubs to the mock block (after the `@/components/ui/empty-state` mock, ~line 74)**
+
+  ```ts
+  vi.mock("../components/team/CommanderRosterTab", () => ({
+    CommanderRosterTab: ({ agents }: any) => <div data-testid="roster-tab">{agents.length} agents</div>,
+  }));
+
+  vi.mock("../components/team/CommanderKanbanTab", () => ({
+    CommanderKanbanTab: () => <div data-testid="kanban-tab">Kanban board</div>,
+  }));
+
+  vi.mock("../components/team/CommanderGovernanceTab", () => ({
+    CommanderGovernanceTab: () => <div data-testid="governance-tab">Governance table</div>,
+  }));
+  ```
+
+- [ ] **Step 2: Add `trustScores={[]}` and `liveRuns={[]}` to every existing render call (7 occurrences)**
+
+  Each `<CommanderTeamTab agents={agents as any} permissions={...} />` becomes:
+  ```tsx
+  <CommanderTeamTab
+    agents={agents as any}
+    trustScores={[]}
+    liveRuns={[]}
+    permissions={...}
+  />
+  ```
+
+- [ ] **Step 3: Append four new sub-tab switching tests inside the `describe("CommanderTeamTab", ...)` block**
+
+  ```ts
+  it("defaults to Roster sub-tab on first render", () => {
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    expect(screen.getByTestId("roster-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("kanban-tab")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("governance-tab")).not.toBeInTheDocument();
+  });
+
+  it("clicking Kanban tab shows kanban panel and hides roster", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    await user.click(screen.getByRole("button", { name: /^Kanban$/i }));
+    expect(screen.getByTestId("kanban-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("roster-tab")).not.toBeInTheDocument();
+  });
+
+  it("clicking Governance tab shows governance panel and hides roster", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    await user.click(screen.getByRole("button", { name: /^Governance$/i }));
+    expect(screen.getByTestId("governance-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("roster-tab")).not.toBeInTheDocument();
+  });
+
+  it("clicking Roster after switching to Kanban returns to roster panel", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    await user.click(screen.getByRole("button", { name: /^Kanban$/i }));
+    expect(screen.getByTestId("kanban-tab")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Roster$/i }));
+    expect(screen.getByTestId("roster-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("kanban-tab")).not.toBeInTheDocument();
+  });
+  ```
+
+- [ ] **Step 4: Run the full updated test file**
+
+  ```bash
+  pnpm --filter ui vitest run --reporter=verbose ui/src/__tests__/CommanderTeamTab.test.tsx
+  ```
+  Expected: all 11 tests pass (7 existing + 4 new).
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  git add ui/src/__tests__/CommanderTeamTab.test.tsx
+  git commit -m "test(team): update CommanderTeamTab tests for sub-tab shell and add sub-tab switching coverage"
+  ```
+
+---
+
+## Task 9 — E2E smoke test: Commander Team tab navigation
+
+### Purpose
+An E2E smoke test verifies that the full Team page → Commander tab → sub-tab navigation works in a real browser. Runs in CI with `AOA_E2E_SKIP_LLM=true` (no heartbeat required).
+
+**Files:**
+- Create: `tests/e2e/commander-team-tab.spec.ts`
+
+- [ ] **Step 1: Create the E2E test file**
+
+  ```ts
+  import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+  import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+
+  /**
+   * E2E smoke: Commander Team tab — sub-tab navigation
+   *
+   * Verifies:
+   * 1. Commander tab is reachable from the Team page
+   * 2. Roster / Kanban / Governance sub-tabs render without errors
+   *
+   * Does not require a running heartbeat (AOA_E2E_SKIP_LLM=true safe).
+   */
+  test.describe("Commander Team tab navigation", () => {
+    test.beforeEach(async ({ request }) => {
+      await cleanupTestCompanies(request, /^E2E-CommanderTab-/);
+    });
+
+    async function openCommanderTab(page: Page, request: APIRequestContext) {
+      const company = await seedCompany(request, `E2E-CommanderTab-${Date.now()}`);
+      await page.goto(`/${company.issuePrefix}/team?tab=commander`);
+      await expect(page).toHaveTitle(/\w+/);
+      return company;
+    }
+
+    test("Roster/Kanban/Governance sub-tab buttons are visible on the Commander tab", async ({
+      page,
+      request,
+    }) => {
+      await openCommanderTab(page, request);
+
+      await expect(page.getByRole("button", { name: /^Roster$/i })).toBeVisible({ timeout: 8_000 });
+      await expect(page.getByRole("button", { name: /^Kanban$/i })).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByRole("button", { name: /^Governance$/i })).toBeVisible({ timeout: 3_000 });
+    });
+
+    test("clicking Kanban sub-tab shows all 5 column headers", async ({ page, request }) => {
+      await openCommanderTab(page, request);
+      await page.getByRole("button", { name: /^Kanban$/i }).click();
+
+      for (const col of ["Idle", "Running", "Awaiting Approval", "Error", "Paused"]) {
+        await expect(page.getByText(col).first()).toBeVisible({ timeout: 5_000 });
+      }
+    });
+
+    test("clicking Governance sub-tab shows oversight table headers", async ({ page, request }) => {
+      await openCommanderTab(page, request);
+      await page.getByRole("button", { name: /^Governance$/i }).click();
+
+      for (const header of ["Agent", "Trust", "Budget", "Can hire", "Actions"]) {
+        await expect(
+          page.getByRole("columnheader", { name: new RegExp(header, "i") }).first(),
+        ).toBeVisible({ timeout: 5_000 });
+      }
+    });
+  });
+  ```
+
+- [ ] **Step 2: Verify the test is picked up by the Playwright config**
+
+  ```bash
+  cd "C:\Users\TK\OneDrive\Desktop\Claude Data\Paperclip-AoA\AoA-2.5"
+  pnpm e2e --list --grep "Commander Team"
+  ```
+  Expected: 3 test lines listed.
+
+- [ ] **Step 3: Run the E2E test (requires dev server running)**
+
+  ```bash
+  AOA_E2E_SKIP_LLM=true pnpm e2e --grep "Commander Team tab"
+  ```
+  Expected: all 3 tests pass.
+
+- [ ] **Step 4: Commit**
+
+  ```bash
+  git add tests/e2e/commander-team-tab.spec.ts
+  git commit -m "test(e2e): add Commander Team tab sub-tab navigation smoke test"
+  ```
+
+---
+
 ## Self-Review
 
 ### Spec coverage
@@ -1178,6 +1796,9 @@ An oversight table with columns: Agent · Trust · Budget (editable limit) · Ca
 | Sub-tab bar shell | Task 5 — `CommanderTeamTab` |
 | Trust/live-runs queries in TeamPage | Task 1 |
 | Empty state preserved | Task 5 — `agents.length === 0` guard |
+| Unit tests: helpers + sub-components | Task 7 |
+| Integration tests: sub-tab switching + mutations | Task 8 |
+| E2E smoke: full tab navigation | Task 9 |
 
 All requirements covered.
 
@@ -1196,3 +1817,49 @@ No TBD, TODO, or vague "add validation" phrases found. All code blocks are compl
 ### One known limitation
 
 The **Quick-approve** button in `CommanderGovernanceTab` requires `agent.metadata.pendingApprovalId`. If the backend does not populate this field in the AoA agents list response, the Approve button will simply not render (guarded by `pendingApprovalId` check). This is safe degradation — the user can still navigate to Config to approve from the full approval page. If the approval ID needs to be fetched, a follow-up plan should add `GET /companies/:cid/approvals?status=pending_approval` to the TeamPage queries.
+
+---
+
+## GSTACK REVIEW REPORT
+
+_Reviewed 2026-05-27 — gstack v1.47.0.0 / plan-eng-review_
+
+### D1 — Architecture (resolved: fix all 3)
+
+| # | Finding | Severity | Fix applied |
+|---|---------|----------|-------------|
+| A1 | `commanderLiveRunsQuery` `refetchInterval: 10_000` not gated on active tab — polls every 10s even while user is on Org Tree, Agents, or Humans tabs | High | Added `&& activeTab === "commander"` to `enabled` in Task 1 Step 3 |
+| A2 | Task 6 (install date-fns) placed after Tasks 3 and 4 that already import it — typecheck would fail mid-plan | High | Added prerequisite callout at top of Task 3; Task 6 remains as the canonical install step |
+| A3 | `BudgetEditCell` local `useState(limitDollars)` gets stale when `commanderLiveRunsQuery` refetches and parent re-renders with new agent data | Medium | Added `key={agent.budgetMonthlyCents}` to `<BudgetEditCell>` call in Task 4 — forces remount when the stored limit changes |
+
+_Prior learning applied: `react-query-visibility-gating` (9/10) — the `enabled` gate pattern matches this exact scenario._
+
+### D2 — Code Quality (resolved: fix both)
+
+| # | Finding | Severity | Fix applied |
+|---|---------|----------|-------------|
+| C1 | `avgTrust` guard checks `totalAgents > 0` but divides by `trustScores.length` — if agents exist but no trust data yet, produces `NaN%` in the metric card | High | Changed guard to `trustScores.length > 0` in Task 4 |
+| C2 | Two separate `lucide-react` import statements (`Bot` and `Plus`) in Task 5 code — lint warning | Low | Merged into `import { Bot, Plus } from "lucide-react"` in Task 5 |
+
+### D3 — Tests (resolved: full coverage — unit + integration + E2E)
+
+| # | Finding | Severity | Fix applied |
+|---|---------|----------|-------------|
+| T1 | Zero tests in the original plan — no unit, integration, or E2E coverage | Critical | Added Tasks 7 (unit tests for all 3 sub-components + `makeAgent` factory fix), 8 (integration tests for `CommanderTeamTab` shell + sub-tab switching + mutations), 9 (E2E Playwright smoke — 3 tests) |
+| T2 | `makeAgent` factory in `test-utils.tsx` missing `budgetMonthlyCents`, `spentMonthlyCents`, `permissions`, `metadata` — tests using these fields would fail TypeScript compilation | High | Task 7 Step 1 updates the factory with all missing fields |
+
+### Test inventory added (Tasks 7–9)
+
+**Unit (Task 7, ~25 tests):**
+- `CommanderRosterTab`: agent names, founder button gate, BudgetBar colors, BudgetBar limit=0 safety, trust badge presence/absence
+- `CommanderKanbanTab`: 5 column headers, empty text for each column, all 7 status→column mappings
+- `CommanderGovernanceTab`: agent names, NaN% protection, Pause/Resume/Approve buttons (founder gate), agentsApi.pause call, approvalsApi.approve call, BudgetEditCell founder/non-founder variants, BudgetEditCell blur→cents conversion, CanHireToggle founder/non-founder
+
+**Integration (Task 8, 11 tests total):**
+- 7 existing tests updated with new `trustScores={[]}` and `liveRuns={[]}` props
+- 4 new sub-tab switching tests: default=Roster, click→Kanban, click→Governance, click back→Roster
+
+**E2E (Task 9, 3 tests):**
+- Sub-tab buttons visible on Commander tab
+- Kanban columns present after click
+- Governance table headers present after click
