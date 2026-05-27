@@ -119,8 +119,39 @@ export function makeAgent(overrides: Record<string, any> = {}) {
     companyId: "comp-1",
     projectId: null,
     runtimeConfig: {},
+    budgetMonthlyCents: 1000,
+    spentMonthlyCents: 200,
+    permissions: { canCreateAgents: false },
+    metadata: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+export function makeTrustScore(overrides: Record<string, any> = {}) {
+  return {
+    agentId: "agent-1",
+    currentScore: 80,
+    totalCompleted: 10,
+    approvedWithoutChanges: 8,
+    recentCompleted: 5,
+    recentApproved: 4,
+    ...overrides,
+  };
+}
+
+export function makeLiveRun(overrides: Record<string, any> = {}) {
+  return {
+    id: "run-1",
+    status: "running",
+    agentId: "agent-1",
+    agentName: "Claude Agent",
+    adapterType: "claude_local",
+    issueId: "issue-abc123",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    createdAt: new Date().toISOString(),
     ...overrides,
   };
 }
