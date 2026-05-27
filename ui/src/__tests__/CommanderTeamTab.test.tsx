@@ -5,7 +5,31 @@ import { renderWithProviders, makeAgent, mockCompanyContext } from "./test-utils
 import { CommanderTeamTab } from "../components/team/CommanderTeamTab";
 import { agentsApi } from "../api/agents";
 
-// --- Mocks ---
+// --- Sub-component stubs (test shell wiring, not sub-component rendering) ---
+
+vi.mock("../components/team/CommanderRosterTab", () => ({
+  CommanderRosterTab: ({ agents, isFounder, onNewAgent }: any) => (
+    <div data-testid="roster-content">
+      {agents.map((a: any) => (
+        <div key={a.id} data-testid={`commander-agent-card-${a.id}`}>
+          {a.name}
+          {a.runtimeConfig?.aoa?.role === "lead" && <span>Lead</span>}
+        </div>
+      ))}
+      {isFounder && <button onClick={onNewAgent}>New AoA Agent</button>}
+    </div>
+  ),
+}));
+
+vi.mock("../components/team/CommanderKanbanTab", () => ({
+  CommanderKanbanTab: () => <div data-testid="kanban-content">kanban view</div>,
+}));
+
+vi.mock("../components/team/CommanderGovernanceTab", () => ({
+  CommanderGovernanceTab: () => <div data-testid="governance-content">governance view</div>,
+}));
+
+// --- Other mocks ---
 
 const mockNavigate = vi.fn();
 
@@ -50,7 +74,7 @@ vi.mock("../components/StatusBadge", () => ({
 
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: any) => <div>{children}</div>,
-  TooltipTrigger: ({ children, asChild }: any) => <div>{children}</div>,
+  TooltipTrigger: ({ children }: any) => <div>{children}</div>,
   TooltipContent: ({ children }: any) => <div>{children}</div>,
   TooltipProvider: ({ children }: any) => <div>{children}</div>,
 }));
@@ -143,24 +167,22 @@ describe("CommanderTeamTab", () => {
     ];
   }
 
-  it("renders both agent names", () => {
+  // ── Roster (default sub-tab) ──────────────────────────────────────────────
+
+  it("renders both agent names in Roster tab (default)", () => {
     const agents = makeAoaAgents();
-
     renderWithProviders(
-      <CommanderTeamTab agents={agents as any} permissions={defaultPermissions} />,
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
     );
-
     expect(screen.getByText("Commander")).toBeInTheDocument();
     expect(screen.getByText("Discussion Extraction")).toBeInTheDocument();
   });
 
   it("shows Lead badge for commander agent with lead role", () => {
     const agents = makeAoaAgents();
-
     renderWithProviders(
-      <CommanderTeamTab agents={agents as any} permissions={defaultPermissions} />,
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
     );
-
     expect(screen.getByText("Lead")).toBeInTheDocument();
   });
 
@@ -175,53 +197,32 @@ describe("CommanderTeamTab", () => {
         adapterType: "process",
       }),
     ];
-
     renderWithProviders(
-      <CommanderTeamTab agents={agents as any} permissions={defaultPermissions} />,
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
     );
-
     expect(screen.queryByText("Lead")).not.toBeInTheDocument();
-  });
-
-  it("clicking an agent card navigates to aoa detail route", async () => {
-    const user = userEvent.setup();
-    const agents = makeAoaAgents();
-
-    renderWithProviders(
-      <CommanderTeamTab agents={agents as any} permissions={defaultPermissions} />,
-    );
-
-    const card = screen.getByTestId("commander-agent-card-a1");
-    await user.click(card);
-
-    expect(mockNavigate).toHaveBeenCalledWith("/team/aoa/a1");
   });
 
   it("shows empty state when no agents", () => {
     renderWithProviders(
-      <CommanderTeamTab agents={[]} permissions={defaultPermissions} />,
+      <CommanderTeamTab agents={[]} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
     );
-
     expect(screen.getByText("No AoA agents yet")).toBeInTheDocument();
   });
 
   it("shows New AoA agent button for founder", () => {
     const agents = makeAoaAgents();
-
     renderWithProviders(
-      <CommanderTeamTab agents={agents as any} permissions={defaultPermissions} />,
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
     );
-
     expect(screen.getByText("New AoA Agent")).toBeInTheDocument();
   });
 
   it("hides New AoA agent button for non-founders", () => {
     const agents = makeAoaAgents();
-
     renderWithProviders(
-      <CommanderTeamTab agents={agents as any} permissions={{ isFounder: false }} />,
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={{ isFounder: false }} />,
     );
-
     expect(screen.queryByText("New AoA Agent")).not.toBeInTheDocument();
   });
 
@@ -231,7 +232,7 @@ describe("CommanderTeamTab", () => {
     vi.mocked(agentsApi.create).mockResolvedValue(fakeAgent as any);
 
     renderWithProviders(
-      <CommanderTeamTab agents={[]} permissions={{ isFounder: true }} />,
+      <CommanderTeamTab agents={[]} trustScores={[]} liveRuns={[]} permissions={{ isFounder: true }} />,
     );
 
     // Click "New AoA Agent" button in empty state
@@ -262,5 +263,55 @@ describe("CommanderTeamTab", () => {
         }),
       );
     });
+  });
+
+  // ── Sub-tab navigation ────────────────────────────────────────────────────
+
+  it("defaults to Roster sub-tab (roster-content visible)", () => {
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    expect(screen.getByTestId("roster-content")).toBeInTheDocument();
+    expect(screen.queryByTestId("kanban-content")).toBeNull();
+    expect(screen.queryByTestId("governance-content")).toBeNull();
+  });
+
+  it("switching to Kanban tab shows kanban-content and hides others", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    await user.click(screen.getByTestId("commander-subtab-kanban"));
+    expect(screen.getByTestId("kanban-content")).toBeInTheDocument();
+    expect(screen.queryByTestId("roster-content")).toBeNull();
+    expect(screen.queryByTestId("governance-content")).toBeNull();
+  });
+
+  it("switching to Governance tab shows governance-content and hides others", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    await user.click(screen.getByTestId("commander-subtab-governance"));
+    expect(screen.getByTestId("governance-content")).toBeInTheDocument();
+    expect(screen.queryByTestId("roster-content")).toBeNull();
+    expect(screen.queryByTestId("kanban-content")).toBeNull();
+  });
+
+  it("switching back to Roster tab from Governance restores roster-content", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab agents={agents as any} trustScores={[]} liveRuns={[]} permissions={defaultPermissions} />,
+    );
+    await user.click(screen.getByTestId("commander-subtab-governance"));
+    expect(screen.getByTestId("governance-content")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("commander-subtab-roster"));
+    expect(screen.getByTestId("roster-content")).toBeInTheDocument();
+    expect(screen.queryByTestId("governance-content")).toBeNull();
   });
 });

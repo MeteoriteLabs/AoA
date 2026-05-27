@@ -82,6 +82,7 @@ export function CommanderRosterTab({
           return (
             <div
               key={agent.id}
+              data-testid={`commander-agent-card-${agent.id}`}
               className={cn(
                 "group relative border border-border bg-card rounded-lg p-4",
                 "transition-all duration-150 cursor-pointer",
