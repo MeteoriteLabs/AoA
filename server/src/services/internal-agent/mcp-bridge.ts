@@ -2,6 +2,10 @@ import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 import type { CommanderToolPermissions } from "@armyofagents/shared";
 import { resolveCommanderToolPolicy } from "./authorize-tool.js";
 import { filterAuthorizedToolsForContext } from "./tool-registry.js";
+
+// Re-export so consumers (and existing tests) can import this from mcp-bridge
+// where the function used to live before it moved to tool-registry.
+export { filterAuthorizedToolsForContext };
 import { runtimeApprovalService } from "./runtime-approvals.js";
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
@@ -71,8 +75,11 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
 
     const policy = resolveCommanderToolPolicy(tool, deps.toolContext);
     if (!policy.allowed) {
+      // Include both the error code (e.g., NOT_IN_ALLOWLIST, FORBIDDEN_ROLE,
+      // CAPABILITY_DISABLED) and the human-readable summary so callers/tests
+      // can parse the failure type and humans see the explanation.
       return {
-        content: [{ type: "text", text: policy.summary }],
+        content: [{ type: "text", text: policy.error ? `${policy.error}: ${policy.summary}` : policy.summary }],
         isError: true,
       };
     }
