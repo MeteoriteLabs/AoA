@@ -3,7 +3,6 @@ import type { Db } from "@armyofagents/db";
 import { agents, internalAgentConfig, companySkills } from "@armyofagents/db";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import { seedCommanderInstructionBundle } from "./seed-commander-bundle.js";
-import { seedDefaultCommanderSkills } from "../../marketplace-install/default-skill-seeder.js";
 import {
   resolveCrewAdapterForCompany,
   needsAdapterBackfill,
@@ -159,12 +158,6 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
   } catch {
     // Seeding failure must not block Commander provisioning (graceful: the
     // chat falls back to the SYSTEM_INSTRUCTIONS constant — M2).
-  }
-  // Seed default catalog skills (idempotent; never blocks provisioning).
-  try {
-    await seedDefaultCommanderSkills({ db, companyId });
-  } catch {
-    // Non-fatal — catalog may not be seeded yet on first boot.
   }
   // Initialize the Commander's curated skill selection ONCE (sensible default =
   // all currently-installed company skills). Flag-guarded via metadata so a
