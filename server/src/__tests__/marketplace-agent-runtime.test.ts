@@ -248,4 +248,81 @@ describe("marketplace agent runtime parser", () => {
     expect(() => deriveSiblingResourceUrl(AGENT_ITEM, "/AGENTS.md")).toThrow(/unsafe/i);
     expect(() => deriveSiblingResourceUrl(AGENT_ITEM, "docs//AGENTS.md")).toThrow(/unsafe/i);
   });
+
+  // ─── T3.2: kind + triggers ────────────────────────────────────────────────
+
+  it("T3.2: normalizes kind='aoa' and trigger list for a crew agent template", () => {
+    const parsed = parseMarketplaceAgentTemplate(
+      JSON.stringify({
+        schemaVersion: "agent.v1",
+        id: "aoa-curated/commander",
+        name: "Commander",
+        description: "Coordination crew agent",
+        instructions: { type: "inline", content: "Coordinate the team." },
+        aoa: {
+          kind: "aoa",
+          triggers: [
+            { kind: "mention", config: { priority: "high" } },
+            { kind: "outbox" },
+          ],
+          install: { defaultRole: "general" },
+        },
+      }),
+      AGENT_ITEM,
+    );
+
+    const normalized = normalizeMarketplaceAgentTemplate({
+      parsed,
+      catalogItem: AGENT_ITEM,
+      availableAdapterTypes: [],
+    });
+
+    expect(normalized.kind).toBe("aoa");
+    expect(normalized.triggers).toHaveLength(2);
+    expect(normalized.triggers[0]).toEqual({ kind: "mention", config: { priority: "high" } });
+    // config defaults to {} when absent in the template
+    expect(normalized.triggers[1]).toEqual({ kind: "outbox", config: {} });
+  });
+
+  it("T3.2: normalizes kind='org' (default) when aoa.kind is absent", () => {
+    const parsed = parseMarketplaceAgentTemplate(
+      JSON.stringify({
+        schemaVersion: "agent.v1",
+        id: "aoa-curated/engineer",
+        name: "Engineer",
+        description: "Heartbeat-driven engineer",
+        instructions: { type: "inline", content: "Build things." },
+        aoa: { install: { defaultRole: "engineer" } },
+      }),
+      AGENT_ITEM,
+    );
+
+    const normalized = normalizeMarketplaceAgentTemplate({
+      parsed,
+      catalogItem: AGENT_ITEM,
+      availableAdapterTypes: [],
+    });
+
+    expect(normalized.kind).toBe("org");
+    expect(normalized.triggers).toEqual([]);
+  });
+
+  it("T3.2: legacy agents always produce kind='org' and empty triggers", () => {
+    const parsed = parseMarketplaceAgentTemplate(
+      JSON.stringify({
+        role: "general",
+        adapterConfig: { promptTemplate: "Do stuff." },
+      }),
+      AGENT_ITEM,
+    );
+
+    const normalized = normalizeMarketplaceAgentTemplate({
+      parsed,
+      catalogItem: AGENT_ITEM,
+      availableAdapterTypes: [],
+    });
+
+    expect(normalized.kind).toBe("org");
+    expect(normalized.triggers).toEqual([]);
+  });
 });

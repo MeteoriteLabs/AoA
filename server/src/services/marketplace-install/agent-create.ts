@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents } from "@armyofagents/db";
+import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { deriveSiblingResourceUrl } from "./agent-runtime.js";
 import { fetchCatalogResourceUrl } from "./fetch-resource.js";
@@ -72,6 +72,9 @@ export async function createMarketplaceAgent(opts: {
       .values({
         companyId,
         name: desiredName,
+        // D1 (T3.2): propagate kind from template so crew agents land as kind='aoa'.
+        // Defaults to 'org' for all legacy/org-kind templates.
+        kind: template.kind ?? "org",
         role: template.role,
         title: template.title,
         icon: template.icon,
@@ -90,6 +93,20 @@ export async function createMarketplaceAgent(opts: {
       .returning();
 
     const agent = inserted[0];
+
+    // Materialise any aoa_agent_triggers rows declared in the template.
+    // Each trigger is enabled by default; config is merged from the template.
+    // Only executed when there are triggers to insert (org-kind agents have []).
+    for (const trigger of template.triggers ?? []) {
+      await tx.insert(aoaAgentTriggers).values({
+        companyId,
+        agentId: agent.id,
+        kind: trigger.kind,
+        enabled: true,
+        config: trigger.config,
+      });
+    }
+
     if (instructions && instructionsService) {
       const materialized = await instructionsService.materializeManagedBundle(
         agent,

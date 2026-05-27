@@ -103,6 +103,10 @@ export interface AgentSetupRequirement {
 export interface NormalizedMarketplaceAgentTemplate {
   name: string;
   role: AgentRole | string;
+  /** "org" = heartbeat-driven (default). "aoa" = trigger-driven crew agent. */
+  kind: "org" | "aoa";
+  /** Trigger rows to materialise in aoa_agent_triggers on install. */
+  triggers: Array<{ kind: string; config: Record<string, unknown> }>;
   title?: string | null;
   icon?: string | null;
   status: AgentStatus;

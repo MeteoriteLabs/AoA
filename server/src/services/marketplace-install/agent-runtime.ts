@@ -80,6 +80,16 @@ const AgentRuntimeSchema = z.object({
     adapterConfig: z.record(z.unknown()).optional(),
     permissions: z.record(z.unknown()).optional(),
     skillKeys: z.array(z.string().min(1)).optional(),
+    // Phase 3 (T3.2): crew agent kind + triggers.
+    // kind="aoa" marks this agent as trigger-driven (not heartbeat-driven).
+    // triggers lists the aoa_agent_triggers rows to insert on install.
+    kind: z.enum(["org", "aoa"]).optional(),
+    triggers: z.array(
+      z.object({
+        kind: z.string().min(1),
+        config: z.record(z.unknown()).optional().default({}),
+      }).strict(),
+    ).optional(),
     setup: z.object({
       secrets: z.array(z.object({
         key: z.string().trim().min(1),
@@ -241,6 +251,9 @@ export function normalizeMarketplaceAgentTemplate(opts: {
     return {
       name: catalogItem.name,
       role,
+      // Legacy agents are always org-kind; no triggers supported.
+      kind: "org" as const,
+      triggers: [],
       title: parsed.template.title ?? null,
       icon,
       status: "idle",
@@ -287,6 +300,13 @@ export function normalizeMarketplaceAgentTemplate(opts: {
   return {
     name: runtime.name || catalogItem.name,
     role,
+    // kind defaults to "org" so existing agent.v1 catalog items without the field
+    // continue to work. aoa.kind="aoa" marks the agent as trigger-driven.
+    kind: (runtime.aoa?.kind ?? "org") as "org" | "aoa",
+    triggers: (runtime.aoa?.triggers ?? []).map((t) => ({
+      kind: t.kind,
+      config: t.config ?? {},
+    })),
     title: runtime.name,
     icon: normalizeIcon(runtime.aoa?.install?.defaultIcon, warnings),
     status: normalizeStatus(runtime.aoa?.install?.defaultStatus, setupRequired),

@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
-  return { agents: tableProxy };
+  // T3.2: aoaAgentTriggers added so trigger-insert path in createMarketplaceAgent resolves
+  return { agents: tableProxy, aoaAgentTriggers: tableProxy };
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
@@ -524,5 +525,119 @@ describe("installAgent", () => {
 
     expect(materializeManagedBundle).toHaveBeenCalledTimes(1);
     expect(committedRows).toEqual([]);
+  });
+
+  // ─── T3.2: kind propagation + trigger materialisation ────────────────────
+
+  it("T3.2: sets kind='aoa' when template declares aoa.kind='aoa'", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          schemaVersion: "agent.v1",
+          id: "aoa-curated/commander",
+          name: "Commander",
+          description: "Coordination crew agent",
+          instructions: { type: "inline", content: "Coordinate." },
+          aoa: { kind: "aoa", install: { defaultRole: "general" } },
+        }),
+    })) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: mockDb as any,
+      desiredName: "Commander",
+    });
+
+    expect(insertedRow.kind).toBe("aoa");
+  });
+
+  it("T3.2: kind defaults to 'org' when aoa.kind is absent", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          schemaVersion: "agent.v1",
+          id: "aoa-curated/engineer",
+          name: "Engineer",
+          description: "Regular engineer",
+          instructions: { type: "inline", content: "Build." },
+          aoa: { install: { defaultRole: "engineer" } },
+        }),
+    })) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: mockDb as any,
+      desiredName: "Engineer",
+    });
+
+    expect(insertedRow.kind).toBe("org");
+  });
+
+  it("T3.2: inserts one trigger row per declared trigger; org-kind agents insert none", async () => {
+    const triggerInserts: any[] = [];
+    const dbWithTriggerTracking = {
+      insert: (_table: any) => ({
+        values: (row: any) => {
+          // Distinguish agent vs trigger rows by the presence of 'agentId'+'kind'
+          if (row.agentId !== undefined && row.kind !== undefined && row.enabled !== undefined) {
+            triggerInserts.push(row);
+            return { returning: () => Promise.resolve([]) };
+          }
+          insertedRow = row;
+          return { returning: () => Promise.resolve([{ ...row, id: "agent-uuid-t3" }]) };
+        },
+      }),
+      transaction: async (cb: any) => cb(dbWithTriggerTracking),
+    };
+
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          schemaVersion: "agent.v1",
+          id: "aoa-curated/commander",
+          name: "Commander",
+          description: "Crew commander",
+          instructions: { type: "inline", content: "Coordinate." },
+          aoa: {
+            kind: "aoa",
+            triggers: [
+              { kind: "mention", config: { priority: "high" } },
+              { kind: "outbox" },
+            ],
+            install: { defaultRole: "general" },
+          },
+        }),
+    })) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: dbWithTriggerTracking as any,
+      desiredName: "Commander",
+    });
+
+    expect(triggerInserts).toHaveLength(2);
+    expect(triggerInserts[0]).toMatchObject({
+      companyId: "c1",
+      agentId: "agent-uuid-t3",
+      kind: "mention",
+      enabled: true,
+      config: { priority: "high" },
+    });
+    expect(triggerInserts[1]).toMatchObject({
+      companyId: "c1",
+      agentId: "agent-uuid-t3",
+      kind: "outbox",
+      enabled: true,
+      config: {},
+    });
   });
 });
