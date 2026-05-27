@@ -668,6 +668,9 @@ importers:
       d3:
         specifier: ^7.9.0
         version: 7.9.0
+      date-fns:
+        specifier: ^4.3.0
+        version: 4.3.0
       lucide-react:
         specifier: ^0.574.0
         version: 0.574.0(react@19.2.4)
@@ -4544,6 +4547,9 @@ packages:
   data-urls@7.0.0:
     resolution: {integrity: sha512-23XHcCF+coGYevirZceTVD7NdJOqVn+49IHyxgszm+JIiHLoB2TkmPtsYkNWT1pvRSGkc35L6NHs0yHkN2SumA==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=24.0.0}
+
+  date-fns@4.3.0:
+    resolution: {integrity: sha512-OYcL+3N/jyWbYdFGqoMAhytDgxP9pbYPUUiRCOgn4Fewaadk9l/Wam4Avciiyp2BgkpfQyBV9B+ehnVJych+eQ==}
 
   dateformat@4.6.3:
     resolution: {integrity: sha512-2P0p0pFGzHS5EMnhdxQi7aJN+iMheud0UhG4dlE1DLAlvL8JHjJJTX/CSm4JXwV0Ka5nGk3zC5mcb5bUQUxxMA==}
@@ -11675,6 +11681,8 @@ snapshots:
       whatwg-url: 16.0.1(@noble/hashes@2.0.1)
     transitivePeerDependencies:
       - '@noble/hashes'
+
+  date-fns@4.3.0: {}
 
   dateformat@4.6.3: {}
 
