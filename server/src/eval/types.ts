@@ -43,25 +43,37 @@ export interface EvalGrade {
 export interface EvalSuite<TInput = unknown, TActual = unknown, TExpected = unknown> {
   name: string;
   cases: Array<EvalCase<TInput, TExpected>>;
+  /**
+   * Max number of cases to run concurrently. Defaults to 5 — chosen to stay
+   * well under OpenAI's default RPM tiers while still parallelising enough
+   * to keep wall-clock tolerable. Set higher for cheap/local suites; set to
+   * 1 for strictly sequential debugging.
+   */
+  concurrency?: number;
   /** Run a single case input through the system under test. */
   runOne(input: TInput): Promise<TActual>;
   /** Grade the actual output against the expected output. */
   grade(actual: TActual, expected: EvalCase<TInput, TExpected>["expected"]): Promise<EvalGrade>;
 }
 
-export interface EvalCaseResult extends EvalGrade {
+export interface EvalCaseResult<TActual = unknown> extends EvalGrade {
   caseId: string;
-  /** Optional — captured for debugging when the suite chooses to surface it. */
-  actual?: unknown;
+  /**
+   * The output produced by runOne. Always captured when available — even on
+   * grade-throw paths — so callers can debug flaky graders without re-running.
+   * Undefined only when runOne itself threw.
+   */
+  actual?: TActual;
   /** ms wall-clock for this case (runOne + grade). */
   durationMs: number;
 }
 
-export interface EvalSuiteResult {
+export interface EvalSuiteResult<TActual = unknown> {
   name: string;
   total: number;
   pass: number;
   /** Number of cases below pass threshold. Useful for CI summary lines. */
   fail: number;
-  results: EvalCaseResult[];
+  /** Results preserve the input order of `suite.cases`. */
+  results: Array<EvalCaseResult<TActual>>;
 }
