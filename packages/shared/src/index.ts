@@ -1018,3 +1018,29 @@ export {
 } from "./config-schema.js";
 
 export * from "./teams.js";
+
+// ── API contract artifacts ──
+// Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).
+export {
+  DiscussionEntryAttachmentSchema,
+  DiscussionEntryV2Schema,
+  DISCUSSION_ENTRY_INPUT_TYPES_V2,
+  ProposedTaskSchema,
+  ScopeProposalPayloadSchema,
+  ThreadVisibilitySchema,
+  THREAD_VISIBILITIES_V2,
+  AdapterConfigEntrySchema,
+  CommanderAdapterConfigSchema,
+  CrewAdapterConfigSchema,
+  NewNotificationTypeSchema,
+  NEW_NOTIFICATION_TYPES,
+  type DiscussionEntryAttachment,
+  type DiscussionEntryV2,
+  type ProposedTask,
+  type ScopeProposalPayload,
+  type ThreadVisibilityV2,
+  type AdapterConfigEntry,
+  type CommanderAdapterConfig,
+  type CrewAdapterConfig,
+  type NewNotificationType,
+} from "./api/threads-contract.js";
