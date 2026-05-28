@@ -19,7 +19,7 @@
  *
  * See docs/guides/board-operator/aoa-agents-acceptance.md for setup instructions.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { createDb, type Db } from "@armyofagents/db";
 import { companyService } from "../services/companies.js";
@@ -66,6 +66,22 @@ describe.skipIf(isWin32 || !hasAcceptanceCli)(
     let extractionAgentId: string;
     let entryId: string;
     let setupError: unknown = null;
+
+    // Phase 1 (Task C1): autonomous Scribe outbox drain is OFF in production.
+    // The §17 hard-bar acceptance test pins the full autonomous extraction path
+    // end-to-end (real claude_local adapter producing extracted_items rows), so
+    // it opts INTO the drain via env flag while the test runs.
+    const ORIGINAL_DRAIN_FLAG = process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
+    beforeEach(() => {
+      process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED = "true";
+    });
+    afterEach(() => {
+      if (ORIGINAL_DRAIN_FLAG === undefined) {
+        delete process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
+      } else {
+        process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED = ORIGINAL_DRAIN_FLAG;
+      }
+    });
 
     beforeAll(async () => {
       try {

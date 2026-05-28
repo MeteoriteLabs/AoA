@@ -8,7 +8,7 @@
 // trigger (listEnabledOutboxAgents). A company with no enabled outbox agent
 // is SKIPPED; otherwise the extraction agent is resolved (memoized per
 // company) and runExtractionConsumer is invoked under a bounded limiter.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { consumerMock, ensureExtractionMock, listOutboxMock, publishLiveEventMock, runAoaMock } =
   vi.hoisted(() => ({
@@ -139,7 +139,16 @@ const entryFailReclaim = (s: any) =>
   s.extractionStatus === "failed" && s.sourceInfo !== undefined;
 
 describe("runAoaDispatch — generalized #99 dispatcher", () => {
+  // Phase 1 (Task C1): the autonomous Scribe outbox drain is OFF by default
+  // in production — Memory Keeper (phase=done sweep) and Adjutant own
+  // extraction via tool calls. These tests pin the legacy autonomous-drain
+  // mechanism (Phase-2 dispatch through `runExtractionConsumer`), so they
+  // explicitly opt INTO the drain by setting the env flag before each test.
+  // Cleaned up in `afterEach` so other suites in the same vitest worker are
+  // unaffected.
+  const ORIGINAL_DRAIN_FLAG = process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
   beforeEach(() => {
+    process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED = "true";
     consumerMock.mockClear();
     ensureExtractionMock.mockClear();
     listOutboxMock.mockClear();
@@ -149,6 +158,13 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     runAoaMock.mockResolvedValue(undefined);
     ensureExtractionMock.mockResolvedValue("ext-1");
     listOutboxMock.mockResolvedValue(["ext-1"]);
+  });
+  afterEach(() => {
+    if (ORIGINAL_DRAIN_FLAG === undefined) {
+      delete process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
+    } else {
+      process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED = ORIGINAL_DRAIN_FLAG;
+    }
   });
 
   it("Phase-2: company WITH an enabled outbox agent → entry dispatched via runExtractionConsumer(db, companyId, entryId, agentId)", async () => {

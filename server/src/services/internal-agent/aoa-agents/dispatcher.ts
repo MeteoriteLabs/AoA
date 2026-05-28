@@ -22,6 +22,31 @@ export interface DispatchOptions {
   staleMs: number;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// @deprecated — Phase 1 (Task C1): autonomous Scribe outbox drain is OFF by
+// default. The pre-existing Phase-2 code path below (per-company outbox-trigger
+// gated dispatch of pending discussion entries through `runExtractionConsumer`)
+// is preserved for rollback safety and for the existing aoa-dispatcher tests
+// that pin its mechanism, but it does NOT fire in production.
+//
+// Rationale: extraction is now invoked via tools by Memory Keeper (at
+// phase=done sweep) and Adjutant (optional, mid-discussion). Firing the LLM
+// on every entry was burning calls on entries that no role needed.
+//
+// Reactivate by setting `AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED=true`. Tests that
+// assert legacy autonomous-drain behaviour MUST set this in `beforeEach`.
+// When the new tool path is fully exercised in production the gated block can
+// be deleted (and the related Phase-1 / Phase-4 reclaim phases — which only
+// matter when entries reach 'processing' via the autonomous consumer — can be
+// reassessed). Until then we keep all of them intact.
+// ─────────────────────────────────────────────────────────────────────────────
+function isScribeAutonomousDrainEnabled(): boolean {
+  const raw = process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
 /**
  * AoA Dispatcher — the generalized durable poll (transactional-outbox
  * pattern), not an event listener. Generalizes the battle-tested
@@ -192,6 +217,19 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
 
   const drainPhase2 = async (): Promise<void> => {
     if (rows.length === 0) return;
+    // ── Phase 1 (Task C1): autonomous Scribe drain gated OFF by default ──────
+    // The SELECT above still runs so the positional-select order other suites
+    // depend on is byte-stable (slot 1 = pending-drain) and so the legacy
+    // Phase-1 / Phase-4 reclaim phases can still observe what is or isn't
+    // pending. Only the dispatch through `runExtractionConsumer` is gated.
+    //
+    // When the flag is OFF, Memory Keeper (phase=done sweep) and Adjutant
+    // (optional, mid-discussion) own extraction — they call the tool-callable
+    // functions in `services/extraction.ts` (extractMemoryCandidates, etc.).
+    // Set `AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED=true` to reactivate the legacy
+    // outbox drain (tests that pin its mechanism do this in `beforeEach`).
+    if (!isScribeAutonomousDrainEnabled()) return;
+
     // Per-company memoization within this tick: the enabled-outbox gate result
     // (true = has an enabled outbox agent) and the resolved extraction agent id.
     const outboxByCompany = new Map<string, boolean>();

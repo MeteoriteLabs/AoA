@@ -31,7 +31,7 @@
  * Skipped on Windows (embedded-postgres / migration-chain issue — Issue #114);
  * Linux CI is the authoritative gate for this test.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,6 +96,23 @@ describe.skipIf(process.platform === "win32")(
   () => {
     let companyId: string;
     let entryId: string;
+
+    // Phase 1 (Task C1): the autonomous Scribe outbox drain is OFF by default
+    // in production. This integration test pins the legacy autonomous-drain
+    // mechanism end-to-end (a pending discussion entry → atomically claimed
+    // by the kind='aoa' Discussion Extraction agent), so it explicitly opts
+    // INTO the drain via env flag while the test runs.
+    const ORIGINAL_DRAIN_FLAG = process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
+    beforeEach(() => {
+      process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED = "true";
+    });
+    afterEach(() => {
+      if (ORIGINAL_DRAIN_FLAG === undefined) {
+        delete process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED;
+      } else {
+        process.env.AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED = ORIGINAL_DRAIN_FLAG;
+      }
+    });
 
     it("setup: company create eagerly seeds the Commander Team (Decision #100)", async () => {
       if (setupError) {
