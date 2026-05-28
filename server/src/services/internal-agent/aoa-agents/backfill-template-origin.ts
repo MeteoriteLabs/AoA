@@ -20,10 +20,18 @@ const CREW_NAMES = [
   "Adjutant",
   "Scribe",
   "Memory Keeper",
+  // Phase D rename of Router. Keep both: any pre-rename Router row that
+  // dodged the in-seeder rename (e.g. seeded into a company that never hit
+  // ensureCommandStaff again) still gets a `@legacy` templateOrigin so the
+  // crew-updater can skip it.
   "Router",
+  "Navigator",
   "Planner",
   "Dispatcher",
+  // Phase D rename of Maker. Same rationale as Router/Navigator above.
   "Maker",
+  "Engineer",
+  "Scout",
 ] as const;
 
 export async function backfillCrewTemplateOrigin(db: Db): Promise<void> {

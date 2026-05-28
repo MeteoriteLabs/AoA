@@ -59,7 +59,8 @@ import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js
 import { DEFAULT_BACKUP_RETENTION, MARKETPLACE_SETTINGS_DEFAULTS } from "@armyofagents/shared";
 import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
-import { ensureMaker } from "./services/internal-agent/aoa-agents/ensure-maker.js";
+import { ensureScout } from "./services/internal-agent/aoa-agents/ensure-scout.js";
+import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engineer.js";
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
 import { ensureExtractionAgent } from "./services/internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
@@ -732,8 +733,14 @@ void db
           ensureAdjutant(db as any, row.id).catch((err: unknown) =>
             logger.warn({ err, companyId: row.id }, "adjutant backfill failed"),
           ),
-          ensureMaker(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "maker backfill failed"),
+          // Phase D batch 1: Maker → Engineer + new Scout. ensureEngineer's
+          // first action renames any legacy Maker rows to Engineer so the
+          // unique index never sees both names for one company.
+          ensureScout(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "scout backfill failed"),
+          ),
+          ensureEngineer(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "engineer backfill failed"),
           ),
           ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
             logger.warn({ err, companyId: row.id }, "commander backfill failed"),

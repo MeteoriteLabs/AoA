@@ -15,6 +15,15 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   adjutant: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   // Plan 4 — Maker (8th crew agent, design § 3)
   maker: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  // Phase D batch 1 — Navigator (rename of Router) and Engineer (rename of
+  // Maker) share dirs with the predecessors at v1 (full 4-file bundle).
+  // Scout (net-new) has no curated bundle yet — it reuses the single-file
+  // default fallback so seedRoleInstructionBundle returns gracefully and the
+  // runner uses the inline instruction string. Per-role markdown can be added
+  // later by shipping onboarding-assets/scout/ + bumping the file list here.
+  navigator: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  engineer: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  scout: ["AGENTS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -31,6 +40,14 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   scribe: "scribe",
   adjutant: "adjutant",
   maker: "maker",
+  // Phase D batch 1: alias the renamed roles to the existing bundle dirs.
+  // The bundle content is identical at v1; per-role specialization can ship
+  // later by adding a `navigator/` / `engineer/` / `scout/` dir and updating
+  // these entries. Until then, navigator reads from router/, engineer from
+  // maker/, and scout falls back to default/.
+  navigator: "router",
+  engineer: "maker",
+  scout: "default",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {

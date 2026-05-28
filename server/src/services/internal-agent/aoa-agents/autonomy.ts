@@ -9,18 +9,32 @@
  *   At L0/L1 these roles fire no autonomous actions.
  */
 
-export type CrewRole = "scribe" | "memory_keeper" | "curator" | "router" | "planner" | "dispatcher" | "adjutant" | "maker";
+export type CrewRole =
+  | "scribe"
+  | "memory_keeper"
+  | "curator"
+  | "router"
+  | "navigator"
+  | "planner"
+  | "dispatcher"
+  | "adjutant"
+  | "maker"
+  | "engineer"
+  | "scout";
 
 /** Minimum autonomy level at which each role auto-runs. Core roles are always on (0). */
 const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   scribe: 0,        // core: extraction always runs
   memory_keeper: 0, // core: proposals always run
   curator: 0,       // core: proactive scan always runs
-  router: 2,
+  router: 2,        // legacy alias — kept while staging DBs still carry kind='aoa' name='Router' rows
+  navigator: 2,     // Phase D rename of router: cross-thread routing + spin-off
   planner: 2,
   dispatcher: 2,
   adjutant: 0,      // active at L0 for nudges; advance_phase self-gates at L2 inside the tool
-  maker: 1,         // active at L1 for mention-driven artifact generation; phase-advance routing requires L2
+  maker: 1,         // legacy alias — kept while staging DBs still carry kind='aoa' name='Maker' rows
+  engineer: 1,      // Phase D rename of maker: artifact creation on @mention or phase-advance
+  scout: 1,         // mention-driven internal-only research (Phase 1 — no browse); aligns with engineer
 };
 
 /**

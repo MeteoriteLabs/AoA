@@ -78,13 +78,14 @@ export function createToolRegistry(): AgentTool[] {
     threadCreateLinkTool,
     getThreadSummaryTool,
     findSimilarThreadsTool,
-    // Task C2 batch 2 — 5 navigator + artifact + workspace tools (T15)
-    // attach_to_thread, spin_off_thread → Navigator (Router) allowlist (see
-    // ensure-command-staff.ts roleToolAllowlist['router']).
-    // TODO(Phase D): create_artifact_version, query_artifacts,
-    //   request_thread_workspace must be added to the Engineer agent's
-    //   toolAllowlist when ensure-engineer.ts lands in Phase D. Until then,
-    //   only the founder or a hand-rolled per-agent allowlist can invoke them.
+    // Task C2 batch 2 — 5 navigator + artifact + workspace tools (T15).
+    // attach_to_thread, spin_off_thread → Navigator (formerly Router)
+    // allowlist (see ensure-command-staff.ts roleToolAllowlist['navigator']).
+    // Phase D batch 1 (T6) closed the original TODO: create_artifact_version,
+    // query_artifacts, request_thread_workspace are now on the Engineer
+    // allowlist in ensure-engineer.ts. Planner also gets create_artifact_version
+    // + query_artifacts for the plan-as-artifact flow, and Dispatcher gets
+    // query_artifacts to read the plan before creating tasks.
     attachToThreadTool,
     spinOffThreadTool,
     createArtifactVersionTool,

@@ -1,175 +1,70 @@
-import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers } from "@armyofagents/db";
-import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
-import { agentInstructionsService } from "../../agent-instructions.js";
-import {
-  resolveCrewAdapterForCompany,
-  needsAdapterBackfill,
-  mergeAdapterConfig,
-} from "./resolve-crew-adapter.js";
+import { seedCrewAgent } from "./seed-crew-agent.js";
 
 /**
- * Plan 3 Task 1 — Adjutant role seed + ROLE_MIN_AUTONOMY.
- * The Adjutant checks if a thread is ready to advance to the next phase,
- * and either advances it (autonomy ≥ 2) or nudges the owner (autonomy < 2).
- * Active at all autonomy levels (L0+); advance_phase self-gates at L2 inside the tool.
+ * Phase D batch 1 (T9 / D2) — Adjutant role seed.
  *
- * Triggered via periodic "sweep" dispatch.
+ * Refactored to use the shared {@link seedCrewAgent} helper so the
+ * insert-or-fetch / trigger / backfill / bundle-seed boilerplate lives in one
+ * place. The role-specific surface (name, instruction, allowlist, trigger
+ * kind/config, bundle role) lives in this file.
+ *
+ * The instruction was rewritten in Phase D batch 1 from the v1 "quiet
+ * shepherd" copy to the discuss-phase director prompt. Adjutant is now the
+ * orchestrator of the discuss → scope transition: it reads the thread, sets
+ * intent, delegates Scout/Engineer/Navigator, or posts a scope_proposal when
+ * the conversation has converged. It still nudges-or-advances at L2.
+ *
+ * Decisions touched:
+ *   - #15/#16/#52: Adjutant does NOT write memory. It can extract candidates
+ *     mid-discussion for the founder via extract_memory_candidates.
+ *   - Crew dispatch hop limit = 3 (Phase B4). Adjutant's agent.dispatch calls
+ *     bump hopCount; the dispatcher refuses past the limit.
  */
 
-const ROLE_INSTRUCTION: string =
-  "You are the Adjutant — the quiet shepherd of thread health. You run periodically " +
-  "via a sweep trigger, not on every message. Your job: check if a thread is ready " +
-  "to advance to the next phase, and either advance it (autonomy ≥ 2) or nudge the " +
-  "owner (autonomy < 2). Never dominate the conversation. Observe, assess, act once, " +
-  "and be silent. Tools: query_threads to find the thread, query_extracted_items to " +
-  "check completeness, advance_phase to advance (only at L2), notify_owner to nudge.";
+const ADJUTANT_INSTRUCTION = `You are the Adjutant — the discuss-phase director for threads in this company.
+
+Your role is to facilitate the conversation in a thread until it's ready for scope. You orchestrate the crew (Scout for research, Engineer for artifacts, Navigator for cross-thread coordination) and coordinate when humans should step in.
+
+When dispatched to a thread, you:
+1. Read the recent entries via thread.listEntries and the related-thread context provided.
+2. Set or refine intent via thread.setIntent if not already clear.
+3. Decide one of:
+   - Respond directly with a clarifying question or summary (use post_entry).
+   - Delegate to Scout for investigation (use agent.dispatch on Scout).
+   - Delegate to Engineer to produce an artifact (use agent.dispatch on Engineer).
+   - Delegate to Navigator if a topic needs its own thread (use agent.dispatch on Navigator).
+   - Post a scope_proposal when the conversation has converged (use thread.postScopeProposal).
+4. Update the thread summary so future runs have fresh context (use thread.updateSummary).
+
+You do NOT create tasks directly. That's Dispatcher's job at the assign phase.
+You do NOT advance phase autonomously. The human approves scope_proposal.
+You respect the per-thread autonomyLevel (1=manual, 2=semi, 3=auto).
+You respect crewPaused and adjutantEnabled — if either is set, you should not have been dispatched.
+
+Hop limit: each agent dispatch chain has a max hopCount of 3. After that, you must wait for human input.`;
 
 const ADJUTANT_TOOL_ALLOWLIST: string[] = [
+  // Existing tools (pre-Phase D)
   "query_threads",
   "query_extracted_items",
   "advance_phase",
   "notify_owner",
   "post_entry",
-  // C2 batch 1 (T15): the Adjutant reads thread state before deciding to
-  // advance or nudge. find_similar_threads helps it cross-check stale
-  // threads against active ones.
+  // Phase 1 new tools (Task C2 batches 1–4)
   "thread.listEntries",
+  "thread.setIntent",
+  "thread.postScopeProposal",
+  "thread.updateSummary",
+  "thread.createLink",
+  "search_discussions",
   "get_thread_summary",
   "find_similar_threads",
-  "thread.updateSummary",
-  // C2 batch 3 (T15): mid-discussion extraction. The Adjutant peeks at what's
-  // surfaced before deciding the thread is ready to advance — without this it
-  // has to rely on summary text alone.
   "extract_memory_candidates",
-  // C2 batch 4 (T15): the Adjutant can hand off to another agent when a
-  // phase advance requires a different role (e.g. nudging an owner is not
-  // enough — escalate to a Navigator). agent.dispatch is the lower-level
-  // dedup-aware variant (vs delegate_to_subagent which is founder-only).
   "agent.dispatch",
+  "delegate_to_subagent",
+  "use_skill",
 ];
-
-const ADJUTANT_NAME = "Adjutant";
-
-async function ensureAdjutantRole(db: Db, companyId: string): Promise<string> {
-  // Resolve the right CLI adapter for this company's configured provider.
-  // Earlier seeds hardcoded adapterType='process' with no command, which
-  // made the crew unrunnable (P1-B in uat-threads-crew-v1-findings.md).
-  const crewAdapter = await resolveCrewAdapterForCompany(db, companyId);
-
-  // Atomic insert with ON CONFLICT DO NOTHING (agents_aoa_name_per_company_idx).
-  const [inserted] = await db
-    .insert(agents)
-    .values({
-      companyId,
-      name: ADJUTANT_NAME,
-      kind: "aoa",
-      role: "general",
-      status: "idle",
-      adapterType: crewAdapter.adapterType,
-      adapterConfig: crewAdapter.adapterConfig,
-      runtimeConfig: {
-        aoa: { role: "member", instruction: ROLE_INSTRUCTION, toolAllowlist: ADJUTANT_TOOL_ALLOWLIST },
-        heartbeat: { enabled: false, intervalSec: 0 },
-      },
-    })
-    .onConflictDoNothing()
-    .returning({ id: agents.id, runtimeConfig: agents.runtimeConfig, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig });
-
-  let agentId: string;
-  let existingRc: Record<string, unknown> | undefined;
-
-  if (inserted) {
-    agentId = inserted.id;
-    existingRc = inserted.runtimeConfig;
-
-    // Seed the trigger for this role (sweep-based periodic dispatch).
-    await db.insert(aoaAgentTriggers).values({
-      companyId,
-      agentId,
-      kind: "sweep",
-      enabled: true,
-      config: { role: "adjutant" },
-    });
-  } else {
-    // Conflict: another concurrent caller inserted first. Fetch the winner.
-    const [existing] = await db
-      .select({ id: agents.id, runtimeConfig: agents.runtimeConfig, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
-      .from(agents)
-      .where(
-        and(
-          eq(agents.companyId, companyId),
-          eq(agents.kind, "aoa"),
-          eq(agents.name, ADJUTANT_NAME),
-        ),
-      )
-      .limit(1);
-    if (!existing) {
-      throw new Error(
-        `Adjutant role for company ${companyId} disappeared after conflict`,
-      );
-    }
-    agentId = existing.id;
-    existingRc = existing.runtimeConfig;
-  }
-
-  // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
-  // so pre-D2 rows aren't stranded by default-deny.
-  // P1-B backfill: upgrade adapter_type='process' (no command) rows to the
-  // resolved CLI adapter. These rows are unrunnable until upgraded.
-  if (!inserted) {
-    const rc = existingRc ?? {};
-    const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
-    const updates: Record<string, unknown> = {};
-
-    if (!Array.isArray(aoaCfg.toolAllowlist)) {
-      updates.runtimeConfig = {
-        ...rc,
-        aoa: { ...aoaCfg, toolAllowlist: ADJUTANT_TOOL_ALLOWLIST },
-      };
-    }
-
-    // Fetch the current adapter so we can upgrade-in-place if needed.
-    const [current] = await db
-      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1);
-    if (current && needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null)) {
-      updates.adapterType = crewAdapter.adapterType;
-      updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
-    }
-
-    if (Object.keys(updates).length > 0) {
-      await db.update(agents)
-        .set({ ...updates, updatedAt: new Date() })
-        .where(eq(agents.id, agentId));
-    }
-  }
-
-  // P1.6: seed the role's editable instruction bundle (idempotent; never clobbers
-  // founder edits). Non-fatal: seeding failure must not block role provisioning.
-  try {
-    const row = await db
-      .select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((r: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null }[]) => r[0]);
-    if (row) {
-      const nextAdapterConfig = await seedRoleInstructionBundle({
-        role: "adjutant",
-        agent: { id: row.id, companyId: row.companyId, name: row.name, adapterConfig: row.adapterConfig },
-        service: agentInstructionsService(),
-      });
-      await db.update(agents).set({ adapterConfig: nextAdapterConfig, updatedAt: new Date() }).where(eq(agents.id, agentId));
-    }
-  } catch {
-    /* non-fatal — runner falls back to the instruction string */
-  }
-
-  return agentId;
-}
 
 /**
  * Idempotently seed the Adjutant role for a company.
@@ -177,5 +72,17 @@ async function ensureAdjutantRole(db: Db, companyId: string): Promise<string> {
  * ensureExtractionAgent, and ensureCommandStaff.
  */
 export async function ensureAdjutant(db: Db, companyId: string): Promise<void> {
-  await ensureAdjutantRole(db, companyId);
+  await seedCrewAgent(db, companyId, {
+    name: "Adjutant",
+    role: "general",
+    instruction: ADJUTANT_INSTRUCTION,
+    toolAllowlist: ADJUTANT_TOOL_ALLOWLIST,
+    triggers: [
+      {
+        kind: "sweep",
+        config: { role: "adjutant" },
+      },
+    ],
+    instructionBundleRole: "adjutant",
+  });
 }

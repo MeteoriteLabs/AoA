@@ -6,8 +6,22 @@ import { loadDefaultAgentInstructionsBundle } from "../../default-agent-instruct
 type SeedAgentShape = { id: string; companyId: string; name: string; adapterConfig: unknown };
 
 interface SeedRoleArgs {
-  /** Bundle role key — must be registered in default-agent-instructions.ts. */
-  role: "commander" | "router" | "planner" | "dispatcher" | "memory_keeper" | "scribe" | "adjutant" | "maker";
+  /** Bundle role key — must be registered in default-agent-instructions.ts.
+   *  Phase D batch 1: `navigator` is the new key for the role formerly known
+   *  as `router`. Both are accepted while the rename rolls out. `engineer`
+   *  replaces `maker`; `scout` is net-new. */
+  role:
+    | "commander"
+    | "router"
+    | "navigator"
+    | "planner"
+    | "dispatcher"
+    | "memory_keeper"
+    | "scribe"
+    | "adjutant"
+    | "maker"
+    | "engineer"
+    | "scout";
   agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
   // Injected for testability. The real implementation passes agentInstructionsService() with
   // ensureWritableBundle aliased from ensureManagedBundle (see ensure-commander.ts).

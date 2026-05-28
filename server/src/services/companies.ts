@@ -6,7 +6,8 @@ import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-command
 import { ensureExtractionAgent } from "./internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
-import { ensureMaker } from "./internal-agent/aoa-agents/ensure-maker.js";
+import { ensureScout } from "./internal-agent/aoa-agents/ensure-scout.js";
+import { ensureEngineer } from "./internal-agent/aoa-agents/ensure-engineer.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -168,10 +169,19 @@ export function companyService(db: Db) {
           await ensureAdjutant(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
           });
-          // Plan 4: seed the Maker role (artifact generator on @mention or phase-advance).
-          // Eighth crew agent per design § 3.
-          await ensureMaker(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Maker agent seeding failed");
+          // Phase D batch 1 (T2): seed Scout (internal-only research arm).
+          await ensureScout(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Scout agent seeding failed");
+          });
+          // Phase D batch 1 (T6): seed Engineer (replaces Maker).
+          // ensureEngineer's first action is to UPDATE any pre-existing
+          // name='Maker' rows in this company to name='Engineer' before its own
+          // INSERT lands, so legacy companies migrate in place without a unique-
+          // index conflict and without spawning a duplicate Maker row.
+          // ensureMaker is no longer called from bootstrap; the file remains for
+          // tests that exercise pre-rename behavior.
+          await ensureEngineer(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Engineer agent seeding failed");
           });
         }
         return company;
