@@ -14,24 +14,27 @@ import { agents } from "@armyofagents/db";
  *
  * Safe to call on every startup — it only touches rows where templateOrigin IS NULL.
  * Idempotent: second run updates 0 rows.
+ *
+ * Phase D batch 2 (D6 + D7): canonical Phase-1 roster only. Removed:
+ *   - Scribe — autonomous Scribe is gated off (Task C1); extraction now runs
+ *     as tool calls from Memory Keeper + Adjutant. Pre-existing Scribe rows
+ *     in legacy DBs are left as-is (founder can terminate manually if desired).
+ *   - Router — superseded by Navigator (rename happens inside
+ *     ensure-command-staff.ts). Pre-existing Router rows are renamed to
+ *     Navigator before seedCrewAgent runs, so by the time this backfill stamps
+ *     templateOrigin the row is already named Navigator.
+ *   - Maker — superseded by Engineer (rename happens inside ensure-engineer.ts,
+ *     same mechanism as Router/Navigator).
  */
 const CREW_NAMES = [
   "Commander",
   "Adjutant",
-  "Scribe",
-  "Memory Keeper",
-  // Phase D rename of Router. Keep both: any pre-rename Router row that
-  // dodged the in-seeder rename (e.g. seeded into a company that never hit
-  // ensureCommandStaff again) still gets a `@legacy` templateOrigin so the
-  // crew-updater can skip it.
-  "Router",
+  "Scout",
+  "Engineer",
   "Navigator",
   "Planner",
   "Dispatcher",
-  // Phase D rename of Maker. Same rationale as Router/Navigator above.
-  "Maker",
-  "Engineer",
-  "Scout",
+  "Memory Keeper",
 ] as const;
 
 export async function backfillCrewTemplateOrigin(db: Db): Promise<void> {

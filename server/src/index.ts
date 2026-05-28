@@ -62,7 +62,6 @@ import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adju
 import { ensureScout } from "./services/internal-agent/aoa-agents/ensure-scout.js";
 import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engineer.js";
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
-import { ensureExtractionAgent } from "./services/internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
@@ -745,9 +744,13 @@ void db
           ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
             logger.warn({ err, companyId: row.id }, "commander backfill failed"),
           ),
-          ensureExtractionAgent(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "extraction agent backfill failed"),
-          ),
+          // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
+          // ("Scribe") agent is no longer backfilled at startup. The
+          // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
+          // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
+          // Keeper + Adjutant. ensureExtractionAgent stays in the codebase
+          // for rollback safety and the dispatcher's lazy-ensure path; it is
+          // simply no longer invoked from bootstrap.
         ]);
       } catch (err: unknown) {
         logger.warn({ err, companyId: row.id }, "crew startup backfill failed for company");

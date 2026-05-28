@@ -1,21 +1,25 @@
-// A9.1 — proves the three Commander-Team seeds are wired into the SOLE
+// A9.1 — proves the Commander-Team seeds are wired into the SOLE
 // per-company create path (companyService.create → createCompanyWithUniquePrefix).
 //
 // Decision #100 ("the Commander Team comes with the app"): every newly-created
-// company must eagerly get (1) a default internal_agent_config row, (2) the
-// Commander kind='aoa' agent linked into that config, and (3) the Discussion
-// Extraction kind='aoa' agent + its enabled `outbox` aoa_agent_triggers row.
-// (3) is what makes the dispatcher's per-company `listEnabledOutboxAgents`
-// gate pass — without an eager trigger the dispatcher skips the company
-// forever (chicken-and-egg), so this wiring is load-bearing, not cosmetic.
+// company must eagerly get (1) a default internal_agent_config row and (2) the
+// Commander kind='aoa' agent linked into that config.
 //
-// The three seeds are mocked here (their own units are covered by
-// aoa-ensure-commander.test.ts / aoa-ensure-extraction-agent.test.ts); this
-// test pins ONLY the wiring contract: invoked, with (db, newCompanyId), in
-// order config → commander → extraction, after the root-folder seed.
+// Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction ("Scribe")
+// agent is no longer seeded at company create. The autonomous extraction drain
+// is gated OFF (AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED); extraction now runs as
+// tool calls from Memory Keeper + Adjutant. `ensureExtractionAgent` stays in
+// the codebase for rollback safety (and is unit-tested in
+// aoa-ensure-extraction-agent.test.ts) but is no longer wired into bootstrap,
+// so this test no longer asserts it.
+//
+// The two remaining seeds are mocked here (their own units are covered by
+// aoa-ensure-commander.test.ts); this test pins ONLY the wiring contract:
+// invoked, with (db, newCompanyId), in order config → commander, after the
+// root-folder seed.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ensureConfigMock, ensureCommanderMock, ensureExtractionMock, callOrder } =
+const { ensureConfigMock, ensureCommanderMock, callOrder } =
   vi.hoisted(() => {
     const callOrder: string[] = [];
     return {
@@ -26,10 +30,6 @@ const { ensureConfigMock, ensureCommanderMock, ensureExtractionMock, callOrder }
       ensureCommanderMock: vi.fn(async () => {
         callOrder.push("commander");
         return "cmd-1";
-      }),
-      ensureExtractionMock: vi.fn(async () => {
-        callOrder.push("extraction");
-        return "ext-1";
       }),
     };
   });
@@ -117,8 +117,22 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-internal-agent-config.js",
 vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
   ensureCommanderAgent: ensureCommanderMock,
 }));
-vi.mock("../services/internal-agent/aoa-agents/ensure-extraction-agent.js", () => ({
-  ensureExtractionAgent: ensureExtractionMock,
+// The additional crew seeders introduced in Phase D batch 1 (Command Staff,
+// Adjutant, Scout, Engineer) are mocked as no-ops here. This test only pins
+// the wiring contract for the Decision #100 minimum (config + commander); the
+// crew seeders have their own unit tests and the marketplace gate test
+// asserts their order.
+vi.mock("../services/internal-agent/aoa-agents/ensure-command-staff.js", () => ({
+  ensureCommandStaff: vi.fn(async () => undefined),
+}));
+vi.mock("../services/internal-agent/aoa-agents/ensure-adjutant.js", () => ({
+  ensureAdjutant: vi.fn(async () => undefined),
+}));
+vi.mock("../services/internal-agent/aoa-agents/ensure-scout.js", () => ({
+  ensureScout: vi.fn(async () => undefined),
+}));
+vi.mock("../services/internal-agent/aoa-agents/ensure-engineer.js", () => ({
+  ensureEngineer: vi.fn(async () => undefined),
 }));
 
 import { companyService } from "../services/companies.js";
@@ -127,7 +141,7 @@ const NEW_COMPANY_ID = "co-new-9";
 
 // Minimal mock DB: the only DB op createCompanyWithUniquePrefix performs on
 // the happy path is `db.insert(companies).values(...).returning()` → returns
-// the freshly-created company row (with id). The 3 ensure-seeds are mocked,
+// the freshly-created company row (with id). All ensure-seeds are mocked,
 // so no further DB ops are exercised by this test.
 //
 // T3.5 addition: createCompanyWithUniquePrefix now calls
@@ -155,11 +169,10 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
   beforeEach(() => {
     ensureConfigMock.mockClear();
     ensureCommanderMock.mockClear();
-    ensureExtractionMock.mockClear();
     callOrder.length = 0;
   });
 
-  it("calls all three seeds with (db, newCompanyId)", async () => {
+  it("calls config + commander seeds with (db, newCompanyId)", async () => {
     const db = makeDb();
     const svc = companyService(db);
 
@@ -168,17 +181,16 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
 
     expect(ensureConfigMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
     expect(ensureCommanderMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
-    expect(ensureExtractionMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
   });
 
-  it("seeds in order: root-folder → config → commander → extraction", async () => {
+  it("seeds in order: root-folder → config → commander", async () => {
     const db = makeDb();
     await companyService(db).create({ name: "Acme" } as any);
 
     // ensureCommander's internal_agent_config UPDATE no-ops unless the config
-    // row exists first, so config MUST precede commander. Extraction creates
-    // the outbox trigger the dispatcher gate needs; ordering it last keeps the
-    // sequence deterministic and matches Decision #100's intent.
-    expect(callOrder).toEqual(["rootFolder", "config", "commander", "extraction"]);
+    // row exists first, so config MUST precede commander. (Phase 1 / Phase D
+    // batch 2: the Discussion Extraction seed was removed from this chain;
+    // see file-level docstring.)
+    expect(callOrder).toEqual(["rootFolder", "config", "commander"]);
   });
 });

@@ -95,14 +95,18 @@ describe.skipIf(isWin32 || !hasAcceptanceCli)(
         }
         db = createDb(databaseUrl);
 
-        // Create a test company — this also seeds the Discussion Extraction agent
-        // via companyService.create → ensureExtractionAgent.
+        // Create a test company. Phase 1 / Phase D batch 2 removed the
+        // automatic Discussion Extraction ("Scribe") seed from
+        // companyService.create (autonomous Scribe drain is now gated off);
+        // this §17 acceptance test pins the full autonomous extraction path,
+        // so we seed it explicitly below via ensureExtractionAgent.
         const company = await companyService(db).create({
           name: `AoA §17 Acceptance Co ${Date.now()}`,
         } as any);
         companyId = company.id;
 
-        // Resolve the extraction agent seeded by company create.
+        // Seed the extraction agent explicitly (idempotent — same function
+        // the dispatcher uses on the gated autonomous path).
         extractionAgentId = await ensureExtractionAgent(db, companyId);
 
         // Configure the extraction agent with claude_local so it can actually

@@ -3,7 +3,6 @@ import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
 import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-commander.js";
-import { ensureExtractionAgent } from "./internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
 import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
 import { ensureScout } from "./internal-agent/aoa-agents/ensure-scout.js";
@@ -113,18 +112,22 @@ export function companyService(db: Db) {
           logger.warn({ err, companyId: company.id }, "memory company-root folder seeding failed");
         });
         // Decision #100 — the Commander Team comes with every company.
-        // Eagerly seed (1) the default internal_agent_config row, (2) the
-        // Commander kind='aoa' agent linked into that config, and (3) the
-        // Discussion Extraction kind='aoa' agent + its enabled `outbox`
-        // trigger. (1) MUST precede (2) — ensureCommanderAgent's
-        // internal_agent_config UPDATE no-ops without an existing config row.
-        // (3) creates the outbox trigger the AoA dispatcher's per-company
-        // listEnabledOutboxAgents gate requires (chicken-and-egg: without an
-        // eager trigger the dispatcher skips the company forever). All three
-        // are idempotent and seeded non-fatally — exactly mirroring the
-        // root-folder seed above — so a seed failure never breaks company
-        // create (the dispatcher's lazy ensureExtractionAgent is the
-        // idempotent safety-net).
+        // Eagerly seed (1) the default internal_agent_config row and (2) the
+        // Commander kind='aoa' agent linked into that config. (1) MUST precede
+        // (2) — ensureCommanderAgent's internal_agent_config UPDATE no-ops
+        // without an existing config row. Both are idempotent and seeded
+        // non-fatally — exactly mirroring the root-folder seed above — so a
+        // seed failure never breaks company create.
+        //
+        // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
+        // ("Scribe") agent is no longer seeded at company create. The
+        // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
+        // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
+        // Keeper (phase=done sweep) and Adjutant (optional, mid-discussion).
+        // `ensureExtractionAgent` is preserved in the codebase for rollback
+        // safety and so the dispatcher's lazy ensure on the legacy autonomous
+        // path keeps working when the env flag is re-enabled; it is no longer
+        // wired into bootstrap.
         //
         // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
         // A brand-new company that gets a marketplace install immediately after
@@ -157,9 +160,6 @@ export function companyService(db: Db) {
           await ensureCommanderAgent(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "Commander agent seeding failed");
           });
-          await ensureExtractionAgent(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Discussion Extraction agent seeding failed");
-          });
           // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
           await ensureCommandStaff(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
@@ -178,8 +178,8 @@ export function companyService(db: Db) {
           // name='Maker' rows in this company to name='Engineer' before its own
           // INSERT lands, so legacy companies migrate in place without a unique-
           // index conflict and without spawning a duplicate Maker row.
-          // ensureMaker is no longer called from bootstrap; the file remains for
-          // tests that exercise pre-rename behavior.
+          // The legacy ensure-maker.ts file was deleted in Phase D batch 2;
+          // git history preserves it for rollback if ever needed.
           await ensureEngineer(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "Engineer agent seeding failed");
           });

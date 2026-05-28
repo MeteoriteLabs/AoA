@@ -6,11 +6,15 @@
  *
  * Boots embedded-postgres, applies all migrations, then:
  *   1. seeds a company via companyService.create → createCompanyWithUniquePrefix
- *      (which runs ensureInternalAgentConfig + ensureCommanderAgent +
- *      ensureExtractionAgent — A9.1 wiring),
- *   2. inserts a discussion + a discussion_entry with extractionStatus='pending',
- *   3. runs runAoaDispatch(db, { limiterMax: 2, staleMs: 600000 }),
- *   4. asserts the durable-outbox contract held.
+ *      (which runs ensureInternalAgentConfig + ensureCommanderAgent —
+ *      A9.1 wiring),
+ *   2. explicitly calls ensureExtractionAgent(db, companyId) — Phase 1 / Phase
+ *      D batch 2 removed the seed from bootstrap (autonomous Scribe drain is
+ *      gated off), so this integration test (which pins the legacy autonomous
+ *      mechanism) seeds it directly,
+ *   3. inserts a discussion + a discussion_entry with extractionStatus='pending',
+ *   4. runs runAoaDispatch(db, { limiterMax: 2, staleMs: 600000 }),
+ *   5. asserts the durable-outbox contract held.
  *
  * Deterministic-without-CLI note: ensureExtractionAgent seeds the extraction
  * agent with adapterType='process' and NO adapterConfig.command. In
@@ -39,6 +43,7 @@ import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { companyService } from "../services/companies.js";
 import { runAoaDispatch } from "../services/internal-agent/aoa-agents/dispatcher.js";
+import { ensureExtractionAgent } from "../services/internal-agent/aoa-agents/ensure-extraction-agent.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -124,6 +129,13 @@ describe.skipIf(process.platform === "win32")(
       companyId = company.id;
       expect(companyId).toBeTruthy();
 
+      // Phase 1 / Phase D batch 2: bootstrap no longer auto-seeds the
+      // Discussion Extraction ("Scribe") agent. This integration test pins
+      // the legacy autonomous-drain mechanism end-to-end, so it seeds the
+      // extraction agent explicitly here (same idempotent function the
+      // dispatcher uses on the gated autonomous path).
+      await ensureExtractionAgent(db, companyId);
+
       // (1) default internal_agent_config row exists (ensureInternalAgentConfig)
       const cfg = await db.execute<{ agent_id: string | null }>(sql`
         SELECT agent_id FROM internal_agent_config WHERE company_id = ${companyId}
@@ -141,6 +153,7 @@ describe.skipIf(process.platform === "win32")(
       expect(cfgRow.agent_id).toBe(commanderId); // ensureCommanderAgent linked it
 
       // (3) Discussion Extraction kind='aoa' agent + an ENABLED outbox trigger
+      // (seeded above via explicit ensureExtractionAgent call).
       const extraction = await db.execute<{ id: string }>(sql`
         SELECT id FROM agents
         WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Discussion Extraction'

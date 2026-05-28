@@ -68,8 +68,8 @@ const ADJUTANT_TOOL_ALLOWLIST: string[] = [
 
 /**
  * Idempotently seed the Adjutant role for a company.
- * Call this from the company bootstrap path alongside ensureCommanderAgent,
- * ensureExtractionAgent, and ensureCommandStaff.
+ * Call this from the company bootstrap path alongside ensureCommanderAgent
+ * and ensureCommandStaff.
  */
 export async function ensureAdjutant(db: Db, companyId: string): Promise<void> {
   await seedCrewAgent(db, companyId, {

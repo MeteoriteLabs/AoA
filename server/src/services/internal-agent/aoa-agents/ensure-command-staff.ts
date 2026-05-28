@@ -18,8 +18,9 @@ import { seedCrewAgent, type CrewAgentTriggerSpec } from "./seed-crew-agent.js";
  *
  * Decisions #15/#16/#52: Memory Keeper can only PROPOSE memory (status='pending').
  * Agentic roles (router/navigator, planner, dispatcher) require autonomyLevel ≥ 2
- * to fire (enforced in autonomy.ts + dispatcher.ts). Core roles (scribe,
- * memory_keeper, curator) are always active (min autonomy = 0).
+ * to fire (enforced in autonomy.ts + dispatcher.ts). Core roles (memory_keeper,
+ * curator) are always active (min autonomy = 0). (Phase 1: autonomous Scribe
+ * is gated off; the legacy scribe role no longer participates in routing.)
  */
 
 export const COMMAND_STAFF_ROLES = [
@@ -237,8 +238,7 @@ async function ensureRole(
 
 /**
  * Idempotently seed all four Command Staff roles for a company.
- * Call this from the company bootstrap path alongside ensureCommanderAgent
- * and ensureExtractionAgent.
+ * Call this from the company bootstrap path alongside ensureCommanderAgent.
  */
 export async function ensureCommandStaff(db: Db, companyId: string): Promise<void> {
   for (const role of COMMAND_STAFF_ROLES) {
