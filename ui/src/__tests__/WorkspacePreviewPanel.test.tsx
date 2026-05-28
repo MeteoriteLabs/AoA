@@ -1,6 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+vi.mock("react-pdf", async () => {
+  const { useEffect } = await vi.importActual<typeof import("react")>("react");
+
+  return {
+    Document: ({
+      children,
+      onLoadSuccess,
+    }: {
+      children: React.ReactNode;
+      onLoadSuccess: (document: { numPages: number }) => void;
+    }) => {
+      useEffect(() => {
+        onLoadSuccess({ numPages: 3 });
+      }, [onLoadSuccess]);
+
+      return <div data-testid="react-pdf-document">{children}</div>;
+    },
+    Page: ({ pageNumber }: { pageNumber: number }) => (
+      <div data-testid="react-pdf-page">page {pageNumber}</div>
+    ),
+    pdfjs: { GlobalWorkerOptions: { workerSrc: "" } },
+  };
+});
+vi.mock("react-pdf/dist/Page/TextLayer.css", () => ({}));
+vi.mock("react-pdf/dist/Page/AnnotationLayer.css", () => ({}));
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
@@ -473,10 +499,10 @@ describe("WorkspacePreviewPanel tab deck", () => {
     );
   });
 
-  it("renders captured text output tabs by loading the asset content", async () => {
+  it("renders captured markdown output tabs by loading and formatting the asset content", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response("Rendered output body", { status: 200 })),
+      vi.fn().mockResolvedValue(new Response("# Workspace summary\n\n- Rendered output body", { status: 200 })),
     );
     const tabs: WorkspacePreviewTab[] = [
       {
@@ -510,12 +536,13 @@ describe("WorkspacePreviewPanel tab deck", () => {
       { wrapper },
     );
 
-    await waitFor(() => expect(screen.getByTestId("preview-output-text")).toHaveTextContent("Rendered output body"));
+    await waitFor(() => expect(screen.getByTestId("work-product-markdown")).toHaveTextContent("Rendered output body"));
+    expect(screen.getByRole("heading", { name: "Workspace summary" })).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith("/api/assets/asset-1/content", { credentials: "include" });
     expect(screen.getAllByText("workspace-summary.md").length).toBeGreaterThan(0);
   });
 
-  it("renders captured html output as source instead of executing it in a frame", async () => {
+  it("renders captured html output in a sandboxed preview frame with source available", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response("<button>Agent UI</button>", { status: 200 })),
@@ -552,9 +579,190 @@ describe("WorkspacePreviewPanel tab deck", () => {
       { wrapper },
     );
 
-    await waitFor(() => expect(screen.getByTestId("preview-output-text")).toHaveTextContent("<button>Agent UI</button>"));
-    expect(screen.queryByTestId("preview-output-frame")).not.toBeInTheDocument();
-    expect(screen.getByTestId("preview-output-tab")).toHaveTextContent("Source preview");
+    const frame = await screen.findByTestId("work-product-html-frame");
+    expect(frame).toHaveAttribute("sandbox");
+    expect(frame.getAttribute("sandbox") ?? "").toContain("allow-scripts");
+    expect(frame.getAttribute("sandbox") ?? "").not.toContain("allow-same-origin");
+    expect(screen.getByTestId("preview-output-tab")).toHaveTextContent("HTML preview");
+
+    fireEvent.click(screen.getByRole("button", { name: /source/i }));
+    expect(screen.getByTestId("work-product-source")).toHaveTextContent("<button>Agent UI</button>");
+  });
+
+  it("renders video outputs with native controls", () => {
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "output:run-1:0",
+        kind: "output",
+        title: "demo.mp4",
+        output: {
+          runId: "run-1",
+          outputIndex: 0,
+          path: "demo.mp4",
+          filename: "demo.mp4",
+          byteSize: 1024 * 1024,
+          contentType: "video/mp4",
+          assetId: "asset-video",
+          sha256: null,
+          source: "workspace_scan",
+          status: "pending",
+          runFinishedAt: "2026-04-04T10:05:00Z",
+        },
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="output:run-1:0"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    expect(screen.getByTestId("work-product-video")).toHaveAttribute("controls");
+    expect(screen.getByTestId("work-product-video")).toHaveAttribute("src", "/api/assets/asset-video/content");
+  });
+
+  it("pretty-prints json outputs with a source view", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("{\"ok\":true,\"count\":2}", { status: 200 })),
+    );
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "output:run-1:0",
+        kind: "output",
+        title: "result.json",
+        output: {
+          runId: "run-1",
+          outputIndex: 0,
+          path: "result.json",
+          filename: "result.json",
+          byteSize: 128,
+          contentType: "application/json",
+          assetId: "asset-json",
+          sha256: null,
+          source: "workspace_scan",
+          status: "pending",
+          runFinishedAt: "2026-04-04T10:05:00Z",
+        },
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="output:run-1:0"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getByTestId("work-product-json")).toHaveTextContent('"ok": true'));
+    expect(screen.getByTestId("work-product-json")).toHaveTextContent('"count": 2');
+  });
+
+  it("renders declared canvas json as a read-only canvas surface", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        version: 1,
+        width: 800,
+        height: 400,
+        items: [{ type: "text", x: 20, y: 40, text: "Plan" }],
+      }), { status: 200 })),
+    );
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "output:run-1:0",
+        kind: "output",
+        title: "board.aoa-canvas.json",
+        output: {
+          runId: "run-1",
+          outputIndex: 0,
+          path: "board.aoa-canvas.json",
+          filename: "board.aoa-canvas.json",
+          byteSize: 256,
+          contentType: "application/json",
+          assetId: "asset-canvas",
+          sha256: null,
+          source: "workspace_scan",
+          status: "pending",
+          runFinishedAt: "2026-04-04T10:05:00Z",
+        },
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="output:run-1:0"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getByTestId("work-product-canvas")).toHaveTextContent("Plan"));
+  });
+
+  it("renders graph-shaped canvas json with nodes and edges", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        version: 1,
+        nodes: [
+          { id: "brief", label: "Brief" },
+          { id: "artifact", label: "Artifact" },
+          { id: "decision", label: "Decision" },
+        ],
+        edges: [
+          { from: "brief", to: "artifact" },
+          { from: "artifact", to: "decision" },
+        ],
+      }), { status: 200 })),
+    );
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "output:run-1:0",
+        kind: "output",
+        title: "board.aoa-canvas.json",
+        output: {
+          runId: "run-1",
+          outputIndex: 0,
+          path: "board.aoa-canvas.json",
+          filename: "board.aoa-canvas.json",
+          byteSize: 256,
+          contentType: "application/json",
+          assetId: "asset-canvas",
+          sha256: null,
+          source: "workspace_scan",
+          status: "pending",
+          runFinishedAt: "2026-04-04T10:05:00Z",
+        },
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="output:run-1:0"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getByTestId("work-product-canvas")).toHaveTextContent("Brief"));
+    expect(screen.getByTestId("work-product-canvas")).toHaveTextContent("Artifact");
+    expect(screen.getByTestId("work-product-canvas")).toHaveTextContent("Decision");
   });
 
   it("renders image outputs as images", () => {
@@ -594,7 +802,7 @@ describe("WorkspacePreviewPanel tab deck", () => {
     expect(screen.getByRole("img", { name: "mock.png" })).toHaveAttribute("src", "/api/assets/asset-image/content");
   });
 
-  it("renders pdf outputs in a frame", () => {
+  it("renders pdf outputs in the shared PDF document viewer", () => {
     const tabs: WorkspacePreviewTab[] = [
       {
         id: "output:run-1:0",
@@ -627,7 +835,11 @@ describe("WorkspacePreviewPanel tab deck", () => {
       { wrapper },
     );
 
-    expect(screen.getByTestId("preview-output-frame")).toHaveAttribute("src", "/api/assets/asset-pdf/content");
+    const pdfViewer = screen.getByTestId("pdf-document-viewer");
+    expect(pdfViewer).toBeInTheDocument();
+    expect(within(pdfViewer).getByText("report.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /download/i })).toHaveAttribute("href", "/api/assets/asset-pdf/content");
+    expect(screen.queryByTestId("preview-output-frame")).not.toBeInTheDocument();
   });
 
   it("does not preview binary output types inline", () => {
@@ -668,10 +880,11 @@ describe("WorkspacePreviewPanel tab deck", () => {
 
   it("classifies output viewer capability from content type and filename", () => {
     expect(resolveOutputViewer({ contentType: "text/html", filename: "page.html", assetId: "a1" })).toMatchObject({
-      kind: "text",
-      label: "Source preview",
+      kind: "html_sandbox",
+      label: "HTML preview",
       canOpenDirectly: true,
       shouldExecuteInBrowser: false,
+      canShowSource: true,
     });
     expect(resolveOutputViewer({ contentType: "image/png", filename: "mock.png", assetId: "a1" })).toMatchObject({
       kind: "image",
@@ -680,6 +893,10 @@ describe("WorkspacePreviewPanel tab deck", () => {
     expect(resolveOutputViewer({ contentType: "application/pdf", filename: "report.pdf", assetId: "a1" })).toMatchObject({
       kind: "pdf",
       label: "PDF preview",
+    });
+    expect(resolveOutputViewer({ contentType: "video/mp4", filename: "demo.mp4", assetId: "a1" })).toMatchObject({
+      kind: "video",
+      label: "Video preview",
     });
     expect(resolveOutputViewer({ contentType: "application/zip", filename: "archive.zip", assetId: "a1" })).toMatchObject({
       kind: "download",

@@ -37,6 +37,7 @@ describe("PdfFileViewer", () => {
       </QueryClientProvider>,
     );
     await waitFor(() => expect(screen.getByText("x.pdf")).toBeInTheDocument());
+    expect(screen.getByTestId("pdf-document-viewer")).toBeInTheDocument();
     expect(screen.getByLabelText("Previous page")).toBeInTheDocument();
     expect(screen.getByLabelText("Next page")).toBeInTheDocument();
   });

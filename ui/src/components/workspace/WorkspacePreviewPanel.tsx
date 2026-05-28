@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { GitBranch, GitCompareArrows, GitPullRequest, Eye, Terminal, X, RefreshCw, Globe, Plus, FileText, LayoutGrid } from "lucide-react";
 import { formatBytes, sourceLabel, fileIcon } from "./workspace-utils";
 import { resolveOutputViewer } from "./output-viewer-registry";
+import { WorkProductViewer } from "./WorkProductViewer";
 import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI, TaskOutput } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
@@ -762,16 +763,6 @@ function OutputPreviewView({ output }: { output: DetectedOutputForUI }) {
   const viewer = resolveOutputViewer(output);
   const assetUrl = viewer.assetUrl;
 
-  const { data: textContent, isLoading, error } = useQuery({
-    queryKey: ["output-asset-text", output.assetId],
-    queryFn: async () => {
-      const response = await fetch(assetUrl!, { credentials: "include" });
-      if (!response.ok) throw new Error(`Failed to load output (${response.status})`);
-      return await response.text();
-    },
-    enabled: Boolean(assetUrl && viewer.requiresTextFetch),
-  });
-
   if (!assetUrl) {
     return (
       <div className="flex h-full items-center justify-center p-4 text-sm text-muted-foreground" data-testid="preview-output-empty">
@@ -798,39 +789,7 @@ function OutputPreviewView({ output }: { output: DetectedOutputForUI }) {
           </Button>
         )}
       </div>
-      {viewer.kind === "text" ? (
-        <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="preview-output-text">
-          {isLoading ? (
-            <div className="text-sm text-muted-foreground">Loading output...</div>
-          ) : error ? (
-            <div className="text-sm text-destructive">Could not load output content.</div>
-          ) : (
-            <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-              {textContent}
-            </pre>
-          )}
-        </div>
-      ) : viewer.kind === "image" ? (
-        <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="preview-output-image">
-          <img src={assetUrl} alt={output.filename} className="max-w-full rounded-md border border-border" />
-        </div>
-      ) : viewer.kind === "pdf" ? (
-        <iframe
-          src={assetUrl}
-          className="min-h-0 flex-1 border-0 bg-background"
-          title={output.filename}
-          data-testid="preview-output-frame"
-        />
-      ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-4" data-testid="preview-output-download">
-          <div className="max-w-sm rounded-md border border-border bg-muted/30 p-4 text-center">
-            <div className="text-sm font-medium">Preview unavailable</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              This file type can be opened in a separate tab.
-            </div>
-          </div>
-        </div>
-      )}
+      <WorkProductViewer viewer={viewer} filename={output.filename} />
     </div>
   );
 }
