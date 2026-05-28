@@ -17,7 +17,9 @@ interface NewGoalDefaults {
 }
 
 interface OnboardingOptions {
-  initialStep?: 1 | 2 | 3 | 4;
+  // Phase 1 Phase E batch 2 (T20): step count grew from 6 to 8 (Commander
+  // + Crew picks inserted between root-folder and first-agent steps).
+  initialStep?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   companyId?: string;
 }
 

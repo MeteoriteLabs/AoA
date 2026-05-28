@@ -1,11 +1,21 @@
 import { z } from "zod";
 import { COMPANY_STATUSES } from "../constants.js";
+import {
+  CommanderAdapterConfigSchema,
+  CrewAdapterConfigSchema,
+} from "../api/threads-contract.js";
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   rootFolder: z.string().min(1).optional().nullable(),
+  // Phase 1 Phase E batch 2 (T20): OnboardingWizard now collects Commander +
+  // Crew adapter picks at company-create time. Both are optional — when
+  // omitted, the companies row keeps its `{}` default and downstream code
+  // (resolveCrewAdapterForCompany) falls back to internal_agent_config.
+  commanderAdapterConfig: CommanderAdapterConfigSchema.optional(),
+  crewAdapterConfig: CrewAdapterConfigSchema.optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor, act } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { OriginCard } from "../OriginCard";
@@ -12,6 +12,8 @@ vi.mock("../../../api/threads", () => ({
     claim: vi.fn().mockResolvedValue({ ownerUserId: "user-1" }),
     transfer: vi.fn().mockResolvedValue({ ownerUserId: "user-2" }),
     setVisibility: vi.fn().mockResolvedValue({}),
+    generateShareToken: vi.fn().mockResolvedValue({ token: "tok-fresh" }),
+    revokeShareToken: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -43,6 +45,10 @@ function makeThread(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
     autonomyLevel: 1,
     summaryText: null,
     summaryNext: null,
+    crewPaused: false,
+    subtype: "normal",
+    shareToken: null,
+    participants: [],
     ...overrides,
   };
 }
@@ -73,7 +79,7 @@ describe("OriginCard", () => {
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    const scopeBtn = screen.getByRole("button", { name: /scope/i });
+    const scopeBtn = screen.getByRole("button", { name: /^scope$/i });
     expect(scopeBtn).toHaveAttribute("aria-current", "true");
   });
 
@@ -82,7 +88,7 @@ describe("OriginCard", () => {
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    const scopeBtn = screen.getByRole("button", { name: /scope/i });
+    const scopeBtn = screen.getByRole("button", { name: /^scope$/i });
     expect(scopeBtn).not.toHaveAttribute("aria-current", "true");
   });
 
@@ -91,10 +97,10 @@ describe("OriginCard", () => {
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    expect(screen.getByRole("button", { name: /discuss/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /scope/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /assign/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /done/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^discuss$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^scope$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^assign$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
   });
 
   it("renders intent chips when intent is provided", () => {
@@ -114,28 +120,19 @@ describe("OriginCard", () => {
     expect(screen.getByText(/L2/i)).toBeInTheDocument();
   });
 
-  it("renders visibility badge", () => {
-    const thread = makeThread({ visibility: "company" });
-    renderWithProviders(
-      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
-    );
-    expect(screen.getByText(/company/i)).toBeInTheDocument();
-  });
-
   it("shows confirm dialog when a phase pill is clicked", async () => {
     const thread = makeThread({ phase: "discuss" });
     const user = userEvent.setup();
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    await user.click(screen.getByRole("button", { name: /scope/i }));
-    // Confirm dialog should appear
+    await user.click(screen.getByRole("button", { name: /^scope$/i }));
     await waitFor(() => {
       expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     });
   });
 
-  // ── Task 6: Claim button + visibility toggle ─────────────────────────────
+  // ── Claim button (carried over from prior task) ─────────────────────────
 
   it("shows Claim button when ownerUserId is null", () => {
     const thread = makeThread({ ownerUserId: null });
@@ -165,40 +162,228 @@ describe("OriginCard", () => {
     });
   });
 
-  it("shows visibility toggle button", () => {
-    const thread = makeThread({ visibility: "company" });
+  // ── Phase E batch 2 (T22): 3-option visibility selector ─────────────────
+
+  it("renders visibility selector with the current value", () => {
+    const thread = makeThread({ visibility: "department" });
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    // Visibility toggle should be a button (either 'Make private' or 'Make open')
-    expect(screen.getByTestId("visibility-toggle")).toBeInTheDocument();
+    const selector = screen.getByTestId("visibility-selector");
+    expect(selector).toBeInTheDocument();
+    expect(selector).toHaveTextContent(/department/i);
   });
 
-  it("visibility toggle shows correct label for 'company' (open-equivalent) thread", () => {
-    const thread = makeThread({ visibility: "company" });
-    renderWithProviders(
-      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
-    );
-    expect(screen.getByTestId("visibility-toggle")).toHaveTextContent(/private/i);
-  });
-
-  it("visibility toggle shows correct label for 'private' thread", () => {
-    const thread = makeThread({ visibility: "private" });
-    renderWithProviders(
-      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
-    );
-    expect(screen.getByTestId("visibility-toggle")).toHaveTextContent(/open/i);
-  });
-
-  it("calls threadsApi.setVisibility with 'private' when toggle is clicked on a company thread", async () => {
+  it("calls threadsApi.setVisibility when a new option is chosen (legacy mode)", async () => {
     const thread = makeThread({ visibility: "company" });
     const user = userEvent.setup();
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    await user.click(screen.getByTestId("visibility-toggle"));
+    await user.click(screen.getByTestId("visibility-selector"));
+    const option = await screen.findByTestId("visibility-option-private");
+    await user.click(option);
     await waitFor(() => {
       expect(threadsApi.setVisibility).toHaveBeenCalledWith("comp-1", "thread-1", "private");
     });
+  });
+
+  it("calls onVisibilityChange when provided instead of mutating directly", async () => {
+    const onVisibilityChange = vi.fn();
+    const thread = makeThread({ visibility: "company" });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard
+        thread={thread}
+        companyId="comp-1"
+        onPhaseChanged={vi.fn()}
+        onVisibilityChange={onVisibilityChange}
+      />,
+    );
+    await user.click(screen.getByTestId("visibility-selector"));
+    const option = await screen.findByTestId("visibility-option-department");
+    await user.click(option);
+    expect(onVisibilityChange).toHaveBeenCalledWith("department");
+    expect(threadsApi.setVisibility).not.toHaveBeenCalled();
+  });
+
+  it("renders all three visibility options in the menu", async () => {
+    const thread = makeThread();
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("visibility-selector"));
+    expect(await screen.findByTestId("visibility-option-private")).toBeInTheDocument();
+    expect(screen.getByTestId("visibility-option-department")).toBeInTheDocument();
+    expect(screen.getByTestId("visibility-option-company")).toBeInTheDocument();
+  });
+
+  // ── Phase E batch 2 (T22): share link toggle ────────────────────────────
+
+  it("renders 'Generate share link' when shareToken is null", () => {
+    const thread = makeThread({ shareToken: null });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.getByTestId("generate-share-token")).toBeInTheDocument();
+    expect(screen.queryByTestId("share-link-url")).not.toBeInTheDocument();
+  });
+
+  it("calls threadsApi.generateShareToken when 'Generate share link' is clicked", async () => {
+    const thread = makeThread({ shareToken: null });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("generate-share-token"));
+    await waitFor(() => {
+      expect(threadsApi.generateShareToken).toHaveBeenCalledWith("comp-1", "thread-1");
+    });
+  });
+
+  it("renders share URL, copy, and revoke when shareToken is set", () => {
+    const thread = makeThread({ shareToken: "tok-abc" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const url = screen.getByTestId("share-link-url");
+    expect(url).toBeInTheDocument();
+    expect(url.textContent).toContain("/discussions/thread-1?token=tok-abc");
+    expect(screen.getByTestId("copy-share-token")).toBeInTheDocument();
+    expect(screen.getByTestId("revoke-share-token")).toBeInTheDocument();
+  });
+
+  it("calls threadsApi.revokeShareToken when 'Revoke' is clicked", async () => {
+    const thread = makeThread({ shareToken: "tok-abc" });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("revoke-share-token"));
+    await waitFor(() => {
+      expect(threadsApi.revokeShareToken).toHaveBeenCalledWith("comp-1", "thread-1");
+    });
+  });
+
+  it("prefers the onGenerateShareToken prop when provided", async () => {
+    const onGenerate = vi.fn().mockResolvedValue({ token: "tok-via-prop" });
+    const thread = makeThread({ shareToken: null });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard
+        thread={thread}
+        companyId="comp-1"
+        onPhaseChanged={vi.fn()}
+        onGenerateShareToken={onGenerate}
+      />,
+    );
+    await user.click(screen.getByTestId("generate-share-token"));
+    await waitFor(() => {
+      expect(onGenerate).toHaveBeenCalled();
+    });
+    expect(threadsApi.generateShareToken).not.toHaveBeenCalled();
+  });
+
+  // ── Phase E batch 2 (T22): roster wiring ────────────────────────────────
+
+  it("renders ThreadRoster below PresencePanel when participants are present", () => {
+    const thread = makeThread({
+      participants: [
+        {
+          principalType: "user",
+          principalId: "u-1",
+          name: "Maria",
+          role: "owner",
+          addedAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          principalType: "agent",
+          principalId: "agent-1",
+          name: "Adjutant",
+          role: "worker",
+          addedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const roster = screen.getByTestId("thread-roster");
+    expect(roster).toBeInTheDocument();
+    expect(roster).toHaveTextContent("Maria");
+    expect(roster).toHaveTextContent("Adjutant");
+  });
+
+  it("does NOT render ThreadRoster when participants is empty", () => {
+    const thread = makeThread({ participants: [] });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.queryByTestId("thread-roster")).not.toBeInTheDocument();
+  });
+
+  it("uses the participants prop when provided (overrides thread.participants)", () => {
+    const thread = makeThread({
+      participants: [
+        {
+          principalType: "user",
+          principalId: "u-from-thread",
+          name: "From Thread",
+          role: "owner",
+          addedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    renderWithProviders(
+      <OriginCard
+        thread={thread}
+        companyId="comp-1"
+        onPhaseChanged={vi.fn()}
+        participants={[
+          {
+            principalType: "user",
+            principalId: "u-from-prop",
+            name: "From Prop",
+            role: "owner",
+            addedAt: "2026-01-01T00:00:00Z",
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("From Prop")).toBeInTheDocument();
+    expect(screen.queryByText("From Thread")).not.toBeInTheDocument();
+  });
+
+  // ── Phase E batch 2 (T22): live-thread visual treatment ─────────────────
+
+  it("applies live-thread className when subtype === 'live'", () => {
+    const thread = makeThread({ subtype: "live" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const card = screen.getByTestId("origin-card");
+    expect(card).toHaveAttribute("data-subtype", "live");
+    expect(card.className).toContain("origin-card--live");
+  });
+
+  it("hides phase advance buttons when subtype === 'live'", () => {
+    const thread = makeThread({ subtype: "live" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.queryByTestId("phase-pills")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^scope$/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("phase-pills-live")).toBeInTheDocument();
+    expect(screen.getByText(/live feed/i)).toBeInTheDocument();
+  });
+
+  it("renders phase advance buttons for normal threads", () => {
+    const thread = makeThread({ subtype: "normal" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.getByTestId("phase-pills")).toBeInTheDocument();
+    expect(screen.queryByTestId("phase-pills-live")).not.toBeInTheDocument();
   });
 });

@@ -77,6 +77,10 @@ const mockThread: ThreadDetailType = {
   autonomyLevel: 1,
   summaryText: null,
   summaryNext: null,
+  crewPaused: false,
+  subtype: "normal",
+  shareToken: null,
+  participants: [],
 };
 
 describe("ThreadDetail", () => {

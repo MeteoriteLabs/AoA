@@ -23,6 +23,17 @@ vi.mock("@armyofagents/db", () => ({
   agents: { id: "ag_id", name: "ag_name", icon: "ag_icon" },
   projects: {}, goals: {},
   threadPlanSteps: { id: "tps_id", threadId: "tps_thread", stepOrder: "tps_order" },
+  // Phase E batch 2 (T22): thread_participants + auth users (joined in getById)
+  threadParticipants: {
+    id: "tp_id",
+    threadId: "tp_thread",
+    principalType: "tp_pt",
+    principalId: "tp_pid",
+    role: "tp_role",
+    addedAt: "tp_at",
+    companyId: "tp_co",
+  },
+  authUsers: { id: "au_id", name: "au_name", email: "au_email" },
 }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
@@ -62,6 +73,7 @@ describe("discussionService.getById — plan steps", () => {
         { id: "p1", threadId: "t1", stepOrder: 0, title: "Spec" },
         { id: "p2", threadId: "t1", stepOrder: 1, title: "Build" },
       ], // plan steps
+      [], // Phase E batch 2 (T22): participants — empty
     ]);
     const res: any = await discussionService(db).getById("co1", "t1");
     expect(res.planSteps.map((p: any) => p.title)).toEqual(["Spec", "Build"]);
@@ -73,6 +85,7 @@ describe("discussionService.getById — plan steps", () => {
       [{ id: "t1", companyId: "co1" }], // discussion
       [], // entries (empty)
       [], // plan steps (empty, no items so skipped)
+      [], // Phase E batch 2 (T22): participants — empty
     ]);
     const res: any = await discussionService(db).getById("co1", "t1");
     expect(res.planSteps).toEqual([]);

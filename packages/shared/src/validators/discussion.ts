@@ -6,6 +6,7 @@ import {
   EXTRACTION_ITEM_TYPES,
   MEMORY_ITEM_LAYERS,
   BRIEF_DEDUP_ACTIONS,
+  THREAD_VISIBILITIES,
 } from "../constants.js";
 
 export const createDiscussionEntrySchema = z.object({
@@ -48,6 +49,10 @@ export const updateDiscussionSchema = z.object({
   status: z.enum(DISCUSSION_STATUSES).optional(),
   tags: z.array(z.string()).optional(),
   autonomyLevel: z.number().int().min(0).max(3).nullable().optional(),
+  // Phase 1 Phase E batch 2 (T22): OriginCard's 3-option visibility selector
+  // patches via this endpoint. The service `update()` already passes the
+  // field through to the discussions UPDATE.
+  visibility: z.enum(THREAD_VISIBILITIES).optional(),
 });
 
 export type UpdateDiscussion = z.infer<typeof updateDiscussionSchema>;

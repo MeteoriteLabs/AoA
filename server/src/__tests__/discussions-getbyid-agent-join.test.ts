@@ -111,6 +111,17 @@ vi.mock("@armyofagents/db", () => ({
     artifactId: "dea_artifact_id",
   },
   artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
+  // Phase E batch 2 (T22): thread_participants + auth users (joined in getById)
+  threadParticipants: {
+    id: "tp_id",
+    threadId: "tp_thread_id",
+    principalType: "tp_principal_type",
+    principalId: "tp_principal_id",
+    role: "tp_role",
+    addedAt: "tp_added_at",
+    companyId: "tp_company_id",
+  },
+  authUsers: { id: "auth_users_id", name: "auth_users_name", email: "auth_users_email" },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -244,6 +255,8 @@ describe("discussionService.getById — agent join serialization", () => {
       // 5. Phase E2: attachments — empty
       [],
       // 6. plan steps (P5.2) — empty
+      [],
+      // 7. Phase E batch 2 (T22): thread participants — empty
       [],
     ]);
 

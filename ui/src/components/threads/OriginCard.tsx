@@ -1,7 +1,13 @@
 import { Fragment, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { THREAD_PHASES, type Agent, type ThreadPhase } from "@armyofagents/shared";
-import { threadsApi, type ThreadDetail } from "../../api/threads";
+import {
+  THREAD_PHASES,
+  THREAD_VISIBILITIES,
+  type Agent,
+  type ThreadPhase,
+  type ThreadVisibility,
+} from "@armyofagents/shared";
+import { threadsApi, type ThreadDetail, type ThreadParticipantRow } from "../../api/threads";
 import { agentsApi } from "../../api/agents";
 import { queryKeys } from "../../lib/queryKeys";
 import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
@@ -20,13 +26,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Lock,
-  Unlock,
   Lightbulb,
   Plug,
   Mic,
@@ -37,11 +43,17 @@ import {
   MoreHorizontal,
   Flag,
   Calendar,
+  Copy,
+  Link as LinkIcon,
+  Globe,
+  Building2,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ThreadPresenceMember } from "../../context/LiveUpdatesProvider";
 import { MentionInput } from "./MentionInput";
+import { ThreadRoster } from "./ThreadRoster";
 
 /* ─── Constants ─── */
 
@@ -112,15 +124,58 @@ interface OriginCardProps {
   thread: ThreadDetail;
   companyId: string;
   onPhaseChanged: () => void;
+  /**
+   * Phase E batch 2 (T22): visibility selector callback. When omitted, the
+   * card mutates via threadsApi.setVisibility directly (legacy behavior).
+   * When set, the callback is invoked instead — parent owns the optimistic
+   * update + invalidation.
+   */
+  onVisibilityChange?: (visibility: ThreadVisibility) => void;
+  /**
+   * Phase E batch 2 (T22): share-link generation hook. Parent returns the
+   * fresh token after server-side creation; OriginCard does NOT cache it —
+   * it reads `thread.shareToken` on the next render after invalidation.
+   */
+  onGenerateShareToken?: () => Promise<{ token: string }>;
+  onRevokeShareToken?: () => Promise<void>;
+  /**
+   * Phase E batch 2 (T22): static roster passed by caller (LEFT JOIN against
+   * thread_participants in the server GET handler). Defaults to thread.participants.
+   */
+  participants?: ThreadParticipantRow[];
 }
 
-export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProps) {
+const VISIBILITY_META: Record<
+  ThreadVisibility,
+  { label: string; Icon: LucideIcon }
+> = {
+  private: { label: "Private", Icon: Lock },
+  department: { label: "Department", Icon: Building2 },
+  company: { label: "Company", Icon: Globe },
+};
+
+export function OriginCard({
+  thread,
+  companyId,
+  onPhaseChanged,
+  onVisibilityChange,
+  onGenerateShareToken,
+  onRevokeShareToken,
+  participants,
+}: OriginCardProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
   // The phase the user intends to advance to (pending confirm dialog)
   const [pendingPhase, setPendingPhase] = useState<ThreadPhase | null>(null);
   const [mentionChips, setMentionChips] = useState<string[]>([]);
+  const [shareBusy, setShareBusy] = useState(false);
+
+  // Phase E batch 2 (T22): live threads (`subtype === "live"`) get a feed-style
+  // treatment — distinct accent + suppressed phase advance (live threads stay
+  // in `discuss` forever; promotion happens via explicit dialog, not stepper).
+  const isLive = thread.subtype === "live";
+  const rosterRows: ThreadParticipantRow[] = participants ?? thread.participants ?? [];
 
   // ── Plan 7: live presence/typing + agent "working" indicator ──
   const { presenceByThread } = useLiveUpdates();
@@ -162,12 +217,11 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
     },
   });
 
-  // Phase 1 (Task A2): the canonical visibility tiers are private | department | company.
-  // The OriginCard still surfaces a binary private ↔ open toggle for now; we map
-  // "open" → "company" (everyone with scope can see it). The dept-scoped UI lives
-  // in a later task.
+  // Phase 1 Phase E batch 2 (T22): full 3-option visibility selector
+  // (private | department | company). The legacy binary toggle was dropped —
+  // dept-scoped UI is now reachable directly from the dropdown.
   const visibilityMutation = useMutation({
-    mutationFn: (visibility: "private" | "company") =>
+    mutationFn: (visibility: ThreadVisibility) =>
       threadsApi.setVisibility(companyId, thread.id, visibility),
     onSuccess: () => {
       invalidate();
@@ -198,19 +252,86 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
     }
   }
 
-  function toggleVisibility() {
-    // Binary toggle between private and company (open-equivalent). Threads
-    // already on "department" flip to "private" on first toggle.
-    visibilityMutation.mutate(thread.visibility === "private" ? "company" : "private");
+  function handleVisibilityChange(next: ThreadVisibility) {
+    if (next === thread.visibility) return;
+    if (onVisibilityChange) {
+      onVisibilityChange(next);
+      return;
+    }
+    visibilityMutation.mutate(next);
+  }
+
+  // Share-link URL — assembled client-side from the current host. Server
+  // returns just the token; the URL shape (`/discussions/<id>?token=<t>`)
+  // matches the public read-only viewer route.
+  const shareUrl = thread.shareToken
+    ? `${typeof window === "undefined" ? "" : window.location.origin}/discussions/${thread.id}?token=${thread.shareToken}`
+    : null;
+
+  async function handleGenerateShareToken() {
+    if (shareBusy) return;
+    setShareBusy(true);
+    try {
+      if (onGenerateShareToken) {
+        await onGenerateShareToken();
+      } else {
+        await threadsApi.generateShareToken(companyId, thread.id);
+      }
+      invalidate();
+      pushToast({ title: "Share link generated", tone: "success" });
+    } catch {
+      pushToast({ title: "Failed to generate share link", tone: "warn" });
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function handleRevokeShareToken() {
+    if (shareBusy) return;
+    setShareBusy(true);
+    try {
+      if (onRevokeShareToken) {
+        await onRevokeShareToken();
+      } else {
+        await threadsApi.revokeShareToken(companyId, thread.id);
+      }
+      invalidate();
+      pushToast({ title: "Share link revoked", tone: "success" });
+    } catch {
+      pushToast({ title: "Failed to revoke share link", tone: "warn" });
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function handleCopyShareUrl() {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard?.writeText(shareUrl);
+      pushToast({ title: "Share link copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Couldn't copy share link", tone: "warn" });
+    }
   }
 
   const { label: originLabel, Icon: OriginIcon } = originMeta(thread.originSource);
   const owner = thread.ownerUserId ? friendlyUser(thread.ownerUserId) : null;
   const currentIndex = THREAD_PHASES.indexOf(thread.phase);
 
+  const VisibilityIcon = VISIBILITY_META[thread.visibility].Icon;
+
   return (
     <>
-      <div className="rounded-xl border border-border bg-card p-4 space-y-3" data-testid="origin-card">
+      <div
+        className={cn(
+          "rounded-xl border bg-card p-4 space-y-3",
+          isLive
+            ? "border-teal-500/40 bg-teal-500/[0.03] origin-card--live"
+            : "border-border",
+        )}
+        data-testid="origin-card"
+        data-subtype={thread.subtype ?? "normal"}
+      >
         {/* Row 1: origin icon + eyebrow/title + Share/⋯ */}
         <div className="flex items-start gap-3">
           <div
@@ -226,6 +347,11 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
           <div className="min-w-0 flex-1">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Thread · {originLabel}
+              {isLive && (
+                <span className="ml-1.5 text-teal-600 dark:text-teal-400">
+                  · Live
+                </span>
+              )}
             </p>
             <h2 className="text-base font-semibold leading-tight text-foreground">
               {thread.title}
@@ -249,9 +375,6 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={handleShare}>Copy link</DropdownMenuItem>
-                <DropdownMenuItem onClick={toggleVisibility}>
-                  {thread.visibility === "private" ? "Make open" : "Make private"}
-                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -297,26 +420,111 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
             {formatDate(thread.createdAt)}
           </span>
 
-          {/* Visibility badge */}
-          <Badge variant="outline" className="text-[10px] capitalize">
-            {thread.visibility}
-          </Badge>
+          {/* Phase E batch 2 (T22): 3-option visibility dropdown
+              (Private / Department / Company). Replaces the legacy binary
+              toggle. Still surfaces a data-testid for back-compat with the
+              upgraded test suite. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-testid="visibility-selector"
+                disabled={visibilityMutation.isPending}
+                aria-label={`Visibility: ${VISIBILITY_META[thread.visibility].label}`}
+                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] border border-border hover:bg-muted/30 transition-colors capitalize"
+              >
+                <VisibilityIcon className="h-2.5 w-2.5" />
+                {VISIBILITY_META[thread.visibility].label}
+                <ChevronDown className="h-2.5 w-2.5 opacity-60" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" data-testid="visibility-menu">
+              <DropdownMenuRadioGroup
+                value={thread.visibility}
+                onValueChange={(value) =>
+                  handleVisibilityChange(value as ThreadVisibility)
+                }
+              >
+                {THREAD_VISIBILITIES.map((v) => {
+                  const meta = VISIBILITY_META[v];
+                  const Icon = meta.Icon;
+                  return (
+                    <DropdownMenuRadioItem
+                      key={v}
+                      value={v}
+                      data-testid={`visibility-option-${v}`}
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <Icon className="h-3 w-3" />
+                        {meta.label}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  );
+                })}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
 
-          {/* Visibility toggle (binary: private ↔ company) */}
-          <button
-            type="button"
-            data-testid="visibility-toggle"
-            onClick={toggleVisibility}
-            disabled={visibilityMutation.isPending}
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] border border-border hover:bg-muted/30 transition-colors"
-            aria-label={thread.visibility === "private" ? "Make open" : "Make private"}
-          >
-            {thread.visibility === "private" ? (
-              <><Unlock className="h-2.5 w-2.5" /> Make open</>
-            ) : (
-              <><Lock className="h-2.5 w-2.5" /> Make private</>
-            )}
-          </button>
+        {/* Phase E batch 2 (T22): share-link toggle + token display.
+            Founder-only flow. When no token exists, surface a single
+            "Generate share link" button. When a token exists, show the URL +
+            copy + revoke. */}
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border bg-muted/10 px-2.5 py-2"
+          data-testid="share-link-block"
+        >
+          <LinkIcon className="h-3 w-3 text-muted-foreground shrink-0" aria-hidden />
+          {!thread.shareToken ? (
+            <>
+              <span className="text-[11px] text-muted-foreground">
+                Public share link: off
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-[11px] ml-auto"
+                disabled={shareBusy}
+                onClick={() => void handleGenerateShareToken()}
+                data-testid="generate-share-token"
+              >
+                Generate share link
+              </Button>
+            </>
+          ) : (
+            <>
+              <code
+                className="truncate font-mono text-[11px] text-foreground"
+                data-testid="share-link-url"
+                title={shareUrl ?? ""}
+              >
+                {shareUrl}
+              </code>
+              <div className="ml-auto flex shrink-0 items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[11px]"
+                  onClick={() => void handleCopyShareUrl()}
+                  data-testid="copy-share-token"
+                  aria-label="Copy share link"
+                >
+                  <Copy className="h-3 w-3" />
+                  Copy
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-2 text-[11px] text-destructive hover:text-destructive"
+                  disabled={shareBusy}
+                  onClick={() => void handleRevokeShareToken()}
+                  data-testid="revoke-share-token"
+                >
+                  Revoke
+                </Button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Owner / claim + live presence */}
@@ -350,6 +558,11 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
           />
         </div>
 
+        {/* Phase E batch 2 (T22): static roster (thread_participants).
+            Lives BELOW the live PresenceStrip so the two never overlap.
+            Auto-hides when participants is empty. */}
+        <ThreadRoster participants={rosterRows} />
+
         {/* @mention input */}
         <MentionInput
           chips={mentionChips}
@@ -357,74 +570,102 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
           placeholder="@mention someone..."
         />
 
-        {/* Phase stepper (connected nodes + lines) + autonomy pill */}
-        <div
-          className="flex items-center gap-0"
-          role="group"
-          aria-label="Thread phases"
-          data-testid="phase-pills"
-        >
-          {THREAD_PHASES.map((phase, i) => {
-            const isActive = i === currentIndex;
-            const isDone = i < currentIndex;
-            return (
-              <Fragment key={phase}>
-                <button
-                  type="button"
-                  aria-current={isActive ? "true" : undefined}
-                  aria-label={PHASE_LABELS[phase]}
-                  onClick={() => handlePhaseClick(phase)}
-                  disabled={advancePhaseMutation.isPending}
-                  data-testid={`phase-pill-${phase}`}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition-colors",
-                    "focus-visible:outline-2 focus-visible:outline-primary",
-                    isActive
-                      ? "font-semibold text-foreground"
-                      : isDone
-                        ? "font-medium text-green-600 dark:text-green-400"
-                        : "font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "h-2 w-2 rounded-full border shrink-0",
-                      isActive
-                        ? "border-brand bg-brand"
-                        : isDone
-                          ? "border-green-500 bg-green-500"
-                          : "border-muted-foreground/40",
-                    )}
-                    aria-hidden
-                  />
-                  {PHASE_LABELS[phase]}
-                </button>
-                {i < THREAD_PHASES.length - 1 && (
-                  <span
-                    className={cn(
-                      "h-px w-5 flex-none mx-0.5",
-                      isDone ? "bg-green-500/40" : "bg-border",
-                    )}
-                    aria-hidden
-                  />
-                )}
-              </Fragment>
-            );
-          })}
-
-          <div className="flex-1" />
-
-          {/* Autonomy pill */}
-          {thread.autonomyLevel != null && (
-            <span
-              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground"
-              aria-label={`Autonomy level ${thread.autonomyLevel}`}
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-teal-500" aria-hidden />
-              {AUTONOMY_LABELS[thread.autonomyLevel] ?? `L${thread.autonomyLevel}`}
+        {/* Phase stepper (connected nodes + lines) + autonomy pill.
+            Phase E batch 2 (T22): live threads never advance phase — they
+            stay in 'discuss' as a feed. Suppress the stepper entirely and
+            surface a "Live feed" pill instead so the autonomy pill still
+            has a row to live on. */}
+        {isLive ? (
+          <div
+            className="flex items-center gap-0"
+            role="group"
+            aria-label="Live thread"
+            data-testid="phase-pills-live"
+          >
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-teal-500/40 bg-teal-500/10 px-2 py-0.5 text-[10px] font-semibold text-teal-700 dark:text-teal-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-teal-500 animate-pulse" aria-hidden />
+              Live feed
             </span>
-          )}
-        </div>
+            <div className="flex-1" />
+            {thread.autonomyLevel != null && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground"
+                aria-label={`Autonomy level ${thread.autonomyLevel}`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-teal-500" aria-hidden />
+                {AUTONOMY_LABELS[thread.autonomyLevel] ?? `L${thread.autonomyLevel}`}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div
+            className="flex items-center gap-0"
+            role="group"
+            aria-label="Thread phases"
+            data-testid="phase-pills"
+          >
+            {THREAD_PHASES.map((phase, i) => {
+              const isActive = i === currentIndex;
+              const isDone = i < currentIndex;
+              return (
+                <Fragment key={phase}>
+                  <button
+                    type="button"
+                    aria-current={isActive ? "true" : undefined}
+                    aria-label={PHASE_LABELS[phase]}
+                    onClick={() => handlePhaseClick(phase)}
+                    disabled={advancePhaseMutation.isPending}
+                    data-testid={`phase-pill-${phase}`}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition-colors",
+                      "focus-visible:outline-2 focus-visible:outline-primary",
+                      isActive
+                        ? "font-semibold text-foreground"
+                        : isDone
+                          ? "font-medium text-green-600 dark:text-green-400"
+                          : "font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full border shrink-0",
+                        isActive
+                          ? "border-brand bg-brand"
+                          : isDone
+                            ? "border-green-500 bg-green-500"
+                            : "border-muted-foreground/40",
+                      )}
+                      aria-hidden
+                    />
+                    {PHASE_LABELS[phase]}
+                  </button>
+                  {i < THREAD_PHASES.length - 1 && (
+                    <span
+                      className={cn(
+                        "h-px w-5 flex-none mx-0.5",
+                        isDone ? "bg-green-500/40" : "bg-border",
+                      )}
+                      aria-hidden
+                    />
+                  )}
+                </Fragment>
+              );
+            })}
+
+            <div className="flex-1" />
+
+            {/* Autonomy pill */}
+            {thread.autonomyLevel != null && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground"
+                aria-label={`Autonomy level ${thread.autonomyLevel}`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-teal-500" aria-hidden />
+                {AUTONOMY_LABELS[thread.autonomyLevel] ?? `L${thread.autonomyLevel}`}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Confirm dialog for phase advance */}

@@ -22,8 +22,21 @@ export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
-  create: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
-    api.post<Company>("/companies", data),
+  // Phase 1 Phase E batch 2 (T20): OnboardingWizard now collects Commander +
+  // Crew adapter picks at company-create time. Both are optional — when
+  // omitted the server falls back to legacy defaults (empty objects).
+  // Schema contracts: see CommanderAdapterConfigSchema / CrewAdapterConfigSchema
+  // in packages/shared/src/api/threads-contract.ts.
+  create: (data: {
+    name: string;
+    description?: string | null;
+    budgetMonthlyCents?: number;
+    commanderAdapterConfig?: { adapter: string; model: string };
+    crewAdapterConfig?: {
+      default?: { adapter: string; model: string };
+      perAgent?: Record<string, { adapter: string; model: string }>;
+    };
+  }) => api.post<Company>("/companies", data),
   update: (
     companyId: string,
     data: Partial<

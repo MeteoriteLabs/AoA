@@ -11,6 +11,8 @@ import {
   projects,
   goals,
   threadPlanSteps,
+  threadParticipants,
+  authUsers,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -246,7 +248,44 @@ export function discussionService(db: Db) {
         .orderBy(asc(threadPlanSteps.stepOrder))
         .then((rows: typeof threadPlanSteps.$inferSelect[]) => rows);
 
-      return { ...discussion, entries: enrichedEntries, planSteps };
+      // Phase 1 Phase E batch 2 (T22): static roster of thread_participants
+      // with name resolution. principalType branches to authUsers (text id) or
+      // agents (uuid stored as text). Both joins are LEFT so a stale row with
+      // a deleted principal still surfaces with a fallback name.
+      const participantRows = await db
+        .select({
+          principalType: threadParticipants.principalType,
+          principalId: threadParticipants.principalId,
+          role: threadParticipants.role,
+          addedAt: threadParticipants.addedAt,
+          userName: authUsers.name,
+          userEmail: authUsers.email,
+          agentName: agents.name,
+        })
+        .from(threadParticipants)
+        .leftJoin(authUsers, eq(threadParticipants.principalId, authUsers.id))
+        .leftJoin(agents, eq(threadParticipants.principalId, sql`${agents.id}::text`))
+        .where(eq(threadParticipants.threadId, id))
+        .orderBy(asc(threadParticipants.addedAt));
+
+      const participants = participantRows.map((p) => {
+        const fallback =
+          p.principalType === "agent"
+            ? p.agentName ?? "Agent"
+            : p.userName ?? (p.userEmail ? p.userEmail.split("@")[0] : p.principalId);
+        return {
+          principalType: p.principalType as "user" | "agent",
+          principalId: p.principalId,
+          name: fallback,
+          role: p.role,
+          addedAt:
+            p.addedAt instanceof Date
+              ? p.addedAt.toISOString()
+              : (p.addedAt as unknown as string),
+        };
+      });
+
+      return { ...discussion, entries: enrichedEntries, planSteps, participants };
     },
 
     /**
@@ -357,6 +396,9 @@ export function discussionService(db: Db) {
         scopeId?: string | null;
         tags?: string[];
         autonomyLevel?: number | null;
+        // Phase 1 Phase E batch 2 (T22): visibility patch from OriginCard's
+        // 3-option dropdown (private | department | company).
+        visibility?: "private" | "department" | "company";
       },
     ) => {
       // Validate scope if being changed

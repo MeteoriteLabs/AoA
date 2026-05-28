@@ -1,5 +1,5 @@
 import { api } from "./client";
-import type { ThreadVisibility } from "@armyofagents/shared";
+import type { ThreadVisibility, ThreadSubtype } from "@armyofagents/shared";
 import {
   discussionsApi,
   type DiscussionListItem,
@@ -10,11 +10,26 @@ import {
 
 // threads.ts extends the discussions API — threads ARE discussions with extra fields
 
+/** Phase E batch 2 (T22): static roster row surfaced by GET /discussions/:id. */
+export interface ThreadParticipantRow {
+  /** "user" | "agent" — mirrors thread_participants.principalType. */
+  principalType: "user" | "agent";
+  /** user id (text/uuid) OR agent id (uuid stored as text). */
+  principalId: string;
+  /** Resolved display name (auth_users.email-prefix or agents.name). */
+  name: string;
+  /** owner | co_owner | collaborator | viewer | worker */
+  role: string;
+  /** ISO timestamp. */
+  addedAt: string;
+}
+
 export interface ThreadFields {
   phase: "discuss" | "scope" | "assign" | "done";
   // Phase 1 (Task A2): canonicalized from open|private to private|department|company.
-  // OriginCard's binary toggle still flips between "private" and "company" for now;
-  // the "department" tier is reserved for the dept-scoped UI work (later task).
+  // Phase 1 Phase E batch 2 (T22): the OriginCard now surfaces a 3-option
+  // dropdown (Private / Department / Company); the legacy binary toggle was
+  // removed. Server still patches via PATCH /discussions/:id { visibility }.
   visibility: ThreadVisibility;
   ownerUserId: string | null;
   originSource: string | null;
@@ -22,6 +37,12 @@ export interface ThreadFields {
   goalId: string | null;
   summaryText: string | null;
   summaryNext: string | null;
+  /** Phase 1 Phase E batch 2 (T22): "normal" | "live" — drives feed-style UI. */
+  subtype: ThreadSubtype;
+  /** Phase 1 Phase E batch 2 (T22): public share link token; null when not set. */
+  shareToken: string | null;
+  /** Phase 1 Phase E batch 2 (T22): static roster of thread_participants rows. */
+  participants: ThreadParticipantRow[];
   // crewPaused and autonomyLevel come from DiscussionDetail (the base type),
   // but are thread-specific semantics so documented here.
 }
@@ -75,6 +96,20 @@ export const threadsApi = {
     api.patch<ThreadDetail>(
       `/companies/${companyId}/discussions/${id}`,
       { visibility },
+    ),
+
+  // Phase 1 Phase E batch 2 (T22): public share-link toggle.
+  // Generate creates a new opaque token (32+ bytes urlsafe) on the discussions
+  // row; revoke clears it. Both are founder-only on the server.
+  generateShareToken: (companyId: string, id: string) =>
+    api.post<{ token: string }>(
+      `/companies/${companyId}/discussions/${id}/share-token`,
+      {},
+    ),
+
+  revokeShareToken: (companyId: string, id: string) =>
+    api.delete<{ ok: true }>(
+      `/companies/${companyId}/discussions/${id}/share-token`,
     ),
 
   createLink: (companyId: string, fromId: string, toThreadId: string, kind: string) =>

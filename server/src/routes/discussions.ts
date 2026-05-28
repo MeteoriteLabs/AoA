@@ -605,6 +605,92 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // Phase 1 Phase E batch 2 (T22): Share-link generation + revocation.
+  // Founder-only. Tokens are opaque 32-byte url-safe random strings; uniqueness
+  // is enforced by the column-level UNIQUE constraint on discussions.share_token.
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/share-token",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      try {
+        // Use Web Crypto for a URL-safe random token. Node 19+/browsers expose
+        // `crypto.randomUUID()`; we want a longer 32-byte token so use
+        // `randomBytes` via node:crypto.
+        const { randomBytes } = await import("node:crypto");
+        const token = randomBytes(24).toString("base64url");
+        const [updated] = await db
+          .update(discussions)
+          .set({ shareToken: token, updatedAt: new Date() })
+          .where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)))
+          .returning({ id: discussions.id, shareToken: discussions.shareToken });
+        if (!updated) {
+          res.status(404).json({ error: "Discussion not found" });
+          return;
+        }
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "thread.share_token_generated",
+          entityType: "discussion",
+          entityId: discussionId,
+          details: {},
+        });
+        res.status(201).json({ token: updated.shareToken });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.delete(
+    "/companies/:companyId/discussions/:discussionId/share-token",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      try {
+        const [updated] = await db
+          .update(discussions)
+          .set({ shareToken: null, updatedAt: new Date() })
+          .where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)))
+          .returning({ id: discussions.id });
+        if (!updated) {
+          res.status(404).json({ error: "Discussion not found" });
+          return;
+        }
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "thread.share_token_revoked",
+          entityType: "discussion",
+          entityId: discussionId,
+          details: {},
+        });
+        res.json({ ok: true });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
   // T.4 Add participant to thread
   router.post(
     "/companies/:companyId/discussions/:discussionId/participants",
