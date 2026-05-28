@@ -15,6 +15,7 @@ import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
+import { getThreadEventListener } from "./thread-events.js";
 
 export interface DiscussionFilters {
   status?: string;
@@ -475,6 +476,29 @@ export function discussionService(db: Db) {
           seq: entry.seq,
         },
       });
+
+      // Task B2: notify the thread-event listener so it can debounce and wake
+      // Adjutant 30s after the last *human* entry. The listener filters out
+      // agent/system/scope_proposal entries internally — we pass everything and
+      // let it decide. Fire-and-forget: any failure inside the listener is its
+      // own concern (logged there) and must not block the addEntry response.
+      // getThreadEventListener() returns null in test/bootstrap contexts where
+      // the singleton isn't initialized — that's expected, treat as no-op.
+      const threadListener = getThreadEventListener();
+      if (threadListener) {
+        void threadListener
+          .onEntryCreated({
+            id: entry.id,
+            discussionId: entry.discussionId,
+            authorAgentId: entry.authorAgentId,
+            inputType: entry.inputType,
+            createdBy: entry.createdBy,
+          })
+          .catch(() => {
+            // Listener already logs its own errors; we swallow here so the
+            // addEntry happy path is unaffected by listener failures.
+          });
+      }
 
       // Trigger extraction directly (fire-and-forget) so the UI sees items within
       // seconds rather than waiting up to 45 s for the durable sweeper interval.

@@ -50,6 +50,7 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { initThreadEventListener } from "./services/thread-events.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -845,6 +846,16 @@ const embeddingWorker = startEmbeddingWorker(db as any, { intervalMs: 2000 });
 // already exit the process, but this lets the in-flight tick log cleanly.
 process.once("SIGTERM", () => embeddingWorker.stop());
 process.once("SIGINT", () => embeddingWorker.stop());
+
+// Thread event listener singleton (Task B2, T12, Decisions D5+D7).
+// In-memory 30s debounce on human-authored discussion entries. When the
+// debounce fires, inserts an Adjutant wakeup row guarded by A4's dedupKey
+// partial unique index. discussions.addEntry imports getThreadEventListener()
+// to push events here — the singleton MUST be initialized before the HTTP
+// server starts accepting requests so the first addEntry call finds it.
+const threadEventListener = initThreadEventListener(db as any);
+process.once("SIGTERM", () => threadEventListener.shutdown());
+process.once("SIGINT", () => threadEventListener.shutdown());
 
 // Sub-agent #1: durable discussion-extraction sweeper (primary trigger).
 // Polls discussion_entries.extractionStatus='pending' (+ reclaims orphaned

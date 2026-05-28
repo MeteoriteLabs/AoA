@@ -1,0 +1,328 @@
+/**
+ * Thread event listener — 30s human-entries-only debounce for Adjutant wakeups
+ * (Task B2, T12, Decisions D5 + D7).
+ *
+ * Subscribes to discussion-entry inserts from `discussions.addEntry`. When a
+ * HUMAN posts (entry with `authorAgentId IS NULL` AND `inputType` not in
+ * {agent, system, scope_proposal}), starts a 30-second trailing-edge debounce
+ * timer scoped to the thread. Subsequent human entries within the window
+ * reset the timer. When the timer fires, we insert ONE `agent_wakeup_requests`
+ * row addressed to that company's Adjutant agent, using A4's `dedupKey`
+ * partial unique index for cross-process dedup.
+ *
+ * Critical contracts:
+ *   - Agent / system / scope_proposal entries do NOT trigger. The signal we
+ *     care about is "humans are talking" — Adjutant should weigh in only after
+ *     humans pause for 30s, otherwise crew agents would keep waking each
+ *     other up in a thrash loop.
+ *   - The dedup key shape is `${adjutantAgentId}:${threadId}:queued`. This
+ *     matches A4's partial unique index `status = 'queued' AND dedup_key IS NOT NULL`,
+ *     so the .onConflictDoNothing() pairs cleanly: while a queued wakeup
+ *     exists for (adjutant, thread), no second one can be created. Once the
+ *     row transitions to claimed/finished/failed the dedup key may legitimately
+ *     recur.
+ *   - Respects per-thread opt-outs: skips if `discussions.crewPaused = true`
+ *     or `discussions.adjutantEnabled = false` (re-checked at fire time, not at
+ *     onEntryCreated time, so toggling mid-debounce is honored).
+ *   - hopCount caps cross-agent cascades. dispatchMention(@agent) increments
+ *     payload.hopCount; once it would exceed MAX_HOP_COUNT (3), the dispatch
+ *     is blocked instead. Wakeups triggered by *humans* always reset to 0.
+ *
+ * In-memory timers are acceptable-loss for Phase 1: a server restart drops
+ * pending timers, but the next human entry retriggers the debounce. The
+ * design doc §15 documents this — no DB persistence for the debounce in v1.
+ */
+
+import { eq, and } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import { agents, agentWakeupRequests, discussions } from "@armyofagents/db";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ service: "thread-events" });
+
+/** Max hop count before agent→agent cascade is blocked. Humans always reset to 0. */
+export const MAX_HOP_COUNT = 3;
+
+/** Debounce window after the last human entry, in milliseconds. */
+export const DEFAULT_DEBOUNCE_MS = 30_000;
+
+/**
+ * Shape of the entry-creation event consumed by the listener. Mirrors the
+ * fields the listener actually reads from `discussion_entries` — keeping the
+ * payload narrow makes the listener cheaper to call from `addEntry`'s hot
+ * path and decouples it from full row shapes.
+ */
+export interface EntryCreatedEvent {
+  id: string;
+  discussionId: string;
+  authorAgentId: string | null;
+  inputType: string;
+  createdBy: string;
+}
+
+export interface DispatchMentionParams {
+  agentId: string;
+  threadId: string;
+  entryId: string;
+  /** hopCount from the incoming wakeup payload that triggered the mention dispatch. 0 = human-originated. */
+  currentHopCount: number;
+}
+
+export interface DispatchMentionResult {
+  /** New wakeup row id, or null when the dedup key collided OR the dispatch was blocked. */
+  wakeupId: string | null;
+  /** True when hopCount cap blocked the dispatch — distinguishes from "queued duplicate already exists". */
+  blocked: boolean;
+}
+
+export interface ThreadEventListenerOpts {
+  /** Override the 30s default. Tests pass `0` + manual flush; sweepers may go shorter for canary. */
+  debounceMs?: number;
+}
+
+export interface ThreadEventListener {
+  /** Called by `discussions.addEntry` after a successful entry insert. */
+  onEntryCreated(event: EntryCreatedEvent): Promise<void>;
+  /**
+   * Programmatic dispatch path used by the @mention pipeline (currently in
+   * `services/threads.ts`). Returns the inserted wakeup id, OR `null` when
+   * deduped, OR `null + blocked: true` when hopCount cap was hit.
+   */
+  dispatchMention(params: DispatchMentionParams): Promise<DispatchMentionResult>;
+  /** Clear pending timers — for test cleanup and graceful shutdown. */
+  shutdown(): void;
+}
+
+/**
+ * Recognize human-authored discussion entries.
+ *
+ * An entry is "human-authored" iff:
+ *   - `authorAgentId === null` (no agent claimed authorship), AND
+ *   - `inputType` is not one of the explicit non-human signals:
+ *     - `agent`          — explicit agent-authored entry
+ *     - `system`         — system / lifecycle-posted entry
+ *     - `scope_proposal` — Adjutant-posted scope proposal (A3)
+ *
+ * Other inputTypes (paste, write, voice, mcp, transcript, document, routine,
+ * webhook, integration, ...) are all treated as human signal sources. This
+ * keeps the rule additive: unknown future human inputTypes default to
+ * "yes, fire Adjutant" rather than silently breaking.
+ */
+function isHumanEntry(event: EntryCreatedEvent): boolean {
+  if (event.authorAgentId !== null) return false;
+  if (event.inputType === "agent") return false;
+  if (event.inputType === "system") return false;
+  if (event.inputType === "scope_proposal") return false;
+  return true;
+}
+
+export function createThreadEventListener(
+  db: Db,
+  opts: ThreadEventListenerOpts = {},
+): ThreadEventListener {
+  const debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+
+  // threadId → pending timer handle. Single-process state — see header note
+  // on in-memory acceptable-loss for Phase 1.
+  const timers = new Map<string, NodeJS.Timeout>();
+
+  async function fireAdjutantWakeup(threadId: string): Promise<void> {
+    // Always drop the timer entry first — even if subsequent work throws,
+    // the next human entry can install a fresh timer without a leaked handle.
+    timers.delete(threadId);
+
+    // Re-fetch the thread row inside the firing closure so toggles to
+    // crewPaused / adjutantEnabled while the timer was pending are honored.
+    const [thread] = await db
+      .select()
+      .from(discussions)
+      .where(eq(discussions.id, threadId))
+      .limit(1);
+
+    if (!thread) {
+      // Thread was deleted between debounce start and fire — nothing to do.
+      return;
+    }
+    if (thread.crewPaused) {
+      log.debug({ threadId }, "skip adjutant wakeup — thread.crewPaused");
+      return;
+    }
+    if (thread.adjutantEnabled === false) {
+      log.debug({ threadId }, "skip adjutant wakeup — thread.adjutantEnabled=false");
+      return;
+    }
+
+    // Resolve the company's Adjutant. There is exactly one per company by
+    // construction (see agents_aoa_name_per_company_idx + ensure-adjutant
+    // bootstrap). If absent the company hasn't been bootstrapped yet — skip
+    // quietly rather than crash; sweep-adjutant will catch up.
+    const [adjutant] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, thread.companyId),
+          eq(agents.kind, "aoa"),
+          eq(agents.name, "Adjutant"),
+        ),
+      )
+      .limit(1);
+
+    if (!adjutant) {
+      log.debug(
+        { threadId, companyId: thread.companyId },
+        "skip adjutant wakeup — no Adjutant agent for company",
+      );
+      return;
+    }
+
+    const dedupKey = `${adjutant.id}:${threadId}:queued`;
+
+    // .onConflictDoNothing() pairs with the partial unique index on
+    // (dedup_key) WHERE status='queued' AND dedup_key IS NOT NULL.
+    // If a queued wakeup with the same dedupKey already exists (e.g. another
+    // server in the same cluster fired first) we silently no-op.
+    await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: thread.companyId,
+        agentId: adjutant.id,
+        source: "thread.event",
+        reason: "human_entry_debounce",
+        // hopCount=0 because this wakeup is human-originated; cap only counts
+        // agent→agent hops, not the initial human→adjutant edge.
+        payload: { threadId, hopCount: 0 } as Record<string, unknown>,
+        dedupKey,
+        status: "queued",
+      })
+      .onConflictDoNothing();
+  }
+
+  return {
+    async onEntryCreated(event: EntryCreatedEvent) {
+      if (!isHumanEntry(event)) return;
+
+      // Trailing-edge debounce: kill any existing timer for this thread, then
+      // schedule a fresh one. Last human entry wins.
+      const existing = timers.get(event.discussionId);
+      if (existing) clearTimeout(existing);
+
+      const t = setTimeout(() => {
+        fireAdjutantWakeup(event.discussionId).catch((err) => {
+          log.error(
+            { err, threadId: event.discussionId },
+            "fireAdjutantWakeup failed",
+          );
+        });
+      }, debounceMs);
+      // Unref so a pending timer doesn't prevent test workers (or graceful
+      // shutdown) from exiting. .unref is a no-op in environments without it.
+      if (typeof t.unref === "function") t.unref();
+      timers.set(event.discussionId, t);
+    },
+
+    async dispatchMention(params: DispatchMentionParams) {
+      // hopCount cap: if we'd be storing hopCount+1 >= MAX, block instead.
+      // Using >= because currentHopCount is the *incoming* count and we
+      // increment when storing — a wakeup at hop 2 produces a hop-3 mention,
+      // and we want to block before the chain extends past 3 total hops.
+      if (params.currentHopCount >= MAX_HOP_COUNT) {
+        log.info(
+          {
+            agentId: params.agentId,
+            threadId: params.threadId,
+            entryId: params.entryId,
+            hopCount: params.currentHopCount,
+          },
+          "dispatchMention blocked — hopCount cap reached",
+        );
+        return { wakeupId: null, blocked: true };
+      }
+
+      const [agent] = await db
+        .select({ companyId: agents.companyId })
+        .from(agents)
+        .where(eq(agents.id, params.agentId))
+        .limit(1);
+
+      if (!agent) {
+        log.debug(
+          { agentId: params.agentId },
+          "dispatchMention — agent not found, no-op",
+        );
+        return { wakeupId: null, blocked: false };
+      }
+
+      const dedupKey = `${params.agentId}:${params.threadId}:queued`;
+
+      const result = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId: params.agentId,
+          source: "thread.mention",
+          reason: "agent_mentioned",
+          payload: {
+            threadId: params.threadId,
+            mentionEntryId: params.entryId,
+            hopCount: params.currentHopCount + 1,
+          } as Record<string, unknown>,
+          dedupKey,
+          status: "queued",
+        })
+        .onConflictDoNothing()
+        .returning({ id: agentWakeupRequests.id });
+
+      const row = result[0];
+      return { wakeupId: row?.id ?? null, blocked: false };
+    },
+
+    shutdown() {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    },
+  };
+}
+
+// ── Singleton wiring ────────────────────────────────────────────────────────
+//
+// The listener is process-singleton because its debounce timers live in-memory.
+// Routes/services that need to fire `onEntryCreated` import the singleton
+// directly rather than reconstructing it per-request — otherwise each request
+// would carry its own timer Map and the debounce semantic would break.
+
+let _instance: ThreadEventListener | null = null;
+
+/**
+ * Initialize the process-wide listener singleton. Called once from
+ * `server/src/index.ts` after `db` is ready. Idempotent — calling again with
+ * the same db is a no-op; calling with a different db throws (would split
+ * timer state across two listeners).
+ */
+export function initThreadEventListener(
+  db: Db,
+  opts: ThreadEventListenerOpts = {},
+): ThreadEventListener {
+  if (_instance) return _instance;
+  _instance = createThreadEventListener(db, opts);
+  return _instance;
+}
+
+/**
+ * Resolve the singleton. Returns null if `initThreadEventListener` hasn't
+ * been called yet — callers (e.g. `discussions.addEntry`) should treat null
+ * as "feature not yet wired" and no-op, not crash. This keeps test setups
+ * that skip startup-side wiring green.
+ */
+export function getThreadEventListener(): ThreadEventListener | null {
+  return _instance;
+}
+
+/**
+ * Test-only escape hatch. Resets the singleton so a fresh listener can be
+ * installed for the next test case. Never call from production code paths.
+ */
+export function __resetThreadEventListenerForTests(): void {
+  if (_instance) _instance.shutdown();
+  _instance = null;
+}

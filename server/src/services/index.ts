@@ -51,6 +51,18 @@ export { workflowTemplateService } from "./workflow-templates.js";
 export type { CreateWorkflowInput, UpdateWorkflowInput, InstantiateResult } from "./workflow-templates.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { discussionService, type DiscussionFilters } from "./discussions.js";
+export {
+  createThreadEventListener,
+  initThreadEventListener,
+  getThreadEventListener,
+  MAX_HOP_COUNT,
+  DEFAULT_DEBOUNCE_MS,
+  type ThreadEventListener,
+  type EntryCreatedEvent,
+  type DispatchMentionParams,
+  type DispatchMentionResult,
+  type ThreadEventListenerOpts,
+} from "./thread-events.js";
 export { notificationService } from "./notifications.js";
 export { companySkillService } from "./company-skills.js";
 export type { RuntimeSkillEntry } from "./company-skills.js";
