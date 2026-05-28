@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { THREAD_VISIBILITIES } from "../constants.js";
+import { DISCUSSION_ENTRY_INPUT_TYPES, THREAD_VISIBILITIES } from "../constants.js";
 
 // ---- Discussion entry attachments (new field on DiscussionEntry) ----
 export const DiscussionEntryAttachmentSchema = z.object({
@@ -13,16 +13,15 @@ export const DiscussionEntryAttachmentSchema = z.object({
 export type DiscussionEntryAttachment = z.infer<typeof DiscussionEntryAttachmentSchema>;
 
 // ---- Phase 1 extended DiscussionEntry (adds attachments to existing shape) ----
-export const DISCUSSION_ENTRY_INPUT_TYPES_V2 = [
-  "paste", "write", "voice", "mcp", "transcript", "document", "routine", "webhook", "integration", "agent",
-  // Phase 1 additions:
-  "scope_proposal", "system",
-] as const;
+// The legacy DISCUSSION_ENTRY_INPUT_TYPES_V2 alias was dropped in Task A3 —
+// "scope_proposal" and "system" now live on the canonical
+// DISCUSSION_ENTRY_INPUT_TYPES constant in packages/shared/src/constants.ts,
+// matching the same rename pattern Task A2 used for THREAD_VISIBILITIES_V2.
 
 export const DiscussionEntryV2Schema = z.object({
   id: z.string().uuid(),
   discussionId: z.string().uuid(),
-  inputType: z.enum(DISCUSSION_ENTRY_INPUT_TYPES_V2),
+  inputType: z.enum(DISCUSSION_ENTRY_INPUT_TYPES),
   rawContent: z.string(),
   title: z.string().nullable().optional(),
   parentEntryId: z.string().uuid().nullable(),

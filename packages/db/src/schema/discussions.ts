@@ -267,6 +267,14 @@ export const discussionExtractedItems = pgTable(
     assigneeUserId: text("assignee_user_id"), // TEXT (mirrors issues.assigneeUserId; no FK)
     departmentId: uuid("department_id").references(() => projects.id, { onDelete: "set null" }),
 
+    // ── Phase 1 (Task A3): per-item embedding for cross-thread semantic
+    // retrieval over extracted decisions/tasks/insights. Same gating
+    // discipline as discussions.summaryEmbedding: any code path that
+    // writes or reads this column must first check probeDbCapabilities()
+    // — embedded-postgres bundles do not ship pgvector. The defensive
+    // HNSW index lives in the accompanying migration.
+    embedding: vector("embedding"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

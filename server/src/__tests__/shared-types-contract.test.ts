@@ -42,12 +42,15 @@ describe("v2.5 discussion constants", () => {
     expect(DISCUSSION_SCOPE_TYPES).toEqual(["department", "project", "goal"]);
   });
 
-  it("DISCUSSION_ENTRY_INPUT_TYPES has 10 values", () => {
-    expect(DISCUSSION_ENTRY_INPUT_TYPES).toHaveLength(10);
+  it("DISCUSSION_ENTRY_INPUT_TYPES has 12 values (Phase 1 added scope_proposal + system)", () => {
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toHaveLength(12);
     expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("paste");
     expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("write");
     expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("voice");
     expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("mcp");
+    // Phase 1 (Task A3): Adjutant scope proposal + crew failure messages
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("scope_proposal");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("system");
   });
 
   it("EXTRACTION_STATUSES has 5 values", () => {

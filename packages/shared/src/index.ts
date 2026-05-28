@@ -1021,10 +1021,12 @@ export * from "./teams.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).
+// DISCUSSION_ENTRY_INPUT_TYPES_V2 was consolidated into the canonical
+// DISCUSSION_ENTRY_INPUT_TYPES constant in Task A3 (same pattern A2 used for
+// THREAD_VISIBILITIES_V2). Import the canonical constant from the package root.
 export {
   DiscussionEntryAttachmentSchema,
   DiscussionEntryV2Schema,
-  DISCUSSION_ENTRY_INPUT_TYPES_V2,
   ProposedTaskSchema,
   ScopeProposalPayloadSchema,
   ThreadVisibilitySchema,

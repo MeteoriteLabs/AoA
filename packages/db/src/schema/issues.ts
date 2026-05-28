@@ -19,6 +19,11 @@ import { authUsers } from "./auth.js";
 import { artifacts } from "./artifacts.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { environments } from "./environments.js";
+// discussions imports issues, creating a circular module-init dependency.
+// The lazy `(): AnyPgColumn => discussions.id` callback below is evaluated at
+// table-build time (after both modules have finished loading), matching the
+// existing executionWorkspaces ↔ issues circular pattern.
+import { discussions } from "./discussions.js";
 
 export const issues = pgTable(
   "issues",
@@ -65,6 +70,15 @@ export const issues = pgTable(
     originKind: text("origin_kind"),
     originId: text("origin_id"),
     originRunId: uuid("origin_run_id"),
+    // Phase 1 (Task A3): the discussion thread that produced this task via
+    // Dispatcher's scope_proposal acceptance. Nullable; ON DELETE SET NULL
+    // so deleting the source thread does not cascade-delete tasks that were
+    // spawned from it (the task can outlive the thread). Lazy FK reference
+    // because discussions.ts imports issues (see top of file).
+    sourceDiscussionId: uuid("source_discussion_id").references(
+      (): AnyPgColumn => discussions.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

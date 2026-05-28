@@ -633,8 +633,28 @@ export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
 export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
-// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write
-export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp", "transcript", "document", "routine", "webhook", "integration", "agent"] as const;
+// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write.
+// Phase 1 (Task A3): added "scope_proposal" (Adjutant posts a structured proposal
+// entry with a JSON payload of summary + proposedTasks; UI renders a special
+// card with CTAs) and "system" (used for crew/agent failure messages with retry
+// affordances; UI renders with a warning icon). The previously aliased
+// DISCUSSION_ENTRY_INPUT_TYPES_V2 export in packages/shared/src/api/threads-contract.ts
+// was dropped in this task — consumers should import this canonical constant.
+export const DISCUSSION_ENTRY_INPUT_TYPES = [
+  "paste",
+  "write",
+  "voice",
+  "mcp",
+  "transcript",
+  "document",
+  "routine",
+  "webhook",
+  "integration",
+  "agent",
+  // Phase 1 additions:
+  "scope_proposal",
+  "system",
+] as const;
 export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
 
 export const EXTRACTION_STATUSES = ["pending", "processing", "completed", "failed", "skipped"] as const;
