@@ -33,6 +33,18 @@ import { spinOffThreadTool } from "./tools/thread-spin-off.js";
 import { createArtifactVersionTool } from "./tools/artifact-create-version.js";
 import { queryArtifactsTool } from "./tools/artifact-query.js";
 import { requestThreadWorkspaceTool } from "./tools/workspace-request-for-thread.js";
+// Task C2 batch 3 — 7 memory tools (T15)
+// Extraction wrappers (4) call into C1's named exports (extractMemoryCandidates
+// + filtered helpers in server/src/services/extraction.ts). The HNSW search
+// tool uses direct pgvector (mirrors find_similar_threads). propose_memory_from_thread
+// + archive_stale_memory are new memory-management operations.
+import { extractMemoryCandidatesTool } from "./tools/memory-extract-candidates.js";
+import { extractDecisionsTool } from "./tools/memory-extract-decisions.js";
+import { extractInsightsTool } from "./tools/memory-extract-insights.js";
+import { extractReferencesTool } from "./tools/memory-extract-references.js";
+import { findSimilarMemoryHnswTool } from "./tools/memory-find-similar.js";
+import { proposeMemoryFromThreadTool } from "./tools/memory-propose.js";
+import { archiveStaleMemoryTool } from "./tools/memory-archive-stale.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -73,6 +85,18 @@ export function createToolRegistry(): AgentTool[] {
     createArtifactVersionTool,
     queryArtifactsTool,
     requestThreadWorkspaceTool,
+    // Task C2 batch 3 — 7 memory tools (T15)
+    // Memory Keeper allowlist (ensure-command-staff.ts roleToolAllowlist['memory_keeper'])
+    // is extended to cover all 7 of these. extract_memory_candidates is also
+    // added to the Adjutant allowlist so it can extract mid-discussion when
+    // checking phase readiness.
+    extractMemoryCandidatesTool,
+    extractDecisionsTool,
+    extractInsightsTool,
+    extractReferencesTool,
+    findSimilarMemoryHnswTool,
+    proposeMemoryFromThreadTool,
+    archiveStaleMemoryTool,
   ];
 }
 

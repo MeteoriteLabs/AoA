@@ -85,12 +85,24 @@ export function roleToolAllowlist(role: CommandStaffRoleKey): string[] {
     case "memory_keeper":
       // C2 batch 1: Memory Keeper benefits from cross-thread retrieval to
       // surface duplicate or related memory patterns across threads.
+      // C2 batch 3: full memory toolkit — extraction wrappers (decisions,
+      // insights, references, all candidates), the HNSW similarity tool, the
+      // thread-aware proposer (inherits visibility/scope from source thread),
+      // and the staleness sweeper.
       return [
         "suggest_memory",
         "find_similar_memory",
         "detect_conflicts",
         "find_similar_threads",
         "thread.listEntries",
+        // C2 batch 3
+        "extract_memory_candidates",
+        "extract_decisions",
+        "extract_insights",
+        "extract_references",
+        "find_similar_memory_hnsw",
+        "propose_memory_from_thread",
+        "archive_stale_memory",
       ];
   }
 }

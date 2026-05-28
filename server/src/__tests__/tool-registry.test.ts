@@ -23,7 +23,7 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 52 tools", () => {
+    it("returns all 59 tools", () => {
       // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
       // thread.listEntries, thread.setIntent, thread.postScopeProposal,
       // thread.updateSummary, thread.createLink, get_thread_summary,
@@ -31,8 +31,12 @@ describe("Tool Registry", () => {
       // Task C2 batch 2 (T15) added 5 navigator+artifact+workspace tools:
       // attach_to_thread, spin_off_thread, create_artifact_version,
       // query_artifacts, request_thread_workspace.
+      // Task C2 batch 3 (T15) added 7 memory tools:
+      // extract_memory_candidates, extract_decisions, extract_insights,
+      // extract_references, find_similar_memory_hnsw,
+      // propose_memory_from_thread, archive_stale_memory.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(52);
+      expect(tools).toHaveLength(59);
     });
 
     it("every tool has required fields", () => {

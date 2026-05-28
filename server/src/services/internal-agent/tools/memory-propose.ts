@@ -1,0 +1,225 @@
+// server/src/services/internal-agent/tools/memory-propose.ts
+//
+// Task C2 batch 3 — `propose_memory_from_thread` (memory tool, Memory Keeper).
+//
+// Creates a `memory_items` row with status='pending' (founder approves; per
+// Decisions #15/#16/#52). Distinct from the existing `suggest_memory` tool —
+// this variant inherits visibility + scope from the source thread and enforces
+// the private-thread layer restriction:
+//
+//   visibility = 'private'      → may only propose 'working' or 'active_context'
+//                                  (private threads must not seed identity/domain)
+//   visibility ∈ {department, company} → all four layers allowed
+//
+// Also respects `discussions.allowMemoryExtraction` — when false, refuses with
+// MEMORY_EXTRACTION_DISABLED.
+//
+// The `sourceThreadId` is recorded in `sourceContext` (memory_items has no
+// dedicated thread FK column; sourceContext is the existing text breadcrumb).
+// Best-effort embedding enqueue (non-fatal) so retrieval picks the item up.
+
+import { eq } from "drizzle-orm";
+import { memoryItems, discussions } from "@armyofagents/db";
+import type { AgentTool } from "../types.js";
+
+const PRIVATE_THREAD_ALLOWED_LAYERS = new Set(["working", "active_context"]);
+const VALID_LAYERS = new Set(["identity", "domain", "active_context", "working"]);
+const VALID_CATEGORIES = new Set([
+  "decision",
+  "insight",
+  "context",
+  "reference",
+  "preference",
+]);
+
+export const proposeMemoryFromThreadTool: AgentTool = {
+  name: "propose_memory_from_thread",
+  description:
+    "Propose a memory item (status='pending', founder approves) seeded from a thread. " +
+    "Inherits visibility + scope from the source thread. Private threads may only " +
+    "propose working or active_context layers.",
+  parameters: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Memory content (required)" },
+      layer: {
+        type: "string",
+        description: "identity|domain|active_context|working",
+      },
+      sourceThreadId: {
+        type: "string",
+        description: "Originating thread (discussion) id",
+      },
+      type: {
+        type: "string",
+        description:
+          "Optional category: decision|insight|context|reference|preference (default 'context')",
+      },
+      title: {
+        type: "string",
+        description:
+          "Optional title; defaults to a truncated first line of content",
+      },
+    },
+    required: ["content", "layer", "sourceThreadId"],
+  },
+  category: "memory",
+  requiredRole: "team_member",
+  requiresConfirmation: false,
+  async execute(params, ctx) {
+    const { content, layer, sourceThreadId, type, title } = (params ?? {}) as {
+      content?: string;
+      layer?: string;
+      sourceThreadId?: string;
+      type?: string;
+      title?: string;
+    };
+    if (!content || typeof content !== "string" || content.trim().length === 0) {
+      return {
+        success: false,
+        data: null,
+        summary: "content is required",
+        error: "INVALID_PARAMS",
+      };
+    }
+    if (!layer || !VALID_LAYERS.has(layer)) {
+      return {
+        success: false,
+        data: null,
+        summary: `layer is required and must be one of identity|domain|active_context|working`,
+        error: "INVALID_PARAMS",
+      };
+    }
+    if (!sourceThreadId || typeof sourceThreadId !== "string") {
+      return {
+        success: false,
+        data: null,
+        summary: "sourceThreadId is required",
+        error: "INVALID_PARAMS",
+      };
+    }
+    const category = type && VALID_CATEGORIES.has(type) ? type : "context";
+
+    // Look up the source thread for visibility + extraction-allowed checks
+    // and to inherit scope (department/project/goal) onto the memory item.
+    const threadRows = await ctx.db
+      .select({
+        id: discussions.id,
+        visibility: discussions.visibility,
+        allowMemoryExtraction: discussions.allowMemoryExtraction,
+        scopeType: discussions.scopeType,
+        scopeId: discussions.scopeId,
+        goalId: discussions.goalId,
+      })
+      .from(discussions)
+      .where(eq(discussions.id, sourceThreadId))
+      .limit(1);
+    const thread = Array.isArray(threadRows) ? threadRows[0] : null;
+    if (!thread) {
+      return {
+        success: false,
+        data: null,
+        summary: "Source thread not found",
+        error: "THREAD_NOT_FOUND",
+      };
+    }
+
+    if (thread.allowMemoryExtraction === false) {
+      return {
+        success: false,
+        data: null,
+        summary: "Memory extraction is disabled for this thread",
+        error: "MEMORY_EXTRACTION_DISABLED",
+      };
+    }
+
+    // Visibility-scoped layer restriction. Private threads must not seed
+    // identity/domain memory — those layers are company-wide truth and a
+    // private thread cannot speak for the company.
+    if (
+      thread.visibility === "private" &&
+      !PRIVATE_THREAD_ALLOWED_LAYERS.has(layer)
+    ) {
+      return {
+        success: false,
+        data: null,
+        summary:
+          "Private threads can only propose memory at layer 'working' or 'active_context'",
+        error: "VISIBILITY_VIOLATION",
+      };
+    }
+
+    // Inherit scope. scopeType='department' → departmentId; 'project' → projectId;
+    // 'goal' → goalId. discussion.goalId is set independently for goal-as-property
+    // semantics; if scope is goal and the discussion.goalId is set we use that.
+    const scopeInherit: {
+      departmentId?: string;
+      projectId?: string;
+      goalId?: string;
+    } = {};
+    if (thread.scopeType === "department" && thread.scopeId) {
+      scopeInherit.departmentId = thread.scopeId;
+    } else if (thread.scopeType === "project" && thread.scopeId) {
+      scopeInherit.projectId = thread.scopeId;
+    } else if (thread.scopeType === "goal" && thread.scopeId) {
+      scopeInherit.goalId = thread.scopeId;
+    }
+    if (thread.goalId && !scopeInherit.goalId) {
+      scopeInherit.goalId = thread.goalId;
+    }
+
+    // Default the title to a truncated first line of content when caller omits.
+    const defaultedTitle =
+      title && title.trim().length > 0
+        ? title.trim()
+        : content.trim().split("\n")[0].slice(0, 200);
+
+    const inserted = await ctx.db
+      .insert(memoryItems)
+      .values({
+        companyId: ctx.companyId,
+        title: defaultedTitle,
+        content,
+        category,
+        source: "agent",
+        layer,
+        status: "pending",
+        sourceContext: `thread:${sourceThreadId}`,
+        ...scopeInherit,
+        createdBy: ctx.agentId ?? ctx.userId ?? "system",
+      })
+      .returning({ id: memoryItems.id });
+    const item = Array.isArray(inserted) ? inserted[0] : inserted;
+    if (!item || !item.id) {
+      return {
+        success: false,
+        data: null,
+        summary: "Memory insert returned no row",
+        error: "INSERT_FAILED",
+      };
+    }
+
+    // Best-effort embedding enqueue — non-fatal. Failing to enqueue should
+    // not block the proposal because the founder can approve a pending item
+    // without an embedding (retrieval just won't surface it semantically).
+    try {
+      const enqueue = ctx.services?.embeddings?.enqueue;
+      if (typeof enqueue === "function") {
+        await enqueue({
+          targetTable: "memory_items",
+          targetId: item.id,
+          targetColumn: "embedding",
+          inputText: content,
+        });
+      }
+    } catch {
+      /* non-fatal — see note above */
+    }
+
+    return {
+      success: true,
+      data: { memoryItemId: item.id },
+      summary: `Memory proposed (status=pending) at layer ${layer}`,
+    };
+  },
+};

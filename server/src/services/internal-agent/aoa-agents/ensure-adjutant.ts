@@ -39,6 +39,10 @@ const ADJUTANT_TOOL_ALLOWLIST: string[] = [
   "get_thread_summary",
   "find_similar_threads",
   "thread.updateSummary",
+  // C2 batch 3 (T15): mid-discussion extraction. The Adjutant peeks at what's
+  // surfaced before deciding the thread is ready to advance — without this it
+  // has to rely on summary text alone.
+  "extract_memory_candidates",
 ];
 
 const ADJUTANT_NAME = "Adjutant";
