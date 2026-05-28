@@ -15,6 +15,12 @@ import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { projects } from "./projects.js";
+// discussions imports issues (which imports execution_workspaces), so an eager
+// import here would close the cycle. The lazy `(): AnyPgColumn => discussions.id`
+// callback on threadId below is evaluated at table-build time after all modules
+// have loaded — matches the existing executionWorkspaces ↔ issues / executionWorkspaces
+// ↔ executionWorkspaces self-reference patterns above.
+import { discussions } from "./discussions.js";
 
 export const executionWorkspaces = pgTable(
   "execution_workspaces",
@@ -24,6 +30,14 @@ export const executionWorkspaces = pgTable(
     projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     sourceIssueId: uuid("source_issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
+    // Per-thread workspace pointer (Phase 1 — Engineer interactive artifact
+    // work). A workspace row is XOR: EITHER sourceIssueId is set (legacy
+    // per-task) OR threadId is set (per-thread), never both, never neither.
+    // The XOR invariant is enforced at the DB layer by a CHECK constraint
+    // added in the accompanying migration. ON DELETE SET NULL mirrors the
+    // sourceIssueId behaviour — the workspace can outlive its originating
+    // thread (rare, but preserves audit/recovery without orphan cascades).
+    threadId: uuid("thread_id").references((): AnyPgColumn => discussions.id, { onDelete: "set null" }),
     mode: text("mode").notNull(),
     strategyType: text("strategy_type").notNull(),
     name: text("name").notNull(),
@@ -60,9 +74,21 @@ export const executionWorkspaces = pgTable(
       table.companyId,
       table.sourceIssueId,
     ),
+    // Mirrors companySourceIssueIdx for the per-thread variant — every lookup
+    // that joins workspace → thread will scope by companyId first.
+    companyThreadIdx: index("execution_workspaces_company_thread_idx").on(
+      table.companyId,
+      table.threadId,
+    ),
     activeTaskWorkspaceUq: uniqueIndex("execution_workspaces_active_task_workspace_uq")
       .on(table.companyId, table.sourceIssueId)
       .where(sql`source_issue_id IS NOT NULL AND status <> 'archived'`),
+    // Mirrors activeTaskWorkspaceUq: at most one non-archived workspace per
+    // (company, thread). Required so Phase B Engineer doesn't accidentally
+    // open two parallel workspaces for the same thread.
+    activeThreadWorkspaceUq: uniqueIndex("execution_workspaces_active_thread_workspace_uq")
+      .on(table.companyId, table.threadId)
+      .where(sql`thread_id IS NOT NULL AND status <> 'archived'`),
     companyLastUsedIdx: index("execution_workspaces_company_last_used_idx").on(
       table.companyId,
       table.lastUsedAt,
