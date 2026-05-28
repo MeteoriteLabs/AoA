@@ -22,7 +22,7 @@
           ]
         }
       ],
-      "availableAgents": ["Engineer", "Scout", "Memory Keeper", "Navigator", "Adjutant", "Dispatcher"]
+      "availableAgents": ["Engineer", "Scout", "Memory Keeper"]
     }
   },
   "expected": {

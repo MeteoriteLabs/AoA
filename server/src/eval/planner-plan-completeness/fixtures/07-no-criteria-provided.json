@@ -8,7 +8,7 @@
         { "title": "Show read/unread indicator dot on Inbox rows" },
         { "title": "Add bulk-dismiss control to the Inbox toolbar" }
       ],
-      "availableAgents": ["Engineer", "Scout", "Memory Keeper", "Navigator", "Adjutant", "Dispatcher"]
+      "availableAgents": ["Engineer", "Scout", "Memory Keeper"]
     }
   },
   "expected": {

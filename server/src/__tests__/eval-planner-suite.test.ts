@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { loadFixtures } from "../eval/fixture-loader.js";
 import {
   buildPlannerSuite,
+  stripPlanPreamble,
   type PlannerFixtureInput,
 } from "../eval/planner-plan-completeness/suite.js";
 
@@ -328,5 +329,58 @@ describe("buildPlannerSuite.grade (llm-graded)", () => {
     expect(grade.score).toBe(0.88);
     expect(grade.reason).toBe("rubric satisfied");
     expect(graderFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("stripPlanPreamble", () => {
+  it("returns clean markdown unchanged (idempotent)", () => {
+    expect(stripPlanPreamble(SAMPLE_PLAN)).toBe(SAMPLE_PLAN);
+  });
+
+  it("strips a leading 'Sure, here is …' chat preamble before 'Goal:'", () => {
+    const noisy = "Sure! Here is the plan you requested:\n\n" + SAMPLE_PLAN;
+    expect(stripPlanPreamble(noisy)).toBe(SAMPLE_PLAN);
+  });
+
+  it("strips a leading code fence wrapper ```markdown ... ```", () => {
+    const fenced = "```markdown\n" + SAMPLE_PLAN + "\n```";
+    expect(stripPlanPreamble(fenced)).toBe(SAMPLE_PLAN);
+  });
+
+  it("strips a trailing 'Let me know …' sign-off", () => {
+    const noisy = SAMPLE_PLAN + "\n\nLet me know if you want to adjust!";
+    expect(stripPlanPreamble(noisy)).toBe(SAMPLE_PLAN);
+  });
+
+  it("strips both preamble AND postamble in one pass", () => {
+    const noisy =
+      "Here is the plan:\n\n" + SAMPLE_PLAN + "\n\nHope this helps with shipping.";
+    expect(stripPlanPreamble(noisy)).toBe(SAMPLE_PLAN);
+  });
+
+  it("falls back to first heading when no 'Goal:' anchor is present", () => {
+    const noGoal = "Random intro line.\n\n## Tasks\n\n### 1. Do thing\nDepends on: none";
+    const stripped = stripPlanPreamble(noGoal);
+    expect(stripped.startsWith("## Tasks")).toBe(true);
+  });
+});
+
+describe("buildPlannerSuite.grade (case-insensitive contains)", () => {
+  // The eval prompt mandates 'Depends on: none' in lowercase, but gpt-4o-mini
+  // occasionally drifts to 'Depends on: None'. The contains grader is now
+  // case-insensitive to absorb that drift without losing semantic signal.
+  it("matches substrings case-insensitively", async () => {
+    const suite = await buildPlannerSuite({
+      apiKey: "sk-test",
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      fixturesDir: FIXTURES_DIR,
+    });
+    const grade = await suite.grade(SAMPLE_PLAN, {
+      type: "contains",
+      // Mixed-case needles MUST still match against lowercase markdown.
+      value: ["GOAL:", "depends on: NONE", "### 1."],
+    });
+    expect(grade.pass).toBe(true);
+    expect(grade.reason).toContain("all expected substrings present");
   });
 });

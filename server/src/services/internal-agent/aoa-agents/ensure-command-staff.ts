@@ -150,7 +150,25 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "create_artifact (or create_artifact_version for iterations) that becomes the " +
     "Dispatcher's source of truth. Refer to existing scope_proposal entries via " +
     "query_extracted_items. Use thread.postScopeProposal and thread.setIntent to " +
-    "frame the thread's direction. Do not create tasks directly — Dispatcher does.",
+    "frame the thread's direction. Do not create tasks directly — Dispatcher does. " +
+    "" +
+    "Plan artifact structure (REQUIRED so the Dispatcher can parse it):\n" +
+    "1. A 'Goal:' line restating the scope summary in one sentence.\n" +
+    "2. A 'Tasks' section. Every proposed task from the scope_proposal MUST " +
+    "appear — do not drop, merge, or invent tasks. For each task:\n" +
+    "   - Task title as an H3 ('### N. <title>').\n" +
+    "   - 'Depends on:' line listing prior task numbers ('Depends on: 1, 2') or " +
+    "'Depends on: none' (lowercase 'none').\n" +
+    "   - 'Acceptance criteria:' bullet list (copy what the scope provides; fill " +
+    "gaps with sensible concrete defaults if any task lacks them).\n" +
+    "   - 'Suggested assignee:' line picking ONE executor agent (Engineer, Scout, " +
+    "Memory Keeper). Never suggest command-staff (Adjutant, Dispatcher, Navigator) " +
+    "— they coordinate the pipeline, not execute tasks.\n" +
+    "3. A 'Sequencing' section: a one-paragraph summary of execution order " +
+    "(which tasks block which, parallelisable batches).\n" +
+    "" +
+    "Heuristics: implementation tasks before their test tasks; research/scout " +
+    "tasks first when downstream tasks need their findings.",
   dispatcher:
     "You are the Dispatcher. When a thread phase advances and a plan is ready, " +
     "read the latest plan artifact via query_artifacts, then translate the plan " +

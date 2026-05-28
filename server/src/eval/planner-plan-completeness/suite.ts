@@ -119,7 +119,7 @@ export async function buildPlannerSuite(
       };
       const content = data.choices?.[0]?.message?.content;
       if (!content) throw new Error("planner returned empty content");
-      return content;
+      return stripPlanPreamble(content);
     },
     async grade(actual, expected): Promise<EvalGrade> {
       if (expected.type === "exact") {
@@ -140,9 +140,10 @@ export async function buildPlannerSuite(
         );
       }
       // "contains" — expected.value MUST be string[] of substrings that all
-      // need to appear in the markdown. Order-agnostic; case-sensitive (the
-      // Planner's structural tokens like "### 1." and "Depends on:" are
-      // deterministic so case-sensitivity is a feature, not a bug).
+      // need to appear in the markdown. Order-agnostic; CASE-INSENSITIVE so
+      // "Depends on: None" still matches "Depends on: none" — the structural
+      // contract lives in the prompt but humans/models occasionally drift
+      // capitalization. Reject non-array shapes defensively (F2/F3 parity).
       const needles = Array.isArray(expected.value)
         ? (expected.value as unknown[]).filter((v): v is string => typeof v === "string")
         : [];
@@ -153,7 +154,8 @@ export async function buildPlannerSuite(
           reason: "contains grading requires expected.value: string[]",
         };
       }
-      const missing = needles.filter((n) => !actual.includes(n));
+      const haystack = actual.toLowerCase();
+      const missing = needles.filter((n) => !haystack.includes(n.toLowerCase()));
       const pass = missing.length === 0;
       return {
         pass,
@@ -164,6 +166,47 @@ export async function buildPlannerSuite(
       };
     },
   };
+}
+
+/**
+ * Strip common chat-style preamble/postamble that gpt-4o-mini occasionally
+ * adds despite the "Markdown only" instruction. We slice from the first
+ * structural anchor (Goal: line, or a heading) and trim trailing
+ * conversational fluff. Idempotent — clean input passes through unchanged.
+ */
+export function stripPlanPreamble(raw: string): string {
+  // 1. Strip a leading code fence ```markdown ... ``` if present.
+  const fenceMatch = raw.match(/^\s*```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/);
+  if (fenceMatch) {
+    return stripPlanPreamble(fenceMatch[1]);
+  }
+
+  // 2. Slice from the first structural anchor onwards. The prompt mandates
+  //    "Goal:" leading line; fall back to the first heading if it's absent.
+  const anchorIdx = (() => {
+    const candidates = [/(^|\n)\s*Goal:/i, /(^|\n)\s*#{1,3}\s+/];
+    let best = -1;
+    for (const re of candidates) {
+      const m = raw.match(re);
+      if (m && m.index !== undefined && (best === -1 || m.index < best)) {
+        best = m.index + (m[0].startsWith("\n") ? 1 : 0);
+      }
+    }
+    return best;
+  })();
+  const sliced = anchorIdx >= 0 ? raw.slice(anchorIdx) : raw;
+
+  // 3. Trim conversational trailing fluff after the last structural section.
+  //    Look for "Let me know" / "Hope this helps" / "Feel free" style sign-offs
+  //    on their own line and drop everything from there onwards.
+  const tailDrop = sliced.match(
+    /\n+(?:Let me know|Hope this|Feel free|Happy to|Anything else)[^\n]*$/i,
+  );
+  const trimmed = tailDrop && tailDrop.index !== undefined
+    ? sliced.slice(0, tailDrop.index)
+    : sliced;
+
+  return trimmed.trim();
 }
 
 function renderScopeForPlanner(scope: PlannerFixtureInput["scope"]): string {

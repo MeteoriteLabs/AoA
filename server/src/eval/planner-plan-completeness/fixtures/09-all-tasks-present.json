@@ -26,7 +26,7 @@
           "acceptanceCriteria": ["Screenshots refreshed", "Copy mirrors the new welcome-screen language"]
         }
       ],
-      "availableAgents": ["Engineer", "Scout", "Memory Keeper", "Navigator", "Adjutant", "Dispatcher"]
+      "availableAgents": ["Engineer", "Scout", "Memory Keeper"]
     }
   },
   "expected": {
