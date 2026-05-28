@@ -27,7 +27,8 @@
     "build": "tsc && node --input-type=commonjs -e \"require('node:fs').cpSync('src/onboarding-assets','dist/onboarding-assets',{recursive:true})\"",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval:run": "tsx src/eval/run-all.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",

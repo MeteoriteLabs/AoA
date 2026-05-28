@@ -40,7 +40,8 @@
     "docker:build-test": "./scripts/docker-build-test.sh",
     "docker:smoke": "./scripts/docker-onboard-smoke.sh",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
-    "evals:validate": "cd evals/promptfoo && npx promptfoo@0.103.3 validate"
+    "evals:validate": "cd evals/promptfoo && npx promptfoo@0.103.3 validate",
+    "eval:run": "pnpm --filter @armyofagents/server eval:run"
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
