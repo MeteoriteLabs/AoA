@@ -806,6 +806,13 @@
       "when": 1779875031670,
       "tag": "0114_new_scarecrow",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1779974963240,
+      "tag": "0115_enable_pgvector",
+      "breakpoints": true
     }
   ]
 }
