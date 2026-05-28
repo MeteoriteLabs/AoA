@@ -15,7 +15,7 @@
   },
   "expected": {
     "type": "llm-graded",
-    "rubric": "Should produce a scope_proposal with clear summary and 2-4 concrete tasks. Not 'wait' or 'ask-clarifying'.",
+    "rubric": "The category MUST be 'propose-scope'. Three turns of human alignment: problem named (homepage CTA), goal named (signup conversion), and first step explicitly proposed ('start with hero section + CTA placement'). 'wait' or 'ask-clarifying' would be wrong because the humans have already converged.",
     "value": { "category": "propose-scope" }
   }
 }

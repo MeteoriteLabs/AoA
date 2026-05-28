@@ -36,10 +36,17 @@ Use these heuristics:
 
 Return JSON only.`;
 
+/**
+ * Thread phase values mirror the canonical DB enum at
+ * `packages/db/src/schema/discussions.ts:65`. Keep these in sync — the
+ * eval suite is an interpretation of production behavior, not a fantasy.
+ */
+export type AdjutantThreadPhase = "discuss" | "scope" | "assign" | "done";
+
 export interface AdjutantThreadFixture {
   thread: {
     id: string;
-    phase: "discuss" | "scope" | "plan" | "build" | "review" | "archived";
+    phase: AdjutantThreadPhase;
     intent?: string[];
     summaryText?: string | null;
     entries: Array<{
@@ -137,10 +144,20 @@ export async function buildAdjutantScopeSuite(
           graderConfig,
         );
       }
-      // "contains" — check the actual category appears anywhere in expected.value
-      const haystack = JSON.stringify(expected.value);
-      const pass = haystack.includes(actual.category);
-      return { pass, score: pass ? 1 : 0, reason: pass ? "contains match" : `${actual.category} not in expected` };
+      // "contains" — expected.value must be a string[] of acceptable categories.
+      // We narrow rather than substring-match a stringified blob so a value of
+      // {other: "wait-and-see"} can't false-positive when actual.category="wait".
+      const allowed = Array.isArray(expected.value)
+        ? (expected.value as unknown[]).filter((v): v is string => typeof v === "string")
+        : [];
+      const pass = allowed.includes(actual.category);
+      return {
+        pass,
+        score: pass ? 1 : 0,
+        reason: pass
+          ? `category ${actual.category} is in allowed set`
+          : `expected one of [${allowed.join(", ")}], got ${actual.category}`,
+      };
     },
   };
 }

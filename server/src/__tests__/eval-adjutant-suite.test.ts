@@ -272,7 +272,10 @@ describe("buildAdjutantScopeSuite.grade", () => {
     expect(graderFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("handles 'contains' grading by checking the category appears in the expected value", async () => {
+  it("handles 'contains' grading by checking the category is in the allowed string[]", async () => {
+    // expected.value MUST be a string[] of acceptable categories — narrow
+    // contract instead of stringified-substring matching so {other:"wait-ish"}
+    // can't false-positive when actual.category is "wait".
     const suite = await buildAdjutantScopeSuite({
       apiKey: "sk-test",
       fetchImpl: vi.fn() as unknown as typeof fetch,
@@ -280,15 +283,32 @@ describe("buildAdjutantScopeSuite.grade", () => {
     });
     const positive = await suite.grade(
       { category: "wait", reasoning: "" },
-      { type: "contains", value: { allowed: ["wait", "ask-clarifying"] } },
+      { type: "contains", value: ["wait", "ask-clarifying"] },
     );
     expect(positive.pass).toBe(true);
+    expect(positive.reason).toContain("allowed set");
 
     const negative = await suite.grade(
       { category: "propose-scope", reasoning: "" },
-      { type: "contains", value: { allowed: ["wait", "ask-clarifying"] } },
+      { type: "contains", value: ["wait", "ask-clarifying"] },
     );
     expect(negative.pass).toBe(false);
     expect(negative.reason).toContain("propose-scope");
+    expect(negative.reason).toContain("expected one of");
+  });
+
+  it("'contains' grading rejects non-array expected.value defensively", async () => {
+    // Object-shaped expected.value (the old loose shape) must not false-positive.
+    const suite = await buildAdjutantScopeSuite({
+      apiKey: "sk-test",
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      fixturesDir: FIXTURES_DIR,
+    });
+    const result = await suite.grade(
+      { category: "wait", reasoning: "" },
+      { type: "contains", value: { allowed: ["wait"] } as unknown as string[] },
+    );
+    expect(result.pass).toBe(false);
+    expect(result.reason).toContain("expected one of");
   });
 });
