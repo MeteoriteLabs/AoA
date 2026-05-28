@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("drizzle-orm", () => ({ eq: vi.fn((a:any,b:any)=>({eq:[a,b]})), and: vi.fn((...a:any)=>({and:a})) }));
-vi.mock("@armyofagents/db", () => ({ internalAgentConfig: {}, agents: {} }));
+vi.mock("@armyofagents/db", () => ({
+  internalAgentConfig: {},
+  agents: {},
+  // Required by services/embeddings.ts (imported transitively via memory.ts)
+  memoryItems: {},
+  discussions: {},
+  discussionExtractedItems: {},
+  embeddingQueue: {},
+}));
 const cliCalls:any[]=[];
 vi.mock("../services/internal-agent/cli-mode.js", () => ({ cliModeService: () => ({ chat: async function*(p:any){ cliCalls.push(p); yield {type:"text",delta:"ok"}; } }) }));
 vi.mock("../services/internal-agent/conversation.js", () => ({

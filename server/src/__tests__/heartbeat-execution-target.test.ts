@@ -25,6 +25,10 @@ vi.mock("@armyofagents/db", () => {
     teamMembers: makeTable(),
     teamCoordinations: makeTable(),
     teams: makeTable(),
+    // Required by services/embeddings.ts (B1: createEmbeddingService target map)
+    discussions: makeTable(),
+    discussionExtractedItems: makeTable(),
+    embeddingQueue: makeTable(),
   };
 });
 
