@@ -40,8 +40,8 @@ export function createMemoryTools(): AgentTool[] {
       },
     },
     {
-      name: "create_memory",
-      description: "Create a new memory item. Requires founder or team lead approval.",
+      name: "suggest_memory",
+      description: "Propose a new memory item for founder approval (status: pending).",
       parameters: {
         type: "object",
         properties: {

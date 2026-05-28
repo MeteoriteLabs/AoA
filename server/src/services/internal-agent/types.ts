@@ -16,6 +16,7 @@ import type { secretService } from "../secrets.js";
 import type { notificationService } from "../notifications.js";
 import type { discussionService } from "../discussions.js";
 import type { threadService } from "../threads.js";
+import type { EmbeddingService } from "../embeddings.js";
 
 // JSON Schema type for tool parameter definitions
 export interface JsonSchema {
@@ -100,4 +101,12 @@ export interface ServiceContainer {
     update: (id: string, data: Partial<{ vision: string; mission: string }>) => Promise<{ id: string; name: string | null; vision: string | null; mission: string | null }>;
   };
   workflows: null; // Placeholder — workflow service not yet implemented
+  /**
+   * Optional embedding service — present when the embedding worker has been
+   * started (see `startEmbeddingWorker` in embeddings-worker.ts). Tools that
+   * need synchronous embedding (e.g. find_similar_threads) should check for
+   * presence and fall back gracefully when absent (e.g. in tests or when the
+   * worker has not been wired up yet).
+   */
+  embeddings?: EmbeddingService;
 }

@@ -32,6 +32,13 @@ const ADJUTANT_TOOL_ALLOWLIST: string[] = [
   "advance_phase",
   "notify_owner",
   "post_entry",
+  // C2 batch 1 (T15): the Adjutant reads thread state before deciding to
+  // advance or nudge. find_similar_threads helps it cross-check stale
+  // threads against active ones.
+  "thread.listEntries",
+  "get_thread_summary",
+  "find_similar_threads",
+  "thread.updateSummary",
 ];
 
 const ADJUTANT_NAME = "Adjutant";

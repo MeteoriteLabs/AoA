@@ -293,6 +293,28 @@ async function updateVectorColumn(
 export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
   return {
     /**
+     * Synchronous embedding generation. Calls the underlying LLM embedder
+     * directly without queueing — useful for query-time use cases like
+     * `find_similar_threads` where the caller needs the vector immediately
+     * to feed a cosine-similarity ORDER BY clause.
+     *
+     * This is distinct from `enqueue` + `processQueue` (which is the
+     * write-behind path for storing embeddings on rows). The sync path
+     * does NOT touch `embedding_queue`.
+     *
+     * Cost note: each call costs one OpenAI API request. Callers should
+     * avoid calling this in hot loops; for batch use cases, batch via
+     * `generateEmbeddingsBatch` directly.
+     */
+    async embedSync(text: string): Promise<number[]> {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        throw new Error("Cannot generate embedding for empty text");
+      }
+      return await llm.embed(trimmed);
+    },
+
+    /**
      * Enqueue a row for the background worker to process. Synchronous —
      * returns as soon as the row is in `embedding_queue` with status='pending'.
      * The actual embedding happens in `processQueue` on the worker tick.

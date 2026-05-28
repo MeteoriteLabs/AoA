@@ -39,13 +39,53 @@ export type CommandStaffRoleKey = (typeof COMMAND_STAFF_ROLES)[number]["key"];
 export function roleToolAllowlist(role: CommandStaffRoleKey): string[] {
   switch (role) {
     case "router":
-      return ["search_discussions", "query_departments"];
+      // C2 batch 1: Router needs find_similar_threads to suggest a sibling
+      // thread instead of routing to a department when the topic has been
+      // discussed before. get_thread_summary + thread.listEntries help it
+      // read the topic of an existing thread without polluting the thread itself.
+      return [
+        "search_discussions",
+        "query_departments",
+        "find_similar_threads",
+        "get_thread_summary",
+        "thread.listEntries",
+        "thread.createLink",
+      ];
     case "planner":
-      return ["search_discussions", "query_tasks", "query_dependency_chain"];
+      // C2 batch 1: Planner owns scope proposals + setting intent on a thread
+      // when escalating from discuss → scope. Needs listEntries to read the
+      // thread context before proposing.
+      return [
+        "search_discussions",
+        "query_tasks",
+        "query_dependency_chain",
+        "thread.listEntries",
+        "get_thread_summary",
+        "thread.setIntent",
+        "thread.postScopeProposal",
+        "thread.updateSummary",
+      ];
     case "dispatcher":
-      return ["create_task", "assign_task", "add_task_dependency", "wakeup_agent", "query_agents"];
+      return [
+        "create_task",
+        "assign_task",
+        "add_task_dependency",
+        "wakeup_agent",
+        "query_agents",
+        // Dispatcher reads the proposal before creating tasks
+        "thread.listEntries",
+        "get_thread_summary",
+      ];
     case "memory_keeper":
-      return ["suggest_memory", "find_similar_memory", "detect_conflicts"];
+      // C2 batch 1: Memory Keeper benefits from cross-thread retrieval to
+      // surface duplicate or related memory patterns across threads.
+      return [
+        "suggest_memory",
+        "find_similar_memory",
+        "detect_conflicts",
+        "find_similar_threads",
+        "thread.listEntries",
+      ];
   }
 }
 

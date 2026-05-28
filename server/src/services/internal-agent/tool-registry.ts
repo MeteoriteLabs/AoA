@@ -19,6 +19,14 @@ import { createPostEntryTool } from "./tools/post-entry-tool.js";
 import { createAdvancePhaseTool } from "./tools/advance-phase-tool.js";
 import { createNotifyOwnerTool } from "./tools/notify-owner-tool.js";
 import { createArtifactTool } from "./tools/create-artifact-tool.js";
+// Task C2 batch 1 — 7 thread + query tools (T15)
+import { threadListEntriesTool } from "./tools/thread-list-entries.js";
+import { threadSetIntentTool } from "./tools/thread-set-intent.js";
+import { threadPostScopeProposalTool } from "./tools/thread-post-scope-proposal.js";
+import { threadUpdateSummaryTool } from "./tools/thread-update-summary.js";
+import { threadCreateLinkTool } from "./tools/thread-create-link.js";
+import { getThreadSummaryTool } from "./tools/thread-get-summary.js";
+import { findSimilarThreadsTool } from "./tools/thread-find-similar.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -39,6 +47,14 @@ export function createToolRegistry(): AgentTool[] {
     createAdvancePhaseTool(),
     createNotifyOwnerTool(),
     createArtifactTool(),
+    // Task C2 batch 1 — 7 thread + query tools (T15)
+    threadListEntriesTool,
+    threadSetIntentTool,
+    threadPostScopeProposalTool,
+    threadUpdateSummaryTool,
+    threadCreateLinkTool,
+    getThreadSummaryTool,
+    findSimilarThreadsTool,
   ];
 }
 

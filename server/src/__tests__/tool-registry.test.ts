@@ -23,9 +23,13 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 40 tools", () => {
+    it("returns all 47 tools", () => {
+      // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
+      // thread.listEntries, thread.setIntent, thread.postScopeProposal,
+      // thread.updateSummary, thread.createLink, get_thread_summary,
+      // find_similar_threads.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(40);
+      expect(tools).toHaveLength(47);
     });
 
     it("every tool has required fields", () => {

@@ -35,7 +35,7 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "wakeup_agent",
   // Memory
   "query_memory",
-  "create_memory",
+  "suggest_memory",
   "update_memory",
   "find_similar_memory",
   "detect_conflicts",
@@ -54,6 +54,14 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   // Analysis
   "analyze_workload",
   "suggest_improvements",
+  // Task C2 batch 1 (T15) — thread + query tools for crew coordination
+  "thread.listEntries",
+  "thread.setIntent",
+  "thread.postScopeProposal",
+  "thread.updateSummary",
+  "thread.createLink",
+  "get_thread_summary",
+  "find_similar_threads",
 ] as const;
 
 /** Idempotently ensure the per-company Commander kind='aoa' row + link
