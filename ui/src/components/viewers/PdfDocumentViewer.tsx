@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -8,6 +8,11 @@ const PdfDocumentRenderer = lazy(() =>
     default: module.PdfDocumentRenderer,
   })),
 );
+
+function pageWidthForContainer(containerWidth: number): number {
+  if (!Number.isFinite(containerWidth) || containerWidth <= 0) return 680;
+  return Math.max(240, Math.min(900, Math.floor(containerWidth - 32)));
+}
 
 export function PdfDocumentViewer({
   fileUrl,
@@ -21,6 +26,28 @@ export function PdfDocumentViewer({
   const [pageNum, setPageNum] = useState(1);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [useNativeFallback, setUseNativeFallback] = useState(false);
+  const [pageWidth, setPageWidth] = useState(680);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+
+    const updatePageWidth = (width: number) => {
+      setPageWidth(pageWidthForContainer(width));
+    };
+
+    updatePageWidth(element.clientWidth || element.getBoundingClientRect().width);
+
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      updatePageWidth(width || element.clientWidth || element.getBoundingClientRect().width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div
@@ -67,7 +94,7 @@ export function PdfDocumentViewer({
           </a>
         </Button>
       </div>
-      <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-muted/30 py-4">
+      <div ref={viewportRef} className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-muted/30 py-4">
         {useNativeFallback ? (
           <iframe
             data-testid="pdf-native-fallback"
@@ -80,6 +107,7 @@ export function PdfDocumentViewer({
             <PdfDocumentRenderer
               fileUrl={fileUrl}
               pageNumber={pageNum}
+              pageWidth={pageWidth}
               onLoadSuccess={(loadedPages) => setNumPages(loadedPages)}
               onLoadError={() => setUseNativeFallback(true)}
             />

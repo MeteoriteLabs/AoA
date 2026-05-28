@@ -11,6 +11,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 interface PdfDocumentRendererProps {
   fileUrl: string;
   pageNumber: number;
+  pageWidth: number;
   onLoadSuccess: (numPages: number) => void;
   onLoadError: () => void;
 }
@@ -18,6 +19,7 @@ interface PdfDocumentRendererProps {
 export function PdfDocumentRenderer({
   fileUrl,
   pageNumber,
+  pageWidth,
   onLoadSuccess,
   onLoadError,
 }: PdfDocumentRendererProps) {
@@ -29,7 +31,7 @@ export function PdfDocumentRenderer({
       loading={<div className="p-8 text-xs text-muted-foreground">Loading PDF...</div>}
       error={<div className="p-8 text-xs text-destructive">Failed to load PDF.</div>}
     >
-      <Page pageNumber={pageNumber} width={680} />
+      <Page pageNumber={pageNumber} width={pageWidth} />
     </Document>
   );
 }

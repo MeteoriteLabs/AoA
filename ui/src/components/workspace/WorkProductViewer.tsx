@@ -9,20 +9,22 @@ import type { OutputViewerResolution } from "./output-viewer-registry";
 interface WorkProductViewerProps {
   viewer: OutputViewerResolution;
   filename: string;
+  inlineTextContent?: string | null;
 }
 
-export function WorkProductViewer({ viewer, filename }: WorkProductViewerProps) {
+export function WorkProductViewer({ viewer, filename, inlineTextContent = null }: WorkProductViewerProps) {
   const assetUrl = viewer.assetUrl;
 
-  const { data: textContent, isLoading, error } = useQuery({
+  const { data: fetchedTextContent, isLoading, error } = useQuery({
     queryKey: ["work-product-text", assetUrl],
     queryFn: async () => {
       const response = await fetch(assetUrl!, { credentials: "include" });
       if (!response.ok) throw new Error(`Failed to load output (${response.status})`);
       return await response.text();
     },
-    enabled: Boolean(assetUrl && viewer.requiresTextFetch),
+    enabled: Boolean(inlineTextContent === null && assetUrl && viewer.requiresTextFetch),
   });
+  const textContent = inlineTextContent ?? fetchedTextContent;
 
   if (viewer.requiresTextFetch) {
     if (isLoading) {
@@ -66,9 +68,6 @@ export function WorkProductViewer({ viewer, filename }: WorkProductViewerProps) 
       return <AudioOutputViewer url={assetUrl} filename={filename} />;
     case "pdf":
       return <PdfOutputViewer url={assetUrl} filename={filename} />;
-    case "browser":
-    case "external":
-    case "collection":
     case "download":
       return <DownloadFallbackViewer url={viewer.url ?? assetUrl} />;
   }
@@ -121,7 +120,7 @@ function SandboxedMarkupViewer({
       <iframe
         title={filename}
         srcDoc={srcDoc}
-        sandbox="allow-scripts allow-forms allow-downloads"
+        sandbox="allow-scripts"
         className="min-h-0 flex-1 border-0 bg-background"
         data-testid={kind === "svg" ? "work-product-svg-frame" : "work-product-html-frame"}
       />

@@ -531,7 +531,8 @@ describe("WorkspaceView — three-panel layout", () => {
     expect(screen.getByTestId("workspace-left-panel")).toHaveAttribute("data-collapsed", "true");
     expect(screen.getByTestId("workspace-right-panel")).toHaveAttribute("data-collapsed", "false");
     expect(screen.getByRole("tab", { name: /workspace summary/i })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByTestId("preview-text")).toHaveTextContent("Artifact body");
+    expect(screen.getByTestId("preview-artifact-tab")).toBeInTheDocument();
+    expect(screen.getByTestId("work-product-markdown")).toHaveTextContent("Artifact body");
   });
 
   it("renders timeline in center panel and right panel sections", async () => {

@@ -2,8 +2,7 @@ type OutputViewerInput = {
   contentType?: string | null;
   filename?: string | null;
   assetId?: string | null;
-  url?: string | null;
-  outputType?: string | null;
+  assetUrl?: string | null;
   metadata?: Record<string, unknown> | null;
 };
 
@@ -20,9 +19,6 @@ export type OutputViewerKind =
   | "svg_sandbox"
   | "mermaid"
   | "canvas"
-  | "browser"
-  | "collection"
-  | "external"
   | "download";
 
 export interface OutputViewerResolution {
@@ -64,7 +60,6 @@ const SAFE_METADATA_VIEWERS = new Set<OutputViewerKind>([
   "svg_sandbox",
   "mermaid",
   "canvas",
-  "collection",
 ]);
 
 function normaliseContentType(value: string | null | undefined): string {
@@ -78,10 +73,6 @@ function extensionOf(filename: string | null | undefined): string {
   const lastDot = name.lastIndexOf(".");
   if (lastDot === -1 || lastDot === name.length - 1) return "";
   return name.slice(lastDot + 1);
-}
-
-function normaliseOutputType(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
 }
 
 function metadataViewerKind(metadata: Record<string, unknown> | null | undefined): OutputViewerKind | null {
@@ -142,37 +133,9 @@ function isTextLike(contentType: string, extension: string): boolean {
 export function resolveOutputViewer(output: OutputViewerInput): OutputViewerResolution {
   const contentType = normaliseContentType(output.contentType);
   const extension = extensionOf(output.filename);
-  const assetUrl = output.assetId ? `/api/assets/${output.assetId}/content` : null;
-  const outputType = normaliseOutputType(output.outputType);
-  const url = output.url?.trim() || assetUrl;
+  const assetUrl = output.assetUrl ?? (output.assetId ? `/api/assets/${output.assetId}/content` : null);
   const canOpenDirectly = Boolean(assetUrl);
   const hintedKind = metadataViewerKind(output.metadata);
-
-  if (outputType === "preview_url" || outputType === "runtime_service") {
-    return {
-      kind: "browser",
-      label: "Browser preview",
-      assetUrl,
-      url: output.url ?? assetUrl,
-      canOpenDirectly: Boolean(output.url ?? assetUrl),
-      shouldExecuteInBrowser: true,
-      requiresTextFetch: false,
-      canShowSource: false,
-    };
-  }
-
-  if (outputType === "external_link") {
-    return {
-      kind: "external",
-      label: "External link",
-      assetUrl,
-      url: output.url ?? assetUrl,
-      canOpenDirectly: Boolean(output.url ?? assetUrl),
-      shouldExecuteInBrowser: false,
-      requiresTextFetch: false,
-      canShowSource: false,
-    };
-  }
 
   if (hintedKind) {
     const labels: Partial<Record<OutputViewerKind, string>> = {
@@ -183,7 +146,6 @@ export function resolveOutputViewer(output: OutputViewerInput): OutputViewerReso
       svg_sandbox: "SVG preview",
       mermaid: "Diagram preview",
       canvas: "Canvas preview",
-      collection: "Collection preview",
     };
     return textViewer(hintedKind, labels[hintedKind] ?? "Preview", assetUrl, canOpenDirectly);
   }
@@ -240,7 +202,7 @@ export function resolveOutputViewer(output: OutputViewerInput): OutputViewerReso
     kind: "download",
     label: "Open externally",
     assetUrl,
-    url,
+    url: assetUrl,
     canOpenDirectly,
     shouldExecuteInBrowser: false,
     requiresTextFetch: false,

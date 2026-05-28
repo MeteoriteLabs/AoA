@@ -108,6 +108,7 @@ test.describe("software department product workspace journey", () => {
     });
     await assertWorkspaceViewers(page, company, workspace, {
       artifactTitle: "workspace-summary.md",
+      outputToken,
       serviceName: service.serviceName,
       serviceUrl: service.url!,
     });
@@ -657,7 +658,7 @@ async function assertWorkspaceViewers(
   page: Page,
   company: Company,
   workspace: ExecutionWorkspace,
-  expected: { artifactTitle: string; serviceName: string; serviceUrl: string },
+  expected: { artifactTitle: string; outputToken: string; serviceName: string; serviceUrl: string },
 ) {
   await page.goto(`/${company.issuePrefix}/workspaces/${workspace.id}`);
   await page.getByTestId("workspace-preview-toggle").click();
@@ -675,7 +676,8 @@ async function assertWorkspaceViewers(
   await expect(artifactRow).toBeVisible();
   await artifactRow.click();
   await expect(page.getByRole("tab", { name: expected.artifactTitle })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByTestId("preview-download")).toContainText(expected.artifactTitle);
+  await expect(page.getByTestId("preview-artifact-tab")).toBeVisible();
+  await expect(page.getByTestId("work-product-markdown")).toContainText(expected.outputToken);
 
   await page.getByRole("tab", { name: "Viewer" }).click();
   await page.getByTestId("viewer-home-logs").click();

@@ -177,15 +177,7 @@ export function WorkspacePreviewPanel({
             </ScrollArea>
           )}
           {activeTab.kind === "artifact" && (
-            <ScrollArea className="h-full">
-              <PreviewView
-                artifact={activeTab.artifact}
-                version={activeTab.version}
-                functionType={functionType ?? null}
-                workspaceId={workspaceId ?? null}
-                preferArtifact
-              />
-            </ScrollArea>
+            <ArtifactVersionPreviewView artifact={activeTab.artifact} version={activeTab.version} />
           )}
           {activeTab.kind === "output" && <OutputPreviewView output={activeTab.output} />}
           {activeTab.kind === "logs" && (
@@ -790,6 +782,97 @@ function OutputPreviewView({ output }: { output: DetectedOutputForUI }) {
         )}
       </div>
       <WorkProductViewer viewer={viewer} filename={output.filename} />
+    </div>
+  );
+}
+
+function extensionFromName(value: string | null | undefined): string {
+  const name = value?.split(/[?#]/, 1)[0]?.trim().toLowerCase() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot === -1 ? "" : name.slice(dot + 1);
+}
+
+function contentTypeFromArtifactVersion(artifact: ArtifactWithVersions, version: ArtifactVersion): string {
+  const extension = extensionFromName(artifact.title) || extensionFromName(version.fileUrl);
+  switch (extension) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "pdf":
+      return "application/pdf";
+    case "mp4":
+      return "video/mp4";
+    case "webm":
+      return "video/webm";
+    case "mp3":
+      return "audio/mpeg";
+    case "wav":
+      return "audio/wav";
+    case "html":
+    case "htm":
+      return "text/html";
+    case "md":
+    case "mdx":
+      return "text/markdown";
+    case "json":
+      return "application/json";
+    case "csv":
+      return "text/csv";
+  }
+  if (artifact.type === "design" && version.fileUrl) return "image/png";
+  if (version.content !== null && version.content !== undefined) {
+    if (artifact.type === "code") return "text/plain";
+    if (artifact.type === "document") return "text/markdown";
+    return "text/plain";
+  }
+  return "application/octet-stream";
+}
+
+function ArtifactVersionPreviewView({
+  artifact,
+  version,
+}: {
+  artifact: ArtifactWithVersions;
+  version: ArtifactVersion;
+}) {
+  const inlineContent = version.content ?? null;
+  const fileUrl = version.fileUrl;
+  const filename = artifact.title;
+  const contentType = contentTypeFromArtifactVersion(artifact, version);
+  const viewer = resolveOutputViewer({
+    contentType,
+    filename,
+    assetId: null,
+    assetUrl: fileUrl,
+  });
+
+  return (
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="preview-artifact-tab">
+      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">{artifact.title}</div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            {viewer.label} - v{version.versionNumber}
+          </div>
+        </div>
+        {viewer.canOpenDirectly && (
+          <Button asChild type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">
+            <a href={viewer.assetUrl ?? undefined} target="_blank" rel="noopener noreferrer">
+              Open
+            </a>
+          </Button>
+        )}
+      </div>
+      <WorkProductViewer viewer={viewer} filename={filename} inlineTextContent={inlineContent} />
     </div>
   );
 }

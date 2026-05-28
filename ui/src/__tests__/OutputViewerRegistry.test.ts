@@ -82,25 +82,44 @@ describe("resolveOutputViewer", () => {
     });
   });
 
-  it("classifies runtime and external URL outputs without requiring assets", () => {
+  it("ignores metadata hints for viewers that do not have an implemented renderer", () => {
     expect(resolveOutputViewer({
-      outputType: "preview_url",
-      url: "/preview/services/svc-1/",
-      filename: "web",
+      contentType: "application/json",
+      filename: "collection.json",
+      assetId: "asset-collection",
+      metadata: { viewerKind: "collection" },
     })).toMatchObject({
-      kind: "browser",
-      label: "Browser preview",
+      kind: "json",
+      label: "JSON preview",
+    });
+  });
+
+  it("does not classify runtime URLs as detected-output viewers", () => {
+    expect(resolveOutputViewer({
+      filename: "web",
+      contentType: null,
+      assetId: null,
+    })).toMatchObject({
+      kind: "download",
+      assetUrl: null,
+      url: null,
+      canOpenDirectly: false,
+      shouldExecuteInBrowser: false,
       requiresTextFetch: false,
     });
+  });
 
+  it("supports explicit artifact file URLs without pretending they are runtime URLs", () => {
     expect(resolveOutputViewer({
-      outputType: "external_link",
-      url: "https://example.com/report",
-      filename: "report",
+      contentType: "image/png",
+      filename: "Logo.png",
+      assetUrl: "/api/assets/asset-image/content",
     })).toMatchObject({
-      kind: "external",
-      label: "External link",
-      requiresTextFetch: false,
+      kind: "image",
+      assetUrl: "/api/assets/asset-image/content",
+      url: "/api/assets/asset-image/content",
+      canOpenDirectly: true,
+      shouldExecuteInBrowser: false,
     });
   });
 

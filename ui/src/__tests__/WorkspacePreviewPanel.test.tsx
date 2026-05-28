@@ -542,6 +542,166 @@ describe("WorkspacePreviewPanel tab deck", () => {
     expect(screen.getAllByText("workspace-summary.md").length).toBeGreaterThan(0);
   });
 
+  it("renders saved markdown artifact versions with the work-product viewer", async () => {
+    const artifact = {
+      id: "artifact-1",
+      companyId: "comp-1",
+      title: "Workspace summary.md",
+      description: null,
+      type: "document" as const,
+      status: "active" as const,
+      currentVersionId: "version-1",
+      createdById: "agent-1",
+      createdAt: new Date("2026-05-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-28T00:00:00.000Z"),
+      versions: [
+        {
+          id: "version-1",
+          artifactId: "artifact-1",
+          versionNumber: 1,
+          source: "agent" as const,
+          sourceDetail: "Codex",
+          changelog: "Initial",
+          parentVersionId: null,
+          content: "# Summary\n\nThis is saved.",
+          fileUrl: null,
+          createdAt: new Date("2026-05-28T00:00:00.000Z"),
+        },
+      ],
+    };
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "artifact:artifact-1:version-1",
+        kind: "artifact",
+        title: "Workspace summary.md",
+        artifact,
+        version: artifact.versions[0],
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="artifact:artifact-1:version-1"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    expect(await screen.findByTestId("preview-artifact-tab")).toBeInTheDocument();
+    expect(screen.getByTestId("work-product-markdown")).toHaveTextContent("This is saved.");
+  });
+
+  it("renders empty saved text artifact content without fetching its asset", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response("unexpected network body", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const artifact = {
+      id: "artifact-1",
+      companyId: "comp-1",
+      title: "empty-summary.md",
+      description: null,
+      type: "document" as const,
+      status: "active" as const,
+      currentVersionId: "version-1",
+      createdById: "agent-1",
+      createdAt: new Date("2026-05-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-28T00:00:00.000Z"),
+      versions: [
+        {
+          id: "version-1",
+          artifactId: "artifact-1",
+          versionNumber: 1,
+          source: "agent" as const,
+          sourceDetail: "Codex",
+          changelog: "Initial",
+          parentVersionId: null,
+          content: "",
+          fileUrl: "/api/assets/asset-empty/content",
+          createdAt: new Date("2026-05-28T00:00:00.000Z"),
+        },
+      ],
+    };
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "artifact:artifact-1:version-1",
+        kind: "artifact",
+        title: "empty-summary.md",
+        artifact,
+        version: artifact.versions[0],
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="artifact:artifact-1:version-1"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    expect(await screen.findByTestId("preview-artifact-tab")).toBeInTheDocument();
+    expect(screen.getByTestId("work-product-markdown")).toHaveTextContent("");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders saved image artifact versions with the work-product viewer", async () => {
+    const artifact = {
+      id: "artifact-1",
+      companyId: "comp-1",
+      title: "Logo.png",
+      description: null,
+      type: "design" as const,
+      status: "active" as const,
+      currentVersionId: "version-1",
+      createdById: "agent-1",
+      createdAt: new Date("2026-05-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-28T00:00:00.000Z"),
+      versions: [
+        {
+          id: "version-1",
+          artifactId: "artifact-1",
+          versionNumber: 1,
+          source: "agent" as const,
+          sourceDetail: "Codex",
+          changelog: "Initial",
+          parentVersionId: null,
+          content: null,
+          fileUrl: "/api/assets/asset-image/content",
+          createdAt: new Date("2026-05-28T00:00:00.000Z"),
+        },
+      ],
+    };
+    const tabs: WorkspacePreviewTab[] = [
+      {
+        id: "artifact:artifact-1:version-1",
+        kind: "artifact",
+        title: "Logo.png",
+        artifact,
+        version: artifact.versions[0],
+      },
+    ];
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={tabs}
+        activeTabId="artifact:artifact-1:version-1"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />,
+      { wrapper },
+    );
+
+    expect(await screen.findByTestId("preview-artifact-tab")).toBeInTheDocument();
+    expect(screen.getByTestId("preview-output-image")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Logo.png" })).toHaveAttribute("src", "/api/assets/asset-image/content");
+  });
+
   it("renders captured html output in a sandboxed preview frame with source available", async () => {
     vi.stubGlobal(
       "fetch",
@@ -580,8 +740,9 @@ describe("WorkspacePreviewPanel tab deck", () => {
     );
 
     const frame = await screen.findByTestId("work-product-html-frame");
-    expect(frame).toHaveAttribute("sandbox");
-    expect(frame.getAttribute("sandbox") ?? "").toContain("allow-scripts");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame.getAttribute("sandbox") ?? "").not.toContain("allow-forms");
+    expect(frame.getAttribute("sandbox") ?? "").not.toContain("allow-downloads");
     expect(frame.getAttribute("sandbox") ?? "").not.toContain("allow-same-origin");
     expect(screen.getByTestId("preview-output-tab")).toHaveTextContent("HTML preview");
 

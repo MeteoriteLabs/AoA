@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 const pdfMockState = vi.hoisted(() => ({ failLoad: false }));
@@ -26,8 +26,10 @@ vi.mock("react-pdf", async () => {
 
       return <div data-testid="react-pdf-document">{children}</div>;
     },
-    Page: ({ pageNumber }: { pageNumber: number }) => (
-      <div data-testid="react-pdf-page">page {pageNumber}</div>
+    Page: ({ pageNumber, width }: { pageNumber: number; width?: number }) => (
+      <div data-testid="react-pdf-page" data-page-width={width}>
+        page {pageNumber}
+      </div>
     ),
     pdfjs: { GlobalWorkerOptions: { workerSrc: "" } },
   };
@@ -38,6 +40,10 @@ vi.mock("react-pdf/dist/Page/AnnotationLayer.css", () => ({}));
 import { PdfDocumentViewer } from "../components/viewers/PdfDocumentViewer";
 
 describe("PdfDocumentViewer", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("renders a loaded PDF document with filename, page controls, and download link", async () => {
     pdfMockState.failLoad = false;
 
@@ -60,6 +66,41 @@ describe("PdfDocumentViewer", () => {
     const downloadLink = screen.getByRole("link", { name: /download/i });
     expect(downloadLink).toHaveAttribute("href", "/uploads/sample.pdf");
     expect(downloadLink).toHaveAttribute("download", "sample.pdf");
+  });
+
+  it("sizes the rendered PDF page to the available panel width", async () => {
+    pdfMockState.failLoad = false;
+
+    vi.stubGlobal(
+      "ResizeObserver",
+      class ResizeObserver {
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = callback;
+        }
+
+        observe(target: Element) {
+          this.callback(
+            [
+              {
+                target,
+                contentRect: { width: 512 },
+              } as ResizeObserverEntry,
+            ],
+            this,
+          );
+        }
+
+        unobserve() {}
+
+        disconnect() {}
+      },
+    );
+
+    render(<PdfDocumentViewer fileUrl="/uploads/responsive.pdf" filename="responsive.pdf" />);
+
+    expect(await screen.findByTestId("react-pdf-page")).toHaveAttribute("data-page-width", "480");
   });
 
   it("falls back to the native browser PDF frame when PDF.js cannot load", async () => {
