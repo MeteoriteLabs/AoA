@@ -618,9 +618,11 @@ export function discussionRoutes(db: Db) {
       try {
         // Use Web Crypto for a URL-safe random token. Node 19+/browsers expose
         // `crypto.randomUUID()`; we want a longer 32-byte token so use
-        // `randomBytes` via node:crypto.
+        // `randomBytes` via node:crypto. (Phase E batch 3 bumped from 24 → 32
+        // bytes for additional entropy; share tokens are still base64url and
+        // backward-compatible because the schema column has no length cap.)
         const { randomBytes } = await import("node:crypto");
-        const token = randomBytes(24).toString("base64url");
+        const token = randomBytes(32).toString("base64url");
         const [updated] = await db
           .update(discussions)
           .set({ shareToken: token, updatedAt: new Date() })

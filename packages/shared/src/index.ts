@@ -326,6 +326,7 @@ export type {
   Artifact,
   ArtifactVersion,
   ArtifactWithVersions,
+  Notification,
   TaskOutput,
   TaskOutputType,
   TaskOutputStatus,

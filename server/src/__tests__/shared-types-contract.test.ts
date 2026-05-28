@@ -89,8 +89,20 @@ describe("v2.5 internal agent constants", () => {
     expect(TRIGGER_SOURCES).toHaveLength(6);
   });
 
-  it("NOTIFICATION_TYPES has 12 values", () => {
-    expect(NOTIFICATION_TYPES).toHaveLength(12);
+  it("NOTIFICATION_TYPES has 17 values", () => {
+    // 12 pre-Phase-1 types + 5 new thread.* types added in Phase E batch 3
+    // (T23). Keep this assertion in sync with packages/shared/src/constants.ts
+    // so additions don't sneak in without test coverage.
+    expect(NOTIFICATION_TYPES).toHaveLength(17);
+  });
+
+  it("NOTIFICATION_TYPES includes the 5 Phase 1 thread.* types", () => {
+    const set = new Set<string>(NOTIFICATION_TYPES);
+    expect(set.has("thread.scope_proposal_posted")).toBe(true);
+    expect(set.has("thread.artifact_needs_review")).toBe(true);
+    expect(set.has("thread.crew_failed")).toBe(true);
+    expect(set.has("thread.spinoff_suggested")).toBe(true);
+    expect(set.has("thread.human_input_needed")).toBe(true);
   });
 
   it("IA_RUN_STATUSES has 3 values", () => {

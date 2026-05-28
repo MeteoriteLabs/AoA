@@ -832,6 +832,14 @@ export const NOTIFICATION_TYPES = [
   "marketplace.update_completed",
   "marketplace.update_failed",
   "thread.mention",
+  // Phase 1 Phase E batch 3 (T23): new thread-coordination notifications
+  // surfaced in Inbox. Backing payload still lives on the existing
+  // notifications row shape (title/message/relatedEntityType/relatedEntityId).
+  "thread.scope_proposal_posted",
+  "thread.artifact_needs_review",
+  "thread.crew_failed",
+  "thread.spinoff_suggested",
+  "thread.human_input_needed",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

@@ -86,6 +86,19 @@ export interface Issue {
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   source: IssueSource | null;
+  /**
+   * Phase 1 Task A3: the discussion thread (if any) that produced this task
+   * via Dispatcher's scope_proposal acceptance. `null` for tasks that did not
+   * originate from a thread. Joined with `discussions.title` server-side to
+   * provide the optional `sourceThreadTitle` denormalization below.
+   */
+  sourceDiscussionId?: string | null;
+  /**
+   * Denormalized title of the source discussion. Populated by the issues list
+   * endpoint when `sourceDiscussionIdNotNull=true` is passed; absent otherwise.
+   * Read-only on the client — server-derived from a LEFT JOIN.
+   */
+  sourceThreadTitle?: string | null;
   reviewerUserId: string | null;
   dueDate: Date | null;
   startedAt: Date | null;

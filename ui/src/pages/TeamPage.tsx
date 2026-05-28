@@ -16,6 +16,7 @@ import { OrgTreeTab, type OrgNodeAction } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
 import { CommanderTeamTab } from "../components/team/CommanderTeamTab";
+import { TasksTab } from "../components/team/TasksTab";
 import { TeamsListPage } from "./TeamsListPage";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -23,7 +24,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs } from "@/components/ui/tabs";
 import { PageTabBar, type PageTabItem } from "../components/PageTabBar";
 
-const VALID_TABS = ["org", "agents", "humans", "teams", "commander"] as const;
+const VALID_TABS = ["org", "agents", "humans", "teams", "commander", "tasks"] as const;
 type TeamTab = (typeof VALID_TABS)[number];
 
 function isValidTab(value: string | null): value is TeamTab {
@@ -36,6 +37,9 @@ const TAB_ITEMS: PageTabItem[] = [
   { value: "humans", label: "Humans" },
   { value: "teams", label: "Teams" },
   { value: "commander", label: "Commander Team" },
+  // Phase 1 Phase E batch 3 (T21): crew/Dispatcher-created tasks grouped by
+  // their originating discussion thread.
+  { value: "tasks", label: "Tasks" },
 ];
 
 export function TeamPage() {
@@ -239,6 +243,13 @@ export function TeamPage() {
               liveRuns={commanderLiveRunsQuery.data ?? []}
               permissions={{ isFounder: role === "founder" }}
               onMutationSuccess={invalidateAll}
+            />
+          )}
+
+          {activeTab === "tasks" && (
+            <TasksTab
+              companyId={selectedCompanyId}
+              crewAgents={commanderAgentsQuery.data ?? agentsQuery.data ?? []}
             />
           )}
         </div>

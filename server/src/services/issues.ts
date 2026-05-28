@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -8,6 +8,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  discussions,
   executionWorkspaces,
   goals,
   heartbeatRuns,
@@ -113,6 +114,14 @@ export interface IssueFilters {
    * Omit to include all tasks regardless of parentage.
    */
   parentId?: string | null;
+  /**
+   * Phase 1 Phase E batch 3 (T21): when true, restrict to tasks that were
+   * spawned from a discussion thread (i.e. issues.source_discussion_id IS NOT
+   * NULL). Also enables the server-side LEFT JOIN that populates the
+   * `sourceThreadTitle` denormalization on returned rows so the TeamPage
+   * Tasks tab can group results without a follow-up fetch.
+   */
+  sourceDiscussionIdNotNull?: boolean;
 }
 
 export function pickWorkspaceInheritanceSourceIssueId(input: {
@@ -228,7 +237,15 @@ export function resolveCreateIssueExecutionWorkspaceFields(input: {
   };
 }
 
-type IssueRow = typeof issues.$inferSelect;
+type IssueRow = typeof issues.$inferSelect & {
+  /**
+   * Phase 1 Phase E batch 3 (T21): denormalized title of the source discussion
+   * thread. Populated only when the issues list endpoint is called with the
+   * `sourceDiscussionIdNotNull=true` filter (which opts the query into a LEFT
+   * JOIN against `discussions`). Absent or `null` otherwise.
+   */
+  sourceThreadTitle?: string | null;
+};
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssueActiveRunRow = {
   id: string;
@@ -627,6 +644,13 @@ export function issueService(db: Db) {
           )!,
         );
       }
+      // Phase 1 Phase E batch 3 (T21): restrict to tasks spawned from a thread.
+      // Also opts the query into the LEFT JOIN below so the TeamPage Tasks tab
+      // can group by source thread title without a follow-up fetch.
+      const fromDiscussions = filters?.sourceDiscussionIdNotNull === true;
+      if (fromDiscussions) {
+        conditions.push(isNotNull(issues.sourceDiscussionId));
+      }
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
@@ -641,11 +665,43 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const rows = await db
-        .select()
-        .from(issues)
-        .where(and(...conditions))
-        .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
+      const orderClause = [
+        hasSearch ? asc(searchOrder) : asc(priorityOrder),
+        asc(priorityOrder),
+        desc(issues.updatedAt),
+      ];
+
+      // Two query shapes: with-JOIN (when grouping by source thread) and the
+      // legacy select-all shape (preserved to keep callers and downstream tests
+      // identical). The JOIN variant projects every issue column explicitly
+      // because mixing `select()` with a LEFT JOIN in Drizzle returns nested
+      // rows ({ issues: {...}, discussions: {...} }) which would break every
+      // downstream consumer.
+      let rows: IssueRow[];
+      if (fromDiscussions) {
+        const joinedRows = await db
+          .select({
+            // Spread issues columns via Drizzle's column reference. We rely on
+            // PostgreSQL preserving column ordering — the returned shape mirrors
+            // the bare `select().from(issues)` call.
+            issue: issues,
+            sourceThreadTitle: discussions.title,
+          })
+          .from(issues)
+          .leftJoin(discussions, eq(discussions.id, issues.sourceDiscussionId))
+          .where(and(...conditions))
+          .orderBy(...orderClause);
+        rows = joinedRows.map((row) => ({
+          ...(row.issue as IssueRow),
+          sourceThreadTitle: row.sourceThreadTitle,
+        } as IssueRow));
+      } else {
+        rows = await db
+          .select()
+          .from(issues)
+          .where(and(...conditions))
+          .orderBy(...orderClause);
+      }
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);

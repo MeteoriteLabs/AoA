@@ -625,6 +625,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
     }
 
+    // Phase 1 Phase E batch 3 (T21): filter to crew/dispatcher-created tasks
+    // for the TeamPage Tasks tab. Accepts the literal string "true" — all other
+    // values (including absent) leave the filter off so behavior is unchanged.
+    const sourceDiscussionIdNotNull = req.query.sourceDiscussionIdNotNull === "true";
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -635,6 +640,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
       ...(parentIdFilter !== undefined ? { parentId: parentIdFilter } : {}),
+      ...(sourceDiscussionIdNotNull ? { sourceDiscussionIdNotNull: true } : {}),
     });
     res.json(result);
   });

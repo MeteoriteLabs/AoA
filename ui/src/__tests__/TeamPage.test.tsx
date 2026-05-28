@@ -70,6 +70,8 @@ describe("TeamPage", () => {
     expect(screen.getByText("Agents")).toBeInTheDocument();
     expect(screen.getByText("Humans")).toBeInTheDocument();
     expect(screen.getByText("Teams")).toBeInTheDocument();
+    // Phase 1 Phase E batch 3 (T21): Tasks sub-tab for crew-created tasks.
+    expect(screen.getByRole("tab", { name: /tasks/i })).toBeInTheDocument();
   });
 
   it("defaults to Org Tree tab", () => {

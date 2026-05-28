@@ -97,6 +97,7 @@ export type {
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
 export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
+export type { Notification } from "./notification.js";
 export type {
   TaskOutput,
   TaskOutputType,

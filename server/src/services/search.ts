@@ -250,6 +250,21 @@ export function searchService(db: Db) {
         actor: Actor;
         includeArchived?: boolean;
         limitPerType?: number;
+        /**
+         * Phase 1 Phase E batch 3 (T24): when set, the brief/thread group is
+         * pulled from `discussions` (instead of legacy `briefs+debriefs`) and
+         * filtered by intent. The brief source is replaced — not augmented —
+         * because the new producers all write to `discussions`.
+         */
+        intent?: string;
+        /** Thread phase: `discuss | scope | assign | done`. See `THREAD_PHASES`. */
+        phase?: string;
+        /**
+         * Participant filter formatted as `agent:<uuid>` or `user:<id>`.
+         * Anything that doesn't parse cleanly is dropped silently — the
+         * route validates URL shape; this is the service-level safety net.
+         */
+        participant?: string;
       },
     ): Promise<GlobalSearchResponse> => {
       const query = input.query.trim();
@@ -263,6 +278,22 @@ export function searchService(db: Db) {
       const fetchLimit = Math.max(limitPerType * 3, 24);
       const likePattern = `%${query}%`;
       const tsQuery = sql`websearch_to_tsquery('simple', ${query})`;
+
+      // Phase 1 Phase E batch 3 (T24): parse participant once so both the
+      // SQL EXISTS clause and the test contract see the same value.
+      const participantParts = input.participant?.includes(":")
+        ? input.participant.split(":", 2)
+        : null;
+      const participantType =
+        participantParts?.[0] === "agent" || participantParts?.[0] === "user"
+          ? participantParts[0]
+          : null;
+      const participantId = participantType ? participantParts![1] : null;
+      // Trigger the discussions source whenever any thread-only filter is set.
+      const useDiscussionsForBriefs =
+        Boolean(input.intent) ||
+        Boolean(input.phase) ||
+        Boolean(participantId);
 
       const [
         taskRows,
@@ -361,62 +392,122 @@ export function searchService(db: Db) {
           order by score desc, a.updated_at desc
           limit ${fetchLimit}
         `),
-        db.execute(sql`
-          select
-            b.id,
-            coalesce(d.title, 'Brief') as title,
-            b.status,
-            b.department_id as "departmentId",
-            b.project_id as "projectId",
-            p.name as "departmentName",
-            left(coalesce(d.raw_content, ''), 160) as subtitle,
-            greatest(
-              ts_rank_cd(
-                to_tsvector(
-                  'simple',
-                  concat_ws(
-                    ' ',
-                    coalesce(d.title, ''),
-                    coalesce(d.raw_content, ''),
-                    coalesce((
-                      select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
-                      from brief_items bi
-                      where bi.brief_id = b.id
-                    ), '')
-                  )
-                ),
-                ${tsQuery}
-              ),
-              case
-                when coalesce(d.title, '') ilike ${likePattern} then 0.6
-                when coalesce(d.raw_content, '') ilike ${likePattern} then 0.3
-                else 0
-              end
-            ) as score
-          from briefs b
-          inner join debriefs d on d.id = b.debrief_id
-          left join projects p on p.id = b.department_id
-          where b.company_id = ${companyId}
-            and (
-              to_tsvector(
-                'simple',
-                concat_ws(
-                  ' ',
-                  coalesce(d.title, ''),
-                  coalesce(d.raw_content, ''),
-                  coalesce((
-                    select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
-                    from brief_items bi
-                    where bi.brief_id = b.id
-                  ), '')
+        // Phase 1 Phase E batch 3 (T24): if any thread-only filter is active
+        // (intent/phase/participant), source the brief/thread group from
+        // `discussions` so the filters can apply. Otherwise we preserve the
+        // existing briefs+debriefs source to keep older tests + back-compat.
+        useDiscussionsForBriefs
+          ? db.execute(sql`
+              select
+                d.id,
+                coalesce(d.title, 'Thread') as title,
+                d.status,
+                d.scope_id as "departmentId",
+                null::uuid as "projectId",
+                p.name as "departmentName",
+                left(coalesce(d.summary_text, ''), 160) as subtitle,
+                greatest(
+                  ts_rank_cd(
+                    to_tsvector(
+                      'simple',
+                      concat_ws(
+                        ' ',
+                        coalesce(d.title, ''),
+                        coalesce(d.summary_text, '')
+                      )
+                    ),
+                    ${tsQuery}
+                  ),
+                  case
+                    when coalesce(d.title, '') ilike ${likePattern} then 0.6
+                    when coalesce(d.summary_text, '') ilike ${likePattern} then 0.3
+                    else 0
+                  end
+                ) as score
+              from discussions d
+              left join projects p on p.id = d.scope_id
+              where d.company_id = ${companyId}
+                and (
+                  to_tsvector(
+                    'simple',
+                    concat_ws(
+                      ' ',
+                      coalesce(d.title, ''),
+                      coalesce(d.summary_text, '')
+                    )
+                  ) @@ ${tsQuery}
+                  or coalesce(d.title, '') ilike ${likePattern}
+                  or coalesce(d.summary_text, '') ilike ${likePattern}
                 )
-              ) @@ ${tsQuery}
-              or coalesce(d.title, '') ilike ${likePattern}
-              or coalesce(d.raw_content, '') ilike ${likePattern}
-            )
-          order by score desc, b.updated_at desc
-          limit ${fetchLimit}
-        `),
+                ${input.intent ? sql`and d.intent @> ${JSON.stringify([input.intent])}::jsonb` : sql``}
+                ${input.phase ? sql`and d.phase = ${input.phase}` : sql``}
+                ${participantType && participantId ? sql`
+                  and exists (
+                    select 1 from thread_participants tp
+                    where tp.thread_id = d.id
+                      and tp.principal_type = ${participantType}
+                      and tp.principal_id = ${participantId}
+                  )
+                ` : sql``}
+              order by score desc, d.updated_at desc
+              limit ${fetchLimit}
+            `)
+          : db.execute(sql`
+              select
+                b.id,
+                coalesce(d.title, 'Brief') as title,
+                b.status,
+                b.department_id as "departmentId",
+                b.project_id as "projectId",
+                p.name as "departmentName",
+                left(coalesce(d.raw_content, ''), 160) as subtitle,
+                greatest(
+                  ts_rank_cd(
+                    to_tsvector(
+                      'simple',
+                      concat_ws(
+                        ' ',
+                        coalesce(d.title, ''),
+                        coalesce(d.raw_content, ''),
+                        coalesce((
+                          select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
+                          from brief_items bi
+                          where bi.brief_id = b.id
+                        ), '')
+                      )
+                    ),
+                    ${tsQuery}
+                  ),
+                  case
+                    when coalesce(d.title, '') ilike ${likePattern} then 0.6
+                    when coalesce(d.raw_content, '') ilike ${likePattern} then 0.3
+                    else 0
+                  end
+                ) as score
+              from briefs b
+              inner join debriefs d on d.id = b.debrief_id
+              left join projects p on p.id = b.department_id
+              where b.company_id = ${companyId}
+                and (
+                  to_tsvector(
+                    'simple',
+                    concat_ws(
+                      ' ',
+                      coalesce(d.title, ''),
+                      coalesce(d.raw_content, ''),
+                      coalesce((
+                        select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
+                        from brief_items bi
+                        where bi.brief_id = b.id
+                      ), '')
+                    )
+                  ) @@ ${tsQuery}
+                  or coalesce(d.title, '') ilike ${likePattern}
+                  or coalesce(d.raw_content, '') ilike ${likePattern}
+                )
+              order by score desc, b.updated_at desc
+              limit ${fetchLimit}
+            `),
         db.execute(sql`
           select
             m.id,
