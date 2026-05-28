@@ -69,7 +69,7 @@ const makeThread = (overrides: Partial<ThreadListItem> = {}): ThreadListItem => 
   lastEntryAt: "2026-01-01T12:00:00Z",
   lastEntryInputType: null,
   phase: "discuss",
-  visibility: "open",
+  visibility: "company",
   ownerUserId: null,
   originSource: null,
   intent: null,

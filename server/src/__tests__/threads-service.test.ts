@@ -279,7 +279,7 @@ describe("threadService.getById", () => {
 describe("threadService.list", () => {
   it("returns all threads for a founder without filtering", async () => {
     const threads = [
-      { id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null },
+      { id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null },
       { id: "t2", companyId: "co1", ownerUserId: "u1", visibility: "private", scopeType: null, scopeId: null },
     ];
     const db = createSequenceDb([threads]);
@@ -289,7 +289,7 @@ describe("threadService.list", () => {
 
   it("filters out private threads for non-participants", async () => {
     const threads = [
-      { id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null },
+      { id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null },
       { id: "t2", companyId: "co1", ownerUserId: "u9", visibility: "private", scopeType: null, scopeId: null },
     ];
     const db = createSequenceDb([
@@ -312,11 +312,11 @@ describe("computeCreateDefaults", () => {
     const d = computeCreateDefaults({
       origin: { source: "human", medium: "text" },
       creator: { userId: "u1", isHuman: true },
-      departmentDefaultVisibility: "open",
+      departmentDefaultVisibility: "company",
     });
     expect(d.phase).toBe("discuss");
     expect(d.ownerUserId).toBe("u1");
-    expect(d.visibility).toBe("open");
+    expect(d.visibility).toBe("company");
     expect(d.originSource).toBe("human");
   });
 
@@ -336,7 +336,7 @@ describe("computeCreateDefaults", () => {
 describe("threadService.advancePhase", () => {
   it("rejects an illegal forward skip", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
     ]);
     await expect(
       threadService(db).advancePhase("co1", "t1", "assign", { userId: "u1", role: "founder", isHuman: true }),
@@ -345,7 +345,7 @@ describe("threadService.advancePhase", () => {
 
   it("advances phase forward by one step", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", phase: "discuss", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [], // update
       [], // aoaAgentTriggers select (phase-advance subscribers — P3.4)
     ]);
@@ -373,7 +373,7 @@ describe("threadService.advancePhase", () => {
 describe("threadService.updateSummary", () => {
   it("persists summary and fires live event", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [], // update
     ]);
     const result = await threadService(db).updateSummary(
@@ -396,7 +396,7 @@ describe("threadService.claim", () => {
     // Fix 1: an unclaimed thread is only viewable by founder or team_lead-with-scope.
     // A team_lead with scope access (null scope → globally accessible) passes assertCanView.
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "company", scopeType: null, scopeId: null }],
       [], // assertCanView: participants query (team_lead; null-scope → hasScopeAccess → visible)
       [], // update discussions
       [], // participant insert
@@ -412,7 +412,7 @@ describe("threadService.claim", () => {
   it("does not change owner when thread is already owned", async () => {
     // Already-owned + open + null scope → viewable by a team_member (hasScopeAccess).
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "company", scopeType: null, scopeId: null }],
       [], // assertCanView: participants query (non-founder; open+null-scope → visible)
     ]);
     const res = await threadService(db).claim("co1", "t1", {
@@ -428,7 +428,7 @@ describe("threadService.claim", () => {
     // by a team_member, so assertCanView throws notFound before resolveOwnerOnAction
     // (which would also refuse the agent). Agents can never become owners.
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: null, visibility: "company", scopeType: null, scopeId: null }],
       [], // assertCanView: participants query → team_member on unclaimed → notFound
     ]);
     await expect(
@@ -461,7 +461,7 @@ describe("threadService.claim", () => {
 describe("threadService.transferOwnership", () => {
   it("transfers ownership and demotes previous owner", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
       [{ id: "cm1" }], // Fix 3: recipient membership lookup (u2 is a member)
       [], // update participants (demote)
       [], // update discussions
@@ -480,7 +480,7 @@ describe("threadService.transferOwnership", () => {
 
   it("throws notFound when recipient is not a company member (Fix 3)", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
       [], // Fix 3: recipient membership lookup → no rows → notFound
     ]);
     await expect(
@@ -494,7 +494,7 @@ describe("threadService.transferOwnership", () => {
 
   it("non-owner non-founder gets notFound", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "company", scopeType: null, scopeId: null }],
     ]);
     await expect(
       threadService(db).transferOwnership("co1", "t1", "u2", {
@@ -510,7 +510,7 @@ describe("threadService.transferOwnership — existing participant", () => {
   it("updates the existing participant role to owner (does not leave stale role)", async () => {
     // u2 is already a co_owner participant; transfer should upsert role → owner
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }], // thread
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }], // thread
       // assertCanEdit: actor is founder → returns immediately (no participant query consumed)
       [{ id: "cm1" }], // Fix 3: recipient membership lookup (u2 is a member)
       [], // demote old owner participant update
@@ -528,7 +528,7 @@ describe("threadService.transferOwnership — existing participant", () => {
   it("co_owner can transfer ownership (Fix 5: assertCanEdit allows co_owner)", async () => {
     // u1 is co_owner, not the ownerUserId (u9) and not founder
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "open", scopeType: null, scopeId: null }], // thread
+      [{ id: "t1", companyId: "co1", ownerUserId: "u9", visibility: "company", scopeType: null, scopeId: null }], // thread
       // assertCanEdit: not founder, not ownerUserId → queries threadParticipants → co_owner → passes
       [{ role: "co_owner" }],
       [{ id: "cm1" }], // Fix 3: recipient membership lookup (u2 is a member)
@@ -566,7 +566,7 @@ describe("threadService.assignScopeItems — phase advance", () => {
       discussionEntryId: "entry1",
     };
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread
       [{ id: "entry1" }], // entries (inside tx)
       [approvedItem], // items (inside tx)
       [{ id: "issue-x" }], // issue insert (inside tx)
@@ -589,7 +589,7 @@ describe("threadService.assignScopeItems — phase advance", () => {
 describe("threadService.promoteToGoal", () => {
   it("creates a company-wide goal, links it on the thread", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+      [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "company" }],
       // goalService.create + setGoalParents are mocked; the only direct db write
       // is the discussions.goalId update.
       [],
@@ -608,7 +608,7 @@ describe("threadService.promoteToGoal", () => {
 
   it("creates a scoped sub-goal with a parent", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+      [{ id: "t1", companyId: "co1", title: "Launch", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "company" }],
       [],
     ]);
     const res = await threadService(db).promoteToGoal(
@@ -622,7 +622,7 @@ describe("threadService.promoteToGoal", () => {
 
   it("rejects if thread already has a goal", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: "existing-g", scopeType: null, scopeId: null, visibility: "open" }],
+      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: "existing-g", scopeType: null, scopeId: null, visibility: "company" }],
     ]);
     await expect(
       threadService(db).promoteToGoal(
@@ -636,7 +636,7 @@ describe("threadService.promoteToGoal", () => {
 
   it("rejects a scoped goal with no projects", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "open" }],
+      [{ id: "t1", companyId: "co1", title: "x", ownerUserId: "u1", goalId: null, scopeType: null, scopeId: null, visibility: "company" }],
     ]);
     await expect(
       threadService(db).promoteToGoal(
@@ -654,7 +654,7 @@ describe("threadService.promoteToGoal", () => {
 describe("threadService.fork", () => {
   it("creates a child thread linked back with kind=fork", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", title: "Parent", scopeType: null, scopeId: null, visibility: "open", ownerUserId: "u1" }],
+      [{ id: "t1", companyId: "co1", title: "Parent", scopeType: null, scopeId: null, visibility: "company", ownerUserId: "u1" }],
       [{ id: "t2" }], // new discussion insert returning
       [], // thread_links insert
     ]);
@@ -686,7 +686,7 @@ describe("threadService.addParticipant (assertCanEdit co_owner)", () => {
     // assertCanEdit: ownerUserId check fails → queries threadParticipants → returns co_owner row → passes
     const db = createSequenceDb([
       // getById select (thread exists, open, owned by u9)
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u9", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u9", scopeType: null, scopeId: null }],
       // assertCanView: threadParticipants select (actor is not a direct participant, but open+null-scope → visible)
       [],
       // assertCanEdit: threadParticipants select → actor has co_owner role
@@ -705,7 +705,7 @@ describe("threadService.addParticipant (assertCanEdit co_owner)", () => {
 
   it("denies a participant with a non-edit role (collaborator) from adding participants", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u9", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u9", scopeType: null, scopeId: null }],
       [], // assertCanView participants
       // assertCanEdit: actor has collaborator role → not co_owner or owner → throws
       [{ role: "collaborator" }],
@@ -726,7 +726,7 @@ describe("threadService.addParticipant (assertCanEdit co_owner)", () => {
 describe("threadService.merge", () => {
   it("archives source thread and creates merge link", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
       [], // participants check
       [], // update discussions (archive)
       [], // thread_links insert
@@ -761,7 +761,7 @@ describe("threadService.assignScopeItems", () => {
       discussionEntryId: "entry1",
     };
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread (outside tx)
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread (outside tx)
       [{ id: "entry1" }], // entries query (inside tx)
       [approvedItem], // extractedItems query (inside tx)
       [{ id: "issue1" }], // issue insert returning (inside tx)
@@ -797,7 +797,7 @@ describe("threadService.assignScopeItems", () => {
       discussionEntryId: "entry1",
     };
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [{ id: "entry1" }], // entries
       [alreadyAssigned], // only this item
     ]);
@@ -823,7 +823,7 @@ describe("threadService.assignScopeItems", () => {
 
   it("returns 0 when thread has no entries", async () => {
     const db = createSequenceDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [], // entries -> empty
     ]);
     const res = await threadService(db).assignScopeItems("co1", "t1", {

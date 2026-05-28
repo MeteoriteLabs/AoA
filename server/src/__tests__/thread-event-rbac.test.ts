@@ -19,14 +19,14 @@ describe("filterThreadEventRecipients (envelope RBAC)", () => {
     expect(out).not.toContain("s1"); // scope access but not a participant -> blocked
   });
 
-  it("delivers an open thread event to anyone with scope access or participation", () => {
-    const open = { ownerUserId: "u9", visibility: "open" as const };
+  it("delivers a company-wide thread event to anyone with scope access or participation", () => {
+    const open = { ownerUserId: "u9", visibility: "company" as const };
     const out = filterThreadEventRecipients(open, subs).map((s) => s.id);
     expect(out).toEqual(["s1", "s2", "s3"]);
   });
 
   it("delivers an unclaimed thread event only to leads with scope (+ founder)", () => {
-    const unclaimed = { ownerUserId: null, visibility: "open" as const };
+    const unclaimed = { ownerUserId: null, visibility: "company" as const };
     const leadSubs = [
       { id: "lead", role: "team_lead" as const, hasScopeAccess: true, isParticipant: false },
       { id: "member", role: "team_member" as const, hasScopeAccess: true, isParticipant: true },

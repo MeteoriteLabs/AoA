@@ -1,5 +1,6 @@
 import {
   type AnyPgColumn,
+  customType,
   pgTable,
   uuid,
   text,
@@ -18,6 +19,26 @@ import { agents } from "./agents.js";
 import { issues } from "./issues.js";
 import { memoryItems } from "./memory_items.js";
 import { internalAgentRuns } from "./internal_agent.js";
+
+/**
+ * Custom Drizzle type for pgvector's `vector(N)` column.
+ * Stores/retrieves a number[] and maps to the SQL `vector` type.
+ * Mirrors the pattern in memory_items.ts. Runtime gating via
+ * probeDbCapabilities() — embedded-postgres bundles do not ship pgvector,
+ * so any code path that writes/reads this column must check capability first.
+ */
+const vector = customType<{ data: number[]; driverData: string }>({
+  dataType() {
+    return "vector(1536)";
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(",")}]`;
+  },
+  fromDriver(value: string): number[] {
+    // pgvector returns "[0.1,0.2,...]" string
+    return JSON.parse(value);
+  },
+});
 
 // ── Table 1: discussions ──────────────────────────────────────────────────────
 
@@ -43,7 +64,11 @@ export const discussions = pgTable(
     intent: jsonb("intent").default([]), // ThreadIntent[] (multi-tag)
     phase: text("phase").notNull().default("discuss"), // ThreadPhase: discuss|scope|assign|done
     goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }), // goal-as-property
-    visibility: text("visibility").notNull().default("open"), // ThreadVisibility: open|private
+    // ThreadVisibility: private|department|company (Phase 1 A2 canonicalized
+    // from legacy open|private). Migration backfills existing "open" rows to
+    // "company". The migration column-default change also flips new rows to
+    // "company" instead of "open".
+    visibility: text("visibility").notNull().default("company"),
     ownerUserId: text("owner_user_id"), // accountable human (TEXT like issues.assigneeUserId); null = Unclaimed
     autonomyLevel: integer("autonomy_level"), // 1..3; null = fall back to internal_agent_config
     subtype: text("subtype").notNull().default("normal"), // ThreadSubtype: normal|live
@@ -53,6 +78,26 @@ export const discussions = pgTable(
     summaryNext: text("summary_next"),
     summaryUpdatedAt: timestamp("summary_updated_at", { withTimezone: true }),
     entrySeq: integer("entry_seq").notNull().default(0), // atomic per-thread entry counter (Plan 7 seq assignment)
+
+    // ── Phase 1 thread-native coordination (Task A2) ─────────────────────────
+    // Public share link for read-only external view. Unique so the token
+    // alone resolves to a single thread. Nullable — set on demand by founder.
+    shareToken: text("share_token").unique(),
+    // Slack channel binding (Phase 2 wiring — column added but not used yet).
+    slackChannelId: text("slack_channel_id"),
+    // When true, the Scribe (extraction) crew may propose memory items from
+    // this thread's entries. When false, no memory suggestions are produced.
+    allowMemoryExtraction: boolean("allow_memory_extraction").notNull().default(true),
+    // Per-thread toggle for the Adjutant crew (Router/Planner/Dispatcher).
+    // Independent of crewPaused (which is the broader "no crew at all" switch);
+    // adjutantEnabled = false silences just the Adjutant while other roles
+    // still run if crewPaused = false.
+    adjutantEnabled: boolean("adjutant_enabled").notNull().default(true),
+    // Semantic summary embedding for cross-thread retrieval. Populated by the
+    // summarizer pipeline; gated by probeDbCapabilities() because embedded-postgres
+    // does not ship pgvector. The HNSW index is added defensively in the
+    // accompanying migration.
+    summaryEmbedding: vector("summary_embedding"),
 
     // Plan 3 Task 8: thread-level crew kill-switch.
     // When true, no crew roles (Router, Planner, Dispatcher, Memory Keeper) fire

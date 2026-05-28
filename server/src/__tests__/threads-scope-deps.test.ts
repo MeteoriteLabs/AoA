@@ -134,7 +134,7 @@ describe("threadService.addScopeItemDependency", () => {
   it("inserts a scopeItemDependencies row", async () => {
     const thread = {
       id: "t1", companyId: "co1", ownerUserId: "u1",
-      visibility: "open", scopeType: null, scopeId: null,
+      visibility: "company", scopeType: null, scopeId: null,
     };
     const blockerItem = { id: "item-a" };
     const blockedItem = { id: "item-b" };
@@ -181,7 +181,7 @@ describe("threadService.addScopeItemDependency", () => {
   it("throws notFound when blockedItemId is not in this thread (Fix 4)", async () => {
     const thread = {
       id: "t1", companyId: "co1", ownerUserId: "u1",
-      visibility: "open", scopeType: null, scopeId: null,
+      visibility: "company", scopeType: null, scopeId: null,
     };
     const blockerItem = { id: "item-a" };
     // blockedItem belongs to a different thread → join returns no rows
@@ -228,7 +228,7 @@ describe("threadService.graduateScopeItemDependencies", () => {
   it("copies scope deps to task_dependencies when resultTaskIds exist", async () => {
     const thread = {
       id: "t1", companyId: "co1", ownerUserId: "u1",
-      visibility: "open", scopeType: null, scopeId: null,
+      visibility: "company", scopeType: null, scopeId: null,
     };
     const precomputedRows = [
       {
@@ -272,7 +272,7 @@ describe("threadService.graduateScopeItemDependencies", () => {
   it("is idempotent — skips already-graduated deps", async () => {
     const thread = {
       id: "t1", companyId: "co1", ownerUserId: "u1",
-      visibility: "open", scopeType: null, scopeId: null,
+      visibility: "company", scopeType: null, scopeId: null,
     };
     const precomputedRows = [
       {
@@ -314,7 +314,7 @@ describe("threadService.graduateScopeItemDependencies", () => {
   it("skips deps where resultTaskId is missing from scope items", async () => {
     const thread = {
       id: "t1", companyId: "co1", ownerUserId: "u1",
-      visibility: "open", scopeType: null, scopeId: null,
+      visibility: "company", scopeType: null, scopeId: null,
     };
     const precomputedRows = [
       {

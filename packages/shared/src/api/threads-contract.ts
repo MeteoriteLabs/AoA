@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { THREAD_VISIBILITIES } from "../constants.js";
+
 // ---- Discussion entry attachments (new field on DiscussionEntry) ----
 export const DiscussionEntryAttachmentSchema = z.object({
   id: z.string().uuid(),
@@ -49,10 +51,12 @@ export const ScopeProposalPayloadSchema = z.object({
 });
 export type ScopeProposalPayload = z.infer<typeof ScopeProposalPayloadSchema>;
 
-// ---- Thread visibility (expanded from open|private to private|department|company) ----
-export const THREAD_VISIBILITIES_V2 = ["private", "department", "company"] as const;
-export const ThreadVisibilitySchema = z.enum(THREAD_VISIBILITIES_V2);
-export type ThreadVisibilityV2 = z.infer<typeof ThreadVisibilitySchema>;
+// ---- Thread visibility (Phase 1: canonicalized in constants.ts) ----
+// The legacy THREAD_VISIBILITIES_V2 / ThreadVisibilityV2 aliases were dropped
+// in Task A2 — the underlying enum values now live on the canonical
+// THREAD_VISIBILITIES constant in packages/shared/src/constants.ts and the
+// ThreadVisibility type re-exported from the package root.
+export const ThreadVisibilitySchema = z.enum(THREAD_VISIBILITIES);
 
 // ---- Adapter configuration ----
 export const AdapterConfigEntrySchema = z.object({

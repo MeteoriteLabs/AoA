@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { ThreadVisibility } from "@armyofagents/shared";
 import {
   discussionsApi,
   type DiscussionListItem,
@@ -11,7 +12,10 @@ import {
 
 export interface ThreadFields {
   phase: "discuss" | "scope" | "assign" | "done";
-  visibility: "open" | "private";
+  // Phase 1 (Task A2): canonicalized from open|private to private|department|company.
+  // OriginCard's binary toggle still flips between "private" and "company" for now;
+  // the "department" tier is reserved for the dept-scoped UI work (later task).
+  visibility: ThreadVisibility;
   ownerUserId: string | null;
   originSource: string | null;
   intent: string[] | null;
@@ -67,7 +71,7 @@ export const threadsApi = {
       goalData,
     ),
 
-  setVisibility: (companyId: string, id: string, visibility: "open" | "private") =>
+  setVisibility: (companyId: string, id: string, visibility: ThreadVisibility) =>
     api.patch<ThreadDetail>(
       `/companies/${companyId}/discussions/${id}`,
       { visibility },

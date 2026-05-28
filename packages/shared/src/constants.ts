@@ -660,7 +660,13 @@ export type ThreadIntent = (typeof THREAD_INTENTS)[number];
 export const THREAD_PHASES = ["discuss", "scope", "assign", "done"] as const;
 export type ThreadPhase = (typeof THREAD_PHASES)[number];
 
-export const THREAD_VISIBILITIES = ["open", "private"] as const;
+// Phase 1 (Task A2): canonicalized from legacy ["open", "private"] to the
+// 3-tier model used across the new thread coordination contract. Existing
+// rows defaulting to "open" are migrated to "company" (open ≈ everyone with
+// scope access, which is what the new "company" tier expresses). The
+// previously aliased THREAD_VISIBILITIES_V2 / ThreadVisibilityV2 exports in
+// packages/shared/src/api/threads-contract.ts were dropped as redundant.
+export const THREAD_VISIBILITIES = ["private", "department", "company"] as const;
 export type ThreadVisibility = (typeof THREAD_VISIBILITIES)[number];
 
 export const THREAD_SUBTYPES = ["normal", "live"] as const;

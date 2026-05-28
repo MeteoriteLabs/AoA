@@ -30,7 +30,7 @@ vi.mock("../../../api/threads", () => ({
           title: "Existing thread alpha",
           status: "active",
           phase: "discuss",
-          visibility: "open",
+          visibility: "company",
           ownerUserId: null,
           originSource: null,
           intent: null,

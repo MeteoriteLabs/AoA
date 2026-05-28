@@ -92,11 +92,13 @@ export function nextSeq(currentMax: number | null): number {
 }
 
 /**
- * Visibility rules:
+ * Visibility rules (Phase 1 visibility model: private|department|company):
  * - founder: sees everything
  * - unclaimed (ownerUserId=null): visible only to founder or team_lead with scope access
  * - private: visible only to participants (regardless of role)
- * - open: visible to anyone with scope access, or participants
+ * - department / company: visible to anyone with scope access, or participants
+ *   (the department/company distinction is enforced via the scope filter on
+ *   the calling list query and the `hasScopeAccess` precomputation, not here)
  */
 export function canViewThread(
   thread: { ownerUserId: string | null; visibility: ThreadVisibility },
@@ -108,7 +110,7 @@ export function canViewThread(
     return viewer.role === "team_lead" && viewer.hasScopeAccess;
   }
   if (thread.visibility === "private") return viewer.isParticipant;
-  // open: scope access OR participant
+  // department / company: scope access OR participant
   return viewer.hasScopeAccess || viewer.isParticipant;
 }
 
@@ -540,7 +542,7 @@ export function threadService(db: Db) {
         canViewThread(
           {
             ownerUserId: t.ownerUserId ?? null,
-            visibility: (t.visibility ?? "open") as ThreadVisibility,
+            visibility: (t.visibility ?? "company") as ThreadVisibility,
           },
           {
             role: actor.role,

@@ -162,8 +162,12 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
     },
   });
 
+  // Phase 1 (Task A2): the canonical visibility tiers are private | department | company.
+  // The OriginCard still surfaces a binary private ↔ open toggle for now; we map
+  // "open" → "company" (everyone with scope can see it). The dept-scoped UI lives
+  // in a later task.
   const visibilityMutation = useMutation({
-    mutationFn: (visibility: "open" | "private") =>
+    mutationFn: (visibility: "private" | "company") =>
       threadsApi.setVisibility(companyId, thread.id, visibility),
     onSuccess: () => {
       invalidate();
@@ -195,7 +199,9 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
   }
 
   function toggleVisibility() {
-    visibilityMutation.mutate(thread.visibility === "open" ? "private" : "open");
+    // Binary toggle between private and company (open-equivalent). Threads
+    // already on "department" flip to "private" on first toggle.
+    visibilityMutation.mutate(thread.visibility === "private" ? "company" : "private");
   }
 
   const { label: originLabel, Icon: OriginIcon } = originMeta(thread.originSource);
@@ -244,7 +250,7 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={handleShare}>Copy link</DropdownMenuItem>
                 <DropdownMenuItem onClick={toggleVisibility}>
-                  {thread.visibility === "open" ? "Make private" : "Make open"}
+                  {thread.visibility === "private" ? "Make open" : "Make private"}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -296,19 +302,19 @@ export function OriginCard({ thread, companyId, onPhaseChanged }: OriginCardProp
             {thread.visibility}
           </Badge>
 
-          {/* Visibility toggle */}
+          {/* Visibility toggle (binary: private ↔ company) */}
           <button
             type="button"
             data-testid="visibility-toggle"
             onClick={toggleVisibility}
             disabled={visibilityMutation.isPending}
             className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] border border-border hover:bg-muted/30 transition-colors"
-            aria-label={thread.visibility === "open" ? "Make private" : "Make open"}
+            aria-label={thread.visibility === "private" ? "Make open" : "Make private"}
           >
-            {thread.visibility === "open" ? (
-              <><Lock className="h-2.5 w-2.5" /> Make private</>
-            ) : (
+            {thread.visibility === "private" ? (
               <><Unlock className="h-2.5 w-2.5" /> Make open</>
+            ) : (
+              <><Lock className="h-2.5 w-2.5" /> Make private</>
             )}
           </button>
         </div>

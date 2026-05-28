@@ -69,7 +69,7 @@ beforeEach(() => vi.clearAllMocks());
 describe("threadService.assignScopeItems — scope→task crystallization (D8 planning mode)", () => {
   it("creates a planning-mode issue from an approved task item and links resultTaskId", async () => {
     const db = seqDb([
-      [{ id: "t1", companyId: "co1", phase: "scope", goalId: null, ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }], // thread row
+      [{ id: "t1", companyId: "co1", phase: "scope", goalId: null, ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }], // thread row
       [{ id: "e1" }], // entries
       [
         { id: "item1", type: "task", title: "Build API", status: "approved", resultTaskId: null, departmentId: "eng", assigneeAgentId: null, assigneeUserId: null, description: null, suggestedPriority: null, suggestedDepartmentId: null, suggestedProjectId: null, suggestedGoalId: null, priority: null },
@@ -87,7 +87,7 @@ describe("threadService.assignScopeItems — scope→task crystallization (D8 pl
 
   it("is idempotent: items with an existing resultTaskId are skipped", async () => {
     const db = seqDb([
-      [{ id: "t1", companyId: "co1", phase: "scope", goalId: null, ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", phase: "scope", goalId: null, ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
       [{ id: "e1" }],
       [{ id: "item1", type: "task", title: "Already", status: "approved", resultTaskId: "existing-task", departmentId: null, assigneeAgentId: null, assigneeUserId: null, description: null, suggestedPriority: null, suggestedDepartmentId: null, suggestedProjectId: null, suggestedGoalId: null, priority: null }],
     ]);

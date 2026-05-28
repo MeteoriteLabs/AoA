@@ -77,7 +77,7 @@ const parentThread = {
   id: "parent-thread",
   companyId: "co1",
   ownerUserId: "u1",
-  visibility: "open",
+  visibility: "company",
   scopeType: null,
   scopeId: null,
   title: "Parent Thread",

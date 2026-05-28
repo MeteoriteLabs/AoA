@@ -73,7 +73,7 @@ const teamMember = { userId: "u2", role: "team_member" as const, isHuman: true }
 
 const thread = {
   id: "t1", companyId: "co1", ownerUserId: "u1",
-  visibility: "open", scopeType: null, scopeId: null,
+  visibility: "company", scopeType: null, scopeId: null,
 };
 const existingItem = {
   id: "item-1", type: "task", title: "My Task",

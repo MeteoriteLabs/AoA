@@ -220,9 +220,9 @@ describe("threadService.createLink", () => {
     const db = makeDb(
       [
         // getById: fromThread
-        [{ id: "from-thread", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+        [{ id: "from-thread", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
         // getById: toThread
-        [{ id: "to-thread", companyId: "co1", ownerUserId: "u2", visibility: "open", scopeType: null, scopeId: null }],
+        [{ id: "to-thread", companyId: "co1", ownerUserId: "u2", visibility: "company", scopeType: null, scopeId: null }],
       ],
       [[linkRow]],
     );
@@ -235,8 +235,8 @@ describe("threadService.createLink", () => {
   it("throws badRequest for invalid kind", async () => {
     const db = makeDb(
       [
-        [{ id: "from-thread", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
-        [{ id: "to-thread", companyId: "co1", ownerUserId: "u2", visibility: "open", scopeType: null, scopeId: null }],
+        [{ id: "from-thread", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
+        [{ id: "to-thread", companyId: "co1", ownerUserId: "u2", visibility: "company", scopeType: null, scopeId: null }],
       ],
     );
     const svc = threadService(db);
@@ -254,7 +254,7 @@ describe("threadService.listLinks", () => {
     ];
     const db = makeDb([
       // getById: thread exists
-      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "open", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", ownerUserId: "u1", visibility: "company", scopeType: null, scopeId: null }],
       // listLinks query
       links,
     ]);

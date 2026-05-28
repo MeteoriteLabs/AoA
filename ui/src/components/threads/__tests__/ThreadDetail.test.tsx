@@ -69,7 +69,7 @@ const mockThread: ThreadDetailType = {
   updatedAt: "2026-01-01T00:00:00Z",
   entries: [],
   phase: "discuss",
-  visibility: "open",
+  visibility: "company",
   ownerUserId: null,
   originSource: null,
   intent: ["improve security"],

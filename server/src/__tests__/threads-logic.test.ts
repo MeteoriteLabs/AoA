@@ -40,9 +40,9 @@ describe("resolveOwnerOnAction (owned-by-action; agents never own)", () => {
 });
 
 describe("canViewThread (hide private/unclaimed)", () => {
-  const open = { ownerUserId: "u9", visibility: "open" as const };
+  const open = { ownerUserId: "u9", visibility: "company" as const };
   const priv = { ownerUserId: "u9", visibility: "private" as const };
-  const unclaimed = { ownerUserId: null, visibility: "open" as const };
+  const unclaimed = { ownerUserId: null, visibility: "company" as const };
 
   it("founder sees everything", () => {
     expect(canViewThread(open, { role: "founder", hasScopeAccess: false, isParticipant: false })).toBe(true);

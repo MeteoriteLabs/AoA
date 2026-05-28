@@ -57,6 +57,15 @@ describe("discussions table", () => {
     expect(cols).toContain("entryCount");
     expect(cols).toContain("pendingItemCount");
   });
+
+  // Phase 1 (Task A2): thread-native coordination columns
+  it("has Phase 1 thread coordination columns (shareToken, slackChannelId, allowMemoryExtraction, adjutantEnabled, summaryEmbedding)", () => {
+    expect(cols).toContain("shareToken");
+    expect(cols).toContain("slackChannelId");
+    expect(cols).toContain("allowMemoryExtraction");
+    expect(cols).toContain("adjutantEnabled");
+    expect(cols).toContain("summaryEmbedding");
+  });
 });
 
 describe("discussionEntries table", () => {

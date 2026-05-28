@@ -35,7 +35,7 @@ function makeThread(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
     updatedAt: "2026-01-01T00:00:00Z",
     entries: [],
     phase: "discuss",
-    visibility: "open",
+    visibility: "company",
     ownerUserId: null,
     originSource: "mcp",
     intent: ["improve ux", "reduce churn"],
@@ -115,11 +115,11 @@ describe("OriginCard", () => {
   });
 
   it("renders visibility badge", () => {
-    const thread = makeThread({ visibility: "open" });
+    const thread = makeThread({ visibility: "company" });
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
-    expect(screen.getByText(/open/i)).toBeInTheDocument();
+    expect(screen.getByText(/company/i)).toBeInTheDocument();
   });
 
   it("shows confirm dialog when a phase pill is clicked", async () => {
@@ -166,7 +166,7 @@ describe("OriginCard", () => {
   });
 
   it("shows visibility toggle button", () => {
-    const thread = makeThread({ visibility: "open" });
+    const thread = makeThread({ visibility: "company" });
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
@@ -174,8 +174,8 @@ describe("OriginCard", () => {
     expect(screen.getByTestId("visibility-toggle")).toBeInTheDocument();
   });
 
-  it("visibility toggle shows correct label for 'open' thread", () => {
-    const thread = makeThread({ visibility: "open" });
+  it("visibility toggle shows correct label for 'company' (open-equivalent) thread", () => {
+    const thread = makeThread({ visibility: "company" });
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
     );
@@ -190,8 +190,8 @@ describe("OriginCard", () => {
     expect(screen.getByTestId("visibility-toggle")).toHaveTextContent(/open/i);
   });
 
-  it("calls threadsApi.setVisibility with 'private' when toggle is clicked on an open thread", async () => {
-    const thread = makeThread({ visibility: "open" });
+  it("calls threadsApi.setVisibility with 'private' when toggle is clicked on a company thread", async () => {
+    const thread = makeThread({ visibility: "company" });
     const user = userEvent.setup();
     renderWithProviders(
       <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,

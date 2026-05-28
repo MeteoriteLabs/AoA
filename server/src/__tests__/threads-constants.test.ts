@@ -15,8 +15,8 @@ describe("Threads constants", () => {
     expect(THREAD_PHASES).toEqual(["discuss", "scope", "assign", "done"]);
   });
 
-  it("THREAD_VISIBILITIES = open|private", () => {
-    expect(THREAD_VISIBILITIES).toEqual(["open", "private"]);
+  it("THREAD_VISIBILITIES = private|department|company (Phase 1 canonicalized)", () => {
+    expect(THREAD_VISIBILITIES).toEqual(["private", "department", "company"]);
   });
 
   it("THREAD_ORIGIN_SOURCES cover human/agent/external/system", () => {

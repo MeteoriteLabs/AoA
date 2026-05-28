@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { LiveEvent, LiveEventType } from "@armyofagents/shared";
+import type { LiveEvent, LiveEventType, ThreadVisibility } from "@armyofagents/shared";
 import { canViewThread, type ThreadViewer } from "./threads.js";
 
 // Threads v1 Plan 7: the thread.* event types
@@ -61,7 +61,7 @@ export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEven
  * these inputs are recomputed per event at fan-out, never cached.
  */
 export function filterThreadEventRecipients<T extends ThreadViewer>(
-  thread: { ownerUserId: string | null; visibility: "open" | "private" },
+  thread: { ownerUserId: string | null; visibility: ThreadVisibility },
   subscribers: T[],
 ): T[] {
   return subscribers.filter((s) => canViewThread(thread, s));

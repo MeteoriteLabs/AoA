@@ -18,7 +18,7 @@ export const projects = pgTable(
     targetDate: date("target_date"),
     color: text("color"),
     functionType: text("function_type").default("general"),
-    defaultThreadVisibility: text("default_thread_visibility").notNull().default("open"), // ThreadVisibility: per-dept default for new threads (HR/Finance/Exec -> private)
+    defaultThreadVisibility: text("default_thread_visibility").notNull().default("company"), // ThreadVisibility: per-dept default for new threads (HR/Finance/Exec -> private). Phase 1 (Task A2): canonicalized from "open" -> "company" alongside the THREAD_VISIBILITIES rewrite.
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),
     env: jsonb("env").$type<AgentEnvConfig>(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),

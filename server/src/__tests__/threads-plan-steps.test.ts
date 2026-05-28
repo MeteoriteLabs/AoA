@@ -63,7 +63,7 @@ beforeEach(() => vi.clearAllMocks());
 describe("threadService.getPlanSteps", () => {
   it("returns ordered plan steps for a viewable thread", async () => {
     const db = seqDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [
         { id: "s1", threadId: "t1", stepOrder: 0, title: "Spec", collapsed: false, linkedItemId: null },
         { id: "s2", threadId: "t1", stepOrder: 1, title: "Build", collapsed: false, linkedItemId: "item-9" },
@@ -77,7 +77,7 @@ describe("threadService.getPlanSteps", () => {
 describe("threadService.updatePlanSteps", () => {
   it("replaces the plan with the given ordered titles (founder)", async () => {
     const db = seqDb([
-      [{ id: "t1", companyId: "co1", visibility: "open", ownerUserId: "u1", scopeType: null, scopeId: null }],
+      [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }],
       [{ id: "s1" }, { id: "s2" }],
     ]);
     const res = await threadService(db).updatePlanSteps(
