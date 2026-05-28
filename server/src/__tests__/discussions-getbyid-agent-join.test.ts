@@ -103,6 +103,14 @@ vi.mock("@armyofagents/db", () => ({
     threadId: "tps_thread_id",
     stepOrder: "tps_step_order",
   },
+  // Phase E2: discussion-entry attachments + artifacts (joined in getById)
+  discussionEntryAttachments: {
+    id: "dea_id",
+    discussionEntryId: "dea_discussion_entry_id",
+    assetId: "dea_asset_id",
+    artifactId: "dea_artifact_id",
+  },
+  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -233,7 +241,9 @@ describe("discussionService.getById — agent join serialization", () => {
       [],
       // 4. annotations — empty
       [],
-      // 5. plan steps (P5.2) — empty
+      // 5. Phase E2: attachments — empty
+      [],
+      // 6. plan steps (P5.2) — empty
       [],
     ]);
 

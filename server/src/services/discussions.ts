@@ -5,6 +5,8 @@ import {
   discussionEntries,
   discussionExtractedItems,
   discussionAnnotations,
+  discussionEntryAttachments,
+  artifacts,
   agents,
   projects,
   goals,
@@ -166,6 +168,16 @@ export function discussionService(db: Db) {
 
       let items: (typeof discussionExtractedItems.$inferSelect)[] = [];
       let annotations: (typeof discussionAnnotations.$inferSelect)[] = [];
+      // Phase E2: attachments joined via artifacts so the FE can render
+      // inline artifact cards (title + type) without a second round-trip.
+      let attachmentRows: Array<{
+        id: string;
+        discussionEntryId: string;
+        assetId: string | null;
+        artifactId: string | null;
+        artifactType: string | null;
+        artifactTitle: string | null;
+      }> = [];
 
       if (entryIds.length > 0) {
         items = await db
@@ -177,6 +189,19 @@ export function discussionService(db: Db) {
           .select()
           .from(discussionAnnotations)
           .where(inArray(discussionAnnotations.discussionEntryId, entryIds));
+
+        attachmentRows = await db
+          .select({
+            id: discussionEntryAttachments.id,
+            discussionEntryId: discussionEntryAttachments.discussionEntryId,
+            assetId: discussionEntryAttachments.assetId,
+            artifactId: discussionEntryAttachments.artifactId,
+            artifactType: artifacts.type,
+            artifactTitle: artifacts.title,
+          })
+          .from(discussionEntryAttachments)
+          .leftJoin(artifacts, eq(discussionEntryAttachments.artifactId, artifacts.id))
+          .where(inArray(discussionEntryAttachments.discussionEntryId, entryIds));
       }
 
       // Group items and annotations by entry for the frontend
@@ -194,10 +219,24 @@ export function discussionService(db: Db) {
         annotationsByEntry.set(ann.discussionEntryId, list);
       }
 
+      const attachmentsByEntry = new Map<string, typeof attachmentRows>();
+      for (const att of attachmentRows) {
+        const list = attachmentsByEntry.get(att.discussionEntryId) ?? [];
+        list.push(att);
+        attachmentsByEntry.set(att.discussionEntryId, list);
+      }
+
       const enrichedEntries = entries.map((e) => ({
         ...e,
         extractedItems: itemsByEntry.get(e.id) ?? [],
         annotations: annotationsByEntry.get(e.id) ?? [],
+        attachments: (attachmentsByEntry.get(e.id) ?? []).map((a) => ({
+          id: a.id,
+          assetId: a.assetId,
+          artifactId: a.artifactId,
+          artifactType: a.artifactType,
+          artifactTitle: a.artifactTitle,
+        })),
       }));
 
       const planSteps = await db
@@ -371,6 +410,7 @@ export function discussionService(db: Db) {
         sourceInfo?: Record<string, unknown> | null;
         parentEntryId?: string | null;
         authorAgentId?: string | null;
+        attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
       },
       actorId: string,
     ) => {
@@ -451,6 +491,22 @@ export function discussionService(db: Db) {
             createdBy: actorId,
           })
           .returning();
+
+        // Phase E1: link attachments (assets or artifacts) to the entry in the
+        // same transaction so the entry+attachments commit atomically.
+        if (data.attachments && data.attachments.length > 0) {
+          const rows = data.attachments
+            .filter((a) => a.assetId || a.artifactId)
+            .map((a) => ({
+              discussionEntryId: inserted.id,
+              assetId: a.assetId ?? null,
+              artifactId: a.artifactId ?? null,
+            }));
+          if (rows.length > 0) {
+            await tx.insert(discussionEntryAttachments).values(rows);
+          }
+        }
+
         return inserted;
       });
 

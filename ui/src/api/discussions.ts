@@ -58,6 +58,20 @@ export interface Annotation {
   createdAt: string;
 }
 
+/**
+ * Phase E2: Inline attachment row for a discussion entry. Returned by the
+ * server alongside extractedItems/annotations. Either assetId OR artifactId
+ * is non-null (or both may be null for legacy rows). artifactType/artifactTitle
+ * come from a LEFT JOIN against artifacts.
+ */
+export interface DiscussionEntryAttachment {
+  id: string;
+  assetId: string | null;
+  artifactId: string | null;
+  artifactType: string | null;
+  artifactTitle: string | null;
+}
+
 export interface DiscussionEntry {
   id: string;
   inputType: string;
@@ -76,6 +90,13 @@ export interface DiscussionEntry {
   createdAt: string;
   extractedItems: ExtractedItem[];
   annotations: Annotation[];
+  /** Phase E2: attachments linked via discussion_entry_attachments. */
+  attachments?: DiscussionEntryAttachment[];
+  /**
+   * Phase E2: number of nested replies (parentEntryId === this.id).
+   * Computed client-side from the entries list when not provided by the server.
+   */
+  replyCount?: number;
 }
 
 export interface DiscussionDetail {

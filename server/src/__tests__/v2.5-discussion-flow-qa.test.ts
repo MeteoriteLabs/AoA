@@ -108,6 +108,14 @@ vi.mock("@armyofagents/db", () => ({
     threadId: "tps_thread_id",
     stepOrder: "tps_step_order",
   },
+  // Phase E2: discussion-entry attachments + artifacts (joined in getById)
+  discussionEntryAttachments: {
+    id: "dea_id",
+    discussionEntryId: "dea_discussion_entry_id",
+    assetId: "dea_asset_id",
+    artifactId: "dea_artifact_id",
+  },
+  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -1319,6 +1327,8 @@ describe("v2.5 Discussion Flow QA", () => {
         items,
         // select annotations (inArray entryIds)
         annotations,
+        // Phase E2: select attachments (inArray entryIds)
+        [],
         // select plan steps (P5.2)
         [],
       ]);

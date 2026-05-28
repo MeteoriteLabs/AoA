@@ -13,6 +13,13 @@ vi.mock("@armyofagents/db", () => ({
   discussionEntries: { id: "de_id", discussionId: "de_disc", authorAgentId: "de_agent", createdAt: "de_created" },
   discussionExtractedItems: { id: "dei_id", discussionEntryId: "dei_entry" },
   discussionAnnotations: { id: "da_id", discussionEntryId: "da_entry" },
+  discussionEntryAttachments: {
+    id: "dea_id",
+    discussionEntryId: "dea_entry",
+    assetId: "dea_asset",
+    artifactId: "dea_artifact",
+  },
+  artifacts: { id: "art_id", type: "art_type", title: "art_title" },
   agents: { id: "ag_id", name: "ag_name", icon: "ag_icon" },
   projects: {}, goals: {},
   threadPlanSteps: { id: "tps_id", threadId: "tps_thread", stepOrder: "tps_order" },
@@ -50,6 +57,7 @@ describe("discussionService.getById — plan steps", () => {
       [{ entry: { id: "e1", discussionId: "t1", createdAt: "x", authorAgentId: null }, authorAgentName: null, authorAgentAvatar: null }], // entries join
       [{ id: "i1", discussionEntryId: "e1", type: "task", title: "T" }], // items
       [], // annotations
+      [], // Phase E2: attachments
       [
         { id: "p1", threadId: "t1", stepOrder: 0, title: "Spec" },
         { id: "p2", threadId: "t1", stepOrder: 1, title: "Build" },

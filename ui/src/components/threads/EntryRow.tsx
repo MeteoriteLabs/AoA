@@ -4,11 +4,34 @@
  * Other humans → left-aligned bubble.
  * Agents → left-aligned card with role-colored left border.
  * System notices → centered divider.
+ *
+ * Phase E2 additions:
+ *  - Agent attribution badge (name + avatar) when authorAgentId + authorAgentName
+ *  - Inline InlineArtifactCard when entry.attachments[] is non-empty
+ *  - Reply count toggle when entry.replyCount > 0
+ *
+ * Phase E3 wiring: special-cased inputTypes route to dedicated cards:
+ *  - "scope_proposal" → ScopeProposalCard
+ *  - "system" → SystemEntryCard (or SpinOffSuggestionCard when payload present)
  */
-import { CheckCircle2, Database, Loader2, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  Database,
+  Loader2,
+  XCircle,
+  MessageSquare,
+} from "lucide-react";
 import { relativeTime } from "@/lib/utils";
 import { Link } from "@/lib/router";
 import type { DiscussionEntry } from "../../api/discussions";
+import { InlineArtifactCard } from "./InlineArtifactCard";
+import { ScopeProposalCard } from "./ScopeProposalCard";
+import { SystemEntryCard } from "./SystemEntryCard";
+import {
+  SpinOffSuggestionCard,
+  type SpinOffSuggestion,
+} from "./SpinOffSuggestionCard";
+import type { ScopeProposalPayload } from "@armyofagents/shared";
 
 /* ─── Agent role → color ─── */
 
@@ -49,6 +72,35 @@ function toDisplayName(id: string | null | undefined): string {
   return id.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
 }
 
+/**
+ * Phase E3: extract a SpinOffSuggestion payload from a system entry's sourceInfo
+ * when present. The Adjutant emits these via sourceInfo.spinOffSuggestion =
+ * { topicSummary, rationale }. Returns null when the shape doesn't match.
+ */
+function extractSpinOffPayload(
+  sourceInfo: Record<string, unknown> | null,
+): SpinOffSuggestion | null {
+  if (!sourceInfo) return null;
+  const raw = sourceInfo.spinOffSuggestion;
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.topicSummary !== "string" || typeof obj.rationale !== "string") {
+    return null;
+  }
+  return { topicSummary: obj.topicSummary, rationale: obj.rationale };
+}
+
+function tryParseScopeProposal(content: string): ScopeProposalPayload | null {
+  try {
+    const obj = JSON.parse(content) as Record<string, unknown>;
+    if (typeof obj.summary !== "string") return null;
+    if (!Array.isArray(obj.proposedTasks)) return null;
+    return obj as unknown as ScopeProposalPayload;
+  } catch {
+    return null;
+  }
+}
+
 /* ─── Inline robot icon ─── */
 
 function RobotIcon() {
@@ -62,6 +114,22 @@ function RobotIcon() {
       <circle cx="12.5" cy="13" r="1.3" />
       <rect x="8" y="16" width="4" height="1" rx="0.5" />
     </svg>
+  );
+}
+
+/* ─── Reply count toggle (Phase E2) ─── */
+
+function ReplyCountToggle({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors mt-1"
+      data-testid="entry-reply-count"
+    >
+      <MessageSquare className="h-3 w-3" />
+      {count} {count === 1 ? "reply" : "replies"}
+    </button>
   );
 }
 
@@ -173,6 +241,15 @@ export interface EntryRowProps {
   currentUserId?: string | null;
   onReprocess: () => void;
   isReprocessing?: boolean;
+  /** Phase E3: optional handlers for entry card actions. */
+  onScopeProposalApprove?: (entry: DiscussionEntry) => void;
+  onScopeProposalReject?: (entry: DiscussionEntry) => void;
+  /** Phase E3: whether this scope_proposal entry is the active proposal. */
+  scopeProposalActive?: boolean;
+  onSpinOffAccept?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
+  onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
+  /** Phase E2: clicked when the user opens an inline artifact. */
+  onOpenArtifact?: (artifactId: string) => void;
 }
 
 export function EntryRow({
@@ -180,8 +257,55 @@ export function EntryRow({
   currentUserId,
   onReprocess,
   isReprocessing = false,
+  onScopeProposalApprove,
+  onScopeProposalReject,
+  scopeProposalActive = false,
+  onSpinOffAccept,
+  onSpinOffDismiss,
+  onOpenArtifact,
 }: EntryRowProps) {
-  // System notice → centered divider
+  // ── Phase E3: scope_proposal entries get the dedicated card ──
+  if (entry.inputType === "scope_proposal") {
+    const proposal = tryParseScopeProposal(entry.rawContent);
+    if (proposal) {
+      return (
+        <div data-testid={`entry-row-${entry.id}`} data-entry-type="scope_proposal">
+          <ScopeProposalCard
+            proposal={proposal}
+            isActive={scopeProposalActive}
+            onApprove={() => onScopeProposalApprove?.(entry)}
+            onReject={() => onScopeProposalReject?.(entry)}
+            autoAdvanceAt={proposal.autoAdvanceAt}
+          />
+        </div>
+      );
+    }
+    // Fall through to system rendering if payload parse fails — the entry is
+    // still useful as a system message.
+  }
+
+  // ── Phase E3: system entries — spin-off when payload present, else generic ──
+  if (entry.inputType === "system") {
+    const spinOff = extractSpinOffPayload(entry.sourceInfo);
+    if (spinOff) {
+      return (
+        <div data-testid={`entry-row-${entry.id}`} data-entry-type="spinoff_suggestion">
+          <SpinOffSuggestionCard
+            suggestion={spinOff}
+            onAccept={() => onSpinOffAccept?.(entry, spinOff)}
+            onDismiss={() => onSpinOffDismiss?.(entry, spinOff)}
+          />
+        </div>
+      );
+    }
+    return (
+      <div data-testid={`entry-row-${entry.id}`} data-entry-type="system">
+        <SystemEntryCard entry={entry} onRetry={onReprocess} />
+      </div>
+    );
+  }
+
+  // System notice → centered divider (legacy sourceInfo.systemNotice path)
   if ((entry.sourceInfo as Record<string, unknown> | null)?.systemNotice === true) {
     return (
       <div
@@ -231,6 +355,7 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         errorMentionsProvider={errorMentionsProvider}
+        onOpenArtifact={onOpenArtifact}
       />
     );
   }
@@ -242,6 +367,7 @@ export function EntryRow({
         taskCount={taskCount}
         memCount={memCount}
         pendingCount={pendingCount}
+        onOpenArtifact={onOpenArtifact}
       />
     );
   }
@@ -254,6 +380,7 @@ export function EntryRow({
       pendingCount={pendingCount}
       extractionError={extractionError}
       errorMentionsProvider={errorMentionsProvider}
+      onOpenArtifact={onOpenArtifact}
     />
   );
 }
@@ -265,11 +392,13 @@ function MeBubble({
   taskCount,
   memCount,
   pendingCount,
+  onOpenArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
   memCount: number;
   pendingCount: number;
+  onOpenArtifact?: (artifactId: string) => void;
 }) {
   return (
     <div
@@ -298,6 +427,14 @@ function MeBubble({
           >
             {entry.rawContent}
           </div>
+          {entry.attachments && entry.attachments.length > 0 && (
+            <div className="w-full">
+              <InlineArtifactCard
+                attachments={entry.attachments}
+                onOpen={onOpenArtifact}
+              />
+            </div>
+          )}
           <ChipRow
             taskCount={taskCount}
             memCount={memCount}
@@ -306,6 +443,7 @@ function MeBubble({
             extractionError={null}
             errorMentionsProvider={false}
           />
+          <ReplyCountToggle count={entry.replyCount ?? 0} />
         </div>
         <div
           className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
@@ -328,6 +466,7 @@ function HumanBubble({
   pendingCount,
   extractionError,
   errorMentionsProvider,
+  onOpenArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -335,6 +474,7 @@ function HumanBubble({
   pendingCount: number;
   extractionError: string | null;
   errorMentionsProvider: boolean;
+  onOpenArtifact?: (artifactId: string) => void;
 }) {
   return (
     <div
@@ -369,6 +509,12 @@ function HumanBubble({
         >
           {entry.rawContent}
         </div>
+        {entry.attachments && entry.attachments.length > 0 && (
+          <InlineArtifactCard
+            attachments={entry.attachments}
+            onOpen={onOpenArtifact}
+          />
+        )}
         <ChipRow
           taskCount={taskCount}
           memCount={memCount}
@@ -377,6 +523,7 @@ function HumanBubble({
           extractionError={extractionError}
           errorMentionsProvider={errorMentionsProvider}
         />
+        <ReplyCountToggle count={entry.replyCount ?? 0} />
       </div>
     </div>
   );
@@ -391,6 +538,7 @@ function AgentCard({
   pendingCount,
   extractionError,
   errorMentionsProvider,
+  onOpenArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -398,6 +546,7 @@ function AgentCard({
   pendingCount: number;
   extractionError: string | null;
   errorMentionsProvider: boolean;
+  onOpenArtifact?: (artifactId: string) => void;
 }) {
   const color = agentRoleColor(entry.authorAgentName);
   const agentName = entry.authorAgentName ?? "Agent";
@@ -411,11 +560,21 @@ function AgentCard({
     >
       {/* Robot avatar */}
       <div
-        className="w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 mt-0.5"
+        className="w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 mt-0.5 overflow-hidden"
         style={{ background: color }}
         title={agentName}
       >
-        <RobotIcon />
+        {entry.authorAgentAvatar ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={entry.authorAgentAvatar}
+            alt={agentName}
+            className="w-full h-full object-cover"
+            data-testid="entry-agent-avatar"
+          />
+        ) : (
+          <RobotIcon />
+        )}
       </div>
 
       {/* Card */}
@@ -428,7 +587,10 @@ function AgentCard({
         }}
       >
         {/* Header */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div
+          className="flex items-center gap-2 flex-wrap agent-attribution"
+          data-testid="entry-agent-attribution"
+        >
           <span className="text-sm font-semibold" style={{ color: "#eeeeee" }}>
             {agentName}
           </span>
@@ -452,6 +614,14 @@ function AgentCard({
           {entry.rawContent}
         </p>
 
+        {/* Phase E2: inline attachments */}
+        {entry.attachments && entry.attachments.length > 0 && (
+          <InlineArtifactCard
+            attachments={entry.attachments}
+            onOpen={onOpenArtifact}
+          />
+        )}
+
         {/* Chips */}
         <ChipRow
           taskCount={taskCount}
@@ -461,6 +631,9 @@ function AgentCard({
           extractionError={extractionError}
           errorMentionsProvider={errorMentionsProvider}
         />
+
+        {/* Reply count */}
+        <ReplyCountToggle count={entry.replyCount ?? 0} />
       </div>
     </div>
   );

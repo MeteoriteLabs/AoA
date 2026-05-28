@@ -18,6 +18,17 @@ export const createDiscussionEntrySchema = z.object({
   sourceInfo: z.record(z.unknown()).optional().nullable(),
   parentEntryId: z.string().uuid().optional().nullable(),
   authorAgentId: z.string().uuid().optional().nullable(),
+  // Phase E1: composer can attach assets (file uploads) and artifacts
+  // (e.g. an existing plan or document) when posting an entry. Server links
+  // each via discussion_entry_attachments after the entry is inserted.
+  attachments: z
+    .array(
+      z.object({
+        assetId: z.string().uuid().optional().nullable(),
+        artifactId: z.string().uuid().optional().nullable(),
+      }),
+    )
+    .optional(),
 });
 
 export type CreateDiscussionEntry = z.infer<typeof createDiscussionEntrySchema>;

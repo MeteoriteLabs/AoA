@@ -29,6 +29,34 @@ vi.mock("../../../api/discussions", () => ({
   },
 }));
 
+vi.mock("../../../api/agents", () => ({
+  agentsApi: {
+    listAoa: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("../../../api/team", () => ({
+  teamApi: {
+    get: vi.fn().mockResolvedValue({ members: [] }),
+  },
+}));
+
+vi.mock("../../../api/assets", () => ({
+  assetsApi: {
+    uploadFile: vi.fn().mockResolvedValue({
+      assetId: "asset-1",
+      originalFilename: "f.txt",
+      contentType: "text/plain",
+    }),
+  },
+}));
+
+vi.mock("../../../api/auth", () => ({
+  authApi: {
+    getSession: vi.fn().mockResolvedValue({ userId: "user-1" }),
+  },
+}));
+
 vi.mock("../../../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
 }));
@@ -190,10 +218,11 @@ describe("ThreadTab", () => {
         onRetry={vi.fn()}
       />,
     );
-    fireEvent.change(screen.getByTestId("thread-composer-textarea"), {
+    // Phase E1: composer test-ids moved to entry-composer-*
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
       target: { value: "hello world" },
     });
-    fireEvent.click(screen.getByTestId("thread-composer-submit"));
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
     await waitFor(() =>
       expect(discussionsApi.addEntry).toHaveBeenCalledWith(
         "comp-1",

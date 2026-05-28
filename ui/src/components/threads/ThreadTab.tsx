@@ -1,19 +1,23 @@
 /**
  * ThreadTab — group-chat message stream.
  * Uses EntryRow for each entry (bubble/card style).
- * Composer at the bottom with user avatar + input + send.
+ * Composer at the bottom is the new Phase E1 EntryComposer with
+ * @-autocomplete, attachments, and reply support.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { discussionsApi, type DiscussionEntry } from "../../api/discussions";
 import { authApi } from "../../api/auth";
+import { agentsApi } from "../../api/agents";
+import { assetsApi } from "../../api/assets";
+import { teamApi } from "../../api/team";
 import { useToast } from "../../context/ToastContext";
 import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
 import { EntryRow } from "./EntryRow";
+import { EntryComposer, type AgentRef, type AssetRef, type UserRef } from "./EntryComposer";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, SendHorizonal, Paperclip } from "lucide-react";
-import { relativeTime } from "@/lib/utils";
+import { RefreshCw } from "lucide-react";
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadTab
@@ -38,7 +42,7 @@ export function ThreadTab({
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const { connectionState, sendPresence } = useLiveUpdates();
+  const { connectionState } = useLiveUpdates();
   const isOffline = connectionState === "offline";
   const isReconnecting = connectionState === "reconnecting";
   const isDisconnected = isOffline || isReconnecting;
@@ -53,10 +57,43 @@ export function ThreadTab({
     (session as { user?: { id?: string } } | undefined)?.user?.id ??
     null;
 
-  const [composerText, setComposerText] = useState("");
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Suggestions for the @-autocomplete: AoA crew agents + team members.
+  // Both queries are cheap and cached by react-query; we tolerate failure
+  // silently because autocomplete is non-critical.
+  const { data: agentsData } = useQuery({
+    queryKey: ["agents", companyId, "aoa"],
+    queryFn: () => agentsApi.listAoa(companyId),
+    enabled: !!companyId,
+    staleTime: 60_000,
+  });
+  const { data: teamData } = useQuery({
+    queryKey: ["team", companyId],
+    queryFn: () => teamApi.get(companyId),
+    enabled: !!companyId,
+    staleTime: 60_000,
+  });
+
+  const composerAgents: AgentRef[] = useMemo(
+    () =>
+      (agentsData ?? []).map((a) => ({
+        id: a.id,
+        name: a.name,
+        icon: a.icon,
+        role: a.role,
+      })),
+    [agentsData],
+  );
+
+  const composerUsers: UserRef[] = useMemo(() => {
+    const team = teamData as { members?: Array<{ userId: string; displayName?: string | null; email?: string | null }> } | undefined;
+    return (team?.members ?? []).map((m) => ({
+      id: m.userId,
+      name: m.displayName ?? m.email ?? m.userId,
+      email: m.email ?? null,
+    }));
+  }, [teamData]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastTypingSentRef = useRef(0);
 
   // Scroll to bottom when new messages arrive
   useEffect(() => {
@@ -65,54 +102,32 @@ export function ThreadTab({
     }
   }, [entries.length]);
 
-  // Focus composer when thread is empty
-  useEffect(() => {
-    if (entries.length === 0 && !isLoading) {
-      composerRef.current?.focus();
-    }
-  }, [entries.length, isLoading]);
-
-  function handleComposerChange(value: string) {
-    setComposerText(value);
-    const now = Date.now();
-    if (value.trim() && now - lastTypingSentRef.current > 2_000) {
-      lastTypingSentRef.current = now;
-      sendPresence(threadId, { typing: true });
-    }
-  }
-
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
   };
 
   const addEntryMutation = useMutation({
-    mutationFn: (content: string) =>
+    mutationFn: (payload: {
+      rawContent: string;
+      attachments: AssetRef[];
+      parentEntryId: string | null;
+    }) =>
       discussionsApi.addEntry(companyId, threadId, {
-        rawContent: content,
+        rawContent: payload.rawContent,
         inputType: "write",
-        parentEntryId: null,
-      }),
+        parentEntryId: payload.parentEntryId,
+        // Phase E1: pass attachment ids so the server links them in the same txn.
+        attachments: payload.attachments.length
+          ? payload.attachments.map((a) => ({ assetId: a.id }))
+          : undefined,
+      } as Parameters<typeof discussionsApi.addEntry>[2]),
     onSuccess: () => {
       invalidate();
-      setComposerText("");
     },
     onError: () => {
       pushToast({ title: "Failed to send message", tone: "warn" });
     },
   });
-
-  function submitText() {
-    const text = composerText.trim();
-    if (!text || addEntryMutation.isPending) return;
-    if (isDisconnected) {
-      pushToast({
-        title: isOffline ? "You're offline — message not sent" : "Reconnecting — message not sent",
-        tone: "warn",
-      });
-      return;
-    }
-    addEntryMutation.mutate(text);
-  }
 
   const reprocessMutation = useMutation({
     mutationFn: (entryId: string) =>
@@ -125,6 +140,35 @@ export function ThreadTab({
       pushToast({ title: "Failed to reprocess entry", tone: "warn" });
     },
   });
+
+  async function handleComposerSubmit(payload: {
+    text: string;
+    mentions: string[];
+    parentEntryId: string | null;
+    attachments: AssetRef[];
+  }) {
+    if (isDisconnected) {
+      pushToast({
+        title: isOffline ? "You're offline — message not sent" : "Reconnecting — message not sent",
+        tone: "warn",
+      });
+      return;
+    }
+    await addEntryMutation.mutateAsync({
+      rawContent: payload.text,
+      attachments: payload.attachments,
+      parentEntryId: payload.parentEntryId,
+    });
+  }
+
+  async function handleUpload(file: File): Promise<AssetRef> {
+    const res = await assetsApi.uploadFile(companyId, file, "discussion-entries");
+    return {
+      id: res.assetId,
+      name: res.originalFilename ?? file.name,
+      mimeType: res.contentType,
+    };
+  }
 
   // ── Loading skeleton ──
   if (isLoading) {
@@ -167,77 +211,25 @@ export function ThreadTab({
     : "Me";
 
   const composer = (
-    <div
-      className="shrink-0 px-4 py-3 border-t border-border"
-      style={{ background: "var(--card, #161a20)" }}
-      data-testid="thread-composer"
-    >
-      {isDisconnected && (
-        <div
-          className="mb-2 rounded-md px-3 py-1.5 text-xs text-muted-foreground"
-          style={{ background: "hsl(38 20% 10%)", border: "1px solid rgba(217,169,56,0.25)" }}
-          data-testid="thread-composer-offline-hint"
-        >
-          {isOffline ? "You're offline — messages won't send" : "Reconnecting…"}
-        </div>
-      )}
-      <div className="flex items-center gap-2.5">
-        {/* User avatar */}
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-          style={{ background: "hsl(221 22% 34%)" }}
-          aria-hidden="true"
-        >
-          {myInitials}
-        </div>
-
-        {/* Input area */}
-        <div
-          className="flex-1 flex items-center gap-1 rounded-xl border border-border/80 px-3 focus-within:border-border"
-          style={{ background: "var(--field, #0e1014)" }}
-        >
-          <textarea
-            ref={composerRef}
-            value={composerText}
-            onChange={(e) => handleComposerChange(e.target.value)}
-            placeholder="Reply… @mention to summon crew"
-            rows={1}
-            className="flex-1 bg-transparent py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none resize-none min-h-[40px] max-h-[120px]"
-            style={{ lineHeight: "1.4" }}
-            onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                e.preventDefault();
-                submitText();
-              }
-            }}
-            disabled={addEntryMutation.isPending || isDisconnected}
-            aria-label="Write a message"
-            data-testid="thread-composer-textarea"
-          />
-          {/* Attach icon (TODO: wire up) */}
-          <button
-            type="button"
-            title="Attach file (coming soon)"
-            className="shrink-0 p-1 rounded text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-            tabIndex={-1}
-          >
-            <Paperclip className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Send button */}
-        <button
-          type="button"
-          onClick={submitText}
-          disabled={!composerText.trim() || addEntryMutation.isPending || isDisconnected}
-          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-opacity disabled:opacity-40"
-          style={{ background: "#b82d1c" }}
-          aria-label="Send"
-          data-testid="thread-composer-submit"
-        >
-          <SendHorizonal className="h-4 w-4 text-white" />
-        </button>
-      </div>
+    <div data-testid="thread-composer">
+      <EntryComposer
+        threadId={threadId}
+        agents={composerAgents}
+        users={composerUsers}
+        onUpload={handleUpload}
+        onSubmit={handleComposerSubmit}
+        disabled={isDisconnected || addEntryMutation.isPending}
+        myInitials={myInitials}
+        hint={
+          isDisconnected
+            ? (
+                <span data-testid="thread-composer-offline-hint">
+                  {isOffline ? "You're offline — messages won't send" : "Reconnecting…"}
+                </span>
+              )
+            : undefined
+        }
+      />
     </div>
   );
 
@@ -275,30 +267,38 @@ export function ThreadTab({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3"
         data-testid="thread-tab-entries"
       >
-        {roots.map((entry) => (
-          <div key={entry.id} data-testid={`entry-group-${entry.id}`} className="space-y-2">
-            <EntryRow
-              entry={entry}
-              currentUserId={currentUserId}
-              onReprocess={() => reprocessMutation.mutate(entry.id)}
-              isReprocessing={
-                reprocessMutation.isPending && reprocessMutation.variables === entry.id
-              }
-            />
-            {(repliesByParent.get(entry.id) ?? []).map((reply) => (
-              <div key={reply.id} className="pl-10">
-                <EntryRow
-                  entry={reply}
-                  currentUserId={currentUserId}
-                  onReprocess={() => reprocessMutation.mutate(reply.id)}
-                  isReprocessing={
-                    reprocessMutation.isPending && reprocessMutation.variables === reply.id
-                  }
-                />
-              </div>
-            ))}
-          </div>
-        ))}
+        {roots.map((entry) => {
+          const replies = repliesByParent.get(entry.id) ?? [];
+          // Phase E2: client-side reply count when server doesn't supply one.
+          const enrichedEntry: DiscussionEntry = {
+            ...entry,
+            replyCount: entry.replyCount ?? replies.length,
+          };
+          return (
+            <div key={entry.id} data-testid={`entry-group-${entry.id}`} className="space-y-2">
+              <EntryRow
+                entry={enrichedEntry}
+                currentUserId={currentUserId}
+                onReprocess={() => reprocessMutation.mutate(entry.id)}
+                isReprocessing={
+                  reprocessMutation.isPending && reprocessMutation.variables === entry.id
+                }
+              />
+              {replies.map((reply) => (
+                <div key={reply.id} className="pl-10">
+                  <EntryRow
+                    entry={reply}
+                    currentUserId={currentUserId}
+                    onReprocess={() => reprocessMutation.mutate(reply.id)}
+                    isReprocessing={
+                      reprocessMutation.isPending && reprocessMutation.variables === reply.id
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 
