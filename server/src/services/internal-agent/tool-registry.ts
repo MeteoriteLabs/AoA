@@ -45,6 +45,11 @@ import { extractReferencesTool } from "./tools/memory-extract-references.js";
 import { findSimilarMemoryHnswTool } from "./tools/memory-find-similar.js";
 import { proposeMemoryFromThreadTool } from "./tools/memory-propose.js";
 import { archiveStaleMemoryTool } from "./tools/memory-archive-stale.js";
+// Task C2 batch 4 — agent.dispatch (T15)
+// Lower-level sibling to delegate_to_subagent. Inserts wakeup rows with
+// dedup + hop-count cap. Kept alongside delegate_to_subagent — they target
+// different ergonomics (founder approval vs collaborative crew dispatch).
+import { agentDispatchTool } from "./tools/agent-dispatch.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -97,6 +102,13 @@ export function createToolRegistry(): AgentTool[] {
     findSimilarMemoryHnswTool,
     proposeMemoryFromThreadTool,
     archiveStaleMemoryTool,
+    // Task C2 batch 4 — agent.dispatch (T15)
+    // Coordination-category tool that queues a wakeup row for a target AoA
+    // agent with hop-count cap + dedup. Added to the Adjutant allowlist so
+    // it can hand off to another role mid-thread. delegate_to_subagent
+    // remains as the founder-only, name-targeted, confirmation-gated
+    // alternative — both serve distinct ergonomics.
+    agentDispatchTool,
   ];
 }
 

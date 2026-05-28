@@ -43,6 +43,11 @@ const ADJUTANT_TOOL_ALLOWLIST: string[] = [
   // surfaced before deciding the thread is ready to advance — without this it
   // has to rely on summary text alone.
   "extract_memory_candidates",
+  // C2 batch 4 (T15): the Adjutant can hand off to another agent when a
+  // phase advance requires a different role (e.g. nudging an owner is not
+  // enough — escalate to a Navigator). agent.dispatch is the lower-level
+  // dedup-aware variant (vs delegate_to_subagent which is founder-only).
+  "agent.dispatch",
 ];
 
 const ADJUTANT_NAME = "Adjutant";
