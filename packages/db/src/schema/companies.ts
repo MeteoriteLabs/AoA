@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
   "companies",
@@ -21,6 +21,28 @@ export const companies = pgTable(
     logoAssetId: uuid("logo_asset_id"),
     rootFolder: text("root_folder"),
     mcpEnabled: boolean("mcp_enabled").notNull().default(false),
+    // Thread-Native Agent Coordination Phase 1 (Task A1).
+    // Onboarding wizard writes the founder's Commander adapter pick here;
+    // resolveCrewAdapterForCompany() (Task D6) reads this column first and
+    // falls back to internal_agent_config.provider when empty. Empty object
+    // = legacy company (created before onboarding offered adapter selection).
+    // Shape contract: see CommanderAdapterConfigSchema in
+    // packages/shared/src/api/threads-contract.ts (Pre-Task 0.6).
+    commanderAdapterConfig: jsonb("commander_adapter_config")
+      .$type<{ adapter: string; model: string } | Record<string, never>>()
+      .notNull()
+      .default({}),
+    // Crew adapter pick — `default` covers every crew agent that doesn't
+    // have a per-agent override; `perAgent` keys by agent.id (uuid string).
+    // Shape contract: CrewAdapterConfigSchema in
+    // packages/shared/src/api/threads-contract.ts (Pre-Task 0.6).
+    crewAdapterConfig: jsonb("crew_adapter_config")
+      .$type<{
+        default?: { adapter: string; model: string };
+        perAgent?: Record<string, { adapter: string; model: string }>;
+      } | Record<string, never>>()
+      .notNull()
+      .default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     enableTeams: boolean("enable_teams").notNull().default(false),
