@@ -1,0 +1,21 @@
+{
+  "id": "07-medium-clarity",
+  "input": {
+    "thread": {
+      "id": "fixture-7",
+      "phase": "discuss",
+      "intent": ["planning"],
+      "summaryText": null,
+      "entries": [
+        { "id": "e1", "rawContent": "we should redesign the homepage to add stronger CTA", "authorAgentId": null, "createdBy": "user-1" },
+        { "id": "e2", "rawContent": "Yes, focus on signup conversion. We've researched competitors.", "authorAgentId": null, "createdBy": "user-2" },
+        { "id": "e3", "rawContent": "Sounds good. Let's start with hero section + CTA placement.", "authorAgentId": null, "createdBy": "user-1" }
+      ]
+    }
+  },
+  "expected": {
+    "type": "llm-graded",
+    "rubric": "Should produce a scope_proposal with clear summary and 2-4 concrete tasks. Not 'wait' or 'ask-clarifying'.",
+    "value": { "category": "propose-scope" }
+  }
+}
