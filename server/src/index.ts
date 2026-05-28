@@ -49,6 +49,7 @@ import { handlePreviewProxyUpgrade } from "./services/preview-proxy.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
+import { startEmbeddingWorker } from "./services/embeddings-worker.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -832,6 +833,18 @@ setInterval(() => {
 }, WORKER_INTERVAL_MS);
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
+
+// Write-behind embedding queue worker (Task B1, Decision D2).
+// Drains rows from `embedding_queue` and UPDATEs the target row's vector
+// column. The worker tolerates a missing OPENAI_API_KEY (warns but stays
+// registered so any queued rows surface as auth errors via the normal
+// retry path). 2-second tick is fast enough to keep find-similar staleness
+// to a few seconds for typical traffic.
+const embeddingWorker = startEmbeddingWorker(db as any, { intervalMs: 2000 });
+// Best-effort stop on SIGTERM/SIGINT — the shared shutdown handlers below
+// already exit the process, but this lets the in-flight tick log cleanly.
+process.once("SIGTERM", () => embeddingWorker.stop());
+process.once("SIGINT", () => embeddingWorker.stop());
 
 // Sub-agent #1: durable discussion-extraction sweeper (primary trigger).
 // Polls discussion_entries.extractionStatus='pending' (+ reclaims orphaned

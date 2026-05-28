@@ -15,6 +15,12 @@ vi.mock("@armyofagents/db", () => ({
     embedding: "embedding",
     content: "content",
   },
+  // Added for Task B1: the embeddings module imports these for the
+  // write-behind queue's `TARGET_TABLE_MAP`. These tests don't exercise
+  // the new factory, so stub references are sufficient.
+  discussions: { id: "id" },
+  discussionExtractedItems: { id: "id" },
+  embeddingQueue: { id: "id" },
 }));
 
 // Mock logger before importing module under test
