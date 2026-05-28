@@ -1,0 +1,219 @@
+// server/src/__tests__/c2-thread-spin-off.test.ts
+//
+// Task C2 batch 2 — spin_off_thread tool tests.
+// Verifies: new thread with forkedFromId is created, seed entries copied with
+// sourceInfo back-pointers, thread_links row of kind=spinoff written, no-seed
+// case skips the entry copy, and transactional rollback on failure.
+
+import { describe, expect, it, vi } from "vitest";
+import { spinOffThreadTool } from "../services/internal-agent/tools/thread-spin-off.js";
+import type { ToolContext } from "../services/internal-agent/types.js";
+
+// Build a mock tx that tracks insert/select call ordinals.
+// Insert order is:
+//   1. tx.insert(discussions).values(...).returning() — new thread
+//   2. tx.insert(discussionEntries).values(...) — once per seed entry
+//   3. tx.insert(threadLinks).values(...) — final link row
+// Selects are done only when there are seedEntries to copy.
+function makeTxTracker(opts: {
+  newThreadReturn?: any[];
+  seedSelectReturn?: any[];
+  insertThrowsAt?: number; // ordinal of insert call that should throw
+} = {}) {
+  const insertCalls: Array<{ values: any }> = [];
+
+  function makeInsertChain(getResult: () => any[], idx: number) {
+    const chain: any = {};
+    chain.values = (vals: any) => {
+      insertCalls[idx].values = vals;
+      return chain;
+    };
+    chain.returning = () => Promise.resolve(getResult());
+    // Make the chain awaitable so insert(...).values(...) without
+    // .returning() also works.
+    chain.then = (resolve: any) =>
+      Promise.resolve(resolve(getResult()));
+    return chain;
+  }
+
+  const insert = vi.fn((_table: any) => {
+    const idx = insertCalls.length;
+    insertCalls.push({ values: undefined });
+    if (typeof opts.insertThrowsAt === "number" && opts.insertThrowsAt === idx) {
+      throw new Error("simulated insert failure");
+    }
+    if (idx === 0) {
+      return makeInsertChain(
+        () => opts.newThreadReturn ?? [{ id: "new-thread-1" }],
+        idx,
+      );
+    }
+    return makeInsertChain(() => [], idx);
+  });
+
+  const selectFn = vi.fn(() => {
+    const fromObj = {
+      where: vi.fn().mockResolvedValue(opts.seedSelectReturn ?? []),
+    };
+    return { from: vi.fn().mockReturnValue(fromObj) };
+  });
+
+  return { insert, select: selectFn, insertCalls };
+}
+
+function makeCtx(transactionFn: any): ToolContext {
+  return {
+    companyId: "co-1",
+    userId: "u-1",
+    userRole: "team_member",
+    enabledCapabilities: ["system_actions"],
+    agentId: "agent-router",
+    db: { transaction: transactionFn },
+    services: {} as any,
+  } as unknown as ToolContext;
+}
+
+describe("spin_off_thread tool (C2 batch 2)", () => {
+  it("metadata: name, category=action, requiredRole=team_member, requires confirmation", () => {
+    expect(spinOffThreadTool.name).toBe("spin_off_thread");
+    expect(spinOffThreadTool.category).toBe("action");
+    expect(spinOffThreadTool.requiredRole).toBe("team_member");
+    expect(spinOffThreadTool.requiresConfirmation).toBe(true);
+  });
+
+  it("creates a new thread with forkedFromId + thread_links row when no seeds", async () => {
+    const tracker = makeTxTracker();
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src", title: "spinoff title" },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).threadId).toBe("new-thread-1");
+    expect((result.data as any).seedEntryCount).toBe(0);
+    // Two inserts when no seeds: discussions + threadLinks.
+    expect(tracker.insertCalls.length).toBe(2);
+    const newThread = tracker.insertCalls[0].values;
+    expect(newThread).toMatchObject({
+      companyId: "co-1",
+      title: "spinoff title",
+      forkedFromId: "thread-src",
+      visibility: "company",
+      createdBy: "agent-router",
+    });
+    const link = tracker.insertCalls[1].values;
+    expect(link).toMatchObject({
+      companyId: "co-1",
+      fromThreadId: "thread-src",
+      toThreadId: "new-thread-1",
+      kind: "spinoff",
+    });
+  });
+
+  it("copies seed entries with sourceInfo back-pointers", async () => {
+    const tracker = makeTxTracker({
+      seedSelectReturn: [
+        { id: "e-1", rawContent: "first content" },
+        { id: "e-2", rawContent: "second content" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      {
+        fromThreadId: "thread-src",
+        title: "with seeds",
+        seedEntries: ["e-1", "e-2"],
+      },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).seedEntryCount).toBe(2);
+    // 1 new-thread insert + 2 entry inserts + 1 link insert = 4 inserts.
+    expect(tracker.insertCalls.length).toBe(4);
+    const entry1 = tracker.insertCalls[1].values;
+    expect(entry1).toMatchObject({
+      discussionId: "new-thread-1",
+      inputType: "agent",
+      rawContent: "first content",
+      sourceInfo: { copiedFromThreadId: "thread-src", originalEntryId: "e-1" },
+    });
+    const entry2 = tracker.insertCalls[2].values;
+    expect(entry2).toMatchObject({
+      rawContent: "second content",
+      sourceInfo: { copiedFromThreadId: "thread-src", originalEntryId: "e-2" },
+    });
+  });
+
+  it("treats non-string seedEntries entries as missing (no copy, no error)", async () => {
+    const tracker = makeTxTracker();
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      {
+        fromThreadId: "thread-src",
+        title: "filter test",
+        // Mixed array: only strings should be kept; non-string entries filtered.
+        seedEntries: [123, null, undefined],
+      },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).seedEntryCount).toBe(0);
+    // No seed entry inserts; just 1 thread + 1 link.
+    expect(tracker.insertCalls.length).toBe(2);
+  });
+
+  it("rolls back when the new-thread insert fails (no link written)", async () => {
+    const tracker = makeTxTracker({ insertThrowsAt: 0 });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src", title: "x" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("TRANSACTION_FAILED");
+    expect(result.summary).toContain("simulated insert failure");
+  });
+
+  it("returns INVALID_PARAMS when fromThreadId is missing", async () => {
+    const transactionFn = vi.fn();
+    const ctx = makeCtx(transactionFn);
+    const result = await spinOffThreadTool.execute(
+      { title: "no source" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("INVALID_PARAMS");
+    expect(transactionFn).not.toHaveBeenCalled();
+  });
+
+  it("returns INVALID_PARAMS when title is missing", async () => {
+    const transactionFn = vi.fn();
+    const ctx = makeCtx(transactionFn);
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("INVALID_PARAMS");
+    expect(transactionFn).not.toHaveBeenCalled();
+  });
+});

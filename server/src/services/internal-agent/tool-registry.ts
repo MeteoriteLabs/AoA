@@ -27,6 +27,12 @@ import { threadUpdateSummaryTool } from "./tools/thread-update-summary.js";
 import { threadCreateLinkTool } from "./tools/thread-create-link.js";
 import { getThreadSummaryTool } from "./tools/thread-get-summary.js";
 import { findSimilarThreadsTool } from "./tools/thread-find-similar.js";
+// Task C2 batch 2 — 5 navigator + artifact + workspace tools (T15)
+import { attachToThreadTool } from "./tools/inbox-attach-to-thread.js";
+import { spinOffThreadTool } from "./tools/thread-spin-off.js";
+import { createArtifactVersionTool } from "./tools/artifact-create-version.js";
+import { queryArtifactsTool } from "./tools/artifact-query.js";
+import { requestThreadWorkspaceTool } from "./tools/workspace-request-for-thread.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -55,6 +61,18 @@ export function createToolRegistry(): AgentTool[] {
     threadCreateLinkTool,
     getThreadSummaryTool,
     findSimilarThreadsTool,
+    // Task C2 batch 2 — 5 navigator + artifact + workspace tools (T15)
+    // attach_to_thread, spin_off_thread → Navigator (Router) allowlist (see
+    // ensure-command-staff.ts roleToolAllowlist['router']).
+    // TODO(Phase D): create_artifact_version, query_artifacts,
+    //   request_thread_workspace must be added to the Engineer agent's
+    //   toolAllowlist when ensure-engineer.ts lands in Phase D. Until then,
+    //   only the founder or a hand-rolled per-agent allowlist can invoke them.
+    attachToThreadTool,
+    spinOffThreadTool,
+    createArtifactVersionTool,
+    queryArtifactsTool,
+    requestThreadWorkspaceTool,
   ];
 }
 

@@ -43,6 +43,10 @@ export function roleToolAllowlist(role: CommandStaffRoleKey): string[] {
       // thread instead of routing to a department when the topic has been
       // discussed before. get_thread_summary + thread.listEntries help it
       // read the topic of an existing thread without polluting the thread itself.
+      // C2 batch 2: attach_to_thread lets the Router promote an inbox item to
+      // an existing thread when a confident match is found, and spin_off_thread
+      // lets it create a new thread for orphaned material that doesn't belong
+      // in any current discussion.
       return [
         "search_discussions",
         "query_departments",
@@ -50,6 +54,8 @@ export function roleToolAllowlist(role: CommandStaffRoleKey): string[] {
         "get_thread_summary",
         "thread.listEntries",
         "thread.createLink",
+        "attach_to_thread",
+        "spin_off_thread",
       ];
     case "planner":
       // C2 batch 1: Planner owns scope proposals + setting intent on a thread
