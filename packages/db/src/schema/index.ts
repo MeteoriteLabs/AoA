@@ -79,6 +79,7 @@ export {
   threadInboxItems,
   discussionEntryAttachments,
 } from "./threads.js";
+export { threadOrchestrationState } from "./thread_orchestration_state.js";
 export {
   internalAgentConfig,
   internalAgentConversations,

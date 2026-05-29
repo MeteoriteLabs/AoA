@@ -869,6 +869,13 @@
       "when": 1780109340000,
       "tag": "0123_discussions_vector_stub",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1780074698267,
+      "tag": "0124_pale_vapor",
+      "breakpoints": true
     }
   ]
 }
