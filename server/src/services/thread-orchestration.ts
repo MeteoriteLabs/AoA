@@ -97,6 +97,19 @@ export interface RunControllerOpts {
 
 const log = logger.child({ service: "thread-orchestration" });
 
+// ── Hop-cap constant ───────────────────────────────────────────────────────────
+/**
+ * Max agent rounds per quiet window (since the last human entry) before the
+ * Adjutant must stop and ask the human.
+ *
+ * A "hop" is one participation invocation — one sub-agent pulled into the chat.
+ * `hopCount` resets to 0 on every human entry (handled by `triggerOnHumanEntry`).
+ * When `hopCount` reaches this cap, the Adjutant should post a
+ * "scope it / keep going?" decision card instead of spawning another round
+ * (card UI and post wiring are later tasks; this constant is the primitive).
+ */
+export const HOP_CAP = 5;
+
 // ── Default adjutantRunner stub ────────────────────────────────────────────────
 /**
  * P1-T4 DI seam placeholder. Throws immediately so any production path that
@@ -175,6 +188,42 @@ export function threadOrchestrationService(db: Db) {
       );
 
       return updated ?? null;
+    },
+
+    /**
+     * Atomically increment `hopCount` for the controller and return the new
+     * value plus an at-cap signal.
+     *
+     * Called once per participation invocation (a sub-agent pulled into the
+     * chat — wired in the next task, T6). Callers check `atCap` to decide
+     * whether to spawn another agent round or instead post a
+     * "scope it / keep going?" decision card (T13).
+     *
+     * - Calls `ensureController` first so the row is guaranteed to exist.
+     * - Increments `hopCount` atomically via SQL expression (`hopCount + 1`).
+     * - Bumps `updatedAt` to now.
+     * - Returns `{ hopCount, atCap }` where `atCap = hopCount >= HOP_CAP`.
+     */
+    incrementHop: async (threadId: string): Promise<{ hopCount: number; atCap: boolean }> => {
+      await threadOrchestrationService(db).ensureController(threadId);
+
+      const [updated] = await db
+        .update(threadOrchestrationState)
+        .set({
+          hopCount: sql`${threadOrchestrationState.hopCount} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(threadOrchestrationState.threadId, threadId))
+        .returning();
+
+      const hopCount = updated?.hopCount ?? 0;
+
+      log.debug(
+        { threadId, hopCount, atCap: hopCount >= HOP_CAP },
+        "thread orchestration hop incremented",
+      );
+
+      return { hopCount, atCap: hopCount >= HOP_CAP };
     },
 
     /**
