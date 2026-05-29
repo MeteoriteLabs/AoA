@@ -351,7 +351,10 @@ export function discussionService(db: Db) {
               projectId: data.entry.projectId ?? null,
               goalId: data.entry.goalId ?? null,
               sourceInfo: data.entry.sourceInfo ?? null,
-              extractionStatus: "pending",
+              // QA-BUG-015: see addEntry — discuss-phase entries are not
+              // auto-extracted; extraction is a deliberate done-phase /
+              // Adjutant-judgment activity.
+              extractionStatus: "skipped",
               createdBy: actorId,
             })
             .returning();
@@ -556,7 +559,12 @@ export function discussionService(db: Db) {
             sourceInfo: data.sourceInfo ?? null,
             parentEntryId: data.parentEntryId ?? null,
             authorAgentId: data.authorAgentId ?? null,
-            extractionStatus: "pending",
+            // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
+            // 'skipped' so the (gated-off) durable drain never picks them up
+            // and the UI doesn't show a misleading "pending extraction"
+            // state. Extraction happens later, deliberately, via Memory
+            // Keeper at phase=done or Adjutant's extract_memory_candidates.
+            extractionStatus: "skipped",
             seq: entrySeq,
             createdBy: actorId,
           })
@@ -626,17 +634,21 @@ export function discussionService(db: Db) {
           });
       }
 
-      // Trigger extraction directly (fire-and-forget) so the UI sees items within
-      // seconds rather than waiting up to 45 s for the durable sweeper interval.
-      // The sweeper remains as a durability backstop for entries that slip through
-      // (e.g. server restart immediately after insert).
-      import("./extraction.js")
-        .then(({ extractionService }) => {
-          extractionService(db)
-            .extractFromDiscussionEntry(companyId, entry.id)
-            .catch(() => {}); // errors surfaced internally via extractionStatus='failed'
-        })
-        .catch(() => {}); // module load error — swallow; sweeper will pick it up
+      // Design §4.9 + §5 (locked): the `discuss` phase is a pure conversation
+      // between humans and the crew (Adjutant facilitating, delegating to
+      // Scout / Engineer / Navigator). Structured extraction is NOT a
+      // fire-on-every-entry behaviour — "Scribe is ELIMINATED" and the
+      // extraction logic now runs only as deliberate tool calls:
+      //   - Memory Keeper at `phase=done` (extract_decisions / _insights /
+      //     _references → propose_memory), the canonical path; and
+      //   - Adjutant mid-`discuss` IF it judges something was decided, via
+      //     extract_memory_candidates (its own call, not automatic).
+      // The previous unconditional extractFromDiscussionEntry call here made
+      // Scribe run on every message and dumped decision/task/insight cards
+      // into the Scope tab while humans were still talking — premature and
+      // against the design (QA-BUG-015). Removed. The thread-event listener
+      // above still wakes Adjutant after the 30s human-silence debounce so
+      // the conversation moves forward; extraction waits for the right phase.
 
       await logActivity(db, {
         companyId,
