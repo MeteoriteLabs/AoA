@@ -181,7 +181,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     .select({ id: discussionEntries.id, companyId: discussions.companyId })
     .from(discussionEntries)
     .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
-    .where(eq(discussionEntries.extractionStatus, "pending"))
+    // P1-T7 defense-in-depth: never feed a scope_proposal entry to the LLM
+    // extractor. Proposals carry their approval lifecycle in proposalStatus and
+    // are inserted extractionStatus="skipped" so this filter is normally moot,
+    // but excluding by inputType here guarantees that even a mis-inserted
+    // proposal (extractionStatus="pending") can't be claimed by the drain and
+    // have its approval state clobbered (pending -> processing -> completed).
+    .where(
+      and(
+        eq(discussionEntries.extractionStatus, "pending"),
+        notInArray(discussionEntries.inputType, ["scope_proposal"]),
+      ),
+    )
     .limit(200)
     .then((r: Array<{ id: string; companyId: string }>) => r);
 

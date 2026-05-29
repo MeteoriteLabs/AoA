@@ -98,6 +98,18 @@ describe("thread.postScopeProposal tool (C2 batch 1, D9 transactional)", () => {
     expect(tracker.insertCalls.length).toBe(2);
     expect(tracker.insertCalls[0].table).toBe("discussion_entries");
     expect(tracker.insertCalls[1].table).toBe("thread_plan_steps");
+    // P1-T7 (#3 root-cause fix): the entry MUST be inserted with
+    //   extractionStatus="skipped"  → keeps it out of the autonomous Scribe
+    //                                  drain + reprocess sweeps (no inputType
+    //                                  filter there) so approval state can't be
+    //                                  clobbered by extraction.
+    //   proposalStatus="pending"    → the purpose-built approval-lifecycle field
+    //                                  the Approve handler claims atomically.
+    expect(tracker.insertCalls[0].values).toMatchObject({
+      inputType: "scope_proposal",
+      extractionStatus: "skipped",
+      proposalStatus: "pending",
+    });
     // Plan rows: stepOrder 0/1/2 with the titles
     expect(tracker.insertCalls[1].values).toEqual([
       { threadId: "thread-1", stepOrder: 0, title: "Spec login UI", linkedItemId: null },

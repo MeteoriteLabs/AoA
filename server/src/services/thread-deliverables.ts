@@ -9,15 +9,25 @@
  * that closes over `db` and returns methods.
  *
  * P1-T7: `approveProposal` adds:
- *  1. Authorization is the CALLER's responsibility (route layer uses assertRole).
- *     The service itself validates companyId ownership for defense-in-depth.
- *  2. Proposal validation — must exist, belong to threadId, and be pending.
+ *  1. Authorization is the CALLER's responsibility (route layer uses
+ *     assertCompanyAccess + assertRole). The service validates companyId
+ *     ownership + that the entry really is a scope_proposal (defense-in-depth).
+ *  2. Proposal validation — must exist, belong to threadId, be a scope_proposal,
+ *     and have proposalStatus = "pending".
  *  3. Stale check — compares proposalCursorSeq (stamped at post time) against
  *     the thread's current entrySeq. If the thread has newer entries, reject.
- *  4. Idempotent second-approve — returns the previously created result without
- *     creating duplicate tasks.
- *  5. Task creation via createDeliverableTasks, then mark entry approved.
- *  6. Audit log entry via the caller-provided logActivity.
+ *  4. Claim-first atomic idempotency — transitions proposalStatus pending ->
+ *     approved with a single conditional UPDATE ... RETURNING. Loser of a
+ *     concurrent race returns alreadyApproved WITHOUT creating duplicate tasks.
+ *  5. Task creation via createDeliverableTasks happens only after the claim win.
+ *  6. Audit log entry via the caller-provided logActivity (route layer).
+ *
+ * Approval state is tracked on the dedicated `discussion_entries.proposalStatus`
+ * column, NOT `extractionStatus`. The latter is the LLM-extraction lifecycle and
+ * is mutated by the autonomous Scribe drain + reprocess sweeps (both select by
+ * extractionStatus with no inputType filter); overloading it would corrupt
+ * approval state. Proposals are inserted extractionStatus="skipped" so no sweep
+ * ever touches them.
  */
 
 import { eq, and } from "drizzle-orm";
@@ -162,18 +172,37 @@ export function threadDeliverablesService(db: Db) {
      * P1-T7: Securely approve a scope proposal.
      *
      * Authorization is NOT performed here — the HTTP route layer MUST call
-     * `assertRole(db, req, companyId, "founder", "team_lead")` before invoking
-     * this method. This service validates only data integrity and business rules.
+     * `assertCompanyAccess` + `assertRole(db, req, companyId, "founder",
+     * "team_lead")` before invoking this method. This service validates only
+     * data integrity and business rules (defense-in-depth on tenant ownership).
+     *
+     * Approval state lives in the purpose-built `proposalStatus` column —
+     * NOT `extractionStatus`. `extractionStatus` is the LLM-extraction
+     * lifecycle and is mutated by the autonomous Scribe drain (dispatcher
+     * pending sweep) and `reprocessAllEntries`, both of which select by
+     * extractionStatus with NO inputType filter. Overloading it would let a
+     * sweep silently flip a proposal to "completed" and break approval. The
+     * proposal is inserted with extractionStatus="skipped" (so no sweep claims
+     * it) and proposalStatus="pending".
      *
      * Steps:
-     *  1. Load the proposal entry and verify it belongs to the given threadId + companyId.
-     *  2. If already approved (`extractionStatus = "completed"`) → idempotent no-op.
-     *  3. If rejected (`extractionStatus = "skipped"`) → 4xx (not_found treated as error).
-     *  4. Read thread's current `entrySeq`; compare to `proposalCursorSeq` stamped
-     *     at post time. If `currentSeq > proposalCursorSeq` → stale, reject.
-     *  5. Call `createDeliverableTasks` for the proposal's tasks.
-     *  6. Mark entry `extractionStatus = "completed"` (approved).
+     *  1. Load the proposal entry; verify it belongs to threadId + companyId.
+     *  2. Reject non-proposal entries (proposalStatus IS NULL) as not_found.
+     *  3. proposalStatus already "approved" → idempotent no-op.
+     *     proposalStatus "rejected" → 409 rejected.
+     *  4. Parse content; stale-check proposalCursorSeq vs thread.entrySeq.
+     *  5. CLAIM-FIRST: atomically transition pending -> approved with a single
+     *     conditional UPDATE ... RETURNING. If no row comes back, a concurrent
+     *     approve already won → return alreadyApproved WITHOUT creating tasks.
+     *  6. Only after winning the claim, create the deliverable tasks.
      *  7. Return task IDs for the route to log activity.
+     *
+     * Crash-safety trade-off: marking approved before task creation means a
+     * crash mid-create could leave an approved proposal with fewer tasks than
+     * intended. That is strictly preferable to the alternative (create-then-
+     * mark), which on a crash or concurrent approve produces DUPLICATE tasks —
+     * double budget spend + double auto-dispatch. For an authz boundary that
+     * spends real budget, "never duplicate" wins.
      */
     approveProposal: async ({
       threadId,
@@ -189,7 +218,7 @@ export function threadDeliverablesService(db: Db) {
           discussionId: discussionEntries.discussionId,
           inputType: discussionEntries.inputType,
           rawContent: discussionEntries.rawContent,
-          extractionStatus: discussionEntries.extractionStatus,
+          proposalStatus: discussionEntries.proposalStatus,
         })
         .from(discussionEntries)
         .innerJoin(discussions, eq(discussionEntries.discussionId, discussions.id))
@@ -217,16 +246,27 @@ export function threadDeliverablesService(db: Db) {
         };
       }
 
-      // ── Step 3: Check proposal status ────────────────────────────────────────
-      // extractionStatus semantics for scope_proposal entries:
-      //   "pending"   = awaiting approval
-      //   "completed" = already approved (tasks created)
-      //   "skipped"   = rejected
-      if (entry.extractionStatus === "completed") {
+      // ── Step 2b: Must be an actual scope_proposal entry ──────────────────────
+      // proposalStatus IS NULL for every non-proposal entry. Refuse to "approve"
+      // an arbitrary discussion entry (e.g. a paste/write) into tasks — that
+      // would be a privilege/abuse vector independent of role.
+      if (entry.inputType !== "scope_proposal" || entry.proposalStatus == null) {
+        return {
+          ok: false,
+          reason: "not_found",
+          message: "Entry is not an approvable scope proposal",
+        };
+      }
+
+      // ── Step 3: Check proposal status (purpose-built field) ──────────────────
+      //   "pending"  = awaiting approval
+      //   "approved" = already approved (tasks created)
+      //   "rejected" = rejected by a human
+      if (entry.proposalStatus === "approved") {
         // Idempotent: already approved — no-op.
         return { ok: true, alreadyApproved: true };
       }
-      if (entry.extractionStatus === "skipped") {
+      if (entry.proposalStatus === "rejected") {
         return {
           ok: false,
           reason: "rejected",
@@ -271,7 +311,30 @@ export function threadDeliverablesService(db: Db) {
         };
       }
 
-      // ── Step 5: Create deliverable tasks ─────────────────────────────────────
+      // ── Step 5: CLAIM-FIRST atomic transition pending -> approved ────────────
+      // Single conditional UPDATE: only the writer whose WHERE still matches
+      // proposalStatus = "pending" gets a row back. A crash between this and
+      // task creation leaves an approved proposal (re-approve is a safe no-op);
+      // a concurrent second approve gets zero rows and returns alreadyApproved
+      // without creating duplicate tasks.
+      const claimed = await db
+        .update(discussionEntries)
+        .set({ proposalStatus: "approved" })
+        .where(
+          and(
+            eq(discussionEntries.id, proposalEntryId),
+            eq(discussionEntries.proposalStatus, "pending"),
+          ),
+        )
+        .returning({ id: discussionEntries.id });
+
+      if (!claimed || claimed.length === 0) {
+        // Lost the race — another approve already claimed it. Idempotent no-op;
+        // we did NOT create tasks here, so there are no duplicates.
+        return { ok: true, alreadyApproved: true };
+      }
+
+      // ── Step 6: Create deliverable tasks (only after winning the claim) ──────
       const deliverableProposals: DeliverableProposal[] = proposalContent.proposedTasks.map(
         (t) => ({
           title: t.title,
@@ -292,14 +355,6 @@ export function threadDeliverablesService(db: Db) {
       });
 
       const taskIds = created.map((issue: { id: string }) => issue.id);
-
-      // ── Step 6: Mark proposal as approved ────────────────────────────────────
-      // `extractionStatus = "completed"` signals to a second approve call that
-      // the proposal was already processed (idempotency guard).
-      await db
-        .update(discussionEntries)
-        .set({ extractionStatus: "completed" })
-        .where(eq(discussionEntries.id, proposalEntryId));
 
       return { ok: true, alreadyApproved: false, taskIds };
     },

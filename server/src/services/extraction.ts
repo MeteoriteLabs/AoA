@@ -404,6 +404,17 @@ export function extractionService(db: Db) {
 
         discussionId = entry.discussionId;
 
+        // P1-T7: scope_proposal entries are NOT prose for the extractor — their
+        // rawContent is a structured proposal JSON and their lifecycle lives in
+        // proposalStatus. Never claim/extract them: doing so would flip their
+        // extractionStatus (pending -> processing -> completed) and corrupt the
+        // Approve handler's idempotency read. Last line of defense behind the
+        // dispatcher sweep filter + the "skipped" insert default.
+        if (entry.inputType === "scope_proposal") {
+          log.info("Entry is a scope_proposal — skipping extraction (not extractable prose)");
+          return;
+        }
+
         // Atomic claim: flip pending -> processing in a single statement.
         // Only the writer that gets a row back proceeds. This replaces the
         // prior non-atomic read-then-check, fixing a pre-existing race

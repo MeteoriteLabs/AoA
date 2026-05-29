@@ -169,6 +169,21 @@ export const discussionEntries = pgTable(
       { onDelete: "set null" },
     ),
 
+    // ── P1-T7: scope_proposal approval lifecycle ────────────────────────────
+    // Dedicated status field for `inputType = "scope_proposal"` entries so the
+    // Approve handler never has to overload `extractionStatus` (which belongs
+    // to the LLM-extraction lifecycle and is mutated by the autonomous Scribe
+    // drain / reprocess sweeps — both of which select by extractionStatus with
+    // no inputType filter, so reusing it would corrupt approval state).
+    //   null      — not a proposal (the column is meaningless for non-proposals)
+    //   'pending' — proposal awaiting founder/team-lead approval
+    //   'approved'— approved; deliverable tasks created (terminal)
+    //   'rejected'— rejected by a human (terminal)
+    // The claim-first idempotency guard transitions pending -> approved with a
+    // single conditional UPDATE ... RETURNING so concurrent approves create
+    // tasks exactly once.
+    proposalStatus: text("proposal_status"), // null for non-proposal entries
+
     // ── Threads v1: nested replies + agent authorship ──
     parentEntryId: uuid("parent_entry_id").references((): AnyPgColumn => discussionEntries.id, { onDelete: "set null" }),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),

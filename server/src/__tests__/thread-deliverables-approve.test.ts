@@ -152,6 +152,7 @@ vi.mock("../services/permissions.js", () => ({
 // ── Import routes + rbac mock after all vi.mock declarations ──────────────────
 import { discussionRoutes } from "../routes/discussions.js";
 import { assertRole } from "../middleware/rbac.js";
+import { permissionService as mockedPermissionServiceFactory } from "../services/permissions.js";
 import express from "express";
 import request from "supertest";
 
@@ -191,8 +192,17 @@ function makeMockDb(opts: {
   function updateChain(): any {
     const chain: any = {};
     chain.set = () => chain;
-    chain.where = () =>
+    // The claim-first idempotency UPDATE ends in `.returning(...)`; the plain
+    // update path ends in `.where(...)`. Support both: `.where()` resolves to
+    // the result, and `.returning()` (after `.where()`) resolves to the same.
+    const result = () =>
       Promise.resolve(opts.updateShouldSucceed !== false ? [{ id: ENTRY_ID }] : []);
+    chain.where = () => {
+      const p: any = result();
+      p.returning = result;
+      return p;
+    };
+    chain.returning = result;
     return chain;
   }
 
@@ -225,19 +235,22 @@ function makeProposalRaw(opts: {
   });
 }
 
-/** Pending proposal entry row (extractionStatus = "pending" by default). */
+/** Pending proposal entry row (proposalStatus = "pending" by default). */
 function makePendingEntry(overrides: Partial<{
   id: string;
   discussionId: string;
+  inputType: string;
   rawContent: string;
-  extractionStatus: string;
+  proposalStatus: string | null;
 }> = {}) {
   return {
     id: overrides.id ?? ENTRY_ID,
     discussionId: overrides.discussionId ?? THREAD_ID,
-    inputType: "scope_proposal",
+    inputType: overrides.inputType ?? "scope_proposal",
     rawContent: overrides.rawContent ?? makeProposalRaw({ proposalCursorSeq: 5 }),
-    extractionStatus: overrides.extractionStatus ?? "pending",
+    // P1-T7: approval lifecycle lives on proposalStatus, NOT extractionStatus.
+    proposalStatus:
+      overrides.proposalStatus === undefined ? "pending" : overrides.proposalStatus,
   };
 }
 
@@ -352,7 +365,7 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
   it("idempotent: second approve → alreadyApproved:true, no tasks created", async () => {
     const db = makeMockDb({
       selectResults: [
-        [makePendingEntry({ extractionStatus: "completed" })],
+        [makePendingEntry({ proposalStatus: "approved" })],
       ],
     });
 
@@ -410,10 +423,10 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
   });
 
   // ── A7. Already rejected ──────────────────────────────────────────────────────
-  it("returns rejected when proposal was already rejected (skipped status)", async () => {
+  it("returns rejected when proposal was already rejected (proposalStatus=rejected)", async () => {
     const db = makeMockDb({
       selectResults: [
-        [makePendingEntry({ extractionStatus: "skipped" })],
+        [makePendingEntry({ proposalStatus: "rejected" })],
       ],
     });
 
@@ -451,6 +464,137 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
 
     expect(result.ok).toBe(true);
     expect(mockIssueCreate).toHaveBeenCalled();
+  });
+
+  // ── A9. CLAIM-FIRST: lost race → alreadyApproved, NO tasks ────────────────────
+  // Simulates the concurrent-approve loser: both requests read proposalStatus
+  // "pending" (the SELECT), but the atomic claim UPDATE ... RETURNING comes back
+  // empty because a concurrent approve already flipped pending -> approved.
+  // The loser MUST NOT create tasks.
+  it("CLAIM-FIRST: claim UPDATE returns no row → alreadyApproved, no tasks created", async () => {
+    const db = makeMockDb({
+      selectResults: [
+        [makePendingEntry({ rawContent: makeProposalRaw({ proposalCursorSeq: 5 }) })],
+        [{ entrySeq: 5 }],
+      ],
+      // The claim UPDATE ... RETURNING returns [] → this caller lost the race.
+      updateShouldSucceed: false,
+    });
+
+    const svc = realThreadDeliverablesService(db as any);
+    const result = await svc.approveProposal({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      proposalEntryId: ENTRY_ID,
+      approver: { userId: USER_ID },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.alreadyApproved).toBe(true);
+    // The loser tried to claim (update called) but created NO tasks.
+    expect(db.update).toHaveBeenCalled();
+    expect(mockIssueCreate).not.toHaveBeenCalled();
+  });
+
+  // ── A10. Two contending approves → tasks created EXACTLY once ─────────────────
+  // The claim-first invariant against a single shared row. Both approves run
+  // against a db whose proposalStatus mutates: whoever's atomic claim UPDATE
+  // matches `proposalStatus = "pending"` first flips it to "approved" and wins
+  // (creates tasks); every subsequent approve either reads "approved" at the
+  // status check (step 3) or loses the claim (returns []) — either way it does
+  // NOT create tasks. Net across both: exactly one task-creation batch.
+  //
+  // We drive the two approves to completion and assert the aggregate invariant,
+  // which holds regardless of interleaving order (sequential-after-commit is
+  // the realistic post-transaction case; the loser-of-claim case is covered by
+  // A9). Both orderings converge on "tasks created once".
+  it("two contending approves create tasks exactly once", async () => {
+    mockIssueCreate.mockImplementation(async () => ({
+      id: `task-${mockIssueCreate.mock.calls.length}`,
+      title: "T",
+    }));
+
+    // Shared mutable row state both approves contend on.
+    let proposalStatus = "pending";
+
+    function sharedDb(): any {
+      function selectChain(): any {
+        let stage = 0;
+        const chain: any = {};
+        chain.from = () => chain;
+        chain.innerJoin = () => chain;
+        // Within ONE approve call: 1st terminal select = entry (current shared
+        // status), 2nd = entrySeq.
+        const resolve = () => {
+          const s = stage++;
+          return s === 0 ? [makePendingEntry({ proposalStatus })] : [{ entrySeq: 5 }];
+        };
+        chain.where = () => Promise.resolve(resolve());
+        chain.orderBy = () => Promise.resolve(resolve());
+        chain.then = (r: any) => Promise.resolve(r(resolve()));
+        return chain;
+      }
+      return {
+        select: vi.fn(selectChain),
+        update: vi.fn(() => {
+          const chain: any = {};
+          chain.set = () => chain;
+          // Atomic claim: succeeds (returns a row) ONLY while still pending.
+          const claim = () => {
+            const won = proposalStatus === "pending";
+            if (won) proposalStatus = "approved";
+            return won ? [{ id: ENTRY_ID }] : [];
+          };
+          chain.where = () => {
+            const rows = claim();
+            const p: any = Promise.resolve(rows);
+            p.returning = () => Promise.resolve(rows);
+            return p;
+          };
+          chain.returning = () => Promise.resolve(claim());
+          return chain;
+        }),
+      };
+    }
+
+    const db = sharedDb();
+    const svc = realThreadDeliverablesService(db as any);
+
+    const r1 = await svc.approveProposal({ threadId: THREAD_ID, companyId: CO_ID, proposalEntryId: ENTRY_ID, approver: { userId: USER_ID } });
+    const r2 = await svc.approveProposal({ threadId: THREAD_ID, companyId: CO_ID, proposalEntryId: ENTRY_ID, approver: { userId: USER_ID } });
+
+    // Exactly one fresh approval; the other is an idempotent no-op.
+    const fresh = [r1, r2].filter((r) => r.ok && !r.alreadyApproved);
+    const noop = [r1, r2].filter((r) => r.ok && r.alreadyApproved);
+    expect(fresh).toHaveLength(1);
+    expect(noop).toHaveLength(1);
+    // Tasks created EXACTLY once (2 proposed tasks → 2 issue.create calls, not 4).
+    expect(mockIssueCreate).toHaveBeenCalledTimes(2);
+  });
+
+  // ── A11. Non-proposal entry cannot be approved ────────────────────────────────
+  // A discussion entry that is NOT a scope_proposal (proposalStatus IS NULL)
+  // must be refused — approving an arbitrary paste/write into tasks would be an
+  // abuse vector independent of role.
+  it("refuses a non-proposal entry (proposalStatus null) with not_found — no tasks", async () => {
+    const db = makeMockDb({
+      selectResults: [
+        [makePendingEntry({ inputType: "write", proposalStatus: null })],
+      ],
+    });
+
+    const svc = realThreadDeliverablesService(db as any);
+    const result = await svc.approveProposal({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      proposalEntryId: ENTRY_ID,
+      approver: { userId: USER_ID },
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not_found");
+    expect(mockIssueCreate).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 
@@ -563,7 +707,9 @@ describe("route integration: POST …/proposals/:proposalEntryId/approve", () =>
     expect(res.body.alreadyApproved).toBe(false);
   });
 
-  it("unauthorized (team_member): 403 — approveProposal NOT called", async () => {
+  it("unauthorized (team_member): 403 — approveProposal NOT called, NO tasks created", async () => {
+    // assertRole throws forbidden() (status 403) for a team_member — the route's
+    // top-level await rejects and Express forwards to the error handler.
     mockedAssertRole.mockRejectedValue(
       Object.assign(new Error("Requires one of: founder, team_lead"), { status: 403 }),
     );
@@ -573,7 +719,28 @@ describe("route integration: POST …/proposals/:proposalEntryId/approve", () =>
       .send({});
 
     expect(res.status).toBe(403);
+    // The handler never reached the service → no proposal processing AND no
+    // task creation. Both the approve method and the underlying task creator
+    // must be untouched.
     expect(mockApproveProposalFn).not.toHaveBeenCalled();
+    expect(mockCreateDeliverableTasksFn).not.toHaveBeenCalled();
+  });
+
+  it("unauthenticated (actor.type none): 401 — approveProposal NOT called", async () => {
+    // assertCompanyAccess throws unauthorized() (status 401) when actor.type is
+    // "none". The route awaits it before any service call.
+    const { assertCompanyAccess } = await import("../routes/authz.js");
+    vi.mocked(assertCompanyAccess).mockImplementationOnce(() => {
+      throw Object.assign(new Error("Unauthorized"), { status: 401 });
+    });
+
+    const res = await request(makeApp())
+      .post(`/companies/${CO_ID}/discussions/${THREAD_ID}/proposals/${ENTRY_ID}/approve`)
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(mockApproveProposalFn).not.toHaveBeenCalled();
+    expect(mockCreateDeliverableTasksFn).not.toHaveBeenCalled();
   });
 
   it("stale proposal: returns 409 with reason stale", async () => {
@@ -619,5 +786,75 @@ describe("route integration: POST …/proposals/:proposalEntryId/approve", () =>
 
     expect(res.status).toBe(404);
     expect(res.body.reason).toBe("not_found");
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// E. REAL assertRole authorization logic (importActual) — proves the actual
+//    role gate (not a mock) rejects a team_member / unauthenticated caller.
+//    The route integration tests above mock assertRole; this exercises the
+//    genuine `server/src/middleware/rbac.ts` decision path so the 403 is real.
+// ════════════════════════════════════════════════════════════════════════
+
+describe("REAL assertRole gate for proposal approve (founder, team_lead)", () => {
+  let realAssertRole: typeof import("../middleware/rbac.js")["assertRole"];
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const actual = await vi.importActual<typeof import("../middleware/rbac.js")>(
+      "../middleware/rbac.js",
+    );
+    realAssertRole = actual.assertRole;
+  });
+
+  /** Build a real (non-implicit, non-admin) board request for a given userId. */
+  function boardReq(userId: string): any {
+    return {
+      actor: {
+        type: "board",
+        source: "authenticated",
+        isInstanceAdmin: false,
+        userId,
+      },
+    };
+  }
+
+  function dbWithEffectiveRole(role: string): any {
+    // The real assertRole imports permissionService from the (mocked) module;
+    // override getEffectiveRole for this assertion.
+    vi.mocked(mockedPermissionServiceFactory).mockReturnValue({
+      getEffectiveRole: vi.fn().mockResolvedValue(role),
+      isFounder: vi.fn().mockResolvedValue(role === "founder"),
+      isTeamLeadForDepartment: vi.fn().mockResolvedValue(false),
+    } as any);
+    return {} as any;
+  }
+
+  it("team_member → throws 403 (forbidden)", async () => {
+    const db = dbWithEffectiveRole("team_member");
+    await expect(
+      realAssertRole(db, boardReq(USER_ID), CO_ID, "founder", "team_lead"),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("unauthenticated (actor.type none) → throws 401 (unauthorized)", async () => {
+    const req: any = { actor: { type: "none" } };
+    await expect(
+      realAssertRole({} as any, req, CO_ID, "founder", "team_lead"),
+    ).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("team_lead → passes (no throw)", async () => {
+    const db = dbWithEffectiveRole("team_lead");
+    await expect(
+      realAssertRole(db, boardReq(USER_ID), CO_ID, "founder", "team_lead"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("founder → passes (no throw)", async () => {
+    const db = dbWithEffectiveRole("founder");
+    await expect(
+      realAssertRole(db, boardReq(USER_ID), CO_ID, "founder", "team_lead"),
+    ).resolves.toBeUndefined();
   });
 });

@@ -552,4 +552,47 @@ describe("discussionService", () => {
       ).rejects.toThrow("Discussion not found");
     });
   });
+
+  // ── P1-T7 (#3): reprocess guards — scope_proposal must never re-extract ───────
+  describe("reprocess guards for scope_proposal", () => {
+    it("reprocessEntry refuses a scope_proposal entry (badRequest, no update)", async () => {
+      const db = createSequenceDb([
+        // 1st select: the entry (a scope_proposal)
+        [{ id: "entry-sp", discussionId: "disc-1", inputType: "scope_proposal" }],
+        // 2nd select: parent discussion (company match)
+        [{ companyId: "co-1" }],
+      ]);
+
+      await expect(
+        discussionService(db).reprocessEntry("co-1", "entry-sp"),
+      ).rejects.toThrow(/scope proposal/i);
+
+      // The guard throws before any status reset.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("reprocessAllEntries excludes scope_proposal entries from reprocessing", async () => {
+      const db = createSequenceDb([
+        // 1st select: discussion exists for company
+        [{ id: "disc-1", companyId: "co-1" }],
+        // 2nd select: all entries in the discussion — a normal pending entry AND
+        // a scope_proposal stored extractionStatus="skipped".
+        [
+          { id: "entry-normal", inputType: "paste", extractionStatus: "pending" },
+          { id: "entry-sp", inputType: "scope_proposal", extractionStatus: "skipped" },
+          // approved-items check for entry-normal:
+        ],
+        // 3rd select: approved items for entry-normal → none
+        [],
+        // 4th select: pending items for entry-normal → none
+        [],
+      ]);
+
+      const result = await discussionService(db).reprocessAllEntries("co-1", "disc-1");
+
+      // Only the normal entry is reprocessed; the scope_proposal is skipped
+      // entirely (NOT counted, NOT reset). reprocessedCount reflects 1 entry.
+      expect(result.reprocessedCount).toBe(1);
+    });
+  });
 });

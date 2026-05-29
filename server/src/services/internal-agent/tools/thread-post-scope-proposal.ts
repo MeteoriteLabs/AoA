@@ -137,6 +137,15 @@ export const threadPostScopeProposalTool: AgentTool = {
             rawContent,
             authorAgentId: ctx.agentId ?? null,
             createdBy: ctx.agentId ?? "aoa-agent",
+            // P1-T7: a scope_proposal is NOT prose for the LLM extractor. Mark
+            // extractionStatus "skipped" (same guard discussions.addEntry uses)
+            // so neither the autonomous Scribe drain (dispatcher.ts pending
+            // sweep) nor reprocessAllEntries ever claims it and corrupts the
+            // approval state. The approval lifecycle lives in proposalStatus.
+            extractionStatus: "skipped",
+            // P1-T7: the purpose-built approval-lifecycle field. Starts pending;
+            // the Approve handler claims pending -> approved atomically.
+            proposalStatus: "pending",
           })
           .returning();
 

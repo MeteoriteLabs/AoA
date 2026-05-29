@@ -1022,6 +1022,14 @@ export function discussionService(db: Db) {
         throw notFound("Entry not found");
       }
 
+      // P1-T7: a scope_proposal is not an extractable prose entry. Reprocessing
+      // it would reset its extractionStatus and feed the proposal JSON to the
+      // LLM extractor. Refuse — proposals are approved via the proposals/approve
+      // route, not the extraction pipeline.
+      if (entry.inputType === "scope_proposal") {
+        throw badRequest("Scope proposals cannot be reprocessed for extraction.");
+      }
+
       // Check for approved items that would be orphaned
       const approvedItems = await db
         .select({ id: discussionExtractedItems.id })
@@ -1113,7 +1121,17 @@ export function discussionService(db: Db) {
         .where(eq(discussionEntries.discussionId, discussionId));
 
       const reprocessable = entries.filter(
-        (e) => e.extractionStatus === "failed" || e.extractionStatus === "pending" || e.extractionStatus === "skipped",
+        (e) =>
+          // P1-T7: never re-extract a scope_proposal. Proposals are stored with
+          // extractionStatus="skipped" (so they don't auto-extract) and carry
+          // their approval lifecycle in proposalStatus. Without this guard,
+          // reprocessAllEntries would reset a pending/rejected proposal's
+          // extractionStatus to "pending" and feed the proposal JSON to the
+          // LLM extractor — corrupting state and burning budget.
+          e.inputType !== "scope_proposal" &&
+          (e.extractionStatus === "failed" ||
+            e.extractionStatus === "pending" ||
+            e.extractionStatus === "skipped"),
       );
 
       let reprocessedCount = 0;
