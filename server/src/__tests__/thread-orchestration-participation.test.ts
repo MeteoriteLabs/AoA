@@ -82,6 +82,19 @@ vi.mock("../middleware/logger.js", () => ({
   },
 }));
 
+// ── live-events mock ──────────────────────────────────────────────────────────
+// thread-orchestration.ts imports publishLiveEvent from ./live-events.js to
+// fan out participation comments to the WS layer. We mock it here so tests
+// can assert it is called on spawn and NOT called when at cap.
+// vi.mock factories are hoisted to the top of the file by Vitest, so we must
+// use vi.hoisted to declare any variables referenced inside the factory.
+const { mockPublishLiveEvent } = vi.hoisted(() => ({
+  mockPublishLiveEvent: vi.fn(),
+}));
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: mockPublishLiveEvent,
+}));
+
 // ── Imports (after all mocks) ─────────────────────────────────────────────────
 import {
   threadOrchestrationService,
@@ -125,7 +138,8 @@ interface PostedEntry {
  *   select({hopCount}).from(tos).where()            — cap check read
  *   update(tos).set({hopCount: sql…}).where().returning() — incrementHop
  *   db.transaction(tx => …)                        — entry post
- *     tx.update(discussions).set(…).where().returning({entrySeq})
+ *     tx.update(discussions).set({entrySeq,entryCount,…}).where()
+ *       .returning({entrySeq,companyId})
  *     tx.insert(de).values(…).returning()
  *
  * The mock also tracks inserts into `issues` so tests can assert that
@@ -139,7 +153,8 @@ function makeParticipationDb(controller: ControllerState) {
   // Track what entries were posted and whether issues were inserted.
   const postedEntries: PostedEntry[] = [];
   let issueInsertCount = 0;
-  let threadSeq = 0; // simulate discussions.entrySeq counter
+  let threadSeq = 0;       // simulate discussions.entrySeq counter
+  let threadEntryCount = 0; // simulate discussions.entryCount counter (P1-T6 fix)
 
   // Detect table from proxy sentinel property
   function isTos(table: unknown): boolean {
@@ -163,10 +178,18 @@ function makeParticipationDb(controller: ControllerState) {
       set: vi.fn((payload: Record<string, unknown>) => ({
         where: vi.fn(() => {
           if (isDiscussionsTable(table)) {
-            // Bump the per-thread entrySeq counter
+            // Bump entrySeq counter (always)
             threadSeq += 1;
+            // Bump entryCount only when the payload includes it (P1-T6 fix)
+            if ("entryCount" in payload) {
+              threadEntryCount += 1;
+            }
             return {
-              returning: vi.fn(async () => [{ entrySeq: threadSeq }]),
+              // Return both entrySeq and companyId so the fixed code can call
+              // publishLiveEvent with the correct companyId.
+              returning: vi.fn(async () => [
+                { entrySeq: threadSeq, companyId: "company-test-1" },
+              ]),
             };
           }
           // Fallback for other tables inside a transaction (shouldn't happen here)
@@ -291,6 +314,10 @@ function makeParticipationDb(controller: ControllerState) {
     get issueInsertCount() {
       return issueInsertCount;
     },
+    /** How many times the discussions UPDATE included an entryCount bump. */
+    get threadEntryCount() {
+      return threadEntryCount;
+    },
     controller,
   };
 }
@@ -302,6 +329,7 @@ function makeParticipationDb(controller: ControllerState) {
 describe("requestParticipation — successful spawn", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
   });
 
   it("invokes the participantRunner with correct params and posts a discussion_entry", async () => {
@@ -349,6 +377,77 @@ describe("requestParticipation — successful spawn", () => {
     expect(entry.rawContent).toBe("Scout says: coast is clear");
     expect(entry.discussionId).toBe("thread-part-1");
     expect(entry.extractionStatus).toBe("skipped");
+  });
+
+  it("bumps both entrySeq and entryCount in the discussions UPDATE (P1-T6 fix: entryCount drift)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-part-entrycount",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    // Use the full mock object (not destructured) so the live getter is read
+    // after the operation, not captured as 0 at construction time.
+    const mock = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(mock.db);
+
+    await svc.requestParticipation(
+      "thread-part-entrycount",
+      { agentId: "agent-scout-ec", prompt: "check count" },
+      { participantRunner: async () => "ok" },
+    );
+
+    // entryCount must have been incremented exactly once alongside entrySeq
+    expect(mock.threadEntryCount).toBe(1);
+  });
+
+  it("publishes discussion.entry.created and thread.entry.created live events after spawn (P1-T6 fix: real-time UI)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-part-liveevents",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    await svc.requestParticipation(
+      "thread-part-liveevents",
+      { agentId: "agent-scout-le", prompt: "say something" },
+      { participantRunner: async () => "live response" },
+    );
+
+    // publishLiveEvent must have been called exactly twice (discussion.entry.created
+    // + thread.entry.created) — same two calls as discussions.addEntry makes.
+    expect(mockPublishLiveEvent).toHaveBeenCalledTimes(2);
+
+    const calls = mockPublishLiveEvent.mock.calls.map((c) => c[0] as Record<string, unknown>);
+
+    // First call: discussion.entry.created
+    expect(calls[0]).toMatchObject({
+      companyId: "company-test-1",
+      type: "discussion.entry.created",
+      payload: {
+        discussionId: "thread-part-liveevents",
+        entryId: postedEntries[0].id,
+        inputType: "agent",
+      },
+    });
+
+    // Second call: thread.entry.created (Plan 7 thread-scoped poke)
+    expect(calls[1]).toMatchObject({
+      companyId: "company-test-1",
+      type: "thread.entry.created",
+      payload: {
+        threadId: "thread-part-liveevents",
+        entryId: postedEntries[0].id,
+        seq: postedEntries[0].seq,
+      },
+    });
   });
 
   it("increments hopCount by 1 on a successful spawn", async () => {
@@ -442,6 +541,7 @@ describe("requestParticipation — successful spawn", () => {
 describe("requestParticipation — at hop cap", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
   });
 
   it("returns { spawned: false, atCap: true } when hopCount === HOP_CAP", async () => {
@@ -558,11 +658,34 @@ describe("requestParticipation — at hop cap", () => {
     // hopCount must not have been incremented — cap check blocks before incrementHop
     expect(controller.hopCount).toBe(HOP_CAP);
   });
+
+  it("does NOT call publishLiveEvent when at cap (no entry posted)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-part-cap-noevent",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: HOP_CAP,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    await svc.requestParticipation(
+      "thread-part-cap-noevent",
+      { agentId: "agent-any", prompt: "noop" },
+      { participantRunner: async () => "blocked" },
+    );
+
+    // No entry was posted → no live events should fire
+    expect(mockPublishLiveEvent).not.toHaveBeenCalled();
+  });
 });
 
 describe("requestParticipation — multiple sequential spawns", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
   });
 
   it("each spawn posts a separate entry and increments hopCount", async () => {
@@ -662,6 +785,7 @@ describe("requestParticipation — multiple sequential spawns", () => {
 describe("requestParticipation — actorId option", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
   });
 
   it("uses agentId as createdBy when no actorId option is provided", async () => {

@@ -39,6 +39,7 @@ import { eq, gt, and, asc, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { threadOrchestrationState, discussionEntries, discussions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
+import { publishLiveEvent } from "./live-events.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -564,22 +565,34 @@ export function threadOrchestrationService(db: Db) {
       });
 
       // ── Step 4: Post the output as an agent comment ────────────────────────
-      // Atomically bump discussions.entrySeq and insert the entry. This is the
-      // same pattern as discussions.addEntry (Plan 7 seq assignment). We do it
-      // directly here (rather than calling the higher-level service) because
-      // threadOrchestrationService only has a Db reference — not the full
-      // discussionService. The `inputType: "agent"` value ensures isHumanEntry
-      // returns false for this entry (QA-BUG-011 loop-guard: the entry must NOT
-      // re-fire the orchestration controller).
-      const entry = await db.transaction(async (tx) => {
-        const [{ entrySeq }] = await tx
+      // Atomically bump discussions.entrySeq + entryCount and insert the entry.
+      // This deliberately replicates the two posting side-effects of
+      // discussions.addEntry (Plan 7 seq assignment + Gotcha 1.2 entryCount
+      // bump). We cannot call addEntry directly because discussions.ts already
+      // imports threadOrchestrationService from this module — doing the reverse
+      // would create a circular import. Instead we replicate the side-effects
+      // here and import only from ./live-events.js (which does NOT import this
+      // module). A future refactor could extract a shared `postDiscussionEntry`
+      // helper into a lower-level module that both discussions.ts and this
+      // module import, eliminating the duplication cleanly.
+      //
+      // The `inputType: "agent"` value ensures isHumanEntry returns false for
+      // this entry (QA-BUG-011 loop-guard: the entry must NOT re-fire the
+      // orchestration controller).
+      const now = new Date();
+      const { entry, companyId } = await db.transaction(async (tx) => {
+        const [{ entrySeq, companyId: cid }] = await tx
           .update(discussions)
           .set({
             entrySeq: sql`${discussions.entrySeq} + 1`,
-            updatedAt: new Date(),
+            entryCount: sql`${discussions.entryCount} + 1`,
+            updatedAt: now,
           })
           .where(eq(discussions.id, threadId))
-          .returning({ entrySeq: discussions.entrySeq });
+          .returning({
+            entrySeq: discussions.entrySeq,
+            companyId: discussions.companyId,
+          });
 
         const [inserted] = await tx
           .insert(discussionEntries)
@@ -594,7 +607,31 @@ export function threadOrchestrationService(db: Db) {
           })
           .returning();
 
-        return inserted;
+        return { entry: inserted, companyId: cid };
+      });
+
+      // Replicate addEntry's two publishLiveEvent calls so the participation
+      // comment appears in real-time in the chat UI (WebSocket fan-out).
+      // discussion.entry.created — consumed by discussion feed subscribers.
+      publishLiveEvent({
+        companyId,
+        type: "discussion.entry.created",
+        payload: {
+          discussionId: threadId,
+          entryId: entry.id,
+          inputType: "agent",
+        },
+      });
+      // thread.entry.created — thread-scoped poke for the live thread view;
+      // envelope-RBAC fan-out delivers only to viewers who can see the thread.
+      publishLiveEvent({
+        companyId,
+        type: "thread.entry.created",
+        payload: {
+          threadId,
+          entryId: entry.id,
+          seq: entry.seq,
+        },
       });
 
       log.debug(
