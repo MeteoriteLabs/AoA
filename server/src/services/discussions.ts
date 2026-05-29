@@ -403,6 +403,8 @@ export function discussionService(db: Db) {
         // Phase 1 Phase E batch 2 (T22): visibility patch from OriginCard's
         // 3-option dropdown (private | department | company).
         visibility?: "private" | "department" | "company";
+        // Phase G3 (T5, D6): per-thread Memory Keeper opt-out. Default true.
+        allowMemoryExtraction?: boolean;
       },
     ) => {
       // Validate scope if being changed

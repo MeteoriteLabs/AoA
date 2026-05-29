@@ -53,6 +53,10 @@ export const updateDiscussionSchema = z.object({
   // patches via this endpoint. The service `update()` already passes the
   // field through to the discussions UPDATE.
   visibility: z.enum(THREAD_VISIBILITIES).optional(),
+  // Phase G3 (T5, D6): per-thread Memory Keeper opt-out. When false,
+  // memory.propose tool refuses with MEMORY_EXTRACTION_DISABLED for entries
+  // in this thread. UI toggle lives in OriginCard advanced settings.
+  allowMemoryExtraction: z.boolean().optional(),
 });
 
 export type UpdateDiscussion = z.infer<typeof updateDiscussionSchema>;

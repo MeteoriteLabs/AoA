@@ -31,6 +31,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   Lock,
   Lightbulb,
@@ -232,6 +234,36 @@ export function OriginCard({
     },
   });
 
+  // Phase G3 (T5, D6): per-thread Memory Keeper opt-out. Optimistic local
+  // update via React Query cache snapshot — roll back on error so the Switch
+  // never displays a state the server didn't ack.
+  const allowMemoryExtractionMutation = useMutation({
+    mutationFn: (allow: boolean) =>
+      threadsApi.setAllowMemoryExtraction(companyId, thread.id, allow),
+    onMutate: async (allow) => {
+      const queryKey = ["threads", companyId, thread.id];
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<ThreadDetail>(queryKey);
+      if (previous) {
+        queryClient.setQueryData<ThreadDetail>(queryKey, {
+          ...previous,
+          allowMemoryExtraction: allow,
+        });
+      }
+      return { previous };
+    },
+    onError: (_err, _allow, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(["threads", companyId, thread.id], ctx.previous);
+      }
+      pushToast({ title: "Failed to update Memory Keeper", tone: "warn" });
+    },
+    onSuccess: () => {
+      invalidate();
+      pushToast({ title: "Memory Keeper updated", tone: "success" });
+    },
+  });
+
   function handlePhaseClick(phase: ThreadPhase) {
     if (phase === thread.phase) return; // no-op on active phase
     setPendingPhase(phase);
@@ -259,6 +291,11 @@ export function OriginCard({
       return;
     }
     visibilityMutation.mutate(next);
+  }
+
+  function handleAllowMemoryExtractionChange(checked: boolean) {
+    if (checked === thread.allowMemoryExtraction) return;
+    allowMemoryExtractionMutation.mutate(checked);
   }
 
   // Share-link URL — assembled client-side from the current host. Server
@@ -526,6 +563,40 @@ export function OriginCard({
             </>
           )}
         </div>
+
+        {/* Phase G3 (T5, D6): Advanced settings disclosure.
+            Per-thread Memory Keeper opt-out lives here. Collapsed by default —
+            most threads should leave the default on. Founders open this when
+            they want to silence Memory Keeper on a private/personal thread. */}
+        <details className="group rounded-md border border-border" data-testid="origin-card-advanced">
+          <summary className="cursor-pointer list-none px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground flex items-center gap-1.5 select-none">
+            <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" aria-hidden />
+            Advanced settings
+          </summary>
+          <div className="border-t border-border px-2.5 py-2.5 space-y-2">
+            <div className="flex items-start justify-between gap-3 text-sm">
+              <div className="flex-1">
+                <Label htmlFor="allow-memory-extraction">
+                  Memory Keeper enabled for this thread
+                </Label>
+                <p className="text-muted-foreground mt-0.5 text-xs">
+                  {thread.visibility === "private"
+                    ? "Memory items extracted from this thread will inherit its private scope."
+                    : "Memory Keeper will scan this thread for decisions, insights, and references worth proposing."}
+                </p>
+              </div>
+              <Switch
+                id="allow-memory-extraction"
+                data-testid="allow-memory-extraction-switch"
+                checked={thread.allowMemoryExtraction}
+                disabled={allowMemoryExtractionMutation.isPending}
+                onCheckedChange={(checked) =>
+                  handleAllowMemoryExtractionChange(checked)
+                }
+              />
+            </div>
+          </div>
+        </details>
 
         {/* Owner / claim + live presence */}
         <div className="flex items-center gap-3 flex-wrap">

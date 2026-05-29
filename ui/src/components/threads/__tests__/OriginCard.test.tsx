@@ -12,6 +12,7 @@ vi.mock("../../../api/threads", () => ({
     claim: vi.fn().mockResolvedValue({ ownerUserId: "user-1" }),
     transfer: vi.fn().mockResolvedValue({ ownerUserId: "user-2" }),
     setVisibility: vi.fn().mockResolvedValue({}),
+    setAllowMemoryExtraction: vi.fn().mockResolvedValue({}),
     generateShareToken: vi.fn().mockResolvedValue({ token: "tok-fresh" }),
     revokeShareToken: vi.fn().mockResolvedValue({ ok: true }),
   },
@@ -49,6 +50,7 @@ function makeThread(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
     subtype: "normal",
     shareToken: null,
     participants: [],
+    allowMemoryExtraction: true,
     ...overrides,
   };
 }
@@ -385,5 +387,102 @@ describe("OriginCard", () => {
     );
     expect(screen.getByTestId("phase-pills")).toBeInTheDocument();
     expect(screen.queryByTestId("phase-pills-live")).not.toBeInTheDocument();
+  });
+
+  // ── Phase G3 (T5, D6): allowMemoryExtraction toggle ─────────────────────
+
+  it("renders Memory Keeper toggle inside Advanced settings disclosure", () => {
+    const thread = makeThread();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(screen.getByTestId("origin-card-advanced")).toBeInTheDocument();
+    expect(screen.getByTestId("allow-memory-extraction-switch")).toBeInTheDocument();
+    expect(
+      screen.getByText(/memory keeper enabled for this thread/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders Memory Keeper switch as checked when allowMemoryExtraction is true", () => {
+    const thread = makeThread({ allowMemoryExtraction: true });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const sw = screen.getByTestId("allow-memory-extraction-switch");
+    // Radix Switch surfaces state via aria-checked.
+    expect(sw).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("renders Memory Keeper switch as unchecked when allowMemoryExtraction is false", () => {
+    const thread = makeThread({ allowMemoryExtraction: false });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const sw = screen.getByTestId("allow-memory-extraction-switch");
+    expect(sw).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("calls threadsApi.setAllowMemoryExtraction(false) when toggled off from true", async () => {
+    const thread = makeThread({ allowMemoryExtraction: true });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const sw = screen.getByTestId("allow-memory-extraction-switch");
+    await user.click(sw);
+    await waitFor(() => {
+      expect(threadsApi.setAllowMemoryExtraction).toHaveBeenCalledWith(
+        "comp-1",
+        "thread-1",
+        false,
+      );
+    });
+  });
+
+  it("calls threadsApi.setAllowMemoryExtraction(true) when toggled on from false", async () => {
+    const thread = makeThread({ allowMemoryExtraction: false });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    const sw = screen.getByTestId("allow-memory-extraction-switch");
+    await user.click(sw);
+    await waitFor(() => {
+      expect(threadsApi.setAllowMemoryExtraction).toHaveBeenCalledWith(
+        "comp-1",
+        "thread-1",
+        true,
+      );
+    });
+  });
+
+  it("shows the privacy-hint copy when the thread is private", () => {
+    const thread = makeThread({ visibility: "private" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(
+      screen.getByText(/will inherit its private scope/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the standard scan-hint copy when the thread is company-scoped", () => {
+    const thread = makeThread({ visibility: "company" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(
+      screen.getByText(/scan this thread for decisions/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the standard scan-hint copy when the thread is department-scoped", () => {
+    const thread = makeThread({ visibility: "department" });
+    renderWithProviders(
+      <OriginCard thread={thread} companyId="comp-1" onPhaseChanged={vi.fn()} />,
+    );
+    expect(
+      screen.getByText(/scan this thread for decisions/i),
+    ).toBeInTheDocument();
   });
 });

@@ -43,6 +43,12 @@ export interface ThreadFields {
   shareToken: string | null;
   /** Phase 1 Phase E batch 2 (T22): static roster of thread_participants rows. */
   participants: ThreadParticipantRow[];
+  /**
+   * Phase G3 (T5, D6): when false, memory.propose refuses with
+   * MEMORY_EXTRACTION_DISABLED for entries in this thread. DB default is true.
+   * Toggled by the founder in OriginCard's advanced settings.
+   */
+  allowMemoryExtraction: boolean;
   // crewPaused and autonomyLevel come from DiscussionDetail (the base type),
   // but are thread-specific semantics so documented here.
 }
@@ -156,5 +162,13 @@ export const threadsApi = {
     api.patch<ThreadDetail>(
       `/companies/${companyId}/discussions/${id}`,
       { autonomyLevel },
+    ),
+
+  // Phase G3 (T5, D6): per-thread Memory Keeper opt-out toggle. Patches the
+  // same PATCH /discussions/:id endpoint as visibility/autonomyLevel.
+  setAllowMemoryExtraction: (companyId: string, id: string, allowMemoryExtraction: boolean) =>
+    api.patch<ThreadDetail>(
+      `/companies/${companyId}/discussions/${id}`,
+      { allowMemoryExtraction },
     ),
 };
