@@ -20,6 +20,7 @@ import { publishLiveEvent } from "./live-events.js";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
+import { threadOrchestrationService } from "./thread-orchestration.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
 // Several test suites (notably cli-mode.test.ts) partially mock node:child_process
@@ -362,6 +363,20 @@ export function discussionService(db: Db) {
 
         return { ...discussion, entry };
       });
+
+      // P1-T3: ensure a thread orchestration controller row exists for every
+      // newly created thread. Best-effort — failure must not block thread
+      // creation. The ensureController call uses onConflictDoNothing so it is
+      // always safe to call; any error here is a monitoring concern only.
+      void threadOrchestrationService(db)
+        .ensureController(result.id)
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[discussions.create] ensureController failed — thread created without controller",
+            { threadId: result.id, err },
+          );
+        });
 
       // Side effects outside transaction
       await logActivity(db, {

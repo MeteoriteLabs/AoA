@@ -37,6 +37,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, agentWakeupRequests, discussions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
+import { threadOrchestrationService } from "./thread-orchestration.js";
 
 const log = logger.child({ service: "thread-events" });
 
@@ -108,7 +109,7 @@ export interface ThreadEventListener {
  * keeps the rule additive: unknown future human inputTypes default to
  * "yes, fire Adjutant" rather than silently breaking.
  */
-function isHumanEntry(event: EntryCreatedEvent): boolean {
+export function isHumanEntry(event: EntryCreatedEvent): boolean {
   if (event.authorAgentId !== null) return false;
   if (event.inputType === "agent") return false;
   if (event.inputType === "system") return false;
@@ -177,6 +178,17 @@ export function createThreadEventListener(
     }
 
     const dedupKey = `${adjutant.id}:${threadId}:queued`;
+
+    // P1-T3: mark the orchestration controller as "a run is due" ALONGSIDE
+    // the peer-wake insert below. Best-effort — failure must not block the
+    // wakeup. The two operations are additive and do not conflict.
+    // NOTE: triggerOnHumanEntry calls ensureController internally so legacy
+    // threads without a controller row are handled transparently.
+    await threadOrchestrationService(db)
+      .triggerOnHumanEntry(threadId)
+      .catch((err) => {
+        log.warn({ err, threadId }, "triggerOnHumanEntry failed — continuing with peer-wake");
+      });
 
     // .onConflictDoNothing() pairs with the partial unique index on
     // (dedup_key) WHERE status='queued' AND dedup_key IS NOT NULL.
