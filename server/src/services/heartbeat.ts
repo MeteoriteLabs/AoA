@@ -92,8 +92,13 @@ import {
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  resolveDeliverableWorkspaceMode,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
+import {
+  findActiveThreadWorkspace,
+  resolveThreadDeliverableWorkspace,
+} from "./heartbeat-thread-workspace.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
   hasSessionCompactionThresholds,
@@ -2345,6 +2350,7 @@ export function heartbeatService(db: Db) {
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
             workMode: issues.workMode,
+            sourceDiscussionId: issues.sourceDiscussionId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -2587,7 +2593,117 @@ export function heartbeatService(db: Db) {
     let effectiveCwd = resolvedWorkspace.cwd;
     let realizedWorkspace: Awaited<ReturnType<typeof realizeExecutionWorkspace>> | null = null;
 
+    // Lock state for thread-scoped workspaces (P1-T8 slice 4).
+    // Set when the thread workspace lock is claimed; released unconditionally
+    // in the outer finally block so the lock is always freed even on error.
+    let threadWorkspaceLock: { workspaceId: string; runId: string } | null = null;
+
     if (isolatedWorkspacesEnabled) {
+      // ── Thread-scoped workspace branch (P1-T8 slice 4) ────────────────────
+      // Activated ONLY when ALL of these are true:
+      //   1. The task is a deliverable (sourceDiscussionId is set on the issue)
+      //   2. The existing workspace gate is already on (isolatedWorkspacesEnabled above)
+      //   3. resolveDeliverableWorkspaceMode returns "reuse_thread"
+      //
+      // Non-deliverable tasks (no sourceDiscussionId) skip this block entirely
+      // and fall through to the existing path below — ZERO behavioural change.
+      const taskSourceDiscussionId = issueContext?.sourceDiscussionId ?? null;
+      const realizeBaseForThread = {
+        baseCwd: resolvedWorkspace.cwd,
+        source: resolvedWorkspace.source,
+        projectId: resolvedWorkspace.projectId,
+        workspaceId: resolvedWorkspace.workspaceId,
+        repoUrl: resolvedWorkspace.repoUrl,
+        repoRef: resolvedWorkspace.repoRef,
+      };
+      const deliverableMode = taskSourceDiscussionId
+        ? resolveDeliverableWorkspaceMode({
+            intent: undefined,
+            threadHasWorkspace: false, // determined lazily; mode is the same either way
+          })
+        : null;
+
+      if (taskSourceDiscussionId && deliverableMode === "reuse_thread") {
+        // Thread-scoped workspace: look up, provision (if needed), lock, reset.
+        const threadOutcome = await resolveThreadDeliverableWorkspace({
+          db,
+          executionWorkspacesSvc,
+          companyId: agent.companyId,
+          sourceDiscussionId: taskSourceDiscussionId,
+          runId: run.id,
+          resolvedProjectId: executionProjectId ?? null,
+          realizeBase: realizeBaseForThread,
+          resolvedConfig,
+          agent: { id: agent.id, name: agent.name, companyId: agent.companyId },
+          recorder: workspaceOperationsSvc.createRecorder({
+            companyId: agent.companyId,
+            heartbeatRunId: run.id,
+            executionWorkspaceId: null,
+          }),
+        });
+
+        if (threadOutcome.kind === "workspace_busy") {
+          // Another run is in this thread workspace right now.  Fail this run
+          // cleanly so the heartbeat catch path releases the issue lock and
+          // the task becomes retriggerable on the next wakeup.
+          throw new Error(threadOutcome.reason);
+        }
+
+        // Lock acquired — record it for the finally block.
+        threadWorkspaceLock = { workspaceId: threadOutcome.persistedWorkspaceId, runId: run.id };
+
+        effectiveCwd = threadOutcome.realizedWorkspace.cwd;
+        executionWorkspaceWarnings = threadOutcome.realizedWorkspace.warnings;
+        realizedWorkspace = threadOutcome.realizedWorkspace;
+
+        // Persist / update the thread workspace row with latest run state.
+        if (executionProjectId) {
+          persistedExecutionWorkspace = threadOutcome.existingWorkspaceRow
+            ? await executionWorkspacesSvc.update(threadOutcome.persistedWorkspaceId, {
+                cwd: threadOutcome.realizedWorkspace.cwd,
+                repoUrl: threadOutcome.realizedWorkspace.repoUrl,
+                baseRef: threadOutcome.realizedWorkspace.repoRef,
+                branchName: threadOutcome.realizedWorkspace.branchName,
+                providerType: threadOutcome.realizedWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+                providerRef: threadOutcome.realizedWorkspace.worktreePath,
+                status: "active",
+                lastUsedAt: new Date(),
+                metadata: {
+                  ...(threadOutcome.existingWorkspaceRow.metadata ?? {}),
+                  source: threadOutcome.realizedWorkspace.source,
+                  createdByRuntime: threadOutcome.created,
+                },
+              })
+            : null;
+        }
+
+        // Populate context with execution workspace details (mirrors existing path).
+        context.paperclipWorkspace = {
+          cwd: threadOutcome.realizedWorkspace.cwd,
+          source: threadOutcome.realizedWorkspace.source,
+          mode: executionWorkspaceMode,
+          strategy: threadOutcome.realizedWorkspace.strategy,
+          projectId: threadOutcome.realizedWorkspace.projectId,
+          workspaceId: threadOutcome.realizedWorkspace.workspaceId,
+          repoUrl: threadOutcome.realizedWorkspace.repoUrl,
+          repoRef: threadOutcome.realizedWorkspace.repoRef,
+          branchName: threadOutcome.realizedWorkspace.branchName,
+          worktreePath: threadOutcome.realizedWorkspace.worktreePath,
+          agentHome: await (async () => {
+            const home = resolveDefaultAgentWorkspaceDir(agent.id);
+            await fs.mkdir(home, { recursive: true });
+            return home;
+          })(),
+        };
+
+        if (threadOutcome.realizedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
+          context.projectId = threadOutcome.realizedWorkspace.projectId;
+        }
+
+        // Skip the rest of the isolatedWorkspacesEnabled block (existing path).
+        // Fall through to context.paperclipWorkspaces assignment below.
+      } else {
+      // ── Existing per-task workspace path (UNCHANGED) ──────────────────────
       const issueScopedExecutionWorkspace =
         issueRef?.id && !issueRef.executionWorkspaceId
           ? (await executionWorkspacesSvc.list(agent.companyId, {
@@ -2847,6 +2963,7 @@ export function heartbeatService(db: Db) {
       if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
         context.projectId = executionWorkspace.projectId;
       }
+      } // end else (existing per-task workspace path)
     } else {
       // ── Isolated workspaces disabled — use resolvedWorkspace directly ──
       context.paperclipWorkspace = {
@@ -3915,6 +4032,19 @@ export function heartbeatService(db: Db) {
         });
       }
     } finally {
+      // Release thread workspace run lock (P1-T8 slice 4).
+      // This runs unconditionally — even on throw — so the workspace is never
+      // left permanently locked by a crashed or deferred run.
+      if (threadWorkspaceLock) {
+        await executionWorkspacesSvc
+          .releaseWorkspaceRun(threadWorkspaceLock.workspaceId, threadWorkspaceLock.runId)
+          .catch((lockReleaseErr: unknown) => {
+            logger.warn(
+              { workspaceId: threadWorkspaceLock?.workspaceId, runId: threadWorkspaceLock?.runId, err: lockReleaseErr },
+              "heartbeat: failed to release thread workspace run lock in finally",
+            );
+          });
+      }
       if (isolatedWorkspacesEnabled) {
         await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
       }
