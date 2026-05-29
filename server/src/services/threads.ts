@@ -35,6 +35,10 @@ import { badRequest, notFound } from "../errors.js";
 import { publishLiveEvent } from "./live-events.js";
 import { logActivity } from "./activity-log.js";
 import { goalService } from "./goals.js";
+// NOTE: workspace-ttl-sweeper is imported dynamically in `merge()` to keep
+// the top-level import graph free of execution-workspaces → git → child_process.
+// Several test suites (notably cli-mode.test.ts) partially mock node:child_process
+// and the eager import causes their indirect resolution chain to fail.
 import {
   THREAD_PHASES,
   THREAD_LINK_KINDS,
@@ -1068,6 +1072,28 @@ export function threadService(db: Db) {
         .update(discussions)
         .set({ mergedIntoId: intoId, status: "archived", updatedAt: new Date() })
         .where(eq(discussions.id, fromId));
+
+      // Phase G1 (T7/D8): merging a thread archives its source — mark any
+      // thread-scoped workspaces eligible for cleanup immediately rather
+      // than waiting for the TTL sweeper to catch them. Dynamic import
+      // keeps execution-workspaces (which pulls in node:child_process via
+      // git.ts) out of the threads.ts top-level resolution chain — several
+      // test suites mock child_process partially and break on the eager path.
+      try {
+        const { markThreadWorkspacesForCleanup } = await import(
+          "./workspace-ttl-sweeper.js"
+        );
+        await markThreadWorkspacesForCleanup(db, fromId);
+      } catch (err) {
+        // Workspace cleanup is best-effort — never block the merge.
+        // The next TTL sweep will catch any stragglers via the default
+        // 7-day fallback for thread workspaces.
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[threads.merge] markThreadWorkspacesForCleanup failed",
+          { fromId, err },
+        );
+      }
 
       await db.insert(threadLinks).values({
         companyId,

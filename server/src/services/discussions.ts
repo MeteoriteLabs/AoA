@@ -20,6 +20,10 @@ import { publishLiveEvent } from "./live-events.js";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
+// NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
+// the top-level import graph free of execution-workspaces → git → child_process.
+// Several test suites (notably cli-mode.test.ts) partially mock node:child_process
+// and the eager import causes their indirect resolution chain to fail.
 
 export interface DiscussionFilters {
   status?: string;
@@ -427,6 +431,28 @@ export function discussionService(db: Db) {
         .set({ ...data, updatedAt: new Date() })
         .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
         .returning();
+
+      // Phase G1 (T7/D8): if this update archived the thread, mark any
+      // thread-scoped workspaces eligible for cleanup immediately. The
+      // generic PATCH /discussions/:id endpoint is the primary archive path
+      // (merge has its own hook in threads.ts:merge). Best-effort —
+      // workspace cleanup must never block the discussion update. Dynamic
+      // import avoids the execution-workspaces → git → child_process chain
+      // at module load time (see note above).
+      if (updated && data.status === "archived") {
+        try {
+          const { markThreadWorkspacesForCleanup } = await import(
+            "./workspace-ttl-sweeper.js"
+          );
+          await markThreadWorkspacesForCleanup(db, id);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[discussions.update] markThreadWorkspacesForCleanup failed",
+            { id, err },
+          );
+        }
+      }
 
       return updated ?? null;
     },
