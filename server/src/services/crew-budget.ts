@@ -54,7 +54,10 @@ export interface PreflightParams {
   threadId: string;
 }
 
-export type PreflightReasonCode = "thread_disabled" | "budget_exhausted";
+export type PreflightReasonCode =
+  | "thread_disabled"
+  | "thread_paused"
+  | "budget_exhausted";
 
 export type PreflightResult =
   | { allowed: true }
@@ -104,21 +107,36 @@ export function formatBudgetExhaustedMessage(
  *
  * Order of checks (stable contract — tests rely on this):
  *   1. Thread existence + `adjutantEnabled` flag → `thread_disabled` if either trips.
+ *   1b. Thread-wide `crewPaused` kill-switch → `thread_paused` if true.
  *   2. Company budget cap → `budget_exhausted` if observed >= cap on the
  *      active company-scoped, hardStopEnabled policy.
  *
+ * Pause beats budget — an explicit founder action (`crewPaused = true`)
+ * surfaces as `thread_paused` even if the budget would have blocked anyway.
+ *
  * On budget exhaustion, a `system` entry is inserted into the thread. On any
- * other outcome (allowed or thread_disabled), no entry is inserted.
+ * other outcome (allowed, thread_disabled, thread_paused), no entry is inserted.
  */
 export async function preflightCrewDispatch(
   db: Db,
   params: PreflightParams,
 ): Promise<PreflightResult> {
   // ── 1. Per-thread opt-out (founder explicitly silenced Adjutant for this thread)
+  //
+  // We pull both `adjutantEnabled` and `crewPaused` here so a single read
+  // covers two distinct founder gates:
+  //   - `adjutantEnabled = false` → Adjutant-specific opt-out (most narrow)
+  //   - `crewPaused = true` → broader thread-wide crew kill-switch
+  //
+  // The listener boundary at `thread-events.ts:146` already honors
+  // `crewPaused`. Checking it here too is defense-in-depth for any future
+  // call site that invokes `preflightCrewDispatch` outside the listener
+  // (tools, crons, admin endpoints).
   const [thread] = await db
     .select({
       id: discussions.id,
       adjutantEnabled: discussions.adjutantEnabled,
+      crewPaused: discussions.crewPaused,
       companyId: discussions.companyId,
     })
     .from(discussions)
@@ -138,6 +156,21 @@ export async function preflightCrewDispatch(
       allowed: false,
       reason: "Adjutant disabled for this thread",
       reasonCode: "thread_disabled",
+    };
+  }
+
+  // ── 1b. Thread-wide crew pause (founder hit kill-switch).
+  //
+  // Fires BEFORE the budget probe so an explicit pause is always the
+  // surfaced reason — a paused thread that's also over-budget reports
+  // `thread_paused` (the founder action) rather than `budget_exhausted`
+  // (an indirect symptom). No system entry is written: the founder
+  // already knows they paused it.
+  if (thread.crewPaused === true) {
+    return {
+      allowed: false,
+      reason: "Crew paused for this thread",
+      reasonCode: "thread_paused",
     };
   }
 

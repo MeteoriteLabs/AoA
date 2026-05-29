@@ -2,13 +2,12 @@
  * Phase G4.5 — Integration tests for crew dispatch budget gating.
  *
  * Verifies the preflightCrewDispatch gate end-to-end with respect to the
- * thread + budget + cost_events tables. The plan asks for four contracts;
- * the four below assert what the gate enforces today. The plan's
- * "thread_paused" contract is documented as a wiring gap with a TODO test
- * — the current preflight only consults `discussions.adjutantEnabled` and
- * does NOT read `discussions.crewPaused`, so a thread-level crew pause
- * does NOT block preflight at this boundary today (the listener boundary
- * DOES respect crewPaused — see thread-pipeline.test.ts).
+ * thread + budget + cost_events tables. As of the G4 wiring-gap close,
+ * preflight now consults BOTH `discussions.adjutantEnabled` (the narrow
+ * Adjutant-only opt-out → `thread_disabled`) AND `discussions.crewPaused`
+ * (the broader thread-wide kill-switch → `thread_paused`). The pause
+ * check fires BEFORE the budget probe so an explicit founder pause beats
+ * a budget-exhausted message.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -266,10 +265,9 @@ describe("integration: preflightCrewDispatch budget gate", () => {
   // ── 3. Per-thread Adjutant opt-out → blocked WITHOUT budget probe ───────
 
   it("thread.adjutantEnabled=false → reasonCode='thread_disabled', NO budget query, NO system entry", async () => {
-    // The plan's "per-thread crewPaused=true causes preflight to return
-    // thread_paused" maps to the implemented `adjutantEnabled=false` →
-    // `thread_disabled` semantic. See the TODO at the bottom for the
-    // subtle gap: crewPaused is NOT consulted by preflight today.
+    // `adjutantEnabled=false` is the narrow Adjutant-only opt-out
+    // (`thread_disabled`). The broader thread-wide kill-switch is
+    // `crewPaused` (`thread_paused`) — see test 4 below.
     const db = createSequenceDb({
       selects: [
         [threadRow({ adjutantEnabled: false })],
@@ -312,46 +310,86 @@ describe("integration: preflightCrewDispatch budget gate", () => {
     expect(db.insertCalls).toHaveLength(0);
   });
 
-  // ── 4. Wiring gap: crewPaused is NOT checked at preflight today ─────────
+  // ── 4. Phase G4 wiring gap closed: crewPaused gates preflight ───────────
 
-  it(
-    "TODO(wiring-gap): per-thread discussions.crewPaused=true is NOT checked by preflight today — " +
-      "the plan asks for thread_paused semantics but only the listener boundary respects it",
-    async () => {
-      // Plan: "Per-thread crewPaused=true causes preflight to return
-      // {ok:false, reason:'thread_paused'}".
-      //
-      // REALITY: preflightCrewDispatch only consults `adjutantEnabled` —
-      // see server/src/services/crew-budget.ts lines 119-142. The
-      // `discussions.crewPaused` column IS read at the OTHER thread-event
-      // boundary (thread-events.ts:146; see thread-pipeline.test.ts test
-      // "re-checks thread.crewPaused at fire time"), so the listener
-      // honors the pause. The pause is currently NOT enforced at the crew
-      // budget preflight boundary; a paused thread can still pass
-      // preflight if the budget is healthy and adjutantEnabled=true.
-      //
-      // We assert the CURRENT behavior so the gap is visible. When this
-      // gap is closed, flip the assertion to expect a new
-      // reasonCode='thread_paused' (or whatever name lands).
+  it("thread.crewPaused=true → reasonCode='thread_paused', NO budget query, NO system entry", async () => {
+    // Plan: "Per-thread crewPaused=true causes preflight to return
+    // {ok:false, reason:'thread_paused'}". The check fires BEFORE the
+    // budget probe so an explicit founder pause beats a budget-exhausted
+    // message. No system entry is written — the founder already knows
+    // they paused it.
+    const db = createSequenceDb({
+      selects: [
+        // crewPaused=true but adjutantEnabled=true — the broader pause wins.
+        [threadRow({ crewPaused: true, adjutantEnabled: true })],
+      ],
+    });
 
-      const db = createSequenceDb({
-        selects: [
-          // crewPaused=true but adjutantEnabled=true — currently allowed.
-          [threadRow({ crewPaused: true, adjutantEnabled: true })],
-          [],                  // no policy
-        ],
-      });
+    const result = await preflightCrewDispatch(db as any, {
+      companyId: COMPANY_ID,
+      agentId: AGENT_ID,
+      threadId: THREAD_ID,
+    });
 
-      const result = await preflightCrewDispatch(db as any, {
-        companyId: COMPANY_ID,
-        agentId: AGENT_ID,
-        threadId: THREAD_ID,
-      });
+    expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error("unreachable");
+    expect(result.reasonCode).toBe("thread_paused");
+    expect(result.reason).toMatch(/paused/i);
 
-      // Today: passes preflight because crewPaused is not consulted here.
-      expect(result.allowed).toBe(true);
-    },
-  );
+    // Critical: only the thread row was read — no budget probe, no
+    // cost-event scan, no system entry.
+    expect(db.selectCalls).toHaveLength(1);
+    expect(db.insertCalls).toHaveLength(0);
+  });
+
+  it("thread.crewPaused=false → preflight PROCEEDS to the budget check", async () => {
+    // Complementary: explicit `crewPaused=false` doesn't short-circuit;
+    // the gate continues to the budget probe and (with a healthy budget)
+    // returns allowed.
+    const db = createSequenceDb({
+      selects: [
+        [threadRow({ crewPaused: false, adjutantEnabled: true })],
+        [policyRow()],          // $100 cap
+        [spendRow(2500)],       // $25 spend — well under cap
+      ],
+    });
+
+    const result = await preflightCrewDispatch(db as any, {
+      companyId: COMPANY_ID,
+      agentId: AGENT_ID,
+      threadId: THREAD_ID,
+    });
+
+    expect(result).toEqual({ allowed: true });
+    // Verify the gate actually walked all three select stages — the
+    // crewPaused=false branch must NOT short-circuit anywhere.
+    expect(db.selectCalls).toHaveLength(3);
+    expect(db.insertCalls).toHaveLength(0);
+  });
+
+  it("thread.crewPaused=true wins over budget exhaustion (pause beats budget)", async () => {
+    // Ordering contract: when a thread is both paused AND over-budget,
+    // the surfaced reason is the founder action (thread_paused), not the
+    // indirect symptom (budget_exhausted). No budget probe runs at all.
+    const db = createSequenceDb({
+      selects: [
+        [threadRow({ crewPaused: true })],
+        // No budget select stages — preflight must not probe them.
+      ],
+    });
+
+    const result = await preflightCrewDispatch(db as any, {
+      companyId: COMPANY_ID,
+      agentId: AGENT_ID,
+      threadId: THREAD_ID,
+    });
+
+    expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error("unreachable");
+    expect(result.reasonCode).toBe("thread_paused");
+    expect(db.selectCalls).toHaveLength(1);
+    expect(db.insertCalls).toHaveLength(0);
+  });
 
   // ── 5. Sanity: green path issues no inserts across multiple configs ─────
 

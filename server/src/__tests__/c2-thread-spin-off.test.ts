@@ -14,9 +14,18 @@ import type { ToolContext } from "../services/internal-agent/types.js";
 //   1. tx.insert(discussions).values(...).returning() — new thread
 //   2. tx.insert(discussionEntries).values(...) — once per seed entry
 //   3. tx.insert(threadLinks).values(...) — final link row
-// Selects are done only when there are seedEntries to copy.
+// Select order is:
+//   1. tx.select().from(discussions).where(...).limit(1) — source row
+//      (used by the Phase G4 live-only + visibility-inherit guard)
+//   2. tx.select().from(discussionEntries).where(...) — seed-entry copies
+//      (only when seedEntries is non-empty)
+// The mock is sequence-aware: the first .select() resolves to
+// `sourceSelectReturn`, the second to `seedSelectReturn`. Both default
+// to a permissive "live + company" source row so legacy tests that only
+// exercise the happy path continue to pass without setup churn.
 function makeTxTracker(opts: {
   newThreadReturn?: any[];
+  sourceSelectReturn?: any[];
   seedSelectReturn?: any[];
   insertThrowsAt?: number; // ordinal of insert call that should throw
 } = {}) {
@@ -51,11 +60,21 @@ function makeTxTracker(opts: {
     return makeInsertChain(() => [], idx);
   });
 
+  const sourceDefault = [{ id: "thread-src", subtype: "live", visibility: "company" }];
+  const selectQueue = [
+    opts.sourceSelectReturn ?? sourceDefault,
+    opts.seedSelectReturn ?? [],
+  ];
+  let selectIdx = 0;
+
   const selectFn = vi.fn(() => {
-    const fromObj = {
-      where: vi.fn().mockResolvedValue(opts.seedSelectReturn ?? []),
-    };
-    return { from: vi.fn().mockReturnValue(fromObj) };
+    const idx = selectIdx++;
+    const rows = selectQueue[idx] ?? [];
+    const chain: any = {};
+    chain.where = vi.fn().mockReturnValue(chain);
+    chain.limit = vi.fn().mockReturnValue(chain);
+    chain.then = (resolve: any) => Promise.resolve(resolve(rows));
+    return { from: vi.fn().mockReturnValue(chain) };
   });
 
   return { insert, select: selectFn, insertCalls };

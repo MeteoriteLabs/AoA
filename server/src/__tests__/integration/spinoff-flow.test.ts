@@ -2,24 +2,18 @@
  * Phase G4.3 — Integration tests for the live-thread → spin-off flow.
  *
  * Verifies the wiring from `spin_off_thread` (the agent tool, Navigator-
- * invoked) through the discussions + thread_links + seed-entry copy. We
- * assert what the tool ACTUALLY does today (not what a future Phase H
- * change might enforce).
+ * invoked) through the discussions + thread_links + seed-entry copy.
  *
- * Wiring gap noted (see test below): the plan calls for spin-off to be
- * REJECTED on a non-live thread (subtype != 'live'). The current
- * `spin_off_thread` tool does NOT inspect the source thread's subtype —
- * it accepts any source. The schema column exists (`discussions.subtype`,
- * default 'normal', enum normal|live) but no service code reads it. The
- * "rejected on non-live" guard is documented as a TODO test asserting
- * the CURRENT permissive behavior so a future tightening doesn't slip
- * silently. The other three plan requirements (link kind, seed-entry
- * copy semantics, scope inheritance) ARE exercised against today's code.
+ * Phase G4 wiring gaps closed in this file:
+ *   - Spin-off rejects when source `subtype !== 'live'` (error NOT_LIVE).
+ *   - New thread inherits `visibility` from the source (private/department/
+ *     company) instead of always hardcoding "company".
  *
- * Visibility: the tool hardcodes the new thread's visibility to "company"
- * (see thread-spin-off.ts line 79: `visibility: "company"`). It does NOT
- * inherit from the source thread. We assert what the code does today and
- * note the gap explicitly.
+ * What the tool still does (unchanged): new thread carries forkedFromId,
+ * thread_links row of kind='spinoff' is written, seed entries are copied
+ * with sourceInfo back-pointers, companyId is inherited from the caller's
+ * ctx (not from the source row — RBAC enforces cross-company isolation
+ * upstream).
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -34,6 +28,15 @@ import type { ToolContext } from "../../services/internal-agent/types.js";
 
 interface TxTrackerOpts {
   newThreadReturn?: any[];
+  /**
+   * Row returned for the 1st `tx.select()` — the source-thread guard read.
+   * Default: a "live" + "company"-visibility row so existing happy-path
+   * tests don't need explicit setup. Pass `[]` to simulate a missing
+   * source (→ SOURCE_NOT_FOUND), or override subtype/visibility to drive
+   * the live-only + visibility-inherit guards.
+   */
+  sourceSelectReturn?: any[];
+  /** Row returned for the 2nd `tx.select()` — the seed-entries lookup. */
   seedSelectReturn?: any[];
   /** When provided, the insert at this ordinal throws (transaction roll-back). */
   insertThrowsAt?: number;
@@ -68,11 +71,24 @@ function makeTxTracker(opts: TxTrackerOpts = {}) {
     return makeInsertChain(() => [], idx);
   });
 
+  // Sequence-aware select stub: 1st call → source guard, 2nd → seed copy.
+  const sourceDefault = [
+    { id: "thread-src-1", subtype: "live", visibility: "company" },
+  ];
+  const selectQueue = [
+    opts.sourceSelectReturn ?? sourceDefault,
+    opts.seedSelectReturn ?? [],
+  ];
+  let selectIdx = 0;
+
   const selectFn = vi.fn(() => {
-    const fromObj = {
-      where: vi.fn().mockResolvedValue(opts.seedSelectReturn ?? []),
-    };
-    return { from: vi.fn().mockReturnValue(fromObj) };
+    const idx = selectIdx++;
+    const rows = selectQueue[idx] ?? [];
+    const chain: any = {};
+    chain.where = vi.fn().mockReturnValue(chain);
+    chain.limit = vi.fn().mockReturnValue(chain);
+    chain.then = (resolve: any) => Promise.resolve(resolve(rows));
+    return { from: vi.fn().mockReturnValue(chain) };
   });
 
   return { insert, select: selectFn, insertCalls };
@@ -114,7 +130,8 @@ describe("integration: live thread → spin-off flow", () => {
       companyId: "co-spinoff-1",
       title: "Spin-off thread",
       forkedFromId: "thread-src-1",
-      // Tool hardcodes "company" — see file header note on visibility.
+      // Visibility inherits from source — see the dedicated inheritance
+      // tests below. The default mock source row is `company`-visible.
       visibility: "company",
       phase: "discuss",
       createdBy: "agent-navigator",
@@ -212,40 +229,132 @@ describe("integration: live thread → spin-off flow", () => {
     expect(tracker.insertCalls[0].values.title).toBe("explicit-title-only");
   });
 
-  // ── Wiring gap: spin-off on a non-live thread is NOT rejected today ──────
+  // ── Phase G4 wiring gap closed: spin-off requires subtype='live' ─────────
 
-  it(
-    "TODO(wiring-gap): spin-off on a non-live source thread is currently ALLOWED " +
-      "(plan G4.3 calls for subtype='live' guard; tool doesn't enforce it yet)",
-    async () => {
-      // The plan asks for "Spin-off on a non-live thread is rejected (only
-      // subtype='live' threads spin off)". The current tool
-      // (`server/src/services/internal-agent/tools/thread-spin-off.ts`)
-      // does not read source.subtype at all — see the file. We assert
-      // CURRENT behavior so the gap is visible: the spin-off succeeds and
-      // no select against discussions.subtype is issued.
-      //
-      // When the future enforcement lands (a subtype='live' guard before
-      // the tx), flip this test to assert rejection with reason 'not_live'
-      // or whatever the tool error code becomes.
-      const tracker = makeTxTracker();
-      const transactionFn = vi.fn(async (cb: any) =>
-        cb({ insert: tracker.insert, select: tracker.select }),
-      );
+  it("spin-off on a non-live source thread is REJECTED with error NOT_LIVE", async () => {
+    // Plan G4.3 contract: only `subtype='live'` threads may spin off.
+    // A "normal" thread is self-contained and should not produce a
+    // derived thread via the agent tool. The guard fires inside the tx
+    // (the first select against discussions) and rolls back without
+    // inserting anything.
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [
+        { id: "normal-thread-id", subtype: "normal", visibility: "company" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
 
-      const result = await spinOffThreadTool.execute(
-        { fromThreadId: "normal-thread-id", title: "should-be-blocked-but-isnt" },
-        makeCtx(transactionFn),
-      );
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "normal-thread-id", title: "should-be-blocked" },
+      makeCtx(transactionFn),
+    );
 
-      // Today: succeeds.
-      expect(result.success).toBe(true);
-      // Today: NO select against the source's subtype is issued (the tool
-      // never queries the source row inside the tx — it trusts the caller's
-      // companyId).
-      expect(tracker.select).not.toHaveBeenCalled();
-    },
-  );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("NOT_LIVE");
+    // No writes happened — source-guard rollback.
+    expect(tracker.insertCalls).toHaveLength(0);
+    // The source was queried exactly once (the guard read).
+    expect(tracker.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("spin-off on a live source thread PROCEEDS (subtype='live')", async () => {
+    // Complementary assertion: explicit `subtype='live'` short-circuits
+    // past the guard and produces the new thread + link rows as expected.
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [
+        { id: "thread-src-1", subtype: "live", visibility: "company" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src-1", title: "live-source-ok" },
+      makeCtx(transactionFn),
+    );
+
+    expect(result.success).toBe(true);
+    // Two inserts when no seeds: discussions + thread_links.
+    expect(tracker.insertCalls).toHaveLength(2);
+  });
+
+  it("spin-off when source thread is missing is REJECTED with SOURCE_NOT_FOUND", async () => {
+    // Defensive: a referenced thread that no longer exists must not
+    // silently produce an orphaned derived thread. We assert the explicit
+    // structured rejection.
+    const tracker = makeTxTracker({ sourceSelectReturn: [] });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "ghost-thread-id", title: "noop" },
+      makeCtx(transactionFn),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("SOURCE_NOT_FOUND");
+    expect(tracker.insertCalls).toHaveLength(0);
+  });
+
+  // ── Phase G4 wiring gap closed: visibility inherits from source ──────────
+
+  it("derived thread inherits visibility='private' from a private live source", async () => {
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [
+        { id: "thread-src-1", subtype: "live", visibility: "private" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+
+    await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src-1", title: "private-spin-off" },
+      makeCtx(transactionFn),
+    );
+
+    expect(tracker.insertCalls[0].values.visibility).toBe("private");
+  });
+
+  it("derived thread inherits visibility='department' from a department-scoped live source", async () => {
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [
+        { id: "thread-src-1", subtype: "live", visibility: "department" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+
+    await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src-1", title: "dept-spin-off" },
+      makeCtx(transactionFn),
+    );
+
+    expect(tracker.insertCalls[0].values.visibility).toBe("department");
+  });
+
+  it("derived thread inherits visibility='company' from a company-visible live source", async () => {
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [
+        { id: "thread-src-1", subtype: "live", visibility: "company" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+
+    await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src-1", title: "company-spin-off" },
+      makeCtx(transactionFn),
+    );
+
+    expect(tracker.insertCalls[0].values.visibility).toBe("company");
+  });
 
   // ── Failure mode ─────────────────────────────────────────────────────────
 
