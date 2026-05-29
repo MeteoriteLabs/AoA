@@ -1,106 +1,111 @@
 # Commander — Tool Reference
 
-All tools are called via the MCP bridge. The platform enforces your role and capability permissions automatically — you never need to check them manually.
+You have **34 tools** across 9 categories. Only call tools in this list. No other tool names exist.
 
 ---
 
-## Query tools (always available, no confirmation needed)
+## Query Tools (read-only, call freely)
 
 | Tool | What it returns |
 |------|----------------|
-| `query_company` | Company name, vision, mission, issue prefix, stage. **Call this first** if you are unsure who you work for. |
-| `query_tasks` | Tasks filtered by status, department, or goal. |
-| `query_goals` | Goals filtered by status. |
-| `query_agents` | Agents filtered by department. |
-| `query_departments` | All departments in the company. |
-| `query_memory` | Semantic search over the company knowledge base. |
-| `query_budget` | Budget summary for current month or year. |
-| `query_activity` | Recent activity log entries. |
+| `query_tasks` | Tasks filtered by status, assignee, department, goal |
+| `query_goals` | Company goals with status, progress, linked tasks |
+| `query_agents` | Agent roster with adapter type, trust score, current assignments |
+| `query_departments` | Department list with agent counts and goals |
+| `query_budget` | Spend by agent/department, remaining budget, cost events |
+| `query_activity` | Recent activity log across all entities |
+| `query_company` | Company identity: name, vision, mission, stage, settings |
 
 ---
 
-## Action tools (require user confirmation before executing)
-
-| Tool | What it does | Minimum role |
-|------|-------------|-------------|
-| `create_task` | Create a task with title, description, priority, department, goal, assignee. | team_lead |
-| `update_task` | Update an existing task's title, status, or priority. | team_member |
-| `create_agent` | Hire a new agent with adapter type and config. | founder |
-| `create_goal` | Create a new goal with title, description, target date. | team_lead |
-| `create_department` | Create a new department. | founder |
-| `update_goal` | Update a goal's title, description, or status. | team_lead |
-| `assign_task` | Assign a task to an agent or user. | team_member |
-| `wakeup_agent` | Trigger an agent's heartbeat for a specific task. | team_lead |
-
----
-
-## Memory tools
+## Action Tools (confirm before calling)
 
 | Tool | What it does |
 |------|-------------|
-| `query_memory` | Search approved memory by meaning. Already in the Query section — listed here for completeness. |
-| `suggest_memory` | Create a **pending** memory item for founder approval. Never claim it is saved until approved. |
-| `search_memory` | Keyword or semantic search across all memory layers. |
+| `create_task` | Creates a new task (title, description, priority, assignee, goalId) |
+| `update_task` | Updates an existing task (status, priority, assignee, description) |
+| `create_department` | Creates a new department (name, description, parentId) |
+| `create_goal` | Creates a company goal (title, description, targetDate) |
+| `create_agent` | Provisions a new agent (name, role, adapterType, department) |
+| `update_agent` | Updates agent config (name, concurrency, adapterConfig) |
+| `assign_task` | Assigns a task to a specific agent |
+| `wakeup_agent` | Triggers an immediate agent heartbeat run |
+| `update_company_identity` | Updates company vision and/or mission — founder must approve |
 
 ---
 
-## Workflow tools
+## Memory Tools
+
+| Tool | Notes |
+|------|-------|
+| `query_memory` | Search or list memory items by layer, department, or keyword |
+| `create_memory` | Create a PENDING memory item (not saved until founder approves) |
+| `update_memory` | Update an existing approved memory item |
+| `find_similar_memory` | Semantic search — find memory items related to a concept |
+| `detect_conflicts` | Check whether a new memory item contradicts existing ones |
+
+**Layer reference:** `identity` (company-wide permanent) → `domain` (how we work, semi-permanent) → `active_context` (goal/project-scoped, expires) → `working` (task-chain-scoped, ephemeral, 7-day auto-archive)
+
+---
+
+## Discussion Tools
 
 | Tool | What it does |
 |------|-------------|
-| `add_task_dependency` | Link two tasks in a blocking dependency. |
-| `create_workflow_template` | Create a reusable workflow template. (Backend-ready, UI pending.) |
-| `instantiate_workflow` | Expand a workflow template into tasks. (Backend-ready, UI pending.) |
+| `extract_from_content` | Extract structured items (decisions, tasks, insights) from raw text |
+| `search_discussions` | Search discussion threads by keyword, department, or date range |
+| `link_discussion_to_project` | Link a discussion thread to a department or project |
+| `submit_extracted_items` | Submit extracted items for founder review and approval |
 
 ---
 
-## Discussion tools
+## Workflow Tools
 
 | Tool | What it does |
 |------|-------------|
-| `query_discussions` | List discussion threads. |
-| `create_discussion_entry` | Add an entry to a discussion thread. |
-| `submit_extracted_items` | Approve extracted items from a discussion. |
+| `create_workflow_template` | Create a reusable task-chain template with ordered steps |
+| `instantiate_workflow` | Expand a workflow template into real tasks for a goal |
+| `add_task_dependency` | Add a blocking relationship between two tasks |
 
 ---
 
-## Delegation and skills
+## File Tools
 
 | Tool | What it does |
 |------|-------------|
-| `use_skill` | Load a skill's full instructions by key (e.g. `skill:aoa/sprint-planning`). Always call this before applying a skill — never improvise skill steps. |
-| `delegate_to_subagent` | Hand a scoped job to a sub-agent. Summarize the result back to the user. |
+| `read_file` | Read a file from the execution workspace |
 
 ---
 
-## Browser and HTTP
+## Coordination Tools
 
-- **Simple HTTP (API status, JSON responses):** Use the `Bash` tool with `curl`. Example: `curl -s https://api.example.com/health`.
-- **Real browser (research, forms, navigation, external sites):** Only available when the `browser_use` capability is enabled. Use Playwright MCP tools (`browser_navigate`, `browser_fill`, `browser_click`, `browser_screenshot`). Always confirm with the user before submitting forms or clicking actions that modify external state.
-- **App QA / feature testing:** Do NOT use browser tools directly. Use `create_task` to queue a task for a specialized QA agent.
-
----
-
-## Structured output markers
-
-When you need to present the user with multiple-choice options, emit an OPTIONS marker on its own line:
-
-```
-⚡OPTIONS:{"question":"Which adapter fits your workflow?","options":["Claude Code CLI","Codex","OpenCode","Not sure, help me decide"]}⚡
-```
-
-The first option is treated as the recommended choice (shown with "(recommended)" label). Always list 2-4 options. The user's click sends their choice as a regular message.
-
-When an action requires approval, the CONFIRM marker is emitted automatically by the tool system — you do not emit it manually.
+| Tool | What it does |
+|------|-------------|
+| `query_dependency_chain` | Get the full dependency graph for a task or goal |
 
 ---
 
-## Tools you do NOT have
+## Analysis Tools
 
-Do not invent or guess tool names. The following do NOT exist:
-- `list_company_skills` — use `use_skill` to load a skill, the skills table is in your context
-- `get_agent_skills` — skills are in the compact skills list in your system prompt
-- `browse_url` — use Bash + curl for HTTP, or Playwright MCP tools for browser
-- `search_web` — use Bash + curl to a search API, or Playwright MCP for real browsing
+| Tool | What it does |
+|------|-------------|
+| `analyze_workload` | Summarize agent workload distribution across departments |
+| `suggest_improvements` | Generate improvement suggestions based on current company state |
 
-If you are unsure whether a tool exists, check this file or call `query_company` to ground yourself.
+---
+
+## Skills & Delegation Tools
+
+| Tool | What it does |
+|------|-------------|
+| `use_skill` | Load the full markdown for a named skill and apply its instructions |
+| `delegate_to_subagent` | Hand off a subtask to a specialized agent |
+
+---
+
+## Usage Rules
+
+1. **Never guess a tool name.** The 34 tools above are your complete set. If a skill or instruction references a tool not on this list, flag it.
+2. **Query before action.** Call read tools to gather current state before any write.
+3. **Confirm before write.** All Action and Workflow tools require user confirmation via ⚡OPTIONS⚡ unless a loaded skill explicitly grants auto-execute for the specific step.
+4. **Memory governance.** `create_memory` → PENDING. Use `detect_conflicts` before creating new memory that might contradict existing items.

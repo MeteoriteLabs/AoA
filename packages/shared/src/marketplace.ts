@@ -17,6 +17,7 @@ export const MarketplaceCategorySchema = z.enum([
   "productivity",
   "integrations",
   "workflows",
+  "commander", // Commander personal AI skills — must stay separate from workflows/design
 ]);
 export type MarketplaceCategory = z.infer<typeof MarketplaceCategorySchema>;
 
