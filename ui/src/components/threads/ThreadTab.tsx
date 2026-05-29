@@ -141,6 +141,31 @@ export function ThreadTab({
     },
   });
 
+  // P1-T7: Approve a scope proposal — calls the secure server handler which
+  // independently authorizes, validates staleness, and creates deliverable tasks.
+  const approveProposalMutation = useMutation({
+    mutationFn: (proposalEntryId: string) =>
+      discussionsApi.approveProposal(companyId, threadId, proposalEntryId),
+    onSuccess: (data) => {
+      invalidate();
+      if (data.alreadyApproved) {
+        pushToast({ title: "Proposal already approved", tone: "success" });
+      } else {
+        pushToast({
+          title: `${data.tasksCreated.length} task${data.tasksCreated.length === 1 ? "" : "s"} created`,
+          tone: "success",
+        });
+      }
+    },
+    onError: (err: unknown) => {
+      const message =
+        (err as { body?: { error?: string } })?.body?.error ??
+        (err as { message?: string })?.message ??
+        "Failed to approve proposal";
+      pushToast({ title: message, tone: "warn" });
+    },
+  });
+
   async function handleComposerSubmit(payload: {
     text: string;
     mentions: string[];
@@ -246,6 +271,13 @@ export function ThreadTab({
     );
   }
 
+  // P1-T7: The most-recent scope_proposal entry in the thread is the "active" one.
+  // Older proposals are shown read-only (isActive=false, buttons disabled by card).
+  const activeProposalEntryId = useMemo(() => {
+    const proposals = entries.filter((e) => e.inputType === "scope_proposal");
+    return proposals.length > 0 ? proposals[proposals.length - 1].id : null;
+  }, [entries]);
+
   // Group: top-level first, replies underneath; orphan replies treated as top-level
   const topLevel = entries.filter((e) => !e.parentEntryId);
   const topLevelIds = new Set(topLevel.map((e) => e.id));
@@ -283,6 +315,8 @@ export function ThreadTab({
                 isReprocessing={
                   reprocessMutation.isPending && reprocessMutation.variables === entry.id
                 }
+                scopeProposalActive={entry.id === activeProposalEntryId}
+                onScopeProposalApprove={(e) => approveProposalMutation.mutate(e.id)}
               />
               {replies.map((reply) => (
                 <div key={reply.id} className="pl-10">

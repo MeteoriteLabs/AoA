@@ -1218,6 +1218,108 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // ── P1-T7: Secure scope-proposal Approve handler ─────────────────────────
+  //
+  // POST /companies/:companyId/discussions/:discussionId/proposals/:proposalEntryId/approve
+  //
+  // Authorization model (MUST NOT trust the click):
+  //   1. `assertCompanyAccess` — ensures the request principal can access this company.
+  //   2. `assertRole(db, req, companyId, "founder", "team_lead")` — only founder or
+  //      team_lead roles may create tasks (matches the existing write-route pattern).
+  //   3. The service additionally verifies the proposal belongs to this thread+company
+  //      (defense-in-depth: prevents cross-tenant abuse even if auth somehow passes).
+  //
+  // Business rules enforced by threadDeliverablesService.approveProposal:
+  //   - Already approved → 200 idempotent (no duplicate tasks).
+  //   - Rejected → 409.
+  //   - Stale (thread has newer entries than the proposal's cursor stamp) → 409.
+  //   - Not found / wrong thread → 404.
+  //
+  // On success: tasks are created (and auto-dispatched via heartbeat if assigned),
+  // the entry is marked approved, and an activity-log entry is written.
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/proposals/:proposalEntryId/approve",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const proposalEntryId = req.params.proposalEntryId as string;
+
+      // ── Auth: 1. Company access ────────────────────────────────────────────
+      assertCompanyAccess(req, companyId);
+
+      // ── Auth: 2. Role check — founder or team_lead can create tasks ────────
+      // This is the primary authorization gate. It rejects with 403 for
+      // team_member, unauthenticated, and agent actors (agents have separate paths).
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      // ── Auth: 3. Resolve approver identity ────────────────────────────────
+      const actor = getActorInfo(req);
+      const approver = { userId: actor.actorId };
+
+      // ── Invoke service (handles validate + stale + create + mark approved) ──
+      const { threadDeliverablesService: getDeliverablesService } = await import(
+        "../services/thread-deliverables.js"
+      );
+      const delSvc = getDeliverablesService(db);
+
+      try {
+        const result = await delSvc.approveProposal({
+          threadId: discussionId,
+          companyId,
+          proposalEntryId,
+          approver,
+        });
+
+        if (!result.ok) {
+          // Business-rule failures: map to appropriate HTTP status codes.
+          const statusMap: Record<string, number> = {
+            not_found: 404,
+            wrong_thread: 404,
+            rejected: 409,
+            stale: 409,
+          };
+          const status = statusMap[result.reason] ?? 400;
+          res.status(status).json({ error: result.message, reason: result.reason });
+          return;
+        }
+
+        if (result.alreadyApproved) {
+          // Idempotent no-op — 200 with a clear signal.
+          res.json({ alreadyApproved: true, tasksCreated: [] });
+          return;
+        }
+
+        // ── Audit log ──────────────────────────────────────────────────────
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "thread.scope_proposal.approved",
+          entityType: "discussion_entry",
+          entityId: proposalEntryId,
+          details: {
+            threadId: discussionId,
+            taskIds: result.taskIds,
+            taskCount: result.taskIds.length,
+          },
+        });
+
+        res.status(201).json({
+          alreadyApproved: false,
+          tasksCreated: result.taskIds,
+        });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
   // Plan 7 catch-up: GET …/discussions/:discussionId/entries?sinceSeq=N
   // Returns entries with seq > N ordered by seq, for reconnect-refetch.
   // RBAC enforced inside threadService.entriesSince (hide-don't-403).

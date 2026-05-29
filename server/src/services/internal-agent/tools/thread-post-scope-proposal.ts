@@ -10,8 +10,14 @@
 // never see a partial state where the entry is visible but the Plan column
 // is empty. The transaction is the only place this invariant can be enforced
 // reliably.
+//
+// P1-T7 (A): The proposal's rawContent JSON now includes `proposalCursorSeq`
+// — the thread's current `entrySeq` at the moment the proposal was posted.
+// The Approve handler (thread-deliverables.ts) reads this back to detect
+// whether newer entries arrived after the proposal was made (stale check).
 
-import { discussionEntries, threadPlanSteps } from "@armyofagents/db";
+import { eq } from "drizzle-orm";
+import { discussionEntries, discussions, threadPlanSteps } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
 interface ProposedTaskInput {
@@ -102,13 +108,33 @@ export const threadPostScopeProposalTool: AgentTool = {
     // never visible to readers. Drizzle's `.transaction(async tx => ...)`
     // throws on rollback — wrap to surface a tool-style error result.
     try {
+      // P1-T7 (A): Read the thread's current entrySeq BEFORE the transaction.
+      // This stamps "what the thread looked like when the proposal was made".
+      // The slight race (an entry could arrive between this read and the TX start)
+      // only makes the stale check at approve-time marginally conservative — it
+      // cannot silently skip a staleness that genuinely exists. Fall back to 0
+      // when the thread row is not found (conservative: stale check will accept,
+      // not reject, a 0-stamped proposal against a fresh thread).
+      let proposalCursorSeq = 0;
+      try {
+        const threadRows = await ctx.db
+          .select({ entrySeq: discussions.entrySeq })
+          .from(discussions)
+          .where(eq(discussions.id, threadId));
+        proposalCursorSeq = threadRows[0]?.entrySeq ?? 0;
+      } catch {
+        // Non-fatal — use 0 (conservative)
+      }
+
+      const rawContent = JSON.stringify({ ...proposal, proposalCursorSeq });
+
       const result = await ctx.db.transaction(async (tx: any) => {
         const inserted = await tx
           .insert(discussionEntries)
           .values({
             discussionId: threadId,
             inputType: "scope_proposal",
-            rawContent: JSON.stringify(proposal),
+            rawContent,
             authorAgentId: ctx.agentId ?? null,
             createdBy: ctx.agentId ?? "aoa-agent",
           })
@@ -142,7 +168,7 @@ export const threadPostScopeProposalTool: AgentTool = {
 
       return {
         success: true,
-        data: { entryId: result.id },
+        data: { entryId: result.id, proposalCursorSeq },
         summary: `Scope proposal posted with ${proposal.proposedTasks.length} step(s)`,
       };
     } catch (err: any) {

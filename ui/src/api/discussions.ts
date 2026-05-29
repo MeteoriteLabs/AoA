@@ -234,4 +234,14 @@ export const discussionsApi = {
       `/companies/${companyId}/discussions/${discussionId}/entries/${entryId}/annotations`,
       data,
     ),
+
+  /**
+   * P1-T7: Approve a scope proposal entry.
+   * The server validates authz (founder/team_lead), stale check, and idempotency.
+   */
+  approveProposal: (companyId: string, discussionId: string, proposalEntryId: string) =>
+    api.post<{ alreadyApproved: boolean; tasksCreated: string[] }>(
+      `/companies/${companyId}/discussions/${discussionId}/proposals/${proposalEntryId}/approve`,
+      {},
+    ),
 };
