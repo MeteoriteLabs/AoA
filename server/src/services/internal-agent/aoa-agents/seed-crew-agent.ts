@@ -159,12 +159,43 @@ export async function seedCrewAgent(
   // runtimeConfig so pre-D2 rows aren't stranded by default-deny.
   // P1-B backfill: upgrade adapter_type='process' (no command) rows to the
   // resolved CLI adapter — these rows are unrunnable until upgraded.
+  //
+  // QA-BUG-013 fix (2026-05-29): the original predicate
+  // `!Array.isArray(aoaCfg.toolAllowlist)` only refreshed on the first seed
+  // when the row had no allowlist at all. Pre-Phase-D rows got their old
+  // 5-tool allowlist baked in and never picked up Phase D batch 1/2 additions
+  // (thread.postScopeProposal, extract_memory_candidates, delegate_to_subagent,
+  // etc.). Net result: Adjutant could not orchestrate the discuss→scope
+  // chain, Planner could not write plan artifacts, Memory Keeper could not
+  // extract memory candidates — the visible-chat conversation stayed
+  // permanently dead because the orchestration tools were missing from the
+  // bridge's default-deny gate.
+  //
+  // Corrected predicate: detect when the code's spec differs from what's on
+  // the row (membership mismatch or count mismatch) and overwrite. Safe
+  // because:
+  //   1. `roleToolAllowlist()` in code is the single source of truth — there
+  //      is no per-company UI/API for founders to customise the crew tool
+  //      allowlist, so we cannot clobber a deliberate choice.
+  //   2. The startup `ensureCommandStaff` / `ensureAdjutant` / `ensureScout` /
+  //      `ensureEngineer` loop in `server/src/index.ts` will trigger this
+  //      refresh for every company once on next boot, restoring every
+  //      crew row across every legacy install.
   if (!inserted) {
     const rc = existingRc ?? {};
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
     const updates: Record<string, unknown> = {};
 
-    if (!Array.isArray(aoaCfg.toolAllowlist)) {
+    const currentAllowlist = Array.isArray(aoaCfg.toolAllowlist)
+      ? (aoaCfg.toolAllowlist as string[])
+      : [];
+    const expectedSet = new Set(spec.toolAllowlist);
+    const currentSet = new Set(currentAllowlist);
+    const allowlistDrifted =
+      currentSet.size !== expectedSet.size ||
+      !spec.toolAllowlist.every((t) => currentSet.has(t));
+
+    if (allowlistDrifted) {
       updates.runtimeConfig = {
         ...rc,
         aoa: { ...aoaCfg, toolAllowlist: spec.toolAllowlist },
