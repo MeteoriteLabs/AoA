@@ -74,11 +74,45 @@ export interface InstallContext {
   idempotencyKey?: string;
 }
 
+/** AoA-specific trigger binding in agent.json. Seeded into aoa_agent_triggers at install. */
+export interface AgentAoaTrigger {
+  kind: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+/** AoA hints section inside agent.json. All fields optional. */
+export interface AgentAoaHints {
+  adapterType?: string;
+  runtimeConfig?: Record<string, unknown>;
+  adapterConfig?: Record<string, unknown>;
+  permissions?: Record<string, unknown>;
+  skillKeys?: string[];
+  /** Agent kind stored in agents.kind at install time. "aoa" for crew agents. */
+  kind?: string;
+  /** Triggers seeded into aoa_agent_triggers within the Phase 3 txn. */
+  triggers?: AgentAoaTrigger[];
+}
+
 /**
- * Wire format the catalog aggregator produces for agent.json.
+ * Wire format the catalog aggregator produces for agent.json (agent.v1 schema).
  * Mirrored here as a local source-of-truth for the AoA install pipeline.
+ * The `aoa` section carries AoA-specific install hints; legacy flat fields
+ * remain for backward compat with pre-aoa-section agent templates.
  */
 export interface AgentTemplateBody {
+  schemaVersion?: string;
+  id?: string;
+  name?: string;
+  description?: string;
+  instructions?: { type: "inline"; content: string } | { type: "file"; path: string };
+  dependencies?: {
+    skills?: Record<string, string>;
+    plugins?: Record<string, string>;
+  };
+  /** AoA-specific install hints. Takes precedence over legacy flat fields. */
+  aoa?: AgentAoaHints;
+  // Legacy flat fields — used when `aoa` section is absent (pre-v1.1 templates).
   role?: string;
   title?: string;
   icon?: string;
