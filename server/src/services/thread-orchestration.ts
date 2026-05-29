@@ -1,12 +1,10 @@
 /**
- * Thread Orchestration Controller — P1-T3 state bookkeeping.
+ * Thread Orchestration Controller — P1-T3 state bookkeeping + P1-T4 run executor.
  *
  * Manages the per-thread `thread_orchestration_state` row that drives the
- * Adjutant agent idempotently as a conversation advances. This module is
- * responsible ONLY for creating and marking the controller as pending — the
- * actual Adjutant run executor is wired in a later task (P1-T4+).
+ * Adjutant agent idempotently as a conversation advances.
  *
- * Two public operations:
+ * Public operations:
  *
  *   `ensureController(threadId)` — idempotent INSERT: guarantees exactly one
  *   controller row exists for the thread. Uses `onConflictDoNothing` so two
@@ -17,17 +15,97 @@
  *   Calls `ensureController` first so callers don't need to pre-check. Does
  *   NOT touch `lastProcessedEntryId` — only the run executor advances that.
  *
- * This module purposely does NOT start the Adjutant, send wakeup requests, or
- * gate on feature flags. Those concerns belong to the adjacent wiring in
- * thread-events.ts (peer-wake) and the future run executor.
+ *   `runController(threadId, opts)` — (P1-T4) atomically claims a pending run,
+ *   loads unprocessed entries, calls the injected adjutantRunner, then checks
+ *   the epoch to detect stale runs. If the epoch changed mid-run (a newer human
+ *   entry arrived), the output is suppressed and the cursor is NOT advanced.
+ *   Only when the epoch is unchanged does the run commit its output and advance
+ *   the cursor. This prevents duplicate replies, lost input, and stuck agents.
+ *
+ * This module does NOT wire real CLI/crew execution. That happens in a later
+ * integration task. `opts.adjutantRunner` is an injected seam — tests pass a
+ * deterministic fake; production wires the real Adjutant crew there.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { eq, gt, and, asc, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { threadOrchestrationState } from "@armyofagents/db";
+import { threadOrchestrationState, discussionEntries } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+/** Minimal shape of a discussion_entries row as seen by the executor. */
+export interface OrchestratedEntry {
+  id: string;
+  createdAt: Date;
+  [key: string]: unknown;
+}
+
+/** What the adjutantRunner resolves with. */
+export interface AdjutantRunResult {
+  output: unknown;
+  error?: string;
+}
+
+/** Input to the adjutantRunner seam. */
+export interface AdjutantRunnerInput {
+  threadId: string;
+  entries: OrchestratedEntry[];
+  startEpoch: number;
+}
+
+/** Injected function that drives the real (or fake) Adjutant crew. */
+export type AdjutantRunner = (
+  input: AdjutantRunnerInput,
+) => Promise<AdjutantRunResult>;
+
+/**
+ * Injected commit callback: called only when the epoch re-check passes (i.e.
+ * the run is NOT stale). Receives the adjutant output plus the resolved cursor.
+ * Implementers use this to post the reply, create tasks, etc. Returning void
+ * is fine — errors are surfaced in the runController return value.
+ */
+export type OnCommitFn = (result: AdjutantRunResult, cursorAdvancedTo: string | null) => Promise<void>;
+
+/** The union of outcomes that runController can return. */
+export type RunControllerResult =
+  | { ran: false; reason: "no-pending" }
+  | { ran: true; suppressed: true; startEpoch: number; endEpoch: number }
+  | { ran: true; suppressed: false; startEpoch: number; cursorAdvancedTo: string | null }
+  | { ran: true; suppressed: false; error: string; startEpoch: number; cursorAdvancedTo: null };
+
+/** Options accepted by `runController`. */
+export interface RunControllerOpts {
+  /**
+   * The Adjutant driver seam. Tests inject a deterministic fake; production
+   * wires the real crew/CLI execution here in a later integration task.
+   *
+   * The default stub throws "adjutant runner not wired (P1-T4 seam)" so that
+   * production code that accidentally omits the injection fails loudly rather
+   * than silently. Always inject in production wiring.
+   */
+  adjutantRunner?: AdjutantRunner;
+
+  /**
+   * Optional post-commit hook. Called after a COMMIT (non-stale, no-error) run
+   * with the adjutant output and the cursor it advanced to. Use this to post
+   * the reply entry, create tasks, etc. Errors thrown here are caught and
+   * logged but do not roll back the cursor advance.
+   */
+  onCommit?: OnCommitFn;
+}
+
 const log = logger.child({ service: "thread-orchestration" });
+
+// ── Default adjutantRunner stub ────────────────────────────────────────────────
+/**
+ * P1-T4 DI seam placeholder. Throws immediately so any production path that
+ * accidentally omits the injection fails loudly and deterministically rather
+ * than silently producing no output. Always replaced before going to production.
+ */
+const defaultAdjutantRunner: AdjutantRunner = async () => {
+  throw new Error("adjutant runner not wired (P1-T4 seam)");
+};
 
 export function threadOrchestrationService(db: Db) {
   return {
@@ -97,6 +175,185 @@ export function threadOrchestrationService(db: Db) {
       );
 
       return updated ?? null;
+    },
+
+    /**
+     * P1-T4 — Claim and execute a pending Adjutant run with stale-run
+     * suppression.
+     *
+     * ### Claim (atomic)
+     * `UPDATE … SET pendingRun = false WHERE pendingRun = true RETURNING …`
+     * — exactly one concurrent executor wins; others get back `no-pending`.
+     *
+     * ### Read cursor
+     * Loads `discussion_entries` rows for the thread ordered by `createdAt ASC`
+     * then `id ASC` (tie-breaker). When `lastProcessedEntryId` is set, only
+     * rows created AFTER that entry are returned (uses `gt(id)` on UUID ordering
+     * which is insertion-order safe because UUIDs are v4 random — the stable
+     * ordering is `createdAt` + `id` tie-breaker). When null, all entries are
+     * returned from the beginning.
+     *
+     * NOTE on "zero unprocessed entries": if the cursor is already at the last
+     * entry (no new entries), the run short-circuits and returns
+     * `{ ran: false, reason: "no-pending" }`. This is safe: the trigger only
+     * fires on new human entries so the cursor should always have rows to
+     * process. If it doesn't, nothing useful would happen anyway.
+     *
+     * ### Adjutant seam
+     * `opts.adjutantRunner({ threadId, entries, startEpoch })` is the DI seam.
+     * Tests inject a deterministic fake. The default stub throws to make
+     * unwired production calls fail loudly.
+     *
+     * ### Epoch re-check (stale-run suppression)
+     * After `adjutantRunner` resolves, re-reads `runEpoch` from the controller.
+     * - `endEpoch !== startEpoch` → STALE: discard output, do NOT advance cursor,
+     *   do NOT touch pendingRun (triggerOnHumanEntry already set it back to true).
+     * - `endEpoch === startEpoch` → COMMIT: call `opts.onCommit`, advance cursor
+     *   to the last entry's id, leave pendingRun = false.
+     *
+     * ### Error handling
+     * If `adjutantRunner` throws: record `lastError` on the controller, leave
+     * the cursor unchanged so a retry picks up the same entries, and surface the
+     * error in the return value. Does NOT set pendingRun — a retry must be
+     * triggered externally (e.g. retry logic in a later task).
+     */
+    runController: async (
+      threadId: string,
+      opts: RunControllerOpts = {},
+    ): Promise<RunControllerResult> => {
+      const adjutantRunner = opts.adjutantRunner ?? defaultAdjutantRunner;
+
+      // ── Step 1: Atomic claim ────────────────────────────────────────────────
+      // UPDATE … SET pendingRun = false WHERE threadId = X AND pendingRun = true
+      // RETURNING runEpoch, lastProcessedEntryId
+      // If no row is returned, nothing is pending (or another executor claimed it).
+      const [claimed] = await db
+        .update(threadOrchestrationState)
+        .set({ pendingRun: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(threadOrchestrationState.threadId, threadId),
+            eq(threadOrchestrationState.pendingRun, true),
+          ),
+        )
+        .returning();
+
+      if (!claimed) {
+        return { ran: false, reason: "no-pending" };
+      }
+
+      const startEpoch: number = claimed.runEpoch;
+      const lastProcessedEntryId: string | null = claimed.lastProcessedEntryId ?? null;
+
+      log.debug(
+        { threadId, startEpoch, lastProcessedEntryId },
+        "thread orchestration run claimed",
+      );
+
+      // ── Step 2: Read unprocessed entries ───────────────────────────────────
+      // Load discussion_entries after the cursor (or all if cursor is null).
+      // Order by createdAt ASC, id ASC (tie-breaker) for deterministic replay.
+      let entries: OrchestratedEntry[];
+      try {
+        const whereClause = lastProcessedEntryId
+          ? and(
+              eq(discussionEntries.discussionId, threadId),
+              gt(discussionEntries.id, lastProcessedEntryId),
+            )
+          : eq(discussionEntries.discussionId, threadId);
+
+        entries = (await db
+          .select()
+          .from(discussionEntries)
+          .where(whereClause)
+          .orderBy(asc(discussionEntries.createdAt), asc(discussionEntries.id))) as OrchestratedEntry[];
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        log.error({ threadId, startEpoch, err }, "thread orchestration: failed to load entries");
+        await db
+          .update(threadOrchestrationState)
+          .set({ lastError: errorMsg, updatedAt: new Date() })
+          .where(eq(threadOrchestrationState.threadId, threadId));
+        return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
+      }
+
+      // Short-circuit: no new entries to process. This is unexpected given the
+      // trigger fires on new human entries, but handle it gracefully.
+      if (entries.length === 0) {
+        log.debug({ threadId, startEpoch }, "thread orchestration: no unprocessed entries — skipping run");
+        return { ran: false, reason: "no-pending" };
+      }
+
+      const cursorTarget = entries[entries.length - 1].id;
+
+      // ── Step 3: Run the Adjutant (injected seam) ───────────────────────────
+      let runResult: AdjutantRunResult;
+      try {
+        runResult = await adjutantRunner({ threadId, entries, startEpoch });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        log.error(
+          { threadId, startEpoch, err },
+          "thread orchestration: adjutantRunner threw — recording lastError, cursor NOT advanced",
+        );
+        await db
+          .update(threadOrchestrationState)
+          .set({ lastError: errorMsg, updatedAt: new Date() })
+          .where(eq(threadOrchestrationState.threadId, threadId));
+        return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
+      }
+
+      // ── Step 4: Re-check epoch (stale-run suppression) ────────────────────
+      // Re-read the current runEpoch from the controller row.
+      const [current] = await db
+        .select({ runEpoch: threadOrchestrationState.runEpoch })
+        .from(threadOrchestrationState)
+        .where(eq(threadOrchestrationState.threadId, threadId));
+
+      const endEpoch: number = current?.runEpoch ?? startEpoch;
+
+      if (endEpoch !== startEpoch) {
+        // STALE: a newer human entry arrived mid-run.
+        // - Do NOT post output.
+        // - Do NOT advance lastProcessedEntryId.
+        // - Do NOT touch pendingRun (triggerOnHumanEntry already set it back to true).
+        log.warn(
+          { threadId, startEpoch, endEpoch },
+          "thread orchestration: stale run suppressed — epoch changed mid-run; output discarded",
+        );
+        return { ran: true, suppressed: true, startEpoch, endEpoch };
+      }
+
+      // ── Step 5: Commit ─────────────────────────────────────────────────────
+      // Epoch matches — advance the cursor, leave pendingRun = false.
+      await db
+        .update(threadOrchestrationState)
+        .set({
+          lastProcessedEntryId: cursorTarget,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(threadOrchestrationState.threadId, threadId));
+
+      log.debug(
+        { threadId, startEpoch, cursorTarget },
+        "thread orchestration: run committed — cursor advanced",
+      );
+
+      // Call the post-commit hook (fire-and-forget style; errors are logged but
+      // do not roll back the cursor advance, which is already durable).
+      if (opts.onCommit) {
+        try {
+          await opts.onCommit(runResult, cursorTarget);
+        } catch (hookErr) {
+          log.error(
+            { threadId, startEpoch, err: hookErr },
+            "thread orchestration: onCommit hook threw — cursor already advanced, ignoring",
+          );
+        }
+      }
+
+      return { ran: true, suppressed: false, startEpoch, cursorAdvancedTo: cursorTarget };
     },
   };
 }
