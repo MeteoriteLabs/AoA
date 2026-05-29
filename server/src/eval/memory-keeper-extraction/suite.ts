@@ -233,7 +233,11 @@ export async function buildMemoryKeeperSuite(
           reason: "contains grading requires expected.value: string[]",
         };
       }
-      const seen = new Set(actual.map((c) => c.type));
+      // Compare on string identity — `actual[i].type` is the narrow
+      // ExtractedItemType union but `allowed` is plain string[] (fixtures
+      // are JSON, no compile-time narrowing possible). Widening both sides
+      // to string sidesteps the union-mismatch without runtime cost.
+      const seen = new Set<string>(actual.map((c) => c.type as string));
       const missing = allowed.filter((t) => !seen.has(t));
       const pass = missing.length === 0;
       return {

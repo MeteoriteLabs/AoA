@@ -26,7 +26,7 @@ import { runEvalSuite } from "./runner.js";
 import { buildAdjutantScopeSuite } from "./adjutant-scope-readiness/suite.js";
 import { buildMemoryKeeperSuite } from "./memory-keeper-extraction/suite.js";
 import { buildPlannerSuite } from "./planner-plan-completeness/suite.js";
-import type { EvalSuiteResult } from "./types.js";
+import type { EvalSuite, EvalSuiteResult } from "./types.js";
 
 const PASS_THRESHOLD = 0.8;
 
@@ -73,10 +73,16 @@ export async function runAllEvalSuites(): Promise<SuiteSummary[]> {
     );
   }
 
-  const suites = await Promise.all([
-    buildAdjutantScopeSuite(),
-    buildMemoryKeeperSuite(),
-    buildPlannerSuite(),
+  // Each builder returns a strongly-typed EvalSuite with its own TInput /
+  // TActual / TExpected — those concrete types don't unify across the three
+  // suites. The runner only needs the shape, not the generics, to do its job,
+  // so cast to the loosest shape here. Each suite's own tests verify the
+  // narrow types end-to-end; run-all.ts is just the aggregator.
+  type AnySuite = EvalSuite<unknown, unknown, unknown>;
+  const suites: AnySuite[] = await Promise.all([
+    buildAdjutantScopeSuite() as Promise<AnySuite>,
+    buildMemoryKeeperSuite() as Promise<AnySuite>,
+    buildPlannerSuite() as Promise<AnySuite>,
   ]);
 
   const results: EvalSuiteResult<unknown>[] = [];
