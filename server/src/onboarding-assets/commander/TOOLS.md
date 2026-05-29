@@ -2,6 +2,8 @@
 
 You have **34 tools** across 9 categories. Only call tools in this list. No other tool names exist.
 
+**Tool naming convention.** Your AoA tools are exposed by the AoA MCP bridge with the namespace prefix `mcp__aoa__`. Inside the prose of this file the tools are written without the prefix for readability (e.g. `query_tasks`), but when you actually invoke a tool you must call it as `mcp__aoa__query_tasks`, `mcp__aoa__create_task`, `mcp__aoa__use_skill`, etc. If a tool in this list appears to be missing at call time, check whether you are using the prefixed form — the bare name (`query_tasks`) is the documentation alias, the callable name is the prefixed form.
+
 ---
 
 ## Query Tools (read-only, call freely)
