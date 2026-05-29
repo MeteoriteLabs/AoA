@@ -186,12 +186,17 @@ export function threadOrchestrationService(db: Db) {
      * — exactly one concurrent executor wins; others get back `no-pending`.
      *
      * ### Read cursor
-     * Loads `discussion_entries` rows for the thread ordered by `createdAt ASC`
-     * then `id ASC` (tie-breaker). When `lastProcessedEntryId` is set, only
-     * rows created AFTER that entry are returned (uses `gt(id)` on UUID ordering
-     * which is insertion-order safe because UUIDs are v4 random — the stable
-     * ordering is `createdAt` + `id` tie-breaker). When null, all entries are
-     * returned from the beginning.
+     * Loads `discussion_entries` rows for the thread ordered by `seq ASC`
+     * (the per-thread monotonic counter assigned atomically on insert via
+     * `discussions.entrySeq`). When `lastProcessedEntryId` is set, the cursor
+     * entry's `seq` is first resolved via a point-read on that id; then only
+     * rows with `seq > cursorSeq` are returned. This is correct insertion-order
+     * because `seq` is a monotonic integer counter — NOT `id` (UUID v4 is
+     * random and lexicographic comparison of UUID strings does NOT reflect
+     * insertion order). When `lastProcessedEntryId` is null (or the cursor
+     * entry cannot be found), all entries for the thread are returned ordered
+     * by `seq ASC`. The cursor itself remains an id pointer and is advanced to
+     * the last entry's id on commit — only the COMPARISON changes to use seq.
      *
      * NOTE on "zero unprocessed entries": if the cursor is already at the last
      * entry (no new entries), the run short-circuits and returns
@@ -252,13 +257,34 @@ export function threadOrchestrationService(db: Db) {
 
       // ── Step 2: Read unprocessed entries ───────────────────────────────────
       // Load discussion_entries after the cursor (or all if cursor is null).
-      // Order by createdAt ASC, id ASC (tie-breaker) for deterministic replay.
+      // Order by seq ASC — seq is the per-thread monotonic counter and is the
+      // only ordering column that reflects true insertion order. UUID v4 `id`
+      // comparison is lexicographic and does NOT reflect insertion order.
+      //
+      // Two-step approach:
+      //   a) If lastProcessedEntryId is set, point-read the cursor entry to
+      //      resolve its seq. If the entry is not found (deleted; the FK is
+      //      onDelete set null so lastProcessedEntryId should already be null,
+      //      but guard anyway), fall back to reading from seq 0 (all entries).
+      //   b) Select all thread entries with seq > cursorSeq, ordered by seq ASC.
       let entries: OrchestratedEntry[];
       try {
-        const whereClause = lastProcessedEntryId
+        let cursorSeq: number | null = null;
+
+        if (lastProcessedEntryId) {
+          const [cursorRow] = await db
+            .select({ seq: discussionEntries.seq })
+            .from(discussionEntries)
+            .where(eq(discussionEntries.id, lastProcessedEntryId));
+          // If the cursor entry is found, use its seq; otherwise fall back to
+          // reading all entries (treat as seq 0 / no prior cursor).
+          cursorSeq = cursorRow?.seq ?? null;
+        }
+
+        const whereClause = cursorSeq !== null
           ? and(
               eq(discussionEntries.discussionId, threadId),
-              gt(discussionEntries.id, lastProcessedEntryId),
+              gt(discussionEntries.seq, cursorSeq),
             )
           : eq(discussionEntries.discussionId, threadId);
 
@@ -266,7 +292,7 @@ export function threadOrchestrationService(db: Db) {
           .select()
           .from(discussionEntries)
           .where(whereClause)
-          .orderBy(asc(discussionEntries.createdAt), asc(discussionEntries.id))) as OrchestratedEntry[];
+          .orderBy(asc(discussionEntries.seq))) as OrchestratedEntry[];
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         log.error({ threadId, startEpoch, err }, "thread orchestration: failed to load entries");

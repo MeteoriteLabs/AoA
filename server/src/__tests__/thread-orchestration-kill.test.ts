@@ -102,10 +102,13 @@ interface ControllerState {
 
 /**
  * Represents one `discussion_entries` row.
+ * `seq` is the per-thread monotonic integer counter (Plan 7). It is the
+ * authoritative ordering column and MUST be included in all test fixtures.
  */
 interface EntryRow {
   id: string;
   discussionId: string;
+  seq: number;
   createdAt: Date;
   inputType: string;
   rawContent: string;
@@ -118,15 +121,21 @@ interface EntryRow {
  *
  * The mock supports the exact query shapes that runController emits:
  *
- *   db.update(tos).set(…).where(…).returning()     — update controller
- *   db.select(…).from(tos).where(…)                — re-read runEpoch
- *   db.select().from(de).where(…).orderBy(…)       — load entries
+ *   db.update(tos).set(…).where(…).returning()        — update controller
+ *   db.select({ runEpoch }).from(tos).where(…)         — re-read runEpoch
+ *   db.select({ seq }).from(de).where(eq(de.id, …))   — cursor-seq point-read
+ *   db.select().from(de).where(…).orderBy(…)           — load entries by seq
  *
- * The `where` predicate in the mock is intentionally ignored — the mock
- * returns the pre-configured state and the tests set that state correctly
- * before each call. This is fine because the WHERE logic is exercised by
- * the real Drizzle query in production; here we only test the executor's
- * control flow.
+ * Select routing: `from(_table)` receives the table proxy object. We detect
+ * which table is being queried by reading a known sentinel property — `tos`
+ * proxies return `"tos.<prop>"`, `de` proxies return `"de.<prop>"`. The
+ * cursor-seq lookup passes a non-null projection AND targets `de`; the epoch
+ * re-read passes a non-null projection AND targets `tos`; the entry load
+ * passes no projection (undefined) AND targets `de`.
+ *
+ * Entry filtering now uses `seq`-based ordering, NOT array index. This makes
+ * the mock meaningful for the regression test: the mock and the real code both
+ * must agree that seq is the ordering column, not UUID id.
  */
 function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
   // Track committed cursor advances and lastError writes
@@ -181,17 +190,32 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
   }
 
   /**
-   * Simulate loading discussion_entries.
-   * The mock filters by `discussionId === threadId` and, if a cursor is set,
-   * returns only entries that come AFTER the cursor (by array position).
-   * Ordering by createdAt/id is implicit in the array order.
+   * Simulate the cursor-seq point-read:
+   *   SELECT seq FROM discussion_entries WHERE id = lastProcessedEntryId
+   * Returns [{ seq }] when found, [] when not found.
    */
-  function loadEntries(cursor: string | null): EntryRow[] {
-    const forThread = allEntries.filter(e => e.discussionId === controller.threadId);
-    if (!cursor) return [...forThread];
-    const idx = forThread.findIndex(e => e.id === cursor);
-    if (idx === -1) return [...forThread]; // cursor not found → return all
-    return forThread.slice(idx + 1);
+  function readCursorSeq(cursorId: string): Array<{ seq: number }> {
+    const entry = allEntries.find(e => e.id === cursorId);
+    if (!entry) return [];
+    return [{ seq: entry.seq }];
+  }
+
+  /**
+   * Simulate loading discussion_entries filtered by seq > cursorSeq.
+   * Uses seq-based ordering (correct insertion order). The `cursorSeq` is the
+   * seq value resolved in the prior point-read; null means "return all".
+   *
+   * IMPORTANT: this mock intentionally uses seq comparison (not array index or
+   * UUID comparison) so that the regression test is meaningful — if the code
+   * reverted to id-based ordering, this mock would still return results ordered
+   * by seq, exposing the mismatch.
+   */
+  function loadEntriesBySeq(cursorSeq: number | null): EntryRow[] {
+    const forThread = allEntries
+      .filter(e => e.discussionId === controller.threadId)
+      .sort((a, b) => a.seq - b.seq);
+    if (cursorSeq === null) return [...forThread];
+    return forThread.filter(e => e.seq > cursorSeq);
   }
 
   /**
@@ -210,16 +234,25 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
    *     - The ERROR update sets `{ lastError, updatedAt }`. Same pattern — no
    *       `.returning()`, so `where()` must be a Promise.
    *
-   *   select() routing:
-   *     - Epoch re-read: `db.select({ runEpoch: ... }).from(tos).where(...)`.
-   *       `where()` resolves to `[{ runEpoch: N }]`. No `.orderBy()`.
-   *     - Entry load: `db.select().from(de).where(...).orderBy(...)`.
-   *       `where()` returns a builder; `orderBy()` resolves to the entry array.
+   *   select() routing — three paths:
+   *     1. Epoch re-read: `db.select({ runEpoch }).from(tos).where(…)`
+   *        Detected by: `from` receives the `tos` proxy (String(table.runEpoch)
+   *        starts with "tos."). `where()` resolves to `[{ runEpoch: N }]`.
+   *     2. Cursor-seq point-read: `db.select({ seq }).from(de).where(eq(de.id, …))`
+   *        Detected by: `from` receives the `de` proxy AND a projection was
+   *        passed. `where()` resolves to `[{ seq: N }]` or `[]`.
+   *     3. Entry load: `db.select().from(de).where(…).orderBy(…)`
+   *        Detected by: `from` receives the `de` proxy AND no projection.
+   *        `where()` returns a builder; `orderBy()` resolves to the entry array
+   *        filtered by the cursorSeq stored in the closure.
    *
-   * We distinguish the two select paths by whether a projection was passed to
-   * `select()` (epoch re-read passes `{ runEpoch: ... }`; entry load passes
-   * nothing / undefined).
+   *   We carry `pendingCursorSeq` as mutable closure state: the cursor-seq
+   *   point-read (path 2) sets it; the entry load (path 3) consumes it.
    */
+
+  // Mutable closure state: set by the cursor-seq point-read, consumed by entry load.
+  let pendingCursorSeq: number | null = null;
+
   const db = {
     update: vi.fn(() => {
       return {
@@ -245,28 +278,43 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
     }),
 
     select: vi.fn((projection?: Record<string, unknown>) => ({
-      from: vi.fn((_table: unknown) => ({
-        where: vi.fn((_where: unknown) => {
-          // The executor calls select({ runEpoch: tos.runEpoch }) for the epoch
-          // re-read. Because `tos` is a tableProxy, `tos.runEpoch` resolves to
-          // the string "tos.runEpoch". The projection object has ONE key whose
-          // VALUE contains "runEpoch". We detect by checking if the projection
-          // is non-null (non-undefined).  Entry loads call select() with no
-          // argument (projection === undefined). That's the only distinction we
-          // need.
-          const isEpochRead = projection != null;
-          if (isEpochRead) {
-            // Epoch re-read — where() resolves to [{ runEpoch }].
-            return Promise.resolve(readEpoch());
-          }
-          // Entry load — where() returns a builder; orderBy() resolves to rows.
-          return {
-            orderBy: vi.fn(async (..._args: unknown[]) => {
-              return loadEntries(controller.lastProcessedEntryId);
-            }),
-          };
-        }),
-      })),
+      from: vi.fn((table: unknown) => {
+        // Detect which table by reading a sentinel property from the proxy.
+        // `tos` proxy → "tos.<prop>"; `de` proxy → "de.<prop>".
+        const isTosTable = String((table as Record<string, unknown>)["runEpoch"]).startsWith("tos.");
+        const isDeTable = String((table as Record<string, unknown>)["seq"]).startsWith("de.");
+
+        return {
+          where: vi.fn((_where: unknown) => {
+            if (isTosTable) {
+              // Path 1: Epoch re-read — where() resolves to [{ runEpoch }].
+              return Promise.resolve(readEpoch());
+            }
+
+            if (isDeTable && projection != null) {
+              // Path 2: Cursor-seq point-read.
+              // The WHERE clause identifies the cursor entry by id. We extract
+              // the id from controller.lastProcessedEntryId (the cursor id set
+              // before runController was called). We return seq from the entry.
+              const seqResult = readCursorSeq(controller.lastProcessedEntryId ?? "");
+              // Store the resolved seq for the subsequent entry load (path 3).
+              pendingCursorSeq = seqResult[0]?.seq ?? null;
+              return Promise.resolve(seqResult);
+            }
+
+            // Path 3: Entry load — where() returns a builder; orderBy() resolves
+            // to entry rows filtered by seq > pendingCursorSeq.
+            const capturedCursorSeq = pendingCursorSeq;
+            // Reset after consuming so it doesn't bleed into the next call.
+            pendingCursorSeq = null;
+            return {
+              orderBy: vi.fn(async (..._args: unknown[]) => {
+                return loadEntriesBySeq(capturedCursorSeq);
+              }),
+            };
+          }),
+        };
+      }),
     })),
 
     // ── Insert (used by ensureController inside triggerOnHumanEntry) ──────────
@@ -320,6 +368,7 @@ describe("runController — KILL scenario (stale-run suppression)", () => {
     const entryA: EntryRow = {
       id: "entry-a",
       discussionId: threadId,
+      seq: 1,
       createdAt: new Date("2026-01-01T10:00:00Z"),
       inputType: "write",
       rawContent: "Hello from human A",
@@ -327,6 +376,7 @@ describe("runController — KILL scenario (stale-run suppression)", () => {
     const entryB: EntryRow = {
       id: "entry-b",
       discussionId: threadId,
+      seq: 2,
       createdAt: new Date("2026-01-01T10:01:00Z"),
       inputType: "write",
       rawContent: "Hello from human B",
@@ -477,6 +527,7 @@ describe("runController — claim semantics", () => {
     const entryA: EntryRow = {
       id: "entry-concurrent-a",
       discussionId: "thread-concurrent",
+      seq: 1,
       createdAt: new Date("2026-01-01T10:00:00Z"),
       inputType: "write",
       rawContent: "Concurrent entry",
@@ -541,6 +592,7 @@ describe("runController — adjutantRunner error handling", () => {
     const entry: EntryRow = {
       id: "entry-err-a",
       discussionId: threadId,
+      seq: 1,
       createdAt: new Date("2026-01-01T10:00:00Z"),
       inputType: "write",
       rawContent: "Entry that causes error",
@@ -583,8 +635,8 @@ describe("runController — adjutantRunner error handling", () => {
     };
 
     const entries: EntryRow[] = [
-      { id: "entry-e1", discussionId: threadId, createdAt: new Date("2026-01-01T10:00:00Z"), inputType: "write", rawContent: "A" },
-      { id: "entry-e2", discussionId: threadId, createdAt: new Date("2026-01-01T10:01:00Z"), inputType: "write", rawContent: "B" },
+      { id: "entry-e1", discussionId: threadId, seq: 1, createdAt: new Date("2026-01-01T10:00:00Z"), inputType: "write", rawContent: "A" },
+      { id: "entry-e2", discussionId: threadId, seq: 2, createdAt: new Date("2026-01-01T10:01:00Z"), inputType: "write", rawContent: "B" },
     ];
 
     const { db, controller: ctrl } = makeStateDb(controller, entries);
@@ -658,6 +710,7 @@ describe("runController — onCommit hook", () => {
     const entry: EntryRow = {
       id: "entry-hook-a",
       discussionId: threadId,
+      seq: 1,
       createdAt: new Date("2026-01-01T10:00:00Z"),
       inputType: "write",
       rawContent: "Hook test entry",
@@ -692,6 +745,7 @@ describe("runController — onCommit hook", () => {
     const entry: EntryRow = {
       id: "entry-stale-a",
       discussionId: threadId,
+      seq: 1,
       createdAt: new Date("2026-01-01T10:00:00Z"),
       inputType: "write",
       rawContent: "Stale entry",
@@ -711,5 +765,141 @@ describe("runController — onCommit hook", () => {
     });
 
     expect(onCommit).not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
+// § 6 — Regression: cursor uses seq (monotonic integer), NOT UUID id
+//
+// This is the KILL TEST for the P1-T4 bug fix. It constructs a scenario where
+// UUID `id` lexicographic order DIFFERS from `seq` insertion order, verifying
+// that runController correctly reads entries after the cursor by `seq`, NOT by
+// `id`.
+//
+// Setup:
+//   - Entry C  →  id = "ffffffff-0000-4000-a000-000000000001", seq = 1  (cursor)
+//   - Entry D  →  id = "00000000-0000-4000-a000-000000000002", seq = 2  (newer)
+//   - Entry E  →  id = "00000000-0000-4000-a000-000000000003", seq = 3  (newest)
+//
+// UUID lexicographic order: "ffffffff..." > "00000000..." so under the old
+// `gt(id)` logic, NO entries would be returned after the cursor (both D and E
+// have smaller UUIDs than C). Under the correct `gt(seq)` logic, entries D and
+// E (seq 2 and 3) are returned because their seqs are greater than cursor's seq 1.
+//
+// The regression test FAILS under the old id-based logic (entries after cursor
+// = 0 because id("D") < id("C") and id("E") < id("C")) and PASSES under the
+// fixed seq-based logic.
+// =============================================================================
+
+describe("runController — REGRESSION: cursor compares seq, not UUID id", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reads entries with seq > cursor seq even when their UUID ids are lexicographically smaller than the cursor id", async () => {
+    const threadId = "thread-seq-regression";
+
+    // Entry C: seq=1, cursor entry. UUID starts with "ff" — lexicographically
+    // GREATER than entries D and E which start with "00".
+    const entryC: EntryRow = {
+      id: "ffffffff-0000-4000-a000-000000000001",
+      discussionId: threadId,
+      seq: 1,
+      createdAt: new Date("2026-01-01T10:00:00Z"),
+      inputType: "write",
+      rawContent: "Cursor entry (seq=1, UUID=ff...)",
+    };
+
+    // Entry D: seq=2. UUID starts with "00" — lexicographically LESS than
+    // entry C's UUID. Under old `gt(id)` logic this would be EXCLUDED because
+    // "00..." < "ff...". Under `gt(seq)` logic it is INCLUDED because seq 2 > 1.
+    const entryD: EntryRow = {
+      id: "00000000-0000-4000-a000-000000000002",
+      discussionId: threadId,
+      seq: 2,
+      createdAt: new Date("2026-01-01T10:01:00Z"),
+      inputType: "write",
+      rawContent: "Newer entry D (seq=2, UUID=00...)",
+    };
+
+    // Entry E: seq=3. UUID also starts with "00" — same exclusion problem under
+    // old `gt(id)` logic. Included under `gt(seq)`.
+    const entryE: EntryRow = {
+      id: "00000000-0000-4000-a000-000000000003",
+      discussionId: threadId,
+      seq: 3,
+      createdAt: new Date("2026-01-01T10:02:00Z"),
+      inputType: "write",
+      rawContent: "Newest entry E (seq=3, UUID=00...)",
+    };
+
+    // Cursor is set to entry C (the "ff..." UUID, seq=1).
+    // The test should see D and E as unprocessed.
+    const controller: ControllerState = {
+      threadId,
+      runEpoch: 1,
+      pendingRun: true,
+      hopCount: 0,
+      lastProcessedEntryId: entryC.id, // cursor = entry C (ff... UUID)
+      lastError: null,
+    };
+
+    let entriesSeen: OrchestratedEntry[] = [];
+    const { db, controller: ctrl } = makeStateDb(controller, [entryC, entryD, entryE]);
+    const svc = threadOrchestrationService(db);
+
+    const result = await svc.runController(threadId, {
+      adjutantRunner: async (input) => {
+        entriesSeen = input.entries;
+        return { output: "seq-regression output" };
+      },
+    });
+
+    // The run must have committed (not suppressed).
+    expect(result).toMatchObject({
+      ran: true,
+      suppressed: false,
+      startEpoch: 1,
+    });
+
+    // CRITICAL assertion: the runner must have seen D and E (seq > 1),
+    // NOT C (which is the cursor itself) and NOT an empty set (which the old
+    // gt(id) logic would have returned because id("D") < id("C") lexicographically).
+    expect(entriesSeen.map(e => e.id)).toEqual([
+      entryD.id, // seq=2
+      entryE.id, // seq=3
+    ]);
+
+    // Cursor advanced to entry E (the last one in seq order).
+    expect(ctrl.lastProcessedEntryId).toBe(entryE.id);
+    expect(result).toMatchObject({ cursorAdvancedTo: entryE.id });
+  });
+
+  it("confirming the regression: old id-based filter would return ZERO entries here (documents the bug)", () => {
+    // Purely a documentation / specification test — no real DB calls.
+    // Shows why gt(id) fails: the cursor entry has a lexicographically larger
+    // UUID than the newer entries, so gt(cursorId) excludes them.
+    const cursorId = "ffffffff-0000-4000-a000-000000000001"; // cursor, seq=1
+    const newerEntryId1 = "00000000-0000-4000-a000-000000000002"; // seq=2
+    const newerEntryId2 = "00000000-0000-4000-a000-000000000003"; // seq=3
+
+    // Simulate what gt(id) > cursorId would return: nothing, because both newer
+    // entry ids are lexicographically smaller than the cursor id.
+    const wouldBeReturnedByOldLogic = [newerEntryId1, newerEntryId2].filter(
+      id => id > cursorId, // JavaScript string comparison, same as Postgres text ordering
+    );
+
+    // The old logic returns ZERO entries — the bug.
+    expect(wouldBeReturnedByOldLogic).toHaveLength(0);
+
+    // Correct seq-based logic: both entries have seq > 1 (cursor's seq).
+    const entries = [
+      { id: newerEntryId1, seq: 2 },
+      { id: newerEntryId2, seq: 3 },
+    ];
+    const wouldBeReturnedBySeqLogic = entries.filter(e => e.seq > 1);
+
+    // Seq-based logic correctly returns both newer entries.
+    expect(wouldBeReturnedBySeqLogic).toHaveLength(2);
   });
 });
