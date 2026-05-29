@@ -26,17 +26,40 @@ describe("P3.3: sweep trigger + adjutant periodic driver", () => {
       sweepTriggers: any[];
       activeThreads?: any[];
       insertResult?: any[];
+      recentWakeups?: any[]; // QA-BUG-011: rows returned by the dedup-window lookup
     }) {
       const valuesMock = vi.fn().mockResolvedValue(options.insertResult ?? [{ id: "w-1" }]);
-      let triggerQueryCalled = false;
+      const recentRows = options.recentWakeups ?? [];
 
+      // QA-BUG-011: the dedup query chains `.where(...).limit(1)`. activeThreads
+      // / trigger queries just await `.where(...)`. We return a thenable from
+      // .where() that resolves to the appropriate row set AND exposes `.limit`
+      // so the dedup call still resolves. Sequence: 1st where = triggers;
+      // subsequent where calls alternate between activeThreads (when awaited
+      // directly) and dedup (when `.limit` is chained). To differentiate we
+      // track call counts and let the consumer pick the right shape via the
+      // chain it picks: awaited-directly → activeThreads, `.limit()` chained
+      // → dedup. Both shapes can come from the same thenable because the
+      // caller picks exactly one continuation.
+      let triggerQueryDone = false;
+      let threadQueryToggle = true; // alternates: threads, dedup, threads, dedup, ...
       const whereMock = vi.fn().mockImplementation(() => {
-        if (!triggerQueryCalled) {
-          triggerQueryCalled = true;
+        if (!triggerQueryDone) {
+          triggerQueryDone = true;
           return Promise.resolve(options.sweepTriggers);
         }
-        // For subsequent queries (activeThreads per trigger)
-        return Promise.resolve(options.activeThreads ?? []);
+        // After the trigger query, subsequent where calls are either
+        // activeThreads (awaited) or dedup (.limit chained). We return a
+        // thenable that resolves to activeThreads, AND attach .limit that
+        // resolves to recentWakeups — the consumer picks one.
+        const isThread = threadQueryToggle;
+        threadQueryToggle = !threadQueryToggle;
+        const target = isThread ? (options.activeThreads ?? []) : recentRows;
+        const t = Promise.resolve(target);
+        // .limit always resolves to recentRows (the dedup result shape)
+        return Object.assign(t, {
+          limit: vi.fn().mockResolvedValue(recentRows),
+        });
       });
 
       return {
@@ -103,6 +126,22 @@ describe("P3.3: sweep trigger + adjutant periodic driver", () => {
       await runAdjutantSweep(db as any);
 
       // Should not have called insert when there are no active threads
+      expect(db._valuesMock).not.toHaveBeenCalled();
+    });
+
+    it("QA-BUG-011: skips re-queueing when a recent wakeup exists for the same (agent, thread)", async () => {
+      // recentWakeups returns a non-empty row → dedup hit → insert MUST be skipped
+      const db = makeDb({
+        sweepTriggers: [
+          { agentId: "adj-1", companyId: "co-1" },
+        ],
+        activeThreads: [{ id: "t-1" }],
+        recentWakeups: [{ id: "previous-wakeup-id" }],
+      });
+
+      await runAdjutantSweep(db as any);
+
+      // No insert because the dedup window matched a previous wakeup
       expect(db._valuesMock).not.toHaveBeenCalled();
     });
 

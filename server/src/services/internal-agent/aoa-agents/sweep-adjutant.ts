@@ -1,6 +1,34 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers, discussions, agentWakeupRequests } from "@armyofagents/db";
+
+/**
+ * QA-BUG-011 — Adjutant sweep dedup window.
+ *
+ * The original sweep enqueued one wakeup per (Adjutant, active-thread) tuple
+ * EVERY tick. When a thread sits in `phase=discuss` with no pending items
+ * (already-resolved-but-not-advanced state), each wakeup fires an LLM call
+ * that posts a "ready to advance" system notice. The next tick repeats. We
+ * observed 20+ near-identical Adjutant notices on a single thread within
+ * one minute during the QA pass on 2026-05-29. Each notice costs an LLM
+ * call (~$0.01-$0.03) so the loop burns through the company's monthly
+ * budget on a single dormant thread.
+ *
+ * The dedup window suppresses requeues for any (agentId, threadId) tuple
+ * that has been enqueued within the last N minutes regardless of the
+ * existing wakeup's status. Choice of window:
+ *  - Too short (< 5 min) → the loop reopens before the founder can act.
+ *  - Too long (> 60 min) → legitimate retries (e.g. after thread updates)
+ *    are starved.
+ *  - 10 min is the documented Adjutant dispatch cadence in the
+ *    implementation plan, and matches the founder's expected response
+ *    window for advance notices.
+ *
+ * If a thread's situation changes (new entry, pending items appear,
+ * crewPaused flipped) the founder/UI typically nudges the thread directly,
+ * bypassing the sweep cadence. So the 10-min dedup is safe.
+ */
+const ADJUTANT_DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * Periodic sweep driver for the Adjutant role (P3.3).
@@ -63,6 +91,28 @@ export async function runAdjutantSweep(db: Db): Promise<void> {
       );
 
     for (const thread of activeThreads) {
+      // QA-BUG-011 dedup: skip if we already enqueued a wakeup for this
+      // (agent, thread) tuple within the dedup window. Status-agnostic —
+      // a wakeup may be queued, claimed, finished, or failed; in all
+      // cases the recent activity is enough signal that we should not
+      // re-fire. The check is a small focused query (companyId + agentId
+      // + thread payload + createdAt) — cheap because it filters down to
+      // at most one row in practice.
+      const cutoff = new Date(Date.now() - ADJUTANT_DEDUP_WINDOW_MS);
+      const [recent] = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, trigger.companyId),
+            eq(agentWakeupRequests.agentId, trigger.agentId),
+            sql`${agentWakeupRequests.payload} ->> 'threadId' = ${thread.id}`,
+            gt(agentWakeupRequests.createdAt, cutoff),
+          ),
+        )
+        .limit(1);
+      if (recent) continue;
+
       await db.insert(agentWakeupRequests).values({
         companyId: trigger.companyId,
         agentId: trigger.agentId,
