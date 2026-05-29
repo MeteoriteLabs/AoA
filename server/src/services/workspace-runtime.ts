@@ -2826,3 +2826,144 @@ export function buildWorkspaceReadyComment(input: {
   }
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// resetWorkspaceToCleanState
+// ---------------------------------------------------------------------------
+//
+// Clears leftover junk from a prior/failed run in a REUSED thread workspace
+// WITHOUT destroying committed work.
+//
+// SAFETY CONTRACT — WHY WE RESET TO HEAD ONLY:
+//   In thread-workspace reuse, each task in the thread may commit work to the
+//   shared worktree branch.  Resetting to a base ref (e.g. origin/main, the
+//   thread-workspace base branch, or any ref other than the current HEAD) would
+//   WIPE those prior-task commits.  That is permanent, unrecoverable data loss.
+//
+//   Therefore this function ONLY runs:
+//     git reset --hard HEAD     ← discards uncommitted changes to tracked files;
+//                                  HEAD (the current branch tip) is unchanged
+//     git clean -fd             ← removes untracked files + directories
+//
+//   There is NO parameter that lets a caller supply a different ref.  If you
+//   need to reset to a base ref, that is a completely different (destructive)
+//   operation and must be a separately-reviewed, separately-named function.
+//
+// PATH GUARD:
+//   The function refuses to operate on obviously wrong paths (empty, root "/",
+//   or a directory that does not look like a git worktree) to prevent
+//   accidentally running `reset --hard` on the wrong directory.
+
+export type GitRunner = (
+  args: string[],
+  cwd: string,
+) => Promise<{ stdout: string; stderr: string; code: number }>;
+
+export interface ResetWorkspaceToCleanStateOpts {
+  /**
+   * Inject a fake git runner in tests.  Defaults to the module-private runGit
+   * wrapper (which uses `spawn` via executeProcess).  Production code should
+   * never pass this.
+   */
+  gitRunner?: GitRunner;
+}
+
+async function defaultGitRunner(
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  // Thin bridge to the module-private executeProcess so the injection seam
+  // shares the same underlying spawn logic used everywhere else in this file.
+  const proc = await executeProcess({ command: "git", args, cwd });
+  return { stdout: proc.stdout, stderr: proc.stderr, code: proc.code ?? -1 };
+}
+
+/**
+ * Safely clears the working tree of a git worktree back to a clean state.
+ *
+ * Runs, in order:
+ *   1. git reset --hard HEAD
+ *   2. git clean -fd
+ *
+ * NEVER resets to anything other than HEAD — see the block comment above for
+ * the full safety rationale.
+ *
+ * @param worktreePath  Absolute path to the git worktree directory.
+ * @param opts          Optional injection seam for testing (gitRunner).
+ * @returns             `{ ok: true }` on success; throws on any failure.
+ */
+export async function resetWorkspaceToCleanState(
+  worktreePath: string,
+  opts?: ResetWorkspaceToCleanStateOpts,
+): Promise<{ ok: true }> {
+  // -------------------------------------------------------------------------
+  // PATH GUARD
+  // -------------------------------------------------------------------------
+  if (!worktreePath || worktreePath.trim() === "") {
+    throw new Error("resetWorkspaceToCleanState: worktreePath must not be empty");
+  }
+
+  const resolved = path.resolve(worktreePath);
+
+  // Refuse to operate on the filesystem root (e.g. "/" on POSIX or "C:\" on Windows).
+  const parsed = path.parse(resolved);
+  if (parsed.root === resolved || parsed.dir === resolved) {
+    throw new Error(
+      `resetWorkspaceToCleanState: refusing to operate on filesystem root "${resolved}"`,
+    );
+  }
+
+  // Verify the path is a directory that contains a ".git" entry (file or
+  // directory).  A linked worktree has a ".git" *file*; the main worktree
+  // has a ".git" *directory*.  Either is acceptable.
+  let hasGitEntry = false;
+  try {
+    await fs.stat(path.join(resolved, ".git"));
+    hasGitEntry = true;
+  } catch {
+    hasGitEntry = false;
+  }
+
+  if (!hasGitEntry) {
+    throw new Error(
+      `resetWorkspaceToCleanState: "${resolved}" does not appear to be a git worktree (no .git entry found)`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // GIT OPERATIONS
+  // -------------------------------------------------------------------------
+  const run = opts?.gitRunner ?? defaultGitRunner;
+
+  logger.info({ worktreePath: resolved }, "resetWorkspaceToCleanState: starting clean-state reset");
+
+  // Step 1: discard uncommitted changes to tracked files.
+  // CRITICAL: the ref is ALWAYS "HEAD" — never a branch name, never an origin
+  // ref.  Resetting to a base ref would destroy prior-task commits. See safety
+  // rationale in the block comment above.
+  const resetResult = await run(["reset", "--hard", "HEAD"], resolved);
+  if (resetResult.code !== 0) {
+    const detail = [resetResult.stderr.trim(), resetResult.stdout.trim()].filter(Boolean).join("\n");
+    throw new Error(
+      `resetWorkspaceToCleanState: git reset --hard HEAD failed at "${resolved}"` +
+        (detail ? `: ${detail}` : ` with exit code ${resetResult.code}`),
+    );
+  }
+
+  // Step 2: remove untracked files and directories.
+  const cleanResult = await run(["clean", "-fd"], resolved);
+  if (cleanResult.code !== 0) {
+    const detail = [cleanResult.stderr.trim(), cleanResult.stdout.trim()].filter(Boolean).join("\n");
+    throw new Error(
+      `resetWorkspaceToCleanState: git clean -fd failed at "${resolved}"` +
+        (detail ? `: ${detail}` : ` with exit code ${cleanResult.code}`),
+    );
+  }
+
+  logger.info(
+    { worktreePath: resolved },
+    "resetWorkspaceToCleanState: clean-state reset complete",
+  );
+
+  return { ok: true };
+}
