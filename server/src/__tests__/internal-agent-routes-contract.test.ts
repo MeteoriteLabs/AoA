@@ -113,7 +113,7 @@ describe("internal-agent-routes-contract", () => {
     expect(Array.isArray(router.stack)).toBe(true);
   });
 
-  it("registers exactly 25 route handlers", () => {
+  it("registers exactly 26 route handlers", () => {
     const db = {} as any;
     const router = internalAgentRoutes(db);
 
@@ -122,8 +122,9 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 22 existing routes + 2 durable tool-trust rule routes + 1 runtime settings route.
-    expect(routeLayers).toHaveLength(25);
+    // 22 existing routes + 2 durable tool-trust rule routes + 1 runtime settings
+    // route + 1 test-connection route (QA-BUG-010, 2026-05-29).
+    expect(routeLayers).toHaveLength(26);
   });
 
   it("registers all expected paths and methods", () => {
@@ -171,6 +172,8 @@ describe("internal-agent-routes-contract", () => {
       // session reorder + reset routes (Batch 2)
       { path: "/companies/:companyId/internal-agent/conversations/reorder", method: "patch" },
       { path: "/companies/:companyId/internal-agent/conversations/order", method: "delete" },
+      // QA-BUG-010: CLI test-connection probe surfaced by Settings → Commander → Execution & Model
+      { path: "/companies/:companyId/internal-agent/test-connection", method: "post" },
     ];
 
     for (const expected of expectedRoutes) {
