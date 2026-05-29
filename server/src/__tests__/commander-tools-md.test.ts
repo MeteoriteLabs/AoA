@@ -29,8 +29,13 @@ describe("TOOLS.md contract", () => {
     });
   }
 
-  // Browser routing rule must be explicit
-  it("contains browser routing instruction (Bash for HTTP, task for QA)", () => {
+  // Browser routing instructions used to live here, but the v0.1 rewrite
+  // (commit 25507693) moved external-tool routing (Bash for HTTP, task for
+  // QA workflows) into AGENTS.md / HEARTBEAT.md so TOOLS.md focuses purely
+  // on the 34 internal Commander tools. The contract test is preserved as
+  // a placeholder — if browser routing returns to TOOLS.md, restore the
+  // assertion below.
+  it.skip("(deferred) contains browser routing instruction (Bash for HTTP, task for QA)", () => {
     expect(src).toContain("Bash");
     expect(src.toLowerCase()).toContain("browser");
   });
@@ -40,5 +45,15 @@ describe("TOOLS.md contract", () => {
     expect(src).not.toContain(
       "You have query, action, memory, workflow, coordination, analysis, file, and delegation tools",
     );
+  });
+
+  // The v0.1 rewrite organizes tools into named, table-rendered categories.
+  // Lock that surface so a future drift back to the prose blob is caught.
+  it("organizes tools into named markdown categories with table rows", () => {
+    expect(src).toMatch(/^## Query Tools/m);
+    expect(src).toMatch(/^## Action Tools/m);
+    expect(src).toMatch(/^## Memory Tools/m);
+    // Pipe-table syntax: | Tool | What it ... |
+    expect(src).toMatch(/^\|\s*Tool\s*\|/m);
   });
 });
