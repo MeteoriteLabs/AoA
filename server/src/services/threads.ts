@@ -28,11 +28,11 @@ import {
   companyMemberships,
   agentWakeupRequests,
   aoaAgentTriggers,
-  notifications,
   threadPlanSteps,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { publishLiveEvent } from "./live-events.js";
+import { createNotification } from "./notifications.js";
 import { logActivity } from "./activity-log.js";
 import { goalService } from "./goals.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `merge()` to keep
@@ -246,7 +246,7 @@ export async function processMentions(
       .then((rows) => rows);
 
     if (userRows.length > 0) {
-      await db.insert(notifications).values({
+      await createNotification(db, {
         companyId,
         userId: userRows[0].id,
         type: "thread.mention",

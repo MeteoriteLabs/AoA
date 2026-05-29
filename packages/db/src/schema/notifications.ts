@@ -4,8 +4,9 @@ import {
   text,
   timestamp,
   index,
+  integer,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 // ── Table 11: notifications ─────────────────────────────────────────────────
@@ -24,6 +25,9 @@ export const notifications = pgTable(
     // 'discussion.extraction_complete' | 'discussion.extraction_failed'
     // | 'internal_agent.reminder' | 'internal_agent.proactive'
     // | 'internal_agent.action_result'
+    // | 'thread.mention' | 'thread.scope_proposal_posted'
+    // | 'thread.artifact_needs_review' | 'thread.crew_failed'
+    // | 'thread.spinoff_suggested' | 'thread.human_input_needed'
     title: text("title").notNull(),
     message: text("message"),
 
@@ -35,6 +39,17 @@ export const notifications = pgTable(
     // State
     readAt: timestamp("read_at", { withTimezone: true }),
     dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+
+    // Delivery tracking (Phase G2, T26).
+    // `deliveryAttempts` increments on every retry attempt. `deliveredAt` is
+    // stamped when the row is considered successfully delivered (or queued
+    // for the realtime channel — concrete delivery adapters land later).
+    // `deliveryError` is the most recent failure message; rows with a non-
+    // null error and < MAX_DELIVERY_ATTEMPTS attempts are picked up by the
+    // notification retry worker. See server/src/services/notifications.ts.
+    deliveryAttempts: integer("delivery_attempts").notNull().default(0),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    deliveryError: text("delivery_error"),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -54,6 +69,11 @@ export const notifications = pgTable(
       table.companyId,
       table.createdAt,
     ),
+    retryQueueIdx: index("notifications_retry_queue_idx")
+      .on(table.deliveryAttempts, table.deliveryError)
+      .where(
+        sql`delivery_error IS NOT NULL AND delivered_at IS NULL`,
+      ),
   }),
 );
 

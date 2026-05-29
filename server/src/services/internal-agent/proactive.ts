@@ -8,10 +8,10 @@ import {
   internalAgentConfig,
   internalAgentRuns,
   internalAgentReminders,
-  notifications,
   memoryFeedbackPatterns,
   activityLog,
 } from "@armyofagents/db";
+import { createNotification } from "../notifications.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,17 +96,13 @@ async function createNotificationIfAllowed(
 
   // 'digest' and 'realtime' both create the notification record.
   // Digest batching is a consumer concern (the UI groups them).
-  const [notif] = await db
-    .insert(notifications)
-    .values({
-      companyId,
-      userId,
-      type: "internal_agent_proactive",
-      title,
-      message,
-    })
-    .returning();
-  return notif;
+  return createNotification(db, {
+    companyId,
+    userId,
+    type: "internal_agent_proactive",
+    title,
+    message,
+  });
 }
 
 // ── Checks ───────────────────────────────────────────────────────────────────
@@ -505,16 +501,13 @@ export async function checkReminders(
       .where(eq(internalAgentReminders.id, reminder.id));
 
     // Reminders always notify regardless of preference
-    const [notif] = await db
-      .insert(notifications)
-      .values({
-        companyId,
-        userId: reminder.userId,
-        type: "internal_agent_reminder",
-        title: "Reminder",
-        message: reminder.content,
-      })
-      .returning();
+    await createNotification(db, {
+      companyId,
+      userId: reminder.userId,
+      type: "internal_agent_reminder",
+      title: "Reminder",
+      message: reminder.content,
+    });
   }
 
   return { firedCount: dueReminders.length, runCreated: true };

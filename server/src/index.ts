@@ -50,6 +50,7 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
 import { initThreadEventListener } from "./services/thread-events.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -856,6 +857,19 @@ const embeddingWorker = startEmbeddingWorker(db as any, { intervalMs: 2000 });
 // already exit the process, but this lets the in-flight tick log cleanly.
 process.once("SIGTERM", () => embeddingWorker.stop());
 process.once("SIGINT", () => embeddingWorker.stop());
+
+// Notification delivery retry worker (Phase G2, T26).
+// Sweeps `notifications` rows where `delivery_error IS NOT NULL AND
+// delivered_at IS NULL AND delivery_attempts < MAX_DELIVERY_ATTEMPTS` on
+// a 60-second cadence. Disabled by setting NOTIFICATION_RETRY_ENABLED="false".
+const notificationRetryEnabled = process.env.NOTIFICATION_RETRY_ENABLED !== "false";
+const notificationRetryTimer = notificationRetryEnabled
+  ? scheduleNotificationRetryWorker(db as any)
+  : null;
+if (notificationRetryTimer) {
+  process.once("SIGTERM", () => clearInterval(notificationRetryTimer));
+  process.once("SIGINT", () => clearInterval(notificationRetryTimer));
+}
 
 // Thread event listener singleton (Task B2, T12, Decisions D5+D7).
 // In-memory 30s debounce on human-authored discussion entries. When the

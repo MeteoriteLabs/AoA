@@ -123,7 +123,12 @@ describe("processMentions (dispatch)", () => {
     triggerRole?: string;
   }) {
     const insertValues = vi.fn().mockReturnThis();
-    const insertChain = { values: insertValues };
+    // `.returning()` resolves to a single-row array so `const [row] = await …`
+    // destructures cleanly. Phase G2 (T26) introduced this in createNotification.
+    const insertChain: any = {
+      values: insertValues,
+      returning: vi.fn(() => Promise.resolve([{ id: "notif-stub" }])),
+    };
 
     // Queue mirrors the actual sequence of selects in processMentions():
     //   1. agent lookup (always)
@@ -269,7 +274,10 @@ describe("processMentions (dispatch)", () => {
   it("handles multiple mentions in one call", async () => {
     // We need a mock db that returns two different results for agent lookups
     const insertValues = vi.fn().mockReturnThis();
-    const insertChain = { values: insertValues };
+    const insertChain: any = {
+      values: insertValues,
+      returning: vi.fn(() => Promise.resolve([{ id: "notif-stub" }])),
+    };
 
     // selectQueue mirrors processMentions() select order:
     //   @Bot → agent lookup (found) → aoaAgentTriggers lookup (UAT iter 2)
