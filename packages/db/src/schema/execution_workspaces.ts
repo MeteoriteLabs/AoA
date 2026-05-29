@@ -50,6 +50,14 @@ export const executionWorkspaces = pgTable(
     providerRef: text("provider_ref"),
     derivedFromExecutionWorkspaceId: uuid("derived_from_execution_workspace_id")
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
+    // Per-workspace run lock (slice 2).
+    // activeRunId holds the UUID of the heartbeat run that currently owns this
+    // workspace.  lockedAt is the wall-clock time the lock was acquired.  Both
+    // are NULL when no run is holding the lock.  A stale lock (lockedAt older
+    // than a configured threshold) can be reclaimed by a new run — see
+    // tryClaimWorkspaceRun() in execution-workspaces.ts.
+    activeRunId: uuid("active_run_id"),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
     openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),

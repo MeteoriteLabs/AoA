@@ -286,6 +286,41 @@ export function resolveExecutionWorkspaceMode(input: {
   return "shared_workspace";
 }
 
+/**
+ * Decide whether a deliverable task should reuse the thread's shared workspace
+ * or get its own isolated worktree/branch.  This is a pure decision function
+ * with no I/O — all context is passed in.
+ *
+ * Rules:
+ *   • intent === "isolated"  → "isolated"
+ *     The deliverable (or its proposal) explicitly requests an independent
+ *     worktree / branch.  Always honoured regardless of threadHasWorkspace.
+ *
+ *   • otherwise (intent === "reuse" OR intent is absent)  → "reuse_thread"
+ *     The deliverable shares the thread's workspace.  When threadHasWorkspace
+ *     is false the caller is expected to create the thread workspace first;
+ *     the returned mode is the same in both the "create-then-reuse" and
+ *     "already-exists" cases because the distinction is a provisioning concern,
+ *     not a mode concern.
+ *
+ * This function is intentionally kept next to resolveExecutionWorkspaceMode so
+ * the two resolution paths for task-level vs deliverable-level workspace mode
+ * remain easy to compare.
+ */
+export function resolveDeliverableWorkspaceMode(input: {
+  intent?: "reuse" | "isolated";
+  threadHasWorkspace: boolean;
+}): "reuse_thread" | "isolated" {
+  if (input.intent === "isolated") {
+    return "isolated";
+  }
+  // Default (no intent) and explicit "reuse" both map to "reuse_thread".
+  // threadHasWorkspace does not affect the resolved mode — it only affects
+  // whether the caller must provision the workspace before attaching the
+  // deliverable.
+  return "reuse_thread";
+}
+
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;

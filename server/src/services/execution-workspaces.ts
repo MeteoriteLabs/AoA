@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   executionWorkspaces,
@@ -39,6 +39,16 @@ type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+/**
+ * How long (in ms) a workspace lock is considered fresh.  After this interval
+ * a lock is "stale" and a new caller may reclaim it atomically, which handles
+ * the case where the process that acquired the lock crashed without releasing.
+ *
+ * Default: 30 minutes.  Callers may pass a custom staleMs to tryClaimWorkspaceRun
+ * (useful in tests and for workloads with known shorter/longer build times).
+ */
+export const WORKSPACE_RUN_LOCK_STALE_MS = 30 * 60 * 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -893,6 +903,89 @@ export function executionWorkspaceService(db: Db) {
     createTaskOwnedIdempotent,
 
     update,
+
+    /**
+     * Atomically claim the per-workspace run lock for `runId`.
+     *
+     * The claim succeeds (returns the claimed workspace row) when either:
+     *   a) the workspace has no current lock  (active_run_id IS NULL), OR
+     *   b) the existing lock is stale         (locked_at < now - staleMs).
+     *
+     * SQL shape:
+     *   UPDATE execution_workspaces
+     *     SET active_run_id = <runId>, locked_at = now()
+     *   WHERE id = <workspaceId>
+     *     AND (active_run_id IS NULL OR locked_at < now() - <staleMs> interval)
+     *   RETURNING id, active_run_id, locked_at
+     *
+     * Returns the updated row when the lock was acquired, or `null` when the
+     * workspace is currently locked by another run.
+     */
+    tryClaimWorkspaceRun: async (
+      workspaceId: string,
+      runId: string,
+      opts?: { staleMs?: number },
+    ): Promise<{ id: string; activeRunId: string; lockedAt: Date } | null> => {
+      const staleMs = opts?.staleMs ?? WORKSPACE_RUN_LOCK_STALE_MS;
+      // Build the stale-interval literal.  We express it as `now() - interval
+      // '<N> milliseconds'` so it works on any PostgreSQL version without
+      // needing a cast.  Drizzle's `sql` template is used to keep this
+      // side-effect-free and injectable into the WHERE clause.
+      const staleThreshold = sql`now() - interval '${sql.raw(String(staleMs))} milliseconds'`;
+
+      const [row] = await db
+        .update(executionWorkspaces)
+        .set({
+          activeRunId: runId,
+          lockedAt: new Date(), // Drizzle serialises this to a timestamptz literal
+        })
+        .where(
+          and(
+            eq(executionWorkspaces.id, workspaceId),
+            sql`(${executionWorkspaces.activeRunId} IS NULL OR ${executionWorkspaces.lockedAt} < ${staleThreshold})`,
+          ),
+        )
+        .returning({
+          id: executionWorkspaces.id,
+          activeRunId: executionWorkspaces.activeRunId,
+          lockedAt: executionWorkspaces.lockedAt,
+        });
+
+      if (!row || !row.activeRunId || !row.lockedAt) return null;
+      return { id: row.id, activeRunId: row.activeRunId, lockedAt: row.lockedAt };
+    },
+
+    /**
+     * Release the per-workspace run lock.
+     *
+     * Clears active_run_id and locked_at ONLY when the workspace is currently
+     * locked by `runId`.  A lock held by a different run is never disturbed —
+     * this is intentional: if a stale-timeout reclaim happened while the
+     * original holder was still running, the original holder must not
+     * accidentally clear the new owner's lock on completion.
+     *
+     * SQL shape:
+     *   UPDATE execution_workspaces
+     *     SET active_run_id = NULL, locked_at = NULL
+     *   WHERE id = <workspaceId>
+     *     AND active_run_id = <runId>
+     */
+    releaseWorkspaceRun: async (
+      workspaceId: string,
+      runId: string,
+    ): Promise<boolean> => {
+      const [row] = await db
+        .update(executionWorkspaces)
+        .set({ activeRunId: null, lockedAt: null })
+        .where(
+          and(
+            eq(executionWorkspaces.id, workspaceId),
+            eq(executionWorkspaces.activeRunId, runId),
+          ),
+        )
+        .returning({ id: executionWorkspaces.id });
+      return Boolean(row);
+    },
   };
 }
 
