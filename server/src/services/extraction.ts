@@ -808,6 +808,24 @@ export async function extractMemoryCandidates(
     threadId: params.threadId,
   });
 
+  // ── 0. Per-thread privacy gate (G4 wiring-gap fix, G3 contract).
+  //       Threads with allowMemoryExtraction=false MUST short-circuit at
+  //       the top of the chain: we don't even fetch entries, much less
+  //       burn LLM tokens. The propose_memory_from_thread tool also
+  //       enforces this downstream, but extracting candidates that will
+  //       immediately be rejected wastes time and budget.
+  const threadRows = await db
+    .select({ allowMemoryExtraction: discussions.allowMemoryExtraction })
+    .from(discussions)
+    .where(eq(discussions.id, params.threadId));
+  const allowExtraction = threadRows[0]?.allowMemoryExtraction;
+  if (allowExtraction === false) {
+    log.info(
+      "thread has allowMemoryExtraction=false — returning empty candidate set",
+    );
+    return { candidates: [] };
+  }
+
   // ── 1. Resolve the cursor: when sinceEntryId is given, look up its
   //       createdAt so we can express "strictly after this entry" with a
   //       single index-friendly `createdAt > cursor` predicate. Falling back

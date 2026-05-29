@@ -293,81 +293,100 @@ describe("integration: thread privacy → memory proposal inheritance", () => {
 // Tests — extractMemoryCandidates wiring gap
 // ---------------------------------------------------------------------------
 
-describe("integration: extractMemoryCandidates and allowMemoryExtraction wiring gap", () => {
-  // Mock harness for the extraction service. The service makes two .select()
-  // calls in the no-cursor path: (1) cursor lookup if sinceEntryId provided
-  // (skipped here), (2) entry fetch keyed by discussionId. Plus, on the LLM
-  // path, buildDepartmentsList issues additional reads — but we short-circuit
-  // by returning zero entries so the LLM is never invoked.
-  function makeExtractionDb(entryRows: any[] = []) {
-    const where = vi.fn().mockResolvedValue(entryRows);
-    const orderBy = vi.fn().mockResolvedValue(entryRows);
+describe("integration: extractMemoryCandidates respects allowMemoryExtraction (G4 gap closed in G3 follow-up)", () => {
+  // Mock harness for the extraction service. The discussions privacy gate
+  // (added 2026-05-29 as a G4-surfaced fix) is the FIRST select; entry fetch
+  // is the SECOND select when extraction is allowed. We control which path
+  // the test exercises by providing a discussions-row queue.
+  function makeExtractionDb(opts: {
+    threadAllowExtraction?: boolean | undefined;
+    entryRows?: any[];
+  }) {
+    const entryRows = opts.entryRows ?? [];
+    const discussionsRow =
+      opts.threadAllowExtraction === undefined
+        ? []
+        : [{ allowMemoryExtraction: opts.threadAllowExtraction }];
 
-    const whereChain = vi.fn().mockReturnValue({
-      orderBy,
-      then: (cb: (v: any) => any) => Promise.resolve(cb(entryRows)),
+    // Each .select() pops one result off the queue. Order matches the
+    // order of selects inside extractMemoryCandidates: discussions privacy
+    // gate first, then entries fetch.
+    const queue: any[][] = [discussionsRow, entryRows];
+
+    const select = vi.fn().mockImplementation(() => {
+      const result = queue.shift() ?? [];
+      // The drizzle chain is `select().from(t).where(p).orderBy(c)` —
+      // every call shape resolves to `result`. .where returns a thenable
+      // that resolves to result, and also exposes .orderBy that resolves
+      // to result.
+      const orderBy = vi.fn().mockResolvedValue(result);
+      const whereChain = {
+        orderBy,
+        then: (cb: (v: any) => any) => Promise.resolve(cb(result)),
+      };
+      const where = vi.fn().mockReturnValue(whereChain);
+      const from = vi.fn().mockReturnValue({ where });
+      return { from };
     });
-    const from = vi.fn().mockReturnValue({ where: whereChain });
-    const select = vi.fn().mockReturnValue({ from });
 
-    return { db: { select } as any, where, orderBy };
+    return { db: { select } as any };
   }
 
   it(
-    "TODO(wiring-gap): extractMemoryCandidates does NOT read discussions.allowMemoryExtraction; " +
-      "asserting CURRENT behavior — extraction runs regardless of the flag",
+    "short-circuits to {candidates:[]} when discussions.allowMemoryExtraction=false",
     async () => {
-      // The plan's intent: "extractMemoryCandidates skips threads with
-      // allowMemoryExtraction=false (returns empty candidates)".
-      //
-      // CURRENT IMPLEMENTATION: see server/src/services/extraction.ts:800.
-      // The function never queries discussions.allowMemoryExtraction — it
-      // jumps directly to fetching entries by discussionId. The privacy
-      // flag is honored ONE LEVEL DOWNSTREAM at the proposal boundary
-      // (proposeMemoryFromThreadTool), so a candidate can be EXTRACTED but
-      // cannot be PROPOSED on a flag=false thread.
-      //
-      // We assert this honestly: when no entries exist, extraction returns
-      // {candidates:[]} (the "empty" path), and we verify NO read against
-      // a discussions table was issued. When the future enforcement lands,
-      // either rewrite this test to assert rejection OR remove the TODO and
-      // assert empty candidates as the privacy-preserving outcome.
-
-      const { db } = makeExtractionDb([]); // no entries
+      const { db } = makeExtractionDb({ threadAllowExtraction: false });
 
       const result = await extractMemoryCandidates(db as any, null, {
         companyId: "co-priv-1",
         threadId: "th-disabled-extract",
-        // No sinceEntryId — so the FIRST select goes straight to entries.
       });
 
       expect(result.candidates).toEqual([]);
-      // The extraction service made ONE select (the entry fetch). It did
-      // NOT issue a discussions lookup — proving the privacy flag is not
-      // consulted at this layer today.
+      // Exactly ONE select: the discussions privacy gate. Entry fetch was
+      // never issued because the gate short-circuited.
       expect((db.select as any).mock.calls.length).toBe(1);
     },
   );
 
   it(
-    "TODO(wiring-gap): extractMemoryCandidates returns empty for zero-entries thread regardless of allowMemoryExtraction flag value",
+    "proceeds to entry fetch when discussions.allowMemoryExtraction=true",
     async () => {
-      // Twin to the above: confirm the empty-candidates path is reached
-      // for both flag values today. Once the gap is closed, this test
-      // becomes redundant.
-      const { db: db1 } = makeExtractionDb([]);
-      const r1 = await extractMemoryCandidates(db1 as any, null, {
-        companyId: "co-priv-1",
-        threadId: "th-empty-1",
+      const { db } = makeExtractionDb({
+        threadAllowExtraction: true,
+        entryRows: [], // no entries, so the LLM is still never invoked
       });
-      expect(r1.candidates).toEqual([]);
 
-      const { db: db2 } = makeExtractionDb([]);
-      const r2 = await extractMemoryCandidates(db2 as any, null, {
+      const result = await extractMemoryCandidates(db as any, null, {
         companyId: "co-priv-1",
-        threadId: "th-empty-2",
+        threadId: "th-allowed-extract",
       });
-      expect(r2.candidates).toEqual([]);
+
+      expect(result.candidates).toEqual([]);
+      // Two selects: discussions gate (allowed) + entries fetch (empty).
+      expect((db.select as any).mock.calls.length).toBe(2);
+    },
+  );
+
+  it(
+    "is permissive when the discussions row is missing (defensive: treat as allowed)",
+    async () => {
+      // Edge case: stale threadId, race with deletion, etc. The flag is
+      // undefined, not explicitly false, so we DO NOT short-circuit —
+      // letting the entry fetch handle the "no rows" case naturally.
+      const { db } = makeExtractionDb({
+        threadAllowExtraction: undefined, // discussions query returns []
+        entryRows: [],
+      });
+
+      const result = await extractMemoryCandidates(db as any, null, {
+        companyId: "co-priv-1",
+        threadId: "th-deleted",
+      });
+
+      expect(result.candidates).toEqual([]);
+      // Two selects: the (empty) discussions check + the entries fetch.
+      expect((db.select as any).mock.calls.length).toBe(2);
     },
   );
 });

@@ -97,18 +97,26 @@ import {
 // The tool-callable extractors issue selects in a predictable order:
 //
 //   sinceEntryId is undefined:
-//     1. entries window (entire thread)
-//     2. departments list
+//     1. discussions privacy gate (allowMemoryExtraction lookup, G3 wiring)
+//     2. entries window (entire thread)
+//     3. departments list
 //
 //   sinceEntryId is provided:
-//     1. cursor lookup (createdAt of sinceEntryId)
-//     2. entries window (strictly after cursor)
-//     3. departments list
+//     1. discussions privacy gate (allowMemoryExtraction lookup, G3 wiring)
+//     2. cursor lookup (createdAt of sinceEntryId)
+//     3. entries window (strictly after cursor)
+//     4. departments list
 //
 // Each `.select()` consumes the next preset row set. We don't care about
 // .from / .where / .orderBy semantics; the mock just records the table name
 // (via the `_` meta on `makeTableProxy`) so a test can assert which select
 // hit which table, in order.
+//
+// PRIVACY_ALLOWED is the standard first-row to prepend in tests that should
+// flow past the gate. Tests that want to assert the gate short-circuits feed
+// `[{ allowMemoryExtraction: false }]` as the first row instead.
+
+const PRIVACY_ALLOWED: MockRow[] = [{ allowMemoryExtraction: true }];
 
 type MockRow = Record<string, unknown>;
 
@@ -230,12 +238,14 @@ describe("extractMemoryCandidates", () => {
     const llm = makeLlmReturning(MIXED_LLM_RESPONSE);
 
     const db = createSequenceDb([
-      // 1. entries window: two entries, both with substantive content
+      // 1. discussions privacy gate
+      PRIVACY_ALLOWED,
+      // 2. entries window: two entries, both with substantive content
       [
         entryRow("e1", "Decided Tailwind. Need to draft Q4 OKRs.", new Date("2026-05-01T00:00:00Z")),
         entryRow("e2", "Renewal cohort skews enterprise. See https://example.com/q4-plan", new Date("2026-05-02T00:00:00Z")),
       ],
-      // 2. departments list
+      // 3. departments list
       [deptRow("dept-eng", "Engineering")],
     ]);
 
@@ -292,16 +302,18 @@ describe("extractMemoryCandidates", () => {
 
     const cursorCreatedAt = new Date("2026-05-02T00:00:00Z");
     const db = createSequenceDb([
-      // 1. cursor lookup: sinceEntryId='e1' was created at the named time
+      // 1. discussions privacy gate
+      PRIVACY_ALLOWED,
+      // 2. cursor lookup: sinceEntryId='e1' was created at the named time
       [{ createdAt: cursorCreatedAt }],
-      // 2. entries window: only the post-cursor entry (e2) is returned by
+      // 3. entries window: only the post-cursor entry (e2) is returned by
       //    the gt(createdAt, cursor) predicate. The mock DB doesn't actually
       //    enforce the predicate — but the extractor builds it from
       //    cursorCreatedAt and trusts the query result. We assert this by
       //    feeding ONLY the post-cursor entry into the select result and
       //    confirming the LLM gets only that content.
       [entryRow("e2", "Post-cursor content with a real decision.", new Date("2026-05-03T00:00:00Z"))],
-      // 3. departments list (empty for brevity)
+      // 4. departments list (empty for brevity)
       [],
     ]);
 
@@ -313,11 +325,12 @@ describe("extractMemoryCandidates", () => {
 
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0].title).toBe("Post-cursor decision");
-    // Sequence: cursor select → entries select → departments select (3 calls)
-    expect(db.selectCalls).toHaveLength(3);
-    expect(db.selectCalls[0].fromTable).toBe("discussion_entries"); // cursor lookup
-    expect(db.selectCalls[1].fromTable).toBe("discussion_entries"); // entries window
-    expect(db.selectCalls[2].fromTable).toBe("projects");           // departments list
+    // Sequence: discussions gate → cursor select → entries select → departments select (4 calls)
+    expect(db.selectCalls).toHaveLength(4);
+    expect(db.selectCalls[0].fromTable).toBe("discussions");        // privacy gate
+    expect(db.selectCalls[1].fromTable).toBe("discussion_entries"); // cursor lookup
+    expect(db.selectCalls[2].fromTable).toBe("discussion_entries"); // entries window
+    expect(db.selectCalls[3].fromTable).toBe("projects");           // departments list
 
     // LLM saw ONLY the post-cursor content (no pre-cursor leak).
     const [, userContent] = (llm.generate as any).mock.calls[0];
@@ -329,7 +342,9 @@ describe("extractMemoryCandidates", () => {
     const llm = makeLlmReturning(MIXED_LLM_RESPONSE);
 
     const db = createSequenceDb([
-      // 1. entries window: zero entries (e.g. a brand-new thread)
+      // 1. discussions privacy gate
+      PRIVACY_ALLOWED,
+      // 2. entries window: zero entries (e.g. a brand-new thread)
       [],
     ]);
 
@@ -340,14 +355,16 @@ describe("extractMemoryCandidates", () => {
 
     expect(result.candidates).toEqual([]);
     expect(llm.generate).not.toHaveBeenCalled();
-    // The short-circuit means departments are NOT queried either.
-    expect(db.selectCalls).toHaveLength(1);
+    // discussions gate + entries fetch — departments are NOT queried because
+    // the empty-entries short-circuit fires after entries fetch.
+    expect(db.selectCalls).toHaveLength(2);
   });
 
   it("returns empty candidates when entries exist but every entry is empty/whitespace-only", async () => {
     const llm = makeLlmReturning(MIXED_LLM_RESPONSE);
 
     const db = createSequenceDb([
+      PRIVACY_ALLOWED,
       // entries exist, but raw content is short (the joined content fails the
       // length check used by the legacy autonomous path)
       [
@@ -371,6 +388,7 @@ describe("extractMemoryCandidates", () => {
     const llm = makeRejectingLlm(llmErr);
 
     const db = createSequenceDb([
+      PRIVACY_ALLOWED,
       [entryRow("e1", "Some substantive content for the extractor to chew on.", new Date())],
       [deptRow("dept-eng", "Engineering")],
     ]);
@@ -390,11 +408,13 @@ describe("extractMemoryCandidates", () => {
     const llm = makeLlmReturning(JSON.stringify([]));
 
     const db = createSequenceDb([
-      // 1. cursor lookup: sinceEntryId='ghost' returns no rows
+      // 1. discussions privacy gate
+      PRIVACY_ALLOWED,
+      // 2. cursor lookup: sinceEntryId='ghost' returns no rows
       [],
-      // 2. entries window: full thread (the extractor's fallback path)
+      // 3. entries window: full thread (the extractor's fallback path)
       [entryRow("e1", "Fallback content because cursor was missing.", new Date())],
-      // 3. departments list
+      // 4. departments list
       [],
     ]);
 
@@ -406,7 +426,7 @@ describe("extractMemoryCandidates", () => {
 
     expect(result.candidates).toEqual([]);
     expect(llm.generate).toHaveBeenCalledTimes(1);
-    expect(db.selectCalls).toHaveLength(3);
+    expect(db.selectCalls).toHaveLength(4);
   });
 });
 
@@ -423,6 +443,7 @@ describe("extractDecisions / extractInsights / extractReferences", () => {
    */
   function makeMixedThreadDb() {
     return createSequenceDb([
+      PRIVACY_ALLOWED,
       [entryRow("e1", "Mixed thread content covering all five types.", new Date())],
       [deptRow("dept-eng", "Engineering")],
     ]);

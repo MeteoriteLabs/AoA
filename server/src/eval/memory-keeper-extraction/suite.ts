@@ -75,10 +75,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 function makeStubDb(
   entries: MemoryKeeperFixtureInput["thread"]["entries"],
 ): Db {
-  // Drizzle issues two awaits: entries (with orderBy) and projects (no orderBy).
-  // We return the entries on the first await regardless of orderBy presence —
+  // Drizzle issues three awaits in the allowed-extraction path:
+  //   1. discussions privacy gate (allowMemoryExtraction lookup, added 2026-05-29)
+  //   2. entries fetch (with orderBy)
+  //   3. projects fetch (no orderBy) — buildDepartmentsList
+  // We return one queued row set per await regardless of orderBy presence —
   // both arms of the chain are thenable so either await resolves.
   const queue: unknown[][] = [
+    [{ allowMemoryExtraction: true }], // discussions gate — fixtures always allow
     entries.map((e) => ({
       id: e.id,
       rawContent: e.rawContent,
