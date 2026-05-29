@@ -167,9 +167,29 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     // Seeding failure must not block Commander provisioning (graceful: the
     // chat falls back to the SYSTEM_INSTRUCTIONS constant — M2).
   }
-  // Initialize the Commander's curated skill selection ONCE (sensible default =
+  // Initialize the Commander's curated skill selection (sensible default =
   // all currently-installed company skills). Flag-guarded via metadata so a
   // founder who later clears the selection is respected (we never re-backfill).
+  //
+  // QA-BUG-007 fix: the original gate only fired when
+  // `!metadata.commanderSkillsInitialized`, which meant the FIRST call —
+  // during company create, before any skills are installed — would set
+  // `skillKeys: []` and flip the flag to `true`, permanently locking the
+  // Commander to zero skills. The seeding order in routes/companies.ts runs
+  // `svc.create()` (which invokes ensureCommanderAgent) BEFORE
+  // `seedAoaNativeSkills`, so installed.length is always 0 on first call.
+  //
+  // The corrected predicate also re-runs when the founder has not yet
+  // curated anything (`skillKeys.length === 0`) AND skills are now
+  // available — that's the legitimate "haven't picked yet, defaults to
+  // all-installed" state. The flag still prevents clobbering a deliberate
+  // "empty selection" choice: if a founder explicitly cleared all skills
+  // after the initial backfill, the empty array carries an
+  // `commanderSkillsInitialized: true` flag from a prior call, so the
+  // second branch (empty + installed > 0) won't fire — only the first
+  // call with the flag UNSET re-tries. This is the safe relax-direction:
+  // fixes legacy companies + new companies in one shot, doesn't reintroduce
+  // backfill on an explicitly-cleared selection.
   try {
     const [row] = await db
       .select({ skillKeys: agents.skillKeys, metadata: agents.metadata })
@@ -177,19 +197,25 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
       .where(eq(agents.id, agentId))
       .limit(1);
     const meta = (row?.metadata as Record<string, unknown> | null) ?? {};
-    if (!meta.commanderSkillsInitialized) {
+    const currentSkillKeys = (row?.skillKeys as string[] | null) ?? [];
+    if (!meta.commanderSkillsInitialized || currentSkillKeys.length === 0) {
       const installed = await db
         .select({ key: companySkills.key })
         .from(companySkills)
         .where(eq(companySkills.companyId, companyId));
-      await db
-        .update(agents)
-        .set({
-          skillKeys: installed.map((s) => s.key),
-          metadata: { ...meta, commanderSkillsInitialized: true },
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, agentId));
+      // Only write when there is something to put there. If installed is
+      // also empty (truly fresh company, no skills yet), leave the flag
+      // unset so the NEXT call (after seedAoaNativeSkills runs) backfills.
+      if (installed.length > 0) {
+        await db
+          .update(agents)
+          .set({
+            skillKeys: installed.map((s) => s.key),
+            metadata: { ...meta, commanderSkillsInitialized: true },
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, agentId));
+      }
     }
   } catch {
     // Non-fatal: a backfill failure must not block Commander provisioning.

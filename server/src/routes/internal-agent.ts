@@ -17,6 +17,7 @@ import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 import { companySkillService } from "../services/company-skills.js";
 import {
@@ -496,6 +497,48 @@ export function internalAgentRoutes(db: Db) {
         .where(eq(internalAgentConfig.companyId, companyId));
 
       res.json({ success: true });
+    },
+  );
+
+  // ── Test Connection (QA-BUG-010) ────────────────────────────────────
+  // UI button at Settings → Commander → Execution & Model calls this to
+  // validate the configured CLI tool is reachable. The route resolves
+  // the company's `cliTool` (defaulting to `claude_cli` when unset —
+  // matches the agent-loop default in agent-loop.ts:254) and runs the
+  // `detectCliTool` helper that the chat path already uses. Reply shape
+  // matches what `ui/src/api/internal-agent.ts:339` expects:
+  //   { success: boolean, error?: string, detectedTool?: string, path?: string }
+  // No side effects — purely a PATH/availability probe.
+  router.post(
+    "/companies/:companyId/internal-agent/test-connection",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({ cliTool: internalAgentConfig.cliTool })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      const effectiveTool =
+        (config?.cliTool as string | null | undefined) ?? "claude_cli";
+
+      const detection = await detectCliTool(effectiveTool);
+
+      if (!detection.available) {
+        res.json({
+          success: false,
+          error: detection.error,
+          detectedTool: effectiveTool,
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        detectedTool: effectiveTool,
+        path: detection.path,
+      });
     },
   );
 

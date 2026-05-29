@@ -16,6 +16,7 @@ import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
+import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 
 export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
@@ -135,6 +136,19 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
     await seedAoaNativeSkills(db, company.id).catch(() => {
       // Never block company creation on skill seeding failure
+    });
+    // QA-BUG-007 fix: re-run Commander provisioning AFTER native skills are
+    // seeded so the Commander's skillKeys backfills from the now-populated
+    // company_skills table. The first ensureCommanderAgent call inside
+    // svc.create() runs BEFORE seedAoaNativeSkills, so installed.length is
+    // 0 and the gate in ensure-commander.ts:170-200 skips writing. This
+    // second call (combined with the relaxed gate in ensure-commander.ts
+    // that allows re-run when skillKeys is empty AND installed > 0)
+    // populates skillKeys with all 4 native skills. The function is
+    // idempotent — second call only updates skillKeys and is otherwise
+    // no-op against the agent row.
+    await ensureCommanderAgent(db, company.id).catch(() => {
+      // Never block company creation on Commander skill-init re-run failure
     });
     await logActivity(db, {
       companyId: company.id,
