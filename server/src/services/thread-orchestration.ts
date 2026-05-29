@@ -1,5 +1,6 @@
 /**
- * Thread Orchestration Controller — P1-T3 state bookkeeping + P1-T4 run executor.
+ * Thread Orchestration Controller — P1-T3 state bookkeeping + P1-T4 run executor
+ * + P1-T6 hop-gated participation invocations.
  *
  * Manages the per-thread `thread_orchestration_state` row that drives the
  * Adjutant agent idempotently as a conversation advances.
@@ -22,14 +23,21 @@
  *   Only when the epoch is unchanged does the run commit its output and advance
  *   the cursor. This prevents duplicate replies, lost input, and stuck agents.
  *
+ *   `requestParticipation(threadId, params, opts)` — (P1-T6) hop-gated sub-agent
+ *   participation. Reads the current hopCount; if already at HOP_CAP returns
+ *   `{ spawned: false, atCap: true }` without invoking the runner. Otherwise
+ *   calls `incrementHop`, invokes `opts.participantRunner`, posts the runner's
+ *   output as an `inputType: "agent"` `discussion_entry` (does NOT create an
+ *   issue), and returns `{ spawned: true, hopCount, entryId }`.
+ *
  * This module does NOT wire real CLI/crew execution. That happens in a later
- * integration task. `opts.adjutantRunner` is an injected seam — tests pass a
- * deterministic fake; production wires the real Adjutant crew there.
+ * integration task. Runners (`adjutantRunner`, `participantRunner`) are injected
+ * seams — tests pass deterministic fakes; production wires real crew/CLI there.
  */
 
 import { eq, gt, and, asc, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { threadOrchestrationState, discussionEntries } from "@armyofagents/db";
+import { threadOrchestrationState, discussionEntries, discussions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -73,6 +81,47 @@ export type RunControllerResult =
   | { ran: true; suppressed: true; startEpoch: number; endEpoch: number }
   | { ran: true; suppressed: false; startEpoch: number; cursorAdvancedTo: string | null }
   | { ran: true; suppressed: false; error: string; startEpoch: number; cursorAdvancedTo: null };
+
+// ── Participation types (P1-T6) ───────────────────────────────────────────────
+
+/**
+ * Input passed to the participant runner seam. The runner runs the named
+ * sub-agent against the thread and returns its output text.
+ */
+export interface ParticipantRunnerInput {
+  threadId: string;
+  agentId: string;
+  prompt: string;
+}
+
+/**
+ * Injected runner for sub-agent participation. Tests inject a fake that
+ * returns deterministic output; production wires real crew/CLI execution.
+ * The default stub throws "participant runner not wired (P1-T6 seam)".
+ */
+export type ParticipantRunner = (
+  input: ParticipantRunnerInput,
+) => Promise<string>;
+
+/** The union of outcomes that requestParticipation can return. */
+export type RequestParticipationResult =
+  | { spawned: false; atCap: true; hopCount: number }
+  | { spawned: true; hopCount: number; entryId: string };
+
+/** Options accepted by `requestParticipation`. */
+export interface RequestParticipationOpts {
+  /**
+   * The participant runner seam. Tests inject a deterministic fake;
+   * production wires the real crew/CLI execution here in a later
+   * integration task. The default stub throws so unwired callers fail loudly.
+   */
+  participantRunner?: ParticipantRunner;
+  /**
+   * The actor id recorded as `createdBy` on the posted discussion_entry.
+   * Defaults to the agentId from the params.
+   */
+  actorId?: string;
+}
 
 /** Options accepted by `runController`. */
 export interface RunControllerOpts {
@@ -118,6 +167,15 @@ export const HOP_CAP = 5;
  */
 const defaultAdjutantRunner: AdjutantRunner = async () => {
   throw new Error("adjutant runner not wired (P1-T4 seam)");
+};
+
+// ── Default participantRunner stub ────────────────────────────────────────────
+/**
+ * P1-T6 DI seam placeholder. Throws immediately so any production path that
+ * accidentally omits the injection fails loudly. Always replaced in production.
+ */
+const defaultParticipantRunner: ParticipantRunner = async () => {
+  throw new Error("participant runner not wired (P1-T6 seam)");
 };
 
 export function threadOrchestrationService(db: Db) {
@@ -429,6 +487,122 @@ export function threadOrchestrationService(db: Db) {
       }
 
       return { ran: true, suppressed: false, startEpoch, cursorAdvancedTo: cursorTarget };
+    },
+
+    /**
+     * P1-T6 — Hop-gated sub-agent participation invocation.
+     *
+     * Pulls a named sub-agent (Scout, Planner, Engineer, etc.) into the
+     * thread conversation. The sub-agent runs against the thread and its
+     * output is posted as an `inputType: "agent"` `discussion_entry` comment.
+     * This does NOT create an issue/task — participation is chat-only.
+     *
+     * ### Cap check (read-then-act, sequential)
+     * Reads the current `hopCount` from the controller row. If already at or
+     * above `HOP_CAP`, returns `{ spawned: false, atCap: true, hopCount }`
+     * immediately — the caller (Adjutant) should post a "scope it / keep
+     * going?" decision card (T13) instead. No hop is counted, no runner is
+     * invoked, nothing is posted.
+     *
+     * ### On spawn
+     * 1. `incrementHop(threadId)` — atomically bumps the counter; this round
+     *    counts toward the cap.
+     * 2. `opts.participantRunner({ threadId, agentId, prompt })` — runs the
+     *    sub-agent. The default stub throws so unwired production callers fail
+     *    loudly.
+     * 3. Posts the runner's output as a `discussion_entry` with:
+     *      - `inputType: "agent"` (excluded by `isHumanEntry` → won't re-fire
+     *        the controller; QA-BUG-011 loop-guard)
+     *      - `authorAgentId: agentId`
+     *      - `rawContent: <runner output>`
+     *    Uses a DB transaction to atomically bump `discussions.entrySeq` and
+     *    insert the entry (same pattern as `discussions.addEntry`).
+     * 4. Returns `{ spawned: true, hopCount, entryId }`.
+     *
+     * ### Race note
+     * The cap check and `incrementHop` are separate reads — there is a tiny
+     * window between them. This is acceptable because only the Adjutant calls
+     * this method, sequentially. In a future multi-caller world a compare-and-
+     * swap column would close the gap; for now the sequential constraint makes
+     * the race benign.
+     */
+    requestParticipation: async (
+      threadId: string,
+      params: { agentId: string; prompt: string },
+      opts: RequestParticipationOpts = {},
+    ): Promise<RequestParticipationResult> => {
+      const participantRunner = opts.participantRunner ?? defaultParticipantRunner;
+      const actorId = opts.actorId ?? params.agentId;
+
+      // ── Step 1: Cap check — read current hopCount ──────────────────────────
+      // ensureController first so the row always exists.
+      await threadOrchestrationService(db).ensureController(threadId);
+
+      const [current] = await db
+        .select({ hopCount: threadOrchestrationState.hopCount })
+        .from(threadOrchestrationState)
+        .where(eq(threadOrchestrationState.threadId, threadId));
+
+      const currentHopCount = current?.hopCount ?? 0;
+
+      if (currentHopCount >= HOP_CAP) {
+        log.info(
+          { threadId, agentId: params.agentId, hopCount: currentHopCount },
+          "requestParticipation: at hop cap — not spawning",
+        );
+        return { spawned: false, atCap: true, hopCount: currentHopCount };
+      }
+
+      // ── Step 2: Increment hop (this participation counts) ─────────────────
+      const { hopCount } = await threadOrchestrationService(db).incrementHop(threadId);
+
+      // ── Step 3: Run the participant (injected seam) ────────────────────────
+      const output = await participantRunner({
+        threadId,
+        agentId: params.agentId,
+        prompt: params.prompt,
+      });
+
+      // ── Step 4: Post the output as an agent comment ────────────────────────
+      // Atomically bump discussions.entrySeq and insert the entry. This is the
+      // same pattern as discussions.addEntry (Plan 7 seq assignment). We do it
+      // directly here (rather than calling the higher-level service) because
+      // threadOrchestrationService only has a Db reference — not the full
+      // discussionService. The `inputType: "agent"` value ensures isHumanEntry
+      // returns false for this entry (QA-BUG-011 loop-guard: the entry must NOT
+      // re-fire the orchestration controller).
+      const entry = await db.transaction(async (tx) => {
+        const [{ entrySeq }] = await tx
+          .update(discussions)
+          .set({
+            entrySeq: sql`${discussions.entrySeq} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(discussions.id, threadId))
+          .returning({ entrySeq: discussions.entrySeq });
+
+        const [inserted] = await tx
+          .insert(discussionEntries)
+          .values({
+            discussionId: threadId,
+            inputType: "agent",
+            rawContent: output,
+            authorAgentId: params.agentId,
+            extractionStatus: "skipped",
+            seq: entrySeq,
+            createdBy: actorId,
+          })
+          .returning();
+
+        return inserted;
+      });
+
+      log.debug(
+        { threadId, agentId: params.agentId, hopCount, entryId: entry.id },
+        "requestParticipation: spawned and posted agent comment",
+      );
+
+      return { spawned: true, hopCount, entryId: entry.id };
     },
   };
 }
