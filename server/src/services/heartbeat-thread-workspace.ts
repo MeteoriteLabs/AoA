@@ -24,10 +24,18 @@ import {
   realizeExecutionWorkspace,
 } from "./workspace-runtime.js";
 import { resetWorkspaceToCleanState } from "./workspace-runtime.js";
+import { isUniqueViolation } from "./db-errors.js";
 import { logger } from "../middleware/logger.js";
 import type { Db } from "@armyofagents/db";
 import { executionWorkspaces } from "@armyofagents/db";
 import { and, eq, ne } from "drizzle-orm";
+
+/**
+ * DB index name backing the (companyId, threadId) partial unique constraint.
+ * Kept as a named constant so the create-race handler and any future caller
+ * detect the exact violation rather than string-matching the PG message.
+ */
+const ACTIVE_THREAD_WORKSPACE_UQ = "execution_workspaces_active_thread_workspace_uq";
 
 // Re-export for callers that import constants alongside the helpers.
 export type { WORKSPACE_RUN_LOCK_STALE_MS };
@@ -136,6 +144,44 @@ export async function findActiveThreadWorkspace(
   return rows[0] ?? null;
 }
 
+/**
+ * Run post-claim work with a structural lock-leak guard.
+ *
+ * The per-workspace run lock is claimed INSIDE this module, but the caller
+ * (heartbeat.ts) only records it for its `finally` AFTER `resolveThreadDeliverableWorkspace`
+ * returns "resolved".  That means ANY throw between claiming the lock and
+ * returning would leak the lock until the 30-minute stale-timeout reclaim —
+ * the thread workspace would be unusable for half an hour.
+ *
+ * Rather than wrap each individual fallible op (reset, etc.) in its own
+ * try/catch — which is fragile because a future edit could add a fallible op
+ * outside the guard — every claim site funnels its post-claim work through
+ * this wrapper.  If `work()` throws, the lock is released (best-effort) and the
+ * original error is re-thrown, so the caller's catch path still marks the run
+ * failed and the workspace is immediately free for the retried run.
+ */
+async function runPostClaimGuarded<T>(
+  svc: ExecutionWorkspacesSvc,
+  workspaceId: string,
+  runId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await work();
+  } catch (err) {
+    // Release the lock we just claimed before propagating so the workspace is
+    // not held until the stale-timeout. Swallow release errors — the original
+    // error is what matters, and the stale-timeout is the backstop.
+    await svc.releaseWorkspaceRun(workspaceId, runId).catch((releaseErr: unknown) => {
+      logger.warn(
+        { workspaceId, runId, err: releaseErr },
+        "heartbeat-thread-workspace: failed to release lock after post-claim error",
+      );
+    });
+    throw err;
+  }
+}
+
 // ─── Primary orchestration helper ─────────────────────────────────────────────
 
 /**
@@ -213,16 +259,15 @@ export async function resolveThreadDeliverableWorkspace(
       };
     }
 
-    // Lock acquired — now safe to reset the working tree to a clean state.
-    if (realizedWorkspace.worktreePath) {
-      try {
+    // Lock acquired — all subsequent fallible work runs inside the guard so a
+    // throw releases the lock instead of leaking it to the stale-timeout.
+    await runPostClaimGuarded(executionWorkspacesSvc, existingRow.id, runId, async () => {
+      // Reset the working tree to a clean state (reuse only — a freshly created
+      // worktree has nothing to reset).
+      if (realizedWorkspace.worktreePath) {
         await resetWorkspaceToCleanState(realizedWorkspace.worktreePath);
-      } catch (resetErr) {
-        // Release the lock we just claimed before propagating.
-        await executionWorkspacesSvc.releaseWorkspaceRun(existingRow.id, runId).catch(() => undefined);
-        throw resetErr;
       }
-    }
+    });
 
     persistedWorkspaceId = existingRow.id;
   } else {
@@ -274,14 +319,11 @@ export async function resolveThreadDeliverableWorkspace(
       });
     } catch (createErr) {
       // Unique violation on activeThreadWorkspaceUq — another deliverable raced
-      // us and won.  Re-query and fall back to reuse.
-      const isUniqueViolation =
-        createErr instanceof Error &&
-        (createErr.message.includes("execution_workspaces_active_thread_workspace_uq") ||
-          createErr.message.includes("unique constraint") ||
-          createErr.message.includes("UniqueConstraintViolationException") ||
-          (createErr as any)?.code === "23505");
-      if (!isUniqueViolation) throw createErr;
+      // us and won.  Re-query and fall back to reuse.  Use the canonical
+      // detector (checks SQLSTATE 23505 on both the error and `err.cause`,
+      // plus the specific constraint name) rather than string-matching the
+      // PG message, which is not a stable contract.
+      if (!isUniqueViolation(createErr, ACTIVE_THREAD_WORKSPACE_UQ)) throw createErr;
 
       logger.info(
         { companyId, threadId: sourceDiscussionId, runId },
@@ -308,14 +350,12 @@ export async function resolveThreadDeliverableWorkspace(
         };
       }
 
-      if (realizedWorkspace.worktreePath) {
-        try {
+      // Lock acquired — guard all post-claim work so a throw releases it.
+      await runPostClaimGuarded(executionWorkspacesSvc, racedRow.id, runId, async () => {
+        if (realizedWorkspace.worktreePath) {
           await resetWorkspaceToCleanState(realizedWorkspace.worktreePath);
-        } catch (resetErr) {
-          await executionWorkspacesSvc.releaseWorkspaceRun(racedRow.id, runId).catch(() => undefined);
-          throw resetErr;
         }
-      }
+      });
 
       return {
         kind: "resolved",
@@ -341,6 +381,13 @@ export async function resolveThreadDeliverableWorkspace(
       };
     }
 
+    // A freshly provisioned worktree has nothing to reset, so there is NO
+    // fallible post-claim work on this path: the only statements between the
+    // claim above and the `return` below are the two assignments here (which
+    // cannot throw).  If a future edit adds fallible work after the claim on
+    // this path, it MUST be wrapped in runPostClaimGuarded (see the reuse and
+    // race paths) so the lock is released on throw instead of leaking to the
+    // 30-minute stale-timeout.
     existingWorkspaceRow = persistedRow;
     persistedWorkspaceId = persistedRow.id;
   }

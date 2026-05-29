@@ -200,6 +200,43 @@ function makeDbWithSelect(rows: unknown[]) {
   return chain as unknown as import("@armyofagents/db").Db;
 }
 
+/**
+ * Build a DB mock whose successive `select…limit` calls return the next row-set
+ * in `sequence`. Used for the create-race path, where findActiveThreadWorkspace
+ * is called twice: first returns [] (no workspace), then returns the winner's
+ * raced row after the unique-violation re-query.
+ */
+function makeSequencedDb(sequence: unknown[][]) {
+  let call = 0;
+  const next = () => sequence[Math.min(call++, sequence.length - 1)] ?? [];
+  const makeChain = () => {
+    const rows = next();
+    const chain: Record<string, unknown> = {
+      select: () => makeChain(),
+      from: () => chain,
+      where: () => chain,
+      limit: () => ({ then: (fn: (r: unknown[]) => unknown) => fn(rows) }),
+      then: (fn: (r: unknown[]) => unknown) => fn(rows),
+    };
+    return chain;
+  };
+  // The first .select() consumes sequence[0]; build lazily so each top-level
+  // select() call advances the sequence.
+  const root = {
+    select: () => makeChain(),
+  };
+  return root as unknown as import("@armyofagents/db").Db;
+}
+
+/** Build an Error carrying a PG unique-violation on `err.cause` (drizzle wrap). */
+function makeCauseWrappedUniqueViolation(constraint: string): Error {
+  const err = new Error("insert failed") as Error & { cause?: unknown };
+  // Mirror how postgres-js surfaces a 23505: code + constraint on the cause,
+  // with NO mention of the constraint name in the top-level message.
+  err.cause = { code: "23505", constraint };
+  return err;
+}
+
 /** Build a minimal executionWorkspacesSvc mock. */
 function makeWorkspacesSvc(overrides: Partial<{
   getById: ReturnType<typeof vi.fn>;
@@ -478,6 +515,140 @@ describe("resolveThreadDeliverableWorkspace", () => {
     // The lock MUST be released even though the error was thrown
     expect(mockRelease).toHaveBeenCalledOnce();
     expect(mockRelease).toHaveBeenCalledWith("ws-crash", "run-crash");
+  });
+
+  // ── (g) CREATE RACE: cause-wrapped 23505 (no message match) → re-query + reuse ─
+  it("(g) recovers from a create-race unique violation surfaced on err.cause (no message match)", async () => {
+    // First findActiveThreadWorkspace → [] (no workspace), then after the
+    // create() unique violation, the re-query returns the winner's raced row.
+    const racedRow = { id: "ws-winner", companyId: "company-1", threadId: "thread-race", status: "active" };
+    const db = makeSequencedDb([[], [racedRow]]);
+    const realized = makeRealizedWorkspace({ worktreePath: "/tmp/race-ws" });
+    const persistedWinner = makePersistedWorkspace("ws-winner");
+
+    // create() rejects with a cause-wrapped 23505 that the OLD inline
+    // string/`.code` check would have missed (no top-level .code, message does
+    // not contain the constraint name). The canonical isUniqueViolation must
+    // still detect it via err.cause.code + err.cause.constraint.
+    const mockCreate = vi
+      .fn()
+      .mockRejectedValue(makeCauseWrappedUniqueViolation("execution_workspaces_active_thread_workspace_uq"));
+    const mockGetById = vi.fn().mockResolvedValue(persistedWinner);
+    const mockTryClaim = vi.fn().mockResolvedValue({ id: "ws-winner", activeRunId: "run-loser", lockedAt: new Date() });
+    const mockRelease = vi.fn().mockResolvedValue(true);
+    const svc = makeWorkspacesSvc({
+      create: mockCreate,
+      getById: mockGetById,
+      tryClaimWorkspaceRun: mockTryClaim,
+      releaseWorkspaceRun: mockRelease,
+    });
+
+    vi.mocked(realizeExecutionWorkspace).mockResolvedValue(realized as any);
+    vi.mocked(ensurePersistedExecutionWorkspaceAvailable).mockResolvedValue(realized as any);
+    vi.mocked(resetWorkspaceToCleanState).mockResolvedValue({ ok: true });
+
+    const outcome = await resolveThreadDeliverableWorkspace({
+      db: db as any,
+      executionWorkspacesSvc: svc,
+      companyId: "company-1",
+      sourceDiscussionId: "thread-race",
+      runId: "run-loser",
+      resolvedProjectId: "proj-1",
+      realizeBase: REALIZE_BASE,
+      resolvedConfig: {},
+      agent: AGENT,
+    });
+
+    // The loser falls back to reusing the winner's row — NOT a crash.
+    expect(outcome.kind).toBe("resolved");
+    if (outcome.kind !== "resolved") return;
+    expect(outcome.persistedWorkspaceId).toBe("ws-winner");
+    expect(outcome.created).toBe(false);
+
+    // Re-query happened; winner's worktree was reattached + reset; lock claimed.
+    expect(mockGetById).toHaveBeenCalledWith("ws-winner");
+    expect(ensurePersistedExecutionWorkspaceAvailable).toHaveBeenCalled();
+    expect(resetWorkspaceToCleanState).toHaveBeenCalledWith("/tmp/race-ws");
+    expect(mockTryClaim).toHaveBeenCalledWith("ws-winner", "run-loser");
+    // The lock is held (not released) because the run resolved successfully.
+    expect(mockRelease).not.toHaveBeenCalled();
+  });
+
+  // ── (h) CREATE RACE + reset throws after claim → lock released (no leak) ───────
+  it("(h) releases the lock when post-claim reset throws on the create-race path", async () => {
+    const racedRow = { id: "ws-winner2", companyId: "company-1", threadId: "thread-race2", status: "active" };
+    const db = makeSequencedDb([[], [racedRow]]);
+    const realized = makeRealizedWorkspace({ worktreePath: "/tmp/race-ws2" });
+    const persistedWinner = makePersistedWorkspace("ws-winner2");
+
+    const mockCreate = vi.fn().mockRejectedValue(makeCauseWrappedUniqueViolation("execution_workspaces_active_thread_workspace_uq"));
+    const mockGetById = vi.fn().mockResolvedValue(persistedWinner);
+    const mockTryClaim = vi.fn().mockResolvedValue({ id: "ws-winner2", activeRunId: "run-loser2", lockedAt: new Date() });
+    const mockRelease = vi.fn().mockResolvedValue(true);
+    const svc = makeWorkspacesSvc({
+      create: mockCreate,
+      getById: mockGetById,
+      tryClaimWorkspaceRun: mockTryClaim,
+      releaseWorkspaceRun: mockRelease,
+    });
+
+    vi.mocked(realizeExecutionWorkspace).mockResolvedValue(realized as any);
+    vi.mocked(ensurePersistedExecutionWorkspaceAvailable).mockResolvedValue(realized as any);
+    // Reset throws AFTER the lock has been claimed on the race path.
+    vi.mocked(resetWorkspaceToCleanState).mockRejectedValue(new Error("git reset failed (race)"));
+
+    await expect(
+      resolveThreadDeliverableWorkspace({
+        db: db as any,
+        executionWorkspacesSvc: svc,
+        companyId: "company-1",
+        sourceDiscussionId: "thread-race2",
+        runId: "run-loser2",
+        resolvedProjectId: "proj-1",
+        realizeBase: REALIZE_BASE,
+        resolvedConfig: {},
+        agent: AGENT,
+      }),
+    ).rejects.toThrow("git reset failed (race)");
+
+    // The lock claimed on the race path MUST be released, not leaked.
+    expect(mockTryClaim).toHaveBeenCalledWith("ws-winner2", "run-loser2");
+    expect(mockRelease).toHaveBeenCalledOnce();
+    expect(mockRelease).toHaveBeenCalledWith("ws-winner2", "run-loser2");
+  });
+
+  // ── (i) Non-unique create error is rethrown (not swallowed as a race) ──────────
+  it("(i) rethrows a non-unique create error instead of treating it as a race", async () => {
+    const db = makeSequencedDb([[]]);
+    const realized = makeRealizedWorkspace();
+    const mockCreate = vi.fn().mockRejectedValue(new Error("connection reset by peer"));
+    const mockGetById = vi.fn();
+    const mockRelease = vi.fn().mockResolvedValue(true);
+    const svc = makeWorkspacesSvc({
+      create: mockCreate,
+      getById: mockGetById,
+      releaseWorkspaceRun: mockRelease,
+    });
+
+    vi.mocked(realizeExecutionWorkspace).mockResolvedValue(realized as any);
+
+    await expect(
+      resolveThreadDeliverableWorkspace({
+        db: db as any,
+        executionWorkspacesSvc: svc,
+        companyId: "company-1",
+        sourceDiscussionId: "thread-nonunique",
+        runId: "run-x",
+        resolvedProjectId: "proj-1",
+        realizeBase: REALIZE_BASE,
+        resolvedConfig: {},
+        agent: AGENT,
+      }),
+    ).rejects.toThrow("connection reset by peer");
+
+    // No re-query, no lock claim, no release — the error propagated as-is.
+    expect(mockGetById).not.toHaveBeenCalled();
+    expect(mockRelease).not.toHaveBeenCalled();
   });
 });
 
