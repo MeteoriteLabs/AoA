@@ -1019,6 +1019,7 @@ export {
 } from "./config-schema.js";
 
 export * from "./teams.js";
+export * from "./autonomy-levels.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).
