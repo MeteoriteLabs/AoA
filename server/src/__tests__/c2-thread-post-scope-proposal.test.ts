@@ -3,6 +3,12 @@
 // Task C2 batch 1 — thread.postScopeProposal tool tests.
 // Verifies transactional integrity (entry + plan steps in ONE tx, rollback on
 // failure), param validation, and the empty-proposedTasks happy path.
+//
+// Updated (Task 2.1): the tool now delegates to writeScopeProposal which does
+// a companyId-validation SELECT before entering the transaction. Mocks updated
+// to include the select chain returning a matching thread row. Contract
+// assertions on the tool's result shape, error codes, and param validation are
+// preserved unchanged.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -12,7 +18,7 @@ vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 import { threadPostScopeProposalTool } from "../services/internal-agent/tools/thread-post-scope-proposal.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-// Build a mock tx that tracks inserts. The tool issues (in this order):
+// Build a mock tx that tracks inserts. The writer issues (in this order):
 //   1. tx.update(discussions)  — bump entrySeq + entryCount (T13 live-delivery)
 //   2. tx.insert(discussionEntries).values({...}).returning() — entry
 //   3. tx.insert(threadPlanSteps).values([...]) — plan steps (when nonempty)
@@ -62,14 +68,27 @@ function makeTxTracker(opts: {
   return { insert, update, insertCalls };
 }
 
-function makeCtx(transactionFn: any): ToolContext {
+/**
+ * Build a mock `select` chain that returns a thread row matching companyId "co-1".
+ * writeScopeProposal calls db.select(...).from(discussions).where(eq(...)) for
+ * the Codex-#14 companyId check before entering the transaction.
+ */
+function makeSelectChain(companyId = "co-1") {
+  return {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue([{ companyId, entrySeq: 0 }]),
+  };
+}
+
+function makeCtx(transactionFn: any, selectChain?: any): ToolContext {
+  const select = vi.fn().mockReturnValue(selectChain ?? makeSelectChain());
   return {
     companyId: "co-1",
     userId: "u-1",
     userRole: "team_member",
     enabledCapabilities: ["system_actions"],
     agentId: "agent-42",
-    db: { transaction: transactionFn },
+    db: { transaction: transactionFn, select },
     services: {} as any,
   } as unknown as ToolContext;
 }

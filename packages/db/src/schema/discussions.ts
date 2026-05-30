@@ -222,6 +222,18 @@ export const discussionEntries = pgTable(
     threadSeqUniq: uniqueIndex("discussion_entries_thread_seq_uniq")
       .on(table.discussionId, table.seq)
       .where(sql`${table.seq} <> 0`),
+    // Task 2.1 (Crew Work-as-Tasks): one-pending-per-thread guard (D5/D6/D8).
+    // At most one scope_proposal entry with proposalStatus='pending' may exist
+    // per thread at any time. writeScopeProposal catches a violation on this
+    // index and converts it to { existing: true } rather than failing —
+    // making the write idempotent across concurrent Planner runs or retries.
+    onePendingScopeProposalIdx: uniqueIndex(
+      "discussion_entries_one_pending_scope_proposal_idx",
+    )
+      .on(table.discussionId)
+      .where(
+        sql`input_type = 'scope_proposal' AND proposal_status = 'pending'`,
+      ),
   }),
 );
 
