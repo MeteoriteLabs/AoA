@@ -75,6 +75,11 @@ const updateConfigSchema = z.object({
   runtimeApprovalsEnabled: z.boolean().optional(),
   runtimeAllowAlwaysEnabled: z.boolean().optional(),
   vendorCliBypassEnabled: z.boolean().optional(),
+  // Task 0.7 (Inbound Dirty-Data Routing): per-company routing dial.
+  // Derives allowed values from INBOUND_ROUTING_LEVELS to stay in sync.
+  inboundRoutingLevel: z
+    .enum(["off", "suggest", "auto_attach", "full_auto"])
+    .optional(),
 });
 
 const cancelReminderSchema = z.object({

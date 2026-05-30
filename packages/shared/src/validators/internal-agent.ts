@@ -5,6 +5,7 @@ import {
   AGENT_CAPABILITIES,
   NOTIFICATION_PREFERENCES,
 } from "../constants.js";
+import { INBOUND_ROUTING_LEVELS } from "../inbound-routing.js";
 
 export const updateInternalAgentConfigSchema = z.object({
   executionMode: z.enum(AGENT_EXECUTION_MODES).optional(),
@@ -21,6 +22,13 @@ export const updateInternalAgentConfigSchema = z.object({
   runtimeApprovalsEnabled: z.boolean().optional(),
   runtimeAllowAlwaysEnabled: z.boolean().optional(),
   vendorCliBypassEnabled: z.boolean().optional(),
+  // Task 0.7 (Inbound Dirty-Data Routing): per-company routing dial.
+  // Derives allowed values from INBOUND_ROUTING_LEVELS to stay in sync.
+  inboundRoutingLevel: z
+    .enum(
+      INBOUND_ROUTING_LEVELS.map((l) => l.value) as [string, ...string[]],
+    )
+    .optional(),
 });
 
 export type UpdateInternalAgentConfig = z.infer<typeof updateInternalAgentConfigSchema>;
