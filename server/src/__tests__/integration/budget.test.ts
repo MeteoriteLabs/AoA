@@ -25,10 +25,17 @@ vi.mock("@armyofagents/db", () => ({
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
+// Mock live-events so the transaction-based budget-block path can call
+// publishLiveEvent without touching real sockets.
+vi.mock("../../services/live-events.js", () => ({
+  publishLiveEvent: vi.fn(),
+}));
+
 import {
   preflightCrewDispatch,
   formatBudgetExhaustedMessage,
 } from "../../services/crew-budget.js";
+import { publishLiveEvent } from "../../services/live-events.js";
 
 // ---------------------------------------------------------------------------
 // Sequence DB harness — mirrors crew-budget.test.ts so we capture .select()
@@ -45,6 +52,10 @@ interface InsertCall {
 
 interface SequenceDbConfig {
   selects?: MockRow[][];
+  /** Rows returned by the UPDATE discussions .returning() inside the transaction */
+  txUpdateReturns?: MockRow[];
+  /** Rows returned by the INSERT discussion_entries .returning() inside the transaction */
+  txInsertReturns?: MockRow[];
 }
 
 function tableNameOf(value: unknown): string | undefined {
@@ -63,6 +74,14 @@ function createSequenceDb(config: SequenceDbConfig = {}) {
   let selectIdx = 0;
   const selectCalls: { fromTable?: string }[] = [];
   const insertCalls: InsertCall[] = [];
+
+  // Default transaction return values when not overridden by the test.
+  const txUpdateReturns: MockRow[] = config.txUpdateReturns ?? [
+    { entrySeq: 1, companyId: COMPANY_ID },
+  ];
+  const txInsertReturns: MockRow[] = config.txInsertReturns ?? [
+    { id: "entry-budget-1", seq: 1, discussionId: THREAD_ID, inputType: "system" },
+  ];
 
   function makeSelectChain(): any {
     const call: { fromTable?: string } = {};
@@ -86,7 +105,11 @@ function createSequenceDb(config: SequenceDbConfig = {}) {
     const chain: any = {
       values: (v: Record<string, unknown>) => {
         call.values = v;
-        return chain;
+        return {
+          returning: () => Promise.resolve(txInsertReturns),
+          then: (resolve: (v: MockRow[]) => unknown) =>
+            Promise.resolve(resolve([])),
+        };
       },
       then: (resolve: (v: MockRow[]) => unknown) =>
         Promise.resolve(resolve([])),
@@ -94,9 +117,25 @@ function createSequenceDb(config: SequenceDbConfig = {}) {
     return chain;
   }
 
+  // The transaction mock runs the callback with a proxy `tx` that routes
+  // update().returning() to txUpdateReturns and insert() to makeInsertChain.
+  function makeTx(): any {
+    return {
+      update: (_table: unknown) => ({
+        set: (_vals: unknown) => ({
+          where: (_cond: unknown) => ({
+            returning: (_cols: unknown) => Promise.resolve(txUpdateReturns),
+          }),
+        }),
+      }),
+      insert: (table: unknown) => makeInsertChain(tableNameOf(table)),
+    };
+  }
+
   return {
     select: (..._args: unknown[]) => makeSelectChain(),
     insert: (table: unknown) => makeInsertChain(tableNameOf(table)),
+    transaction: (fn: (tx: any) => Promise<unknown>) => fn(makeTx()),
     selectCalls,
     insertCalls,
   };
@@ -146,6 +185,9 @@ function spendRow(totalCents: number): MockRow {
 describe("integration: preflightCrewDispatch budget gate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // publishLiveEvent returns a LiveEvent; the return value is not used by
+    // preflightCrewDispatch, so we can safely return a stub object.
+    vi.mocked(publishLiveEvent).mockReturnValue({} as ReturnType<typeof publishLiveEvent>);
   });
 
   // ── 1. Under budget → allowed; no system entry written ──────────────────
@@ -194,12 +236,17 @@ describe("integration: preflightCrewDispatch budget gate", () => {
   // ── 2. Budget exhausted → blocked + system entry posted ─────────────────
 
   it("returns {allowed:false, reasonCode:'budget_exhausted'} AND posts a system entry into the thread", async () => {
+    const ENTRY_ID = "entry-budget-test-1";
+    const ENTRY_SEQ = 5;
+
     const db = createSequenceDb({
       selects: [
         [threadRow()],
         [policyRow()],          // $100 cap
         [spendRow(10500)],      // $105 spend — over cap
       ],
+      txUpdateReturns: [{ entrySeq: ENTRY_SEQ, companyId: COMPANY_ID }],
+      txInsertReturns: [{ id: ENTRY_ID, seq: ENTRY_SEQ, discussionId: THREAD_ID, inputType: "system" }],
     });
 
     const result = await preflightCrewDispatch(db as any, {
@@ -220,6 +267,7 @@ describe("integration: preflightCrewDispatch budget gate", () => {
     expect(result.reason).toContain("10000");
 
     // ── The system entry — this is what the founder SEES in the thread ──
+    // The entry is now inserted inside a transaction via tx.insert().values().returning().
     expect(db.insertCalls).toHaveLength(1);
     const entry = db.insertCalls[0];
     expect(entry.tableName).toBe("discussion_entries");
@@ -228,6 +276,8 @@ describe("integration: preflightCrewDispatch budget gate", () => {
       inputType: "system",
       authorAgentId: null,
       createdBy: "system",
+      extractionStatus: "skipped",
+      seq: ENTRY_SEQ,
     });
     // The structured failure message — exact match against the exported
     // formatter so a future format drift is caught.
@@ -236,6 +286,23 @@ describe("integration: preflightCrewDispatch budget gate", () => {
     );
     expect(entry.values.rawContent).toMatch(/\$105\.00/);
     expect(entry.values.rawContent).toMatch(/\$100\.00/);
+
+    // ── Live events published after the transaction completes ────────────
+    expect(publishLiveEvent).toHaveBeenCalledTimes(2);
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        type: "discussion.entry.created",
+        payload: expect.objectContaining({ discussionId: THREAD_ID, entryId: ENTRY_ID, inputType: "system" }),
+      }),
+    );
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        type: "thread.entry.created",
+        payload: expect.objectContaining({ threadId: THREAD_ID, entryId: ENTRY_ID, seq: ENTRY_SEQ }),
+      }),
+    );
   });
 
   it("budget exhaustion at exactly the cap (spend === cap) still blocks (>= semantics)", async () => {
@@ -245,6 +312,7 @@ describe("integration: preflightCrewDispatch budget gate", () => {
         [policyRow({ amountCents: 10000 })],
         [spendRow(10000)],      // exactly at cap
       ],
+      // Use defaults — the transaction mock will return a valid entry row.
     });
 
     const result = await preflightCrewDispatch(db as any, {
@@ -260,6 +328,8 @@ describe("integration: preflightCrewDispatch budget gate", () => {
     // contract test for that boundary (vs > cap, which would let users
     // overshoot by a cent before blocking).
     expect(db.insertCalls).toHaveLength(1);
+    // Live events are published even when spend is exactly at cap.
+    expect(publishLiveEvent).toHaveBeenCalledTimes(2);
   });
 
   // ── 3. Per-thread Adjutant opt-out → blocked WITHOUT budget probe ───────
