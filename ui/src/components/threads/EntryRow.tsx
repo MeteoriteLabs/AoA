@@ -32,6 +32,7 @@ import {
   type SpinOffSuggestion,
 } from "./SpinOffSuggestionCard";
 import { HopCapDecisionCard } from "./HopCapDecisionCard";
+import { CrewFailureCard, type CrewFailurePayload } from "./CrewFailureCard";
 import type { ScopeProposalPayload } from "@armyofagents/shared";
 
 /* ─── Agent role → color ─── */
@@ -102,6 +103,23 @@ function extractHopCapPayload(entry: DiscussionEntry): { hopCount: number; cap: 
   const hopCount = typeof si.hopCount === "number" ? si.hopCount : 0;
   const cap = typeof si.cap === "number" ? si.cap : 5;
   return { hopCount, cap };
+}
+
+/**
+ * P2-T2: extract a crew-failure payload from a system entry's sourceInfo.
+ * Returns the payload when sourceInfo.type === "crew_failed".
+ */
+function extractCrewFailurePayload(entry: DiscussionEntry): CrewFailurePayload | null {
+  if (entry.inputType !== "system") return null;
+  const si = entry.sourceInfo as Record<string, unknown> | null;
+  if (!si || si.type !== "crew_failed") return null;
+  if (typeof si.issueId !== "string") return null;
+  return {
+    issueId: si.issueId,
+    agentName: typeof si.agentName === "string" ? si.agentName : "An agent",
+    taskTitle: typeof si.taskTitle === "string" ? si.taskTitle : "(untitled task)",
+    error: typeof si.error === "string" ? si.error : "",
+  };
 }
 
 function tryParseScopeProposal(content: string): ScopeProposalPayload | null {
@@ -264,6 +282,10 @@ export interface EntryRowProps {
   onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   /** Phase E2: clicked when the user opens an inline artifact. */
   onOpenArtifact?: (artifactId: string) => void;
+  /** P2-T2: crew-failure card actions (issueId passed through). */
+  onCrewFailureRetry?: (issueId: string) => void;
+  onCrewFailureReassign?: (issueId: string) => void;
+  onCrewFailureSkip?: (issueId: string) => void;
 }
 
 export function EntryRow({
@@ -277,6 +299,9 @@ export function EntryRow({
   onSpinOffAccept,
   onSpinOffDismiss,
   onOpenArtifact,
+  onCrewFailureRetry,
+  onCrewFailureReassign,
+  onCrewFailureSkip,
 }: EntryRowProps) {
   // ── Phase E3: scope_proposal entries get the dedicated card ──
   if (entry.inputType === "scope_proposal") {
@@ -304,6 +329,21 @@ export function EntryRow({
     return (
       <div data-testid={`entry-row-${entry.id}`} data-entry-type="hop_cap_decision">
         <HopCapDecisionCard hopCount={hopCapPayload.hopCount} cap={hopCapPayload.cap} />
+      </div>
+    );
+  }
+
+  // ── P2-T2: crew-failure card — system entry with sourceInfo.type === "crew_failed" ──
+  const crewFailurePayload = extractCrewFailurePayload(entry);
+  if (crewFailurePayload) {
+    return (
+      <div data-testid={`entry-row-${entry.id}`} data-entry-type="crew_failed">
+        <CrewFailureCard
+          payload={crewFailurePayload}
+          onRetry={() => onCrewFailureRetry?.(crewFailurePayload.issueId)}
+          onReassign={() => onCrewFailureReassign?.(crewFailurePayload.issueId)}
+          onSkip={() => onCrewFailureSkip?.(crewFailurePayload.issueId)}
+        />
       </div>
     );
   }

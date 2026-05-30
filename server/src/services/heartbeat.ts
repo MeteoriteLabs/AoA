@@ -30,6 +30,7 @@ import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
+import { postCrewFailureCard } from "./crew-failure-card.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -4044,6 +4045,28 @@ export function heartbeatService(db: Db) {
           issueId: readNonEmptyString(context.issueId),
           detectedFiles: [],
         });
+      }
+
+      // P2-T2: surface thread-linked deliverable failures as a visible chat
+      // card (not a silent `failed`). Best-effort — must never mask the
+      // original failure or throw out of the catch.
+      if (presenceThreadId && issueContext?.id) {
+        try {
+          await postCrewFailureCard(db, {
+            threadId: presenceThreadId,
+            companyId: agent.companyId,
+            issueId: issueContext.id,
+            agentId: agent.id,
+            agentName: agent.name,
+            taskTitle: issueContext.title ?? "(untitled task)",
+            error: message,
+          });
+        } catch (cardErr) {
+          logger.warn(
+            { err: cardErr, threadId: presenceThreadId, issueId: issueContext.id },
+            "P2-T2: failed to post crew-failure card",
+          );
+        }
       }
     } finally {
       // P2-T1: clear this agent's working presence for the thread (run ended,

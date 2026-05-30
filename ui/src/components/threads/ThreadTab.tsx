@@ -11,6 +11,7 @@ import { authApi } from "../../api/auth";
 import { agentsApi } from "../../api/agents";
 import { assetsApi } from "../../api/assets";
 import { teamApi } from "../../api/team";
+import { issuesApi } from "../../api/issues";
 import { useToast } from "../../context/ToastContext";
 import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
@@ -18,6 +19,7 @@ import { EntryRow } from "./EntryRow";
 import { EntryComposer, type AgentRef, type AssetRef, type UserRef } from "./EntryComposer";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
+import { useNavigate } from "@/lib/router";
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadTab
@@ -42,6 +44,7 @@ export function ThreadTab({
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { connectionState } = useLiveUpdates();
   const isOffline = connectionState === "offline";
   const isReconnecting = connectionState === "reconnecting";
@@ -164,6 +167,24 @@ export function ThreadTab({
         "Failed to approve proposal";
       pushToast({ title: message, tone: "warn" });
     },
+  });
+
+  // P2-T2: crew-failure card actions.
+  const retryTaskMutation = useMutation({
+    mutationFn: (issueId: string) => issuesApi.update(issueId, { status: "todo" }),
+    onSuccess: () => {
+      pushToast({ title: "Task re-queued", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+    onError: () => pushToast({ title: "Failed to retry task", tone: "warn" }),
+  });
+  const skipTaskMutation = useMutation({
+    mutationFn: (issueId: string) => issuesApi.update(issueId, { status: "cancelled" }),
+    onSuccess: () => {
+      pushToast({ title: "Task skipped", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+    onError: () => pushToast({ title: "Failed to skip task", tone: "warn" }),
   });
 
   async function handleComposerSubmit(payload: {
@@ -317,6 +338,9 @@ export function ThreadTab({
                 }
                 scopeProposalActive={entry.id === activeProposalEntryId}
                 onScopeProposalApprove={(e) => approveProposalMutation.mutate(e.id)}
+                onCrewFailureRetry={(issueId) => retryTaskMutation.mutate(issueId)}
+                onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
+                onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
               />
               {replies.map((reply) => (
                 <div key={reply.id} className="pl-10">
@@ -327,6 +351,9 @@ export function ThreadTab({
                     isReprocessing={
                       reprocessMutation.isPending && reprocessMutation.variables === reply.id
                     }
+                    onCrewFailureRetry={(issueId) => retryTaskMutation.mutate(issueId)}
+                    onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
+                    onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                   />
                 </div>
               ))}
