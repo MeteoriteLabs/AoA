@@ -190,6 +190,14 @@ export function createThreadEventListener(
         log.warn({ err, threadId }, "triggerOnHumanEntry failed — continuing with peer-wake");
       });
 
+    // P1-T11: For controller-path threads, the new orchestration controller
+    // handles dispatch. The peer-wake pipeline (agentWakeupRequests insert) is
+    // dormant for these threads — do NOT delete it; old threads still need it.
+    if (thread.useControllerPath) {
+      log.debug({ threadId }, "skip peer-wake insert — thread uses controller path");
+      return;  // triggerOnHumanEntry already ran above
+    }
+
     // .onConflictDoNothing() pairs with the partial unique index on
     // (dedup_key) WHERE status='queued' AND dedup_key IS NOT NULL.
     // If a queued wakeup with the same dedupKey already exists (e.g. another

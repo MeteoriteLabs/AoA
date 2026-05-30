@@ -307,13 +307,14 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // key never matched. `threads` and `discussions` are the same
           // table; `threadId` IS the discussion's primary key.
           const threadIdInPayload = (w.payload as Record<string, unknown> | null)?.threadId;
-          const threadPaused = typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
+          const threadRow = typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
             ? await db
-                .select({ crewPaused: discussions.crewPaused })
+                .select({ crewPaused: discussions.crewPaused, useControllerPath: discussions.useControllerPath })
                 .from(discussions)
                 .where(eq(discussions.id, threadIdInPayload))
-                .then((rows: Array<{ crewPaused: boolean | null }>) => Boolean(rows[0]?.crewPaused))
-            : false;
+                .then((rows: Array<{ crewPaused: boolean | null; useControllerPath: boolean | null }>) => rows[0] ?? null)
+            : null;
+          const threadPaused = Boolean(threadRow?.crewPaused);
           if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
             // P2 fix: distinct terminal status so the wakeup table tells you
             // WHY a wakeup ended, not just that it ended. Was collapsed into
@@ -325,6 +326,17 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             logger.child({ subagent: "aoa-dispatcher" }).info(
               { agentId: w.agentId, companyId: w.companyId, threadPaused },
               "aoa wakeup skipped: crew kill-switch active",
+            );
+            return;
+          }
+
+          // P1-T11: Defense-in-depth gate — controller-path threads are driven
+          // by the orchestration controller, not the peer-wake pipeline. Any
+          // wakeup that slipped through (e.g. from a pre-T11 row) is skipped.
+          if (threadRow?.useControllerPath) {
+            logger.child({ subagent: "aoa-dispatcher" }).debug(
+              { wakeupId: w.id },
+              "aoa wakeup skipped: controller-path thread (peer-wake dormant)",
             );
             return;
           }

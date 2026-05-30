@@ -335,6 +335,7 @@ export function discussionService(db: Db) {
             entryCount: hasEntry ? 1 : 0,
             lastEntryAt: hasEntry ? now : null,
             createdBy: actorId,
+            useControllerPath: true,   // P1-T11: new threads use orchestration controller path
           })
           .returning();
 

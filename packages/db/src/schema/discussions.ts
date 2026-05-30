@@ -105,6 +105,13 @@ export const discussions = pgTable(
     // separately by the outbox trigger. Company-level pause is in internal_agent_config.
     crewPaused: boolean("crew_paused").notNull().default(false),
 
+    // P1-T11: Per-thread strangler flag.
+    // When true, this thread uses the P1 orchestration controller path.
+    // The old peer-wake pipeline (sweep-adjutant, dispatcher, advancePhase wakeups)
+    // is dormant for this thread. Set on create for all new threads; false for
+    // pre-existing threads (they stay on the old path).
+    useControllerPath: boolean("use_controller_path").notNull().default(false),
+
     // Denormalized metadata
     entryCount: integer("entry_count").notNull().default(0),
     pendingItemCount: integer("pending_item_count").notNull().default(0),

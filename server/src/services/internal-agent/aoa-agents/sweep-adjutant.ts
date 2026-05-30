@@ -87,6 +87,10 @@ export async function runAdjutantSweep(db: Db): Promise<void> {
           eq(discussions.companyId, trigger.companyId),
           ne(discussions.phase, "done"),
           eq(discussions.crewPaused, false),
+          // P1-T11: controller-path threads are driven by the orchestration
+          // controller, not the sweep. Exclude them so the peer-wake pipeline
+          // remains dormant for new threads.
+          eq(discussions.useControllerPath, false),
         ),
       );
 
