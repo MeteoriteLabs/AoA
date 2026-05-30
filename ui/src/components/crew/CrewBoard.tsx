@@ -47,10 +47,16 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
   const queryClient = useQueryClient();
   const [selectedAgentId, setSelectedAgentId] = useState<string>(ALL_AGENTS_VALUE);
 
+  const agentFilter =
+    selectedAgentId === ALL_AGENTS_VALUE ? undefined : selectedAgentId;
+
   const tasksQuery = useQuery({
-    queryKey: ["tasks", "from-discussions", companyId],
+    queryKey: ["tasks", "from-discussions", companyId, agentFilter ?? null],
     queryFn: () =>
-      issuesApi.list(companyId, { crewBoard: true }),
+      issuesApi.list(companyId, {
+        crewBoard: true,
+        ...(agentFilter ? { assigneeAgentId: agentFilter } : {}),
+      }),
     enabled: Boolean(companyId),
   });
 

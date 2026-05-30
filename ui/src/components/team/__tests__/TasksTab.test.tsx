@@ -210,4 +210,75 @@ describe("TasksTab", () => {
     expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument();
     expect(screen.queryByTestId("kb-card-i-2")).not.toBeInTheDocument();
   });
+
+  it("triggers a server re-query with assigneeAgentId when an agent is selected", async () => {
+    const user = userEvent.setup();
+
+    // Initial load: both agents' tasks returned (no agent filter).
+    mockIssuesList.mockResolvedValueOnce([
+      makeIssue({
+        id: "i-1",
+        title: "Task by A",
+        assigneeAgentId: "agent-1",
+        sourceDiscussionId: "thread-A",
+        sourceThreadTitle: "Thread A",
+      }),
+      makeIssue({
+        id: "i-2",
+        title: "Task by B",
+        assigneeAgentId: "agent-2",
+        sourceDiscussionId: "thread-A",
+        sourceThreadTitle: "Thread A",
+      }),
+    ]);
+
+    // Second query (after filter): only agent-1's task.
+    mockIssuesList.mockResolvedValueOnce([
+      makeIssue({
+        id: "i-1",
+        title: "Task by A",
+        assigneeAgentId: "agent-1",
+        sourceDiscussionId: "thread-A",
+        sourceThreadTitle: "Thread A",
+      }),
+    ]);
+
+    renderWithProviders(
+      <TasksTab
+        companyId="comp-1"
+        crewAgents={[
+          { id: "agent-1", name: "Adjutant" },
+          { id: "agent-2", name: "Planner" },
+        ]}
+      />,
+    );
+
+    // Wait for initial board to render.
+    await waitFor(() =>
+      expect(screen.getByTestId("crew-board")).toBeInTheDocument(),
+    );
+
+    // First call: no assigneeAgentId.
+    expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
+      crewBoard: true,
+    });
+
+    // Select agent-1.
+    await user.selectOptions(
+      screen.getByTestId("agent-filter-select"),
+      "agent-1",
+    );
+
+    // The component should issue a second API call that includes assigneeAgentId.
+    await waitFor(() =>
+      expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
+        crewBoard: true,
+        assigneeAgentId: "agent-1",
+      }),
+    );
+
+    // After the re-query only agent-1's task is visible.
+    expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("kb-card-i-2")).not.toBeInTheDocument();
+  });
 });
