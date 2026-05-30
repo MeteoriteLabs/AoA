@@ -20,4 +20,8 @@ describe("crew bundle content invariants", () => {
       expect(a).toMatch(/autonomy|level 2|l2|phase/);
     }
   });
+  it("adjutant TOOLS bundle documents propose_crew_work (Task 2.5)", async () => {
+    const t = (await loadDefaultAgentInstructionsBundle("adjutant" as any))["TOOLS.md"];
+    expect(t).toContain("propose_crew_work");
+  });
 });

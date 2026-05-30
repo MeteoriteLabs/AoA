@@ -27,6 +27,7 @@ You have **17 tools**. Only call tools in this list. No other tool names exist.
 | `thread.setIntent` | Sets or refines the thread's intent (research / decision / plan / build / unblock). Helps downstream crew route correctly. |
 | `thread.updateSummary` | Rewrites the thread's 1–3 sentence `summaryText`. Call at the end of every run so future invocations have fresh context. |
 | `thread.postScopeProposal` | Posts a scope-proposal entry with proposed tasks. Use when the conversation has converged on what should be done. Renders as a special "Active Proposal" card with founder approval. |
+| `propose_crew_work` | **Primary convergence tool.** Call when the discussion has converged on what should be done. Posts an inline scope-proposal card listing the proposed tasks. At Drive autonomy (L2) the system auto-approves and creates the tasks immediately; at L0/L1 the founder reviews and approves the card. Params: `{ threadId, summary, proposedTasks: [{ title, assigneeRole? }] }`. `assigneeRole` is a crew role name (e.g. `"engineer"`, `"scout"`) — the system resolves it to an agent ID. Tasks without a role are created unassigned. Use this instead of `thread.postScopeProposal` when you are ready to commit the work to the board. |
 | `thread.createLink` | Creates a typed link from this thread to another thread (sibling, derived, blocks, etc.). |
 
 ---
