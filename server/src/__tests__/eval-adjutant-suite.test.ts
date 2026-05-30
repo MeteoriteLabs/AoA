@@ -25,9 +25,9 @@ function makeClassifierResponse(category: AdjutantClassification["category"], re
 }
 
 describe("loadFixtures", () => {
-  it("loads all 15 Adjutant fixture cases sorted lexicographically", async () => {
+  it("loads all 18 Adjutant fixture cases sorted lexicographically", async () => {
     const cases = await loadFixtures<AdjutantThreadFixture, AdjutantClassification>(FIXTURES_DIR);
-    expect(cases).toHaveLength(15);
+    expect(cases).toHaveLength(18);
     expect(cases.map((c) => c.id)).toEqual([
       "01-clearly-not-ready",
       "02-empty-thread",
@@ -44,6 +44,10 @@ describe("loadFixtures", () => {
       "13-extensive-conversation",
       "14-rich-with-research",
       "15-obviously-ready",
+      // P2-T4 regression fixtures — pin the QA-bug + new-behavior failure modes.
+      "16-long-but-unconverged",       // QA-BUG-015: length ≠ readiness, don't scope prematurely
+      "17-converged-facilitate",       // QA-BUG-016: facilitate (propose) when humans have aligned
+      "18-already-proposed-awaiting-human", // act-once-then-silent: don't re-propose/loop
     ]);
   });
 
@@ -58,14 +62,14 @@ describe("loadFixtures", () => {
 });
 
 describe("buildAdjutantScopeSuite", () => {
-  it("resolves to a suite named 'adjutant-scope-readiness' with 15 cases", async () => {
+  it("resolves to a suite named 'adjutant-scope-readiness' with 18 cases", async () => {
     const suite = await buildAdjutantScopeSuite({
       apiKey: "sk-test",
       fetchImpl: vi.fn() as unknown as typeof fetch,
       fixturesDir: FIXTURES_DIR,
     });
     expect(suite.name).toBe("adjutant-scope-readiness");
-    expect(suite.cases).toHaveLength(15);
+    expect(suite.cases).toHaveLength(18);
     expect(suite.concurrency).toBe(5);
   });
 
@@ -73,20 +77,20 @@ describe("buildAdjutantScopeSuite", () => {
     const cases = await loadFixtures<AdjutantThreadFixture, AdjutantClassification>(FIXTURES_DIR);
     const exact = cases.filter((c) => c.expected.type === "exact").length;
     const graded = cases.filter((c) => c.expected.type === "llm-graded").length;
-    expect(exact + graded).toBe(15);
+    expect(exact + graded).toBe(18);
     // Each side should have at least 5 cases so a single grading mode can't dominate.
     expect(exact).toBeGreaterThanOrEqual(5);
     expect(graded).toBeGreaterThanOrEqual(5);
   });
 
-  it("covers all three categories with five fixtures each", async () => {
+  it("covers all three categories with six fixtures each", async () => {
     const cases = await loadFixtures<AdjutantThreadFixture, AdjutantClassification>(FIXTURES_DIR);
     const counts: Record<string, number> = { wait: 0, "ask-clarifying": 0, "propose-scope": 0 };
     for (const c of cases) {
       const category = (c.expected.value as AdjutantClassification).category;
       counts[category] = (counts[category] ?? 0) + 1;
     }
-    expect(counts).toEqual({ wait: 5, "ask-clarifying": 5, "propose-scope": 5 });
+    expect(counts).toEqual({ wait: 6, "ask-clarifying": 6, "propose-scope": 6 });
   });
 });
 
