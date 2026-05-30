@@ -11,7 +11,17 @@
 // runtimeConfig.aoa.role key, not agent.name.
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { buildTriggerPrompt } from "../services/internal-agent/aoa-agents/aoa-trigger-prompt.js";
+
+// Task 0.4 — ensure-adjutant instruction text (read raw so changes to
+// the module don't require re-importing; the string constant is exported via
+// the seedCrewAgent call, not directly, so read the source file directly).
+const ENSURE_ADJUTANT_SRC = readFileSync(
+  join(__dirname, "../services/internal-agent/aoa-agents/ensure-adjutant.ts"),
+  "utf8"
+);
 
 const BASE_INSTRUCTION = "## Persona\nYou are a focused, terse agent.\n";
 
@@ -42,15 +52,31 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).toContain("parentEntryId");
     });
 
-    it("adjutant → advance_phase OR notify_owner", () => {
+    it("adjutant → propose_crew_work at convergence (Task 0.4)", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,
         payload: { companyId: "co", source: "sweep.adjutant" },
         agentName: "Adjutant",
         agentRoleKey: "adjutant",
       });
+      // Must mention the new propose_crew_work tool and scope-proposing
+      expect(out).toContain("propose_crew_work");
+      // advance_phase is still valid for phase transitions
       expect(out).toContain("advance_phase");
-      expect(out).toContain("notify_owner");
+      // Silence must be explicitly correct (not a bug)
+      expect(out).toMatch(/silence is correct/i);
+    });
+
+    it("adjutant → does NOT carry the 'returning is a bug' forcing clause (Task 0.4)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep.adjutant" },
+        agentName: "Adjutant",
+        agentRoleKey: "adjutant",
+      });
+      // The old forcing clause said returning without the directed action is a bug.
+      // This must be removed — silence is the correct behavior when idle.
+      expect(out).not.toMatch(/returning without taking the directed action is a bug/i);
     });
 
     it("router → post_entry with department recommendation", () => {
@@ -221,5 +247,19 @@ describe("buildTriggerPrompt (T1.2)", () => {
       // post_entry by name — the Scribe regression test forbids that)
       expect(out).toMatch(/surfaces? feedback to the human/i);
     });
+  });
+});
+
+// Task 0.4 — ensure-adjutant stale-framing guard
+describe("ensure-adjutant instruction (Task 0.4)", () => {
+  it("does NOT contain stale 'Dispatcher and Engineer take over' framing", () => {
+    // The Dispatcher card-making role is retired in a later task.
+    // The Adjutant now proposes work directly via propose_crew_work.
+    expect(ENSURE_ADJUTANT_SRC).not.toMatch(/Dispatcher.*take over/i);
+  });
+
+  it("does NOT reference Dispatcher taking over at the scope transition", () => {
+    // Even partial "Dispatcher … take over" in any form is stale
+    expect(ENSURE_ADJUTANT_SRC).not.toMatch(/Dispatcher[^.]*take over/i);
   });
 });

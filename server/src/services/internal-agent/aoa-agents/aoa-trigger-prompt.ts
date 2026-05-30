@@ -43,7 +43,7 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
   maker:          "call `post_entry` exactly once with parentEntryId set to the inviting entry, attaching your artifact",
   engineer:       "call `create_artifact` (or `create_artifact_version` for an iteration), then `post_entry` exactly once with parentEntryId set to the inviting entry linking the new artifact",
   scout:          "investigate the thread context via your internal-only retrieval tools, then `post_entry` exactly once with a synthesis of what you found (link related threads via `thread.createLink` if a precedent applies)",
-  adjutant:       "call `advance_phase` if the thread is ready to move forward, OR `notify_owner` if it needs the human first",
+  adjutant:       "If the conversation has converged on work to do, call `propose_crew_work` with the proposed tasks. You may still call `advance_phase` for phase transitions. If the thread is not ready or you have nothing to add, return without posting — silence is correct.",
   router:         "call `post_entry` exactly once as a system-notice with your department recommendation",
   navigator:      "decide whether to `attach_to_thread` (promote to an existing thread), `spin_off_thread` (orphan material into a new thread), or post a routing recommendation via `post_entry`",
   planner:        "call `create_artifact` (or `create_artifact_version` for an iteration) with the plan markdown as the document body, then `post_entry` exactly once as a system-notice linking the new artifact so the Dispatcher can pick it up",
@@ -98,6 +98,6 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     "## This wakeup",
     ctxLines.join("\n"),
     "",
-    `You are ${agentName}. ${directive}. Return when done. Returning without taking the directed action is a bug — if you cannot take it for any reason (missing data, ambiguity), use whatever tool in your allowlist surfaces feedback to the human (a thread post, a notification, or your own report) rather than returning silently.`,
+    `You are ${agentName}. ${directive}. Return when done. If you cannot act for any reason (missing data, ambiguity), use whatever tool in your allowlist surfaces feedback to the human (a thread post, a notification, or your own report) rather than returning silently. Silence is acceptable when there is genuinely nothing to do.`,
   ].join("\n");
 }
