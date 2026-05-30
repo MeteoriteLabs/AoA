@@ -5,15 +5,18 @@
 // failure), param validation, and the empty-proposedTasks happy path.
 
 import { describe, expect, it, vi } from "vitest";
+
+// Mock publishLiveEvent — called after the transaction in T13's live-delivery fix.
+vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
+
 import { threadPostScopeProposalTool } from "../services/internal-agent/tools/thread-post-scope-proposal.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-// Build a mock tx that tracks inserts. The tool issues exactly TWO inserts
-// inside the transaction (in this order):
-//   1. tx.insert(discussionEntries).values({...}).returning() — entry
-//   2. tx.insert(threadPlanSteps).values([...]) — plan steps (when nonempty)
-// We key behavior off insert-call ordinal rather than schema-table identity
-// because real Drizzle table objects don't expose a name-via-`._` accessor.
+// Build a mock tx that tracks inserts. The tool issues (in this order):
+//   1. tx.update(discussions)  — bump entrySeq + entryCount (T13 live-delivery)
+//   2. tx.insert(discussionEntries).values({...}).returning() — entry
+//   3. tx.insert(threadPlanSteps).values([...]) — plan steps (when nonempty)
+// We key insert behavior off ordinal rather than schema-table identity.
 function makeTxTracker(opts: {
   entryReturn?: any[];
   planInsertThrows?: Error;
@@ -31,8 +34,8 @@ function makeTxTracker(opts: {
   }
   const insert = vi.fn((_table: any) => {
     const idx = insertCalls.length;
-    const isEntryInsert = idx === 0; // first insert = entry
-    const isPlanInsert = idx === 1; // second insert = plan steps
+    const isEntryInsert = idx === 0; // first insert = discussion_entries
+    const isPlanInsert = idx === 1; // second insert = thread_plan_steps
     const tableLabel = isEntryInsert
       ? "discussion_entries"
       : isPlanInsert
@@ -43,11 +46,20 @@ function makeTxTracker(opts: {
       throw opts.planInsertThrows;
     }
     if (isEntryInsert) {
-      return makeChain(() => opts.entryReturn ?? [{ id: "entry-1" }], idx);
+      return makeChain(() => opts.entryReturn ?? [{ id: "entry-1", seq: 1 }], idx);
     }
     return makeChain(() => [], idx);
   });
-  return { insert, insertCalls };
+  // T13: tx.update(discussions) bumps entrySeq — returns [{ entrySeq, companyId }].
+  const update = vi.fn((_table: any) => ({
+    set: (_vals: any) => ({
+      where: (_cond: any) => ({
+        returning: (_cols: any) =>
+          Promise.resolve([{ entrySeq: 1, companyId: "co-1" }]),
+      }),
+    }),
+  }));
+  return { insert, update, insertCalls };
 }
 
 function makeCtx(transactionFn: any): ToolContext {
@@ -73,7 +85,7 @@ describe("thread.postScopeProposal tool (C2 batch 1, D9 transactional)", () => {
   it("posts entry + plan steps in a single transaction", async () => {
     const tracker = makeTxTracker();
     const transactionFn = vi.fn(async (cb: any) => {
-      return await cb({ insert: tracker.insert });
+      return await cb({ insert: tracker.insert, update: tracker.update });
     });
     const ctx = makeCtx(transactionFn);
 
@@ -125,7 +137,7 @@ describe("thread.postScopeProposal tool (C2 batch 1, D9 transactional)", () => {
     const transactionFn = vi.fn(async (cb: any) => {
       // Simulate Postgres transaction behavior: the callback throws → re-throw.
       // No commit happens, no plan steps persist.
-      return await cb({ insert: tracker.insert });
+      return await cb({ insert: tracker.insert, update: tracker.update });
     });
     const ctx = makeCtx(transactionFn);
 
@@ -148,7 +160,7 @@ describe("thread.postScopeProposal tool (C2 batch 1, D9 transactional)", () => {
   it("handles empty proposedTasks array (only posts the entry, no plan steps)", async () => {
     const tracker = makeTxTracker();
     const transactionFn = vi.fn(async (cb: any) => {
-      return await cb({ insert: tracker.insert });
+      return await cb({ insert: tracker.insert, update: tracker.update });
     });
     const ctx = makeCtx(transactionFn);
 
@@ -193,7 +205,7 @@ describe("thread.postScopeProposal tool (C2 batch 1, D9 transactional)", () => {
   it("rolls back when a proposed task is missing its title", async () => {
     const tracker = makeTxTracker();
     const transactionFn = vi.fn(async (cb: any) => {
-      return await cb({ insert: tracker.insert });
+      return await cb({ insert: tracker.insert, update: tracker.update });
     });
     const ctx = makeCtx(transactionFn);
 
