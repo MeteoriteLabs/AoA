@@ -48,7 +48,7 @@ export const updateDiscussionSchema = z.object({
   title: z.string().optional().nullable(),
   status: z.enum(DISCUSSION_STATUSES).optional(),
   tags: z.array(z.string()).optional(),
-  autonomyLevel: z.number().int().min(0).max(3).nullable().optional(),
+  autonomyLevel: z.number().int().min(0).max(2).nullable().optional(),
   // Phase 1 Phase E batch 2 (T22): OriginCard's 3-option visibility selector
   // patches via this endpoint. The service `update()` already passes the
   // field through to the discussions UPDATE.

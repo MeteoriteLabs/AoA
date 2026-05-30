@@ -44,7 +44,7 @@ export const internalAgentConfig = pgTable(
     cliTool: text("cli_tool"), // 'claude_cli' | 'codex' | 'opencode' | null
 
     // Autonomy
-    autonomyLevel: integer("autonomy_level").notNull().default(0), // 0-3, v2.5 ships with 0 only
+    autonomyLevel: integer("autonomy_level").notNull().default(0), // 0-2 (Manual/Assist/Drive), v2.5 ships with 0 only
 
     // Capabilities
     enabledCapabilities: jsonb("enabled_capabilities").notNull().default([

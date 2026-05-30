@@ -11,7 +11,7 @@ export const updateInternalAgentConfigSchema = z.object({
   provider: z.enum(AGENT_PROVIDERS).optional().nullable(),
   model: z.string().optional().nullable(),
   cliTool: z.string().optional().nullable(),
-  autonomyLevel: z.number().int().min(0).max(3).optional(),
+  autonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.enum(AGENT_CAPABILITIES)).optional(),
   notificationPreference: z.enum(NOTIFICATION_PREFERENCES).optional(),
   contextTokenBudget: z.number().int().positive().optional(),

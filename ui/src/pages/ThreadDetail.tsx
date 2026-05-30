@@ -17,6 +17,7 @@ import { ThreadTab } from "../components/threads/ThreadTab";
 import { ScopeTab } from "../components/threads/ScopeTab";
 import { BranchesTab } from "../components/threads/BranchesTab";
 import type { ScopeItem } from "../components/threads/scopeGrouping";
+import { AUTONOMY_LEVELS, autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
 
 /* ─── Phase constants ─── */
 
@@ -44,10 +45,12 @@ const PHASE_LABELS: Record<Phase, string> = {
 
 /* ─── Autonomy pill ─── */
 
-const AUTONOMY: Record<number, { label: string; color: string; bgColor: string }> = {
-  1: { label: "Manual", color: "#D9A938", bgColor: "rgba(217,169,56,0.15)" },
-  2: { label: "Semi",   color: "#60a5fa", bgColor: "rgba(96,165,250,0.15)" },
-  3: { label: "Auto",   color: "#4FB67E", bgColor: "rgba(79,182,126,0.15)" },
+// Canonical 0-2 scale (Manual / Assist / Drive) sourced from @armyofagents/shared.
+// Colors keyed on AutonomyValue (0 | 1 | 2).
+const AUTONOMY_COLORS: Record<AutonomyValue, { color: string; bgColor: string }> = {
+  0: { color: "#D9A938", bgColor: "rgba(217,169,56,0.15)" },
+  1: { color: "#60a5fa", bgColor: "rgba(96,165,250,0.15)" },
+  2: { color: "#4FB67E", bgColor: "rgba(79,182,126,0.15)" },
 };
 
 /* ─── Mobile + center tab types ─── */
@@ -348,7 +351,10 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
   const phaseIndex = PHASES.indexOf(thread.phase as Phase);
   const nextPhase = NEXT_PHASE[thread.phase as Phase];
   const phaseButtonLabel = PHASE_BTN[thread.phase as Phase];
-  const autonomyInfo = thread.autonomyLevel != null ? AUTONOMY[thread.autonomyLevel] : null;
+  const autonomyInfo =
+    thread.autonomyLevel != null && thread.autonomyLevel in AUTONOMY_COLORS
+      ? { label: autonomyLabel(thread.autonomyLevel), ...AUTONOMY_COLORS[thread.autonomyLevel as AutonomyValue] }
+      : null;
 
   // Participant avatars (first 5)
   const allParticipants: Array<{ type: "human" | "agent"; id: string; name: string | null }> = [
@@ -507,12 +513,11 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                       className="absolute right-0 top-full mt-1 z-50 min-w-[130px] rounded-lg border border-border shadow-lg py-1"
                       style={{ background: "var(--card, #161a20)" }}
                     >
-                      {([
-                        [null, "Off",    "hsl(0 0% 40%)", "hsl(0 0% 14%)"],
-                        [1,    "Manual", "#D9A938",        "rgba(217,169,56,0.15)"],
-                        [2,    "Semi",   "#60a5fa",        "rgba(96,165,250,0.15)"],
-                        [3,    "Auto",   "#4FB67E",        "rgba(79,182,126,0.15)"],
-                      ] as Array<[number | null, string, string, string]>).map(([lvl, label, color, bg]) => {
+                      {([null, 0, 1, 2] as Array<AutonomyValue | null>).map((lvl) => {
+                        const label = autonomyLabel(lvl);
+                        const colors = lvl !== null ? AUTONOMY_COLORS[lvl] : null;
+                        const color = colors?.color ?? "hsl(0 0% 40%)";
+                        const bg    = colors?.bgColor ?? "hsl(0 0% 14%)";
                         const isActive = (thread.autonomyLevel ?? null) === lvl;
                         return (
                           <button
@@ -1004,10 +1009,11 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
    Thread Viewer Panel
    ════════════════════════════════════════════════════════════════════════ */
 
-const AUTONOMY_BANNER: Record<number, { label: string; text: string }> = {
-  0: { label: "L0 · Manual", text: "Agents act only when you explicitly ask." },
-  1: { label: "L1 · Assist", text: "Agents suggest; you approve each step." },
-  2: { label: "L2 · Drive", text: "Agents drive Discuss → Scope → Assign autonomously." },
+// Derived from the canonical AUTONOMY_LEVELS in @armyofagents/shared (0=Manual/1=Assist/2=Drive).
+const AUTONOMY_BANNER: Record<AutonomyValue, { label: string; text: string }> = {
+  0: { label: `L0 · ${AUTONOMY_LEVELS[0].name}`, text: AUTONOMY_LEVELS[0].blurb },
+  1: { label: `L1 · ${AUTONOMY_LEVELS[1].name}`, text: AUTONOMY_LEVELS[1].blurb },
+  2: { label: `L2 · ${AUTONOMY_LEVELS[2].name}`, text: AUTONOMY_LEVELS[2].blurb },
 };
 
 const ITEM_TYPE_COLORS: Record<string, string> = {
@@ -1105,7 +1111,10 @@ function ThreadViewerPanel({ thread, companyId, item, onClose, onOpenScope, onCo
     );
   }
 
-  const autonomy = thread.autonomyLevel != null ? AUTONOMY_BANNER[thread.autonomyLevel] : null;
+  const autonomy =
+    thread.autonomyLevel != null && thread.autonomyLevel in AUTONOMY_BANNER
+      ? AUTONOMY_BANNER[thread.autonomyLevel as AutonomyValue]
+      : null;
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
