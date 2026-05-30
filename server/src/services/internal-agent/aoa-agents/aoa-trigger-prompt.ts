@@ -46,7 +46,7 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
   adjutant:       "If the conversation has converged on work to do, call `propose_crew_work` with the proposed tasks. You may still call `advance_phase` for phase transitions. If the thread is not ready or you have nothing to add, return without posting — silence is correct.",
   router:         "call `post_entry` exactly once as a system-notice with your department recommendation",
   navigator:      "decide whether to `attach_to_thread` (promote to an existing thread), `spin_off_thread` (orphan material into a new thread), or post a routing recommendation via `post_entry`",
-  planner:        "call `create_artifact` (or `create_artifact_version` for an iteration) with the plan markdown as the document body, then `post_entry` exactly once as a system-notice linking the new artifact so the Dispatcher can pick it up",
+  planner:        "call `create_artifact` (or `create_artifact_version` for an iteration) with the plan markdown as the document body, then `post_entry` exactly once as a system-notice linking the new artifact",
   dispatcher:     "call `create_task` (one per scope item), then `assign_task` + `add_task_dependency` as needed",
   memory_keeper:  "call `suggest_memory` for each candidate pattern (propose-only — the founder approves)",
   commander:      "call `post_entry` exactly once with your synthesis or answer",

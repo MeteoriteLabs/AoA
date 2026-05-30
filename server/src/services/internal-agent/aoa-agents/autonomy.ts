@@ -5,8 +5,10 @@
  * - Core roles (scribe, memory_keeper, curator) are ALWAYS ON (min autonomy = 0).
  *   They must not be gated off — disabling extraction at L0 would break the
  *   Discussion pipeline entirely.
- * - Agentic roles (router, planner, dispatcher) require autonomyLevel ≥ 2.
+ * - Agentic roles (router/navigator, planner) require autonomyLevel ≥ 2.
  *   At L0/L1 these roles fire no autonomous actions.
+ *   Note: dispatcher was retired in Task 2.7; ROLE_MIN_AUTONOMY retains the
+ *   entry for type-safety (CrewRole union) but no live trigger seeds it.
  */
 
 export type CrewRole =

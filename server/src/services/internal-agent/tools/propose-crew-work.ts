@@ -25,7 +25,9 @@ const ROLE_TO_AGENT_NAME: Record<string, string> = {
   maker: "Maker", // legacy alias for Engineer
   scout: "Scout",
   planner: "Planner",
-  dispatcher: "Dispatcher",
+  // dispatcher intentionally removed — Dispatcher is retired (Task 2.7).
+  // crew-task-service is the sole creator of crew work; work must not be
+  // assigned to the retired Dispatcher agent.
   navigator: "Navigator",
   router: "Navigator", // legacy alias for Navigator
   memory_keeper: "Memory Keeper",
@@ -88,7 +90,7 @@ export const proposeCrewWorkTool: AgentTool = {
             assigneeRole: {
               type: "string",
               description:
-                "Crew role to assign the task to (engineer, scout, planner, dispatcher, navigator, memory_keeper, adjutant). Omit to leave unassigned.",
+                "Crew role to assign the task to (engineer, scout, planner, navigator, memory_keeper, adjutant). Omit to leave unassigned.",
             },
           },
           required: ["title"],

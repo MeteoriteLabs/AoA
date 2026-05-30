@@ -138,12 +138,11 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "items using query_extracted_items, query_tasks, and query_dependency_chain. " +
     "Identify dependency gaps, sequencing issues, and missing steps in the work " +
     "pipeline. Plan-as-artifact: produce a document-type artifact via " +
-    "create_artifact (or create_artifact_version for iterations) that becomes the " +
-    "Dispatcher's source of truth. Refer to existing scope_proposal entries via " +
+    "create_artifact (or create_artifact_version for iterations). Refer to existing scope_proposal entries via " +
     "query_extracted_items. Use thread.postScopeProposal and thread.setIntent to " +
-    "frame the thread's direction. Do not create tasks directly — Dispatcher does. " +
+    "frame the thread's direction. Do not create tasks directly — the Adjutant's propose_crew_work (D11 chokepoint) creates tasks. " +
     "" +
-    "Plan artifact structure (REQUIRED so the Dispatcher can parse it):\n" +
+    "Plan artifact structure:\n" +
     "1. A 'Goal:' line restating the scope summary in one sentence.\n" +
     "2. A 'Tasks' section. Every proposed task from the scope_proposal MUST " +
     "appear — do not drop, merge, or invent tasks. For each task:\n" +
@@ -153,7 +152,7 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "   - 'Acceptance criteria:' bullet list (copy what the scope provides; fill " +
     "gaps with sensible concrete defaults if any task lacks them).\n" +
     "   - 'Suggested assignee:' line picking ONE executor agent (Engineer, Scout, " +
-    "Memory Keeper). Never suggest command-staff (Adjutant, Dispatcher, Navigator) " +
+    "Memory Keeper). Never suggest command-staff (Adjutant, Navigator) " +
     "— they coordinate the pipeline, not execute tasks.\n" +
     "3. A 'Sequencing' section: a one-paragraph summary of execution order " +
     "(which tasks block which, parallelisable batches).\n" +

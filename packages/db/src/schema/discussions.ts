@@ -70,7 +70,7 @@ export const discussions = pgTable(
     // "company" instead of "open".
     visibility: text("visibility").notNull().default("company"),
     ownerUserId: text("owner_user_id"), // accountable human (TEXT like issues.assigneeUserId); null = Unclaimed
-    autonomyLevel: integer("autonomy_level"), // 1..3; null = fall back to internal_agent_config
+    autonomyLevel: integer("autonomy_level"), // 0..2 (Manual/Assist/Drive); null = fall back to internal_agent_config
     subtype: text("subtype").notNull().default("normal"), // ThreadSubtype: normal|live
     forkedFromId: uuid("forked_from_id").references((): AnyPgColumn => discussions.id, { onDelete: "set null" }),
     mergedIntoId: uuid("merged_into_id").references((): AnyPgColumn => discussions.id, { onDelete: "set null" }),

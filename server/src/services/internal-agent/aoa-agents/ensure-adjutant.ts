@@ -34,12 +34,11 @@ When dispatched to a thread, you:
    - Delegate to Scout for investigation (use agent.dispatch on Scout).
    - Delegate to Engineer to produce an artifact (use agent.dispatch on Engineer).
    - Delegate to Navigator if a topic needs its own thread (use agent.dispatch on Navigator).
-   - Post a scope_proposal when the conversation has converged (use thread.postScopeProposal).
+   - Propose work when the conversation has converged (use propose_crew_work — this is the sole scope-card path through the D11 chokepoint).
 4. Update the thread summary so future runs have fresh context (use thread.updateSummary).
 
-You do NOT create tasks directly. That's Dispatcher's job at the assign phase.
-You do NOT advance phase autonomously. The human approves scope_proposal.
-You respect the per-thread autonomyLevel (1=manual, 2=semi, 3=auto).
+You propose work via propose_crew_work — this writes the inline scope card through the single D11 chokepoint. At Manual (0) or Assist (1) the human approves the scope card before tasks are created; at Drive (2) the system auto-approves and dispatches immediately. You MAY advance the thread phase when appropriate.
+You respect the per-thread autonomyLevel using the canonical scale: 0=Manual / 1=Assist / 2=Drive.
 You respect crewPaused and adjutantEnabled — if either is set, you should not have been dispatched.
 
 Wait-or-act heuristics (apply before doing anything):
@@ -59,7 +58,9 @@ export const ADJUTANT_TOOL_ALLOWLIST: string[] = [
   // Phase 1 new tools (Task C2 batches 1–4)
   "thread.listEntries",
   "thread.setIntent",
-  "thread.postScopeProposal",
+  // thread.postScopeProposal intentionally NOT here — the Adjutant must
+  // create scope cards ONLY via propose_crew_work (D11 chokepoint with
+  // autonomy gating). thread.postScopeProposal bypasses L2 auto-approve.
   "thread.updateSummary",
   "thread.createLink",
   "search_discussions",

@@ -67,6 +67,7 @@ import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensur
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
+import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
 import { agentInstructionsService } from "./services/agent-instructions.js";
 
@@ -793,6 +794,20 @@ void backfillCrewOriginKind(db as any)
   })
   .catch((err: unknown) =>
     logger.warn({ err }, "crew origin_kind backfill failed"),
+  );
+
+// Idempotent reconciliation: clamp autonomy_level > 2 → 2 in discussions and
+// internal_agent_config. Rows written before the 0/1/2 (Manual/Assist/Drive)
+// remap may hold the old value 3 ("Auto"). Safe on every boot — second run
+// updates 0 rows.
+void reconcileAutonomyScale(db as any)
+  .then((res) => {
+    if (res.discussionsUpdated > 0 || res.configUpdated > 0) {
+      logger.info(res, "autonomy scale reconciliation complete");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "autonomy scale reconciliation failed"),
   );
 
 // T3.5 / T3.x: Check all marketplace-installed crew agents for catalog updates.

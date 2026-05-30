@@ -18,12 +18,13 @@ import {
 
 /**
  * P1-T9: Crew Board — filtered deliverable view for tasks spawned from
- * discussion threads (sourceDiscussionId IS NOT NULL).
+ * discussion threads (originKind = 'crew_thread').
  *
- * Lists every issue produced by the Dispatcher's scope_proposal acceptance,
- * grouped by the source thread. Backs the team expectation that crew-created
- * tasks show up alongside the rest of the team without trawling through
- * individual discussions.
+ * Lists every issue produced by the Adjutant's propose_crew_work chokepoint
+ * (D11), grouped by the source thread. The Dispatcher is retired; scope cards
+ * now flow through crew-task-service.proposeWork with autonomy gating. Backs
+ * the team expectation that crew-created tasks show up alongside the rest of
+ * the team without trawling through individual discussions.
  *
  * Filter dropdown narrows by crew agent (assignee) — defensive client-side
  * filter on top of the server filter so the dropdown reflects what's actually
