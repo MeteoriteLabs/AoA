@@ -101,5 +101,6 @@ export const issues = pgTable(
       .on(table.originKind, table.originId)
       .where(sql`origin_kind IS NOT NULL AND status NOT IN ('done', 'cancelled')`),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
+    sourceDiscussionIdx: index("issues_source_discussion_idx").on(table.sourceDiscussionId),
   }),
 );
