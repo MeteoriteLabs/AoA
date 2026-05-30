@@ -7,6 +7,7 @@ import { KanbanBoard } from "../KanbanBoard";
 import { issuesApi } from "../../api/issues";
 import { queryKeys } from "../../lib/queryKeys";
 import { EmptyState } from "../EmptyState";
+import { CrewTaskAuditCard } from "./CrewTaskAuditCard";
 import {
   Select,
   SelectContent,
@@ -46,6 +47,8 @@ const ALL_AGENTS_VALUE = "__all__";
 export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
   const queryClient = useQueryClient();
   const [selectedAgentId, setSelectedAgentId] = useState<string>(ALL_AGENTS_VALUE);
+  const [auditIssue, setAuditIssue] = useState<Issue | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
 
   const agentFilter =
     selectedAgentId === ALL_AGENTS_VALUE ? undefined : selectedAgentId;
@@ -78,6 +81,15 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
     if (selectedAgentId === ALL_AGENTS_VALUE) return tasks;
     return tasks.filter((t) => t.assigneeAgentId === selectedAgentId);
   }, [tasksQuery.data, selectedAgentId]);
+
+  const handleSelectIssue = (identifierOrId: string) => {
+    const found =
+      filteredTasks.find((t) => t.identifier === identifierOrId) ??
+      filteredTasks.find((t) => t.id === identifierOrId) ??
+      null;
+    setAuditIssue(found);
+    setAuditOpen(true);
+  };
 
   const grouped = useMemo<ThreadGroup[]>(() => {
     const map = new Map<string, ThreadGroup>();
@@ -121,57 +133,67 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
   }
 
   return (
-    <div className="px-5 py-4 space-y-6" data-testid="crew-board">
-      {crewAgents.length > 0 && (
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Filter:</span>
-          <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
-            <SelectTrigger
-              className="h-8 w-[220px] text-xs"
-              data-testid="crew-board-agent-filter"
-            >
-              <SelectValue placeholder="All crew agents" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_AGENTS_VALUE}>All crew agents</SelectItem>
-              {crewAgents.map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-
-      {grouped.length === 0 ? (
-        <div
-          className="text-center py-12 text-sm text-muted-foreground"
-          data-testid="crew-board-filtered-empty"
-        >
-          No tasks match this filter.
-        </div>
-      ) : (
-        grouped.map((g) => (
-          <div key={g.threadId} data-testid={`crew-board-group-${g.threadId}`}>
-            <div className="text-sm text-muted-foreground mb-2">
-              From:{" "}
-              <Link
-                to={`/discussions/${g.threadId}`}
-                className="font-medium text-foreground hover:underline"
+    <>
+      <div className="px-5 py-4 space-y-6" data-testid="crew-board">
+        {crewAgents.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Filter:</span>
+            <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
+              <SelectTrigger
+                className="h-8 w-[220px] text-xs"
+                data-testid="crew-board-agent-filter"
               >
-                {g.threadTitle}
-              </Link>
-            </div>
-            <KanbanBoard
-              issues={g.tasks}
-              onUpdateIssue={(id, data) =>
-                updateMutation.mutate({ id, data })
-              }
-            />
+                <SelectValue placeholder="All crew agents" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_AGENTS_VALUE}>All crew agents</SelectItem>
+                {crewAgents.map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        ))
-      )}
-    </div>
+        )}
+
+        {grouped.length === 0 ? (
+          <div
+            className="text-center py-12 text-sm text-muted-foreground"
+            data-testid="crew-board-filtered-empty"
+          >
+            No tasks match this filter.
+          </div>
+        ) : (
+          grouped.map((g) => (
+            <div key={g.threadId} data-testid={`crew-board-group-${g.threadId}`}>
+              <div className="text-sm text-muted-foreground mb-2">
+                From:{" "}
+                <Link
+                  to={`/discussions/${g.threadId}`}
+                  className="font-medium text-foreground hover:underline"
+                >
+                  {g.threadTitle}
+                </Link>
+              </div>
+              <KanbanBoard
+                issues={g.tasks}
+                onUpdateIssue={(id, data) =>
+                  updateMutation.mutate({ id, data })
+                }
+                onSelectIssue={handleSelectIssue}
+              />
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Audit sheet — opens when a card is clicked on the crew board */}
+      <CrewTaskAuditCard
+        issue={auditIssue}
+        open={auditOpen}
+        onOpenChange={setAuditOpen}
+      />
+    </>
   );
 }
