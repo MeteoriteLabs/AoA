@@ -1,8 +1,17 @@
 /**
- * P3.4 — advancePhase emits phase-advance wakeups
+ * P3.4 (revised) — advancePhase does NOT emit legacy phase-advance wakeups
  *
- * Tests that threadService.advancePhase inserts agentWakeupRequests rows for
- * every agent that has an enabled kind="phase-advance" trigger in the company.
+ * The old pipeline (discuss→scope wakes Planner; scope→assign wakes Dispatcher)
+ * was retired in Task 2.7 (Dispatcher) and Task 2.6 (work=task redesign).
+ * advancePhase() now:
+ *   - updates the thread's phase column
+ *   - at "assign" + L2: auto-approves the pending scope_proposal via crew-task-service
+ *   - does NOT insert agentWakeupRequests rows with source="phase-advance"
+ *
+ * This file is a regression guard: it proves the retired pipeline is absent.
+ * The new auto-approve behavior is covered comprehensively by
+ * thread-advance-autoapprove.test.ts (T1–T6). See Decision #15 and the
+ * work=task redesign notes in CLAUDE.md.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -69,6 +78,16 @@ vi.mock("../errors.js", () => ({
   forbidden: (m: string) => Object.assign(new Error(m), { status: 403 }),
 }));
 
+// crew-task-service is dynamically imported inside advancePhase at "assign" target.
+// Mock it so the L2 auto-approve path doesn't blow up in unit tests.
+vi.mock("../services/crew-task-service.js", () => ({
+  crewTaskService: vi.fn(() => ({
+    approveAndDispatch: vi.fn().mockResolvedValue({ approved: true, createdIssueIds: [] }),
+    proposeWork: vi.fn(),
+  })),
+  resolveCreationGate: vi.fn(() => "await_human"),
+}));
+
 // ── Now import the function under test ────────────────────────────────────────
 import { threadService } from "../services/threads.js";
 
@@ -80,20 +99,18 @@ const THREAD_ID = "t-1";
 const ACTOR = { userId: "user-1", isHuman: true, role: "founder" as const };
 
 /**
- * Build a mock DB that sequences its select/update/insert calls.
- *
- * `selectResults` - array of arrays; each advancePhase call triggers multiple
- *   selects in order: [threadRow, triggerRows, ...]
- * `insertValues` - captured insert payloads accumulate here
+ * Build a mock DB for advancePhase. Sequences select/update/insert calls.
+ * The insert mock throws if called, so any spurious wakeup insert is caught.
  */
-function buildMockDb(selectResults: Array<unknown[]>, insertValues: unknown[]) {
+function buildMockDb(selectResults: Array<unknown[]>) {
   let selectCallIdx = 0;
 
+  // Insert should NOT be called. If it is, record it so we can assert length=0.
+  const insertValues: unknown[] = [];
   const insertValuesMock = vi.fn().mockImplementation((vals: unknown) => {
     insertValues.push(vals);
     return Promise.resolve([{ id: "w-1" }]);
   });
-
   const insertMock = vi.fn().mockReturnValue({ values: insertValuesMock });
 
   const updateSetMock = vi.fn().mockReturnValue({
@@ -110,14 +127,12 @@ function buildMockDb(selectResults: Array<unknown[]>, insertValues: unknown[]) {
           then: vi.fn().mockImplementation((cb: (r: unknown[]) => unknown) =>
             Promise.resolve(cb(result)),
           ),
-          // For cases where .limit() is chained
           limit: vi.fn().mockReturnValue({
             then: vi.fn().mockImplementation((cb: (r: unknown[]) => unknown) =>
               Promise.resolve(cb(result)),
             ),
           }),
         }),
-        // For direct awaits without .where
         then: vi.fn().mockImplementation((cb: (r: unknown[]) => unknown) =>
           Promise.resolve(cb(result)),
         ),
@@ -125,7 +140,12 @@ function buildMockDb(selectResults: Array<unknown[]>, insertValues: unknown[]) {
     };
   });
 
-  return { select: selectMock, update: updateMock, insert: insertMock, _insertValuesMock: insertValuesMock };
+  return {
+    select: selectMock,
+    update: updateMock,
+    insert: insertMock,
+    _insertValues: insertValues,
+  };
 }
 
 const THREAD_ROW = {
@@ -136,29 +156,29 @@ const THREAD_ROW = {
   visibility: "company_members",
   scopeType: null,
   scopeId: null,
+  autonomyLevel: null,
+  useControllerPath: false,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+//
+// Decision: the legacy phase-advance wakeup pipeline (Planner on scope,
+// Dispatcher on assign) is retired. advancePhase() must NOT insert
+// agentWakeupRequests rows with source="phase-advance" for any phase transition.
+// The crew-task-service approveAndDispatch path (at "assign" + L2) is a
+// separate, crew-task-service-owned path — not a wakeup emission.
 
-describe("P3.4 — advancePhase emits phase-advance wakeups", () => {
+describe("P3.4 (regression) — advancePhase does NOT emit legacy phase-advance wakeups", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("emits a wakeup row for each agent with an enabled phase-advance trigger", async () => {
-    const capturedInserts: unknown[] = [];
-    const db = buildMockDb(
-      [
-        // select 1: get thread
-        [THREAD_ROW],
-        // select 2: phase-advance triggers
-        [
-          { agentId: "planner-1", config: { role: "planner" } },
-          { agentId: "dispatcher-1", config: { role: "dispatcher" } },
-        ],
-      ],
-      capturedInserts,
-    );
+  it("advancing discuss → scope does NOT insert any agentWakeupRequests row", async () => {
+    const db = buildMockDb([
+      [THREAD_ROW],  // fetch thread row
+      // No further selects expected; the old pipeline would have queried
+      // aoaAgentTriggers here, but that code was removed.
+    ]);
 
     await threadService(db as never).advancePhase(
       COMPANY_ID,
@@ -167,97 +187,57 @@ describe("P3.4 — advancePhase emits phase-advance wakeups", () => {
       ACTOR,
     );
 
-    // Two inserts — one per trigger
-    expect(capturedInserts).toHaveLength(2);
-    expect(capturedInserts[0]).toMatchObject({
-      companyId: COMPANY_ID,
-      agentId: "planner-1",
-      source: "phase-advance",
-      reason: "thread_phase_advanced",
-    });
-    expect(capturedInserts[1]).toMatchObject({
-      companyId: COMPANY_ID,
-      agentId: "dispatcher-1",
-      source: "phase-advance",
-      reason: "thread_phase_advanced",
-    });
+    // The retired pipeline used db.insert(agentWakeupRequests). It must not fire.
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db._insertValues).toHaveLength(0);
   });
 
-  it("skips wakeup inserts when no phase-advance triggers exist for the company", async () => {
-    const capturedInserts: unknown[] = [];
-    const db = buildMockDb(
-      [
-        // select 1: get thread
-        [THREAD_ROW],
-        // select 2: no triggers
-        [],
-      ],
-      capturedInserts,
-    );
+  it("advancing scope → assign (L0, await_human) does NOT insert any phase-advance wakeup", async () => {
+    const SCOPE_THREAD = { ...THREAD_ROW, phase: "scope", autonomyLevel: 0 };
+    const db = buildMockDb([
+      [SCOPE_THREAD],  // fetch thread row
+      // update is chained; no wakeup-insert should follow
+    ]);
 
     await threadService(db as never).advancePhase(
       COMPANY_ID,
       THREAD_ID,
-      "scope",
+      "assign",
       ACTOR,
     );
 
-    expect(capturedInserts).toHaveLength(0);
+    // db.insert may be called by crew-task-service.approveAndDispatch internally,
+    // but the legacy wakeup insert (agentWakeupRequests with source="phase-advance")
+    // must be absent. Since crewTaskService is fully mocked, insert not called at all.
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it("payload contains threadId, toPhase, and role from trigger config", async () => {
-    const capturedInserts: unknown[] = [];
-    const db = buildMockDb(
-      [
-        [THREAD_ROW],
-        [{ agentId: "a-1", config: { role: "planner" } }],
-      ],
-      capturedInserts,
-    );
+  it("advancing scope → assign (L1, await_human) does NOT insert any phase-advance wakeup", async () => {
+    const SCOPE_THREAD = { ...THREAD_ROW, phase: "scope", autonomyLevel: 1 };
+    const db = buildMockDb([
+      [SCOPE_THREAD],  // fetch thread row
+    ]);
 
     await threadService(db as never).advancePhase(
       COMPANY_ID,
       THREAD_ID,
-      "scope",
+      "assign",
       ACTOR,
     );
 
-    expect(capturedInserts).toHaveLength(1);
-    expect(capturedInserts[0]).toMatchObject({
-      agentId: "a-1",
-      payload: {
-        threadId: THREAD_ID,
-        toPhase: "scope",
-        role: "planner",
-      },
-    });
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it("payload role is undefined when trigger config is null", async () => {
-    const capturedInserts: unknown[] = [];
-    const db = buildMockDb(
-      [
-        [THREAD_ROW],
-        [{ agentId: "a-1", config: null }],
-      ],
-      capturedInserts,
-    );
+  it("phase result object contains the new phase (basic advance contract)", async () => {
+    const db = buildMockDb([[THREAD_ROW]]);
 
-    await threadService(db as never).advancePhase(
+    const result = await threadService(db as never).advancePhase(
       COMPANY_ID,
       THREAD_ID,
       "scope",
       ACTOR,
     );
 
-    expect(capturedInserts).toHaveLength(1);
-    expect((capturedInserts[0] as Record<string, unknown>).payload).toMatchObject({
-      threadId: THREAD_ID,
-      toPhase: "scope",
-    });
-    // role should be undefined (absent) when config is null
-    const payload = (capturedInserts[0] as Record<string, unknown>).payload as Record<string, unknown>;
-    expect(payload.role).toBeUndefined();
+    expect(result).toMatchObject({ id: THREAD_ID, phase: "scope" });
   });
 });

@@ -348,6 +348,31 @@ describe("propose_crew_work tool — role → agentId resolution", () => {
       }),
     );
   });
+
+  it("resolves assigneeRole='planner' to PLANNER_AGENT_ID via DB lookup (Planner is an assignable worker)", async () => {
+    const PLANNER_AGENT_ID = "ffffffff-1111-4000-8000-ffffffffffff";
+    // DB returns the Planner agent on the first select call
+    const db = makeDbWithAgent({ id: PLANNER_AGENT_ID });
+    const ctx = makeCtx(db, { effectiveAutonomy: 1 });
+
+    await proposeCrewWorkTool.execute(
+      {
+        threadId: THREAD_ID,
+        summary: "Write a plan for the feature",
+        proposedTasks: [{ title: "Write the plan", assigneeRole: "planner" }],
+      },
+      ctx,
+    );
+
+    // The Planner agent (name="Planner", kind="aoa") must be resolved and
+    // assigned to the task — Planner is a normal crew worker in the work=task model.
+    // ROLE_TO_AGENT_NAME["planner"] = "Planner"; DB lookup finds the seeded agent.
+    expect(mockProposeWork).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposedTasks: [{ title: "Write the plan", assigneeAgentId: PLANNER_AGENT_ID }],
+      }),
+    );
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
