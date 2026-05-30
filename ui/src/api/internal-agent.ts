@@ -47,6 +47,7 @@ export interface AgentConfig {
   runtimeApprovalsEnabled: boolean;
   runtimeAllowAlwaysEnabled: boolean;
   vendorCliBypassEnabled: boolean;
+  inboundRoutingLevel: string;
 }
 
 export interface AgentRunToolCall {

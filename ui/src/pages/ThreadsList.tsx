@@ -24,6 +24,7 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { ThreadBoard } from "../components/threads/ThreadBoard";
+import { RoutingDialControl } from "../components/threads/RoutingDialControl";
 
 // ── Phase filter config ───────────────────────────────────────────────────────
 
@@ -169,6 +170,7 @@ export function ThreadsList() {
           }}
           onNewThread={openNewThread}
           totalCount={0}
+          companyId={selectedCompanyId}
         />
         <div
           className="space-y-2"
@@ -204,6 +206,7 @@ export function ThreadsList() {
           }}
           onNewThread={openNewThread}
           totalCount={0}
+          companyId={selectedCompanyId}
         />
         <div className="flex flex-col items-center gap-4 py-16" data-testid="threads-list-error">
           <p className="text-sm text-muted-foreground">Couldn&apos;t load threads.</p>
@@ -243,6 +246,7 @@ export function ThreadsList() {
         setView={setView}
         onNewThread={openNewThread}
         totalCount={threads.length}
+        companyId={selectedCompanyId}
       />
 
       {/* Board view */}
@@ -301,6 +305,7 @@ interface ThreadsListHeaderProps {
   setView: (v: ViewMode) => void;
   onNewThread: () => void;
   totalCount: number;
+  companyId?: string | null;
 }
 
 function ThreadsListHeader({
@@ -312,6 +317,7 @@ function ThreadsListHeader({
   setView,
   onNewThread,
   totalCount,
+  companyId,
 }: ThreadsListHeaderProps) {
   return (
     <div className="flex flex-col gap-2">
@@ -343,6 +349,11 @@ function ThreadsListHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Inbound routing dial */}
+          {companyId && (
+            <RoutingDialControl companyId={companyId} />
+          )}
+
           {/* View mode toggle */}
           <div className="flex items-center rounded-md border border-border overflow-hidden">
             <button
