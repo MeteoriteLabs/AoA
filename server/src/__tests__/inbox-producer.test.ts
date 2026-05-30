@@ -1,21 +1,39 @@
 // server/src/__tests__/inbox-producer.test.ts
 //
 // Task 0.5 (Inbound Dirty-Data Routing) — unit tests for inbox-producer.ts.
+// Task 1.4 (Inbound Dirty-Data Routing) — fire-and-forget routing after insert.
 //
-// Three cases:
+// Three cases (Task 0.5):
 //   (a) happy path — inserts with the right column set (status, routingStatus,
 //       dedupKey, originMedium, originSource, rawContent) → deduped:false
 //   (b) dedup path — unique violation on `thread_inbox_items_company_dedup_idx`
 //       → SELECT existing row → deduped:true, correct id, no duplicate insert
 //   (c) dedupKey stability — same inputs always produce the same SHA-256 hex
 //
+// Task 1.4 cases (fire-and-forget routing):
+//   (d) non-deduped enqueue triggers routeInboxItem for the new item id
+//   (e) deduped enqueue does NOT trigger routeInboxItem
+//   (f) enqueueInboxItem resolves without awaiting routing (fire-and-forget)
+//   (g) routing error is swallowed — enqueueInboxItem does not reject
+//
 // Mock-DB style mirrors scope-proposal-writer.test.ts / inbox-attach.test.ts:
 //   - plain vi.fn() chains for insert/select
 //   - no drizzle internals imported; only the service + computeDedupKey are under test
+//
+// Note: inbox-router.js is mocked at module level so no real embedding/network
+// calls happen. The mock is hoisted by vitest before the import of enqueueInboxItem.
 
-import { describe, expect, it, vi } from "vitest";
-import { enqueueInboxItem, computeDedupKey } from "../services/inbox-producer.js";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import crypto from "crypto";
+
+// ── inbox-router mock (Task 1.4) ──────────────────────────────────────────────
+// Must be declared before the service import so vitest hoists it correctly.
+const mockRouteInboxItem = vi.fn();
+vi.mock("../services/inbox-router.js", () => ({
+  routeInboxItem: (...args: any[]) => mockRouteInboxItem(...args),
+}));
+
+import { enqueueInboxItem, computeDedupKey } from "../services/inbox-producer.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -318,5 +336,130 @@ describe("computeDedupKey", () => {
     const k1 = computeDedupKey("co-1", "mcp", "src", "data");
     const k2 = computeDedupKey("co-1m", "cp", "src", "data");
     expect(k1).not.toBe(k2);
+  });
+});
+
+// ── Task 1.4: fire-and-forget routing ────────────────────────────────────────
+//
+// After a successful NON-deduped insert, enqueueInboxItem triggers routing
+// asynchronously (fire-and-forget) via dynamic import of inbox-router.
+//
+// Key invariants:
+//   - routeInboxItem IS called for the new item id
+//   - routeInboxItem is NOT called on a deduped item (it's a re-delivery)
+//   - enqueueInboxItem resolves before routing completes (non-blocking)
+//   - routing errors are swallowed (never propagate to the caller)
+
+describe("enqueueInboxItem — fire-and-forget routing (Task 1.4)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRouteInboxItem.mockResolvedValue({ action: "human", outcome: "uncomputable" });
+  });
+
+  describe("non-deduped insert triggers routing", () => {
+    it("calls routeInboxItem with the new inboxItemId", async () => {
+      const { db } = makeDb({ insertedId: "inbox-new-fire-1" });
+
+      await enqueueInboxItem(db, {
+        companyId: COMPANY,
+        originMedium: "mcp",
+        originSource: "bot",
+        rawContent: "hello world",
+      });
+
+      // Allow the fire-and-forget microtask to settle
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockRouteInboxItem).toHaveBeenCalledOnce();
+      expect(mockRouteInboxItem).toHaveBeenCalledWith(
+        db,
+        { inboxItemId: "inbox-new-fire-1" },
+      );
+    });
+
+    it("passes the db reference (not a copy) to routeInboxItem", async () => {
+      const { db } = makeDb({ insertedId: "inbox-new-fire-2" });
+
+      await enqueueInboxItem(db, {
+        companyId: COMPANY,
+        originMedium: "paste",
+        rawContent: "test",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockRouteInboxItem.mock.calls[0][0]).toBe(db);
+    });
+  });
+
+  describe("deduped insert does NOT trigger routing", () => {
+    it("does not call routeInboxItem on a deduped enqueue", async () => {
+      const dedupErr = makeUniqueViolationError("thread_inbox_items_company_dedup_idx");
+      const { db } = makeDb({ insertError: dedupErr, existingId: "inbox-existing-55" });
+
+      await enqueueInboxItem(db, {
+        companyId: COMPANY,
+        originMedium: "mcp",
+        rawContent: "duplicate content",
+      });
+
+      // Allow any async task to settle
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockRouteInboxItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("fire-and-forget: enqueueInboxItem does not block on routing", () => {
+    it("resolves immediately without awaiting routeInboxItem completion", async () => {
+      // routeInboxItem takes 50ms — enqueueInboxItem should resolve well before that
+      let routingStarted = false;
+      let routingFinished = false;
+
+      mockRouteInboxItem.mockImplementation(async () => {
+        routingStarted = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        routingFinished = true;
+        return { action: "human", outcome: "uncomputable" };
+      });
+
+      const { db } = makeDb({ insertedId: "inbox-nonblock-1" });
+
+      const enqueueStart = Date.now();
+      const result = await enqueueInboxItem(db, {
+        companyId: COMPANY,
+        originMedium: "mcp",
+        rawContent: "non-blocking test",
+      });
+      const enqueueElapsed = Date.now() - enqueueStart;
+
+      // enqueueInboxItem should resolve quickly (< 40ms), before the 50ms routing finishes
+      expect(result.deduped).toBe(false);
+      expect(enqueueElapsed).toBeLessThan(40);
+      // Routing may or may not have started by now, but is definitely not finished
+      expect(routingFinished).toBe(false);
+
+      // Clean up: let routing finish so no unhandled promise rejection
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+  });
+
+  describe("routing error is swallowed", () => {
+    it("does not reject when routeInboxItem throws", async () => {
+      mockRouteInboxItem.mockRejectedValue(new Error("routing failed"));
+
+      const { db } = makeDb({ insertedId: "inbox-err-test-1" });
+
+      await expect(
+        enqueueInboxItem(db, {
+          companyId: COMPANY,
+          originMedium: "mcp",
+          rawContent: "error test",
+        }),
+      ).resolves.toMatchObject({ deduped: false, inboxItemId: "inbox-err-test-1" });
+
+      // Let the rejected promise settle — should not cause unhandled rejection
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
   });
 });

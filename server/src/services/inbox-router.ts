@@ -46,6 +46,48 @@ import { findSimilarThreadsScored } from "./internal-agent/tools/thread-find-sim
 import { attachInboxItemToThread, promoteInboxItemToNewThread } from "./inbox-attach.js";
 import { logActivity } from "./activity-log.js";
 
+// ── resolveDefaultEmbedder ────────────────────────────────────────────────────
+//
+// Constructs a ctx-free embed function for use by the producer fire-and-forget
+// and sweep backstop paths (which have no request ctx and cannot use
+// ctx.services.embeddings.embedSync).
+//
+// Design:
+//   - Dynamic import of embeddings.js prevents an eager heavy static chain
+//     (the module pulls in OpenAI SDK, resolveApiKey, etc.). This mirrors the
+//     fire-and-forget pattern in inbox-producer.ts (Decision D5).
+//   - resolveApiKey is called per-embed (not cached) because API keys can
+//     rotate. The cost is one extra DB/secret lookup per routing call — cheap
+//     relative to the embedding API call itself.
+//   - Returns undefined if the module fails to import or the API key is absent,
+//     so the existing `uncomputable → human` fallback holds (fail-closed, D2).
+//
+// Called from routeInboxItem when embedText is not passed by the caller.
+
+async function resolveDefaultEmbedder(
+  companyId: string,
+): Promise<((text: string) => Promise<number[]>) | undefined> {
+  try {
+    const [embeddingsModule, apiCommonModule] = await Promise.all([
+      import("./embeddings.js"),
+      import("../adapters/api-common.js"),
+    ]);
+
+    let apiKey: string;
+    try {
+      apiKey = await apiCommonModule.resolveApiKey(companyId, "openai");
+    } catch {
+      // Missing API key → no embedder available. Fail-closed: human reviews.
+      return undefined;
+    }
+
+    return (text: string) => embeddingsModule.generateEmbedding(text, apiKey);
+  } catch {
+    // Dynamic import failed (rare — would indicate a packaging issue).
+    return undefined;
+  }
+}
+
 const log = logger.child({ service: "inbox-router" });
 
 // ── SYSTEM_ACTOR ──────────────────────────────────────────────────────────────
@@ -348,9 +390,17 @@ export async function routeInboxItem(
     | "full_auto";
 
   // ── 4. Similarity scoring ─────────────────────────────────────────────────
+  // Resolve the embed function: caller-supplied override takes priority (the ctx
+  // path passes ctx.services.embeddings.embedSync). When not supplied (producer
+  // fire-and-forget and sweep), self-resolve a ctx-free embedder via dynamic
+  // import of embeddings.js + resolveApiKey. If unavailable → undefined → the
+  // existing `uncomputable → human` fallback holds (fail-closed, D2).
+  const resolvedEmbedText: ((text: string) => Promise<number[]>) | null | undefined =
+    embedText !== undefined ? embedText : await resolveDefaultEmbedder(companyId);
+
   const scored = await findSimilarThreadsScored({
     db,
-    embedText,
+    embedText: resolvedEmbedText,
     companyId,
     text: rawContent,
     limit: 5,

@@ -1,6 +1,7 @@
 // server/src/services/inbox-producer.ts
 //
 // Task 0.5 (Inbound Dirty-Data Routing) — single insert chokepoint for all inbound items.
+// Task 1.4 (Inbound Dirty-Data Routing) — fire-and-forget async routing after insert.
 //
 // Every code path that creates a thread_inbox_items row (MCP debrief-push, paste route,
 // and the async router in 1.4) must call this function — never insert directly.
@@ -14,12 +15,26 @@
 //
 // Only the exact index above is caught. Any other 23505 (e.g. a future unique index
 // on a different column) propagates normally so real failures are never silently swallowed.
+//
+// Fire-and-forget routing (Task 1.4, D5):
+//   After a fresh (non-deduped) insert the producer triggers routing asynchronously
+//   via a dynamic import of inbox-router.js. The producer returns immediately — it is
+//   never blocked on embedding or network I/O. The sweep-inbox.ts backstop catches
+//   any items whose async route never landed (crash / restart before claim).
+//
+//   Dynamic import rationale: keeps the producer's static import chain light and avoids
+//   the transitive-import mock cascade that has bitten this codebase before (the inbox-
+//   router pulls in embeddings, drizzle, and network code that tests must mock carefully).
+//   A deduped re-delivery does NOT trigger routing — the existing row is already queued.
 
 import crypto from "crypto";
 import { and, eq } from "drizzle-orm";
 import { threadInboxItems } from "@armyofagents/db";
 import type { Db } from "@armyofagents/db";
 import { isUniqueViolation } from "./db-errors.js";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ service: "inbox-producer" });
 
 // The exact Drizzle-generated index name for the durable cross-status dedup guard.
 const DEDUP_INDEX = "thread_inbox_items_company_dedup_idx";
@@ -87,7 +102,22 @@ export async function enqueueInboxItem(
       .returning({ id: threadInboxItems.id });
 
     const row = Array.isArray(inserted) ? inserted[0] : inserted;
-    return { inboxItemId: row.id, deduped: false };
+    const inboxItemId: string = row.id;
+
+    // ── Fire-and-forget routing (Task 1.4, D5) ────────────────────────────────
+    // The producer returns immediately after the durable insert. Routing runs
+    // asynchronously; the sweep-inbox.ts backstop catches any items that never
+    // get routed (process restart, crash before the dynamic import resolves).
+    //
+    // Dynamic import keeps the static chain light (avoids the transitive drizzle/
+    // embeddings mock cascade). A deduped re-delivery skips this — only fresh items.
+    void import("./inbox-router.js")
+      .then((m) => m.routeInboxItem(db, { inboxItemId }))
+      .catch((err) =>
+        log.warn({ err, inboxItemId }, "inbox-producer: async routing failed — sweep backstop will retry"),
+      );
+
+    return { inboxItemId, deduped: false };
   } catch (err: unknown) {
     // ── Durable dedup: re-delivered item (Codex #8) ────────────────────────────
     // Only swallow the exact index that guards (company_id, dedup_key).

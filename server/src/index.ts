@@ -42,6 +42,7 @@ import { runExtractionSweep } from "./services/internal-agent/subagents/extracti
 import { runAdjutantSweep } from "./services/internal-agent/aoa-agents/sweep-adjutant.js";
 import { runControllerSweep } from "./services/internal-agent/aoa-agents/sweep-controller.js";
 import { runMemoryKeeperSweep, MK_SWEEP_DEBOUNCE_MS } from "./services/internal-agent/aoa-agents/sweep-memory-keeper.js";
+import { runInboxSweep } from "./services/internal-agent/aoa-agents/sweep-inbox.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -970,6 +971,27 @@ setInterval(() => {
     .catch((err) => logger.warn({ err }, "memory keeper sweep tick failed"))
     .finally(() => { memoryKeeperSweepInFlight = false; });
 }, MEMORY_KEEPER_SWEEP_INTERVAL_MS);
+
+// Sub-agent #5: inbox routing backstop sweep (Task 1.4).
+// PRIMARY driver: fire-and-forget in inbox-producer.ts (immediate on insert).
+// This sweep is the SAFETY NET: catches thread_inbox_items rows with
+// routingStatus='pending_route' whose async route never ran (crash, restart,
+// or transient import failure). Serialized by routeInboxItem's idempotency
+// guard (Codex #9) — concurrent calls from the async trigger and the sweep
+// cannot double-route the same item.
+// Cadence: 2 minutes — mirrors the controller backstop sweep (same intent: catch
+// items whose primary trigger missed). The sweep only touches pending_route rows
+// so it's cheap even if empty; no in-flight guard needed (each routeInboxItem
+// call atomically claims and transitions the row).
+const INBOX_SWEEP_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+let inboxSweepInFlight = false;
+setInterval(() => {
+  if (inboxSweepInFlight) return;
+  inboxSweepInFlight = true;
+  void runInboxSweep(db as any)
+    .catch((err) => logger.warn({ err }, "inbox routing sweep tick failed"))
+    .finally(() => { inboxSweepInFlight = false; });
+}, INBOX_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
