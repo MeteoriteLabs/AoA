@@ -160,7 +160,13 @@ vi.mock("../services/heartbeat.js", () => ({
 }));
 
 vi.mock("../middleware/logger.js", () => ({
-  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  },
 }));
 
 vi.mock("../routes/issues-planning-mode-dispatch.js", () => ({
