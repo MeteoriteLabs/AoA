@@ -7,6 +7,8 @@ import {
   type AdjutantClassification,
   type AdjutantThreadFixture,
 } from "../eval/adjutant-scope-readiness/suite.js";
+import { loadDefaultAgentInstructionsBundle } from "../services/default-agent-instructions.js";
+import { buildTriggerPrompt } from "../services/internal-agent/aoa-agents/aoa-trigger-prompt.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, "..", "eval", "adjutant-scope-readiness", "fixtures");
@@ -314,5 +316,107 @@ describe("buildAdjutantScopeSuite.grade", () => {
     );
     expect(result.pass).toBe(false);
     expect(result.reason).toContain("expected one of");
+  });
+});
+
+/**
+ * Real-bundle prompt content assertions (Task 5.1).
+ *
+ * These cases point at the ACTUAL assembled runtime prompt — the instruction
+ * bundle loaded from onboarding-assets/adjutant/ (AGENTS + SOUL + TOOLS +
+ * HEARTBEAT, concatenated in the same order as assembleAgentPersona) merged
+ * with the ROLE_ACTION_DIRECTIVE.adjutant entry from aoa-trigger-prompt.ts.
+ *
+ * Assertions are purely deterministic (no LLM call, no fetch mock needed) and
+ * run green in normal `pnpm test:run`. They act as a regression guard: if a
+ * future edit removes propose_crew_work from the directive or adds a silence-
+ * forbidden forcing clause, these cases fail immediately.
+ *
+ * Two invariants pinned here (Task 0.4 contract):
+ *   1. Converged → propose: the assembled prompt directs the Adjutant to call
+ *      `propose_crew_work` when the conversation has converged.
+ *   2. Idle → silent: the assembled prompt explicitly permits returning without
+ *      posting when there is nothing to do (no "returning is a bug" forcing
+ *      clause that would make silence wrong).
+ */
+describe("real-bundle Adjutant prompt assertions (Task 5.1)", () => {
+  /**
+   * Assemble the real instruction bundle exactly as runner.ts does:
+   *   loadDefaultAgentInstructionsBundle('adjutant') → join AGENTS, SOUL, TOOLS, HEARTBEAT
+   *   then feed into buildTriggerPrompt with agentRoleKey='adjutant'.
+   *
+   * The BUNDLE_ORDER in assembleAgentPersona (commander-context.ts) is:
+   *   ["AGENTS.md", "SOUL.md", "TOOLS.md", "HEARTBEAT.md"]
+   * We replicate that join here without importing assembleAgentPersona
+   * (which requires a full agentInstructionsService — a DB dependency).
+   * loadDefaultAgentInstructionsBundle reads the canonical on-disk files
+   * directly, which is the correct source of truth for the seed values
+   * every new company receives.
+   */
+  async function buildRealAdjutantPrompt(overridePayload?: Record<string, unknown>): Promise<string> {
+    const BUNDLE_ORDER = ["AGENTS.md", "SOUL.md", "TOOLS.md", "HEARTBEAT.md"] as const;
+    const bundle = await loadDefaultAgentInstructionsBundle("adjutant");
+    const instruction = BUNDLE_ORDER
+      .map((name) => bundle[name] ?? "")
+      .filter((c) => c.trim().length > 0)
+      .join("\n\n");
+
+    return buildTriggerPrompt({
+      instruction,
+      payload: {
+        companyId: "co-test",
+        source: "sweep.adjutant",
+        threadId: "thr-test",
+        ...overridePayload,
+      },
+      agentName: "Adjutant",
+      agentRoleKey: "adjutant",
+    });
+  }
+
+  it("assembled prompt contains propose_crew_work directive (converge → propose case)", async () => {
+    const prompt = await buildRealAdjutantPrompt();
+    // The ROLE_ACTION_DIRECTIVE for 'adjutant' in aoa-trigger-prompt.ts must
+    // name propose_crew_work so the Adjutant knows which tool to call at convergence.
+    expect(prompt).toContain("propose_crew_work");
+  });
+
+  it("assembled prompt contains convergence guidance in directive sentence", async () => {
+    const prompt = await buildRealAdjutantPrompt();
+    // The directive must condition propose_crew_work on convergence — not call it blindly.
+    // "converged on work to do" or similar language must appear in the role directive.
+    expect(prompt).toMatch(/converged|conversation has converged/i);
+  });
+
+  it("assembled prompt permits silence — does NOT contain 'returning without taking the directed action is a bug'", async () => {
+    const prompt = await buildRealAdjutantPrompt();
+    // Task 0.4 removed the old forcing clause that made silence a bug.
+    // This regression guard ensures no future edit re-introduces it.
+    expect(prompt).not.toMatch(/returning without taking the directed action is a bug/i);
+  });
+
+  it("assembled prompt explicitly marks silence as correct (idle → silent case)", async () => {
+    const prompt = await buildRealAdjutantPrompt();
+    // The directive must say "silence is correct" or similar — not merely omit
+    // the forcing clause but actively sanction it, so the LLM treats staying
+    // silent as a valid first-class outcome when the thread is not ready.
+    expect(prompt).toMatch(/silence is (correct|acceptable|the right call)|staying? (quiet|silent) is the right|return without posting/i);
+  });
+
+  it("assembled TOOLS.md bundle independently documents propose_crew_work as primary convergence tool", async () => {
+    // Separate from the directive: the TOOLS.md file the agent reads should
+    // describe propose_crew_work so the agent can actually call it.
+    const bundle = await loadDefaultAgentInstructionsBundle("adjutant");
+    const tools = bundle["TOOLS.md"] ?? "";
+    expect(tools).toContain("propose_crew_work");
+    expect(tools).toMatch(/primary convergence tool|converge|converged/i);
+  });
+
+  it("assembled HEARTBEAT.md bundle instructs exit-silently when nothing to do", async () => {
+    // The HEARTBEAT.md is the per-sweep decision flow document.
+    // It must document the "exit silently" path for the idle case.
+    const bundle = await loadDefaultAgentInstructionsBundle("adjutant");
+    const heartbeat = bundle["HEARTBEAT.md"] ?? "";
+    expect(heartbeat).toMatch(/exit silently|stay silent|return without posting|silence is correct/i);
   });
 });
