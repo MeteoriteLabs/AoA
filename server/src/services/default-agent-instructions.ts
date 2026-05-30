@@ -15,15 +15,12 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   adjutant: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   // Plan 4 — Maker (8th crew agent, design § 3)
   maker: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
-  // Phase D batch 1 — Navigator (rename of Router) and Engineer (rename of
-  // Maker) share dirs with the predecessors at v1 (full 4-file bundle).
-  // Scout (net-new) has no curated bundle yet — it reuses the single-file
-  // default fallback so seedRoleInstructionBundle returns gracefully and the
-  // runner uses the inline instruction string. Per-role markdown can be added
-  // later by shipping onboarding-assets/scout/ + bumping the file list here.
+  // Phase D batch 1 — Navigator (rename of Router) shares the router dir at v1.
+  // P2-T3: Engineer and Scout now ship their own curated 4-file bundles with
+  // distinct personas (onboarding-assets/engineer/, onboarding-assets/scout/).
   navigator: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   engineer: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
-  scout: ["AGENTS.md"],
+  scout: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -40,14 +37,13 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   scribe: "scribe",
   adjutant: "adjutant",
   maker: "maker",
-  // Phase D batch 1: alias the renamed roles to the existing bundle dirs.
-  // The bundle content is identical at v1; per-role specialization can ship
-  // later by adding a `navigator/` / `engineer/` / `scout/` dir and updating
-  // these entries. Until then, navigator reads from router/, engineer from
-  // maker/, and scout falls back to default/.
+  // Navigator (rename of Router) still aliases to the router dir — the bundle
+  // content is identical at v1.
   navigator: "router",
-  engineer: "maker",
-  scout: "default",
+  // P2-T3: Engineer and Scout now have their own persona dirs (distinct builder
+  // and researcher voices), no longer aliased to maker/ and default/.
+  engineer: "engineer",
+  scout: "scout",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {
