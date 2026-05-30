@@ -23,8 +23,15 @@
 
 import { and, eq } from "drizzle-orm";
 import { threadInboxItems, internalAgentConfig } from "@armyofagents/db";
-import { attachInboxItemToThread } from "../../inbox-attach.js";
 import type { AgentTool } from "../types.js";
+
+// NOTE: `attachInboxItemToThread` is imported DYNAMICALLY inside execute() (the
+// act path), NOT statically here. A static import pulls the heavy
+// inbox-attach → discussions → execution-workspaces → git → node:child_process
+// chain into the tool-registry's eager module graph, which breaks registry-
+// loading tests (cli-mode, aoa-runner) whose `node:child_process` mock omits
+// `execFile`. Dynamic import keeps that chain off the module-load path —
+// mirrors the producer/sweep dynamic-import pattern (Task 1.4).
 
 export const attachToThreadTool: AgentTool = {
   name: "attach_to_thread",
@@ -119,6 +126,7 @@ export const attachToThreadTool: AgentTool = {
 
     // ── Step 3: act path (auto_attach | full_auto | off) → shared service ─────
     try {
+      const { attachInboxItemToThread } = await import("../../inbox-attach.js");
       const res = await attachInboxItemToThread(ctx.db, {
         companyId: ctx.companyId,
         inboxItemId,
