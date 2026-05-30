@@ -21,6 +21,9 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { threadService, parseMentions, processMentions } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { logger } from "../middleware/logger.js";
+import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 
 // ── Thread lifecycle request-body schemas ────────────────────────────────────
 const phaseSchema = z.object({ phase: z.enum(THREAD_PHASES) });
@@ -1305,6 +1308,24 @@ export function discussionRoutes(db: Db) {
             taskCount: result.taskIds.length,
           },
         });
+
+        // Dispatch heartbeat for each task that has an agent assignee.
+        // Mirrors the assignment-wakeup pattern in routes/issues.ts POST /issues.
+        const heartbeat = heartbeatService(db);
+        for (const task of result.createdTasks) {
+          if (task.assigneeAgentId && shouldDispatchIssueWakeup({ workMode: task.workMode })) {
+            void heartbeat
+              .wakeup(task.assigneeAgentId, {
+                source: "assignment",
+                triggerDetail: "system",
+                reason: "deliverable_created",
+                payload: { issueId: task.id, mutation: "create" },
+              })
+              .catch((err) =>
+                logger.warn({ err, issueId: task.id }, "failed to wake deliverable assignee on approve"),
+              );
+          }
+        }
 
         res.status(201).json({
           alreadyApproved: false,

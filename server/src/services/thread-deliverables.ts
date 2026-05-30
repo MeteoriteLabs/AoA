@@ -32,7 +32,7 @@
 
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussionEntries, discussions } from "@armyofagents/db";
+import { agents, discussionEntries, discussions } from "@armyofagents/db";
 import { issueService } from "./issues.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ export interface ApproveProposalInput {
  * - `ok: false, reason: ...` — validation failure; tasks NOT created.
  */
 export type ApproveProposalResult =
-  | { ok: true; alreadyApproved: false; taskIds: string[] }
+  | { ok: true; alreadyApproved: false; taskIds: string[]; createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> }
   | { ok: true; alreadyApproved: true }
   | { ok: false; reason: "not_found" | "wrong_thread" | "rejected" | "stale"; message: string };
 
@@ -142,6 +142,36 @@ export function parseScopeProposalContent(rawContent: string): {
   }
 }
 
+// ─── Builder helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Look up the Engineer crew agent for this company.
+ * Returns the agent id, or null if no Engineer has been seeded yet.
+ */
+export async function findDefaultBuilder(db: Db, companyId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        eq(agents.kind, "aoa"),
+        eq(agents.name, "Engineer"),
+      ),
+    );
+  return row?.id ?? null;
+}
+
+/**
+ * Append a "needs a worker" notice to a description.
+ * Pure function — no I/O.
+ */
+export function flagNeedsWorker(description: string | null | undefined): string {
+  const base = description?.trim() ?? "";
+  const notice = "⚠️ Needs a worker: assign an agent to this task before it can be built.";
+  return base ? `${base}\n\n${notice}` : notice;
+}
+
 // ─── Service factory ──────────────────────────────────────────────────────────
 
 export function threadDeliverablesService(db: Db) {
@@ -159,9 +189,23 @@ export function threadDeliverablesService(db: Db) {
       proposals,
       createdBy,
     }: CreateDeliverableTasksInput) => {
+      // Find the default builder once — O(1) DB call for all tasks.
+      const builderAgentId = await findDefaultBuilder(db, companyId);
+
       const created = [];
       for (const proposal of proposals) {
-        const payload = buildDeliverableInsert(companyId, threadId, proposal, createdBy);
+        let resolvedProposal = proposal;
+
+        if (!proposal.assigneeAgentId) {
+          if (builderAgentId) {
+            resolvedProposal = { ...proposal, assigneeAgentId: builderAgentId };
+          } else {
+            // No builder configured — flag the task so the founder notices.
+            resolvedProposal = { ...proposal, description: flagNeedsWorker(proposal.description) };
+          }
+        }
+
+        const payload = buildDeliverableInsert(companyId, threadId, resolvedProposal, createdBy);
         const issue = await issues.create(companyId, payload as any);
         created.push(issue);
       }
@@ -355,8 +399,13 @@ export function threadDeliverablesService(db: Db) {
       });
 
       const taskIds = created.map((issue: { id: string }) => issue.id);
+      const createdTasks = created.map((issue: { id: string; assigneeAgentId: string | null; workMode: string | null }) => ({
+        id: issue.id,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        workMode: issue.workMode ?? null,
+      }));
 
-      return { ok: true, alreadyApproved: false, taskIds };
+      return { ok: true, alreadyApproved: false, taskIds, createdTasks };
     },
   };
 }

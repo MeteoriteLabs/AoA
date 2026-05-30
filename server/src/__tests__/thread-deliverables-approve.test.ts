@@ -31,6 +31,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("@armyofagents/db", () => ({
   discussionEntries: new Proxy({} as any, { get: (_t, p) => p }),
   discussions: new Proxy({} as any, { get: (_t, p) => p }),
+  discussionExtractedItems: new Proxy({} as any, { get: (_t, p) => p }),
   threadPlanSteps: new Proxy({} as any, { get: (_t, p) => p }),
   threadInboxItems: new Proxy({} as any, { get: (_t, p) => p }),
   userRoles: new Proxy({} as any, { get: (_t, p) => p }),
@@ -147,6 +148,21 @@ vi.mock("../services/permissions.js", () => ({
     isFounder: vi.fn().mockResolvedValue(true),
     isTeamLeadForDepartment: vi.fn().mockResolvedValue(false),
   })),
+}));
+
+// ── Mocks for T8b additions in discussions.ts ─────────────────────────────────
+vi.mock("../services/heartbeat.js", () => ({
+  heartbeatService: vi.fn(() => ({
+    wakeup: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock("../routes/issues-planning-mode-dispatch.js", () => ({
+  shouldDispatchIssueWakeup: vi.fn().mockReturnValue(true),
 }));
 
 // ── Import routes + rbac mock after all vi.mock declarations ──────────────────
@@ -696,6 +712,10 @@ describe("route integration: POST …/proposals/:proposalEntryId/approve", () =>
       ok: true,
       alreadyApproved: false,
       taskIds: ["task-1", "task-2"],
+      createdTasks: [
+        { id: "task-1", assigneeAgentId: "agent-x", workMode: null },
+        { id: "task-2", assigneeAgentId: null, workMode: null },
+      ],
     });
 
     const res = await request(makeApp())

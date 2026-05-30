@@ -25,6 +25,24 @@ import {
   type DeliverableProposal,
 } from "../services/thread-deliverables.js";
 
+// ── Mock DB factory (needed by T8b: createDeliverableTasks now calls findDefaultBuilder) ──
+function makeMockDb() {
+  function selectChain(): any {
+    const result = [{ id: "default-engineer-id" }];
+    const chain: any = {};
+    chain.from = () => chain;
+    chain.where = () => {
+      const inner: any = {};
+      inner.limit = () => Promise.resolve(result);
+      inner.then = (resolve: any) => Promise.resolve(resolve(result));
+      return inner;
+    };
+    chain.then = (resolve: any) => Promise.resolve(resolve(result));
+    return chain;
+  }
+  return { select: vi.fn(selectChain) };
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const COMPANY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -130,7 +148,7 @@ describe("threadDeliverablesService.createDeliverableTasks", () => {
       { title: "Task 2" },
     ];
 
-    const svc = threadDeliverablesService({} as any);
+    const svc = threadDeliverablesService(makeMockDb() as any);
     const result = await svc.createDeliverableTasks({
       threadId: THREAD_ID,
       companyId: COMPANY_ID,
@@ -146,7 +164,7 @@ describe("threadDeliverablesService.createDeliverableTasks", () => {
     const fakeIssue = { id: "issue-1", title: "Hero copy" };
     mockCreate.mockResolvedValue(fakeIssue);
 
-    const svc = threadDeliverablesService({} as any);
+    const svc = threadDeliverablesService(makeMockDb() as any);
     await svc.createDeliverableTasks({
       threadId: THREAD_ID,
       companyId: COMPANY_ID,
@@ -163,7 +181,7 @@ describe("threadDeliverablesService.createDeliverableTasks", () => {
       .mockResolvedValueOnce({ id: "i1", title: "First" })
       .mockResolvedValueOnce({ id: "i2", title: "Second" });
 
-    const svc = threadDeliverablesService({} as any);
+    const svc = threadDeliverablesService(makeMockDb() as any);
     const result = await svc.createDeliverableTasks({
       threadId: THREAD_ID,
       companyId: COMPANY_ID,
@@ -176,7 +194,7 @@ describe("threadDeliverablesService.createDeliverableTasks", () => {
   });
 
   it("returns an empty array when proposals is empty", async () => {
-    const svc = threadDeliverablesService({} as any);
+    const svc = threadDeliverablesService(makeMockDb() as any);
     const result = await svc.createDeliverableTasks({
       threadId: THREAD_ID,
       companyId: COMPANY_ID,
@@ -191,7 +209,7 @@ describe("threadDeliverablesService.createDeliverableTasks", () => {
   it("passes companyId to issueService.create as the first positional arg", async () => {
     mockCreate.mockResolvedValue({ id: "i1", title: "Test" });
 
-    const svc = threadDeliverablesService({} as any);
+    const svc = threadDeliverablesService(makeMockDb() as any);
     await svc.createDeliverableTasks({
       threadId: THREAD_ID,
       companyId: COMPANY_ID,
