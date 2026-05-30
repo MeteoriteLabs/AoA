@@ -60,7 +60,7 @@ function makeTxTracker(opts: {
     return makeInsertChain(() => [], idx);
   });
 
-  const sourceDefault = [{ id: "thread-src", subtype: "live", visibility: "company" }];
+  const sourceDefault = [{ id: "thread-src", subtype: "live", visibility: "company", companyId: "co-1" }];
   const selectQueue = [
     opts.sourceSelectReturn ?? sourceDefault,
     opts.seedSelectReturn ?? [],
@@ -137,8 +137,8 @@ describe("spin_off_thread tool (C2 batch 2)", () => {
   it("copies seed entries with sourceInfo back-pointers", async () => {
     const tracker = makeTxTracker({
       seedSelectReturn: [
-        { id: "e-1", rawContent: "first content" },
-        { id: "e-2", rawContent: "second content" },
+        { id: "e-1", rawContent: "first content", discussionId: "thread-src" },
+        { id: "e-2", rawContent: "second content", discussionId: "thread-src" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>
@@ -234,5 +234,91 @@ describe("spin_off_thread tool (C2 batch 2)", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe("INVALID_PARAMS");
     expect(transactionFn).not.toHaveBeenCalled();
+  });
+
+  // ── Cross-tenant guards (#7) ─────────────────────────────────────────────────
+
+  it("returns COMPANY_MISMATCH when source thread belongs to a different company", async () => {
+    // Source thread has companyId='company-B', caller's ctx has companyId='co-1'.
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [{ id: "thread-src", subtype: "live", visibility: "company", companyId: "company-B" }],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src", title: "cross-tenant attempt" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("COMPANY_MISMATCH");
+    // No insert should have been issued.
+    expect(tracker.insertCalls.length).toBe(0);
+  });
+
+  it("filters out seed entries whose discussionId does not match fromThreadId (cross-thread scope guard)", async () => {
+    // Two seed entries returned by DB: one from the source thread, one stray.
+    const tracker = makeTxTracker({
+      seedSelectReturn: [
+        { id: "e-1", rawContent: "valid content", discussionId: "thread-src" },
+        { id: "e-stray", rawContent: "stray content from another thread", discussionId: "thread-other" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      {
+        fromThreadId: "thread-src",
+        title: "scope guard test",
+        seedEntries: ["e-1", "e-stray"],
+      },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    // seedEntryCount is the number of IDs passed in (not filtered), for the response.
+    expect((result.data as any).seedEntryCount).toBe(2);
+    // But only 1 entry actually copied: the stray entry is excluded.
+    // Insert order: 1=new thread, 2=e-1 copy, 3=threadLink. The stray is NOT inserted.
+    expect(tracker.insertCalls.length).toBe(3);
+    const copiedEntry = tracker.insertCalls[1].values;
+    expect(copiedEntry).toMatchObject({
+      discussionId: "new-thread-1",
+      rawContent: "valid content",
+      sourceInfo: { originalEntryId: "e-1" },
+    });
+    // Confirm the stray is not inserted (all entry inserts reference the valid ID).
+    for (const call of tracker.insertCalls) {
+      if (call.values?.sourceInfo) {
+        expect(call.values.sourceInfo.originalEntryId).not.toBe("e-stray");
+      }
+    }
+  });
+
+  it("same-company source thread (happy path) still spins off successfully", async () => {
+    // Explicit: same companyId as ctx ('co-1') → guard passes, spinoff succeeds.
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [{ id: "thread-src", subtype: "live", visibility: "company", companyId: "co-1" }],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+    const ctx = makeCtx(transactionFn);
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "thread-src", title: "same-company spinoff" },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).threadId).toBe("new-thread-1");
+    // discussions insert + threadLinks insert
+    expect(tracker.insertCalls.length).toBe(2);
   });
 });

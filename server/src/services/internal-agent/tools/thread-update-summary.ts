@@ -51,6 +51,32 @@ export const threadUpdateSummaryTool: AgentTool = {
       };
     }
 
+    // Cross-tenant guard (#7): verify the thread exists and belongs to the
+    // caller's company before issuing the UPDATE. Without this, a Navigator
+    // scoped to company A could overwrite the summaryText of company B's
+    // thread just by knowing its ID.
+    const existing = await ctx.db
+      .select({ companyId: discussions.companyId })
+      .from(discussions)
+      .where(eq(discussions.id, threadId))
+      .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+    if (!existing) {
+      return {
+        success: false,
+        data: null,
+        summary: `Thread ${threadId} not found`,
+        error: "THREAD_NOT_FOUND",
+      };
+    }
+    if (existing.companyId !== ctx.companyId) {
+      return {
+        success: false,
+        data: null,
+        summary: "Thread belongs to a different company",
+        error: "COMPANY_MISMATCH",
+      };
+    }
+
     const summaryUpdatedAt = new Date();
     await ctx.db
       .update(discussions)

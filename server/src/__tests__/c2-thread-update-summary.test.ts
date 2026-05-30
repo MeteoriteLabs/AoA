@@ -9,10 +9,27 @@ import { describe, expect, it, vi } from "vitest";
 import { threadUpdateSummaryTool } from "../services/internal-agent/tools/thread-update-summary.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-function makeDb() {
+function makeDb(opts: { companyId?: string; threadExists?: boolean } = {}) {
+  const {
+    companyId = "co-1",
+    threadExists = true,
+  } = opts;
+
+  // Pre-flight select: the tool checks thread existence + companyId before UPDATE.
+  // Chain: .select().from().where().then(cb) — resolves via .then() to a single row or null.
+  const selectResult = threadExists ? [{ companyId }] : [];
+  const makeSelectChain = () => {
+    const chain: any = {};
+    chain.from = vi.fn().mockReturnValue(chain);
+    chain.where = vi.fn().mockReturnValue(chain);
+    chain.then = (resolve: any) => Promise.resolve(resolve(selectResult));
+    return chain;
+  };
+  const select = vi.fn(() => makeSelectChain());
+
   const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) });
   const update = vi.fn().mockReturnValue({ set: setMock });
-  return { db: { update } as any, setMock };
+  return { db: { select, update } as any, setMock };
 }
 
 function makeCtx(db: any, overrides: Partial<ToolContext> = {}): ToolContext {
@@ -124,5 +141,49 @@ describe("thread.updateSummary tool (C2 batch 1)", () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toBe("INVALID_PARAMS");
+  });
+
+  // ── Cross-tenant guards (#7) ─────────────────────────────────────────────────
+
+  it("returns THREAD_NOT_FOUND when the thread does not exist (pre-flight)", async () => {
+    const { db } = makeDb({ threadExists: false });
+    const ctx = makeCtx(db);
+    const result = await threadUpdateSummaryTool.execute(
+      { threadId: "ghost-thread", summary: "some summary" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("THREAD_NOT_FOUND");
+    // No UPDATE should be issued.
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("returns COMPANY_MISMATCH when thread belongs to a different company", async () => {
+    // Thread row has companyId='company-B', caller's ctx has companyId='co-1'.
+    const { db } = makeDb({ companyId: "company-B" });
+    const ctx = makeCtx(db);
+    const result = await threadUpdateSummaryTool.execute(
+      { threadId: "t-cross", summary: "attempted cross-tenant update" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("COMPANY_MISMATCH");
+    // No UPDATE should be issued.
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("same-company thread (happy path) still updates + returns summaryUpdatedAt", async () => {
+    // Explicit: same companyId as ctx ('co-1') → guard passes, update proceeds.
+    const { db, setMock } = makeDb({ companyId: "co-1" });
+    const ctx = makeCtx(db);
+    const result = await threadUpdateSummaryTool.execute(
+      { threadId: "t-1", summary: "same-company update" },
+      ctx,
+    );
+    expect(result.success).toBe(true);
+    expect((result.data as any).summaryUpdatedAt).toBeDefined();
+    const setCall = setMock.mock.calls[0][0];
+    expect(setCall.summaryText).toBe("same-company update");
+    expect(setCall.summaryUpdatedAt).toBeInstanceOf(Date);
   });
 });
