@@ -3,21 +3,28 @@
 // Task C2 batch 2 — `attach_to_thread` (action tool, Navigator).
 //
 // Moves a thread_inbox_items row into a real thread as a new discussion entry.
-// Wraps the entry insert + inbox status update in ONE transaction so we never
-// leave the inbox row marked "attached" without the new entry actually existing
-// (or vice versa).
 //
-// The `inputType` on the resulting entry maps from inboxItem.originMedium when
-// present; otherwise we default to "mcp" since the unattached inbox represents
-// external/un-routed inbound. Any originMedium that isn't a valid
-// DiscussionEntryInputType also falls back to "mcp".
+// Task 1.8 rewrite — routing dial gate:
+//
+//   'suggest'               → record routerDecision='suggest' + suggestedThreadId for
+//                             the founder to confirm in the Inbox (Phase 2 UI); do NOT post.
+//   'auto_attach'/'full_auto' → post content immediately via the shared, companyId-guarded,
+//                             atomic write-path (attachInboxItemToThread).
+//   'off'                   → also acts via the shared service. The dispatcher already gates
+//                             auto-routing wakeups at 'off'; an explicit attach_to_thread
+//                             call at 'off' is a direct / manual Navigator action.
+//
+// Eliminates:
+//   - The duplicated inline transaction (#6) — now owned by the shared service.
+//   - The cross-tenant hole (#7) — companyId validation now happens in the shared service
+//     (for act paths) or in the pre-flight guard below (for suggest path).
+//   - The absent seq bump, atomic claim, live events, and routingStatus update —
+//     now all handled by attachInboxItemToThread in inbox-attach.ts.
 
-import { eq } from "drizzle-orm";
-import { threadInboxItems, discussionEntries } from "@armyofagents/db";
-import { DISCUSSION_ENTRY_INPUT_TYPES } from "@armyofagents/shared";
+import { and, eq } from "drizzle-orm";
+import { threadInboxItems, internalAgentConfig } from "@armyofagents/db";
+import { attachInboxItemToThread } from "../../inbox-attach.js";
 import type { AgentTool } from "../types.js";
-
-const VALID_INPUT_TYPES = new Set<string>(DISCUSSION_ENTRY_INPUT_TYPES as readonly string[]);
 
 export const attachToThreadTool: AgentTool = {
   name: "attach_to_thread",
@@ -56,68 +63,94 @@ export const attachToThreadTool: AgentTool = {
       };
     }
 
-    const rows = await ctx.db
-      .select()
-      .from(threadInboxItems)
-      .where(eq(threadInboxItems.id, inboxItemId))
+    // ── Step 1: read the routing dial ─────────────────────────────────────────
+    const [cfg] = await ctx.db
+      .select({ level: internalAgentConfig.inboundRoutingLevel })
+      .from(internalAgentConfig)
+      .where(eq(internalAgentConfig.companyId, ctx.companyId))
       .limit(1);
-    const inboxItem = Array.isArray(rows) ? rows[0] : null;
-    if (!inboxItem) {
+    const level = (cfg?.level ?? "off") as string;
+
+    // ── Step 2: suggest path — record decision, do NOT post content ───────────
+    if (level === "suggest") {
+      // Pre-flight existence + company guard (shared service not called on this path).
+      const [item] = await ctx.db
+        .select({ id: threadInboxItems.id, companyId: threadInboxItems.companyId })
+        .from(threadInboxItems)
+        .where(eq(threadInboxItems.id, inboxItemId))
+        .limit(1);
+      if (!item) {
+        return {
+          success: false,
+          data: null,
+          summary: "Inbox item not found",
+          error: "NOT_FOUND",
+        };
+      }
+      if (item.companyId !== ctx.companyId) {
+        return {
+          success: false,
+          data: null,
+          summary: "Inbox item belongs to a different company",
+          error: "COMPANY_MISMATCH",
+        };
+      }
+      // Record the suggestion — leave status='pending' so the item awaits human confirm.
+      await ctx.db
+        .update(threadInboxItems)
+        .set({
+          routerDecision: "suggest",
+          suggestedThreadId: threadId,
+          routingStatus: "routed",
+        })
+        .where(
+          and(
+            eq(threadInboxItems.id, inboxItemId),
+            eq(threadInboxItems.companyId, ctx.companyId),
+          ),
+        );
       return {
-        success: false,
-        data: null,
-        summary: "Inbox item not found",
-        error: "NOT_FOUND",
+        success: true,
+        data: { suggested: true, suggestedThreadId: threadId },
+        summary:
+          "Routing suggestion recorded — founder confirms in the Inbox",
       };
     }
 
-    // Map originMedium → a valid DiscussionEntryInputType, falling back to "mcp"
-    // for null/unknown values. originMedium uses the THREAD_ORIGIN_MEDIA enum
-    // (text|voice|integration|...) which only partially overlaps the discussion
-    // entry input-type enum; the mapping prevents writing a bogus value.
-    const candidateInputType = inboxItem.originMedium ?? "mcp";
-    const inputType = VALID_INPUT_TYPES.has(candidateInputType)
-      ? candidateInputType
-      : "mcp";
-
+    // ── Step 3: act path (auto_attach | full_auto | off) → shared service ─────
     try {
-      const result = await ctx.db.transaction(async (tx: any) => {
-        const inserted = await tx
-          .insert(discussionEntries)
-          .values({
-            discussionId: threadId,
-            inputType,
-            rawContent: inboxItem.rawContent,
-            sourceInfo: {
-              originSource: inboxItem.originSource,
-              fromInboxItem: inboxItemId,
-            },
-            createdBy: ctx.agentId ?? "system",
-          })
-          .returning();
-        const entry = Array.isArray(inserted) ? inserted[0] : inserted;
-        if (!entry || !entry.id) {
-          throw new Error("discussion entry insert returned no row");
-        }
-
-        await tx
-          .update(threadInboxItems)
-          .set({ status: "attached" })
-          .where(eq(threadInboxItems.id, inboxItemId));
-
-        return entry;
+      const res = await attachInboxItemToThread(ctx.db, {
+        companyId: ctx.companyId,
+        inboxItemId,
+        threadId,
+        actor: {
+          actorId: ctx.agentId ?? "system",
+          actorType: "agent",
+          agentId: ctx.agentId ?? null,
+        },
       });
-
       return {
         success: true,
-        data: { entryId: result.id },
-        summary: "Inbox item attached to thread",
+        data: { entryId: res.entryId, alreadyHandled: res.alreadyHandled },
+        summary: res.alreadyHandled
+          ? "Inbox item was already attached"
+          : "Inbox item attached to thread",
       };
     } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      if (msg.includes("COMPANY_MISMATCH")) {
+        return {
+          success: false,
+          data: null,
+          summary:
+            "Inbox item or thread belongs to a different company",
+          error: "COMPANY_MISMATCH",
+        };
+      }
       return {
         success: false,
         data: null,
-        summary: `Failed to attach inbox item: ${err?.message ?? "unknown error"}`,
+        summary: `Failed to attach inbox item: ${msg || "unknown error"}`,
         error: "TRANSACTION_FAILED",
       };
     }
