@@ -66,6 +66,7 @@ import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engi
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
+import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
 import { agentInstructionsService } from "./services/agent-instructions.js";
 
@@ -779,6 +780,20 @@ void backfillGoalParents(db as any)
 void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
   logger.warn({ err }, "crew templateOrigin backfill failed"),
 );
+
+// Idempotent backfill: stamp origin_kind='crew_thread' onto thread-deliverable
+// tasks that were created before this field was introduced (source_discussion_id
+// IS NOT NULL AND origin_kind IS NULL). Required so the crew board can filter
+// correctly. Safe on every boot — second run updates 0 rows. (Decision D10)
+void backfillCrewOriginKind(db as any)
+  .then((res) => {
+    if (res.updated > 0) {
+      logger.info({ updated: res.updated }, "crew origin_kind backfill complete");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "crew origin_kind backfill failed"),
+  );
 
 // T3.5 / T3.x: Check all marketplace-installed crew agents for catalog updates.
 // auto policy + within window → apply immediately (silent).
