@@ -23,9 +23,14 @@ interface UnlistedLaneProps {
   inboxItems: InboxCardItem[];
   /** Called after any item is triaged (dismissed, attached, or made into a thread) */
   onTriaged: (itemId: string, action: TriageAction) => void;
+  /**
+   * Thread title lookup (id → title) built by ThreadBoard from its already-loaded
+   * thread list. Used by the suggestion banner — no new network fetch.
+   */
+  threadsById?: Map<string, string>;
 }
 
-export function UnlistedLane({ inboxItems, onTriaged }: UnlistedLaneProps) {
+export function UnlistedLane({ inboxItems, onTriaged, threadsById }: UnlistedLaneProps) {
   return (
     <div
       className="flex-none w-[220px] rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 flex flex-col"
@@ -53,6 +58,7 @@ export function UnlistedLane({ inboxItems, onTriaged }: UnlistedLaneProps) {
               key={item.id}
               item={item}
               onTriaged={onTriaged}
+              threadsById={threadsById}
             />
           ))
         )}
@@ -77,9 +83,11 @@ function relativeTime(dateStr: string): string {
 interface InboxTriageCardProps {
   item: InboxCardItem;
   onTriaged: (itemId: string, action: TriageAction) => void;
+  /** Thread title lookup passed from ThreadBoard — no new network fetch. */
+  threadsById?: Map<string, string>;
 }
 
-function InboxTriageCard({ item, onTriaged }: InboxTriageCardProps) {
+function InboxTriageCard({ item, onTriaged, threadsById }: InboxTriageCardProps) {
   const { selectedCompanyId } = useCompany();
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +158,35 @@ function InboxTriageCard({ item, onTriaged }: InboxTriageCardProps) {
       {/* Error */}
       {error && (
         <p className="text-[10px] text-destructive">{error}</p>
+      )}
+
+      {/* Suggestion banner — shown when router has a confident recommendation */}
+      {item.routerDecision === "suggest" && item.suggestedThreadId && (
+        <div
+          className="rounded border border-amber-300 dark:border-amber-700 bg-amber-100/60 dark:bg-amber-900/30 p-1.5 space-y-1.5"
+          data-testid={`inbox-suggestion-${item.id}`}
+        >
+          <div className="flex items-center gap-1 text-[10px] text-amber-800 dark:text-amber-300 font-medium">
+            <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
+            <span className="truncate">
+              Suggested:{" "}
+              <span className="font-semibold">
+                {threadsById?.get(item.suggestedThreadId) ?? item.suggestedThreadId}
+              </span>
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => triage("attach", item.suggestedThreadId!)}
+            disabled={isPending}
+            className="h-6 w-full px-2 text-[10px] border-amber-400 dark:border-amber-600 text-amber-900 dark:text-amber-200 hover:bg-amber-200 dark:hover:bg-amber-800/50"
+            data-testid={`inbox-suggestion-confirm-${item.id}`}
+          >
+            {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
+          </Button>
+          <p className="text-[9px] text-amber-700/60 dark:text-amber-400/60 text-center">or override below</p>
+        </div>
       )}
 
       {/* Add to existing thread — dropdown */}
