@@ -29,8 +29,6 @@ export interface EnqueueInboxItemArgs {
   originMedium: string;
   originSource?: string | null;
   rawContent: string;
-  /** Optional — present when the caller is a known board/MCP actor. */
-  createdBy?: string | null;
 }
 
 export interface EnqueueInboxItemResult {
@@ -70,7 +68,7 @@ export async function enqueueInboxItem(
   db: Db,
   args: EnqueueInboxItemArgs,
 ): Promise<EnqueueInboxItemResult> {
-  const { companyId, originMedium, originSource, rawContent, createdBy } = args;
+  const { companyId, originMedium, originSource, rawContent } = args;
 
   const dedupKey = computeDedupKey(companyId, originMedium, originSource, rawContent);
 
@@ -85,7 +83,6 @@ export async function enqueueInboxItem(
         originMedium,
         originSource: originSource ?? null,
         rawContent,
-        ...(createdBy != null ? { createdBy } : {}),
       })
       .returning({ id: threadInboxItems.id });
 

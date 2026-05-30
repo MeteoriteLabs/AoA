@@ -158,30 +158,17 @@ describe("enqueueInboxItem", () => {
       expect(getInsertValues().originSource).toBeNull();
     });
 
-    it("includes createdBy when provided", async () => {
+    it("does NOT include a createdBy column (not on thread_inbox_items schema)", async () => {
+      // Confirm the insert values object has no createdBy key — the column does not
+      // exist on thread_inbox_items (only on thread_links) so it must never be set.
       const { db, getInsertValues } = makeDb({});
 
       await enqueueInboxItem(db, {
         companyId: COMPANY,
         originMedium: "mcp",
         rawContent: "x",
-        createdBy: "user-77",
       });
 
-      expect(getInsertValues().createdBy).toBe("user-77");
-    });
-
-    it("does NOT set createdBy in values when not provided", async () => {
-      const { db, getInsertValues } = makeDb({});
-
-      await enqueueInboxItem(db, {
-        companyId: COMPANY,
-        originMedium: "mcp",
-        rawContent: "x",
-        // createdBy omitted
-      });
-
-      // Key must not be present (spreading `{}` from the conditional keeps it absent)
       expect(Object.prototype.hasOwnProperty.call(getInsertValues(), "createdBy")).toBe(false);
     });
   });
