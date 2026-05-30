@@ -1,6 +1,12 @@
-import { and, eq, ne, gt, sql } from "drizzle-orm";
+import { and, eq, ne, gt, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers, discussions, agentWakeupRequests } from "@armyofagents/db";
+import {
+  agents,
+  aoaAgentTriggers,
+  discussions,
+  agentWakeupRequests,
+  discussionEntries,
+} from "@armyofagents/db";
 
 /**
  * QA-BUG-011 — Adjutant sweep dedup window.
@@ -116,6 +122,53 @@ export async function runAdjutantSweep(db: Db): Promise<void> {
         )
         .limit(1);
       if (recent) continue;
+
+      // No-flood gate (Task 0.5): only wake the Adjutant when there is at
+      // least one human-authored entry in this thread that is NEWER than the
+      // agent's last finished action. Without this check every sweep tick
+      // fires for dormant threads → floods the thread with "nothing-to-do"
+      // system notices (QA complaint, ~$0.01–0.03/notice).
+      //
+      // "Human entry" mirrors thread-events.ts isHumanEntry:
+      //   - authorAgentId IS NULL           (not agent-posted)
+      //   - inputType NOT IN ('agent', 'system', 'scope_proposal')
+      //
+      // "Last action" = finishedAt of the most recent finished/failed/skipped
+      // wakeup for this (agent, thread) pair. If no finished wakeup exists,
+      // we fall back to epoch so ANY human entry qualifies (first-run case).
+      const [lastFinished] = await db
+        .select({ finishedAt: agentWakeupRequests.finishedAt })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, trigger.companyId),
+            eq(agentWakeupRequests.agentId, trigger.agentId),
+            sql`${agentWakeupRequests.payload} ->> 'threadId' = ${thread.id}`,
+            sql`${agentWakeupRequests.finishedAt} IS NOT NULL`,
+          ),
+        )
+        .orderBy(sql`${agentWakeupRequests.finishedAt} DESC`)
+        .limit(1);
+
+      const lastActionAt: Date = lastFinished?.finishedAt ?? new Date(0);
+
+      const [newerHumanEntry] = await db
+        .select({ id: discussionEntries.id })
+        .from(discussionEntries)
+        .where(
+          and(
+            eq(discussionEntries.discussionId, thread.id),
+            isNull(discussionEntries.authorAgentId),
+            ne(discussionEntries.inputType, "agent"),
+            ne(discussionEntries.inputType, "system"),
+            ne(discussionEntries.inputType, "scope_proposal"),
+            gt(discussionEntries.createdAt, lastActionAt),
+          ),
+        )
+        .limit(1);
+
+      // No new human input since the last Adjutant action — skip silently.
+      if (!newerHumanEntry) continue;
 
       await db.insert(agentWakeupRequests).values({
         companyId: trigger.companyId,

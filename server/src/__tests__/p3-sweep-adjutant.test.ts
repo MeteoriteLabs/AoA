@@ -27,39 +27,51 @@ describe("P3.3: sweep trigger + adjutant periodic driver", () => {
       activeThreads?: any[];
       insertResult?: any[];
       recentWakeups?: any[]; // QA-BUG-011: rows returned by the dedup-window lookup
+      // Task 0.5 no-flood gate: rows returned by the newer-human-entry check.
+      // Defaults to [{id:'e-human'}] so existing tests (which test the dedup/
+      // thread-count behaviour) pass without change. Tests that want to verify
+      // "no insert when no human input" must pass [].
+      newerHumanEntries?: any[];
     }) {
       const valuesMock = vi.fn().mockResolvedValue(options.insertResult ?? [{ id: "w-1" }]);
       const recentRows = options.recentWakeups ?? [];
+      // Default non-empty so pre-existing tests that expect inserts still pass.
+      const humanRows = options.newerHumanEntries ?? [{ id: "e-human" }];
 
-      // QA-BUG-011: the dedup query chains `.where(...).limit(1)`. activeThreads
-      // / trigger queries just await `.where(...)`. We return a thenable from
-      // .where() that resolves to the appropriate row set AND exposes `.limit`
-      // so the dedup call still resolves. Sequence: 1st where = triggers;
-      // subsequent where calls alternate between activeThreads (when awaited
-      // directly) and dedup (when `.limit` is chained). To differentiate we
-      // track call counts and let the consumer pick the right shape via the
-      // chain it picks: awaited-directly → activeThreads, `.limit()` chained
-      // → dedup. Both shapes can come from the same thenable because the
-      // caller picks exactly one continuation.
+      // Post-trigger query cycle of 4 (one activeThreads + three per-thread):
+      //   idx % 4 === 0 → activeThreads query (one per trigger iteration)
+      //   idx % 4 === 1 → dedup window check (.where().limit(1))
+      //   idx % 4 === 2 → lastFinished wakeup (.where().orderBy().limit(1))
+      //   idx % 4 === 3 → newerHumanEntry gate (.where().limit(1))
+      //
+      // This cycle is correct when each trigger has exactly ONE active thread
+      // (the common case for the tests below). Tests with multiple threads per
+      // trigger must use a custom inline mock — the cycle assumption breaks when
+      // numThreads > 1 per trigger because activeThreads is queried only once
+      // per trigger but there are 3 per-thread queries per thread.
+      //
+      // All thenables expose .limit() and .orderBy() for Drizzle chain compat.
       let triggerQueryDone = false;
-      let threadQueryToggle = true; // alternates: threads, dedup, threads, dedup, ...
+      let postTriggerCallIdx = 0;
       const whereMock = vi.fn().mockImplementation(() => {
         if (!triggerQueryDone) {
           triggerQueryDone = true;
           return Promise.resolve(options.sweepTriggers);
         }
-        // After the trigger query, subsequent where calls are either
-        // activeThreads (awaited) or dedup (.limit chained). We return a
-        // thenable that resolves to activeThreads, AND attach .limit that
-        // resolves to recentWakeups — the consumer picks one.
-        const isThread = threadQueryToggle;
-        threadQueryToggle = !threadQueryToggle;
-        const target = isThread ? (options.activeThreads ?? []) : recentRows;
-        const t = Promise.resolve(target);
-        // .limit always resolves to recentRows (the dedup result shape)
-        return Object.assign(t, {
-          limit: vi.fn().mockResolvedValue(recentRows),
-        });
+        const idx = postTriggerCallIdx;
+        postTriggerCallIdx += 1;
+        const phase = idx % 4;
+
+        let rows: any[];
+        if (phase === 0) rows = options.activeThreads ?? []; // threads
+        else if (phase === 1) rows = recentRows;             // dedup
+        else if (phase === 2) rows = [];                     // lastFinished (epoch)
+        else rows = humanRows;                               // humanGate
+
+        const limitFn = vi.fn().mockResolvedValue(rows);
+        const orderByFn = vi.fn().mockReturnValue({ limit: limitFn });
+        const t = Promise.resolve(rows);
+        return Object.assign(t, { limit: limitFn, orderBy: orderByFn });
       });
 
       return {
@@ -76,15 +88,49 @@ describe("P3.3: sweep trigger + adjutant periodic driver", () => {
     }
 
     it("inserts one wakeup per active thread for sweep trigger", async () => {
-      const db = makeDb({
-        sweepTriggers: [
-          { agentId: "adj-1", companyId: "co-1" },
-        ],
-        activeThreads: [
-          { id: "t-1" },
-          { id: "t-2" },
-        ],
+      // Custom inline mock: single trigger, 2 threads. Query sequence after the
+      // trigger query (1 activeThreads + 3 per-thread × 2 threads = 7 calls):
+      //   idx 0 → activeThreads [{id:'t-1'},{id:'t-2'}]
+      //   idx 1 → dedup t-1 (empty)
+      //   idx 2 → lastFinished t-1 (empty → epoch)
+      //   idx 3 → humanGate t-1 → [{id:'e-1'}] → INSERT
+      //   idx 4 → dedup t-2 (empty)
+      //   idx 5 → lastFinished t-2 (empty → epoch)
+      //   idx 6 → humanGate t-2 → [{id:'e-2'}] → INSERT
+      const seqRows: any[][] = [
+        [{ id: "t-1" }, { id: "t-2" }], // threads
+        [],                               // dedup t-1
+        [],                               // lastFinished t-1
+        [{ id: "e-1" }],                  // humanGate t-1
+        [],                               // dedup t-2
+        [],                               // lastFinished t-2
+        [{ id: "e-2" }],                  // humanGate t-2
+      ];
+      const valuesMock = vi.fn().mockResolvedValue([{ id: "w-1" }]);
+      let triggerDone = false;
+      let seqIdx = 0;
+      const whereMock = vi.fn().mockImplementation(() => {
+        if (!triggerDone) {
+          triggerDone = true;
+          return Promise.resolve([{ agentId: "adj-1", companyId: "co-1" }]);
+        }
+        const rows = seqRows[seqIdx++] ?? [];
+        const limitFn = vi.fn().mockResolvedValue(rows);
+        const orderByFn = vi.fn().mockReturnValue({ limit: limitFn });
+        const t = Promise.resolve(rows);
+        return Object.assign(t, { limit: limitFn, orderBy: orderByFn });
       });
+      const db = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({ where: whereMock }),
+            where: whereMock,
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({ values: valuesMock }),
+        _valuesMock: valuesMock,
+        _whereMock: whereMock,
+      };
 
       await runAdjutantSweep(db as any);
 
