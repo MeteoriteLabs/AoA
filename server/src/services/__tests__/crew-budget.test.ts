@@ -13,8 +13,11 @@
  *   2. budgetPolicies row (active, company-scoped, hard-stop) — may be empty
  *   3. costEvents sum (only when a policy row was found)
  *
- * `.insert()` is called at most once — on the `discussion_entries` table —
- * and ONLY on the budget-exhaust branch. Tests assert exactly when.
+ * On budget exhaustion the service:
+ *   - opens a transaction
+ *   - UPDATE discussions ... RETURNING (entrySeq, companyId)
+ *   - INSERT discussion_entries ... RETURNING (with extractionStatus:"skipped" + seq)
+ *   - publishLiveEvent × 2 (discussion.entry.created + thread.entry.created)
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -32,16 +35,27 @@ vi.mock("@armyofagents/db", () => ({
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
+// Mock live-events so we can spy on publishLiveEvent calls.
+vi.mock("../live-events.js", () => ({
+  publishLiveEvent: vi.fn(),
+}));
+
 import {
   preflightCrewDispatch,
   formatBudgetExhaustedMessage,
 } from "../crew-budget.js";
+import { publishLiveEvent } from "../live-events.js";
 
 // ---------------------------------------------------------------------------
 // Sequence-based mock DB. Each `.select()` consumes the next preset row set
-// from `selects`; each `.insert()` records its values onto `insertCalls`.
+// from `selects`; each `.insert()` records its values + returned rows onto
+// `insertCalls`; `update().returning()` returns `txUpdateReturns`.
 // Every chain method is a no-op pass-through. The test wires the exact
 // number of select stages it expects the service to take.
+//
+// Codex #7 fix: the budget-exhaust path now uses db.transaction() with an
+// UPDATE .returning() (to get entrySeq+companyId) and an INSERT .returning()
+// (to get the entry id+seq for live events). The mock supports both.
 // ---------------------------------------------------------------------------
 
 type MockRow = Record<string, unknown>;
@@ -53,6 +67,10 @@ interface InsertCall {
 
 interface SequenceDbConfig {
   selects?: MockRow[][];
+  /** Rows returned by the UPDATE discussions .returning() inside the transaction */
+  txUpdateReturns?: MockRow[];
+  /** Rows returned by the INSERT discussion_entries .returning() inside the transaction */
+  txInsertReturns?: MockRow[];
 }
 
 function tableNameOf(value: unknown): string | undefined {
@@ -71,6 +89,14 @@ function createSequenceDb(config: SequenceDbConfig = {}) {
   let selectIdx = 0;
   const selectCalls: { fromTable?: string }[] = [];
   const insertCalls: InsertCall[] = [];
+
+  // Default transaction return values when not overridden by the test.
+  const txUpdateReturns: MockRow[] = config.txUpdateReturns ?? [
+    { entrySeq: 1, companyId: "co-1" },
+  ];
+  const txInsertReturns: MockRow[] = config.txInsertReturns ?? [
+    { id: "entry-budget-1", seq: 1, discussionId: "thread-1", inputType: "system" },
+  ];
 
   function makeSelectChain(): any {
     const call: { fromTable?: string } = {};
@@ -94,7 +120,11 @@ function createSequenceDb(config: SequenceDbConfig = {}) {
     const chain: any = {
       values: (v: Record<string, unknown>) => {
         call.values = v;
-        return chain;
+        return {
+          returning: () => Promise.resolve(txInsertReturns),
+          then: (resolve: (v: MockRow[]) => unknown) =>
+            Promise.resolve(resolve([])),
+        };
       },
       then: (resolve: (v: MockRow[]) => unknown) =>
         Promise.resolve(resolve([])),
@@ -102,9 +132,25 @@ function createSequenceDb(config: SequenceDbConfig = {}) {
     return chain;
   }
 
+  // The transaction mock runs the callback with a proxy `tx` that routes
+  // update().returning() to txUpdateReturns and insert() to makeInsertChain.
+  function makeTx(): any {
+    return {
+      update: (_table: unknown) => ({
+        set: (_vals: unknown) => ({
+          where: (_cond: unknown) => ({
+            returning: (_cols: unknown) => Promise.resolve(txUpdateReturns),
+          }),
+        }),
+      }),
+      insert: (table: unknown) => makeInsertChain(tableNameOf(table)),
+    };
+  }
+
   return {
     select: (..._args: unknown[]) => makeSelectChain(),
     insert: (table: unknown) => makeInsertChain(tableNameOf(table)),
+    transaction: (fn: (tx: any) => Promise<unknown>) => fn(makeTx()),
     selectCalls,
     insertCalls,
   };
@@ -159,6 +205,9 @@ function spendRow(totalCents: number): MockRow {
 describe("preflightCrewDispatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // publishLiveEvent returns a LiveEvent; the return value is not used by
+    // preflightCrewDispatch, so we can safely return a stub object.
+    vi.mocked(publishLiveEvent).mockReturnValue({} as ReturnType<typeof publishLiveEvent>);
   });
 
   // ── 1. Allows dispatch when under budget ────────────────────────────────
@@ -179,8 +228,9 @@ describe("preflightCrewDispatch", () => {
     });
 
     expect(result).toEqual({ allowed: true });
-    // No system entry written on a green path.
+    // No system entry or live events on the green path.
     expect(db.insertCalls).toHaveLength(0);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
   });
 
   // ── 2. Allows dispatch when no budget policy exists ─────────────────────
@@ -202,20 +252,32 @@ describe("preflightCrewDispatch", () => {
 
     expect(result).toEqual({ allowed: true });
     expect(db.insertCalls).toHaveLength(0);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
     // Verify the service short-circuited after the no-policy lookup —
     // no cost-event scan when there's nothing to enforce against.
     expect(db.selectCalls).toHaveLength(2);
   });
 
-  // ── 3. Blocks + posts system entry when over budget ─────────────────────
+  // ── 3. Blocks + posts system entry when over budget (Codex #7) ─────────────
+  //
+  // Verifies the full atomic pattern:
+  //   - transaction wraps both the UPDATE discussions (entrySeq+entryCount bump)
+  //     and the INSERT discussion_entries (with seq + extractionStatus:"skipped")
+  //   - publishLiveEvent is called twice after the transaction completes
+  //     (discussion.entry.created + thread.entry.created)
 
-  it("blocks dispatch when spend meets cap and posts system entry", async () => {
+  it("blocks dispatch when spend meets cap and posts system entry atomically", async () => {
+    const ENTRY_ID = "entry-budget-test-1";
+    const ENTRY_SEQ = 7; // any non-zero seq to verify the plumbing
+
     const db = createSequenceDb({
       selects: [
         [threadRow()],            // 1. thread
         [policyRow()],            // 2. policy ($100)
         [spendRow(10500)],        // 3. spend ($105) — over cap
       ],
+      txUpdateReturns: [{ entrySeq: ENTRY_SEQ, companyId: COMPANY_ID }],
+      txInsertReturns: [{ id: ENTRY_ID, seq: ENTRY_SEQ, discussionId: THREAD_ID, inputType: "system" }],
     });
 
     const result = await preflightCrewDispatch(db as any, {
@@ -232,7 +294,7 @@ describe("preflightCrewDispatch", () => {
     expect(result.reason).toContain("10500"); // observed
     expect(result.reason).toContain("10000"); // cap
 
-    // System entry written to the thread.
+    // ── entry was inserted inside the transaction with the right fields ───────
     expect(db.insertCalls).toHaveLength(1);
     const insert = db.insertCalls[0];
     expect(insert.tableName).toBe("discussion_entries");
@@ -241,9 +303,28 @@ describe("preflightCrewDispatch", () => {
       inputType: "system",
       authorAgentId: null,
       createdBy: "system",
+      extractionStatus: "skipped",
+      seq: ENTRY_SEQ,
     });
     // rawContent is a string — content asserted in test 9 specifically.
     expect(typeof insert.values.rawContent).toBe("string");
+
+    // ── live events published (Codex #7 fix) ─────────────────────────────────
+    expect(publishLiveEvent).toHaveBeenCalledTimes(2);
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        type: "discussion.entry.created",
+        payload: expect.objectContaining({ discussionId: THREAD_ID, entryId: ENTRY_ID, inputType: "system" }),
+      }),
+    );
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        type: "thread.entry.created",
+        payload: expect.objectContaining({ threadId: THREAD_ID, entryId: ENTRY_ID, seq: ENTRY_SEQ }),
+      }),
+    );
   });
 
   // ── 4. Per-thread adjutantEnabled=false overrides budget pass ───────────
@@ -267,9 +348,10 @@ describe("preflightCrewDispatch", () => {
     expect(result.reasonCode).toBe("thread_disabled");
     expect(result.reason).toMatch(/disabled/i);
 
-    // No budget query, no system entry.
+    // No budget query, no system entry, no live events.
     expect(db.selectCalls).toHaveLength(1);
     expect(db.insertCalls).toHaveLength(0);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
   });
 
   // ── 5. Thread not found ─────────────────────────────────────────────────
@@ -293,9 +375,10 @@ describe("preflightCrewDispatch", () => {
     expect(result.reason).toContain("bad-thread-id");
     expect(result.reason).toMatch(/not found/i);
 
-    // No budget query, no system entry.
+    // No budget query, no system entry, no live events.
     expect(db.selectCalls).toHaveLength(1);
     expect(db.insertCalls).toHaveLength(0);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
   });
 
   // ── 6. Spend calculation uses sum of cost_events for current month ──────
@@ -348,6 +431,7 @@ describe("preflightCrewDispatch", () => {
       });
       expect(result.allowed).toBe(true);
       expect(db.insertCalls).toHaveLength(0);
+      expect(publishLiveEvent).not.toHaveBeenCalled();
     }
   });
 
@@ -369,6 +453,7 @@ describe("preflightCrewDispatch", () => {
 
     expect(result).toEqual({ allowed: true });
     expect(db.insertCalls).toHaveLength(0);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
   });
 
   // ── 9. System entry message includes spend + cap as USD ─────────────────
@@ -423,6 +508,8 @@ describe("preflightCrewDispatch", () => {
     if (result.allowed) throw new Error("unreachable");
     expect(result.reasonCode).toBe("budget_exhausted");
     expect(db.insertCalls).toHaveLength(1);
+    // Live events are published even when spend is exactly at cap.
+    expect(publishLiveEvent).toHaveBeenCalledTimes(2);
   });
 
   // ── Bonus: thread_disabled check fires BEFORE budget check ──────────────

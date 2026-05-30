@@ -47,6 +47,7 @@
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { budgetPolicies, costEvents, discussionEntries, discussions } from "@armyofagents/db";
 import type { Db } from "@armyofagents/db";
+import { publishLiveEvent } from "./live-events.js";
 
 export interface PreflightParams {
   companyId: string;
@@ -224,12 +225,52 @@ export async function preflightCrewDispatch(
     // exactly why nothing happened, with retry guidance. The entry is
     // created by `system` (NOT a real user id) — `discussion_entries.createdBy`
     // is plain text and the 'system' input type was added to the enum in A3.
-    await db.insert(discussionEntries).values({
-      discussionId: params.threadId,
-      inputType: "system",
-      rawContent: formatBudgetExhaustedMessage(observedCents, policy.amountCents),
-      authorAgentId: null,
-      createdBy: "system",
+    //
+    // Atomic pattern (mirrors crew-result-relay.ts): bump entrySeq + entryCount
+    // in the same transaction as the INSERT so:
+    //   - the entry gets the correct monotonic seq (live views use seq ordering)
+    //   - the counter is never out-of-sync with the actual row count
+    // After the transaction, publish the same live-event pair that all other
+    // entry writers publish so the thread renders in real time without a refresh.
+    const rawContent = formatBudgetExhaustedMessage(observedCents, policy.amountCents);
+    const now = new Date();
+
+    const { entry, companyId } = await db.transaction(async (tx) => {
+      const [{ entrySeq, companyId: cid }] = await tx
+        .update(discussions)
+        .set({
+          entrySeq: sql`${discussions.entrySeq} + 1`,
+          entryCount: sql`${discussions.entryCount} + 1`,
+          updatedAt: now,
+        })
+        .where(eq(discussions.id, params.threadId))
+        .returning({ entrySeq: discussions.entrySeq, companyId: discussions.companyId });
+
+      const [inserted] = await tx
+        .insert(discussionEntries)
+        .values({
+          discussionId: params.threadId,
+          inputType: "system",
+          rawContent,
+          authorAgentId: null,
+          createdBy: "system",
+          extractionStatus: "skipped",
+          seq: entrySeq,
+        })
+        .returning();
+
+      return { entry: inserted, companyId: cid };
+    });
+
+    publishLiveEvent({
+      companyId,
+      type: "discussion.entry.created",
+      payload: { discussionId: params.threadId, entryId: entry.id, inputType: "system" },
+    });
+    publishLiveEvent({
+      companyId,
+      type: "thread.entry.created",
+      payload: { threadId: params.threadId, entryId: entry.id, seq: entry.seq ?? 0 },
     });
 
     return {
