@@ -2,7 +2,7 @@ import { Link } from "@/lib/router";
 import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
 import type { ThreadListItem } from "../../api/threads";
 import { cn } from "../../lib/utils";
-import { MessageSquare, Plus } from "lucide-react";
+import { MessageSquare, Plus, Archive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UnlistedLane } from "./UnlistedLane";
 import { groupThreadsForBoard } from "./boardModel";
@@ -35,6 +35,8 @@ function relativeTime(dateStr: string | null | undefined): string {
 
 interface ThreadBoardProps {
   threads: ThreadListItem[];
+  /** Archived threads to display in the Archived column. */
+  archivedThreads?: ThreadListItem[];
   /** Inbox items for the Unlisted lane (v1: empty — inboxItems API is Task 3/4) */
   inboxItems?: InboxCardItem[];
   onNewThread: () => void;
@@ -49,7 +51,7 @@ export interface InboxCardItem {
   createdAt: string;
 }
 
-export function ThreadBoard({ threads, inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
+export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
   // Group threads by phase using pure boardModel function
   const byPhase = groupThreadsForBoard(threads);
 
@@ -77,6 +79,9 @@ export function ThreadBoard({ threads, inboxItems = [], onNewThread, onInboxUpda
           onNewThread={onNewThread}
         />
       ))}
+
+      {/* Archived column — always rendered so it's visible even when empty */}
+      <ArchivedColumn threads={archivedThreads} />
     </div>
   );
 }
@@ -136,9 +141,46 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
   );
 }
 
+/* ── Archived Column ─────────────────────────────────────────────────────────── */
+
+function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
+  return (
+    <div
+      role="region"
+      aria-label="Archived"
+      className="flex-none w-[240px] rounded-lg border border-border bg-muted/20 flex flex-col opacity-70"
+      data-testid="archived-column"
+    >
+      {/* Header */}
+      <div className="px-3 py-2.5 border-b border-border flex items-center gap-2">
+        <Archive className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" aria-hidden />
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
+          Archived
+        </p>
+        <span className="text-[10px] text-muted-foreground font-medium">
+          {threads.length}
+        </span>
+      </div>
+
+      {/* Cards */}
+      <div className="flex-1 p-2 space-y-2 overflow-y-auto">
+        {threads.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground text-center py-4 opacity-60">
+            No archived threads
+          </p>
+        ) : (
+          threads.map((thread) => (
+            <BoardCard key={thread.id} thread={thread} phase={"done" as ThreadPhase} archived />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Board Card ─────────────────────────────────────────────────────────────── */
 
-function BoardCard({ thread, phase: _phase }: { thread: ThreadListItem; phase: ThreadPhase }) {
+function BoardCard({ thread, phase: _phase, archived = false }: { thread: ThreadListItem; phase: ThreadPhase; archived?: boolean }) {
   const hasPending = thread.pendingItemCount > 0;
 
   return (
@@ -146,7 +188,9 @@ function BoardCard({ thread, phase: _phase }: { thread: ThreadListItem; phase: T
       to={`/discussions/${thread.id}`}
       className={cn(
         "block rounded-md border p-2.5 transition-colors text-left",
-        hasPending
+        archived
+          ? "border-border bg-muted/30 hover:bg-muted/50 opacity-60"
+          : hasPending
           ? "border-blue-300 bg-blue-50/80 hover:bg-blue-100/80 dark:border-blue-800 dark:bg-blue-950/30"
           : "border-border bg-background hover:bg-accent/50",
       )}

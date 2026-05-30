@@ -10,7 +10,14 @@ import { api } from "../api/client";
 import {
   RefreshCw, Flag, Link2, Brain, X, ArrowRight, PanelRightClose, PanelRightOpen,
   Pencil, ChevronDown, ChevronRight, Pause, Play, Archive, ArchiveRestore,
+  MoreHorizontal,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ThreadTab } from "../components/threads/ThreadTab";
@@ -957,6 +964,9 @@ function ConnectionPill({ state }: { state: "connecting" | "open" | "reconnectin
    ════════════════════════════════════════════════════════════════════════ */
 
 function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; currentThreadId: string }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+
   const { data } = useQuery({
     queryKey: ["threads", companyId, "list"],
     queryFn: () => threadsApi.list(companyId),
@@ -964,6 +974,18 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
     retry: false,
   });
   const threads = (data?.discussions ?? []) as ThreadListItem[];
+  // Only show active threads in the rail (archived threads are in the board's Archived column)
+  const activeThreads = threads.filter((t) => t.status !== "archived");
+
+  const archiveMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      threadsApi.setStatus(companyId, id, "archived"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["threads", companyId] });
+      pushToast({ title: "Thread archived", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to archive thread", tone: "warn" }),
+  });
 
   return (
     <div className="p-2">
@@ -971,32 +993,61 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
         <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
           Discussions
         </p>
-        <span className="text-[10px] text-muted-foreground tabular-nums">{threads.length}</span>
+        <span className="text-[10px] text-muted-foreground tabular-nums">{activeThreads.length}</span>
       </div>
       <nav className="space-y-0.5" aria-label="Thread index">
-        {threads.length === 0 ? (
+        {activeThreads.length === 0 ? (
           <p className="px-2 py-4 text-center text-xs text-muted-foreground">No threads yet</p>
         ) : (
-          threads.map((t) => {
+          activeThreads.map((t) => {
             const isActive = t.id === currentThreadId;
             return (
-              <Link
+              <div
                 key={t.id}
-                to={`/discussions/${t.id}`}
-                aria-current={isActive ? "page" : undefined}
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
-                  isActive ? "bg-accent text-accent-foreground font-medium" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
+                className="group relative"
               >
-                <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", PHASE_DOT[t.phase] ?? "bg-muted-foreground")} aria-hidden />
-                <span className="flex-1 truncate">{t.title}</span>
-                {t.pendingItemCount > 0 && (
-                  <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 text-[9px] font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
-                    {t.pendingItemCount}
-                  </span>
-                )}
-              </Link>
+                <Link
+                  to={`/discussions/${t.id}`}
+                  aria-current={isActive ? "page" : undefined}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors pr-7",
+                    isActive ? "bg-accent text-accent-foreground font-medium" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                  )}
+                >
+                  <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", PHASE_DOT[t.phase] ?? "bg-muted-foreground")} aria-hidden />
+                  <span className="flex-1 truncate">{t.title}</span>
+                  {t.pendingItemCount > 0 && (
+                    <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 text-[9px] font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
+                      {t.pendingItemCount}
+                    </span>
+                  )}
+                </Link>
+                {/* Hover-revealed kebab menu */}
+                <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        data-testid={`thread-rail-kebab-${t.id}`}
+                        onClick={(e) => e.preventDefault()}
+                        className="flex items-center justify-center h-5 w-5 rounded hover:bg-muted transition-colors"
+                        aria-label={`Thread options for ${t.title}`}
+                      >
+                        <MoreHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="right" align="start">
+                      <DropdownMenuItem
+                        onSelect={() => archiveMutation.mutate({ id: t.id })}
+                        data-testid={`thread-rail-archive-${t.id}`}
+                      >
+                        <Archive className="h-4 w-4" />
+                        Archive
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
             );
           })
         )}

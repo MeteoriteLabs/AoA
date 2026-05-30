@@ -108,6 +108,16 @@ export function ThreadsList() {
     retry: false,
   });
 
+  // Archived threads — separate query so the board's Archived column stays
+  // up to date after archive actions without refetching the active list.
+  const { data: archivedData } = useQuery({
+    queryKey: ["threads", selectedCompanyId, "list", "archived"],
+    queryFn: () => threadsApi.list(selectedCompanyId!, { status: "archived" }),
+    enabled: !!selectedCompanyId,
+    retry: false,
+  });
+  const archivedThreads = (archivedData?.discussions ?? []) as ThreadListItem[];
+
   const { data: inboxData } = useQuery({
     queryKey: ["threads-inbox", selectedCompanyId],
     queryFn: () => api.get<{ items: InboxCardItem[]; total: number }>(`/companies/${selectedCompanyId}/discussions/inbox`),
@@ -239,6 +249,7 @@ export function ThreadsList() {
       {view === "board" && (
         <ThreadBoard
           threads={filtered}
+          archivedThreads={archivedThreads}
           inboxItems={inboxItems}
           onNewThread={openNewThread}
           onInboxUpdate={() => refetch()}
