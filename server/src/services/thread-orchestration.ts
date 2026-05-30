@@ -40,6 +40,7 @@ import type { Db } from "@armyofagents/db";
 import { threadOrchestrationState, discussionEntries, discussions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { preflightCrewDispatch } from "./crew-budget.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -362,6 +363,40 @@ export function threadOrchestrationService(db: Db) {
         { threadId, startEpoch, lastProcessedEntryId },
         "thread orchestration run claimed",
       );
+
+      // ── Step 1b: Crew budget + thread-health preflight ─────────────────────────
+      // Fetch companyId so we can call preflightCrewDispatch (which checks
+      // adjutantEnabled, crewPaused, and company budget). Only fires after we've
+      // claimed the run slot — if the thread is healthy and budget is fine, we
+      // proceed; if not, we return early without advancing the cursor.
+      const [threadRow] = await db
+        .select({ companyId: discussions.companyId })
+        .from(discussions)
+        .where(eq(discussions.id, threadId))
+        .limit(1);
+
+      if (threadRow) {
+        const preflightResult = await preflightCrewDispatch(db, {
+          companyId: threadRow.companyId,
+          agentId: "adjutant",
+          threadId,
+        });
+        if (!preflightResult.allowed) {
+          log.info(
+            { threadId, reasonCode: preflightResult.reasonCode, reason: preflightResult.reason },
+            "thread orchestration: preflight blocked — run aborted",
+          );
+          return {
+            ran: true,
+            suppressed: false,
+            error: preflightResult.reason,
+            startEpoch,
+            cursorAdvancedTo: null,
+          };
+        }
+      }
+      // If threadRow is null (thread deleted mid-claim), proceed — the run will
+      // naturally short-circuit at the empty-entries check.
 
       // ── Step 2: Read unprocessed entries ───────────────────────────────────
       // Load discussion_entries after the cursor (or all if cursor is null).

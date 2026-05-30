@@ -66,6 +66,16 @@ vi.mock("@armyofagents/db", () => ({
   agentWakeupRequests: tableProxy("awr"),
 }));
 
+// ── crew-budget mock (preflightCrewDispatch always allows in kill tests) ──────
+vi.mock("../services/crew-budget.js", () => ({
+  preflightCrewDispatch: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+
+// ── live-events mock ──────────────────────────────────────────────────────────
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ── Logger mock ───────────────────────────────────────────────────────────────
 vi.mock("../middleware/logger.js", () => ({
   logger: {
@@ -280,15 +290,24 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
     select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn((table: unknown) => {
         // Detect which table by reading a sentinel property from the proxy.
-        // `tos` proxy → "tos.<prop>"; `de` proxy → "de.<prop>".
+        // `tos` proxy → "tos.<prop>"; `de` proxy → "de.<prop>"; `discussions` → "discussions.<prop>".
         const isTosTable = String((table as Record<string, unknown>)["runEpoch"]).startsWith("tos.");
         const isDeTable = String((table as Record<string, unknown>)["seq"]).startsWith("de.");
+        const isDiscussionsTable = String((table as Record<string, unknown>)["companyId"]).startsWith("discussions.");
 
         return {
           where: vi.fn((_where: unknown) => {
             if (isTosTable) {
               // Path 1: Epoch re-read — where() resolves to [{ runEpoch }].
               return Promise.resolve(readEpoch());
+            }
+
+            if (isDiscussionsTable) {
+              // Path 1b: threadRow select — Step 1b preflight companyId lookup.
+              // Return a minimal row so preflightCrewDispatch (mocked to allow) is called.
+              return {
+                limit: vi.fn(() => Promise.resolve([{ companyId: "test-company" }])),
+              };
             }
 
             if (isDeTable && projection != null) {
