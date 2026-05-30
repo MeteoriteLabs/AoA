@@ -93,6 +93,45 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // T.I1b POST /companies/:companyId/discussions/inbox — manual paste producer (Task 0.6, Decision #14)
+  // Enqueues a raw paste into thread_inbox_items.  Distinct from the triage POST
+  // (/inbox/:itemId/triage) — this creates a NEW inbox row from a manual human paste.
+  // RBAC: founder + team_lead (mirrors GET inbox auth).
+  router.post(
+    "/companies/:companyId/discussions/inbox",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const { rawContent, originSource } = req.body as {
+        rawContent?: unknown;
+        originSource?: unknown;
+      };
+
+      if (typeof rawContent !== "string" || rawContent.trim() === "") {
+        res.status(400).json({ error: "rawContent is required and must be a non-empty string" });
+        return;
+      }
+
+      const { enqueueInboxItem } = await import("../services/inbox-producer.js");
+      const actor = getActorInfo(req);
+      const resolvedSource =
+        typeof originSource === "string" && originSource.trim() !== ""
+          ? originSource
+          : actor.actorId;
+
+      const result = await enqueueInboxItem(db, {
+        companyId,
+        originMedium: "paste",
+        originSource: resolvedSource,
+        rawContent,
+      });
+
+      res.status(201).json(result);
+    },
+  );
+
   // 1.2 Get discussion detail
   router.get(
     "/companies/:companyId/discussions/:discussionId",
