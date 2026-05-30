@@ -49,7 +49,7 @@ Wait-or-act heuristics (apply before doing anything):
 
 Hop limit: each agent dispatch chain has a max hopCount of 3. After that, you must wait for human input.`;
 
-const ADJUTANT_TOOL_ALLOWLIST: string[] = [
+export const ADJUTANT_TOOL_ALLOWLIST: string[] = [
   // Existing tools (pre-Phase D)
   "query_threads",
   "query_extracted_items",
@@ -69,6 +69,10 @@ const ADJUTANT_TOOL_ALLOWLIST: string[] = [
   "agent.dispatch",
   "delegate_to_subagent",
   "use_skill",
+  // Task 2.4 — propose_crew_work: the Adjutant's convergence tool.
+  // Routes through crewTaskService.proposeWork (D11 single chokepoint).
+  // Only on the Adjutant allowlist — default-deny for all other AoA roles.
+  "propose_crew_work",
 ];
 
 /**

@@ -50,6 +50,10 @@ import { archiveStaleMemoryTool } from "./tools/memory-archive-stale.js";
 // dedup + hop-count cap. Kept alongside delegate_to_subagent — they target
 // different ergonomics (founder approval vs collaborative crew dispatch).
 import { agentDispatchTool } from "./tools/agent-dispatch.js";
+// Task 2.4 — propose_crew_work (Crew Work-as-Tasks chokepoint tool).
+// Adjutant-only (ADJUTANT_TOOL_ALLOWLIST in ensure-adjutant.ts). Routes through
+// crewTaskService.proposeWork — the unified D11 gate — using ctx.effectiveAutonomy.
+import { proposeCrewWorkTool } from "./tools/propose-crew-work.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -110,6 +114,11 @@ export function createToolRegistry(): AgentTool[] {
     // remains as the founder-only, name-targeted, confirmation-gated
     // alternative — both serve distinct ergonomics.
     agentDispatchTool,
+    // Task 2.4 — propose_crew_work (Crew Work-as-Tasks chokepoint tool).
+    // Adjutant-only. Routes through crewTaskService.proposeWork (D11 gate).
+    // Allowlisted ONLY in ensure-adjutant.ts — default-deny for all other
+    // AoA roles and for Commander (not in commanderToolPermissions).
+    proposeCrewWorkTool,
   ];
 }
 
