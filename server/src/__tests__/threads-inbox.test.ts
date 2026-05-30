@@ -16,34 +16,38 @@ import { describe, it, expect, vi, beforeAll } from "vitest";
 
 // ── Mocks (mirror threads-routes-contract.test.ts pattern) ───────────────────
 
-vi.mock("drizzle-orm", () => ({
-  and: vi.fn((...args: any[]) => args),
-  eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
-  desc: vi.fn((col: any) => ({ desc: col })),
-  inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
-  isNull: vi.fn((col: any) => ({ isNull: col })),
-  ilike: vi.fn((col: any, val: any) => ({ ilike: [col, val] })),
-  sql: vi.fn(),
-}));
+vi.mock("drizzle-orm", () => {
+  const SQL_STUB: any = { as: () => SQL_STUB, join: () => SQL_STUB, raw: () => SQL_STUB, toString: () => "sql" };
+  const sqlFn = Object.assign((..._a: any[]) => SQL_STUB, { join: () => SQL_STUB, raw: () => SQL_STUB });
+  const sql = new Proxy(sqlFn, { get: (t: any, p: any) => (p in t ? t[p] : () => SQL_STUB), apply: () => SQL_STUB });
+  return {
+    and: vi.fn((...args: any[]) => args),
+    eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+    desc: vi.fn((col: any) => ({ desc: col })),
+    inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
+    isNull: vi.fn((col: any) => ({ isNull: col })),
+    ilike: vi.fn((col: any, val: any) => ({ ilike: [col, val] })),
+    sql,
+  };
+});
 
-vi.mock("@armyofagents/db", () => ({
-  discussions: new Proxy({} as any, { get: (_t, p) => p }),
-  discussionEntries: new Proxy({} as any, { get: (_t, p) => p }),
-  discussionExtractedItems: new Proxy({} as any, { get: (_t, p) => p }),
-  discussionAnnotations: new Proxy({} as any, { get: (_t, p) => p }),
-  threadParticipants: new Proxy({} as any, { get: (_t, p) => p }),
-  threadLinks: new Proxy({} as any, { get: (_t, p) => p }),
-  threadInboxItems: new Proxy({} as any, { get: (_t, p) => p }),
-  userRoles: new Proxy({} as any, { get: (_t, p) => p }),
-  goals: new Proxy({} as any, { get: (_t, p) => p }),
-  projectGoals: new Proxy({} as any, { get: (_t, p) => p }),
-  projects: new Proxy({} as any, { get: (_t, p) => p }),
-  issues: new Proxy({} as any, { get: (_t, p) => p }),
-  activityLog: new Proxy({} as any, { get: (_t, p) => p }),
-  assets: new Proxy({} as any, { get: (_t, p) => p }),
-  artifacts: new Proxy({} as any, { get: (_t, p) => p }),
-  memoryItems: new Proxy({} as any, { get: (_t, p) => p }),
-}));
+vi.mock("@armyofagents/db", () => {
+  const colProxy = () => new Proxy({} as any, { get: (_t, col) => col });
+  return new Proxy({} as any, {
+    get: (_t, name: string | symbol) => {
+      if (typeof name !== "string") return undefined;
+      return colProxy();
+    },
+    has: (_t, _name) => true,
+    ownKeys: (_t) => [],
+    getOwnPropertyDescriptor: (_t, name) => ({
+      value: colProxy(),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    }),
+  });
+});
 
 vi.mock("../errors.js", () => ({
   badRequest: (msg: string) => { const e = new Error(msg); (e as any).status = 400; return e; },

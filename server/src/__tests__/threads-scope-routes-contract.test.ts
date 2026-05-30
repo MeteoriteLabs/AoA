@@ -23,13 +23,39 @@ vi.mock("../middleware/rbac.js", () => ({ assertRole: vi.fn().mockResolvedValue(
 vi.mock("../services/internal-agent/aoa-agents/router-recommendation.js", () => ({
   recommendDepartment: vi.fn(() => ({ departmentId: "eng", departmentName: "Engineering", itemCount: 1 })),
 }));
-vi.mock("@armyofagents/db", () => ({
-  projects: { id: "p_id", name: "p_name", type: "p_type", companyId: "p_co" },
-}));
-vi.mock("drizzle-orm", () => ({
-  eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
-  and: vi.fn((...a: any[]) => a),
-}));
+vi.mock("@armyofagents/db", () => {
+  const explicit: Record<string, any> = {
+    projects: { id: "p_id", name: "p_name", type: "p_type", companyId: "p_co" },
+  };
+  const colProxy = () => new Proxy({} as any, { get: (_t, col) => col });
+  return new Proxy(explicit, {
+    get: (target, name: string | symbol) => {
+      if (typeof name !== "string") return undefined;
+      return name in target ? target[name] : colProxy();
+    },
+    has: (_t, _name) => true,
+    ownKeys: (target) => Object.keys(target),
+    getOwnPropertyDescriptor: (target, name) => {
+      if (typeof name !== "string") return undefined;
+      return {
+        value: name in target ? target[name] : colProxy(),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      };
+    },
+  });
+});
+vi.mock("drizzle-orm", () => {
+  const SQL_STUB: any = { as: () => SQL_STUB, join: () => SQL_STUB, raw: () => SQL_STUB, toString: () => "sql" };
+  const sqlFn = Object.assign((..._a: any[]) => SQL_STUB, { join: () => SQL_STUB, raw: () => SQL_STUB });
+  const sql = new Proxy(sqlFn, { get: (t: any, p: any) => (p in t ? t[p] : () => SQL_STUB), apply: () => SQL_STUB });
+  return {
+    eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+    and: vi.fn((...a: any[]) => a),
+    sql,
+  };
+});
 
 import { discussionRoutes } from "../routes/discussions.js";
 
