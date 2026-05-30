@@ -128,6 +128,35 @@ describe("buildDeliverableInsert", () => {
     const payload = buildDeliverableInsert(COMPANY_ID, THREAD_ID, proposal, { userId: USER_ID });
     expect(payload.sourceDiscussionId).toBe(THREAD_ID);
   });
+
+  it("stamps originKind as 'crew_thread'", () => {
+    const payload = buildDeliverableInsert(
+      COMPANY_ID,
+      THREAD_ID,
+      { title: "Some task" },
+      { userId: USER_ID },
+    );
+    expect(payload.originKind).toBe("crew_thread");
+  });
+
+  it("does NOT set originId (must remain absent/undefined)", () => {
+    const payload = buildDeliverableInsert(
+      COMPANY_ID,
+      THREAD_ID,
+      { title: "Some task" },
+      { userId: USER_ID },
+    );
+    expect(payload.originId).toBeUndefined();
+  });
+
+  it("originKind 'crew_thread' wins over any originKind in the proposal spread", () => {
+    const proposal: DeliverableProposal = {
+      title: "Proposal with existing originKind",
+      originKind: "routine",
+    };
+    const payload = buildDeliverableInsert(COMPANY_ID, THREAD_ID, proposal, { userId: USER_ID });
+    expect(payload.originKind).toBe("crew_thread");
+  });
 });
 
 // ── B. Service tests ───────────────────────────────────────────────────────────

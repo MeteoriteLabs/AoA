@@ -107,6 +107,7 @@ export function buildDeliverableInsert(
     status: proposal.status ?? "todo",
     createdByUserId: createdBy.userId ?? null,
     createdByAgentId: createdBy.agentId ?? null,
+    originKind: "crew_thread",
   };
 }
 
