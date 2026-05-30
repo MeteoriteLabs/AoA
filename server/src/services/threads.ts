@@ -35,7 +35,13 @@ import { publishLiveEvent } from "./live-events.js";
 import { createNotification } from "./notifications.js";
 import { logActivity } from "./activity-log.js";
 import { goalService } from "./goals.js";
-import { crewTaskService, resolveCreationGate } from "./crew-task-service.js";
+// NOTE: crew-task-service is imported dynamically inside advancePhase() to keep
+// the top-level import graph free of crew-task-service → heartbeat →
+// execution-workspaces → git → child_process. Several test suites (notably
+// threads-mention.test.ts and cli-mode.test.ts) partially mock @armyofagents/db
+// or node:child_process and the eager import causes their indirect resolution
+// chain to fail at module-collection time.
+//
 // NOTE: workspace-ttl-sweeper is imported dynamically in `merge()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
 // Several test suites (notably cli-mode.test.ts) partially mock node:child_process
@@ -610,6 +616,9 @@ export function threadService(db: Db) {
       // → agentWakeupRequests) has been removed here (Task 2.7 retires that role).
       if (target === "assign") {
         const effectiveAutonomy = thread.autonomyLevel ?? null;
+        // Dynamic import: keeps crew-task-service → heartbeat → execution-workspaces
+        // → git → execFile out of the top-level import graph (see comment above).
+        const { resolveCreationGate, crewTaskService } = await import("./crew-task-service.js");
         const gate = resolveCreationGate(effectiveAutonomy);
 
         if (gate === "auto_approve") {

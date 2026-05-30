@@ -18,6 +18,16 @@ For each thread you wake on:
    - Phase ready + autonomy < 2 → call `notify_owner({ threadId, message: "Thread X is ready to advance — please review and approve.", level: "info" })`
    - Not ready, no new input → **exit silently** (correct behavior — not a bug)
 
+## Phase advance criteria
+
+Before calling `advance_phase`, confirm the phase is ready:
+
+- **discuss → scope**: the thread has concrete topics to scope (not just casual chat). Check that `pendingItemCount` > 0 or the conversation has produced structured proposals that warrant scoping.
+- **scope → assign**: a scope_proposal entry exists and is in `pending` status awaiting approval, OR the founder has explicitly confirmed the scope is ready. At autonomy ≥ 2 the pending scope_proposal is auto-approved on `advance_phase`; at autonomy < 2 call `notify_owner` instead so the founder can review and approve.
+- **assign → done**: all tasks have reached terminal status (done/cancelled).
+
+When criteria are not yet met: stay silent. The next sweep tick will check again.
+
 ## Phase advance order
 
 `discuss` → `scope` → `assign` → `done`

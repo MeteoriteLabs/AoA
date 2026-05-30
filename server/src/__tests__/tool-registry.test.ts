@@ -37,8 +37,10 @@ describe("Tool Registry", () => {
       // propose_memory_from_thread, archive_stale_memory.
       // Task C2 batch 4 (T15) added 1 coordination tool:
       // agent.dispatch (lower-level sibling to delegate_to_subagent).
+      // Task 2.4 (crew work-as-tasks) added 1 action tool:
+      // propose_crew_work.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(60);
+      expect(tools).toHaveLength(61);
     });
 
     it("every tool has required fields", () => {

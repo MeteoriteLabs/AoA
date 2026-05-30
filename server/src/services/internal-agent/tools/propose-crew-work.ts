@@ -15,7 +15,6 @@
 import { and, eq, ne } from "drizzle-orm";
 import { agents } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
-import { crewTaskService } from "../../crew-task-service.js";
 
 // ── Role → agent name map ────────────────────────────────────────────────────
 // Source of truth: ensure-*.ts files. Only crew AoA roles are listed here;
@@ -169,7 +168,12 @@ export const proposeCrewWorkTool: AgentTool = {
     }
 
     // ── Call the unified chokepoint ──────────────────────────────────────────
+    // Dynamic import defers the crew-task-service → heartbeat → execution-workspaces
+    // → git → execFile chain until execute() is actually called. This keeps the
+    // tool module-load light so test suites that partially mock node:child_process
+    // don't fail at collection time.
     try {
+      const { crewTaskService } = await import("../../crew-task-service.js");
       const result = await crewTaskService(ctx.db).proposeWork({
         threadId,
         companyId: ctx.companyId,
