@@ -79,15 +79,17 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).not.toMatch(/returning without taking the directed action is a bug/i);
     });
 
-    it("router → post_entry with department recommendation", () => {
+    it("router → attach_to_thread or spin_off_thread (NOT post_entry)", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,
         payload: { companyId: "co", source: "phase-advance" },
         agentName: "Router",
         agentRoleKey: "router",
       });
-      expect(out).toContain("post_entry");
-      expect(out).toContain("department");
+      expect(out).toContain("attach_to_thread");
+      expect(out).toContain("spin_off_thread");
+      // post_entry is NOT in the Navigator allowlist — must not be promised here
+      expect(out).not.toContain("post_entry");
     });
 
     it("planner → post_entry with plan", () => {

@@ -44,8 +44,8 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
   engineer:       "call `create_artifact` (or `create_artifact_version` for an iteration), then `post_entry` exactly once with parentEntryId set to the inviting entry linking the new artifact",
   scout:          "investigate the thread context via your internal-only retrieval tools, then `post_entry` exactly once with a synthesis of what you found (link related threads via `thread.createLink` if a precedent applies)",
   adjutant:       "If the conversation has converged on work to do, call `propose_crew_work` with the proposed tasks. You may still call `advance_phase` for phase transitions. If the thread is not ready or you have nothing to add, return without posting — silence is correct.",
-  router:         "call `post_entry` exactly once as a system-notice with your department recommendation",
-  navigator:      "decide whether to `attach_to_thread` (promote to an existing thread), `spin_off_thread` (orphan material into a new thread), or post a routing recommendation via `post_entry`",
+  router:         "decide whether to `attach_to_thread` (promote to an existing thread) or `spin_off_thread` (create a new thread for orphaned material); if nothing fits, take no action and let the founder triage via the Inbox",
+  navigator:      "decide whether to `attach_to_thread` (promote to an existing thread) or `spin_off_thread` (create a new thread for orphaned material); if nothing fits, take no action and let the founder triage via the Inbox",
   planner:        "call `create_artifact` (or `create_artifact_version` for an iteration) with the plan markdown as the document body, then `post_entry` exactly once as a system-notice linking the new artifact",
   dispatcher:     "call `create_task` (one per scope item), then `assign_task` + `add_task_dependency` as needed",
   memory_keeper:  "call `suggest_memory` for each candidate pattern (propose-only — the founder approves)",
@@ -59,7 +59,7 @@ const GENERIC_DIRECTIVE =
 // The Navigator receives an inboxItemId + candidate threads + distances so it
 // can make a concrete routing decision rather than relying on generic guidance.
 const INBOX_ROUTING_DIRECTIVE =
-  "An inbound item needs routing. Review the candidate threads below. Decide: if one is a clear home, call `attach_to_thread` to attach this inbox item's content as a new entry there; if the material deserves its own thread, call `spin_off_thread`; if none fit, post a routing recommendation via `post_entry`. The routing dial decides whether your decision auto-acts or is surfaced to the founder as a suggestion — act on your best judgment either way.";
+  "An inbound item needs routing. Review the candidate threads below. Decide: if one is a clear home, call `attach_to_thread` to attach this inbox item's content as a new entry there; if the material deserves its own thread, call `spin_off_thread`; if nothing fits, take no action — the item stays in the Inbox for the founder to triage. The routing dial decides whether your decision auto-acts or is surfaced to the founder as a suggestion — act on your best judgment either way.";
 
 export interface BuildTriggerPromptArgs {
   /** Full assembled instruction bundle (SOUL+TOOLS+AGENTS+HEARTBEAT)

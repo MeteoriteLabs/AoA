@@ -27,6 +27,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("@armyofagents/db", () => ({
   threadInboxItems: new Proxy({} as any, { get: (_t, p) => p }),
   internalAgentConfig: new Proxy({} as any, { get: (_t, p) => p }),
+  discussions: new Proxy({} as any, { get: (_t, p) => p }),
 }));
 
 const mockAttachInboxItemToThread = vi.fn();
@@ -58,6 +59,8 @@ interface MakeDbOptions {
   dialLevel?: string;
   /** threadInboxItems rows for the suggest-path pre-flight. Default: same-company item. */
   inboxItemRows?: any[];
+  /** discussions rows for the suggest-path thread company guard. Default: matching thread. */
+  threadRows?: any[];
   /** Capture update set values. */
   onUpdateSet?: (vals: any) => void;
 }
@@ -66,13 +69,15 @@ function makeDb(opts: MakeDbOptions = {}) {
   const {
     dialLevel = "off",
     inboxItemRows = [{ id: INBOX_ITEM_ID, companyId: COMPANY_ID }],
+    threadRows = [{ id: THREAD_ID }],
     onUpdateSet,
   } = opts;
 
-  // Two possible select results indexed by call order.
+  // Three possible select results indexed by call order.
   const selectQueue: any[][] = [
     [{ level: dialLevel }],  // 0: internalAgentConfig
-    inboxItemRows,            // 1: threadInboxItems (suggest path)
+    inboxItemRows,            // 1: threadInboxItems (suggest path — item existence + company)
+    threadRows,               // 2: discussions (suggest path — thread company guard)
   ];
   let selectCallIndex = 0;
 
@@ -210,6 +215,44 @@ describe("attach_to_thread tool (Task 1.8 — dial gate)", () => {
     expect(result.error).toBe("NOT_FOUND");
     expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
     expect(updateFn).not.toHaveBeenCalled();
+  });
+
+  // suggest path — cross-company or nonexistent threadId (Fix 1)
+  it("suggest + cross-company threadId: returns THREAD_NOT_FOUND, does NOT write suggestedThreadId", async () => {
+    // Inbox item belongs to this company; thread select returns empty (cross-company or deleted)
+    const { db, updateFn } = makeDb({
+      dialLevel: "suggest",
+      inboxItemRows: [{ id: INBOX_ITEM_ID, companyId: COMPANY_ID }],
+      threadRows: [], // empty = thread not found in this company
+    });
+    const ctx = makeCtx(db);
+    const result = await attachToThreadTool.execute(
+      { inboxItemId: INBOX_ITEM_ID, threadId: "thread-other-company" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("THREAD_NOT_FOUND");
+    expect(result.summary).toContain("not found in this company");
+    // Must NOT have written suggestedThreadId
+    expect(updateFn).not.toHaveBeenCalled();
+    expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
+  });
+
+  it("suggest + nonexistent threadId (hallucinated): returns THREAD_NOT_FOUND, does NOT write suggestedThreadId", async () => {
+    const { db, updateFn } = makeDb({
+      dialLevel: "suggest",
+      inboxItemRows: [{ id: INBOX_ITEM_ID, companyId: COMPANY_ID }],
+      threadRows: [], // hallucinated id — not in DB at all
+    });
+    const ctx = makeCtx(db);
+    const result = await attachToThreadTool.execute(
+      { inboxItemId: INBOX_ITEM_ID, threadId: "thread-does-not-exist" },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("THREAD_NOT_FOUND");
+    expect(updateFn).not.toHaveBeenCalled();
+    expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
   });
 
   // auto_attach — acts via shared service

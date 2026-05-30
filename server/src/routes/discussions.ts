@@ -986,7 +986,12 @@ export function discussionRoutes(db: Db) {
         await db
           .update(threadInboxItems)
           .set({ status: "dismissed" })
-          .where(eq(threadInboxItems.id, itemId));
+          .where(
+            and(
+              eq(threadInboxItems.id, itemId),
+              eq(threadInboxItems.companyId, companyId),
+            ),
+          );
 
         await logActivity(db, {
           companyId,

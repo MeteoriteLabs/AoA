@@ -24,6 +24,19 @@ vi.mock("../../context/CompanyContext", () => ({
   }),
 }));
 
+// useTeamAccess mock — role is configurable per test via teamAccessRole.
+let teamAccessRole: string = "founder";
+
+vi.mock("../../hooks/useTeamAccess", () => ({
+  useTeamAccess: () => ({
+    role: teamAccessRole,
+    currentUser: null,
+    permissions: { canAssignTasks: true, canInviteUsers: true, canManageRoles: true, canEditIdentityMemory: true },
+    summary: null,
+    isLoading: false,
+  }),
+}));
+
 vi.mock("../../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({
     setBreadcrumbs: vi.fn(),
@@ -37,6 +50,15 @@ vi.mock("../../context/DialogContext", () => ({
     openNewThread: vi.fn(),
     openDiscussionCapture: vi.fn(),
   }),
+}));
+
+// Mock RoutingDialControl so ThreadsList tests don't need to wire up
+// internal-agent API. canEdit prop is forwarded to a data attribute so tests
+// can assert Fix 5 wiring without a full API integration.
+vi.mock("../../components/threads/RoutingDialControl", () => ({
+  RoutingDialControl: ({ canEdit }: { companyId: string; canEdit?: boolean }) => (
+    <div data-testid="routing-dial-stub" data-can-edit={String(canEdit ?? true)} />
+  ),
 }));
 
 vi.mock("@/lib/router", async () => {
@@ -182,5 +204,47 @@ describe("ThreadsList", () => {
 
     expect(screen.queryByText("Discuss thread")).not.toBeInTheDocument();
     expect(screen.getByText("Scope thread")).toBeInTheDocument();
+  });
+
+  // Fix 5 — RoutingDialControl canEdit gated to founder role
+  describe("RoutingDialControl role gating (Fix 5)", () => {
+    it("passes canEdit=true to RoutingDialControl when user is founder", async () => {
+      vi.mocked(threadsApi.list).mockResolvedValue({
+        discussions: [],
+        total: 0,
+        limit: 50,
+        offset: 0,
+      });
+
+      renderWithProviders(<ThreadsList />, { initialEntries: ["/TC/discussions"] });
+
+      await waitFor(() => {
+        const stub = screen.getByTestId("routing-dial-stub");
+        // useTeamAccess mock returns role='founder', so canEdit must be true
+        expect(stub.getAttribute("data-can-edit")).toBe("true");
+      });
+    });
+
+    it("passes canEdit=false to RoutingDialControl when user is not founder", async () => {
+      // Set the shared mutable role to team_lead for this test
+      teamAccessRole = "team_lead";
+
+      vi.mocked(threadsApi.list).mockResolvedValue({
+        discussions: [],
+        total: 0,
+        limit: 50,
+        offset: 0,
+      });
+
+      renderWithProviders(<ThreadsList />, { initialEntries: ["/TC/discussions"] });
+
+      await waitFor(() => {
+        const stub = screen.getByTestId("routing-dial-stub");
+        expect(stub.getAttribute("data-can-edit")).toBe("false");
+      });
+
+      // Restore for subsequent tests
+      teamAccessRole = "founder";
+    });
   });
 });

@@ -22,7 +22,7 @@
 //     now all handled by attachInboxItemToThread in inbox-attach.ts.
 
 import { and, eq } from "drizzle-orm";
-import { threadInboxItems, internalAgentConfig } from "@armyofagents/db";
+import { threadInboxItems, internalAgentConfig, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
 // NOTE: `attachInboxItemToThread` is imported DYNAMICALLY inside execute() (the
@@ -100,6 +100,22 @@ export const attachToThreadTool: AgentTool = {
           data: null,
           summary: "Inbox item belongs to a different company",
           error: "COMPANY_MISMATCH",
+        };
+      }
+      // Pre-flight: verify the target thread exists AND belongs to this company.
+      // Without this check a Navigator could (a) store a cross-company thread FK on
+      // this company's inbox item, or (b) trigger a FK violation crash on a hallucinated
+      // / deleted threadId (the suggest path has no outer try/catch).
+      const [thr] = await ctx.db.select({ id: discussions.id })
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, ctx.companyId)))
+        .limit(1);
+      if (!thr) {
+        return {
+          success: false,
+          data: null,
+          summary: "Target thread not found in this company",
+          error: "THREAD_NOT_FOUND",
         };
       }
       // Record the suggestion — leave status='pending' so the item awaits human confirm.
