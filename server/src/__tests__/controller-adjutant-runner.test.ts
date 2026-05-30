@@ -6,6 +6,7 @@
  *   2. Returns { output: null, error: "thread not found" } when thread select is empty.
  *   3. Returns { output: null, error: "no Adjutant agent …" } when no Adjutant found.
  *   4. Propagates runAgent's errorMessage into the returned `error` field.
+ *   5. Passes effectiveAutonomy = thread.autonomyLevel ?? companyLevel to runAgent.
  *
  * Uses the Proxy-table-stub + sequence-db pattern (see strangler-flag.test.ts).
  */
@@ -27,6 +28,7 @@ function tableProxy(name: string) {
 vi.mock("@armyofagents/db", () => ({
   agents: tableProxy("agents"),
   discussions: tableProxy("discussions"),
+  internalAgentConfig: tableProxy("internalAgentConfig"),
 }));
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
@@ -57,16 +59,19 @@ import { makeControllerAdjutantRunner } from "../services/internal-agent/aoa-age
  * The runner does:
  *   select 1: discussions (returns threadRow or [])
  *   select 2: agents (returns adjutantRow or [])
+ *   select 3: internalAgentConfig (returns companyCfgRow or [] — only reached when thread + adjutant found)
  */
 function makeDb(opts: {
   threadRow?: Record<string, unknown> | null;
   adjutantRow?: Record<string, unknown> | null;
+  companyCfgRow?: Record<string, unknown> | null;
 }) {
-  const { threadRow = null, adjutantRow = null } = opts;
+  const { threadRow = null, adjutantRow = null, companyCfgRow = null } = opts;
 
   const results: Array<Array<Record<string, unknown>>> = [
     threadRow ? [threadRow] : [],
     adjutantRow ? [adjutantRow] : [],
+    companyCfgRow ? [companyCfgRow] : [],
   ];
   let callIdx = 0;
 
@@ -96,8 +101,9 @@ describe("makeControllerAdjutantRunner", () => {
     const fakeRunAgent = vi.fn().mockResolvedValue({ status: "succeeded" });
 
     const db = makeDb({
-      threadRow: { companyId: "company-abc" },
+      threadRow: { companyId: "company-abc", autonomyLevel: null },
       adjutantRow: { id: "adjutant-agent-1" },
+      companyCfgRow: { autonomyLevel: 0 },
     });
 
     const runner = makeControllerAdjutantRunner(db as any, { runAgent: fakeRunAgent });
@@ -115,6 +121,7 @@ describe("makeControllerAdjutantRunner", () => {
         companyId: "company-abc",
         source: "thread.controller",
         threadId: "thread-42",
+        effectiveAutonomy: 0,
       },
     );
     expect(result).toEqual({ output: { status: "succeeded" }, error: undefined });
@@ -156,6 +163,7 @@ describe("makeControllerAdjutantRunner", () => {
     const db = makeDb({
       threadRow: { companyId: "company-fail" },
       adjutantRow: { id: "adjutant-fail" },
+      companyCfgRow: { autonomyLevel: 0 },
     });
 
     const runner = makeControllerAdjutantRunner(db as any, { runAgent: fakeRunAgent });
@@ -165,5 +173,41 @@ describe("makeControllerAdjutantRunner", () => {
       output: { status: "failed" },
       error: "cli exited with code 1",
     });
+  });
+
+  it("5: passes effectiveAutonomy resolved as thread.autonomyLevel ?? companyLevel", async () => {
+    // Thread autonomy level 2 should win over company level 0.
+    const fakeRunAgent = vi.fn().mockResolvedValue({ status: "succeeded" });
+
+    const db = makeDb({
+      threadRow: { companyId: "company-l2", autonomyLevel: 2 },
+      adjutantRow: { id: "adjutant-l2" },
+      companyCfgRow: { autonomyLevel: 0 },
+    });
+
+    const runner = makeControllerAdjutantRunner(db as any, { runAgent: fakeRunAgent });
+    await runner({ threadId: "thread-l2", entries: [], startEpoch: 1 });
+
+    expect(fakeRunAgent).toHaveBeenCalledOnce();
+    const payload = fakeRunAgent.mock.calls[0][2];
+    expect(payload.effectiveAutonomy).toBe(2);
+  });
+
+  it("5b: falls back to company autonomyLevel when thread.autonomyLevel is null", async () => {
+    // Thread has null autonomy → falls back to company level 1.
+    const fakeRunAgent = vi.fn().mockResolvedValue({ status: "succeeded" });
+
+    const db = makeDb({
+      threadRow: { companyId: "company-l1", autonomyLevel: null },
+      adjutantRow: { id: "adjutant-l1" },
+      companyCfgRow: { autonomyLevel: 1 },
+    });
+
+    const runner = makeControllerAdjutantRunner(db as any, { runAgent: fakeRunAgent });
+    await runner({ threadId: "thread-l1", entries: [], startEpoch: 1 });
+
+    expect(fakeRunAgent).toHaveBeenCalledOnce();
+    const payload = fakeRunAgent.mock.calls[0][2];
+    expect(payload.effectiveAutonomy).toBe(1);
   });
 });

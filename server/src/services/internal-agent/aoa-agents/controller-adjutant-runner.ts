@@ -20,7 +20,7 @@
 
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, discussions } from "@armyofagents/db";
+import { agents, discussions, internalAgentConfig } from "@armyofagents/db";
 // `runner.ts` eagerly builds the full crew tool-registry at module load (embeddings,
 // ~40 tool modules). thread-events.ts imports THIS factory, and discussions.ts imports
 // thread-events — so a static `import { runAoaAgent }` would drag that heavy subtree onto
@@ -56,9 +56,9 @@ export function makeControllerAdjutantRunner(
   deps: { runAgent?: RunAoaAgentFn } = {},
 ): AdjutantRunner {
   return async ({ threadId }) => {
-    // Step 1: resolve the thread's company.
+    // Step 1: resolve the thread's company + thread-level autonomy.
     const [thread] = await db
-      .select({ companyId: discussions.companyId })
+      .select({ companyId: discussions.companyId, autonomyLevel: discussions.autonomyLevel })
       .from(discussions)
       .where(eq(discussions.id, threadId))
       .limit(1);
@@ -93,7 +93,20 @@ export function makeControllerAdjutantRunner(
       return { output: null, error: "no Adjutant agent for company" };
     }
 
-    // Step 3: run the Adjutant. wakeupId is intentionally omitted — the controller
+    // Step 3: resolve effectiveAutonomy = thread.autonomyLevel ?? companyLevel.
+    // Mirrors dispatcher.ts D10 block: company config is the fallback; thread-level
+    // override wins when set. This is required so the L2 auto-create gate fires for
+    // controller-driven Adjutant runs.
+    const [companyCfg] = await db
+      .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+      .from(internalAgentConfig)
+      .where(eq(internalAgentConfig.companyId, thread.companyId))
+      .limit(1);
+    const companyAutonomyLevel: number = companyCfg?.autonomyLevel ?? 0;
+    const effectiveAutonomy: number =
+      thread.autonomyLevel != null ? thread.autonomyLevel : companyAutonomyLevel;
+
+    // Step 4: run the Adjutant. wakeupId is intentionally omitted — the controller
     // path has no agentWakeupRequests row. runAoaAgent treats wakeupId as an
     // optional payload extra ([k: string]: unknown) and does not reference it
     // anywhere in its function body.
@@ -106,6 +119,7 @@ export function makeControllerAdjutantRunner(
       companyId: thread.companyId,
       source: "thread.controller",
       threadId,
+      effectiveAutonomy,
     });
 
     log.debug(
