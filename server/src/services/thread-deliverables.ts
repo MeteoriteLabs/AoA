@@ -185,18 +185,28 @@ export function threadDeliverablesService(db: Db) {
      * Create one issue per proposal, all linked to `threadId` via
      * `sourceDiscussionId`. Returns the created issues in the same order as
      * `proposals`.
+     *
+     * @param txDb - optional transaction handle; when provided, all DB writes
+     *   (findDefaultBuilder + issue inserts) run on that transaction so callers
+     *   can atomically roll back task creation together with the claim UPDATE.
      */
-    createDeliverableTasks: async ({
-      threadId,
-      companyId,
-      proposals,
-      createdBy,
-    }: CreateDeliverableTasksInput) => {
+    createDeliverableTasks: async (
+      {
+        threadId,
+        companyId,
+        proposals,
+        createdBy,
+      }: CreateDeliverableTasksInput,
+      txDb?: Db,
+    ) => {
       // Short-circuit: no DB call needed when there is nothing to create.
       if (proposals.length === 0) return [];
 
+      const effectiveDb = txDb ?? db;
+      const txIssues = txDb ? issueService(txDb) : issues;
+
       // Find the default builder once — O(1) DB call for all tasks.
-      const builderAgentId = await findDefaultBuilder(db, companyId);
+      const builderAgentId = await findDefaultBuilder(effectiveDb, companyId);
 
       const created = [];
       for (const proposal of proposals) {
@@ -212,7 +222,7 @@ export function threadDeliverablesService(db: Db) {
         }
 
         const payload = buildDeliverableInsert(companyId, threadId, resolvedProposal, createdBy);
-        const issue = await issues.create(companyId, payload as any);
+        const issue = await txIssues.create(companyId, payload as any);
         created.push(issue);
       }
       return created;
@@ -361,57 +371,78 @@ export function threadDeliverablesService(db: Db) {
         };
       }
 
-      // ── Step 5: CLAIM-FIRST atomic transition pending -> approved ────────────
-      // Single conditional UPDATE: only the writer whose WHERE still matches
-      // proposalStatus = "pending" gets a row back. A crash between this and
-      // task creation leaves an approved proposal (re-approve is a safe no-op);
-      // a concurrent second approve gets zero rows and returns alreadyApproved
-      // without creating duplicate tasks.
-      const claimed = await db
-        .update(discussionEntries)
-        .set({ proposalStatus: "approved" })
-        .where(
-          and(
-            eq(discussionEntries.id, proposalEntryId),
-            eq(discussionEntries.proposalStatus, "pending"),
-          ),
-        )
-        .returning({ id: discussionEntries.id });
+      // ── Steps 5+6: Atomic claim + task creation ──────────────────────────────
+      // Wrapped in a single db.transaction so that if createDeliverableTasks
+      // throws after the claim wins, the claim UPDATE rolls back — leaving the
+      // proposal in "pending" state and making a subsequent re-approve possible.
+      // Without this, a task-creation failure would leave the proposal "approved"
+      // with zero tasks, and re-approve would return alreadyApproved (no-op),
+      // leaving the tasks permanently un-created (Codex #3 robustness gap).
+      //
+      // CLAIM-FIRST invariant is preserved: only the winner of the conditional
+      // UPDATE (WHERE proposalStatus = 'pending' RETURNING) creates tasks; the
+      // loser gets zero rows and returns alreadyApproved without creating tasks.
+      let claimResult: { ok: true; alreadyApproved: false; taskIds: string[]; createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> }
+                     | { ok: true; alreadyApproved: true }
+                     | null = null;
 
-      if (!claimed || claimed.length === 0) {
-        // Lost the race — another approve already claimed it. Idempotent no-op;
-        // we did NOT create tasks here, so there are no duplicates.
-        return { ok: true, alreadyApproved: true };
-      }
+      await (db as any).transaction(async (tx: any) => {
+        const claimed = await tx
+          .update(discussionEntries)
+          .set({ proposalStatus: "approved" })
+          .where(
+            and(
+              eq(discussionEntries.id, proposalEntryId),
+              eq(discussionEntries.proposalStatus, "pending"),
+            ),
+          )
+          .returning({ id: discussionEntries.id });
 
-      // ── Step 6: Create deliverable tasks (only after winning the claim) ──────
-      const deliverableProposals: DeliverableProposal[] = proposalContent.proposedTasks.map(
-        (t) => ({
-          title: t.title,
-          description: (t.description as string | undefined) ?? null,
-          priority: (t.priority as string | undefined) ?? null,
-          assigneeAgentId: (t.assigneeAgentId as string | undefined) ?? null,
-          assigneeUserId: (t.assigneeUserId as string | undefined) ?? null,
-          projectId: (t.projectId as string | undefined) ?? null,
-          goalId: (t.goalId as string | undefined) ?? null,
-        }),
-      );
+        if (!claimed || claimed.length === 0) {
+          // Lost the race — another approve already claimed it. Idempotent no-op;
+          // we did NOT create tasks here, so there are no duplicates.
+          claimResult = { ok: true, alreadyApproved: true };
+          return;
+        }
 
-      const created = await threadDeliverablesService(db).createDeliverableTasks({
-        threadId,
-        companyId,
-        proposals: deliverableProposals,
-        createdBy: { userId: approver.userId },
+        // Only after winning the claim, create the deliverable tasks (on tx so
+        // a failure rolls back the claim and leaves the proposal pending + retryable).
+        const deliverableProposals: DeliverableProposal[] = proposalContent.proposedTasks.map(
+          (t) => ({
+            title: t.title,
+            description: (t.description as string | undefined) ?? null,
+            priority: (t.priority as string | undefined) ?? null,
+            assigneeAgentId: (t.assigneeAgentId as string | undefined) ?? null,
+            assigneeUserId: (t.assigneeUserId as string | undefined) ?? null,
+            projectId: (t.projectId as string | undefined) ?? null,
+            goalId: (t.goalId as string | undefined) ?? null,
+          }),
+        );
+
+        // Pass `tx` so all issue inserts run within the same transaction.
+        const svc = threadDeliverablesService(db);
+        const created = await svc.createDeliverableTasks(
+          {
+            threadId,
+            companyId,
+            proposals: deliverableProposals,
+            createdBy: { userId: approver.userId },
+          },
+          tx as unknown as Db,
+        );
+
+        const taskIds = created.map((issue: { id: string }) => issue.id);
+        const createdTasks = created.map((issue: { id: string; assigneeAgentId: string | null; workMode: string | null }) => ({
+          id: issue.id,
+          assigneeAgentId: issue.assigneeAgentId ?? null,
+          workMode: issue.workMode ?? null,
+        }));
+
+        claimResult = { ok: true, alreadyApproved: false, taskIds, createdTasks };
       });
 
-      const taskIds = created.map((issue: { id: string }) => issue.id);
-      const createdTasks = created.map((issue: { id: string; assigneeAgentId: string | null; workMode: string | null }) => ({
-        id: issue.id,
-        assigneeAgentId: issue.assigneeAgentId ?? null,
-        workMode: issue.workMode ?? null,
-      }));
-
-      return { ok: true, alreadyApproved: false, taskIds, createdTasks };
+      // Transaction completed — claimResult is always set at this point.
+      return claimResult!;
     },
   };
 }

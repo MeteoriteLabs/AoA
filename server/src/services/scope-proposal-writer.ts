@@ -82,13 +82,15 @@ export async function writeScopeProposal(
     );
   }
 
-  // Snapshot of the thread's seq before we bump it.
-  // Stamped into rawContent so the Approve handler can detect stale proposals.
-  const proposalCursorSeq: number = thread.entrySeq ?? 0;
-
-  const rawContent = JSON.stringify({ ...proposal, proposalCursorSeq });
-
   // ── Step 2: D9 transaction ───────────────────────────────────────────────────
+  // NOTE: proposalCursorSeq and rawContent are built INSIDE the transaction,
+  // AFTER the UPDATE ... RETURNING gives us the bumped entrySeq. This ensures
+  // the stamped proposalCursorSeq equals the proposal entry's OWN seq (N+1),
+  // not the pre-bump value (N). Without this, the stale check in approveProposal
+  // (currentSeq > stampedSeq) would always fire for a fresh proposal because
+  // the transaction bumps entrySeq to N+1 but the stamp was N.
+  let proposalCursorSeq: number = 0;
+
   try {
     const result = await (db as any).transaction(async (tx: any) => {
       // Bump entrySeq + entryCount atomically (same pattern as addEntry / requestParticipation).
@@ -104,6 +106,11 @@ export async function writeScopeProposal(
           entrySeq: discussions.entrySeq,
           companyId: discussions.companyId,
         });
+
+      // Stamp the proposal's OWN post-bump seq so the stale check fires only
+      // for genuinely newer entries, not for the proposal entry itself.
+      proposalCursorSeq = entrySeq;
+      const rawContent = JSON.stringify({ ...proposal, proposalCursorSeq });
 
       const inserted = await tx
         .insert(discussionEntries)

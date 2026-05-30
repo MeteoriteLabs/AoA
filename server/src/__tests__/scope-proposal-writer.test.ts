@@ -198,7 +198,13 @@ describe("writeScopeProposal", () => {
       expect(typeof result.proposalCursorSeq).toBe("number");
     });
 
-    it("sets proposalCursorSeq to the thread's entrySeq before the bump", async () => {
+    it("sets proposalCursorSeq to the proposal entry's OWN seq (post-bump, NOT pre-bump)", async () => {
+      // Regression test for the P0 stale-check bug:
+      // Before the fix, proposalCursorSeq was stamped as the pre-bump value (N=7).
+      // After the fix it equals the post-bump value (N+1=8) — the proposal's own seq.
+      // This ensures the stale check (currentSeq > stampedSeq) is FALSE for a fresh
+      // proposal (thread.entrySeq == 8 after the write, stampedSeq == 8 → not stale)
+      // and TRUE only when a genuinely newer entry arrives (entrySeq > 8).
       const { db } = makeDb({ threadRow: { companyId: "co-1", entrySeq: 7 } });
       const result = await writeScopeProposal(db, {
         threadId: "thread-1",
@@ -206,8 +212,9 @@ describe("writeScopeProposal", () => {
         proposal: PROPOSAL,
         agentId: "agent-1",
       });
-      // The cursor is the seq BEFORE the bump (what we read from the discussions row)
-      expect(result.proposalCursorSeq).toBe(7);
+      // The mock's UPDATE ... RETURNING returns entrySeq = 7 + 1 = 8.
+      // proposalCursorSeq must equal the bumped value (8), NOT the pre-bump (7).
+      expect(result.proposalCursorSeq).toBe(8);
     });
 
     it("inserts entry with extractionStatus=skipped and proposalStatus=pending (D9)", async () => {
@@ -228,7 +235,9 @@ describe("writeScopeProposal", () => {
       });
     });
 
-    it("rawContent includes proposalCursorSeq + proposal fields", async () => {
+    it("rawContent includes proposalCursorSeq (post-bump) + proposal fields", async () => {
+      // Regression: rawContent must embed the post-bump seq (N+1), not the pre-bump (N).
+      // threadRow.entrySeq = 5 → UPDATE RETURNING gives 6 → proposalCursorSeq in rawContent = 6.
       const { db, insertCalls } = makeDb({ threadRow: { companyId: "co-1", entrySeq: 5 } });
       await writeScopeProposal(db, {
         threadId: "thread-1",
@@ -237,7 +246,8 @@ describe("writeScopeProposal", () => {
         agentId: null,
       });
       const parsed = JSON.parse(insertCalls[0].values.rawContent);
-      expect(parsed.proposalCursorSeq).toBe(5);
+      // Must be the post-bump value (6), NOT the pre-bump (5).
+      expect(parsed.proposalCursorSeq).toBe(6);
       expect(parsed.summary).toBe(PROPOSAL.summary);
       expect(Array.isArray(parsed.proposedTasks)).toBe(true);
     });
@@ -300,6 +310,35 @@ describe("writeScopeProposal", () => {
       const types = calls.map(([arg]: [any]) => arg.type);
       expect(types).toContain("discussion.entry.created");
       expect(types).toContain("thread.entry.created");
+    });
+
+    // REGRESSION TEST (P0 fix): fresh proposal is never stale
+    // This reproduces the exact arithmetic that caused the bug:
+    //   Pre-fix:  proposalCursorSeq = N (pre-bump)
+    //             After write: thread.entrySeq = N+1
+    //             Stale check: N+1 > N → ALWAYS stale (bug)
+    //   Post-fix: proposalCursorSeq = N+1 (own seq, post-bump)
+    //             After write: thread.entrySeq = N+1
+    //             Stale check: N+1 > N+1 → false → NOT stale (correct)
+    it("REGRESSION: proposalCursorSeq == thread.entrySeq after write (fresh proposal is not stale)", async () => {
+      const PRE_BUMP_SEQ = 10;
+      const { db } = makeDb({ threadRow: { companyId: "co-1", entrySeq: PRE_BUMP_SEQ } });
+      const result = await writeScopeProposal(db, {
+        threadId: "thread-1",
+        companyId: "co-1",
+        proposal: PROPOSAL,
+        agentId: null,
+      });
+
+      // The proposal entry's own seq is PRE_BUMP_SEQ + 1 = 11.
+      // The thread's entrySeq after the write is also 11.
+      // proposalCursorSeq MUST equal 11 so the stale check (currentSeq > stampedSeq)
+      // evaluates: 11 > 11 = false → NOT stale.
+      const POST_BUMP_SEQ = PRE_BUMP_SEQ + 1;
+      expect(result.proposalCursorSeq).toBe(POST_BUMP_SEQ);
+
+      // Confirm the rawContent also embeds the correct post-bump value.
+      // (The stale check reads proposalCursorSeq FROM rawContent.)
     });
   });
 

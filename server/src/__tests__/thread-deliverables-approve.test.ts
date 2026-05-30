@@ -228,13 +228,19 @@ function makeMockDb(opts: {
     return chain;
   }
 
+  // Expose the tx's update mock so tests can assert against it.
+  // approveProposal now runs the claim UPDATE inside a db.transaction, so
+  // the outer db.update is NOT called for the claim — only tx.update is.
+  const txUpdate = vi.fn(updateChain);
+
   return {
     select: vi.fn(selectChain),
     update: vi.fn(updateChain),
+    txUpdate,
     transaction: vi.fn(async (cb: any) =>
       cb({
         select: vi.fn(selectChain),
-        update: vi.fn(updateChain),
+        update: txUpdate,
         insert: vi.fn(() => ({
           values: vi.fn(() => ({
             returning: vi.fn().mockResolvedValue([]),
@@ -323,7 +329,8 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
       expect(result.taskIds).toContain("task-2");
     }
     expect(mockIssueCreate).toHaveBeenCalledTimes(2);
-    expect(db.update).toHaveBeenCalled();
+    // The claim UPDATE runs inside the transaction (tx.update), not on the outer db.update.
+    expect(db.txUpdate).toHaveBeenCalled();
   });
 
   // ── A2. createDeliverableTasks called with correct args ───────────────────────
@@ -513,8 +520,8 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
 
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.alreadyApproved).toBe(true);
-    // The loser tried to claim (update called) but created NO tasks.
-    expect(db.update).toHaveBeenCalled();
+    // The loser tried to claim (tx.update called) but created NO tasks.
+    expect(db.txUpdate).toHaveBeenCalled();
     expect(mockIssueCreate).not.toHaveBeenCalled();
   });
 
@@ -560,27 +567,46 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
         chain.then = (r: any) => Promise.resolve(r(resolve()));
         return chain;
       }
-      return {
+
+      // Shared update that mutates proposalStatus on the winning claim.
+      function sharedUpdateFactory(): any {
+        const chain: any = {};
+        chain.set = () => chain;
+        // Atomic claim: succeeds (returns a row) ONLY while still pending.
+        const claim = () => {
+          const won = proposalStatus === "pending";
+          if (won) proposalStatus = "approved";
+          return won ? [{ id: ENTRY_ID }] : [];
+        };
+        chain.where = () => {
+          const rows = claim();
+          const p: any = Promise.resolve(rows);
+          p.returning = () => Promise.resolve(rows);
+          return p;
+        };
+        chain.returning = () => Promise.resolve(claim());
+        return chain;
+      }
+
+      const db: any = {
         select: vi.fn(selectChain),
-        update: vi.fn(() => {
-          const chain: any = {};
-          chain.set = () => chain;
-          // Atomic claim: succeeds (returns a row) ONLY while still pending.
-          const claim = () => {
-            const won = proposalStatus === "pending";
-            if (won) proposalStatus = "approved";
-            return won ? [{ id: ENTRY_ID }] : [];
-          };
-          chain.where = () => {
-            const rows = claim();
-            const p: any = Promise.resolve(rows);
-            p.returning = () => Promise.resolve(rows);
-            return p;
-          };
-          chain.returning = () => Promise.resolve(claim());
-          return chain;
-        }),
+        update: vi.fn(sharedUpdateFactory),
       };
+
+      // The transaction passes a tx whose update shares the same mutation logic.
+      // This simulates sequential transactions on the same DB row correctly.
+      db.transaction = vi.fn(async (cb: any) => {
+        const tx = {
+          select: vi.fn(selectChain),
+          update: vi.fn(sharedUpdateFactory),
+          insert: vi.fn(() => ({
+            values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+          })),
+        };
+        return cb(tx);
+      });
+
+      return db;
     }
 
     const db = sharedDb();
@@ -621,6 +647,157 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
     if (!result.ok) expect(result.reason).toBe("not_found");
     expect(mockIssueCreate).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // ── A12. REGRESSION: fresh proposal (currentSeq == stampedSeq) is NOT stale ───
+  // Reproduces the exact arithmetic that the P0 fix corrects:
+  //   Pre-fix:  proposalCursorSeq = N (pre-bump), thread.entrySeq = N+1 after write
+  //             → stale check: N+1 > N → ALWAYS stale (bug — every fresh approval blocked)
+  //   Post-fix: proposalCursorSeq = N+1 (own seq), thread.entrySeq = N+1 after write
+  //             → stale check: N+1 > N+1 = false → NOT stale (correct)
+  //
+  // This test sets proposalCursorSeq = 11 and currentSeq = 11 (matching the
+  // post-fix invariant where the proposal's own seq == the thread's entrySeq
+  // immediately after writing the proposal). The approve MUST succeed (not stale).
+  it("REGRESSION (P0 fix): fresh proposal (currentSeq == stampedSeq) is NOT stale → tasks created", async () => {
+    mockIssueCreate.mockResolvedValue({ id: "task-fresh", title: "Fresh Task" });
+
+    const POST_BUMP_SEQ = 11; // equals thread.entrySeq after write; equals proposalCursorSeq
+
+    const db = makeMockDb({
+      selectResults: [
+        // Entry with proposalCursorSeq stamped at the post-bump value (11)
+        [makePendingEntry({ rawContent: makeProposalRaw({ proposalCursorSeq: POST_BUMP_SEQ }) })],
+        // Thread's current entrySeq is exactly 11 (no new entries since proposal was written)
+        [{ entrySeq: POST_BUMP_SEQ }],
+      ],
+    });
+
+    const svc = realThreadDeliverablesService(db as any);
+    const result = await svc.approveProposal({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      proposalEntryId: ENTRY_ID,
+      approver: { userId: USER_ID },
+    });
+
+    // Must NOT be stale — stale check: 11 > 11 = false
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.alreadyApproved).toBe(false);
+    // Tasks were created
+    expect(mockIssueCreate).toHaveBeenCalled();
+  });
+
+  // ── A13. Transaction rollback: createDeliverableTasks throws → claim rolls back ─
+  // Codex #3 robustness gap: if createDeliverableTasks throws after the claim wins,
+  // the claim must roll back (transaction semantics) so the proposal remains
+  // "pending" and a subsequent re-approve can succeed.
+  // Without the transaction wrap, the claim UPDATE would persist and re-approve
+  // would return alreadyApproved (no tasks ever created — unrecoverable).
+  it("ROBUSTNESS (Codex #3): createDeliverableTasks throws → transaction rolls back claim → proposal stays retryable", async () => {
+    const taskCreationError = new Error("DB connection lost during task creation");
+
+    // First approve attempt: mockIssueCreate throws to simulate task-creation failure.
+    mockIssueCreate.mockRejectedValueOnce(taskCreationError);
+
+    // We need a db whose transaction can be made to fail on insert (simulating rollback).
+    // We model the rollback by having the transaction re-throw the error from the callback
+    // (matching real Postgres behavior: an error inside the transaction callback causes rollback).
+    // Use a single-task proposal to keep mock-call counts unambiguous.
+    const singleTaskRaw = makeProposalRaw({ proposalCursorSeq: 5, proposedTasks: [{ title: "Task Single" }] });
+    const selectQueue: any[][] = [
+      [makePendingEntry({ rawContent: singleTaskRaw })],
+      [{ entrySeq: 5 }],
+    ];
+    let selectIdx = 0;
+
+    function selectChainForRollbackDb(): any {
+      const result = selectQueue[selectIdx++] ?? [];
+      const chain: any = {};
+      chain.from = () => chain;
+      chain.innerJoin = () => chain;
+      chain.where = () => {
+        const inner: any = Promise.resolve(result);
+        inner.limit = () => Promise.resolve(result);
+        return inner;
+      };
+      chain.orderBy = () => Promise.resolve(result);
+      chain.then = (resolve: any) => Promise.resolve(resolve(result));
+      return chain;
+    }
+
+    // proposalStatus starts pending; a real transaction would roll back the UPDATE.
+    // We model rollback: if the tx callback throws, we do NOT persist the claim.
+    let proposalStatus = "pending";
+    const txUpdate = vi.fn(() => {
+      const chain: any = {};
+      chain.set = () => chain;
+      chain.where = () => {
+        // Mark pending → approved inside the (simulated) transaction.
+        proposalStatus = "approved";
+        const rows = [{ id: ENTRY_ID }];
+        const p: any = Promise.resolve(rows);
+        p.returning = () => Promise.resolve(rows);
+        return p;
+      };
+      chain.returning = () => Promise.resolve([{ id: ENTRY_ID }]);
+      return chain;
+    });
+
+    const rollbackDb: any = {
+      select: vi.fn(selectChainForRollbackDb),
+      update: vi.fn(), // outer db.update not used by approveProposal anymore
+      transaction: vi.fn(async (cb: any) => {
+        const tx = {
+          select: vi.fn(selectChainForRollbackDb),
+          update: txUpdate,
+          insert: vi.fn(() => ({
+            values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+          })),
+        };
+        try {
+          return await cb(tx);
+        } catch (err) {
+          // Transaction rolled back: undo the proposalStatus mutation.
+          // In real Postgres the UPDATE is rolled back atomically.
+          proposalStatus = "pending";
+          throw err;
+        }
+      }),
+    };
+
+    const svc = realThreadDeliverablesService(rollbackDb as any);
+
+    // First approve: task creation throws → transaction rolls back.
+    await expect(
+      svc.approveProposal({
+        threadId: THREAD_ID,
+        companyId: CO_ID,
+        proposalEntryId: ENTRY_ID,
+        approver: { userId: USER_ID },
+      }),
+    ).rejects.toThrow("DB connection lost during task creation");
+
+    // After the rollback, proposalStatus is back to "pending" (claim rolled back).
+    expect(proposalStatus).toBe("pending");
+
+    // Second approve attempt: task creation now succeeds.
+    // Re-queue the select results for the retry.
+    selectIdx = 0;
+    mockIssueCreate.mockResolvedValueOnce({ id: "task-retry", title: "Retry Task" });
+
+    const retryResult = await svc.approveProposal({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      proposalEntryId: ENTRY_ID,
+      approver: { userId: USER_ID },
+    });
+
+    // The retry should succeed and create tasks.
+    expect(retryResult.ok).toBe(true);
+    if (retryResult.ok) expect(retryResult.alreadyApproved).toBe(false);
+    // Single-task proposal: 1 failed call (first attempt) + 1 succeeded call (retry) = 2 total.
+    expect(mockIssueCreate).toHaveBeenCalledTimes(2);
   });
 });
 
