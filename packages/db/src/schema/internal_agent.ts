@@ -106,6 +106,15 @@ export const internalAgentConfig = pgTable(
     // Thread-level pause is in discussions.crewPaused.
     crewPaused: boolean("crew_paused").notNull().default(false),
 
+    // Task 0.2 (Inbound Dirty-Data Routing): per-company routing dial.
+    // Values: 'off' | 'suggest' | 'auto'
+    // 'off'     = inbound items queue as pending_route but router never fires.
+    // 'suggest' = router scores + suggests; founder approves attachment.
+    // 'auto'    = router auto-attaches above confidence threshold.
+    // Default 'off' — teams opt-in as they build trust (mirrors D5 teaching
+    // default philosophy).
+    inboundRoutingLevel: text("inbound_routing_level").notNull().default("off"),
+
     agentId: uuid("agent_id").references(() => agents.id, {
       onDelete: "set null",
     }),

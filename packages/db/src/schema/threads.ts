@@ -106,9 +106,37 @@ export const threadInboxItems = pgTable(
     suggestedThreadId: uuid("suggested_thread_id").references(() => discussions.id, { onDelete: "set null" }),
     status: text("status").notNull().default("pending"), // ThreadInboxStatus: pending|attached|dismissed
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+
+    // Task 0.2 (Inbound Dirty-Data Routing) ─────────────────────────────────
+    // Durable dedup key — set by inbound adapter from message-id / hash.
+    // Paired with the unique index below to prevent double-insert on retry
+    // across ALL statuses (Codex #8: status moves pending→attached must not
+    // allow a re-delivered item to sneak in as a second row).
+    dedupKey: text("dedup_key"),
+
+    // Router lifecycle (Codex #9): sweep distinguishes not-yet-routed vs
+    // in-progress vs routed vs escalated-pending-founder vs failed.
+    // Values: 'pending_route' | 'routing' | 'routed' | 'escalated' | 'failed'
+    routingStatus: text("routing_status").notNull().default("pending_route"),
+
+    // Populated when routingStatus='failed'; machine-readable error code for
+    // the sweep and for UI display (e.g. 'confidence_too_low', 'timeout').
+    routingErrorCode: text("routing_error_code"),
+
+    // Timestamp when routingStatus last moved to 'routed' or 'escalated'.
+    routedAt: timestamp("routed_at", { withTimezone: true }),
+
+    // UUID of the HeartbeatRun / wakeup that the navigator spawned for this
+    // item. Nullable — only populated when routerDecision='auto_attach' and
+    // the navigator wakeup was actually queued.
+    navigatorWakeupId: uuid("navigator_wakeup_id"),
   },
   (table) => ({
     companyStatusIdx: index("thread_inbox_items_company_status_idx").on(table.companyId, table.status),
+    // Durable cross-status unique guard: prevents re-delivered inbound items
+    // from producing a second row after status moves pending→attached.
+    // Non-partial (no WHERE) by design — Codex #8.
+    companyDedupIdx: uniqueIndex("thread_inbox_items_company_dedup_idx").on(table.companyId, table.dedupKey),
   }),
 );
 
