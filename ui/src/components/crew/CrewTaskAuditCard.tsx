@@ -157,7 +157,8 @@ function RunRow({ run, index }: { run: RunForIssue; index: number }) {
           <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
             Prompt context
           </p>
-          <div className="text-xs space-y-0.5">
+          {/* Meta sub-line: invocationSource + timing */}
+          <div className="text-xs space-y-0.5 mb-2">
             {wakeReason && (
               <div>
                 <span className="text-muted-foreground">Source: </span>
@@ -180,6 +181,21 @@ function RunRow({ run, index }: { run: RunForIssue; index: number }) {
               <p className="text-muted-foreground italic">No context data.</p>
             )}
           </div>
+          {/* System prompt snapshot */}
+          {run.promptSnapshot ? (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                System prompt (redacted)
+              </p>
+              <pre className="text-[11px] font-mono leading-relaxed bg-muted/50 border border-border/60 rounded p-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words">
+                {run.promptSnapshot}
+              </pre>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground italic">
+              Full prompt not captured for this run.
+            </p>
+          )}
         </div>
 
         {/* Reasoning / output section */}

@@ -203,6 +203,62 @@ describe("CrewTaskAuditCard", () => {
     );
   });
 
+  it("renders promptSnapshot in the prompt context section when present", async () => {
+    const runWithSnapshot: RunForIssue = {
+      ...MOCK_RUN,
+      runId: "run-snap",
+      promptSnapshot: "You are the Engineer agent.\n\n## Task\nBuild the engine.\n\n[redacted]",
+    };
+    runsForIssueSpy.mockResolvedValue([runWithSnapshot]);
+
+    renderWithQuery(
+      <CrewTaskAuditCard issue={MOCK_ISSUE} open={true} onOpenChange={vi.fn()} />,
+    );
+
+    const promptSection = await screen.findByTestId("crew-audit-prompt");
+
+    // The snapshot text should appear inside the prompt section
+    await waitFor(() => {
+      expect(promptSection.textContent).toContain("You are the Engineer agent.");
+      expect(promptSection.textContent).toContain("[redacted]");
+    });
+
+    // The "System prompt (redacted)" header should be visible
+    expect(promptSection.textContent).toContain("System prompt (redacted)");
+
+    // The invocationSource meta sub-line should still be present
+    expect(promptSection.textContent).toContain("issue_assigned");
+
+    // The "not captured" fallback should NOT appear
+    expect(promptSection.textContent).not.toContain("Full prompt not captured");
+  });
+
+  it("shows 'Full prompt not captured' fallback when promptSnapshot is null", async () => {
+    const runWithoutSnapshot: RunForIssue = {
+      ...MOCK_RUN,
+      runId: "run-no-snap",
+      promptSnapshot: null,
+    };
+    runsForIssueSpy.mockResolvedValue([runWithoutSnapshot]);
+
+    renderWithQuery(
+      <CrewTaskAuditCard issue={MOCK_ISSUE} open={true} onOpenChange={vi.fn()} />,
+    );
+
+    const promptSection = await screen.findByTestId("crew-audit-prompt");
+
+    // Fallback text must appear
+    await waitFor(() => {
+      expect(promptSection.textContent).toContain("Full prompt not captured for this run.");
+    });
+
+    // The invocationSource proxy should still be visible
+    expect(promptSection.textContent).toContain("issue_assigned");
+
+    // No "System prompt (redacted)" header
+    expect(promptSection.textContent).not.toContain("System prompt (redacted)");
+  });
+
   it("renders cached token count when present", async () => {
     runsForIssueSpy.mockResolvedValue([MOCK_RUN]);
 
