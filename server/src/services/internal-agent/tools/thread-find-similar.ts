@@ -11,10 +11,106 @@
 //     tests, pre-worker startup): return `EMBEDDINGS_UNAVAILABLE`.
 //   - If pgvector isn't available (embedded-postgres): the column-NULL
 //     filter ensures no rows are returned without crashing.
+//
+// Task 1.1 (Inbound Dirty-Data Routing) — `findSimilarThreadsScored`
+//
+// A reusable service-layer function (not gated behind an AgentTool ctx) that
+// also SELECTs the raw cosine distance so the inbound router can:
+//   - threshold on top-1 distance (confidence gate)
+//   - compute the top-1-vs-top-2 ambiguity gap (Codex #10)
+//
+// Embedding access for a plain service (no AgentTool ctx):
+//   The caller passes `embedText` as a plain async function. In the router this
+//   will be `ctx.services.embeddings?.embedSync.bind(ctx.services.embeddings)`,
+//   or `undefined` when the service is absent. When it is undefined / throws,
+//   `findSimilarThreadsScored` returns `{ available: false, results: [] }` —
+//   the fail-closed signal (Decision D2) that tells the router to hand off to
+//   human review rather than guess.
 
 import { sql, and, eq } from "drizzle-orm";
 import { discussions } from "@armyofagents/db";
+import type { Db } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+
+// ─── findSimilarThreadsScored ─────────────────────────────────────────────────
+
+export interface ScoredThreadResult {
+  threadId: string;
+  distance: number;
+}
+
+export interface FindSimilarThreadsScoredResult {
+  available: boolean;
+  results: ScoredThreadResult[];
+}
+
+/**
+ * Embed `text` and run a pgvector cosine-distance query against
+ * `discussions.summary_embedding`, returning `{ threadId, distance }` rows
+ * ordered by distance ASC (closest first).
+ *
+ * @param args.db           - Drizzle DB handle.
+ * @param args.embedText    - Async function that converts a string to a
+ *                            1536-dim number[]. Mirrors `EmbeddingService.embedSync`.
+ *                            Pass `undefined` (or omit) to signal that the
+ *                            embedding service is absent; the function will
+ *                            return `{ available: false, results: [] }`.
+ * @param args.companyId    - Scope the search to this company.
+ * @param args.text         - Raw text to embed and search for.
+ * @param args.limit        - Max rows to return (default 5, hard-capped at 25).
+ */
+export async function findSimilarThreadsScored(args: {
+  db: Db;
+  embedText?: ((text: string) => Promise<number[]>) | null;
+  companyId: string;
+  text: string;
+  limit?: number;
+}): Promise<FindSimilarThreadsScoredResult> {
+  const { db, embedText, companyId, text, limit } = args;
+
+  // Fail-closed: embedding service unavailable.
+  if (typeof embedText !== "function") {
+    return { available: false, results: [] };
+  }
+
+  let vector: number[];
+  try {
+    vector = await embedText(text.trim());
+  } catch {
+    // Embedding fn threw (network error, missing key, etc.) — fail-closed.
+    return { available: false, results: [] };
+  }
+
+  const cappedLimit = Math.min(
+    typeof limit === "number" && limit > 0 ? limit : DEFAULT_LIMIT,
+    MAX_LIMIT,
+  );
+
+  const vectorLiteral = `[${vector.join(",")}]`;
+
+  // SELECT id AS threadId, summary_embedding <=> <vector> AS distance
+  // ORDER BY distance ASC LIMIT n
+  const rows = await db
+    .select({
+      threadId: discussions.id,
+      distance: sql<number>`${discussions.summaryEmbedding} <=> ${vectorLiteral}::vector`,
+    })
+    .from(discussions)
+    .where(
+      and(
+        eq(discussions.companyId, companyId),
+        sql`${discussions.summaryEmbedding} IS NOT NULL`,
+      ),
+    )
+    .orderBy(sql`${discussions.summaryEmbedding} <=> ${vectorLiteral}::vector`)
+    .limit(cappedLimit);
+
+  const results: ScoredThreadResult[] = (Array.isArray(rows) ? rows : []).map(
+    (r) => ({ threadId: r.threadId, distance: Number(r.distance) }),
+  );
+
+  return { available: true, results };
+}
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
