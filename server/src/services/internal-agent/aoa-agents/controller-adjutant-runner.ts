@@ -21,11 +21,25 @@
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, discussions } from "@armyofagents/db";
-import { runAoaAgent } from "./runner.js";
+// `runner.ts` eagerly builds the full crew tool-registry at module load (embeddings,
+// ~40 tool modules). thread-events.ts imports THIS factory, and discussions.ts imports
+// thread-events — so a static `import { runAoaAgent }` would drag that heavy subtree onto
+// the discussions/thread-events module-load path. Import only the TYPES statically (erased
+// by tsc, zero runtime cost) and defer the value to call time via dynamic import.
+// Review I1 (opus, 2026-05-30).
+import type { AoaTriggerPayload } from "./runner.js";
+import type { AoaRunResult } from "./aoa-run-result.js";
 import type { AdjutantRunner } from "../../thread-orchestration.js";
 import { logger } from "../../../middleware/logger.js";
 
 const log = logger.child({ svc: "controller-adjutant-runner" });
+
+/** Shape of `runAoaAgent` — declared from its types so the value stays lazily imported. */
+type RunAoaAgentFn = (
+  db: Db,
+  agentId: string,
+  payload: AoaTriggerPayload,
+) => Promise<AoaRunResult>;
 
 /**
  * Factory returning a production AdjutantRunner. The returned function is
@@ -35,14 +49,12 @@ const log = logger.child({ svc: "controller-adjutant-runner" });
  *
  * @param db - Drizzle db instance.
  * @param deps - Dependency injection for tests. Pass `{ runAgent: myFakeRunner }` to
- *               avoid spawning a real CLI process.
+ *               avoid spawning a real CLI process (also bypasses the dynamic import).
  */
 export function makeControllerAdjutantRunner(
   db: Db,
-  deps: { runAgent?: typeof runAoaAgent } = {},
+  deps: { runAgent?: RunAoaAgentFn } = {},
 ): AdjutantRunner {
-  const runAgent = deps.runAgent ?? runAoaAgent;
-
   return async ({ threadId }) => {
     // Step 1: resolve the thread's company.
     const [thread] = await db
@@ -85,6 +97,11 @@ export function makeControllerAdjutantRunner(
     // path has no agentWakeupRequests row. runAoaAgent treats wakeupId as an
     // optional payload extra ([k: string]: unknown) and does not reference it
     // anywhere in its function body.
+    //
+    // Resolve runAoaAgent lazily (see import note above): tests inject deps.runAgent
+    // and never hit the dynamic import; production loads runner.ts here, off the
+    // module-load path.
+    const runAgent = deps.runAgent ?? (await import("./runner.js")).runAoaAgent;
     const result = await runAgent(db, adjutant.id, {
       companyId: thread.companyId,
       source: "thread.controller",

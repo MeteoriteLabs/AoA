@@ -202,11 +202,20 @@ export function createThreadEventListener(
     // newer entries. The peer-wake pipeline (agentWakeupRequests insert) remains
     // dormant for controller-path threads — do NOT delete it; old threads need it.
     if (thread.useControllerPath) {
-      log.debug({ threadId }, "skip peer-wake insert — thread uses controller path; firing inline drain");
-      const runner = makeControllerAdjutantRunner(db);
-      void threadOrchestrationService(db)
-        .runController(threadId, { adjutantRunner: runner })
-        .catch((err) => log.warn({ err, threadId }, "controller inline drain failed"));
+      // Hard phase gate, symmetric with runControllerSweep's `phase != 'done'`
+      // filter — a closed thread must not drive the Adjutant even if a late human
+      // entry arrives. This is an enforced gate, not the Adjutant's soft prompt
+      // guard. Review M3 (opus, 2026-05-30). Controller-path threads NEVER use
+      // peer-wake, so we return in both branches.
+      if (thread.phase !== "done") {
+        log.debug({ threadId }, "skip peer-wake insert — thread uses controller path; firing inline drain");
+        const runner = makeControllerAdjutantRunner(db);
+        void threadOrchestrationService(db)
+          .runController(threadId, { adjutantRunner: runner })
+          .catch((err) => log.warn({ err, threadId }, "controller inline drain failed"));
+      } else {
+        log.debug({ threadId }, "skip controller drain — thread phase is done");
+      }
       return; // skip the peer-wake insert below
     }
 
