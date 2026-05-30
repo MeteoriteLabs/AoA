@@ -1,4 +1,4 @@
-CREATE TABLE "internal_agent_runtime_approvals" (
+CREATE TABLE IF NOT EXISTS "internal_agent_runtime_approvals" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"conversation_id" uuid,
@@ -22,7 +22,7 @@ CREATE TABLE "internal_agent_runtime_approvals" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "internal_agent_tool_trust_rules" (
+CREATE TABLE IF NOT EXISTS "internal_agent_tool_trust_rules" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"user_id" text NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE "internal_agent_tool_trust_rules" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "task_outputs" (
+CREATE TABLE IF NOT EXISTS "task_outputs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"project_id" uuid,
@@ -84,17 +84,17 @@ ALTER TABLE "task_outputs" ADD CONSTRAINT "task_outputs_runtime_service_id_works
 ALTER TABLE "task_outputs" ADD CONSTRAINT "task_outputs_created_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("created_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_outputs" ADD CONSTRAINT "task_outputs_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_outputs" ADD CONSTRAINT "task_outputs_created_by_user_id_user_id_fk" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "ia_runtime_approvals_company_status_expiry_idx" ON "internal_agent_runtime_approvals" USING btree ("company_id","status","expires_at");--> statement-breakpoint
-CREATE INDEX "ia_runtime_approvals_company_user_status_idx" ON "internal_agent_runtime_approvals" USING btree ("company_id","user_id","status");--> statement-breakpoint
-CREATE INDEX "ia_runtime_approvals_run_idx" ON "internal_agent_runtime_approvals" USING btree ("run_id");--> statement-breakpoint
-CREATE INDEX "ia_runtime_approvals_tool_idx" ON "internal_agent_runtime_approvals" USING btree ("tool_name");--> statement-breakpoint
-CREATE UNIQUE INDEX "ia_tool_trust_rules_exact_params_uq" ON "internal_agent_tool_trust_rules" USING btree ("company_id","user_id","tool_name","params_hash","params_hash_version","scope");--> statement-breakpoint
-CREATE INDEX "ia_tool_trust_rules_company_user_enabled_idx" ON "internal_agent_tool_trust_rules" USING btree ("company_id","user_id","enabled");--> statement-breakpoint
-CREATE INDEX "ia_tool_trust_rules_company_tool_idx" ON "internal_agent_tool_trust_rules" USING btree ("company_id","tool_name");--> statement-breakpoint
-CREATE INDEX "task_outputs_company_issue_type_idx" ON "task_outputs" USING btree ("company_id","issue_id","type");--> statement-breakpoint
-CREATE INDEX "task_outputs_company_issue_primary_idx" ON "task_outputs" USING btree ("company_id","issue_id","is_primary");--> statement-breakpoint
-CREATE INDEX "task_outputs_company_workspace_type_idx" ON "task_outputs" USING btree ("company_id","execution_workspace_id","type");--> statement-breakpoint
-CREATE INDEX "task_outputs_company_runtime_service_idx" ON "task_outputs" USING btree ("company_id","runtime_service_id");--> statement-breakpoint
-CREATE INDEX "task_outputs_company_artifact_idx" ON "task_outputs" USING btree ("company_id","artifact_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "task_outputs_company_issue_provider_external_uq" ON "task_outputs" USING btree ("company_id","issue_id","provider","external_id") WHERE external_id IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "task_outputs_company_updated_idx" ON "task_outputs" USING btree ("company_id","updated_at");
+CREATE INDEX IF NOT EXISTS "ia_runtime_approvals_company_status_expiry_idx" ON "internal_agent_runtime_approvals" USING btree ("company_id","status","expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ia_runtime_approvals_company_user_status_idx" ON "internal_agent_runtime_approvals" USING btree ("company_id","user_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ia_runtime_approvals_run_idx" ON "internal_agent_runtime_approvals" USING btree ("run_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ia_runtime_approvals_tool_idx" ON "internal_agent_runtime_approvals" USING btree ("tool_name");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "ia_tool_trust_rules_exact_params_uq" ON "internal_agent_tool_trust_rules" USING btree ("company_id","user_id","tool_name","params_hash","params_hash_version","scope");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ia_tool_trust_rules_company_user_enabled_idx" ON "internal_agent_tool_trust_rules" USING btree ("company_id","user_id","enabled");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ia_tool_trust_rules_company_tool_idx" ON "internal_agent_tool_trust_rules" USING btree ("company_id","tool_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "task_outputs_company_issue_type_idx" ON "task_outputs" USING btree ("company_id","issue_id","type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "task_outputs_company_issue_primary_idx" ON "task_outputs" USING btree ("company_id","issue_id","is_primary");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "task_outputs_company_workspace_type_idx" ON "task_outputs" USING btree ("company_id","execution_workspace_id","type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "task_outputs_company_runtime_service_idx" ON "task_outputs" USING btree ("company_id","runtime_service_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "task_outputs_company_artifact_idx" ON "task_outputs" USING btree ("company_id","artifact_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "task_outputs_company_issue_provider_external_uq" ON "task_outputs" USING btree ("company_id","issue_id","provider","external_id") WHERE external_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "task_outputs_company_updated_idx" ON "task_outputs" USING btree ("company_id","updated_at");

@@ -27,7 +27,9 @@ describe("Migration 0124 — P1-T2 thread_orchestration_state controller table",
   const sql = readFileSync(MIGRATION_PATH, "utf8");
 
   it("creates the thread_orchestration_state table", () => {
-    expect(sql).toMatch(/CREATE TABLE "thread_orchestration_state"/i);
+    // `IF NOT EXISTS` is the repo's idempotent-migration convention (enforced by
+    // migration-idempotency.test.ts); the table name match tolerates it.
+    expect(sql).toMatch(/CREATE TABLE (IF NOT EXISTS )?"thread_orchestration_state"/i);
   });
 
   it("defines thread_id as NOT NULL uuid", () => {

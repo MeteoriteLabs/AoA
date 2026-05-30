@@ -1,4 +1,4 @@
-CREATE TABLE "thread_orchestration_state" (
+CREATE TABLE IF NOT EXISTS "thread_orchestration_state" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"thread_id" uuid NOT NULL,
 	"last_processed_entry_id" uuid,

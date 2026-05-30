@@ -202,19 +202,24 @@ describe("packageAdjutantContext", () => {
     expect(result.relatedThreads[2].id).toBe("thread-4");
   });
 
-  it("returns empty relatedThreads when thread has no summaryEmbedding", async () => {
+  it("returns empty relatedThreads with no candidate query when there is no embedding AND no text to search", async () => {
+    // P2-T6: without a summaryEmbedding the service falls back to full-text over
+    // title+summary. With NEITHER a title NOR a summary there is no query text,
+    // so the fallback no-ops — no candidate query, no participants query, []
+    // related threads (the same outcome as the pre-P2-T6 always-empty path).
+    // The fallback-WITH-results case is covered in adjutant-context-fallback.test.ts.
     const db = createSequenceDb([
-      [threadRow({ summaryEmbedding: null })],
+      [threadRow({ summaryEmbedding: null, title: null, summaryText: null })],
       [{ count: 5 }],
       entriesDesc(5),
-      // No fourth select — the embedding-conditional branch is skipped.
+      // No fourth select — the full-text fallback is skipped on an empty query.
     ]);
 
     const result = await packageAdjutantContext(db as any, THREAD_ID);
 
     expect(result.relatedThreads).toEqual([]);
-    // The service should have made exactly 3 select calls (thread, count,
-    // entries) — no related-thread query, no participants query.
+    // Exactly 3 select calls (thread, count, entries) — no fallback candidate
+    // query, no participants query.
     expect((db as any).selectCalls).toHaveLength(3);
   });
 

@@ -124,7 +124,7 @@ describe("TasksTab", () => {
     renderWithProviders(<TasksTab companyId="comp-1" />);
 
     await waitFor(() =>
-      expect(screen.getByTestId("tasks-tab")).toBeInTheDocument(),
+      expect(screen.getByTestId("crew-board")).toBeInTheDocument(),
     );
 
     // The query was issued with the new filter so the server knows to JOIN.
@@ -142,8 +142,8 @@ describe("TasksTab", () => {
     expect(screen.getByTestId("kb-card-i-3")).toBeInTheDocument();
 
     // Group containers are present (one per source thread).
-    expect(screen.getByTestId("tasks-tab-group-thread-A")).toBeInTheDocument();
-    expect(screen.getByTestId("tasks-tab-group-thread-B")).toBeInTheDocument();
+    expect(screen.getByTestId("crew-board-group-thread-A")).toBeInTheDocument();
+    expect(screen.getByTestId("crew-board-group-thread-B")).toBeInTheDocument();
   });
 
   it("renders the empty state when no tasks come back from the server", async () => {
@@ -152,7 +152,7 @@ describe("TasksTab", () => {
     renderWithProviders(<TasksTab companyId="comp-1" />);
 
     await waitFor(() =>
-      expect(screen.getByTestId("tasks-tab-empty")).toBeInTheDocument(),
+      expect(screen.getByTestId("crew-board-empty")).toBeInTheDocument(),
     );
     expect(
       screen.getByText(/No tasks yet. Crew-created tasks will appear here\./),
