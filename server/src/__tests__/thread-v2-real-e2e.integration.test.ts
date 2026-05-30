@@ -22,6 +22,18 @@
  *
  * See docs/qa/thread-v2-release-checklist.md for the authoritative per-release
  * manual gate.
+ *
+ * ── Task 5.2 addition ─────────────────────────────────────────────────────────
+ * The second describe block below (T5.2 — "work-as-tasks converse→propose") is
+ * the gated E2E safety net for the Crew Work-as-Tasks feature (P2-T5.2 plan).
+ * It seeds a fresh company + Adjutant (+ Scout/Engineer auto-seeded), posts a
+ * converging human entry, drives the controller, and asserts that the Adjutant
+ * posts a scope_proposal entry with proposalStatus='pending' via the
+ * propose_crew_work chokepoint. The thread uses autonomyLevel=1 (L1 / await_human)
+ * so the card stays pending — a reliable, model-budget-bounded assertion.
+ * The full L2 auto-approve→task→result cycle is NOT asserted here because it
+ * requires a running heartbeat worker and a separate crew worker agent run; that
+ * is deferred to a dedicated L2 integration harness.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
@@ -306,6 +318,274 @@ describe.skipIf(isWin32 || !hasRealE2E || !hasDbUrl)(
           "The Adjutant may have applied the silent-exit heuristic — ensure the human seed " +
           "entry is concrete enough to trigger a response.",
         ).toBeGreaterThan(countBefore);
+      },
+      150_000, // 150-second test timeout (120s poll + 30s overhead)
+    );
+  },
+);
+
+// ── T5.2 — Work-as-Tasks converse→propose cycle (gated, L1 card assertion) ────
+//
+// Seeds a fresh company + Adjutant (Scout + Engineer auto-seeded by
+// companyService.create). Posts a converging human entry into a thread with
+// autonomyLevel=1 (L1 / await_human). Drives the orchestration controller via
+// runControllerSweep and asserts the Adjutant posted a scope_proposal entry with
+// proposalStatus='pending' through the propose_crew_work chokepoint.
+//
+// Gate: identical to the block above — skips when THREAD_V2_E2E, DATABASE_URL,
+// or non-Windows preconditions are absent. This is intentional per the advisory
+// lane contract (docs/qa/thread-v2-release-checklist.md).
+//
+// Limitation: asserts the propose-card path (L0/L1 chokepoint) only. The full
+// L2 auto-approve → issues with originKind='crew_thread' → agent run → result
+// entry cycle is NOT asserted here. L2 requires a running heartbeat worker and a
+// live worker agent run, which is out of scope for the controller-sweep harness.
+describe.skipIf(isWin32 || !hasRealE2E || !hasDbUrl)(
+  "T5.2 work-as-tasks: converse→propose cycle (advisory)",
+  () => {
+    let db: Db;
+    let companyId: string;
+    let adjutantAgentId: string;
+    let threadId: string;
+    let setupError: unknown = null;
+
+    beforeAll(async () => {
+      try {
+        const databaseUrl = process.env.DATABASE_URL;
+        if (!databaseUrl) {
+          throw new Error(
+            "DATABASE_URL is not set. The T5.2 real-agent E2E test requires a " +
+            "running database with migrations applied. See " +
+            "docs/qa/thread-v2-release-checklist.md for setup.",
+          );
+        }
+        db = createDb(databaseUrl);
+
+        // Seed a test company. companyService.create seeds the full AoA crew:
+        // Adjutant, Scout, Engineer, Commander, Command Staff. Idempotent.
+        const company = await companyService(db).create({
+          name: `T5.2 Crew Work E2E Co ${Date.now()}`,
+        });
+        companyId = company.id;
+
+        // Locate the seeded Adjutant (kind='aoa', name='Adjutant', not terminated).
+        const adjutantRow = await db.execute<{ id: string }>(sql`
+          SELECT id
+          FROM agents
+          WHERE company_id = ${companyId}
+            AND kind = 'aoa'
+            AND name = 'Adjutant'
+            AND status != 'terminated'
+          LIMIT 1
+        `);
+        const adjutant = firstRow<{ id: string }>(adjutantRow);
+        if (!adjutant) {
+          throw new Error(
+            "Precondition failed: Adjutant not found after company create. " +
+            "companyService.create should seed it via ensureAdjutant. " +
+            "Check ensure-adjutant.ts and the company bootstrap path.",
+          );
+        }
+        adjutantAgentId = adjutant.id;
+
+        // Configure the Adjutant with claude_local so it can run. Same pattern
+        // as the first suite above: reads ACCEPTANCE_ADAPTER_CONFIG if set
+        // (JSON string with extra flags), otherwise a minimal default that
+        // expects `claude` on PATH.
+        const adapterConfigRaw = process.env.ACCEPTANCE_ADAPTER_CONFIG;
+        const adapterConfig = adapterConfigRaw
+          ? JSON.parse(adapterConfigRaw)
+          : { cwd: process.cwd() };
+
+        await db.execute(sql`
+          UPDATE agents
+          SET adapter_type = 'claude_local',
+              adapter_config = ${JSON.stringify(adapterConfig)}::jsonb,
+              updated_at = now()
+          WHERE id = ${adjutantAgentId}
+        `);
+
+        // Create a controller-path thread with autonomyLevel=1 (L1 / await_human).
+        // L1 means the Adjutant MUST write a scope_proposal card and leave it
+        // pending (no auto-approve). The Approve handler stamps pending→approved
+        // only when the founder clicks Approve; the sweeper sees proposalStatus='pending'.
+        // This is the most reliable assertion because it does NOT require a second
+        // live agent run (the heartbeat worker waking up a worker crew agent).
+        const threadRow = await db.execute<{ id: string }>(sql`
+          INSERT INTO discussions
+            (id, company_id, status, use_controller_path, crew_paused,
+             adjutant_enabled, autonomy_level, phase, entry_count, entry_seq,
+             created_by)
+          VALUES
+            (gen_random_uuid(), ${companyId}, 'active', true, false,
+             true, 1, 'discuss', 0, 0, 't5-2-e2e-test')
+          RETURNING id
+        `);
+        threadId = firstId(threadRow);
+        expect(threadId).toBeTruthy();
+
+        // Orchestration state row. The sweep picks up threads with pending_run=true.
+        await db.execute(sql`
+          INSERT INTO thread_orchestration_state
+            (thread_id, pending_run, hop_count, updated_at)
+          VALUES
+            (${threadId}, false, 0, now())
+          ON CONFLICT (thread_id) DO NOTHING
+        `);
+
+        // Seed a converging human entry. The content is deliberately concrete and
+        // action-oriented so the Adjutant does NOT apply the "casual chat / no
+        // new input" silent-exit heuristic but instead calls propose_crew_work.
+        await db.execute(sql`
+          INSERT INTO discussion_entries
+            (id, discussion_id, input_type, raw_content, extraction_status,
+             created_by, seq)
+          VALUES (
+            gen_random_uuid(),
+            ${threadId},
+            'write',
+            'We need a usage analytics dashboard: daily active users, event counts per agent, '
+              || 'and a cost-per-run trend chart. The data is already in cost_events + activity_log. '
+              || 'Scope it out and let''s build it.',
+            'skipped',
+            't5-2-e2e-test',
+            1
+          )
+        `);
+
+        // Bump entry_seq + entry_count so the wait-or-act heuristic sees new input.
+        await db.execute(sql`
+          UPDATE discussions
+          SET entry_seq = 1, entry_count = 1, last_entry_at = now()
+          WHERE id = ${threadId}
+        `);
+
+        // Mark pending_run=true — the production path does this via the inline
+        // drain in thread-events.ts when a human entry lands. We set it directly
+        // to drive runControllerSweep deterministically (no debounce wait).
+        await db.execute(sql`
+          UPDATE thread_orchestration_state
+          SET pending_run = true, updated_at = now()
+          WHERE thread_id = ${threadId}
+        `);
+      } catch (err) {
+        setupError = err;
+        // eslint-disable-next-line no-console
+        console.error("[t5-2-crew-work-e2e] setup failed:", err);
+      }
+    }, 60_000);
+
+    afterAll(async () => {
+      // Best-effort teardown: cascade-delete the test company (removes thread,
+      // entries, issues, agents, etc. via FK cascades).
+      if (db && companyId) {
+        try {
+          await db.execute(sql`DELETE FROM companies WHERE id = ${companyId}`);
+        } catch {
+          /* swallow — test isolation, not critical */
+        }
+      }
+    }, 30_000);
+
+    it(
+      "Adjutant posts a scope_proposal card (proposalStatus='pending') after propose_crew_work",
+      async () => {
+        if (setupError) {
+          throw new Error(
+            `T5.2 crew-work E2E setup failed — cannot assert real output: ${String(setupError)}`,
+          );
+        }
+
+        // Drive the controller: runControllerSweep claims the pending_run, calls
+        // runController → makeControllerAdjutantRunner → runAoaAgent (real
+        // claude_local). The Adjutant receives the propose_crew_work tool on its
+        // allowlist and should call it when it sees a converging human entry.
+        // The adapter run is synchronous (awaits the subprocess), so by the time
+        // runControllerSweep returns the run is complete or has failed.
+        await runControllerSweep(db);
+
+        // Poll for a scope_proposal entry with proposalStatus='pending' on this
+        // thread. autonomyLevel=1 (L1) means the card stays pending — the Approve
+        // handler is NOT triggered by the sweep. We poll to accommodate any
+        // asynchronous commit lag between the agent subprocess and the poll loop.
+        // Timeout: 120 seconds (real claude_local run including model latency +
+        // subprocess overhead). This mirrors the first suite's poll budget.
+        const proposalCard = await pollUntil<{
+          id: string;
+          input_type: string;
+          proposal_status: string;
+          author_agent_id: string;
+        }>(
+          async () => {
+            const result = await db.execute<{
+              id: string;
+              input_type: string;
+              proposal_status: string;
+              author_agent_id: string;
+            }>(sql`
+              SELECT id, input_type, proposal_status, author_agent_id
+              FROM discussion_entries
+              WHERE discussion_id = ${threadId}
+                AND input_type = 'scope_proposal'
+                AND proposal_status = 'pending'
+                AND author_agent_id = ${adjutantAgentId}
+              LIMIT 1
+            `);
+            return firstRow<{
+              id: string;
+              input_type: string;
+              proposal_status: string;
+              author_agent_id: string;
+            }>(result) ?? null;
+          },
+          120_000,
+          2_000,
+        );
+
+        // Hard bar: a real scope_proposal card appeared within the timeout.
+        expect(
+          proposalCard,
+          "No scope_proposal entry with proposalStatus='pending' appeared within 120 s for " +
+          `thread ${threadId} / Adjutant ${adjutantAgentId}. ` +
+          "Verify: (1) claude_local adapter is configured and claude CLI is on PATH; " +
+          "(2) ACCEPTANCE_ADAPTER_CONFIG is set if extra flags are needed; " +
+          "(3) the Adjutant's allowlist includes propose_crew_work (ensure-adjutant.ts); " +
+          "(4) runControllerSweep claimed the pending_run (check thread_orchestration_state). " +
+          "See docs/qa/thread-v2-release-checklist.md § Preconditions.",
+        ).toBeTruthy();
+
+        // Shape assertions — non-deterministic content is NOT asserted;
+        // only the structural contract is checked.
+        expect(proposalCard!.input_type).toBe("scope_proposal");
+        expect(proposalCard!.proposal_status).toBe("pending");
+        expect(proposalCard!.author_agent_id).toBe(adjutantAgentId);
+
+        // Confirm the proposal card is visible in the one-pending-per-thread
+        // partial-unique index window (i.e., it is THE pending proposal for this
+        // thread, not a duplicate that slipped past the guard).
+        const pendingCount = await db.execute<{ count: string }>(sql`
+          SELECT COUNT(*)::text AS count
+          FROM discussion_entries
+          WHERE discussion_id = ${threadId}
+            AND input_type = 'scope_proposal'
+            AND proposal_status = 'pending'
+        `);
+        const pending = parseInt(
+          firstRow<{ count: string }>(pendingCount)?.count ?? "0",
+          10,
+        );
+        expect(
+          pending,
+          "Expected exactly one pending scope_proposal per the one-pending-per-thread " +
+          "partial-unique index (discussion_entries_one_pending_scope_proposal_idx). " +
+          `Got ${pending}.`,
+        ).toBe(1);
+
+        // NOTE: The full L2 cycle (auto-approve → issues with originKind='crew_thread'
+        // → heartbeat worker wakeup → worker agent run → result entry posted back)
+        // is NOT asserted here. Asserting L2 would require: setting autonomyLevel=2,
+        // a running heartbeat worker, and a configured worker agent (Scout/Engineer)
+        // with claude_local. That is deferred to a dedicated L2 integration harness.
       },
       150_000, // 150-second test timeout (120s poll + 30s overhead)
     );
