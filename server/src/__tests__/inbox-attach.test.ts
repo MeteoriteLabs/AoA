@@ -363,6 +363,43 @@ describe("attachInboxItemToThread", () => {
 });
 
 // ── Tests: promoteInboxItemToNewThread ────────────────────────────────────────
+//
+// After the P0 claim-first fix, the promote function:
+//   1. Pre-flight SELECT (companyId guard — unchanged)
+//   2. Inside transaction:
+//      a. Atomic claim UPDATE (status=pending→attached, routingStatus=routed, routedAt)
+//         with companyId in WHERE — returns [{ id }] on win, [] on already-claimed
+//      b. IF claim wins: discussionService.create (thread + first entry)
+//      c. Backfill suggestedThreadId UPDATE
+//   3. Returns { threadId, entryId, alreadyHandled }
+//
+// Harness: the txUpdate mock must handle two sequential calls:
+//   call 0 — the atomic claim (returns .returning() → [{ id }] or [])
+//   call 1 — the suggestedThreadId backfill (plain where().resolvedValue)
+
+/** Build a tx.update mock that returns a claim result for call 0 and a no-op for call 1. */
+function makeTxUpdateForPromote(claimResult: any[]) {
+  let callIdx = 0;
+  return vi.fn(() => {
+    const idx = callIdx++;
+    if (idx === 0) {
+      // Atomic claim: .set().where().returning()
+      return {
+        set: (s: any) => ({
+          where: (_w: any) => ({
+            returning: () => Promise.resolve(claimResult),
+          }),
+        }),
+      };
+    }
+    // Backfill suggestedThreadId: .set().where() → plain resolve
+    return {
+      set: (_s: any) => ({
+        where: (_w: any) => Promise.resolve([]),
+      }),
+    };
+  });
+}
 
 describe("promoteInboxItemToNewThread", () => {
   beforeEach(() => {
@@ -371,15 +408,10 @@ describe("promoteInboxItemToNewThread", () => {
   });
 
   it("throws COMPANY_MISMATCH when inbox item belongs to a different company", async () => {
-    // For promote, we only do one pre-flight select (the inbox item).
-    let selectCallCount = 0;
-    const select = vi.fn(() => {
-      selectCallCount++;
-      return {
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockResolvedValue([{ ...INBOX_ITEM_PENDING, companyId: COMPANY_B }]),
-      };
-    });
+    const select = vi.fn(() => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([{ ...INBOX_ITEM_PENDING, companyId: COMPANY_B }]),
+    }));
     const transaction = vi.fn();
     const db = { select, transaction } as any;
 
@@ -413,25 +445,15 @@ describe("promoteInboxItemToNewThread", () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it("promote: creates thread + posts rawContent as first entry, returns threadId + entryId", async () => {
-    // select returns a valid inbox item (same company).
+  it("promote: creates thread + posts rawContent as first entry, returns threadId + entryId + alreadyHandled:false", async () => {
     const select = vi.fn(() => ({
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([INBOX_ITEM_PENDING]),
     }));
 
-    // Track the inbox update (claim) inside the transaction.
-    const txUpdateCalls: any[] = [];
-    const txUpdate = vi.fn(() => ({
-      set: (s: any) => ({
-        where: (w: any) => {
-          txUpdateCalls.push({ set: s });
-          return Promise.resolve([]);
-        },
-      }),
-    }));
+    // Claim wins: returns [{ id }].
+    const txUpdate = makeTxUpdateForPromote([{ id: "item-1" }]);
 
-    // Mock discussionService to return a discussion with an entry.
     const mockCreate = vi.fn().mockResolvedValue({
       id: "new-thread-1",
       companyId: COMPANY_A,
@@ -453,6 +475,7 @@ describe("promoteInboxItemToNewThread", () => {
 
     expect(result.threadId).toBe("new-thread-1");
     expect(result.entryId).toBe("entry-first");
+    expect(result.alreadyHandled).toBe(false);
 
     // discussionService.create was called with the rawContent entry.
     expect(mockCreate).toHaveBeenCalledOnce();
@@ -466,16 +489,42 @@ describe("promoteInboxItemToNewThread", () => {
         fromInboxItem: "item-1",
       },
     });
-    // createdBy comes from originSource.
     expect(calledCreatedBy).toBe("external-bot");
 
-    // Inbox row was claimed (status='attached', routingStatus='routed').
-    expect(txUpdateCalls.length).toBe(1);
-    expect(txUpdateCalls[0].set).toMatchObject({
-      status: "attached",
-      routingStatus: "routed",
+    // Two tx.update calls: claim + suggestedThreadId backfill.
+    expect(txUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("promote: alreadyHandled — claim returns 0 rows → no thread created, returns alreadyHandled:true", async () => {
+    const select = vi.fn(() => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([INBOX_ITEM_PENDING]),
+    }));
+
+    // Claim loses: returns [].
+    const txUpdate = makeTxUpdateForPromote([]);
+
+    const mockCreate = vi.fn();
+    discussionServiceMock.mockReturnValue({ create: mockCreate } as any);
+
+    const transaction = vi.fn(async (cb: any) => {
+      return await cb({ update: txUpdate, insert: vi.fn() });
     });
-    expect(txUpdateCalls[0].set.suggestedThreadId).toBe("new-thread-1");
+
+    const db = { select, transaction } as any;
+
+    const result = await promoteInboxItemToNewThread(db, {
+      companyId: COMPANY_A,
+      inboxItemId: "item-1",
+      actor: ACTOR,
+    });
+
+    expect(result.alreadyHandled).toBe(true);
+    expect(result.threadId).toBeNull();
+    expect(result.entryId).toBeNull();
+
+    // discussionService.create must NOT be called — no duplicate thread.
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("promote: title is derived from rawContent (first 80 chars)", async () => {
@@ -485,6 +534,8 @@ describe("promoteInboxItemToNewThread", () => {
       where: vi.fn().mockResolvedValue([{ ...INBOX_ITEM_PENDING, rawContent: longContent }]),
     }));
 
+    const txUpdate = makeTxUpdateForPromote([{ id: "item-1" }]);
+
     const mockCreate = vi.fn().mockResolvedValue({
       id: "new-thread-2",
       companyId: COMPANY_A,
@@ -493,9 +544,6 @@ describe("promoteInboxItemToNewThread", () => {
     discussionServiceMock.mockReturnValue({ create: mockCreate } as any);
 
     const transaction = vi.fn(async (cb: any) => {
-      const txUpdate = vi.fn(() => ({
-        set: () => ({ where: () => Promise.resolve([]) }),
-      }));
       return await cb({ update: txUpdate, insert: vi.fn() });
     });
 

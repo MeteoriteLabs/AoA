@@ -47,8 +47,11 @@ export interface AttachResult {
 }
 
 export interface PromoteResult {
-  threadId: string;
-  entryId: string;
+  threadId: string | null;
+  entryId: string | null;
+  /** True when a concurrent caller already claimed+created the thread.
+   * No new thread was created. Callers must handle this gracefully. */
+  alreadyHandled: boolean;
 }
 
 /**
@@ -259,12 +262,40 @@ export async function promoteInboxItemToNewThread(
     : "mcp";
   const createdBy = item.originSource ?? "system";
 
-  // ── Step 3: create thread + post entry + claim inbox row (in one transaction) ─
-  // discussionService.create already wraps discussion + entry in a transaction.
-  // We then claim the inbox row in a SECOND step (still within our wrapping tx).
-  // To keep it all atomic, we do everything inside db.transaction directly,
-  // mirroring the make_thread route shape but ADDING the content-posting entry.
+  // ── Step 3: claim-first + create thread + post entry (in one transaction) ─────
+  // Atomic claim-first: we claim the inbox row (pending → attached) BEFORE creating
+  // the thread. If the claim returns 0 rows, a concurrent caller already won the
+  // claim — return alreadyHandled:true without creating a duplicate thread.
+  //
+  // This closes the double-create TOCTOU race: two concurrent callers can't both
+  // create a new thread for the same inbox item.
+  //
+  // companyId is included in the claim WHERE as defense-in-depth (Lens A) — it
+  // mirrors the attachInboxItemToThread claim pattern.
   const result = await (db as any).transaction(async (tx: any) => {
+    // Atomic claim: only claims if status='pending'. If already 'attached' or
+    // claimed by a concurrent caller, returns 0 rows → alreadyHandled path.
+    const claimed = await tx
+      .update(threadInboxItems)
+      .set({
+        status: "attached",
+        routingStatus: "routed",
+        routedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(threadInboxItems.id, inboxItemId),
+          eq(threadInboxItems.companyId, companyId),
+          eq(threadInboxItems.status, "pending"),
+        ),
+      )
+      .returning({ id: threadInboxItems.id });
+
+    if (!claimed || claimed.length === 0) {
+      // Already handled by a concurrent caller — do NOT create a duplicate thread.
+      return { alreadyHandled: true, created: null };
+    }
+
     const txSvc = discussionService(tx as unknown as Db);
 
     // Create the discussion WITH the first entry in a single call.
@@ -284,24 +315,28 @@ export async function promoteInboxItemToNewThread(
       createdBy,
     );
 
-    // Claim the inbox row.
+    // Backfill suggestedThreadId now that we have the created thread id.
     await tx
       .update(threadInboxItems)
-      .set({
-        status: "attached",
-        suggestedThreadId: created.id,
-        routingStatus: "routed",
-        routedAt: new Date(),
-      })
-      .where(eq(threadInboxItems.id, inboxItemId));
+      .set({ suggestedThreadId: created.id })
+      .where(
+        and(
+          eq(threadInboxItems.id, inboxItemId),
+          eq(threadInboxItems.companyId, companyId),
+        ),
+      );
 
-    return created;
+    return { alreadyHandled: false, created };
   });
 
-  const entryId = result.entry?.id ?? null;
+  if (result.alreadyHandled) {
+    return { threadId: null, entryId: null, alreadyHandled: true };
+  }
+
+  const entryId = result.created?.entry?.id ?? null;
   if (!entryId) {
     throw new Error("promote: discussion was created but first entry id is missing");
   }
 
-  return { threadId: result.id, entryId };
+  return { threadId: result.created.id, entryId, alreadyHandled: false };
 }

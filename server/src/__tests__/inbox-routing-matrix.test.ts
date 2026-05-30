@@ -114,10 +114,18 @@ const SIMILARITY = {
   },
 } as const;
 
-// ── makeDb (identical to inbox-router.test.ts) ────────────────────────────────
+// ── makeDb (mirrors inbox-router.test.ts harness with P0 atomic-claim fix) ────
+//
+// routeInboxItem call sequence (after P0 fix):
+//   STEP 1 — update().set({routingStatus:'routing'}).where(...).returning()
+//              → claimReturning (claimed item, or [] for no-op)
+//   STEP 2 — select(internalAgentConfig)  → configResult
+//   STEP 3 — (optional) select(agents)    → navigatorResult
+//   Subsequent updates: lifecycle writes (where+catch, no returning).
 
 interface MakeDbOptions {
-  itemResult?: any[];
+  /** Claim UPDATE returning. Default: a pending item (claim wins). Pass [] for no-op. */
+  claimReturning?: any[];
   configResult?: any[];
   navigatorResult?: any[];
   onUpdateSet?: (values: any) => void;
@@ -130,14 +138,12 @@ function makePendingItem() {
     id: INBOX_ITEM_ID,
     companyId: COMPANY_ID,
     rawContent: "Test inbox item content",
-    status: "pending",
-    routingStatus: "pending_route",
   };
 }
 
 function makeDb(opts: MakeDbOptions = {}) {
   const {
-    itemResult = [makePendingItem()],
+    claimReturning = [makePendingItem()],
     configResult = [{ inboundRoutingLevel: "off" }],
     navigatorResult,
     onUpdateSet,
@@ -145,7 +151,7 @@ function makeDb(opts: MakeDbOptions = {}) {
     insertReturning = [{ id: WAKEUP_ID }],
   } = opts;
 
-  const selectQueue: any[][] = [itemResult, configResult];
+  const selectQueue: any[][] = [configResult];
   if (navigatorResult !== undefined) {
     selectQueue.push(navigatorResult);
   }
@@ -159,22 +165,34 @@ function makeDb(opts: MakeDbOptions = {}) {
   });
 
   const capturedUpdateSets: any[] = [];
+  let updateCallIndex = 0;
 
   const db = {
     select: vi.fn(() => {
       const idx = selectCallIndex++;
       return makeSelectChain(idx);
     }),
-    update: vi.fn(() => ({
-      set: vi.fn((values: any) => {
-        capturedUpdateSets.push(values);
-        onUpdateSet?.(values);
-        return {
-          where: vi.fn().mockReturnThis(),
-          catch: vi.fn().mockReturnThis(),
-        };
-      }),
-    })),
+    update: vi.fn(() => {
+      const isClaimCall = updateCallIndex === 0;
+      updateCallIndex++;
+      return {
+        set: vi.fn((values: any) => {
+          capturedUpdateSets.push(values);
+          onUpdateSet?.(values);
+          if (isClaimCall) {
+            return {
+              where: vi.fn(() => ({
+                returning: vi.fn().mockResolvedValue(claimReturning),
+              })),
+            };
+          }
+          return {
+            where: vi.fn().mockReturnThis(),
+            catch: vi.fn().mockReturnThis(),
+          };
+        }),
+      };
+    }),
     insert: vi.fn(() => ({
       values: vi.fn((values: any) => {
         onInsertValues?.(values);
@@ -243,6 +261,7 @@ describe("routeInboxItem — full (outcome × dial) decision grid", () => {
     mockPromoteInboxItemToNewThread.mockResolvedValue({
       threadId: THREAD_1_ID,
       entryId: "e2",
+      alreadyHandled: false,
     });
     mockLogActivity.mockResolvedValue(undefined);
   });
@@ -357,6 +376,7 @@ describe("routeInboxItem — cross-cutting invariants", () => {
     mockPromoteInboxItemToNewThread.mockResolvedValue({
       threadId: THREAD_1_ID,
       entryId: "e2",
+      alreadyHandled: false,
     });
     mockLogActivity.mockResolvedValue(undefined);
   });

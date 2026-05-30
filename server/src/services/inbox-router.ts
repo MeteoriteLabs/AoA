@@ -325,16 +325,27 @@ export interface RouteInboxItemResult {
 /**
  * The routing orchestrator.
  *
- * Loads the inbox item + company routing dial, runs similarity scoring,
- * classifies the outcome, resolves the action, writes lifecycle columns,
- * performs the action, logs activity, and returns {action, outcome}.
+ * Atomically claims the inbox item (pending_route → routing) before acting, so
+ * the producer fire-and-forget and the 2-minute sweep cannot both route the same
+ * item concurrently (TOCTOU fix — P0 double-routing bug).
  *
- * Idempotent: if routingStatus is already not 'pending_route' OR status is not
- * 'pending', returns a no-op result immediately (the sweep + async trigger may
- * both call this).
+ * Loads the company routing dial, runs similarity scoring, classifies the outcome,
+ * resolves the action, writes lifecycle columns, performs the action, logs activity,
+ * and returns {action, outcome}.
+ *
+ * Idempotent: the atomic claim UPDATE only succeeds when routingStatus='pending_route'
+ * AND status='pending'. A concurrent caller that loses the claim gets 0 rows back
+ * and returns a no-op result immediately — no double-route, no duplicate thread.
  *
  * Error containment: if the action step throws, sets routingStatus='failed' +
  * routingErrorCode and returns — never crashes the caller.
+ *
+ * Crash-stranded 'routing' items: if this process dies after claiming but before
+ * completing, the item stays routingStatus='routing' with status='pending'. There
+ * is no updatedAt column on thread_inbox_items to enable timestamped reclaim in
+ * the sweep (adding one requires a migration). Items stranded in 'routing' remain
+ * visible in the Inbox (status='pending') for manual founder triage — this is the
+ * correct fail-safe. Timestamped reclaim is a follow-up (add updatedAt migration).
  */
 export async function routeInboxItem(
   db: Db,
@@ -342,37 +353,36 @@ export async function routeInboxItem(
 ): Promise<RouteInboxItemResult> {
   const { inboxItemId, embedText } = args;
 
-  // ── 1. Load the inbox item ─────────────────────────────────────────────────
-  const itemRows = await db
-    .select({
+  // ── 1. Atomic claim: pending_route → routing ───────────────────────────────
+  // Only ONE concurrent caller wins this UPDATE. The other(s) get 0 rows back
+  // and no-op. This closes the TOCTOU race between the producer fire-and-forget
+  // and the 2-minute sweep (P0: was a SELECT-then-act, not an atomic claim).
+  const claimed = await db
+    .update(threadInboxItems)
+    .set({ routingStatus: "routing" })
+    .where(
+      and(
+        eq(threadInboxItems.id, inboxItemId),
+        eq(threadInboxItems.routingStatus, "pending_route"),
+        eq(threadInboxItems.status, "pending"),
+      ),
+    )
+    .returning({
       id: threadInboxItems.id,
       companyId: threadInboxItems.companyId,
       rawContent: threadInboxItems.rawContent,
-      status: threadInboxItems.status,
-      routingStatus: threadInboxItems.routingStatus,
-    })
-    .from(threadInboxItems)
-    .where(eq(threadInboxItems.id, inboxItemId))
-    .limit(1);
+    });
 
-  const item = itemRows[0] ?? null;
-  if (!item) {
-    // Item not found — nothing to route.
-    log.warn({ inboxItemId }, "routeInboxItem: item not found — no-op");
-    return { action: "human", outcome: "uncomputable" };
-  }
-
-  // ── 2. Idempotency guard (Codex #9) ───────────────────────────────────────
-  // The sweep + the async trigger may both call this. If the item is already
-  // routed/escalated/failed, return without doing anything.
-  if (item.routingStatus !== "pending_route" || item.status !== "pending") {
+  if (claimed.length === 0) {
+    // Already claimed/handled by a concurrent caller or the sweep — no-op.
     log.debug(
-      { inboxItemId, routingStatus: item.routingStatus, status: item.status },
-      "routeInboxItem: already processed — no-op",
+      { inboxItemId },
+      "routeInboxItem: claim returned 0 rows — already claimed or handled, no-op",
     );
     return { action: "human", outcome: "uncomputable" };
   }
 
+  const item = claimed[0];
   const { companyId, rawContent } = item;
 
   // ── 3. Load the company routing dial ──────────────────────────────────────
@@ -413,6 +423,7 @@ export async function routeInboxItem(
   // ── 6. Write routing fields (pre-action) ──────────────────────────────────
   // Always write routerConfidence, routerDecision, suggestedThreadId.
   // routingStatus and routedAt are set per-action below.
+  // companyId is threaded into WHERE as defense-in-depth (Lens A).
   await db
     .update(threadInboxItems)
     .set({
@@ -420,7 +431,12 @@ export async function routeInboxItem(
       routerDecision: action,
       suggestedThreadId: suggestedThreadId ?? null,
     })
-    .where(eq(threadInboxItems.id, inboxItemId));
+    .where(
+      and(
+        eq(threadInboxItems.id, inboxItemId),
+        eq(threadInboxItems.companyId, companyId),
+      ),
+    );
 
   // ── 7. Perform action ─────────────────────────────────────────────────────
   try {
@@ -437,24 +453,40 @@ export async function routeInboxItem(
         });
         // attach sets status='attached' + routingStatus='routed' internally,
         // but we also explicitly write the lifecycle fields to be self-contained.
+        // companyId in WHERE is defense-in-depth (Lens A).
         await db
           .update(threadInboxItems)
           .set({ routingStatus: "routed", routedAt: new Date() })
-          .where(eq(threadInboxItems.id, inboxItemId));
+          .where(
+            and(
+              eq(threadInboxItems.id, inboxItemId),
+              eq(threadInboxItems.companyId, companyId),
+            ),
+          );
         break;
       }
 
       case "auto_create": {
-        await promoteInboxItemToNewThread(db, {
+        const promoteResult = await promoteInboxItemToNewThread(db, {
           companyId,
           inboxItemId,
           actor: SYSTEM_ACTOR,
         });
-        // promote sets status='attached' + routingStatus='routed' internally.
-        await db
-          .update(threadInboxItems)
-          .set({ routingStatus: "routed", routedAt: new Date() })
-          .where(eq(threadInboxItems.id, inboxItemId));
+        // promote's claim-first sets status='attached' + routingStatus='routed' internally.
+        // If alreadyHandled (concurrent claim — extremely rare with Fix 1 in place),
+        // the promote was a no-op; still write routed lifecycle fields for self-containment.
+        if (!promoteResult.alreadyHandled) {
+          // Normal path: promote succeeded.
+          await db
+            .update(threadInboxItems)
+            .set({ routingStatus: "routed", routedAt: new Date() })
+            .where(
+              and(
+                eq(threadInboxItems.id, inboxItemId),
+                eq(threadInboxItems.companyId, companyId),
+              ),
+            );
+        }
         break;
       }
 
@@ -475,6 +507,7 @@ export async function routeInboxItem(
 
         // Item stays status='pending' (Navigator hasn't acted yet).
         // routingStatus='escalated' so the sweep knows not to re-route.
+        // companyId in WHERE is defense-in-depth (Lens A).
         await db
           .update(threadInboxItems)
           .set({
@@ -482,32 +515,52 @@ export async function routeInboxItem(
             routedAt: new Date(),
             navigatorWakeupId: wakeupId,
           })
-          .where(eq(threadInboxItems.id, inboxItemId));
+          .where(
+            and(
+              eq(threadInboxItems.id, inboxItemId),
+              eq(threadInboxItems.companyId, companyId),
+            ),
+          );
         break;
       }
 
       case "suggest": {
         // Router did its job: wrote routerDecision='suggest' + suggestedThreadId.
         // Human confirms attachment from Inbox. Item stays status='pending'.
+        // routedAt records when routing completed (audit completeness).
+        // companyId in WHERE is defense-in-depth (Lens A).
         await db
           .update(threadInboxItems)
-          .set({ routingStatus: "routed" })
-          .where(eq(threadInboxItems.id, inboxItemId));
+          .set({ routingStatus: "routed", routedAt: new Date() })
+          .where(
+            and(
+              eq(threadInboxItems.id, inboxItemId),
+              eq(threadInboxItems.companyId, companyId),
+            ),
+          );
         break;
       }
 
       case "human": {
         // No suggestion; item stays status='pending' for manual triage.
+        // routedAt records when routing completed (audit completeness).
+        // companyId in WHERE is defense-in-depth (Lens A).
         await db
           .update(threadInboxItems)
-          .set({ routingStatus: "routed" })
-          .where(eq(threadInboxItems.id, inboxItemId));
+          .set({ routingStatus: "routed", routedAt: new Date() })
+          .where(
+            and(
+              eq(threadInboxItems.id, inboxItemId),
+              eq(threadInboxItems.companyId, companyId),
+            ),
+          );
         break;
       }
     }
   } catch (err: unknown) {
     // Action step threw — mark failed so the sweep won't retry without
     // intervention. Never crash the caller.
+    // companyId in WHERE is defense-in-depth (Lens A).
     const errorCode =
       err instanceof Error && err.message.startsWith("NAVIGATOR_NOT_FOUND")
         ? "NAVIGATOR_NOT_FOUND"
@@ -523,7 +576,12 @@ export async function routeInboxItem(
     await db
       .update(threadInboxItems)
       .set({ routingStatus: "failed", routingErrorCode: errorCode })
-      .where(eq(threadInboxItems.id, inboxItemId))
+      .where(
+        and(
+          eq(threadInboxItems.id, inboxItemId),
+          eq(threadInboxItems.companyId, companyId),
+        ),
+      )
       .catch((updateErr) => {
         log.error(
           { updateErr, inboxItemId },

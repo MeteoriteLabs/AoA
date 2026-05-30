@@ -401,6 +401,7 @@ describe("triage handler delegation to 0.3 write-path (Codex #6)", () => {
     vi.mocked(inboxAttachModule.promoteInboxItemToNewThread).mockResolvedValue({
       threadId: "new-thread-99",
       entryId: "entry-first",
+      alreadyHandled: false,
     });
 
     const resp = await invokeHandler(
@@ -420,6 +421,26 @@ describe("triage handler delegation to 0.3 write-path (Codex #6)", () => {
     expect(resp.body.threadId).toBe("new-thread-99");
     expect(resp.body.entryId).toBe("entry-first");
     expect(resp.status).toBe(201);
+  });
+
+  it("make_thread action: alreadyHandled → 200 with alreadyHandled:true, no logActivity", async () => {
+    const { db } = makeMockDb();
+    vi.mocked(inboxAttachModule.promoteInboxItemToNewThread).mockResolvedValue({
+      threadId: null,
+      entryId: null,
+      alreadyHandled: true,
+    });
+
+    const resp = await invokeHandler(
+      getTriageHandler(),
+      db,
+      { companyId: "co-1", itemId: "item-1" },
+      { action: "make_thread" },
+    );
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.alreadyHandled).toBe(true);
+    expect(resp.body.threadId).toBeNull();
   });
 
   it("dismiss action: does NOT call inbox-attach functions", async () => {

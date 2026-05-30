@@ -8,11 +8,16 @@
  * - ambiguous (near-tie, dial=auto_attach) → enqueueNavigatorRoutingWakeup called with
  *   payload.candidateThreadIds (NOT payload.threadId), routingStatus='escalated', navigatorWakeupId set
  * - suggest (confident match, dial=suggest) → routerDecision='suggest', suggestedThreadId written,
- *   no attach, routingStatus='routed'
- * - uncomputable (embeddings unavailable) → action='human', routingStatus='routed'
- * - already-routed item (routingStatus !== 'pending_route') → no-op
+ *   no attach, routingStatus='routed', routedAt set
+ * - uncomputable (embeddings unavailable) → action='human', routingStatus='routed', routedAt set
+ * - atomic claim: claim returning 0 rows → no-op (P0 regression guard — no findSimilar, no attach, no insert)
  * - action throw → routingStatus='failed' + routingErrorCode, no crash
  * - activityLog called with action='thread.inbox_item.routed'
+ *
+ * Harness change (P0 fix): routeInboxItem now opens with an atomic UPDATE claim
+ * (pending_route → routing) instead of a SELECT item-load. The first mock call is
+ * now update().set().where().returning() — the claimReturning option drives whether
+ * the claim succeeds (returns item) or fails (returns []).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -76,22 +81,27 @@ const WAKEUP_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 // ── DB builder ────────────────────────────────────────────────────────────────
 //
-// The DB builder uses a FIFO queue of select results. The order matches the
-// sequence of .select() calls in routeInboxItem:
+// routeInboxItem call sequence (after P0 atomic-claim fix):
 //
-//   1. Load inbox item (threadInboxItems)
-//   2. Load company routing dial (internalAgentConfig)
-//   3. (optional) Navigator lookup (agents) — only when escalate_navigator
+//   STEP 1 — update().set({routingStatus:'routing'}).where(...).returning()
+//              → claimReturning (the claimed item, or [] for no-op)
 //
-// For enqueueNavigatorRoutingWakeup's Navigator lookup we splice a result into
-// the queue via the `navigatorResult` option.
+//   STEP 2 — select(internalAgentConfig)  → configResult
+//
+//   STEP 3 — (optional) select(agents) for Navigator → navigatorResult
+//
+// All subsequent update() calls are lifecycle writes (routerDecision/confidence,
+// then per-action status). They are captured in capturedUpdateSets via onUpdateSet.
 
 interface MakeDbOptions {
-  /** What the inbox item select returns (index 0). Default: a pending_route item. */
-  itemResult?: any[];
-  /** What the internalAgentConfig select returns (index 1). Default: { inboundRoutingLevel: 'off' }. */
+  /**
+   * What the atomic claim UPDATE returns. Default: the pending item (claim wins).
+   * Pass [] to simulate "already claimed/handled" (the P0 no-op path).
+   */
+  claimReturning?: any[];
+  /** What the internalAgentConfig select returns. Default: { inboundRoutingLevel: 'off' }. */
   configResult?: any[];
-  /** What the agents select returns when looking up Navigator (index 2 when present). */
+  /** What the agents select returns when looking up Navigator (only when escalate_navigator). */
   navigatorResult?: any[];
   /** Capture the values passed to each update.set() call. */
   onUpdateSet?: (values: any) => void;
@@ -101,22 +111,17 @@ interface MakeDbOptions {
   insertReturning?: any[];
 }
 
-function makePendingItem(overrides: Partial<{
-  status: string;
-  routingStatus: string;
-}> = {}) {
+function makePendingItem() {
   return {
     id: INBOX_ITEM_ID,
     companyId: COMPANY_ID,
     rawContent: "Test inbox item content",
-    status: overrides.status ?? "pending",
-    routingStatus: overrides.routingStatus ?? "pending_route",
   };
 }
 
 function makeDb(opts: MakeDbOptions = {}) {
   const {
-    itemResult = [makePendingItem()],
+    claimReturning = [makePendingItem()],
     configResult = [{ inboundRoutingLevel: "off" }],
     navigatorResult,
     onUpdateSet,
@@ -124,8 +129,9 @@ function makeDb(opts: MakeDbOptions = {}) {
     insertReturning = [{ id: WAKEUP_ID }],
   } = opts;
 
-  // Build select queue
-  const selectQueue: any[][] = [itemResult, configResult];
+  // Build select queue: only internalAgentConfig + optional Navigator lookup.
+  // The item-load SELECT is gone — replaced by the atomic claim UPDATE.
+  const selectQueue: any[][] = [configResult];
   if (navigatorResult !== undefined) {
     selectQueue.push(navigatorResult);
   }
@@ -140,21 +146,39 @@ function makeDb(opts: MakeDbOptions = {}) {
 
   const capturedUpdateSets: any[] = [];
 
+  // Track whether the next update() call is the atomic claim (first call) or a
+  // lifecycle write (subsequent calls). The claim uses .returning(); lifecycle
+  // writes do not (they use .catch() for the failure path).
+  let updateCallIndex = 0;
+
   const db = {
     select: vi.fn(() => {
       const idx = selectCallIndex++;
       return makeSelectChain(idx);
     }),
-    update: vi.fn(() => ({
-      set: vi.fn((values: any) => {
-        capturedUpdateSets.push(values);
-        onUpdateSet?.(values);
-        return {
-          where: vi.fn().mockReturnThis(),
-          catch: vi.fn().mockReturnThis(),
-        };
-      }),
-    })),
+    update: vi.fn(() => {
+      const isClaimCall = updateCallIndex === 0;
+      updateCallIndex++;
+      return {
+        set: vi.fn((values: any) => {
+          capturedUpdateSets.push(values);
+          onUpdateSet?.(values);
+          if (isClaimCall) {
+            // Atomic claim: returns the item (or [] for already-claimed no-op).
+            return {
+              where: vi.fn(() => ({
+                returning: vi.fn().mockResolvedValue(claimReturning),
+              })),
+            };
+          }
+          // Lifecycle write: .where().catch() chain (no .returning()).
+          return {
+            where: vi.fn().mockReturnThis(),
+            catch: vi.fn().mockReturnThis(),
+          };
+        }),
+      };
+    }),
     insert: vi.fn(() => ({
       values: vi.fn((values: any) => {
         onInsertValues?.(values);
@@ -175,7 +199,7 @@ describe("routeInboxItem", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAttachInboxItemToThread.mockResolvedValue({ posted: true, entryId: "e1", alreadyHandled: false });
-    mockPromoteInboxItemToNewThread.mockResolvedValue({ threadId: THREAD_1_ID, entryId: "e2" });
+    mockPromoteInboxItemToNewThread.mockResolvedValue({ threadId: THREAD_1_ID, entryId: "e2", alreadyHandled: false });
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -298,7 +322,7 @@ describe("routeInboxItem", () => {
 
   // ── suggest (confident, dial=suggest) ───────────────────────────────────────
 
-  it("suggest: routerDecision='suggest', suggestedThreadId written, no attach, routingStatus='routed'", async () => {
+  it("suggest: routerDecision='suggest', suggestedThreadId written, no attach, routingStatus='routed', routedAt set", async () => {
     // confident match: distance 0.1, gap = 0.2 - 0.1 = 0.1 (>= 0.05)
     mockFindSimilarThreadsScored.mockResolvedValue({
       available: true,
@@ -329,14 +353,16 @@ describe("routeInboxItem", () => {
     );
     expect(fieldWrite).toBeDefined();
 
-    // routingStatus='routed'
-    const statusWrite = capturedUpdateSets.find((s) => s.routingStatus === "routed");
+    // routingStatus='routed' AND routedAt set (audit completeness fix)
+    const statusWrite = capturedUpdateSets.find(
+      (s) => s.routingStatus === "routed" && s.routedAt instanceof Date,
+    );
     expect(statusWrite).toBeDefined();
   });
 
   // ── uncomputable (embeddings unavailable) → human ───────────────────────────
 
-  it("uncomputable: action='human', routingStatus='routed', no attach", async () => {
+  it("uncomputable: action='human', routingStatus='routed', routedAt set, no attach", async () => {
     mockFindSimilarThreadsScored.mockResolvedValue({
       available: false,
       results: [],
@@ -356,52 +382,50 @@ describe("routeInboxItem", () => {
 
     expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
 
-    const statusWrite = capturedUpdateSets.find((s) => s.routingStatus === "routed");
+    // routingStatus='routed' AND routedAt set (audit completeness fix)
+    const statusWrite = capturedUpdateSets.find(
+      (s) => s.routingStatus === "routed" && s.routedAt instanceof Date,
+    );
     expect(statusWrite).toBeDefined();
   });
 
-  // ── already-routed item → no-op ──────────────────────────────────────────────
+  // ── P0 atomicity regression guard ─────────────────────────────────────────────
+  //
+  // The key regression guard: when the atomic claim UPDATE returns 0 rows (the item
+  // was already claimed by a concurrent caller), routeInboxItem must return a no-op
+  // result immediately WITHOUT calling findSimilarThreadsScored, attach, promote, or insert.
+  //
+  // This is the exact failure mode that caused the double-routing P0 bug:
+  //   - BEFORE: SELECT read pending_route → both callers passed the guard → both acted
+  //   - AFTER:  UPDATE claim → only ONE wins → the other gets 0 rows → no-op
+  //
+  // Verified by passing claimReturning=[] (claim fails → no-op).
 
-  it("already-routed item (routingStatus !== 'pending_route') → no-op, no select calls beyond item load", async () => {
+  it("P0 atomicity: claim returns 0 rows → no-op, no findSimilar, no attach, no insert", async () => {
     mockFindSimilarThreadsScored.mockResolvedValue({
       available: true,
-      results: [],
+      results: [{ threadId: THREAD_1_ID, distance: 0.1 }],
     });
 
     const { db } = makeDb({
-      itemResult: [makePendingItem({ routingStatus: "routed" })],
+      claimReturning: [], // Simulate: concurrent caller already claimed this item
+      configResult: [{ inboundRoutingLevel: "auto_attach" }],
     });
 
     const result = await routeInboxItem(db, { inboxItemId: INBOX_ITEM_ID });
 
+    // No-op result
     expect(result.action).toBe("human");
     expect(result.outcome).toBe("uncomputable");
 
-    // findSimilarThreadsScored must NOT be called (idempotency short-circuit)
+    // findSimilarThreadsScored must NOT be called (claim lost → no further work)
     expect(mockFindSimilarThreadsScored).not.toHaveBeenCalled();
     // No attach, no promote, no insert
     expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
+    expect(mockPromoteInboxItemToNewThread).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
-    // Only 1 select call (item load)
-    expect(db.select).toHaveBeenCalledTimes(1);
-  });
-
-  it("already-handled item (status !== 'pending') → no-op", async () => {
-    mockFindSimilarThreadsScored.mockResolvedValue({
-      available: true,
-      results: [],
-    });
-
-    const { db } = makeDb({
-      itemResult: [makePendingItem({ status: "attached", routingStatus: "pending_route" })],
-    });
-
-    const result = await routeInboxItem(db, { inboxItemId: INBOX_ITEM_ID });
-
-    expect(result.action).toBe("human");
-    expect(mockFindSimilarThreadsScored).not.toHaveBeenCalled();
-    expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
-    expect(db.select).toHaveBeenCalledTimes(1);
+    // No select calls at all (config SELECT is skipped when claim fails)
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   // ── action throw → routingStatus='failed' + routingErrorCode, no crash ───────
@@ -496,22 +520,15 @@ describe("routeInboxItem", () => {
     expect(capturedInsertValues[0]?.payload?.distances).toEqual([0.1, 0.12]);
   });
 
-  it("escalation: gap=null when only one candidate", async () => {
-    // Only one result — gap cannot be computed
+  it("escalation: gap=null when only one candidate — single result yields attach_confident", async () => {
+    // Only one result — gap = Infinity → attach_confident (not ambiguous).
     mockFindSimilarThreadsScored.mockResolvedValue({
       available: true,
       results: [
         { threadId: THREAD_1_ID, distance: 0.1 },
-        // No second result — but distance alone within threshold, and gap = Infinity → attach_confident
-        // To trigger ambiguous with one result we need no runner-up.
-        // Actually one result means gap=Infinity → attach_confident, not ambiguous.
-        // To test gap=null we need to force escalate_navigator via a different path.
-        // Instead, let's check via 2 results with tiny gap.
       ],
     });
 
-    // This won't produce ambiguous with one result (gap=Infinity → attach_confident).
-    // Verify attach_confident with one result instead.
     const { db } = makeDb({
       configResult: [{ inboundRoutingLevel: "auto_attach" }],
     });

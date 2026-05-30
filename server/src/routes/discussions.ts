@@ -1053,11 +1053,27 @@ export function discussionRoutes(db: Db) {
         // the first discussion_entries row, and claims the inbox row atomically
         // (Codex #6 fix). The 0.3 service handles the C1 transaction safety that
         // the previous code implemented manually.
+        //
+        // PromoteResult.alreadyHandled: a concurrent promote (rare — the router's
+        // atomic claim in routeInboxItem guards most concurrent paths) already
+        // claimed+created this item. Return 200 with the current item state so
+        // the caller can discover the existing thread via the inbox item.
         const promoteResult = await promoteInboxItemToNewThread(db, {
           companyId,
           inboxItemId: itemId,
           actor,
         });
+
+        if (promoteResult.alreadyHandled) {
+          res.status(200).json({
+            itemId,
+            status: "attached",
+            threadId: null,
+            entryId: null,
+            alreadyHandled: true,
+          });
+          return;
+        }
 
         await logActivity(db, {
           companyId,
