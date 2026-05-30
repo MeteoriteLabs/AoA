@@ -625,10 +625,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
     }
 
-    // Phase 1 Phase E batch 3 (T21): filter to crew/dispatcher-created tasks
-    // for the TeamPage Tasks tab. Accepts the literal string "true" — all other
-    // values (including absent) leave the filter off so behavior is unchanged.
-    const sourceDiscussionIdNotNull = req.query.sourceDiscussionIdNotNull === "true";
+    // Task 1.4: crew-board filter — origin_kind='crew_thread'. Accepts the
+    // literal string "true" — all other values (including absent) leave the
+    // filter off so behavior is unchanged for all non-crew-board callers.
+    const crewBoard = req.query.crewBoard === "true";
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
@@ -640,7 +640,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
       ...(parentIdFilter !== undefined ? { parentId: parentIdFilter } : {}),
-      ...(sourceDiscussionIdNotNull ? { sourceDiscussionIdNotNull: true } : {}),
+      ...(crewBoard ? { crewBoard: true } : {}),
     });
     res.json(result);
   });

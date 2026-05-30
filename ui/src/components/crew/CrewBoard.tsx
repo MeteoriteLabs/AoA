@@ -50,7 +50,7 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
   const tasksQuery = useQuery({
     queryKey: ["tasks", "from-discussions", companyId],
     queryFn: () =>
-      issuesApi.list(companyId, { sourceDiscussionIdNotNull: true }),
+      issuesApi.list(companyId, { crewBoard: true }),
     enabled: Boolean(companyId),
   });
 

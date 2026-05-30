@@ -31,12 +31,13 @@ export const issuesApi = {
       /** UUID to get children of that parent; `null` for top-level tasks only; omit for all. */
       parentId?: string | null;
       /**
-       * Phase 1 Phase E batch 3 (T21): when true, restrict to tasks that were
-       * spawned from a discussion thread. The server-side handler also opts
+       * Task 1.4: when true, restrict to tasks with origin_kind='crew_thread'
+       * (crew-board provenance, decision D10). The server-side handler also opts
        * into a LEFT JOIN that populates `Issue.sourceThreadTitle` so the
        * TeamPage Tasks tab can group results by source thread title.
+       * Renamed from `sourceDiscussionIdNotNull`.
        */
-      sourceDiscussionIdNotNull?: boolean;
+      crewBoard?: boolean;
     },
   ) => {
     const params = new URLSearchParams();
@@ -51,8 +52,8 @@ export const issuesApi = {
     if (filters && Object.prototype.hasOwnProperty.call(filters, "parentId")) {
       params.set("parentId", filters.parentId === null ? "null" : (filters.parentId as string));
     }
-    if (filters?.sourceDiscussionIdNotNull) {
-      params.set("sourceDiscussionIdNotNull", "true");
+    if (filters?.crewBoard) {
+      params.set("crewBoard", "true");
     }
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);

@@ -115,13 +115,14 @@ export interface IssueFilters {
    */
   parentId?: string | null;
   /**
-   * Phase 1 Phase E batch 3 (T21): when true, restrict to tasks that were
-   * spawned from a discussion thread (i.e. issues.source_discussion_id IS NOT
-   * NULL). Also enables the server-side LEFT JOIN that populates the
-   * `sourceThreadTitle` denormalization on returned rows so the TeamPage
-   * Tasks tab can group results without a follow-up fetch.
+   * Task 1.4: when true, restrict to tasks whose origin_kind='crew_thread'
+   * (crew-board provenance, decision D10). Also enables the server-side LEFT
+   * JOIN that populates the `sourceThreadTitle` denormalization on returned
+   * rows so the TeamPage Tasks tab can group results without a follow-up fetch.
+   * Renamed from `sourceDiscussionIdNotNull` — the old name was misleading once
+   * the predicate changed from sourceDiscussionId IS NOT NULL to originKind eq.
    */
-  sourceDiscussionIdNotNull?: boolean;
+  crewBoard?: boolean;
 }
 
 export function pickWorkspaceInheritanceSourceIssueId(input: {
@@ -241,8 +242,8 @@ type IssueRow = typeof issues.$inferSelect & {
   /**
    * Phase 1 Phase E batch 3 (T21): denormalized title of the source discussion
    * thread. Populated only when the issues list endpoint is called with the
-   * `sourceDiscussionIdNotNull=true` filter (which opts the query into a LEFT
-   * JOIN against `discussions`). Absent or `null` otherwise.
+   * `crewBoard=true` filter (which opts the query into a LEFT JOIN against
+   * `discussions`). Absent or `null` otherwise.
    */
   sourceThreadTitle?: string | null;
 };
@@ -644,12 +645,14 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      // Phase 1 Phase E batch 3 (T21): restrict to tasks spawned from a thread.
+      // Task 1.4: restrict to tasks with origin_kind='crew_thread' (decision D10).
       // Also opts the query into the LEFT JOIN below so the TeamPage Tasks tab
       // can group by source thread title without a follow-up fetch.
-      const fromDiscussions = filters?.sourceDiscussionIdNotNull === true;
+      // The assigneeAgentId filter (line ~610) is already pushed unconditionally
+      // above; it works for both the crew-board path and generic list calls.
+      const fromDiscussions = filters?.crewBoard === true;
       if (fromDiscussions) {
-        conditions.push(isNotNull(issues.sourceDiscussionId));
+        conditions.push(eq(issues.originKind, "crew_thread"));
       }
       conditions.push(isNull(issues.hiddenAt));
 

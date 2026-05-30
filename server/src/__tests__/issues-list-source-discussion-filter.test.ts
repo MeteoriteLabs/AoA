@@ -6,10 +6,11 @@ import { errorHandler } from "../middleware/index.js";
 const companyId = "11111111-1111-4111-8111-111111111111";
 
 /**
- * Phase 1 Phase E batch 3 (T21): the GET /companies/:cid/issues route must
- * translate the `sourceDiscussionIdNotNull=true` query param into a service
- * filter so the LEFT JOIN against `discussions` runs (which is what
- * populates `Issue.sourceThreadTitle` in the response). Other values for the
+ * Task 1.4: the GET /companies/:cid/issues route must translate the
+ * `crewBoard=true` query param into a service filter (renamed from
+ * `sourceDiscussionIdNotNull`). The service then applies the
+ * `origin_kind='crew_thread'` predicate and opts into a LEFT JOIN against
+ * `discussions` to populate `Issue.sourceThreadTitle`. Other values for the
  * param must NOT trigger the filter — we treat it strictly as the literal
  * string "true".
  */
@@ -86,7 +87,7 @@ function createApp() {
   return app;
 }
 
-describe("GET /companies/:companyId/issues — sourceDiscussionIdNotNull filter", () => {
+describe("GET /companies/:companyId/issues — crewBoard filter (renamed from sourceDiscussionIdNotNull)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.canUser.mockResolvedValue(true);
@@ -94,13 +95,13 @@ describe("GET /companies/:companyId/issues — sourceDiscussionIdNotNull filter"
     mockIssueService.list.mockResolvedValue([]);
   });
 
-  it("passes sourceDiscussionIdNotNull=true through to the service when the query param is the literal 'true'", async () => {
+  it("passes crewBoard=true through to the service when the query param is the literal 'true'", async () => {
     await request(createApp()).get(
-      `/api/companies/${companyId}/issues?sourceDiscussionIdNotNull=true`,
+      `/api/companies/${companyId}/issues?crewBoard=true`,
     );
     expect(mockIssueService.list).toHaveBeenCalledTimes(1);
     expect(mockIssueService.list.mock.calls[0][1]).toMatchObject({
-      sourceDiscussionIdNotNull: true,
+      crewBoard: true,
     });
   });
 
@@ -108,17 +109,17 @@ describe("GET /companies/:companyId/issues — sourceDiscussionIdNotNull filter"
     await request(createApp()).get(`/api/companies/${companyId}/issues`);
     expect(mockIssueService.list).toHaveBeenCalledTimes(1);
     expect(mockIssueService.list.mock.calls[0][1]).not.toHaveProperty(
-      "sourceDiscussionIdNotNull",
+      "crewBoard",
     );
   });
 
   it("ignores non-'true' values for the param", async () => {
     await request(createApp()).get(
-      `/api/companies/${companyId}/issues?sourceDiscussionIdNotNull=1`,
+      `/api/companies/${companyId}/issues?crewBoard=1`,
     );
     expect(mockIssueService.list).toHaveBeenCalledTimes(1);
     expect(mockIssueService.list.mock.calls[0][1]).not.toHaveProperty(
-      "sourceDiscussionIdNotNull",
+      "crewBoard",
     );
   });
 
@@ -133,7 +134,7 @@ describe("GET /companies/:companyId/issues — sourceDiscussionIdNotNull filter"
     mockIssueService.list.mockResolvedValue([fakeRow]);
 
     const res = await request(createApp()).get(
-      `/api/companies/${companyId}/issues?sourceDiscussionIdNotNull=true`,
+      `/api/companies/${companyId}/issues?crewBoard=true`,
     );
 
     expect(res.status).toBe(200);
@@ -143,5 +144,27 @@ describe("GET /companies/:companyId/issues — sourceDiscussionIdNotNull filter"
       sourceDiscussionId: "thread-A",
       sourceThreadTitle: "Plan landing page redesign",
     });
+  });
+
+  it("passes assigneeAgentId through to the service alongside crewBoard", async () => {
+    const agentId = "aaaaaaaa-0000-4000-8000-aaaaaaaaaaaa";
+    await request(createApp()).get(
+      `/api/companies/${companyId}/issues?crewBoard=true&assigneeAgentId=${agentId}`,
+    );
+    expect(mockIssueService.list).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.list.mock.calls[0][1]).toMatchObject({
+      crewBoard: true,
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("does NOT set crewBoard when the old sourceDiscussionIdNotNull param is used (old param is ignored)", async () => {
+    await request(createApp()).get(
+      `/api/companies/${companyId}/issues?sourceDiscussionIdNotNull=true`,
+    );
+    expect(mockIssueService.list).toHaveBeenCalledTimes(1);
+    // The old param must not accidentally activate the filter
+    expect(mockIssueService.list.mock.calls[0][1]).not.toHaveProperty("crewBoard");
+    expect(mockIssueService.list.mock.calls[0][1]).not.toHaveProperty("sourceDiscussionIdNotNull");
   });
 });

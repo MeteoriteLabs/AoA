@@ -95,7 +95,7 @@ export interface Issue {
   sourceDiscussionId?: string | null;
   /**
    * Denormalized title of the source discussion. Populated by the issues list
-   * endpoint when `sourceDiscussionIdNotNull=true` is passed; absent otherwise.
+   * endpoint when `crewBoard=true` is passed; absent otherwise.
    * Read-only on the client — server-derived from a LEFT JOIN.
    */
   sourceThreadTitle?: string | null;

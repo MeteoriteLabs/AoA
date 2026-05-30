@@ -127,9 +127,9 @@ describe("TasksTab", () => {
       expect(screen.getByTestId("crew-board")).toBeInTheDocument(),
     );
 
-    // The query was issued with the new filter so the server knows to JOIN.
+    // The query was issued with the crewBoard filter so the server knows to JOIN.
     expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
-      sourceDiscussionIdNotNull: true,
+      crewBoard: true,
     });
 
     // Both group headings render.
