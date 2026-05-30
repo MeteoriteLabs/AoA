@@ -305,10 +305,23 @@ describe("writeScopeProposal", () => {
 
   // (c) unique-violation → existing:true
   describe("one-pending-per-thread guard (idempotency)", () => {
-    it("returns existing:true with the existing entry id when unique violation fires on the entry insert", async () => {
+    it("returns existing:true with the PENDING PROPOSAL's entry id (not an arbitrary entry) when unique violation fires", async () => {
+      // Bug regression: the old unfiltered `.where(eq(discussionId, threadId))` returned
+      // the FIRST entry for the thread (likely the oldest, non-proposal entry).
+      // The fix adds `inputType='scope_proposal' AND proposalStatus='pending'` filters.
+      //
+      // This test has two entries in the mock:
+      //   - "entry-old-unrelated" — an older non-proposal entry (oldest → returned first by unfiltered query)
+      //   - "entry-pending-proposal-99" — the actual pending scope_proposal
+      //
+      // The mock's second select (post-violation) inspects the where-clause argument:
+      //   - If the where clause is missing inputType/proposalStatus conditions → returns the wrong old entry
+      //   - If the where clause contains both conditions → returns the correct pending proposal entry
+      //
+      // With the old unfiltered code, result.entryId would be "entry-old-unrelated" → assertion fails.
+      // With the fix, result.entryId is "entry-pending-proposal-99" → assertion passes.
       const uniqueErr = makeUniqueViolationError(CONSTRAINT_NAME);
-      // The unique violation fires on the ENTRY insert (inside the transaction).
-      // We need the mock to throw during the entry insert.
+
       const insertCalls: Array<{ values: any }> = [];
       const throwingInsert = vi.fn().mockImplementation((_table: any) => {
         const idx = insertCalls.length;
@@ -323,16 +336,62 @@ describe("writeScopeProposal", () => {
         return chain;
       });
 
-      // Select: first call returns thread, second call returns existing pending entry
+      // Track the where-arg used on the second (post-violation) SELECT so we can
+      // assert it contains inputType and proposalStatus predicates.
+      let capturedPostViolationWhereArg: unknown = undefined;
+
       let selectCount = 0;
       const selectChain = {
         from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockImplementation(() => {
+        where: vi.fn().mockImplementation((whereArg: unknown) => {
           selectCount += 1;
-          if (selectCount === 1) return Promise.resolve([{ companyId: "co-1", entrySeq: 2 }]);
-          return Promise.resolve([{ id: "entry-existing-99" }]);
+          if (selectCount === 1) {
+            // First select: thread companyId validation
+            return Promise.resolve([{ companyId: "co-1", entrySeq: 2 }]);
+          }
+          // Second select: find the existing pending scope_proposal.
+          // Capture the where arg so we can assert it has the right predicates.
+          capturedPostViolationWhereArg = whereArg;
+
+          // Simulate what the DB would do: only return the pending proposal row
+          // when the where-clause actually filters by inputType + proposalStatus.
+          //
+          // Drizzle's SQL AST uses SQL objects with `queryChunks`. Literal param
+          // values appear as StringChunk objects ({ value: "<literal>" }) nested
+          // inside the queryChunks tree. We recursively collect these to detect
+          // which literal values are present in the where-clause.
+          //
+          // An unfiltered eq(discussionId, threadId) only has "thread-1" in its
+          // chunk values — NOT "scope_proposal" or "pending" — so it falls through
+          // to the wrong (old, unrelated) entry, mirroring the bug.
+          function collectStringChunkValues(obj: unknown, depth = 0): string[] {
+            if (depth > 15 || obj == null) return [];
+            if (typeof obj === "object") {
+              const o = obj as any;
+              const results: string[] = [];
+              // StringChunk: has a string .value property (the literal param value)
+              if (typeof o.value === "string") results.push(o.value);
+              // SQL: has a .queryChunks array
+              if (Array.isArray(o.queryChunks)) {
+                for (const c of o.queryChunks) {
+                  results.push(...collectStringChunkValues(c, depth + 1));
+                }
+              }
+              return results;
+            }
+            return [];
+          }
+          const paramValues = collectStringChunkValues(whereArg);
+          const hasInputTypeFilter = paramValues.includes("scope_proposal");
+          const hasProposalStatusFilter = paramValues.includes("pending");
+          if (hasInputTypeFilter && hasProposalStatusFilter) {
+            return Promise.resolve([{ id: "entry-pending-proposal-99" }]);
+          }
+          // Old unfiltered query → returns the oldest (wrong) entry
+          return Promise.resolve([{ id: "entry-old-unrelated" }]);
         }),
       };
+
       const updateChain = {
         set: vi.fn().mockReturnThis(),
         where: vi.fn().mockReturnThis(),
@@ -354,7 +413,36 @@ describe("writeScopeProposal", () => {
       });
 
       expect(result.existing).toBe(true);
-      expect(result.entryId).toBe("entry-existing-99");
+      // Must be the PENDING PROPOSAL's id — not the old unrelated entry.
+      expect(result.entryId).toBe("entry-pending-proposal-99");
+
+      // Additionally assert the where-clause structure: the post-violation SELECT
+      // must be a Drizzle SQL object (not undefined/null) whose StringChunk param
+      // values include all three filter literals: the threadId, 'scope_proposal',
+      // and 'pending'. Drizzle's and(eq(...), eq(...), eq(...)) stores literal
+      // param values as StringChunk objects ({ value: "<literal>" }) nested inside
+      // queryChunks — collectStringChunkValues (defined in the mock above) extracts
+      // them recursively.
+      function collectStringChunkValues(obj: unknown, depth = 0): string[] {
+        if (depth > 15 || obj == null) return [];
+        if (typeof obj === "object") {
+          const o = obj as any;
+          const results: string[] = [];
+          if (typeof o.value === "string") results.push(o.value);
+          if (Array.isArray(o.queryChunks)) {
+            for (const c of o.queryChunks) {
+              results.push(...collectStringChunkValues(c, depth + 1));
+            }
+          }
+          return results;
+        }
+        return [];
+      }
+      const whereParamValues = collectStringChunkValues(capturedPostViolationWhereArg);
+      // All three conditions must be present in the where-clause
+      expect(whereParamValues).toContain("thread-1");
+      expect(whereParamValues).toContain("scope_proposal");
+      expect(whereParamValues).toContain("pending");
     });
 
     it("re-throws unique violations from a DIFFERENT constraint (not the pending guard)", async () => {

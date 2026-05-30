@@ -24,7 +24,7 @@
 // If either side fails, both roll back — readers never see a partial state
 // where an entry is visible but its plan-steps are missing (or vice versa).
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { discussionEntries, discussions, threadPlanSteps } from "@armyofagents/db";
 import type { Db } from "@armyofagents/db";
 import { publishLiveEvent } from "./live-events.js";
@@ -183,7 +183,11 @@ export async function writeScopeProposal(
       const existingRows = await (db as any)
         .select({ id: discussionEntries.id })
         .from(discussionEntries)
-        .where(eq(discussionEntries.discussionId, threadId));
+        .where(and(
+          eq(discussionEntries.discussionId, threadId),
+          eq(discussionEntries.inputType, "scope_proposal"),
+          eq(discussionEntries.proposalStatus, "pending"),
+        ));
       const existingId: string = existingRows[0]?.id ?? "";
       return { entryId: existingId, proposalCursorSeq, existing: true };
     }
