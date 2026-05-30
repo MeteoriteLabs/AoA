@@ -483,4 +483,157 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     // Phase-4 still runs last (its select slot was consumed; nothing to do).
     expect(db._sets.some(entryFailReclaim)).toBe(false);
   });
+
+  // ── Task 1.6 — Inbox-routing dispatcher branch (D4 / #3 / #4) ─────────────
+  //
+  // D4: inbox-routing wakeups (source="inbox.routing_ambiguous") are gated on
+  // the routing dial (inboundRoutingLevel), NOT crew autonomy. The Navigator
+  // must fire even when autonomyLevel=0.
+  //
+  // #3 / #4: the payload has no threadId by design, so thread-level
+  // pause/controller-path gates must NOT apply to this wakeup source. The
+  // isInboxRouting guard in the dispatcher makes this explicit rather than
+  // relying on the gates being silently inert when threadId is absent.
+  //
+  // These tests use makeConcurrencyDb (already in this describe block) because
+  // it supports .returning() on update() — needed for the atomic claim path.
+  // Autonomy, kill-switch, and rate-brake are mocked to always pass (see the
+  // module-level vi.mock calls above), so the only gate exercised here is the
+  // routing dial.
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='off' → skipped_routing_off, runAoaAgent NOT called", async () => {
+    // Select slot order for this case (single inbox-routing wakeup, dial=off):
+    //   0 = Phase-1 orphan-select
+    //   1 = Phase-2 pending-drain
+    //   2 = Phase-3 wakeup-select
+    //   3 = Phase-4 reclaim-select (runs after Promise.all; resolver fires after
+    //       resolveCompanyConfig because Phase-4 is awaited after the drains)
+    //   4 = resolveCompanyConfig (consumed inside drainPhase3's closure;
+    //       Promise.all runs drainPhase3 concurrently with drainPhase2)
+    //
+    // BUT: Promise.all runs drainPhase2 and drainPhase3 concurrently. drainPhase2
+    // returns immediately (no rows). drainPhase3's async closure calls
+    // resolveCompanyConfig which issues the next select. Phase-4 select runs
+    // only AFTER Promise.all resolves. The select order is therefore:
+    //   slot 0 (orphan), slot 1 (pending), slot 2 (wakeup),
+    //   slot 3 (resolveCompanyConfig — inside drainPhase3 closure),
+    //   slot 4 (Phase-4 reclaim — after Promise.all).
+    // Early-return fires before the rate-brake / agent-row selects.
+    const db = makeConcurrencyDb(
+      [
+        [],  // slot 0 — Phase-1 orphan-select
+        [],  // slot 1 — Phase-2 pending-drain
+        // slot 2 — Phase-3 wakeup-select: one inbox-routing wakeup
+        [{ id: "wr-off", agentId: "a-nav", companyId: "co-r", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-1", candidateThreadIds: ["t1"], distances: [0.2], gap: false } }],
+        // slot 3 — resolveCompanyConfig: routing dial is OFF
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [],  // slot 4 — Phase-4 reclaim-select (after Promise.all)
+      ],
+      [
+        // update[0] = skipped_routing_off write (early-return path, .returning() not used)
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // runAoaAgent must NOT have been called.
+    expect(runAoaMock).not.toHaveBeenCalled();
+
+    // The wakeup row must have been updated to skipped_routing_off.
+    const skipSet = (db._sets as any[]).find((s: any) => s.status === "skipped_routing_off");
+    expect(skipSet).toBeDefined();
+    expect(skipSet.finishedAt).toBeInstanceOf(Date);
+  });
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='suggest' with autonomyLevel=0 → runAoaAgent IS called (not blocked by crew-autonomy)", async () => {
+    // Select slots (dispatch path — dial != off):
+    //   0 = Phase-1 orphan, 1 = Phase-2 pending, 2 = Phase-3 wakeup,
+    //   3 = resolveCompanyConfig (inside closure, concurrent with Phase-2),
+    //   4 = D3 run-rate window count,
+    //   5 = agent row select,
+    //   6 = effectiveAutonomy threadId lookup (no-op: payload has no threadId),
+    //   7 = Phase-4 reclaim-select (after Promise.all).
+    // NOTE: effectiveAutonomy lookup only fires if payload.threadId is present.
+    // Inbox-routing payload has no threadId, so that DB call is skipped and
+    // Phase-4 is slot 6, not slot 7.
+    const db = makeConcurrencyDb(
+      [
+        [],  // slot 0 — Phase-1 orphan-select
+        [],  // slot 1 — Phase-2 pending-drain
+        // slot 2 — Phase-3 wakeup-select: inbox-routing wakeup
+        [{ id: "wr-sug", agentId: "a-nav", companyId: "co-r2", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-2", candidateThreadIds: [], distances: [], gap: true } }],
+        // slot 3 — resolveCompanyConfig: dial=suggest, autonomyLevel=0 (crew would block)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "suggest" }],
+        [],  // slot 4 — D3 run-rate window count
+        [{ runtimeConfig: {}, adapterConfig: {} }], // slot 5 — agent row
+        [],  // slot 6 — Phase-4 reclaim-select
+      ],
+      [
+        [{ id: "wr-sug" }], // update[0] = atomic claim RETURNING
+        [],                  // update[1] = final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // runAoaAgent MUST be called — autonomyLevel=0 does not block inbox-routing.
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db,
+      "a-nav",
+      expect.objectContaining({
+        companyId: "co-r2",
+        source: "inbox.routing_ambiguous",
+        wakeupId: "wr-sug",
+        inboxItemId: "item-2",
+      }),
+    );
+  });
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='auto_attach' with autonomyLevel=0 → runAoaAgent IS called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], [],  // slots 0-1
+        [{ id: "wr-aa", agentId: "a-nav", companyId: "co-r3", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-3", candidateThreadIds: ["t5"], distances: [0.1], gap: false } }],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "auto_attach" }],
+        [],  // D3 rate count
+        [{ runtimeConfig: {}, adapterConfig: {} }],
+        [],  // Phase-4
+      ],
+      [
+        [{ id: "wr-aa" }], // claim
+        [],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-nav",
+      expect.objectContaining({ source: "inbox.routing_ambiguous", wakeupId: "wr-aa" }),
+    );
+  });
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='full_auto' with autonomyLevel=0 → runAoaAgent IS called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], [],
+        [{ id: "wr-fa", agentId: "a-nav", companyId: "co-r4", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-4" } }],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "full_auto" }],
+        [],
+        [{ runtimeConfig: {}, adapterConfig: {} }],
+        [],  // Phase-4
+      ],
+      [
+        [{ id: "wr-fa" }],
+        [],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-nav",
+      expect.objectContaining({ source: "inbox.routing_ambiguous", wakeupId: "wr-fa" }),
+    );
+  });
 });

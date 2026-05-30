@@ -269,12 +269,12 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     );
   };
 
-  // Per-company config memoization within this tick (autonomy + kill-switch + model).
-  const configByCompany = new Map<string, { autonomyLevel: number; crewPaused: boolean; model: string }>();
-  async function resolveCompanyConfig(companyId: string): Promise<{ autonomyLevel: number; crewPaused: boolean; model: string }> {
+  // Per-company config memoization within this tick (autonomy + kill-switch + model + routing dial).
+  const configByCompany = new Map<string, { autonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }>();
+  async function resolveCompanyConfig(companyId: string): Promise<{ autonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }> {
     if (configByCompany.has(companyId)) return configByCompany.get(companyId)!;
     const [cfg] = await db
-      .select({ autonomyLevel: internalAgentConfig.autonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model })
+      .select({ autonomyLevel: internalAgentConfig.autonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model, inboundRoutingLevel: internalAgentConfig.inboundRoutingLevel })
       .from(internalAgentConfig)
       .where(eq(internalAgentConfig.companyId, companyId))
       .limit(1);
@@ -282,6 +282,9 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
       autonomyLevel: cfg?.autonomyLevel ?? 0,
       crewPaused: cfg?.crewPaused ?? false,
       model: (cfg?.model ?? "claude-sonnet-4-6") as string,
+      // D4: inbound routing has its own dial, distinct from crew autonomy.
+      // Default 'off' when no config row exists — teams opt-in explicitly.
+      inboundRoutingLevel: (cfg?.inboundRoutingLevel ?? "off") as string,
     };
     configByCompany.set(companyId, config);
     return config;
@@ -292,6 +295,28 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
       wakeupRows.map((w) =>
         p3Limiter.run(async () => {
           const companyCfg = await resolveCompanyConfig(w.companyId);
+
+          // D4: inbox-routing wakeups are gated on the routing dial
+          // (inboundRoutingLevel), NOT on crew autonomy. The Navigator must
+          // be dispatchable to route inbound items even when autonomyLevel=0.
+          // #4: the payload deliberately omits threadId so the thread-level
+          // pause/controller skips cannot silently swallow the escalation.
+          const isInboxRouting = w.source === "inbox.routing_ambiguous";
+          if (isInboxRouting) {
+            if (companyCfg.inboundRoutingLevel === "off") {
+              await db
+                .update(agentWakeupRequests)
+                .set({ status: "skipped_routing_off", finishedAt: new Date() })
+                .where(eq(agentWakeupRequests.id, w.id));
+              logger.child({ subagent: "aoa-dispatcher" }).info(
+                { wakeupId: w.id, companyId: w.companyId },
+                "aoa wakeup skipped: inbound routing dial off",
+              );
+              return;
+            }
+            // suggest / auto_attach / full_auto → fall through to rate-brake,
+            // atomic claim, and runAoaAgent dispatch below.
+          }
 
           // Plan 3 Task 8: kill-switch gate — check company pause first.
           // Thread-level pause is read live from discussions.crewPaused so a
@@ -306,68 +331,76 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // `discussionId` made this gate silently inert because the lookup
           // key never matched. `threads` and `discussions` are the same
           // table; `threadId` IS the discussion's primary key.
+          //
+          // #3 / #4: inbox-routing wakeups have no threadId (by design) and
+          // must NOT be gated by thread-level pause or controller-path checks.
+          // The isInboxRouting branch above returns early on 'off', so by the
+          // time we reach here, inbox-routing wakeups have inboundRoutingLevel
+          // != 'off' and must fall straight through to dispatch.
           const threadIdInPayload = (w.payload as Record<string, unknown> | null)?.threadId;
-          const threadRow = typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
+          const threadRow = !isInboxRouting && typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
             ? await db
                 .select({ crewPaused: discussions.crewPaused, useControllerPath: discussions.useControllerPath })
                 .from(discussions)
                 .where(eq(discussions.id, threadIdInPayload))
                 .then((rows: Array<{ crewPaused: boolean | null; useControllerPath: boolean | null }>) => rows[0] ?? null)
             : null;
-          const threadPaused = Boolean(threadRow?.crewPaused);
-          if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
-            // P2 fix: distinct terminal status so the wakeup table tells you
-            // WHY a wakeup ended, not just that it ended. Was collapsed into
-            // 'done' which made silent failures invisible.
-            await db
-              .update(agentWakeupRequests)
-              .set({ status: "skipped_paused", finishedAt: new Date() })
-              .where(eq(agentWakeupRequests.id, w.id));
-            logger.child({ subagent: "aoa-dispatcher" }).info(
-              { agentId: w.agentId, companyId: w.companyId, threadPaused },
-              "aoa wakeup skipped: crew kill-switch active",
-            );
-            return;
-          }
+          if (!isInboxRouting) {
+            const threadPaused = Boolean(threadRow?.crewPaused);
+            if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
+              // P2 fix: distinct terminal status so the wakeup table tells you
+              // WHY a wakeup ended, not just that it ended. Was collapsed into
+              // 'done' which made silent failures invisible.
+              await db
+                .update(agentWakeupRequests)
+                .set({ status: "skipped_paused", finishedAt: new Date() })
+                .where(eq(agentWakeupRequests.id, w.id));
+              logger.child({ subagent: "aoa-dispatcher" }).info(
+                { agentId: w.agentId, companyId: w.companyId, threadPaused },
+                "aoa wakeup skipped: crew kill-switch active",
+              );
+              return;
+            }
 
-          // P1-T11: Defense-in-depth gate — controller-path threads are driven
-          // by the orchestration controller, not the peer-wake pipeline. Any
-          // wakeup that slipped through (e.g. from a pre-T11 row) is skipped.
-          if (threadRow?.useControllerPath) {
-            logger.child({ subagent: "aoa-dispatcher" }).debug(
-              { wakeupId: w.id },
-              "aoa wakeup skipped: controller-path thread (peer-wake dormant)",
-            );
-            return;
-          }
+            // P1-T11: Defense-in-depth gate — controller-path threads are driven
+            // by the orchestration controller, not the peer-wake pipeline. Any
+            // wakeup that slipped through (e.g. from a pre-T11 row) is skipped.
+            if (threadRow?.useControllerPath) {
+              logger.child({ subagent: "aoa-dispatcher" }).debug(
+                { wakeupId: w.id },
+                "aoa wakeup skipped: controller-path thread (peer-wake dormant)",
+              );
+              return;
+            }
 
-          // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
-          // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
-          // (scribe, memory_keeper, curator) are always active (min = 0).
-          //
-          // UAT iteration 2 contract: ALL wakeup enqueue sites populate
-          // payload.role with the crew role key (router/planner/maker/...).
-          // - Sweeps: sweep-adjutant + sweep-memory-keeper already do this.
-          // - Mentions: threads.ts processMentions now does this too (looks
-          //   up aoaAgentTriggers.config.role). Without that, every @Router
-          //   / @Planner / @Dispatcher mention bypassed the gate.
-          // runtimeConfig.aoa.role is NOT the source — that field is always
-          // the literal string "member" (a template default, never
-          // specialized per agent). Don't read it.
-          const payloadRole = (w.payload as Record<string, unknown> | null)?.role as string | undefined;
-          if (payloadRole && !isRoleActiveAtAutonomy(payloadRole as CrewRole, companyCfg.autonomyLevel)) {
-            // P2 fix: distinct terminal status (was 'done'). The wakeup was
-            // correctly queued but the autonomy level prevents execution for
-            // agentic roles. Mark explicitly so the wakeup table is debuggable.
-            await db
-              .update(agentWakeupRequests)
-              .set({ status: "skipped_autonomy", finishedAt: new Date() })
-              .where(eq(agentWakeupRequests.id, w.id));
-            logger.child({ subagent: "aoa-dispatcher" }).info(
-              { agentId: w.agentId, role: payloadRole, companyId: w.companyId },
-              "aoa wakeup skipped: autonomy gate (role requires L2)",
-            );
-            return;
+            // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
+            // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
+            // (scribe, memory_keeper, curator) are always active (min = 0).
+            //
+            // UAT iteration 2 contract: ALL wakeup enqueue sites populate
+            // payload.role with the crew role key (router/planner/maker/...).
+            // - Sweeps: sweep-adjutant + sweep-memory-keeper already do this.
+            // - Mentions: threads.ts processMentions now does this too (looks
+            //   up aoaAgentTriggers.config.role). Without that, every @Router
+            //   / @Planner / @Dispatcher mention bypassed the gate.
+            // runtimeConfig.aoa.role is NOT the source — that field is always
+            // the literal string "member" (a template default, never
+            // specialized per agent). Don't read it.
+            const payloadRole = (w.payload as Record<string, unknown> | null)?.role as string | undefined;
+            if (payloadRole && !isRoleActiveAtAutonomy(payloadRole as CrewRole, companyCfg.autonomyLevel)) {
+              // P2 fix: distinct terminal status (was 'done'). The wakeup was
+              // correctly queued but the autonomy level prevents execution for
+              // agentic roles. Mark explicitly so the wakeup table is debuggable.
+              await db
+                .update(agentWakeupRequests)
+                .set({ status: "skipped_autonomy", finishedAt: new Date() })
+                .where(eq(agentWakeupRequests.id, w.id));
+              logger.child({ subagent: "aoa-dispatcher" }).info(
+                { agentId: w.agentId, role: payloadRole, companyId: w.companyId },
+                "aoa wakeup skipped: autonomy gate (role requires L2)",
+              );
+              return;
+            }
           }
 
           // T1.1: rate-brake counts only PAID runs (costCents > 0). Fast-
