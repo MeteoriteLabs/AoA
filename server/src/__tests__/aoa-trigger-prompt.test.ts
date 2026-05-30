@@ -250,6 +250,129 @@ describe("buildTriggerPrompt (T1.2)", () => {
   });
 });
 
+// Task 1.7 — inbox-routing trigger prompt
+describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
+  it("renders inboxItemId, candidateThreadIds with distances, and ambiguity gap", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-1",
+        candidateThreadIds: ["thread-a", "thread-b"],
+        distances: [0.12, 0.34],
+        gap: 0.22,
+      },
+    });
+    // Inbox item ID must appear
+    expect(out).toContain("inbox-1");
+    // Both candidate thread IDs must appear
+    expect(out).toContain("thread-a");
+    expect(out).toContain("thread-b");
+    // Distances rendered to 3 decimal places
+    expect(out).toContain("0.120");
+    expect(out).toContain("0.340");
+    // Gap rendered to 3 decimal places
+    expect(out).toContain("0.220");
+  });
+
+  it("contains attach_to_thread and spin_off_thread in the directive", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-1",
+        candidateThreadIds: ["thread-a"],
+        distances: [0.15],
+        gap: null,
+      },
+    });
+    expect(out).toContain("attach_to_thread");
+    expect(out).toContain("spin_off_thread");
+  });
+
+  it("uses the inbox-routing directive — not the generic navigator role directive", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-1",
+        candidateThreadIds: ["thread-a", "thread-b"],
+        distances: [0.12, 0.34],
+        gap: 0.22,
+      },
+    });
+    // Distinctive phrase from INBOX_ROUTING_DIRECTIVE
+    expect(out).toContain("An inbound item needs routing");
+    // The generic navigator ROLE_ACTION_DIRECTIVE must NOT appear instead
+    expect(out).not.toContain("decide whether to `attach_to_thread`");
+  });
+
+  it("guard case: empty candidateThreadIds + no gap still renders without throwing", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-2",
+        candidateThreadIds: [],
+        distances: [],
+        gap: undefined,
+      },
+    });
+    // Must still contain the inbox item ID
+    expect(out).toContain("inbox-2");
+    // Must not crash or produce "undefined"
+    expect(out).not.toContain("undefined");
+    // Candidate threads line should be absent (empty array)
+    expect(out).not.toContain("Candidate threads:");
+    // Gap line should be absent (undefined / not a finite number)
+    expect(out).not.toContain("Ambiguity gap:");
+  });
+
+  it("guard case: gap=null renders without gap line", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-3",
+        candidateThreadIds: ["thread-x"],
+        distances: [0.25],
+        gap: null,
+      },
+    });
+    expect(out).toContain("inbox-3");
+    expect(out).toContain("thread-x");
+    expect(out).not.toContain("Ambiguity gap:");
+  });
+
+  it("non-inbox navigator wakeup still uses the role-table directive (regression guard)", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: { companyId: "co", source: "thread_mention", mention: "@Navigator" },
+    });
+    // Role-table directive for 'navigator' must appear
+    expect(out).toContain("attach_to_thread");
+    // But the inbox-routing opener must NOT appear for a non-inbox trigger
+    expect(out).not.toContain("An inbound item needs routing");
+  });
+});
+
 // Task 0.4 — ensure-adjutant stale-framing guard
 describe("ensure-adjutant instruction (Task 0.4)", () => {
   it("does NOT contain stale 'Dispatcher and Engineer take over' framing", () => {

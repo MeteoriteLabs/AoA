@@ -55,6 +55,12 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
 const GENERIC_DIRECTIVE =
   "use the tools in your allowlist appropriate to this trigger, then return";
 
+// Dedicated directive for inbox.routing_ambiguous wakeups (Task 1.7).
+// The Navigator receives an inboxItemId + candidate threads + distances so it
+// can make a concrete routing decision rather than relying on generic guidance.
+const INBOX_ROUTING_DIRECTIVE =
+  "An inbound item needs routing. Review the candidate threads below. Decide: if one is a clear home, call `attach_to_thread` to attach this inbox item's content as a new entry there; if the material deserves its own thread, call `spin_off_thread`; if none fit, post a routing recommendation via `post_entry`. The routing dial decides whether your decision auto-acts or is surfaced to the founder as a suggestion — act on your best judgment either way.";
+
 export interface BuildTriggerPromptArgs {
   /** Full assembled instruction bundle (SOUL+TOOLS+AGENTS+HEARTBEAT)
    *  resolved upstream in runner.ts. Becomes the top of the prompt so the
@@ -90,7 +96,43 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     typeof payload.role === "string" ? `Routed role: ${payload.role}` : null,
   ].filter((line): line is string => line !== null);
 
-  const directive = ROLE_ACTION_DIRECTIVE[agentRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;
+  // Task 1.7 — inbox-routing wakeup branch.
+  // When the Navigator is woken for inbox routing, append the inbox item +
+  // candidate threads + ambiguity gap so it has concrete material to act on.
+  // All field reads are defensive (unknown payload fields); a malformed payload
+  // never throws — it simply omits the field that wasn't valid.
+  let directive: string;
+  if (payload.source === "inbox.routing_ambiguous") {
+    directive = INBOX_ROUTING_DIRECTIVE;
+
+    // Inbox item ID (non-empty string guard)
+    const inboxItemId = payload.inboxItemId;
+    if (typeof inboxItemId === "string" && inboxItemId.length > 0) {
+      ctxLines.push(`Inbox item: ${inboxItemId}`);
+    }
+
+    // Candidate threads (non-empty array guard). Zip with distances by index.
+    const candidates = payload.candidateThreadIds;
+    const distances = payload.distances;
+    if (Array.isArray(candidates) && candidates.length > 0) {
+      const parts = candidates.map((id, i) => {
+        const d = Array.isArray(distances) ? distances[i] : undefined;
+        const dist = typeof d === "number" && Number.isFinite(d)
+          ? `${(d as number).toFixed(3)}`
+          : null;
+        return dist !== null ? `${id} (${dist})` : `${id}`;
+      });
+      ctxLines.push(`Candidate threads: ${parts.join(", ")}`);
+    }
+
+    // Ambiguity gap (finite number guard)
+    const gap = payload.gap;
+    if (typeof gap === "number" && Number.isFinite(gap)) {
+      ctxLines.push(`Ambiguity gap: ${(gap as number).toFixed(3)}`);
+    }
+  } else {
+    directive = ROLE_ACTION_DIRECTIVE[agentRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;
+  }
 
   return [
     instruction,

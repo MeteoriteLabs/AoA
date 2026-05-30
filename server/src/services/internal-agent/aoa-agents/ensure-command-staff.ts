@@ -132,7 +132,9 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "spin_off_thread), or (c) a department (use query_departments + post_entry " +
     "with a routing recommendation). Use thread.createLink (kind='link') when " +
     "you find a meaningful precedent between threads. Do not create tasks or " +
-    "write memory.",
+    "write memory." +
+    // Task 1.7 — inbox-routing standing persona augmentation.
+    " When woken with trigger source `inbox.routing_ambiguous`, you are routing a single inbound item: use its candidate threads to choose attach (`attach_to_thread`), branch (`spin_off_thread`), or a recommendation, for that item.",
   planner:
     "You are the Planner. When a thread phase advances, review pending extracted " +
     "items using query_extracted_items, query_tasks, and query_dependency_chain. " +
