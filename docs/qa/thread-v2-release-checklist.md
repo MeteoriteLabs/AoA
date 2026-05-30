@@ -90,6 +90,25 @@ Test all three crew roles in the same release:
 
 ---
 
+## 8. Work-as-Tasks (crew chokepoint) — release additions
+
+The unified work=task model: every piece of crew work is born as an inline scope card through the single `crew-task-service` chokepoint, gated by the per-thread autonomy pill (L0/L1/L2).
+
+- [ ] **Autonomy pill renders correctly.** On a thread, open the autonomy pill and set each level. The label must read **Manual** (0) / **Assist** (1) / **Drive** (2) — NOT "Semi"/"Auto", and **L0/Manual must render** (no blank/"Auto off"). The picker offers `Off / Manual / Assist / Drive`.
+- [ ] **Propose at convergence.** Drive a thread to convergence (see §1). The Adjutant calls `propose_crew_work` → an inline **scope card** (`inputType = 'scope_proposal'`, `proposal_status = 'pending'`) appears in the thread chat.
+- [ ] **L0/L1 — human approves.** With the thread at Manual or Assist, the card stays pending. Tap **Approve** → tasks appear on the **Team → Crew Board**, each stamped `origin_kind = 'crew_thread'` (confirm in DB or that they render on the board).
+- [ ] **L2 — auto-approve.** Set the thread to **Drive**, drive to convergence. The same card is written and **auto-approved** (no manual tap); tasks appear on the board and the assignees are dispatched (`heartbeat_runs` rows). The card remains visible in-thread as the audit record.
+- [ ] **One-pending guard (no duplicate cards).** Rapidly click the phase-advance control while the Adjutant is proposing. Confirm **exactly one** pending scope card exists (the partial-unique index `discussion_entries_one_pending_scope_proposal_idx` holds) — never two.
+- [ ] **Budget gates dispatch, not the card.** At Drive with crew budget exhausted (or crew paused), confirm the scope card is **still written** (human can approve later) but auto-dispatch is **skipped** with an in-thread reason. Raising budget + approving then dispatches normally.
+- [ ] **Crew board grouping + agent filter.** The board groups tasks by source thread (`crew-board-group-<threadId>`). Selecting an agent in `crew-board-agent-filter` re-queries and narrows to that agent's crew tasks.
+- [ ] **Per-task audit card.** Click a task card on the crew board → the audit card opens (Sheet) showing the run's tool calls, token cost, and outcome (`crew-audit-tools`, `crew-audit-cost`, `crew-audit-outcome`).
+- [ ] **Result relay.** When a crew task completes successfully, its result posts back into the originating thread as an `agent` entry (best-effort — a relay failure never fails the run).
+- [ ] **Planner is a normal worker.** Assign a "write the plan" task to the **Planner** (via a `propose_crew_work` task with `assigneeRole = 'planner'`). It runs like any worker, creates a plan artifact (`create_artifact`), and posts back — it is NOT a special phase-advance trigger.
+- [ ] **Dispatcher retired.** A newly-created company seeds **no Dispatcher** agent (Command Staff = Navigator + Planner + Memory Keeper). Confirm inbound routing/branching still works via the **Navigator** (`attach_to_thread` / `spin_off_thread`). Commander's ad-hoc `create_task` (non-thread) is unaffected.
+- [ ] **Archive UX.** Hover a thread row in the Discussions sidebar → the kebab reveals **Archive**; archiving moves the thread into the **Archived** column on the discussions board.
+
+---
+
 ## Sign-off
 
 | Field | Value |
