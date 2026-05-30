@@ -50,6 +50,10 @@ vi.mock("@armyofagents/db", () => ({
     useControllerPath: "discussions_use_controller_path",
     updatedAt: "discussions_updated_at",
   },
+  internalAgentConfig: {
+    companyId: "iac_company_id",
+    autonomyLevel: "iac_autonomy_level",
+  },
   discussionEntries: {
     id: "de_id",
     discussionId: "de_discussion_id",
@@ -264,9 +268,10 @@ describe("T1. advance to 'assign' at L2 with a pending proposal", () => {
     const thread = makeThread({ phase: "scope", autonomyLevel: 2 });
 
     const db = createSequenceDb([
-      [thread],                    // fetch thread row
-      [],                          // update discussions (phase update)
-      [{ id: PROPOSAL_ID }],       // find pending scope_proposal entry
+      [thread],                         // fetch thread row
+      [],                               // update discussions (phase update)
+      [{ autonomyLevel: 0 }],           // company config fetch (thread L2 wins, company value irrelevant)
+      [{ id: PROPOSAL_ID }],            // find pending scope_proposal entry
     ]);
 
     const svc = threadService(db);
@@ -274,7 +279,7 @@ describe("T1. advance to 'assign' at L2 with a pending proposal", () => {
 
     expect(result.phase).toBe("assign");
 
-    // resolveCreationGate must have been called with autonomyLevel=2
+    // resolveCreationGate must have been called with effective autonomy = 2
     expect(resolveCreationGate).toHaveBeenCalledWith(2);
 
     // crewTaskService must have been instantiated and approveAndDispatch called
@@ -303,8 +308,9 @@ describe("T2. advance to 'assign' at L0 (await_human) — proposal NOT approved"
     const thread = makeThread({ phase: "scope", autonomyLevel: 0 });
 
     const db = createSequenceDb([
-      [thread],    // fetch thread row
-      [],          // update discussions
+      [thread],               // fetch thread row
+      [],                     // update discussions
+      [{ autonomyLevel: 0 }], // company config fetch (thread L0 wins)
       // NO pending-proposal select should happen (gate is await_human)
     ]);
 
@@ -328,8 +334,9 @@ describe("T3. advance to 'assign' at L1 (await_human) — proposal NOT approved"
     const thread = makeThread({ phase: "scope", autonomyLevel: 1 });
 
     const db = createSequenceDb([
-      [thread],   // fetch thread row
-      [],         // update discussions
+      [thread],               // fetch thread row
+      [],                     // update discussions
+      [{ autonomyLevel: 0 }], // company config fetch (thread L1 wins)
     ]);
 
     const svc = threadService(db);
@@ -353,9 +360,10 @@ describe("T4. advance to 'assign' at L2 but NO pending proposal exists", () => {
     const thread = makeThread({ phase: "scope", autonomyLevel: 2 });
 
     const db = createSequenceDb([
-      [thread],   // fetch thread row
-      [],         // update discussions
-      [],         // pending-proposal select → empty (no pending proposal)
+      [thread],               // fetch thread row
+      [],                     // update discussions
+      [{ autonomyLevel: 0 }], // company config fetch (thread L2 wins)
+      [],                     // pending-proposal select → empty (no pending proposal)
     ]);
 
     const svc = threadService(db);
@@ -396,25 +404,87 @@ describe("T5. (regression) advancing to 'scope' — old Dispatcher wakeup not ca
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// T6. autonomyLevel=null → fail-closed (await_human) — no auto-approve
+// T6. thread.autonomyLevel=null, company L0 → still await_human (no auto-approve)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe("T6. autonomyLevel=null → resolveCreationGate returns await_human", () => {
-  it("leaves pending proposal, does NOT call approveAndDispatch", async () => {
+describe("T6. thread autonomyLevel=null + company L0 → resolveCreationGate gets 0 (await_human)", () => {
+  it("falls back to company L0, leaves pending proposal, does NOT call approveAndDispatch", async () => {
     vi.mocked(resolveCreationGate).mockReturnValue("await_human");
 
     const thread = makeThread({ phase: "scope", autonomyLevel: null });
 
     const db = createSequenceDb([
-      [thread],   // fetch thread row
-      [],         // update discussions
+      [thread],               // fetch thread row
+      [],                     // update discussions
+      [{ autonomyLevel: 0 }], // company config fetch → L0 (fallback)
     ]);
 
     const svc = threadService(db);
     const result = await svc.advancePhase(CO_ID, THREAD_ID, "assign", FOUNDER);
 
     expect(result.phase).toBe("assign");
-    expect(resolveCreationGate).toHaveBeenCalledWith(null);
+    // With the company fallback: thread.autonomyLevel=null, company=0 → effective=0
+    expect(resolveCreationGate).toHaveBeenCalledWith(0);
+    expect(mockApproveAndDispatch).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// T7. thread.autonomyLevel=null, company L2 → company fallback triggers auto-approve
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("T7. thread autonomyLevel=null + company L2 → company fallback triggers auto-approve", () => {
+  it("uses company L2 as effective autonomy and auto-approves the pending proposal", async () => {
+    // resolveCreationGate returns auto_approve for autonomy=2
+    vi.mocked(resolveCreationGate).mockReturnValue("auto_approve");
+
+    const thread = makeThread({ phase: "scope", autonomyLevel: null });
+
+    const db = createSequenceDb([
+      [thread],               // fetch thread row
+      [],                     // update discussions
+      [{ autonomyLevel: 2 }], // company config fetch → L2 (fallback used)
+      [{ id: PROPOSAL_ID }],  // find pending scope_proposal entry
+    ]);
+
+    const svc = threadService(db);
+    const result = await svc.advancePhase(CO_ID, THREAD_ID, "assign", FOUNDER);
+
+    expect(result.phase).toBe("assign");
+    // effective autonomy = company L2 (thread was null)
+    expect(resolveCreationGate).toHaveBeenCalledWith(2);
+
+    // auto-approve triggered by company fallback
+    expect(crewTaskService).toHaveBeenCalledWith(db);
+    expect(mockApproveAndDispatch).toHaveBeenCalledTimes(1);
+    expect(mockApproveAndDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: THREAD_ID,
+        companyId: CO_ID,
+        proposalEntryId: PROPOSAL_ID,
+        approverUserId: USER_ID,
+      }),
+    );
+  });
+
+  it("uses company L2 fallback: advance succeeds even with no pending proposal", async () => {
+    vi.mocked(resolveCreationGate).mockReturnValue("auto_approve");
+
+    const thread = makeThread({ phase: "scope", autonomyLevel: null });
+
+    const db = createSequenceDb([
+      [thread],               // fetch thread row
+      [],                     // update discussions
+      [{ autonomyLevel: 2 }], // company config fetch → L2 (fallback used)
+      [],                     // pending-proposal select → empty
+    ]);
+
+    const svc = threadService(db);
+    const result = await svc.advancePhase(CO_ID, THREAD_ID, "assign", FOUNDER);
+
+    expect(result.phase).toBe("assign");
+    expect(resolveCreationGate).toHaveBeenCalledWith(2);
+    // No pending proposal → approveAndDispatch NOT called
     expect(mockApproveAndDispatch).not.toHaveBeenCalled();
   });
 });

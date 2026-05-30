@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { eq, and } from "drizzle-orm";
-import { discussions, threadInboxItems } from "@armyofagents/db";
+import { discussions, threadInboxItems, internalAgentConfig } from "@armyofagents/db";
 import { z } from "zod";
 import {
   createDiscussionSchema,
@@ -560,6 +560,41 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
+
+      // D16 authz gate: advancing to "assign" at L2 triggers auto-approve + task
+      // creation + dispatch, which spends budget. The Approve button requires
+      // founder/team_lead (see assertRole call below at ~line 1257). This gate
+      // makes the two spend-doors require the same role.
+      //
+      // We resolve effective autonomy here (thread.autonomyLevel ?? company
+      // autonomyLevel) the same way advancePhase does, so the authz decision
+      // is consistent. A 404 on the thread fetch is allowed to fall through —
+      // advancePhase will throw its own notFound which is caught below.
+      const targetPhase = req.body.phase as string;
+      if (targetPhase === "assign") {
+        const [threadRow] = await db
+          .select({ autonomyLevel: discussions.autonomyLevel })
+          .from(discussions)
+          .where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)));
+
+        if (threadRow !== undefined) {
+          const [companyCfg] = await db
+            .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+            .from(internalAgentConfig)
+            .where(eq(internalAgentConfig.companyId, companyId))
+            .limit(1);
+          const companyAutonomyLevel = companyCfg?.autonomyLevel ?? 0;
+          const effectiveAutonomy =
+            threadRow.autonomyLevel != null ? threadRow.autonomyLevel : companyAutonomyLevel;
+
+          // At L2, this advance WOULD auto-approve and spend — require the same
+          // role as the Approve route (founder or team_lead).
+          if (effectiveAutonomy >= 2) {
+            await assertRole(db, req, companyId, "founder", "team_lead");
+          }
+        }
+      }
+
       const actor = await buildActor(req, companyId);
       try {
         const result = await tSvc.advancePhase(companyId, discussionId, req.body.phase, actor);

@@ -24,6 +24,7 @@ vi.mock("../services/live-events.js", () => ({
 }));
 
 vi.mock("drizzle-orm", () => ({
+  and: vi.fn((...args: unknown[]) => ({ _op: "and", args })),
   eq: vi.fn((a: unknown, b: unknown) => ({ _op: "eq", a, b })),
   sql: Object.assign(
     vi.fn((_s: unknown) => ({ sql: true })),
@@ -82,7 +83,8 @@ interface MockIssueRow {
 
 /**
  * Build a mock db whose:
- *   - select().from().where()  → [issueRow] (or [] when issueRow is null)
+ *   - select().from().where()  → consumes from selectQueue (queue of row arrays)
+ *       Queue order: [0] issue row(s), [1] source thread row(s)
  *   - transaction callback → invoked with a txStub that:
  *       tx.update(...).set(...).where(...).returning() → [{ entrySeq: 1, companyId: "co-1" }]
  *       tx.insert(...).values(...).returning() → [insertedEntry]
@@ -90,6 +92,8 @@ interface MockIssueRow {
 function makeMockDb(opts: {
   issueRow?: MockIssueRow | null;
   insertedEntry?: Record<string, unknown>;
+  /** source thread companyId for the Guard 3 check; defaults to same as issue companyId */
+  threadCompanyId?: string | null;
 } = {}) {
   const issueRow: MockIssueRow | null =
     opts.issueRow !== undefined
@@ -103,9 +107,22 @@ function makeMockDb(opts: {
           companyId: "co-1",
         };
 
+  // Default threadCompanyId = same as issue (happy path)
+  const threadCompanyId =
+    opts.threadCompanyId !== undefined
+      ? opts.threadCompanyId
+      : issueRow?.companyId ?? "co-1";
+
   const insertedEntry = opts.insertedEntry ?? { id: "entry-1", seq: 1 };
 
   const insertValues: Record<string, unknown> = {};
+
+  // Queue of results: [issue select, source-thread companyId select]
+  const selectQueue: Array<unknown[]> = [
+    issueRow ? [issueRow] : [],
+    threadCompanyId != null ? [{ companyId: threadCompanyId }] : [],
+  ];
+  let selectIdx = 0;
 
   const txStub = {
     update: vi.fn((_table: unknown) => ({
@@ -131,7 +148,7 @@ function makeMockDb(opts: {
     select: vi.fn((_cols: unknown) => ({
       from: vi.fn((_table: unknown) => ({
         where: vi.fn((_cond: unknown) =>
-          Promise.resolve(issueRow ? [issueRow] : []),
+          Promise.resolve(selectQueue[selectIdx++] ?? []),
         ),
       })),
     })),
@@ -270,5 +287,53 @@ describe("relayCrewResult", () => {
     expect(insertValues.authorAgentId).toBeNull();
     // Falls back to issue.id as sentinel
     expect(insertValues.createdBy).toBe("issue-5");
+  });
+
+  // ── Guard 3: multi-tenant companyId cross-check (Codex #6) ───────────────────
+
+  it("is a no-op when source thread belongs to a different company than the issue", async () => {
+    const { db, txStub } = makeMockDb({
+      issueRow: {
+        id: "issue-6",
+        title: "Cross-tenant task",
+        originKind: "crew_thread",
+        sourceDiscussionId: "thread-6",
+        assigneeAgentId: "agent-9",
+        companyId: "co-1",
+      },
+      // Source thread is in a DIFFERENT company — cross-company mismatch
+      threadCompanyId: "co-EVIL",
+    });
+    vi.mocked(publishLiveEvent).mockClear();
+
+    const result = await relayCrewResult(db as any, { issueId: "issue-6" });
+
+    // Must no-op: cross-company write refused
+    expect(result).toEqual({ posted: false });
+    // transaction must NOT have been called
+    expect(txStub.insert).not.toHaveBeenCalled();
+    expect(publishLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when source thread row is not found (Guard 3 treats missing as mismatch)", async () => {
+    const { db, txStub } = makeMockDb({
+      issueRow: {
+        id: "issue-7",
+        title: "Orphaned-thread task",
+        originKind: "crew_thread",
+        sourceDiscussionId: "thread-7",
+        assigneeAgentId: "agent-9",
+        companyId: "co-1",
+      },
+      // No thread row found
+      threadCompanyId: null,
+    });
+    vi.mocked(publishLiveEvent).mockClear();
+
+    const result = await relayCrewResult(db as any, { issueId: "issue-7" });
+
+    expect(result).toEqual({ posted: false });
+    expect(txStub.insert).not.toHaveBeenCalled();
+    expect(publishLiveEvent).not.toHaveBeenCalled();
   });
 });

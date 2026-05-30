@@ -22,7 +22,7 @@
  * posting failure never masks the underlying task completion (mirroring the
  * crew-failure-card design).
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { issues, discussions, discussionEntries } from "@armyofagents/db";
 import { publishLiveEvent } from "./live-events.js";
@@ -78,11 +78,30 @@ export async function relayCrewResult(
   // completion), fall back to the issue id as a safe non-null sentinel.
   const agentId: string = issue.assigneeAgentId ?? issue.id;
 
+  // ── Guard 3: multi-tenant companyId cross-check (Codex #6) ───────────────
+  // Verify the source discussion belongs to the SAME company as the issue.
+  // An explicit check here + a constrained UPDATE below ensure a cross-company
+  // update cannot happen even if auth somehow passes.
+  const [sourceThread] = await db
+    .select({ companyId: discussions.companyId })
+    .from(discussions)
+    .where(eq(discussions.id, threadId));
+
+  if (!sourceThread || sourceThread.companyId !== issue.companyId) {
+    log.warn(
+      { issueId: params.issueId, issueCompanyId: issue.companyId, threadId, threadCompanyId: sourceThread?.companyId },
+      "crew-result-relay: companyId mismatch — refusing to post cross-company entry",
+    );
+    return { posted: false };
+  }
+
   const rawContent = `Completed: "${issue.title}" (task ${issue.id})`;
   const now = new Date();
 
   // ── Atomic insert: bump entrySeq + entryCount, assign seq ─────────────────
   const { entry, companyId } = await db.transaction(async (tx) => {
+    // Constrained UPDATE: include companyId in WHERE so a cross-company write
+    // is impossible even if the explicit check above were somehow bypassed.
     const [{ entrySeq, companyId: cid }] = await tx
       .update(discussions)
       .set({
@@ -90,7 +109,7 @@ export async function relayCrewResult(
         entryCount: sql`${discussions.entryCount} + 1`,
         updatedAt: now,
       })
-      .where(eq(discussions.id, threadId))
+      .where(and(eq(discussions.id, threadId), eq(discussions.companyId, issue.companyId)))
       .returning({ entrySeq: discussions.entrySeq, companyId: discussions.companyId });
 
     const [inserted] = await tx

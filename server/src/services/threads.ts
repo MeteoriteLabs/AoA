@@ -29,6 +29,7 @@ import {
   agentWakeupRequests,
   aoaAgentTriggers,
   threadPlanSteps,
+  internalAgentConfig,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -615,7 +616,17 @@ export function threadService(db: Db) {
       // NOTE: The old Dispatcher-wakeup coupling (phase-advance → aoaAgentTriggers
       // → agentWakeupRequests) has been removed here (Task 2.7 retires that role).
       if (target === "assign") {
-        const effectiveAutonomy = thread.autonomyLevel ?? null;
+        // Resolve effectiveAutonomy: thread-level wins; fall back to company
+        // internal_agent_config.autonomyLevel (same pattern as controller-adjutant-runner
+        // and dispatcher). Default to 0 if no company row exists.
+        const [companyCfg] = await db
+          .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId))
+          .limit(1);
+        const companyAutonomyLevel: number = companyCfg?.autonomyLevel ?? 0;
+        const effectiveAutonomy: number | null =
+          thread.autonomyLevel != null ? thread.autonomyLevel : companyAutonomyLevel;
         // Dynamic import: keeps crew-task-service → heartbeat → execution-workspaces
         // → git → execFile out of the top-level import graph (see comment above).
         const { resolveCreationGate, crewTaskService } = await import("./crew-task-service.js");
