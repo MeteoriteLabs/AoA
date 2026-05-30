@@ -6,14 +6,15 @@
  * The "Active Proposal" badge is set by the caller — typically the most
  * recent scope_proposal entry in the thread is "active".
  */
-import { CheckCircle2, ListChecks, XCircle, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, ListChecks, XCircle, Sparkles, Pencil } from "lucide-react";
 import type { ScopeProposalPayload } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 
 interface ScopeProposalCardProps {
   proposal: ScopeProposalPayload;
   isActive: boolean;
-  onApprove: () => void;
+  onApprove: (overrides?: { title: string }[]) => void;
   onReject: () => void;
   /** Optional auto-advance hint (ISO date string from proposal.autoAdvanceAt). */
   autoAdvanceAt?: string | null;
@@ -26,6 +27,11 @@ export function ScopeProposalCard({
   onReject,
   autoAdvanceAt,
 }: ScopeProposalCardProps) {
+  const [editMode, setEditMode] = useState(false);
+  const [editedTasks, setEditedTasks] = useState(
+    () => proposal.proposedTasks.map(t => ({ ...t })),
+  );
+
   return (
     <div
       className={cn(
@@ -55,30 +61,56 @@ export function ScopeProposalCard({
         Proposed tasks ({proposal.proposedTasks.length})
       </div>
 
-      <ul
-        className="flex flex-col gap-1.5 text-sm text-foreground/90"
-        data-testid="scope-proposal-tasks"
-      >
-        {proposal.proposedTasks.map((task, i) => (
-          <li
-            key={i}
-            className="flex items-start gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-2"
-            data-testid={`scope-proposal-task-${i}`}
-          >
-            <span className="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
-              {i + 1}
-            </span>
-            <div className="flex-1 min-w-0">
-              <p className="font-medium truncate">{task.title}</p>
-              {task.description && (
-                <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                  {task.description}
-                </p>
-              )}
-            </div>
-          </li>
-        ))}
-      </ul>
+      {editMode ? (
+        <ul className="flex flex-col gap-1.5" data-testid="scope-proposal-tasks">
+          {editedTasks.map((task, i) => (
+            <li
+              key={i}
+              className="flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-2"
+              data-testid={`scope-proposal-task-${i}`}
+            >
+              <span className="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
+                {i + 1}
+              </span>
+              <input
+                className="flex-1 bg-transparent text-sm font-medium outline-none border-b border-border/60 focus:border-foreground/40"
+                value={task.title}
+                onChange={e => {
+                  const next = [...editedTasks];
+                  next[i] = { ...next[i], title: e.target.value };
+                  setEditedTasks(next);
+                }}
+                data-testid={`scope-proposal-edit-task-${i}`}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <ul
+          className="flex flex-col gap-1.5 text-sm text-foreground/90"
+          data-testid="scope-proposal-tasks"
+        >
+          {proposal.proposedTasks.map((task, i) => (
+            <li
+              key={i}
+              className="flex items-start gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-2"
+              data-testid={`scope-proposal-task-${i}`}
+            >
+              <span className="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
+                {i + 1}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium truncate">{task.title}</p>
+                {task.description && (
+                  <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+                    {task.description}
+                  </p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {autoAdvanceAt && (
         <p
@@ -92,7 +124,7 @@ export function ScopeProposalCard({
       <div className="flex items-center gap-2 pt-1">
         <button
           type="button"
-          onClick={onApprove}
+          onClick={() => onApprove(editMode ? editedTasks.map(t => ({ title: t.title })) : undefined)}
           className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-300 hover:bg-emerald-500/25 transition-colors"
           data-testid="scope-proposal-approve"
         >
@@ -107,6 +139,15 @@ export function ScopeProposalCard({
         >
           <XCircle className="h-3.5 w-3.5" />
           Reject
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditMode(m => !m)}
+          className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
+          data-testid="scope-proposal-edit"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          {editMode ? "Done editing" : "Edit tasks"}
         </button>
       </div>
     </div>

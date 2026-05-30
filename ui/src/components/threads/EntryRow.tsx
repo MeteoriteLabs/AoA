@@ -31,6 +31,7 @@ import {
   SpinOffSuggestionCard,
   type SpinOffSuggestion,
 } from "./SpinOffSuggestionCard";
+import { HopCapDecisionCard } from "./HopCapDecisionCard";
 import type { ScopeProposalPayload } from "@armyofagents/shared";
 
 /* ─── Agent role → color ─── */
@@ -88,6 +89,19 @@ function extractSpinOffPayload(
     return null;
   }
   return { topicSummary: obj.topicSummary, rationale: obj.rationale };
+}
+
+/**
+ * P1-T13: extract a hop-cap payload from a system entry's sourceInfo.
+ * Returns { hopCount, cap } when sourceInfo.type === "hop_cap_reached".
+ */
+function extractHopCapPayload(entry: DiscussionEntry): { hopCount: number; cap: number } | null {
+  if (entry.inputType !== "system") return null;
+  const si = entry.sourceInfo as Record<string, unknown> | null;
+  if (!si || si.type !== "hop_cap_reached") return null;
+  const hopCount = typeof si.hopCount === "number" ? si.hopCount : 0;
+  const cap = typeof si.cap === "number" ? si.cap : 5;
+  return { hopCount, cap };
 }
 
 function tryParseScopeProposal(content: string): ScopeProposalPayload | null {
@@ -282,6 +296,16 @@ export function EntryRow({
     }
     // Fall through to system rendering if payload parse fails — the entry is
     // still useful as a system message.
+  }
+
+  // ── P1-T13: hop-cap decision card — system entry with sourceInfo.type === "hop_cap_reached" ──
+  const hopCapPayload = extractHopCapPayload(entry);
+  if (hopCapPayload) {
+    return (
+      <div data-testid={`entry-row-${entry.id}`} data-entry-type="hop_cap_decision">
+        <HopCapDecisionCard hopCount={hopCapPayload.hopCount} cap={hopCapPayload.cap} />
+      </div>
+    );
   }
 
   // ── Phase E3: system entries — spin-off when payload present, else generic ──

@@ -586,6 +586,61 @@ export function threadOrchestrationService(db: Db) {
           { threadId, agentId: params.agentId, hopCount: currentHopCount },
           "requestParticipation: at hop cap — not spawning",
         );
+
+        // Post a system entry so the founder sees the hop-cap prompt in the chat.
+        // Best-effort — failure must not prevent returning atCap.
+        try {
+          const [threadRow] = await db
+            .select({ companyId: discussions.companyId })
+            .from(discussions)
+            .where(eq(discussions.id, threadId))
+            .limit(1);
+
+          if (threadRow) {
+            const now = new Date();
+            const { insertedEntry, cid } = await db.transaction(async (tx) => {
+              const [{ entrySeq, companyId: cid }] = await tx
+                .update(discussions)
+                .set({
+                  entrySeq: sql`${discussions.entrySeq} + 1`,
+                  entryCount: sql`${discussions.entryCount} + 1`,
+                  updatedAt: now,
+                })
+                .where(eq(discussions.id, threadId))
+                .returning({ entrySeq: discussions.entrySeq, companyId: discussions.companyId });
+
+              const [insertedEntry] = await tx
+                .insert(discussionEntries)
+                .values({
+                  discussionId: threadId,
+                  inputType: "system",
+                  rawContent: "Agent loop reached hop cap. Scope the work or continue?",
+                  sourceInfo: { type: "hop_cap_reached", hopCount: currentHopCount, cap: HOP_CAP },
+                  authorAgentId: null,
+                  createdBy: params.agentId,
+                  extractionStatus: "skipped",
+                  seq: entrySeq,
+                })
+                .returning();
+
+              return { insertedEntry, cid };
+            });
+
+            publishLiveEvent({
+              companyId: cid,
+              type: "discussion.entry.created",
+              payload: { discussionId: threadId, entryId: insertedEntry.id, inputType: "system" },
+            });
+            publishLiveEvent({
+              companyId: cid,
+              type: "thread.entry.created",
+              payload: { threadId, entryId: insertedEntry.id, seq: insertedEntry.seq },
+            });
+          }
+        } catch (err) {
+          log.warn({ threadId, err }, "requestParticipation: failed to post hop-cap system entry — continuing");
+        }
+
         return { spawned: false, atCap: true, hopCount: currentHopCount };
       }
 

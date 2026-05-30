@@ -16,9 +16,10 @@
 // The Approve handler (thread-deliverables.ts) reads this back to detect
 // whether newer entries arrived after the proposal was made (stale check).
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { discussionEntries, discussions, threadPlanSteps } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { publishLiveEvent } from "../../live-events.js";
 
 interface ProposedTaskInput {
   title: string;
@@ -129,6 +130,20 @@ export const threadPostScopeProposalTool: AgentTool = {
       const rawContent = JSON.stringify({ ...proposal, proposalCursorSeq });
 
       const result = await ctx.db.transaction(async (tx: any) => {
+        // Bump entrySeq + entryCount atomically (same as requestParticipation pattern)
+        const [{ entrySeq, companyId: threadCompanyId }] = await tx
+          .update(discussions)
+          .set({
+            entrySeq: sql`${discussions.entrySeq} + 1`,
+            entryCount: sql`${discussions.entryCount} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(discussions.id, threadId))
+          .returning({
+            entrySeq: discussions.entrySeq,
+            companyId: discussions.companyId,
+          });
+
         const inserted = await tx
           .insert(discussionEntries)
           .values({
@@ -146,6 +161,7 @@ export const threadPostScopeProposalTool: AgentTool = {
             // P1-T7: the purpose-built approval-lifecycle field. Starts pending;
             // the Approve handler claims pending -> approved atomically.
             proposalStatus: "pending",
+            seq: entrySeq,   // assign the monotonic seq
           })
           .returning();
 
@@ -172,12 +188,33 @@ export const threadPostScopeProposalTool: AgentTool = {
         if (stepRows.length > 0) {
           await tx.insert(threadPlanSteps).values(stepRows);
         }
-        return entry;
+        return { entry, companyId: threadCompanyId };
+      });
+
+      // Publish live events so the UI receives the new entry in real time.
+      const { entry, companyId } = result;
+      publishLiveEvent({
+        companyId,
+        type: "discussion.entry.created",
+        payload: {
+          discussionId: threadId,
+          entryId: entry.id,
+          inputType: "scope_proposal",
+        },
+      });
+      publishLiveEvent({
+        companyId,
+        type: "thread.entry.created",
+        payload: {
+          threadId,
+          entryId: entry.id,
+          seq: entry.seq ?? 0,
+        },
       });
 
       return {
         success: true,
-        data: { entryId: result.id, proposalCursorSeq },
+        data: { entryId: entry.id, proposalCursorSeq },
         summary: `Scope proposal posted with ${proposal.proposedTasks.length} step(s)`,
       };
     } catch (err: any) {
