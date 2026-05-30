@@ -28,7 +28,9 @@
  * all created tasks. Null/missing assignees are skipped.
  */
 
+import { and, eq, ne, gt, isNull, desc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
+import { discussionEntries } from "@armyofagents/db";
 import { writeScopeProposal } from "./scope-proposal-writer.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
 import { threadDeliverablesService } from "./thread-deliverables.js";
@@ -235,6 +237,68 @@ export function crewTaskService(db: Db) {
         : createdBy.userId
           ? "user"
           : "system";
+
+      // ── Pre-check: stale duplicate guard (defense-in-depth, post-approval) ───
+      // If the most-recent scope_proposal for this thread is ALREADY APPROVED
+      // and NO new human entry has been posted since it, this call is a stale
+      // re-fire from a duplicate Adjutant/Planner run. Returning early avoids
+      // writing a second pending proposal that would immediately auto-approve
+      // again and duplicate tasks.
+      //
+      // "Human entry" discriminator: mirrors sweep-adjutant.ts isHumanEntry
+      //   - authorAgentId IS NULL           (not agent-posted)
+      //   - inputType NOT IN ('agent', 'system', 'scope_proposal')
+      //
+      // Ordering: seq is a per-thread monotonic counter (Plan 7). We use
+      // seq > latestProposal.seq as the "newer than" check to stay consistent
+      // with the sweep's approach (avoids clock-skew risk with createdAt).
+      const [latestProposal] = await db
+        .select({
+          entryId: discussionEntries.id,
+          seq: discussionEntries.seq,
+          proposalStatus: discussionEntries.proposalStatus,
+        })
+        .from(discussionEntries)
+        .where(
+          and(
+            eq(discussionEntries.discussionId, threadId),
+            eq(discussionEntries.inputType, "scope_proposal"),
+          ),
+        )
+        .orderBy(desc(discussionEntries.seq))
+        .limit(1);
+
+      if (latestProposal && latestProposal.proposalStatus === "approved") {
+        // Check for any human entry newer than the approved proposal
+        const [newerHumanEntry] = await db
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.discussionId, threadId),
+              isNull(discussionEntries.authorAgentId),
+              ne(discussionEntries.inputType, "agent"),
+              ne(discussionEntries.inputType, "system"),
+              ne(discussionEntries.inputType, "scope_proposal"),
+              gt(discussionEntries.seq, latestProposal.seq),
+            ),
+          )
+          .limit(1);
+
+        if (!newerHumanEntry) {
+          // Stale duplicate: no new human input since the approved proposal.
+          // Return the existing approved proposal id as the anchor, no work done.
+          console.info(
+            `[crew-task-service] proposeWork: stale duplicate suppressed ` +
+              `(threadId=${threadId}, latestApprovedEntry=${latestProposal.entryId}, seq=${latestProposal.seq})`,
+          );
+          return {
+            proposalId: latestProposal.entryId,
+            autoApproved: false,
+            existing: true,
+          };
+        }
+      }
 
       // ── Step 1: ALWAYS write the scope card ─────────────────────────────────
       // Codex #16: budget never blocks the card write. The human must always be

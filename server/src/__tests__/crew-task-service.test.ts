@@ -4,12 +4,15 @@
  * Tests for:
  *   A. resolveCreationGate pure function
  *   B. crewTaskService.proposeWork integration tests (all paths)
+ *   C. Post-approval stale-duplicate guard (defense-in-depth)
  *
  * Mock strategy (mirrors thread-deliverables-approve.test.ts pattern):
  *   - drizzle-orm + @armyofagents/db mocked with Proxy stubs
  *   - writeScopeProposal, preflightCrewDispatch, threadDeliverablesService,
  *     heartbeatService, logActivity all mocked
  *   - resolveCreationGate imported directly (pure function, no mocks needed)
+ *   - mockDb uses createSequenceDb so the new pre-check DB selects return
+ *     controlled values per test.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -19,6 +22,9 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: unknown, b: unknown) => ({ _tag: "eq", a, b })),
   and: vi.fn((...args: unknown[]) => ({ _tag: "and", args })),
   ne: vi.fn((a: unknown, b: unknown) => ({ _tag: "ne", a, b })),
+  gt: vi.fn((a: unknown, b: unknown) => ({ _tag: "gt", a, b })),
+  isNull: vi.fn((a: unknown) => ({ _tag: "isNull", a })),
+  desc: vi.fn((a: unknown) => ({ _tag: "desc", a })),
   sql: vi.fn(),
 }));
 
@@ -88,14 +94,77 @@ const THREAD_ID = "bbbbbbbb-0000-4000-8000-bbbbbbbbbbbb";
 const PROPOSAL_ID = "cccccccc-0000-4000-8000-cccccccccccc";
 const AGENT_ID = "dddddddd-0000-4000-8000-dddddddddddd";
 const USER_ID = "eeeeeeee-0000-4000-8000-eeeeeeeeeeee";
+const APPROVED_ENTRY_ID = "ffffffff-0000-4000-8000-ffffffffffff";
 
 const BASE_PROPOSALS = [
   { title: "Task One", assigneeRole: "engineer" },
   { title: "Task Two", assigneeRole: "designer" },
 ];
 
-/** Minimal mock db — the service delegates real DB work to mocked helpers. */
-const mockDb = {} as any;
+// ─── Sequence-DB helper ───────────────────────────────────────────────────────
+/**
+ * createSequenceDb: each call to db.select().from().where()...limit() consumes
+ * the next item in selectQueue. This lets us control what each pre-check DB
+ * read returns without touching the module-level mocks.
+ *
+ * selectQueue items are arrays — each represents the rows returned by one
+ * .select() chain call (destructured as `const [first] = await db.select()...`).
+ */
+function createSequenceDb(selectQueue: unknown[][]): any {
+  let idx = 0;
+
+  function makeSelectChain(): any {
+    const result = selectQueue[idx++] ?? [];
+    const chain: any = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: vi.fn((fn: (rows: unknown[]) => unknown) =>
+        Promise.resolve(fn(result)),
+      ),
+    };
+    return chain;
+  }
+
+  const dbObj: any = {
+    select: vi.fn(() => makeSelectChain()),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockReturnThis(),
+          then: vi.fn((fn: (rows: unknown[]) => unknown) =>
+            Promise.resolve(fn(selectQueue[idx++] ?? [])),
+          ),
+        })),
+      })),
+    })),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn().mockReturnThis(),
+        onConflictDoNothing: vi.fn().mockReturnThis(),
+        onConflictDoUpdate: vi.fn().mockReturnThis(),
+        then: vi.fn((fn: (rows: unknown[]) => unknown) =>
+          Promise.resolve(fn(selectQueue[idx++] ?? [])),
+        ),
+      })),
+    })),
+    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => fn(dbObj)),
+  };
+  return dbObj;
+}
+
+/**
+ * noProposalDb: db where the first select returns [] (no existing proposal).
+ * Use for all existing "normal flow" tests — passes the pre-check immediately.
+ */
+function noProposalDb() {
+  return createSequenceDb([
+    [], // first select: latestProposal query → no prior proposal
+  ]);
+}
 
 // ─── Typed mock accessors ─────────────────────────────────────────────────────
 // Get typed references to the mocked functions after imports.
@@ -191,7 +260,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B1. await_human path (autonomy=0) ────────────────────────────────────────
   it("autonomy=0 (await_human): card written, no issues created, no dispatch", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -202,7 +271,7 @@ describe("crewTaskService.proposeWork", () => {
     });
 
     expect(mockWriteScopeProposal).toHaveBeenCalledTimes(1);
-    expect(mockWriteScopeProposal).toHaveBeenCalledWith(mockDb, expect.objectContaining({
+    expect(mockWriteScopeProposal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       threadId: THREAD_ID,
       companyId: CO_ID,
     }));
@@ -220,7 +289,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B2. await_human path (autonomy=1) ────────────────────────────────────────
   it("autonomy=1 (await_human): card written, no issues created, no dispatch", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -238,7 +307,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B3. auto_approve (autonomy=2) happy path ──────────────────────────────────
   it("autonomy=2 (auto_approve): card written, approval invoked, tasks created, dispatch fired once per distinct assignee", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -286,7 +355,7 @@ describe("crewTaskService.proposeWork", () => {
       ],
     });
 
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -312,7 +381,7 @@ describe("crewTaskService.proposeWork", () => {
       ],
     });
 
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -333,7 +402,7 @@ describe("crewTaskService.proposeWork", () => {
       reasonCode: "budget_exhausted",
     });
 
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -369,7 +438,7 @@ describe("crewTaskService.proposeWork", () => {
       existing: true,
     });
 
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -392,7 +461,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B8. activity_log written for proposal creation ────────────────────────────
   it("activity_log written for proposal creation (await_human)", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -404,7 +473,7 @@ describe("crewTaskService.proposeWork", () => {
 
     expect(mockLogActivity).toHaveBeenCalledTimes(1);
     const logCall = mockLogActivity.mock.calls[0];
-    expect(logCall[0]).toBe(mockDb);
+    // logCall[0] is the db instance — just verify the second arg shape
     expect(logCall[1]).toMatchObject({
       companyId: CO_ID,
       entityId: PROPOSAL_ID,
@@ -414,7 +483,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B9. activity_log written for auto-approval ────────────────────────────────
   it("activity_log written for both proposal creation and auto-approval at L2", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -436,7 +505,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B10. writeScopeProposal called with agentId from createdBy ────────────────
   it("passes agentId from createdBy to writeScopeProposal", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -447,14 +516,14 @@ describe("crewTaskService.proposeWork", () => {
     });
 
     expect(mockWriteScopeProposal).toHaveBeenCalledWith(
-      mockDb,
+      expect.anything(),
       expect.objectContaining({ agentId: AGENT_ID }),
     );
   });
 
   // ── B11. when createdBy has no agentId, passes null ───────────────────────────
   it("passes null agentId to writeScopeProposal when createdBy has no agentId", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -465,7 +534,7 @@ describe("crewTaskService.proposeWork", () => {
     });
 
     expect(mockWriteScopeProposal).toHaveBeenCalledWith(
-      mockDb,
+      expect.anything(),
       expect.objectContaining({ agentId: null }),
     );
   });
@@ -478,7 +547,7 @@ describe("crewTaskService.proposeWork", () => {
       reasonCode: "thread_paused",
     });
 
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -495,7 +564,7 @@ describe("crewTaskService.proposeWork", () => {
 
   // ── B13. proposeWork passes proposedTasks to writeScopeProposal ──────────────
   it("passes summary and proposedTasks to writeScopeProposal proposal arg", async () => {
-    const svc = crewTaskService(mockDb);
+    const svc = crewTaskService(noProposalDb());
     await svc.proposeWork({
       threadId: THREAD_ID,
       companyId: CO_ID,
@@ -506,7 +575,7 @@ describe("crewTaskService.proposeWork", () => {
     });
 
     expect(mockWriteScopeProposal).toHaveBeenCalledWith(
-      mockDb,
+      expect.anything(),
       expect.objectContaining({
         proposal: expect.objectContaining({
           summary: "My summary",
@@ -514,5 +583,191 @@ describe("crewTaskService.proposeWork", () => {
         }),
       }),
     );
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// C. Post-approval stale-duplicate guard (defense-in-depth)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("crewTaskService.proposeWork — post-approval stale-duplicate guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockApproveProposal = vi.fn();
+    mockWakeup = vi.fn();
+
+    vi.mocked(threadDeliverablesService).mockReturnValue({
+      approveProposal: mockApproveProposal,
+      createDeliverableTasks: vi.fn(),
+    } as any);
+
+    vi.mocked(heartbeatService).mockReturnValue({
+      wakeup: mockWakeup,
+    } as any);
+
+    // Default: writeScopeProposal returns fresh proposal (existing:false).
+    // Should NOT be called in the stale-duplicate scenario.
+    mockWriteScopeProposal.mockResolvedValue({
+      entryId: PROPOSAL_ID,
+      proposalCursorSeq: 5,
+      existing: false,
+    });
+
+    mockPreflightCrewDispatch.mockResolvedValue({ allowed: true });
+
+    mockApproveProposal.mockResolvedValue({
+      ok: true,
+      alreadyApproved: false,
+      taskIds: ["task-1", "task-2"],
+      createdTasks: [
+        { id: "task-1", assigneeAgentId: "agent-a", workMode: null },
+        { id: "task-2", assigneeAgentId: "agent-b", workMode: null },
+      ],
+    });
+
+    mockWakeup.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  // ── C1. Stale duplicate: approved latest proposal + NO newer human entry ──────
+  it("stale duplicate: APPROVED latest proposal + no newer human entry → returns existing:true, no write, no dispatch", async () => {
+    const approvedProposal = {
+      entryId: APPROVED_ENTRY_ID,
+      seq: 10,
+      proposalStatus: "approved",
+    };
+    // select 1: latestProposal query → approved proposal exists
+    // select 2: newerHumanEntry query → no newer human entry
+    const db = createSequenceDb([
+      [approvedProposal], // latest proposal: approved
+      [],                  // newer human entry: none
+    ]);
+
+    const svc = crewTaskService(db);
+    const result = await svc.proposeWork({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      autonomy: 2,
+      summary: "Stale re-fire",
+      proposedTasks: BASE_PROPOSALS,
+      createdBy: { agentId: AGENT_ID },
+    });
+
+    // Must return the approved proposal's entry id as the anchor
+    expect(result.proposalId).toBe(APPROVED_ENTRY_ID);
+    expect(result.autoApproved).toBe(false);
+    expect(result.existing).toBe(true);
+    expect(result.createdIssueIds).toBeUndefined();
+    expect(result.blockedReason).toBeUndefined();
+
+    // writeScopeProposal must NOT have been called — no new card written
+    expect(mockWriteScopeProposal).not.toHaveBeenCalled();
+
+    // Approval and dispatch must NOT have been called
+    expect(mockApproveProposal).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockPreflightCrewDispatch).not.toHaveBeenCalled();
+  });
+
+  // ── C2. Legitimate re-proposal: approved latest proposal + newer human entry ──
+  it("legitimate re-proposal: APPROVED latest proposal + newer human entry exists → proceeds normally (writes card, auto-approves at L2)", async () => {
+    const approvedProposal = {
+      entryId: APPROVED_ENTRY_ID,
+      seq: 10,
+      proposalStatus: "approved",
+    };
+    const humanEntry = { id: "human-entry-1" };
+    // select 1: latestProposal query → approved proposal
+    // select 2: newerHumanEntry query → human entry exists (seq > 10)
+    const db = createSequenceDb([
+      [approvedProposal], // latest proposal: approved
+      [humanEntry],        // newer human entry: exists
+    ]);
+
+    const svc = crewTaskService(db);
+    const result = await svc.proposeWork({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      autonomy: 2,
+      summary: "Follow-up after founder input",
+      proposedTasks: BASE_PROPOSALS,
+      createdBy: { agentId: AGENT_ID },
+    });
+
+    // Pre-check passes → proceeds to write new proposal
+    expect(mockWriteScopeProposal).toHaveBeenCalledTimes(1);
+
+    // Auto-approve path fires
+    expect(mockPreflightCrewDispatch).toHaveBeenCalledTimes(1);
+    expect(mockApproveProposal).toHaveBeenCalledTimes(1);
+
+    expect(result.autoApproved).toBe(true);
+    expect(result.existing).toBe(false);
+    expect(result.createdIssueIds).toEqual(["task-1", "task-2"]);
+    expect(mockWakeup).toHaveBeenCalledTimes(2);
+  });
+
+  // ── C3. First proposal (no prior): proceeds normally ─────────────────────────
+  it("first proposal (no prior approved proposal): pre-check passes immediately, proceeds normally", async () => {
+    // select 1: latestProposal query → no prior proposal at all
+    const db = createSequenceDb([
+      [], // no latest proposal
+    ]);
+
+    const svc = crewTaskService(db);
+    const result = await svc.proposeWork({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      autonomy: 2,
+      summary: "First proposal ever",
+      proposedTasks: BASE_PROPOSALS,
+      createdBy: { agentId: AGENT_ID },
+    });
+
+    // No prior proposal → pre-check passes, writeScopeProposal called
+    expect(mockWriteScopeProposal).toHaveBeenCalledTimes(1);
+    expect(mockApproveProposal).toHaveBeenCalledTimes(1);
+    expect(result.autoApproved).toBe(true);
+    expect(result.existing).toBe(false);
+    expect(result.createdIssueIds).toEqual(["task-1", "task-2"]);
+  });
+
+  // ── C4. Latest proposal is still PENDING: pre-check passes (not a stale dup) ──
+  it("pending latest proposal (not yet approved): pre-check passes, proceeds to write", async () => {
+    const pendingProposal = {
+      entryId: APPROVED_ENTRY_ID,
+      seq: 10,
+      proposalStatus: "pending",
+    };
+    // select 1: latestProposal query → pending proposal (not approved → pre-check doesn't block)
+    // Only 1 select needed — the approved-branch check is skipped
+    const db = createSequenceDb([
+      [pendingProposal], // latest proposal: still pending
+    ]);
+
+    const svc = crewTaskService(db);
+    // writeScopeProposal returns existing:true (the idempotency guard catches it)
+    mockWriteScopeProposal.mockResolvedValue({
+      entryId: APPROVED_ENTRY_ID,
+      proposalCursorSeq: 10,
+      existing: true,
+    });
+
+    const result = await svc.proposeWork({
+      threadId: THREAD_ID,
+      companyId: CO_ID,
+      autonomy: 2,
+      summary: "Re-try while pending",
+      proposedTasks: BASE_PROPOSALS,
+      createdBy: { agentId: AGENT_ID },
+    });
+
+    // Pre-check doesn't block (pending, not approved) → writeScopeProposal IS called
+    expect(mockWriteScopeProposal).toHaveBeenCalledTimes(1);
+    // writeScopeProposal returned existing:true → idempotency guard exits
+    expect(result.existing).toBe(true);
+    expect(result.autoApproved).toBe(false);
+    expect(mockApproveProposal).not.toHaveBeenCalled();
   });
 });
