@@ -22,6 +22,10 @@ export interface RunForIssue {
   scheduledRetryAttempt?: number | null;
   scheduledRetryReason?: string | null;
   errorCode?: string | null;
+  /** Redacted+capped snapshot of the assembled system prompt delivered to the
+   *  agent CLI. Populated best-effort; null when not yet captured or when the
+   *  run predates follow-up #27. Max ~16 000 chars; secrets stripped. */
+  promptSnapshot?: string | null;
 }
 
 export interface IssueForRun {

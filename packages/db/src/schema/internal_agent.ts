@@ -267,6 +267,11 @@ export const internalAgentRuns = pgTable(
     provider: text("provider"), // 'anthropic' | 'openai' | 'google'
     model: text("model"), // specific model used
 
+    // Audit: redacted+capped snapshot of the assembled system prompt delivered
+    // to the agent CLI. Populated best-effort — never fails the run.
+    // Capped at ~16 000 chars; secrets stripped via redactAndCapPrompt().
+    promptSnapshot: text("prompt_snapshot"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

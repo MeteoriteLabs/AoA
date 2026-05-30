@@ -54,6 +54,7 @@ import {
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { buildRunInputBundle } from "./run-input-bundles.js";
+import { redactAndCapPrompt } from "./prompt-snapshot.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
 function sanitizeForDb(text: string): string {
@@ -3652,6 +3653,29 @@ export function heartbeatService(db: Db) {
         runScopedConfig,
         adapter,
       );
+
+      // Audit follow-up #27: persist the redacted+capped assembled prompt on
+      // the heartbeat_runs row so the audit card can show "exactly what the
+      // agent read." The full prompt is in runScopedConfig.promptTemplate
+      // (assembled by the adapter's renderTemplate call). Best-effort — a
+      // failure here must NEVER break the run.
+      try {
+        const rawPrompt = typeof runScopedConfig.promptTemplate === "string"
+          ? runScopedConfig.promptTemplate
+          : null;
+        if (rawPrompt) {
+          const snapshot = redactAndCapPrompt(rawPrompt);
+          void db
+            .update(heartbeatRuns)
+            .set({ promptSnapshot: snapshot })
+            .where(eq(heartbeatRuns.id, run.id))
+            .catch((snapErr: unknown) =>
+              logger.warn({ err: snapErr, runId: run.id }, "[heartbeat] failed to persist prompt snapshot (best-effort, ignored)"),
+            );
+        }
+      } catch (snapErr) {
+        logger.warn({ err: snapErr, runId: run.id }, "[heartbeat] prompt snapshot preparation failed (best-effort, ignored)");
+      }
 
       const adapterResult = await adapter.execute({
         runId: run.id,

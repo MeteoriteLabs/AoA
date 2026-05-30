@@ -19,6 +19,7 @@ import { buildAoaRunResultFromAdapter } from "./aoa-run-result.js";
 import { buildTriggerPrompt } from "./aoa-trigger-prompt.js";
 import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
+import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
 
@@ -267,6 +268,21 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       ? { ...baseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
       : { ...baseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
+
+    // Audit follow-up #27: persist the redacted+capped assembled prompt on the
+    // run record so the audit card can show "exactly what the agent read."
+    // Best-effort — a failure here must NEVER break the run.
+    if (runId) {
+      try {
+        const snapshot = redactAndCapPrompt(triggerPrompt);
+        await db
+          .update(internalAgentRuns)
+          .set({ promptSnapshot: snapshot })
+          .where(eq(internalAgentRuns.id, runId));
+      } catch (snapErr) {
+        log.warn({ err: snapErr }, "aoa-runner: failed to persist prompt snapshot (best-effort, ignored)");
+      }
+    }
 
     // T1.0: capture the adapter result so we can build AoaRunResult.
     // Adapters populate `usage`, `costUsd`, `exitCode`, `errorMessage` on

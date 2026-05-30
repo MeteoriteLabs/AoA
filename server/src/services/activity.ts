@@ -78,6 +78,7 @@ export function activityService(db: Db) {
           usageJson: heartbeatRuns.usageJson,
           resultJson: heartbeatRuns.resultJson,
           detectedOutputs: heartbeatRuns.detectedOutputs,
+          promptSnapshot: heartbeatRuns.promptSnapshot,
         })
         .from(heartbeatRuns)
         .where(

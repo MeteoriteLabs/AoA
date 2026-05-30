@@ -53,6 +53,10 @@ export const heartbeatRuns = pgTable(
     continuationAttempt: integer("continuation_attempt").notNull().default(0),
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
+    // Audit: redacted+capped snapshot of the assembled system prompt delivered
+    // to the agent CLI. Populated best-effort — never fails the run.
+    // Capped at ~16 000 chars; secrets stripped via redactAndCapPrompt().
+    promptSnapshot: text("prompt_snapshot"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
