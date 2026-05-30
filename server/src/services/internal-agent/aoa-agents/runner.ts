@@ -89,6 +89,10 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   const startedAt = Date.now();
   let runId: string | null = null;
   let cfgPath: string | null = null;
+  // Audit #27: prompt snapshot built after triggerPrompt is assembled; persisted
+  // by folding into whichever run-row write fires next (completion or failure).
+  // Declared at function scope so both the try body and catch block can access it.
+  let promptSnapshot: string | null = null;
   // FX1/B1: id of the discussion entry this run atomically CLAIMED
   // (pending→processing). Stays null on the not-claimable early-return so the
   // catch terminalizer never touches an entry this run does not own.
@@ -269,19 +273,20 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       : { ...baseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
-    // Audit follow-up #27: persist the redacted+capped assembled prompt on the
-    // run record so the audit card can show "exactly what the agent read."
-    // Best-effort — a failure here must NEVER break the run.
-    if (runId) {
-      try {
-        const snapshot = redactAndCapPrompt(triggerPrompt);
-        await db
-          .update(internalAgentRuns)
-          .set({ promptSnapshot: snapshot })
-          .where(eq(internalAgentRuns.id, runId));
-      } catch (snapErr) {
-        log.warn({ err: snapErr }, "aoa-runner: failed to persist prompt snapshot (best-effort, ignored)");
-      }
+    // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
+    // it is available to fold into the next existing run-row write (either the
+    // completion update below or the catch-block failure update). Building it
+    // here (pure string op) keeps the snapshot close to where triggerPrompt is
+    // assembled. The actual DB write is folded into the existing .set({...})
+    // calls — no separate round-trip, no extra db._sets entry in tests.
+    // Best-effort: redactAndCapPrompt is a pure fn that won't throw, but guard
+    // defensively so a future change there can never break the run.
+    // NOTE: `promptSnapshot` is declared at function scope (above the try block)
+    // so the catch block can also fold it into the failure update.
+    try {
+      promptSnapshot = redactAndCapPrompt(triggerPrompt);
+    } catch (snapErr) {
+      log.warn({ err: snapErr }, "aoa-runner: failed to build prompt snapshot (best-effort, ignored)");
     }
 
     // T1.0: capture the adapter result so we can build AoaRunResult.
@@ -344,6 +349,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           costCents,
           durationMs: Date.now() - startedAt,
           completedAt: new Date(),
+          // Audit #27: folded here (was a separate update pre-execute). This is
+          // the natural home — one round-trip for the final run-row write.
+          ...(promptSnapshot !== null ? { promptSnapshot } : {}),
         })
         .where(eq(internalAgentRuns.id, runId));
     }
