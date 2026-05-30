@@ -30,7 +30,7 @@
  * ever touches them.
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, discussionEntries, discussions } from "@armyofagents/db";
 import { issueService } from "./issues.js";
@@ -157,8 +157,10 @@ export async function findDefaultBuilder(db: Db, companyId: string): Promise<str
         eq(agents.companyId, companyId),
         eq(agents.kind, "aoa"),
         eq(agents.name, "Engineer"),
+        ne(agents.status, "terminated"),
       ),
-    );
+    )
+    .limit(1);
   return row?.id ?? null;
 }
 
@@ -189,6 +191,9 @@ export function threadDeliverablesService(db: Db) {
       proposals,
       createdBy,
     }: CreateDeliverableTasksInput) => {
+      // Short-circuit: no DB call needed when there is nothing to create.
+      if (proposals.length === 0) return [];
+
       // Find the default builder once — O(1) DB call for all tasks.
       const builderAgentId = await findDefaultBuilder(db, companyId);
 

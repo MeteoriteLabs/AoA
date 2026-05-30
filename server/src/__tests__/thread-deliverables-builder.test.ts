@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: any, b: any) => ({ _tag: "eq", a, b })),
   and: vi.fn((...args: any[]) => ({ _tag: "and", args })),
+  ne: vi.fn((a: any, b: any) => ({ _tag: "ne", a, b })),
   gt: vi.fn((a: any, b: any) => ({ _tag: "gt", a, b })),
   asc: vi.fn((col: any) => ({ _tag: "asc", col })),
   desc: vi.fn((col: any) => ({ _tag: "desc", col })),

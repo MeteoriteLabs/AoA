@@ -21,6 +21,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: any, b: any) => ({ _tag: "eq", a, b })),
   and: vi.fn((...args: any[]) => ({ _tag: "and", args })),
+  ne: vi.fn((a: any, b: any) => ({ _tag: "ne", a, b })),
   gt: vi.fn((a: any, b: any) => ({ _tag: "gt", a, b })),
   asc: vi.fn((col: any) => ({ _tag: "asc", col })),
   desc: vi.fn((col: any) => ({ _tag: "desc", col })),
@@ -151,9 +152,10 @@ vi.mock("../services/permissions.js", () => ({
 }));
 
 // ── Mocks for T8b additions in discussions.ts ─────────────────────────────────
+const mockWakeup = vi.fn().mockResolvedValue(undefined);
 vi.mock("../services/heartbeat.js", () => ({
   heartbeatService: vi.fn(() => ({
-    wakeup: vi.fn().mockResolvedValue(undefined),
+    wakeup: mockWakeup,
   })),
 }));
 
@@ -199,7 +201,11 @@ function makeMockDb(opts: {
     const chain: any = {};
     chain.from = () => chain;
     chain.innerJoin = () => chain;
-    chain.where = () => Promise.resolve(result);
+    chain.where = () => {
+      const inner: any = Promise.resolve(result);
+      inner.limit = () => Promise.resolve(result);
+      return inner;
+    };
     chain.orderBy = () => Promise.resolve(result);
     chain.then = (resolve: any) => Promise.resolve(resolve(result));
     return chain;
@@ -545,7 +551,11 @@ describe("threadDeliverablesService.approveProposal (real service, mock DB)", ()
           const s = stage++;
           return s === 0 ? [makePendingEntry({ proposalStatus })] : [{ entrySeq: 5 }];
         };
-        chain.where = () => Promise.resolve(resolve());
+        chain.where = () => {
+          const inner: any = Promise.resolve(resolve());
+          inner.limit = () => Promise.resolve(resolve());
+          return inner;
+        };
         chain.orderBy = () => Promise.resolve(resolve());
         chain.then = (r: any) => Promise.resolve(r(resolve()));
         return chain;
@@ -806,6 +816,26 @@ describe("route integration: POST …/proposals/:proposalEntryId/approve", () =>
 
     expect(res.status).toBe(404);
     expect(res.body.reason).toBe("not_found");
+  });
+
+  it("does not wake agent when task is in planning mode", async () => {
+    // Override shouldDispatchIssueWakeup to return false for this test
+    const { shouldDispatchIssueWakeup } = await import("../routes/issues-planning-mode-dispatch.js");
+    vi.mocked(shouldDispatchIssueWakeup).mockReturnValueOnce(false);
+
+    mockApproveProposalFn.mockResolvedValue({
+      ok: true,
+      alreadyApproved: false,
+      taskIds: ["task-planning-1"],
+      createdTasks: [{ id: "task-planning-1", assigneeAgentId: "agent-1", workMode: "planning" }],
+    });
+
+    const res = await request(makeApp())
+      .post(`/companies/${CO_ID}/discussions/${THREAD_ID}/proposals/${ENTRY_ID}/approve`)
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(mockWakeup).not.toHaveBeenCalled();
   });
 });
 
