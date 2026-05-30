@@ -243,3 +243,70 @@ export class ThreadPresenceStore {
 
 /** Process-wide ephemeral presence store shared by the WS handler. */
 export const threadPresence = new ThreadPresenceStore();
+
+// ── P2-T1: thread-scoped agent "working" presence ────────────────────────────
+//
+// A PARALLEL channel to ThreadPresenceStore (which is humans-only by design —
+// see live-events-ws.ts). Agents that are running a deliverable for a thread
+// appear here so the chat can show "Engineer working" scoped to the right
+// thread. NO TTL — entries are cleared explicitly when the run finishes/fails
+// (the heartbeat run's finally block). Ephemeral in-memory; evaporates on
+// restart, which is correct for "who's working right now".
+
+export interface WorkingAgentEntry {
+  agentId: string;
+  name: string;
+}
+
+export class ThreadWorkingAgentsStore {
+  private byThread = new Map<string, Map<string, WorkingAgentEntry>>();
+
+  /** Mark an agent as working on a thread. Idempotent per (threadId, agentId). */
+  add(threadId: string, agentId: string, name: string): void {
+    let agents = this.byThread.get(threadId);
+    if (!agents) {
+      agents = new Map();
+      this.byThread.set(threadId, agents);
+    }
+    agents.set(agentId, { agentId, name });
+  }
+
+  /** Clear an agent from a thread (run finished/failed). Returns survivors. */
+  remove(threadId: string, agentId: string): WorkingAgentEntry[] {
+    const agents = this.byThread.get(threadId);
+    if (!agents) return [];
+    agents.delete(agentId);
+    if (agents.size === 0) {
+      this.byThread.delete(threadId);
+      return [];
+    }
+    return Array.from(agents.values());
+  }
+
+  /** Current working-agent roster for a thread. */
+  list(threadId: string): WorkingAgentEntry[] {
+    const agents = this.byThread.get(threadId);
+    return agents ? Array.from(agents.values()) : [];
+  }
+}
+
+/** Process-wide ephemeral working-agents store shared by the WS handler + heartbeat. */
+export const threadWorkingAgents = new ThreadWorkingAgentsStore();
+
+/**
+ * Shared thread.presence broadcaster. Reads BOTH rosters (human presence +
+ * working agents) so neither clobbers the other on the client (the client
+ * replaces the whole roster per event). Sweeps human presence against the TTL;
+ * working agents have no TTL (explicit clear).
+ *
+ * `now` is passed in (callers stamp it) to keep this testable.
+ */
+export function broadcastThreadPresence(companyId: string, threadId: string, now: number): void {
+  const members = threadPresence.sweep(threadId, now);
+  const workingAgents = threadWorkingAgents.list(threadId);
+  publishLiveEvent({
+    companyId,
+    type: "thread.presence",
+    payload: { threadId, members, workingAgents },
+  });
+}

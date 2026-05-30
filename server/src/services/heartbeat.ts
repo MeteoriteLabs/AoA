@@ -29,7 +29,7 @@ import {
 import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { publishLiveEvent } from "./live-events.js";
+import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -2598,6 +2598,20 @@ export function heartbeatService(db: Db) {
     // in the outer finally block so the lock is always freed even on error.
     let threadWorkspaceLock: { workspaceId: string; runId: string } | null = null;
 
+    // P2-T1: mark this agent as "working" on the source thread (deliverable
+    // tasks only — issue.sourceDiscussionId set). Thread-scoped presence so the
+    // chat shows "<Agent> working" on the right thread. Cleared in the finally
+    // below. Best-effort: a presence failure must never break the run.
+    const presenceThreadId: string | null = issueContext?.sourceDiscussionId ?? null;
+    if (presenceThreadId) {
+      try {
+        threadWorkingAgents.add(presenceThreadId, agent.id, agent.name);
+        broadcastThreadPresence(agent.companyId, presenceThreadId, Date.now());
+      } catch (presenceErr) {
+        logger.warn({ err: presenceErr, threadId: presenceThreadId, agentId: agent.id }, "P2-T1: failed to set working presence");
+      }
+    }
+
     if (isolatedWorkspacesEnabled) {
       // ── Thread-scoped workspace branch (P1-T8 slice 4) ────────────────────
       // Activated ONLY when ALL of these are true:
@@ -4032,6 +4046,16 @@ export function heartbeatService(db: Db) {
         });
       }
     } finally {
+      // P2-T1: clear this agent's working presence for the thread (run ended,
+      // success or failure). Best-effort.
+      if (presenceThreadId) {
+        try {
+          threadWorkingAgents.remove(presenceThreadId, agent.id);
+          broadcastThreadPresence(agent.companyId, presenceThreadId, Date.now());
+        } catch (presenceErr) {
+          logger.warn({ err: presenceErr, threadId: presenceThreadId, agentId: agent.id }, "P2-T1: failed to clear working presence");
+        }
+      }
       // Release thread workspace run lock (P1-T8 slice 4).
       // This runs unconditionally — even on throw — so the workspace is never
       // left permanently locked by a crashed or deferred run.

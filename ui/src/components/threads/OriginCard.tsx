@@ -1,15 +1,12 @@
 import { Fragment, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   THREAD_PHASES,
   THREAD_VISIBILITIES,
-  type Agent,
   type ThreadPhase,
   type ThreadVisibility,
 } from "@armyofagents/shared";
 import { threadsApi, type ThreadDetail, type ThreadParticipantRow } from "../../api/threads";
-import { agentsApi } from "../../api/agents";
-import { queryKeys } from "../../lib/queryKeys";
 import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { useToast } from "../../context/ToastContext";
 import {
@@ -180,17 +177,13 @@ export function OriginCard({
   const rosterRows: ThreadParticipantRow[] = participants ?? thread.participants ?? [];
 
   // ── Plan 7: live presence/typing + agent "working" indicator ──
-  const { presenceByThread } = useLiveUpdates();
+  const { presenceByThread, workingAgentsByThread } = useLiveUpdates();
   const presence = presenceByThread[thread.id] ?? [];
   const typingMembers = presence.filter((m) => m.typing);
-  // Reuse the agents query (kept fresh by agent.status / heartbeat.run.* live
-  // events) to surface agents currently working — visually distinct from humans.
-  const { data: agents } = useQuery({
-    queryKey: queryKeys.agents.list(companyId),
-    queryFn: () => agentsApi.list(companyId),
-    enabled: !!companyId,
-  });
-  const workingAgents = (agents ?? []).filter((a: Agent) => a.status === "running");
+  // P2-T1: thread-scoped working agents (pushed via thread.presence). Replaces
+  // the old global agents-status filter that showed every running agent on
+  // every thread.
+  const workingAgents = workingAgentsByThread[thread.id] ?? [];
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, thread.id] });
@@ -625,7 +618,7 @@ export function OriginCard({
           <PresenceStrip
             presence={presence}
             typingMembers={typingMembers}
-            workingAgents={workingAgents}
+            workingAgents={workingAgents.map((a) => ({ id: a.agentId, name: a.name }))}
           />
         </div>
 

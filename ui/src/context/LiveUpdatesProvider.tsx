@@ -26,6 +26,11 @@ export interface ThreadPresenceMember {
   typing?: boolean;
 }
 
+export interface ThreadWorkingAgent {
+  agentId: string;
+  name: string;
+}
+
 interface LiveUpdatesContextValue {
   connectionState: LiveConnectionState;
   /** Subscribe the active WS to a thread's events (ref-counted). */
@@ -38,6 +43,8 @@ interface LiveUpdatesContextValue {
   onReconnect: (cb: () => void) => () => void;
   /** Latest presence roster per thread (keyed by threadId). */
   presenceByThread: Record<string, ThreadPresenceMember[]>;
+  /** Latest working-agents roster per thread (keyed by threadId). */
+  workingAgentsByThread: Record<string, ThreadWorkingAgent[]>;
 }
 
 const LiveUpdatesContext = createContext<LiveUpdatesContextValue | null>(null);
@@ -52,6 +59,7 @@ const NOOP_LIVE_UPDATES: LiveUpdatesContextValue = {
   sendPresence: () => {},
   onReconnect: () => () => {},
   presenceByThread: {},
+  workingAgentsByThread: {},
 };
 
 /** Access the live-updates WS context (connection state, thread subscribe, presence). */
@@ -677,6 +685,21 @@ function parsePresenceMembers(payload: Record<string, unknown>): ThreadPresenceM
   return out;
 }
 
+function parseWorkingAgents(payload: Record<string, unknown>): ThreadWorkingAgent[] {
+  const raw = payload.workingAgents;
+  if (!Array.isArray(raw)) return [];
+  const out: ThreadWorkingAgent[] = [];
+  for (const item of raw) {
+    if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      if (typeof rec.agentId === "string" && typeof rec.name === "string") {
+        out.push({ agentId: rec.agentId, name: rec.name });
+      }
+    }
+  }
+  return out;
+}
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -694,6 +717,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "connecting",
   );
   const [presenceByThread, setPresenceByThread] = useState<Record<string, ThreadPresenceMember[]>>({});
+  const [workingAgentsByThread, setWorkingAgentsByThread] = useState<Record<string, ThreadWorkingAgent[]>>({});
 
   const sendRaw = useCallback((msg: Record<string, unknown>) => {
     const sock = socketRef.current;
@@ -834,6 +858,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
             if (threadId) {
               const members = parsePresenceMembers(parsed.payload ?? {});
               setPresenceByThread((prev) => ({ ...prev, [threadId]: members }));
+              const working = parseWorkingAgents(parsed.payload ?? {});
+              setWorkingAgentsByThread((prev) => ({ ...prev, [threadId]: working }));
             }
             return;
           }
@@ -879,8 +905,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       sendPresence,
       onReconnect,
       presenceByThread,
+      workingAgentsByThread,
     }),
-    [connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect, presenceByThread],
+    [connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect, presenceByThread, workingAgentsByThread],
   );
 
   return (
