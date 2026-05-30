@@ -164,6 +164,14 @@ vi.mock("../services/memory.js", () => ({
   })),
 }));
 
+// P3-T1: discussions.update dynamically imports this on archive. Stub it so the
+// archive test doesn't exercise the real Memory Keeper enqueue (its db mock
+// doesn't model the wakeup select/insert chain). vi.mock intercepts the dynamic
+// import; the real helper has its own unit tests (memory-on-close.test.ts).
+vi.mock("../services/internal-agent/aoa-agents/memory-extraction-on-close.js", () => ({
+  enqueueMemoryExtractionOnClose: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { discussionService } from "../services/discussions.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { logActivity } from "../services/activity-log.js";

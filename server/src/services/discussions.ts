@@ -473,6 +473,24 @@ export function discussionService(db: Db) {
             { id, err },
           );
         }
+
+        // P3-T1: capture the closing thread's durable knowledge as Memory Keeper
+        // proposals (founder-gated, status: pending) before it goes dormant.
+        // Best-effort + idempotent — separate try/catch so a failure here never
+        // blocks the archive or the workspace-cleanup hook above. Dynamic import
+        // keeps the dispatcher/agent subtree off the discussions module-load path.
+        try {
+          const { enqueueMemoryExtractionOnClose } = await import(
+            "./internal-agent/aoa-agents/memory-extraction-on-close.js"
+          );
+          await enqueueMemoryExtractionOnClose(db, companyId, id);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[discussions.update] enqueueMemoryExtractionOnClose failed",
+            { id, err },
+          );
+        }
       }
 
       return updated ?? null;
