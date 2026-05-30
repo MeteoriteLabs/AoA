@@ -4,8 +4,8 @@ import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import { seedCrewAgent, type CrewAgentTriggerSpec } from "./seed-crew-agent.js";
 
 /**
- * Plan 3 Task 2 — Command Staff roles (Navigator, Planner, Dispatcher, Memory
- * Keeper). Refactored in Phase D batch 1 (T9) to delegate idempotent boilerplate
+ * Plan 3 Task 2 — Command Staff roles (Navigator, Planner, Memory Keeper).
+ * Refactored in Phase D batch 1 (T9) to delegate idempotent boilerplate
  * to {@link seedCrewAgent}; this file owns only the per-role surface (name,
  * trigger, instruction, tool allowlist, bundle key).
  *
@@ -17,10 +17,16 @@ import { seedCrewAgent, type CrewAgentTriggerSpec } from "./seed-crew-agent.js";
  * seedCrewAgent runs so the unique index doesn't conflict.
  *
  * Decisions #15/#16/#52: Memory Keeper can only PROPOSE memory (status='pending').
- * Agentic roles (router/navigator, planner, dispatcher) require autonomyLevel ≥ 2
+ * Agentic roles (router/navigator, planner) require autonomyLevel ≥ 2
  * to fire (enforced in autonomy.ts + dispatcher.ts). Core roles (memory_keeper,
  * curator) are always active (min autonomy = 0). (Phase 1: autonomous Scribe
  * is gated off; the legacy scribe role no longer participates in routing.)
+ *
+ * Task 2.7 (Crew Work-as-Tasks plan): Dispatcher retired. Its create_task path
+ * bypassed the crew-task-service chokepoint's provenance stamp + autonomy gate.
+ * The crew-task-service is now the sole creator of crew work. Pre-existing
+ * Dispatcher agent rows in the DB become dormant (no trigger, not re-seeded).
+ * Commander retains ad-hoc create_task for non-thread flows (COMMANDER_TOOL_ALLOWLIST).
  */
 
 export const COMMAND_STAFF_ROLES = [
@@ -30,7 +36,8 @@ export const COMMAND_STAFF_ROLES = [
   // can both land on the same agent without a fork in the lookup path.
   { key: "router", name: "Navigator", trigger: "mention" },
   { key: "planner", name: "Planner", trigger: "phase-advance" },
-  { key: "dispatcher", name: "Dispatcher", trigger: "phase-advance" },
+  // Note: "dispatcher" entry removed (Task 2.7). crew-task-service is the
+  // sole creator of crew work. Pre-existing Dispatcher rows become dormant.
   // T1.4 part 1 (v1-completion plan F4): Memory Keeper was kind='outbox'
   // but the dispatcher's outbox drain is hardcoded to the extraction agent —
   // MK never ran. Switched to 'sweep' so the periodic memory-keeper sweep
@@ -90,22 +97,6 @@ export function roleToolAllowlist(
         "create_artifact",
         "create_artifact_version",
         "query_artifacts",
-      ];
-    case "dispatcher":
-      // Phase D batch 1: Dispatcher reads the latest plan artifact (via
-      // query_artifacts) to drive task creation — no instruction-only update
-      // is enough; the tool has to be on the allowlist for the call to clear
-      // the default-deny bridge.
-      return [
-        "create_task",
-        "assign_task",
-        "add_task_dependency",
-        "wakeup_agent",
-        "query_agents",
-        "query_artifacts",
-        // Dispatcher reads the proposal before creating tasks
-        "thread.listEntries",
-        "get_thread_summary",
       ];
     case "memory_keeper":
       // C2 batch 1: Memory Keeper benefits from cross-thread retrieval to
@@ -169,12 +160,6 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "" +
     "Heuristics: implementation tasks before their test tasks; research/scout " +
     "tasks first when downstream tasks need their findings.",
-  dispatcher:
-    "You are the Dispatcher. When a thread phase advances and a plan is ready, " +
-    "read the latest plan artifact via query_artifacts, then translate the plan " +
-    "into concrete tasks using create_task. Assign them to the right agents with " +
-    "assign_task, wire dependencies with add_task_dependency, and wake agents with " +
-    "wakeup_agent. Do not write memory.",
   memory_keeper:
     "You are the Memory Keeper. Review discussion entries and extracted items for " +
     "patterns worth capturing in memory. You can also invoke extraction directly " +

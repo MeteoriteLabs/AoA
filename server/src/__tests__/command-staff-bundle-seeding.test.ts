@@ -38,11 +38,12 @@ function makeDb() {
 }
 
 describe("ensureCommandStaff bundle seeding", () => {
-  it("seeds an instruction bundle for each command-staff role key", async () => {
+  it("seeds an instruction bundle for each command-staff role key (Dispatcher retired in Task 2.7)", async () => {
     seedMock.mockClear();
     await ensureCommandStaff(makeDb(), "c1");
     const roles = seedMock.mock.calls.map((c: any[]) => (c[0] as { role: string }).role).sort();
-    expect(roles).toEqual(["dispatcher", "memory_keeper", "planner", "router"]);
+    // Dispatcher removed from seeding roster: crew-task-service is the sole crew-work creator.
+    expect(roles).toEqual(["memory_keeper", "planner", "router"]);
   });
 
   it("does not throw if seeding fails (provisioning must not break)", async () => {
