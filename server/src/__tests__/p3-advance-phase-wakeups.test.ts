@@ -60,6 +60,7 @@ vi.mock("@armyofagents/db", () => {
     scopeItemDependencies: t("sid"),
     taskDependencies: t("td"),
     issues: t("issues"),
+    internalAgentConfig: t("iac"),
   };
 });
 
@@ -195,8 +196,8 @@ describe("P3.4 (regression) — advancePhase does NOT emit legacy phase-advance 
   it("advancing scope → assign (L0, await_human) does NOT insert any phase-advance wakeup", async () => {
     const SCOPE_THREAD = { ...THREAD_ROW, phase: "scope", autonomyLevel: 0 };
     const db = buildMockDb([
-      [SCOPE_THREAD],  // fetch thread row
-      // update is chained; no wakeup-insert should follow
+      [SCOPE_THREAD],         // fetch thread row
+      [{ autonomyLevel: 0 }], // company config fetch (thread L0 wins; gate → await_human)
     ]);
 
     await threadService(db as never).advancePhase(
@@ -215,7 +216,8 @@ describe("P3.4 (regression) — advancePhase does NOT emit legacy phase-advance 
   it("advancing scope → assign (L1, await_human) does NOT insert any phase-advance wakeup", async () => {
     const SCOPE_THREAD = { ...THREAD_ROW, phase: "scope", autonomyLevel: 1 };
     const db = buildMockDb([
-      [SCOPE_THREAD],  // fetch thread row
+      [SCOPE_THREAD],         // fetch thread row
+      [{ autonomyLevel: 0 }], // company config fetch (thread L1 wins; gate → await_human)
     ]);
 
     await threadService(db as never).advancePhase(

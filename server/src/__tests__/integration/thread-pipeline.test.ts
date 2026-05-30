@@ -408,6 +408,7 @@ vi.mock("@armyofagents/db", () => {
     memoryItems: t("memory_items"),
     goals: t("goals"),
     projects: t("projects"),
+    internalAgentConfig: t("internal_agent_config"),
   };
 });
 
@@ -504,8 +505,8 @@ describe("integration: phase advance — legacy Planner/Dispatcher wakeups are N
   it("scope → assign (L0, await_human): NO legacy Dispatcher wakeup insert", async () => {
     const SCOPE_THREAD = { ...THREAD_ROW, phase: "scope", autonomyLevel: 0 };
     const db = buildPhaseAdvanceDb([
-      [SCOPE_THREAD],  // fetch thread row
-      // At L0 the gate is await_human → no crew-task-service call, no insert.
+      [SCOPE_THREAD],         // fetch thread row
+      [{ autonomyLevel: 0 }], // company config fetch (thread L0 wins; gate → await_human, no insert)
     ]);
 
     await threadService(db as never).advancePhase(
