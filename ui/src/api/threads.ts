@@ -104,6 +104,12 @@ export const threadsApi = {
       { visibility },
     ),
 
+  setStatus: (companyId: string, id: string, status: "active" | "archived") =>
+    api.patch<ThreadDetail>(
+      `/companies/${companyId}/discussions/${id}`,
+      { status },
+    ),
+
   // Phase 1 Phase E batch 2 (T22): public share-link toggle.
   // Generate creates a new opaque token (32+ bytes urlsafe) on the discussions
   // row; revoke clears it. Both are founder-only on the server.

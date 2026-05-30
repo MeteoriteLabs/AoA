@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link } from "@/lib/router";
+import { useParams, Link, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -9,7 +9,7 @@ import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType 
 import { api } from "../api/client";
 import {
   RefreshCw, Flag, Link2, Brain, X, ArrowRight, PanelRightClose, PanelRightOpen,
-  Pencil, ChevronDown, ChevronRight, Pause, Play,
+  Pencil, ChevronDown, ChevronRight, Pause, Play, Archive, ArchiveRestore,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -103,6 +103,7 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const [mobileTab, setMobileTab] = useState<MobileTab>("thread");
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
@@ -244,6 +245,26 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
       pushToast({ title: "Crew resumed", tone: "success" });
     },
     onError: () => pushToast({ title: "Failed to resume crew", tone: "warn" }),
+  });
+
+  // Archive / unarchive the thread (PATCH /discussions/:id { status }).
+  // Server gates this to founder/team_lead; there is no hard delete.
+  const archiveMutation = useMutation({
+    mutationFn: (next: "active" | "archived") =>
+      threadsApi.setStatus(selectedCompanyId!, resolvedId!, next),
+    onSuccess: (_d, next) => {
+      // Refresh both the thread detail and the left-rail list.
+      invalidateThread();
+      queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId] });
+      if (next === "archived") {
+        pushToast({ title: "Thread archived", tone: "success" });
+        // useNavigate from @/lib/router auto-prepends the company prefix.
+        navigate("/discussions");
+      } else {
+        pushToast({ title: "Thread unarchived", tone: "success" });
+      }
+    },
+    onError: () => pushToast({ title: "Failed to update thread", tone: "warn" }),
   });
 
   const setAutonomyMutation = useMutation({
@@ -551,6 +572,21 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                   {thread.crewPaused
                     ? <Play className="h-3 w-3 ml-0.5" />
                     : <Pause className="h-3.5 w-3.5" />
+                  }
+                </button>
+
+                {/* Archive / unarchive thread */}
+                <button
+                  type="button"
+                  title={thread.status === "archived" ? "Unarchive thread" : "Archive thread"}
+                  onClick={() => archiveMutation.mutate(thread.status === "archived" ? "active" : "archived")}
+                  disabled={archiveMutation.isPending}
+                  className="w-7 h-7 rounded-full flex items-center justify-center transition-colors disabled:opacity-40"
+                  style={{ background: "hsl(0 0% 20%)", color: "hsl(0 0% 70%)", border: "1px solid hsl(0 0% 28%)" }}
+                >
+                  {thread.status === "archived"
+                    ? <ArchiveRestore className="h-3.5 w-3.5" />
+                    : <Archive className="h-3.5 w-3.5" />
                   }
                 </button>
               </div>
