@@ -31,6 +31,7 @@ import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
 import { postCrewFailureCard } from "./crew-failure-card.js";
+import { relayCrewResult } from "./crew-result-relay.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -3958,6 +3959,24 @@ export function heartbeatService(db: Db) {
         await recoveryService(db).handleCompletedRun(finalizedRun.id).catch((err) => {
           logger.warn({ err, runId: finalizedRun.id }, "recovery handleCompletedRun failed");
         });
+      }
+
+      // ── P3-T2: Relay crew-task result to source thread (best-effort) ──
+      // When a run finishes successfully for an issue, post a visible agent
+      // entry to the originating thread so the result surfaces in chat.
+      // The relay guards internally (no-ops for non-crew tasks), so we call
+      // it unconditionally for any successful issue-linked run.
+      // Mirrors the failure-card hook pattern: try/catch so a relay failure
+      // logs but NEVER breaks or fails the run.
+      if (outcome === "succeeded" && issueContext?.id) {
+        try {
+          await relayCrewResult(db, { issueId: issueContext.id });
+        } catch (relayErr) {
+          logger.warn(
+            { err: relayErr, issueId: issueContext.id },
+            "P3-T2: failed to relay crew-task result to thread (non-fatal)",
+          );
+        }
       }
 
       // ── Phase B.2: Refresh provider quota snapshots (fire-and-forget) ─
