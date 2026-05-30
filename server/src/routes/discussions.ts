@@ -24,6 +24,7 @@ import type { Actor } from "../services/threads.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { logger } from "../middleware/logger.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
+import { attachInboxItemToThread, promoteInboxItemToNewThread } from "../services/inbox-attach.js";
 
 // ── Thread lifecycle request-body schemas ────────────────────────────────────
 const phaseSchema = z.object({ phase: z.enum(THREAD_PHASES) });
@@ -964,7 +965,9 @@ export function discussionRoutes(db: Db) {
       }
 
       if (action === "attach") {
-        // Fix C2: Validate target thread belongs to same company
+        // Fix C2: Validate target thread belongs to same company (pre-flight;
+        // attachInboxItemToThread also validates — keeping this for a fast 404
+        // before entering any transaction).
         const [targetThread] = await db
           .select({ id: discussions.id })
           .from(discussions)
@@ -974,11 +977,14 @@ export function discussionRoutes(db: Db) {
           return;
         }
 
-        // Attach inbox item to an existing thread (mark as attached)
-        await db
-          .update(threadInboxItems)
-          .set({ status: "attached", suggestedThreadId: threadId })
-          .where(eq(threadInboxItems.id, itemId));
+        // Delegate to the 0.3 write-path — posts rawContent as a discussion_entries
+        // row AND atomically claims the inbox row (Codex #6 fix).
+        const attachResult = await attachInboxItemToThread(db, {
+          companyId,
+          inboxItemId: itemId,
+          threadId: threadId!,
+          actor,
+        });
 
         await logActivity(db, {
           companyId,
@@ -988,33 +994,30 @@ export function discussionRoutes(db: Db) {
           action: "thread.inbox_item.attached",
           entityType: "thread_inbox_item",
           entityId: itemId,
-          details: { threadId },
+          details: { threadId, entryId: attachResult.entryId },
         });
 
-        res.json({ itemId, status: "attached", threadId });
+        // Idempotent: alreadyHandled means the item was previously claimed in the
+        // same transaction — still 200, no duplicate entry inserted.
+        res.json({
+          itemId,
+          status: "attached",
+          threadId,
+          entryId: attachResult.entryId,
+          alreadyHandled: attachResult.alreadyHandled,
+        });
         return;
       }
 
       if (action === "make_thread") {
-        // Fix C1: Wrap create + status update in a transaction to prevent orphaned
-        // discussions if the process crashes between the two DB calls.
-        const newDiscussion = await db.transaction(async (tx) => {
-          const txSvc = discussionService(tx as unknown as typeof db);
-          const created = await txSvc.create(
-            companyId,
-            {
-              title: item.rawContent.slice(0, 80).replace(/\n/g, " ") || "New thread",
-            },
-            actor.actorId,
-          );
-
-          // Mark inbox item as attached to the new thread within the same transaction
-          await tx
-            .update(threadInboxItems)
-            .set({ status: "attached", suggestedThreadId: created.id })
-            .where(eq(threadInboxItems.id, itemId));
-
-          return created;
+        // Delegate to the 0.3 write-path — creates the thread, posts rawContent as
+        // the first discussion_entries row, and claims the inbox row atomically
+        // (Codex #6 fix). The 0.3 service handles the C1 transaction safety that
+        // the previous code implemented manually.
+        const promoteResult = await promoteInboxItemToNewThread(db, {
+          companyId,
+          inboxItemId: itemId,
+          actor,
         });
 
         await logActivity(db, {
@@ -1025,10 +1028,15 @@ export function discussionRoutes(db: Db) {
           action: "thread.inbox_item.promoted",
           entityType: "thread_inbox_item",
           entityId: itemId,
-          details: { newDiscussionId: newDiscussion.id },
+          details: { newDiscussionId: promoteResult.threadId },
         });
 
-        res.status(201).json({ itemId, status: "attached", threadId: newDiscussion.id, thread: newDiscussion });
+        res.status(201).json({
+          itemId,
+          status: "attached",
+          threadId: promoteResult.threadId,
+          entryId: promoteResult.entryId,
+        });
         return;
       }
 
