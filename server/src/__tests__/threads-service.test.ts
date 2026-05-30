@@ -157,6 +157,17 @@ vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
 }));
 
+// Task 2.6: crew-task-service is now imported by threads.ts for phase-advance
+// auto-approve. Mock it so existing threads-service tests stay isolated from
+// the crew pipeline (the advance tests here only go to "scope", not "assign").
+vi.mock("../services/crew-task-service.js", () => ({
+  crewTaskService: vi.fn(() => ({
+    approveAndDispatch: vi.fn().mockResolvedValue({ approved: false, createdIssueIds: [] }),
+    proposeWork: vi.fn(),
+  })),
+  resolveCreationGate: vi.fn(() => "await_human"),
+}));
+
 vi.mock("../services/goals.js", () => ({
   goalService: vi.fn(() => ({
     create: vi.fn().mockResolvedValue({ id: "g1", title: "Launch", projects: [], projectIds: [] }),

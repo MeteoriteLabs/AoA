@@ -35,6 +35,7 @@ import { publishLiveEvent } from "./live-events.js";
 import { createNotification } from "./notifications.js";
 import { logActivity } from "./activity-log.js";
 import { goalService } from "./goals.js";
+import { crewTaskService, resolveCreationGate } from "./crew-task-service.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `merge()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
 // Several test suites (notably cli-mode.test.ts) partially mock node:child_process
@@ -601,39 +602,50 @@ export function threadService(db: Db) {
         })
         .where(eq(discussions.id, id));
 
-      // P1-T11: Controller-path threads are driven by the orchestration controller,
-      // not the old phase-advance trigger mechanism. Skip phase-advance wakeups for
-      // these threads (the peer-wake pipeline is dormant for them).
-      if (!thread.useControllerPath) {
-        // Emit phase-advance wakeups for agents subscribed to this trigger (P3.4)
-        const phaseAdvanceTriggers = await db
-          .select({
-            agentId: aoaAgentTriggers.agentId,
-            config: aoaAgentTriggers.config,
-          })
-          .from(aoaAgentTriggers)
-          .where(
-            and(
-              eq(aoaAgentTriggers.companyId, companyId),
-              eq(aoaAgentTriggers.kind, "phase-advance"),
-              eq(aoaAgentTriggers.enabled, true),
-            ),
-          );
+      // Task 2.6: when advancing into the work-producing phase ("assign"), check
+      // effectiveAutonomy. At L2 (Drive), auto-approve the pending scope_proposal
+      // entry and dispatch work. At L0/L1, leave the pending card for the human.
+      //
+      // NOTE: The old Dispatcher-wakeup coupling (phase-advance → aoaAgentTriggers
+      // → agentWakeupRequests) has been removed here (Task 2.7 retires that role).
+      if (target === "assign") {
+        const effectiveAutonomy = thread.autonomyLevel ?? null;
+        const gate = resolveCreationGate(effectiveAutonomy);
 
-        for (const trigger of phaseAdvanceTriggers) {
-          await db.insert(agentWakeupRequests).values({
-            companyId,
-            agentId: trigger.agentId,
-            source: "phase-advance",
-            reason: "thread_phase_advanced",
-            payload: {
+        if (gate === "auto_approve") {
+          // Find the pending scope_proposal entry for this thread (at most one,
+          // enforced by the onePendingScopeProposalIdx partial unique index).
+          const [pendingProposal] = await db
+            .select({
+              id: discussionEntries.id,
+            })
+            .from(discussionEntries)
+            .where(
+              and(
+                eq(discussionEntries.discussionId, id),
+                eq(discussionEntries.inputType, "scope_proposal"),
+                eq(discussionEntries.proposalStatus, "pending"),
+              ),
+            );
+
+          if (pendingProposal) {
+            // Auto-approve + dispatch via the shared crew-task-service helper.
+            // approverUserId is the actor (founder/team-lead doing the phase advance).
+            const crew = crewTaskService(db);
+            await crew.approveAndDispatch({
               threadId: id,
-              toPhase: target,
-              role: (trigger.config as Record<string, unknown> | null)?.role as string | undefined,
-            },
-            status: "queued",
-          });
+              companyId,
+              proposalEntryId: pendingProposal.id,
+              approverUserId: actor.userId,
+              actorType: actor.isHuman ? "user" : "agent",
+              actorId: actor.userId,
+              agentId: null,
+              autonomy: effectiveAutonomy,
+            });
+          }
+          // If no pending proposal: advance only (Adjutant may propose later).
         }
+        // L0/L1: leave pending card for the human — no further action.
       }
 
       await logActivity(db, {

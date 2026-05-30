@@ -53,6 +53,34 @@ export function resolveCreationGate(
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface ApproveAndDispatchArgs {
+  threadId: string;
+  companyId: string;
+  proposalEntryId: string;
+  /** Synthetic approver id — use a real userId when available, else a system sentinel. */
+  approverUserId: string;
+  /** For activity_log: actor type. */
+  actorType: "agent" | "user" | "system";
+  /** For activity_log: actor id (userId or agentId). */
+  actorId: string;
+  /** For activity_log: optional agentId when actor is an agent. */
+  agentId?: string | null;
+  /** Autonomy level (used only in activity_log details). */
+  autonomy?: number | null;
+}
+
+export interface ApproveAndDispatchResult {
+  /** true when the proposal was freshly approved and tasks were dispatched. */
+  approved: boolean;
+  /** Ids of the issues created by the approval. Empty when approved=false. */
+  createdIssueIds: string[];
+  /**
+   * reasonCode from preflightCrewDispatch when budget blocked dispatch.
+   * The card stays pending for human approval.
+   */
+  blockedReason?: string;
+}
+
 export interface ProposeWorkArgs {
   threadId: string;
   companyId: string;
@@ -88,6 +116,105 @@ export function crewTaskService(db: Db) {
 
   return {
     /**
+     * Shared approve-and-dispatch helper (D11 / Task 2.6 extraction).
+     *
+     * Called by:
+     *   - proposeWork (step 4b-4c, auto_approve path at L2)
+     *   - advancePhase in threads.ts (phase-advance auto-approve at L2)
+     *
+     * Steps:
+     *   1. preflightCrewDispatch (budget gate — if not allowed, card stays pending).
+     *   2. deliverables.approveProposal (claim-first atomic, createDeliverableTasks).
+     *   3. activity_log for auto-approval.
+     *   4. heartbeat.wakeup once per distinct assigneeAgentId.
+     *
+     * Returns:
+     *   - approved=true + createdIssueIds when tasks were created and dispatched.
+     *   - approved=false + blockedReason when budget blocked dispatch.
+     *   - approved=false (no blockedReason) when the approval handler returned
+     *     a non-ok or alreadyApproved result (idempotent race).
+     */
+    async approveAndDispatch(args: ApproveAndDispatchArgs): Promise<ApproveAndDispatchResult> {
+      const { threadId, companyId, proposalEntryId, approverUserId, actorType, actorId, agentId, autonomy } = args;
+
+      // Step 1: Budget pre-flight (gates dispatch, not card)
+      const preflight = await preflightCrewDispatch(db, {
+        companyId,
+        agentId: actorId,
+        threadId,
+      });
+
+      if (!preflight.allowed) {
+        // Card stays pending for human approval. Surface the reason.
+        return {
+          approved: false,
+          createdIssueIds: [],
+          blockedReason: preflight.reasonCode,
+        };
+      }
+
+      // Step 2: Approve via the existing approval handler.
+      // approveProposal does: claim pending→approved (atomic), then
+      // createDeliverableTasks (stamps originKind='crew_thread').
+      const approvalResult = await deliverables.approveProposal({
+        threadId,
+        companyId,
+        proposalEntryId,
+        approver: { userId: approverUserId },
+      });
+
+      if (!approvalResult.ok) {
+        // Unexpected failure (stale, rejected, etc.) — do NOT dispatch.
+        return { approved: false, createdIssueIds: [] };
+      }
+
+      if (approvalResult.alreadyApproved) {
+        // Race: someone else already approved this proposal.
+        return { approved: false, createdIssueIds: [] };
+      }
+
+      const taskIds = approvalResult.taskIds;
+      const createdTasks = approvalResult.createdTasks;
+
+      // Step 3: Codex #19: activity log for auto-approval
+      await logActivity(db, {
+        companyId,
+        actorType,
+        actorId,
+        action: "crew.proposal.auto_approved",
+        entityType: "discussion_entry",
+        entityId: proposalEntryId,
+        agentId,
+        details: {
+          threadId,
+          taskIds,
+          autonomy,
+        },
+      });
+
+      // Step 4: Dispatch — once per DISTINCT assigneeAgentId.
+      // Null assignees are skipped (no agent to dispatch).
+      const distinctAssignees = new Set<string>(
+        createdTasks
+          .map((t: { id: string; assigneeAgentId: string | null; workMode: string | null }) => t.assigneeAgentId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      );
+
+      for (const assigneeAgentId of distinctAssignees) {
+        await hb.wakeup(assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "crew_task_auto_approved",
+        });
+      }
+
+      return {
+        approved: true,
+        createdIssueIds: taskIds,
+      };
+    },
+
+    /**
      * The unified proposal chokepoint (D11).
      *
      * Steps:
@@ -96,13 +223,7 @@ export function crewTaskService(db: Db) {
      *      If existing:true → return immediately (no duplicate work).
      *   2. Compute gate = resolveCreationGate(autonomy).
      *   3. await_human → return (human approves the card later).
-     *   4. auto_approve:
-     *      a. preflightCrewDispatch (budget gate — blocks dispatch, never card).
-     *         If NOT allowed → return with blockedReason (card stays pending).
-     *      b. Approve via approveProposal (claim-first + createDeliverableTasks).
-     *         Write activity_log for the auto-approval.
-     *      c. heartbeat.wakeup once per distinct assigneeAgentId.
-     *      d. Return { proposalId, autoApproved:true, createdIssueIds }.
+     *   4. auto_approve: delegate to approveAndDispatch.
      */
     async proposeWork(args: ProposeWorkArgs): Promise<ProposeWorkResult> {
       const { threadId, companyId, autonomy, summary, proposedTasks, createdBy } = args;
@@ -158,90 +279,41 @@ export function crewTaskService(db: Db) {
         return { proposalId, autoApproved: false, existing: false };
       }
 
-      // ── Step 4: auto_approve path ────────────────────────────────────────────
-
-      // Step 4a: Budget pre-flight (gates dispatch, not card)
-      const preflight = await preflightCrewDispatch(db, {
-        companyId,
-        agentId: actorId,
-        threadId,
-      });
-
-      if (!preflight.allowed) {
-        // Card stays pending for human approval. Surface the reason.
-        return {
-          proposalId,
-          autoApproved: false,
-          existing: false,
-          blockedReason: preflight.reasonCode,
-        };
-      }
-
-      // Step 4b: Approve via the existing approval handler.
-      // approveProposal does: claim pending→approved (atomic), then
-      // createDeliverableTasks (stamps originKind='crew_thread').
+      // ── Step 4: auto_approve path ── delegate to shared helper ───────────────
       // We provide a synthetic approver userId; using the actorId from createdBy
       // when it's a user, or a system-sentinel when agent-only.
       const approverUserId = createdBy.userId ?? `system:agent:${actorId}`;
 
-      const approvalResult = await deliverables.approveProposal({
+      const dispatchResult = await this.approveAndDispatch({
         threadId,
         companyId,
         proposalEntryId: proposalId,
-        approver: { userId: approverUserId },
-      });
-
-      if (!approvalResult.ok) {
-        // Unexpected failure from the approval handler (stale, rejected, etc.).
-        // Return a non-approved result; do NOT dispatch.
-        return { proposalId, autoApproved: false, existing: false };
-      }
-
-      if (approvalResult.alreadyApproved) {
-        // Race: someone else already approved this proposal.
-        return { proposalId, autoApproved: false, existing: true };
-      }
-
-      const taskIds = approvalResult.taskIds;
-      const createdTasks = approvalResult.createdTasks;
-
-      // Codex #19: activity log for auto-approval
-      await logActivity(db, {
-        companyId,
+        approverUserId,
         actorType,
         actorId,
-        action: "crew.proposal.auto_approved",
-        entityType: "discussion_entry",
-        entityId: proposalId,
         agentId,
-        details: {
-          threadId,
-          taskIds,
-          autonomy,
-        },
+        autonomy,
       });
 
-      // Step 4c: Dispatch — once per DISTINCT assigneeAgentId.
-      // Null assignees are skipped (no agent to dispatch).
-      const distinctAssignees = new Set<string>(
-        createdTasks
-          .map((t: { id: string; assigneeAgentId: string | null; workMode: string | null }) => t.assigneeAgentId)
-          .filter((id): id is string => typeof id === "string" && id.length > 0),
-      );
+      if (dispatchResult.blockedReason) {
+        return {
+          proposalId,
+          autoApproved: false,
+          existing: false,
+          blockedReason: dispatchResult.blockedReason,
+        };
+      }
 
-      for (const assigneeAgentId of distinctAssignees) {
-        await hb.wakeup(assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "crew_task_auto_approved",
-        });
+      if (!dispatchResult.approved) {
+        // alreadyApproved race or unexpected validation failure — card remains pending.
+        return { proposalId, autoApproved: false, existing: false };
       }
 
       return {
         proposalId,
         autoApproved: true,
         existing: false,
-        createdIssueIds: taskIds,
+        createdIssueIds: dispatchResult.createdIssueIds,
       };
     },
   };
