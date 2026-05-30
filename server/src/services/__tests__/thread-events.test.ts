@@ -33,6 +33,22 @@ vi.mock("../../middleware/logger.js", () => ({
   },
 }));
 
+// thread-events now imports threadOrchestrationService and makeControllerAdjutantRunner.
+// Mock both to prevent transitive import chains that touch @armyofagents/db exports
+// not present in this test's partial mock (e.g. memoryItems via embeddings.ts).
+vi.mock("../thread-orchestration.js", () => ({
+  threadOrchestrationService: vi.fn(() => ({
+    triggerOnHumanEntry: vi.fn().mockResolvedValue(undefined),
+    runController: vi.fn().mockResolvedValue({ ran: false, reason: "no-pending" }),
+  })),
+}));
+
+vi.mock("../internal-agent/aoa-agents/controller-adjutant-runner.js", () => ({
+  makeControllerAdjutantRunner: vi.fn(() =>
+    vi.fn().mockResolvedValue({ output: null }),
+  ),
+}));
+
 import {
   createThreadEventListener,
   MAX_HOP_COUNT,

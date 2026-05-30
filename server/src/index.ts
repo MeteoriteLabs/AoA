@@ -40,6 +40,7 @@ import {
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
 import { runAdjutantSweep } from "./services/internal-agent/aoa-agents/sweep-adjutant.js";
+import { runControllerSweep } from "./services/internal-agent/aoa-agents/sweep-controller.js";
 import { runMemoryKeeperSweep, MK_SWEEP_DEBOUNCE_MS } from "./services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
@@ -906,7 +907,22 @@ setInterval(() => {
     .finally(() => { adjutantSweepInFlight = false; });
 }, ADJUTANT_SWEEP_INTERVAL_MS);
 
-// Sub-agent #3: periodic Memory Keeper sweep (T1.4 part 1).
+// Sub-agent #3: controller backstop sweep — drains controller-path threads whose
+// inline drain (thread-events) crashed or was missed (pendingRun still true). The
+// inline fire-and-forget runController call is the primary, immediate driver; this
+// is the safety net. The atomic claim inside runController serializes the sweep
+// against the inline drain — only one caller wins per thread, no double-execution.
+const CONTROLLER_SWEEP_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+let controllerSweepInFlight = false;
+setInterval(() => {
+  if (controllerSweepInFlight) return;
+  controllerSweepInFlight = true;
+  void runControllerSweep(db as any)
+    .catch((err) => logger.warn({ err }, "controller sweep tick failed"))
+    .finally(() => { controllerSweepInFlight = false; });
+}, CONTROLLER_SWEEP_INTERVAL_MS);
+
+// Sub-agent #4: periodic Memory Keeper sweep (T1.4 part 1).
 // 4hr cadence — eng-review D10's cost analysis showed naive 30-min sweeping
 // scales to ~$240/day for a company with 50 active threads. 4hr is the cost-
 // vs-freshness sweet spot for memory pattern detection: founders edit memory

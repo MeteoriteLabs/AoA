@@ -38,6 +38,7 @@ import type { Db } from "@armyofagents/db";
 import { agents, agentWakeupRequests, discussions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { threadOrchestrationService } from "./thread-orchestration.js";
+import { makeControllerAdjutantRunner } from "./internal-agent/aoa-agents/controller-adjutant-runner.js";
 
 const log = logger.child({ service: "thread-events" });
 
@@ -190,12 +191,23 @@ export function createThreadEventListener(
         log.warn({ err, threadId }, "triggerOnHumanEntry failed — continuing with peer-wake");
       });
 
-    // P1-T11: For controller-path threads, the new orchestration controller
-    // handles dispatch. The peer-wake pipeline (agentWakeupRequests insert) is
-    // dormant for these threads — do NOT delete it; old threads still need it.
+    // P1-T11 + controller wiring: controller-path threads are driven by the
+    // orchestration controller, not peer-wake. triggerOnHumanEntry (above) set
+    // pendingRun; now drive the run inline. Fire-and-forget — the run executes
+    // the Adjutant (seconds to minutes) and must not block entry creation. The
+    // atomic claim inside runController (pendingRun true→false) serializes this
+    // against the backstop sweep: only one caller wins the claim, so no
+    // double-execution. A second human entry mid-run bumps the epoch → this run
+    // self-suppresses (cursor not advanced) and the next drain picks up the
+    // newer entries. The peer-wake pipeline (agentWakeupRequests insert) remains
+    // dormant for controller-path threads — do NOT delete it; old threads need it.
     if (thread.useControllerPath) {
-      log.debug({ threadId }, "skip peer-wake insert — thread uses controller path");
-      return;  // triggerOnHumanEntry already ran above
+      log.debug({ threadId }, "skip peer-wake insert — thread uses controller path; firing inline drain");
+      const runner = makeControllerAdjutantRunner(db);
+      void threadOrchestrationService(db)
+        .runController(threadId, { adjutantRunner: runner })
+        .catch((err) => log.warn({ err, threadId }, "controller inline drain failed"));
+      return; // skip the peer-wake insert below
     }
 
     // .onConflictDoNothing() pairs with the partial unique index on

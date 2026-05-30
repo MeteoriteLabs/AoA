@@ -91,6 +91,17 @@ vi.mock("../services/thread-orchestration.js", () => ({
   })),
 }));
 
+// ── controller-adjutant-runner mock ──────────────────────────────────────────
+// Thread-events.ts now imports makeControllerAdjutantRunner. Mock it to prevent
+// the transitive chain (runner → embeddings → memoryItems) from being resolved
+// against the partial @armyofagents/db mock above. The factory is never called
+// in any of these tests (useControllerPath branches are verified via insertMock).
+vi.mock("../services/internal-agent/aoa-agents/controller-adjutant-runner.js", () => ({
+  makeControllerAdjutantRunner: vi.fn(() =>
+    vi.fn().mockResolvedValue({ output: null }),
+  ),
+}));
+
 // ── Import AFTER mocks ────────────────────────────────────────────────────────
 import { createThreadEventListener } from "../services/thread-events.js";
 

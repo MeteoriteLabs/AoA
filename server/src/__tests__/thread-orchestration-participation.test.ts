@@ -95,6 +95,16 @@ vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: mockPublishLiveEvent,
 }));
 
+// ── controller-adjutant-runner mock ──────────────────────────────────────────
+// thread-events.ts now imports makeControllerAdjutantRunner. Mock it to prevent
+// the transitive chain (runner → embeddings → memoryItems) from being resolved
+// against the partial @armyofagents/db mock above.
+vi.mock("../services/internal-agent/aoa-agents/controller-adjutant-runner.js", () => ({
+  makeControllerAdjutantRunner: vi.fn(() =>
+    vi.fn().mockResolvedValue({ output: null }),
+  ),
+}));
+
 // ── Imports (after all mocks) ─────────────────────────────────────────────────
 import {
   threadOrchestrationService,
