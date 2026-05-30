@@ -35,10 +35,12 @@
  * to zero accessible neighbors.
  *
  * Embedded-postgres reality: the bundled `pg-embedded` instance does NOT ship
- * pgvector. In environments without vector support, `summary_embedding` will
- * be null on every row, the `IS NOT NULL` filter zeroes the candidate set,
- * and we return `relatedThreads: []`. Tests mock the DB select layer; they
- * don't rely on actual pgvector SQL semantics.
+ * pgvector. In environments without vector support, `summary_embedding` is null
+ * on every row. P2-T6: rather than returning `relatedThreads: []` in that case,
+ * we fall back to core-postgres full-text search (`websearch_to_tsquery` over
+ * title+summary) so cross-thread discovery still works in dev. The prod
+ * semantic path is unchanged. Tests mock the DB select layer; they don't rely
+ * on actual pgvector or full-text SQL semantics.
  */
 
 import { eq, and, desc, sql } from "drizzle-orm";
@@ -113,6 +115,74 @@ function toVectorString(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
 
+/** A related-thread candidate row before visibility filtering. */
+interface RelatedCandidate {
+  id: string;
+  title: string | null;
+  summaryText: string | null;
+  visibility: string;
+}
+
+/**
+ * Resolve which private threads the calling agent participates in (and may
+ * therefore see in the related-thread sidecar). Returns an empty set when no
+ * `callerAgentId` is supplied — private candidates then all fall through to the
+ * fail-closed reject branch in {@link filterRelatedByVisibility}.
+ */
+async function resolveAccessiblePrivateThreadIds(
+  db: Db,
+  companyId: string,
+  callerAgentId?: string,
+): Promise<Set<string>> {
+  if (!callerAgentId) return new Set();
+  const participantRows = await db
+    .select({ threadId: threadParticipants.threadId })
+    .from(threadParticipants)
+    .where(
+      and(
+        eq(threadParticipants.companyId, companyId),
+        eq(threadParticipants.principalType, "agent"),
+        eq(threadParticipants.principalId, callerAgentId),
+      ),
+    );
+  return new Set(participantRows.map((r) => r.threadId));
+}
+
+/**
+ * Apply the three-tier visibility model to a candidate list, cap to
+ * `relatedLimit`, and project to the public {@link RelatedThread} shape. Shared
+ * by the pgvector path and the dev full-text fallback so both enforce the
+ * identical fail-closed privacy rule.
+ */
+function filterRelatedByVisibility(
+  candidates: RelatedCandidate[],
+  accessiblePrivateThreadIds: Set<string>,
+  relatedLimit: number,
+): RelatedThread[] {
+  return candidates
+    .filter((c) => {
+      if (c.visibility === "company") return true;
+      // Phase 1: department-scoped threads are visible to any crew agent inside
+      // the same company. Phase 2 will tighten this once we wire agent ↔
+      // department bindings.
+      // TODO(Phase 2): narrow "department" to same-department crew only.
+      if (c.visibility === "department") return true;
+      if (c.visibility === "private") {
+        return accessiblePrivateThreadIds.has(c.id);
+      }
+      // Unknown visibility — fail closed. Future enum additions should require
+      // an explicit branch here.
+      return false;
+    })
+    .slice(0, relatedLimit)
+    .map((c) => ({
+      id: c.id,
+      title: c.title,
+      summaryText: c.summaryText,
+      visibility: c.visibility,
+    }));
+}
+
 /**
  * Package the context bundle for an Adjutant wakeup on a single thread.
  *
@@ -165,14 +235,20 @@ export async function packageAdjutantContext(
     .limit(maxEntries);
   const entries = [...recentEntriesDesc].reverse();
 
-  // ── 3. Related threads via summaryEmbedding HNSW similarity ─────────────
+  // ── 3. Related threads ──────────────────────────────────────────────────
+  // Prod path: pgvector cosine similarity on `summary_embedding`. Dev fallback
+  // (P2-T6): the bundled embedded-postgres ships NO pgvector, so embeddings are
+  // null on every row and the vector path would always return []. When the
+  // source thread has no embedding we fall back to core-postgres full-text
+  // search over title+summary so cross-thread discovery still works locally.
+  // Both paths share the identical visibility filter.
   let relatedThreads: RelatedThread[] = [];
+  // Over-fetch so visibility filtering can drop private threads the caller
+  // can't see without starving the final list.
+  const overFetch = relatedLimit * RELATED_OVERFETCH_MULTIPLIER;
 
   if (thread.summaryEmbedding) {
     const vectorStr = toVectorString(thread.summaryEmbedding);
-    // Over-fetch so visibility filtering can drop private threads the
-    // caller can't see without starving the final list.
-    const overFetch = relatedLimit * RELATED_OVERFETCH_MULTIPLIER;
 
     const candidates = await db
       .select({
@@ -193,49 +269,53 @@ export async function packageAdjutantContext(
       .orderBy(sql`${discussions.summaryEmbedding} <=> ${vectorStr}::vector`)
       .limit(overFetch);
 
-    // Resolve which private threads (if any) this agent participates in.
-    // Skipped entirely when callerAgentId is omitted — private candidates
-    // will all fall through to the safe-default reject branch below.
-    let accessiblePrivateThreadIds = new Set<string>();
-    if (opts.callerAgentId) {
-      const participantRows = await db
-        .select({ threadId: threadParticipants.threadId })
-        .from(threadParticipants)
+    const accessiblePrivateThreadIds = await resolveAccessiblePrivateThreadIds(
+      db,
+      thread.companyId,
+      opts.callerAgentId,
+    );
+    relatedThreads = filterRelatedByVisibility(candidates, accessiblePrivateThreadIds, relatedLimit);
+  } else {
+    // ── Dev full-text fallback (P2-T6) ────────────────────────────────────
+    // No source embedding → derive a keyword query from the source thread's
+    // title (preferred — short and topical) or, lacking a title, the leading
+    // words of its summary. `websearch_to_tsquery` is injection-safe and ships
+    // with core postgres (NOT pgvector), so this works in embedded-postgres.
+    // An empty query (brand-new thread, no title/summary) yields [], matching
+    // the prior always-empty behavior — never a regression.
+    const rawText = (thread.title ?? thread.summaryText ?? "").trim();
+    const queryText = rawText.split(/\s+/).slice(0, 12).join(" ").trim();
+
+    if (queryText.length > 0) {
+      const tsVector = sql`to_tsvector('simple', concat_ws(' ', coalesce(${discussions.title}, ''), coalesce(${discussions.summaryText}, '')))`;
+      const tsQuery = sql`websearch_to_tsquery('simple', ${queryText})`;
+
+      const candidates = await db
+        .select({
+          id: discussions.id,
+          title: discussions.title,
+          summaryText: discussions.summaryText,
+          visibility: discussions.visibility,
+        })
+        .from(discussions)
         .where(
           and(
-            eq(threadParticipants.companyId, thread.companyId),
-            eq(threadParticipants.principalType, "agent"),
-            eq(threadParticipants.principalId, opts.callerAgentId),
+            eq(discussions.companyId, thread.companyId),
+            sql`${discussions.id} <> ${threadId}`,
+            eq(discussions.status, "active"),
+            sql`${tsVector} @@ ${tsQuery}`,
           ),
-        );
-      accessiblePrivateThreadIds = new Set(
-        participantRows.map((r) => r.threadId),
-      );
-    }
+        )
+        .orderBy(sql`ts_rank_cd(${tsVector}, ${tsQuery}) DESC`)
+        .limit(overFetch);
 
-    relatedThreads = candidates
-      .filter((c) => {
-        if (c.visibility === "company") return true;
-        // Phase 1: department-scoped threads are visible to any crew agent
-        // inside the same company. Phase 2 will tighten this once we wire
-        // agent ↔ department bindings — leaving a TODO marker keeps the
-        // future cleanup discoverable via grep.
-        // TODO(Phase 2): narrow "department" to same-department crew only.
-        if (c.visibility === "department") return true;
-        if (c.visibility === "private") {
-          return accessiblePrivateThreadIds.has(c.id);
-        }
-        // Unknown visibility — fail closed. Future enum additions should
-        // require an explicit branch here.
-        return false;
-      })
-      .slice(0, relatedLimit)
-      .map((c) => ({
-        id: c.id,
-        title: c.title,
-        summaryText: c.summaryText,
-        visibility: c.visibility,
-      }));
+      const accessiblePrivateThreadIds = await resolveAccessiblePrivateThreadIds(
+        db,
+        thread.companyId,
+        opts.callerAgentId,
+      );
+      relatedThreads = filterRelatedByVisibility(candidates, accessiblePrivateThreadIds, relatedLimit);
+    }
   }
 
   // ── 4. Assemble the bundle ───────────────────────────────────────────────
