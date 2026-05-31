@@ -49,6 +49,7 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
   planner:        "call `create_artifact` (or `create_artifact_version` for an iteration) with the plan markdown as the document body, then `post_entry` exactly once as a system-notice linking the new artifact",
   dispatcher:     "call `create_task` (one per scope item), then `assign_task` + `add_task_dependency` as needed",
   memory_keeper:  "call `suggest_memory` for each candidate pattern (propose-only — the founder approves)",
+  chronicler:     "call `get_thread_summary` then `thread.listEntries` for the thread in this wakeup, then call `thread.updateSummary` exactly once with an updated factual summary + routingTerms. Never post_entry.",
   commander:      "call `post_entry` exactly once with your synthesis or answer",
 };
 
@@ -56,10 +57,19 @@ const GENERIC_DIRECTIVE =
   "use the tools in your allowlist appropriate to this trigger, then return";
 
 // Dedicated directive for inbox.routing_ambiguous wakeups (Task 1.7).
-// The Navigator receives an inboxItemId + candidate threads + distances so it
-// can make a concrete routing decision rather than relying on generic guidance.
+// The Navigator receives an inboxItemId + the inbound content so it can make a
+// concrete routing decision rather than relying on generic guidance. It fetches
+// the current routing cards at runtime via list_thread_cards (Codex P1 #1) and
+// MUST finalize via one of attach/promote/defer (Codex P1 #2).
 const INBOX_ROUTING_DIRECTIVE =
-  "An inbound item needs routing. Review the candidate threads below. Decide: if one is a clear home, call `attach_to_thread` to attach this inbox item's content as a new entry there; if the material deserves its own thread, call `spin_off_thread`; if nothing fits, take no action — the item stays in the Inbox for the founder to triage. The routing dial decides whether your decision auto-acts or is surfaced to the founder as a suggestion — act on your best judgment either way.";
+  "An inbound item needs routing. Its content is shown below under 'Inbound content'. " +
+  "Call list_thread_cards to fetch the current routing cards for active threads. " +
+  "Then decide and ACT (do not return silently): " +
+  "(a) if one thread is the clear home for this content, call attach_to_thread; " +
+  "(b) if the content deserves its own new thread, call promote_inbox_to_thread (with a proposed title); " +
+  "(c) if you are unsure or nothing fits, call defer_inbox_to_human — this leaves it in the Inbox for the founder. " +
+  "You MUST call exactly one of these three tools. The routing dial decides whether (a)/(b) auto-act or surface as a suggestion — act on your best judgment either way. " +
+  "Do NOT call spin_off_thread for inbox items — use promote_inbox_to_thread instead.";
 
 export interface BuildTriggerPromptArgs {
   /** Full assembled instruction bundle (SOUL+TOOLS+AGENTS+HEARTBEAT)
@@ -96,39 +106,30 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     typeof payload.role === "string" ? `Routed role: ${payload.role}` : null,
   ].filter((line): line is string => line !== null);
 
-  // Task 1.7 — inbox-routing wakeup branch.
-  // When the Navigator is woken for inbox routing, append the inbox item +
-  // candidate threads + ambiguity gap so it has concrete material to act on.
-  // All field reads are defensive (unknown payload fields); a malformed payload
-  // never throws — it simply omits the field that wasn't valid.
+  // Task 1.7 / routing-card redesign — inbox-routing wakeup branch.
+  // When the Navigator is woken for inbox routing, append the inbox item + the
+  // raw inbound content so it has concrete material to act on. The candidate
+  // routing cards are fetched by the Navigator at runtime via list_thread_cards
+  // (not frozen in the payload). All field reads are defensive (unknown payload
+  // fields); a malformed payload never throws — it simply omits the field that
+  // wasn't valid.
   let directive: string;
   if (payload.source === "inbox.routing_ambiguous") {
     directive = INBOX_ROUTING_DIRECTIVE;
 
-    // Inbox item ID (non-empty string guard)
     const inboxItemId = payload.inboxItemId;
     if (typeof inboxItemId === "string" && inboxItemId.length > 0) {
       ctxLines.push(`Inbox item: ${inboxItemId}`);
     }
 
-    // Candidate threads (non-empty array guard). Zip with distances by index.
-    const candidates = payload.candidateThreadIds;
-    const distances = payload.distances;
-    if (Array.isArray(candidates) && candidates.length > 0) {
-      const parts = candidates.map((id, i) => {
-        const d = Array.isArray(distances) ? distances[i] : undefined;
-        const dist = typeof d === "number" && Number.isFinite(d)
-          ? `${(d as number).toFixed(3)}`
-          : null;
-        return dist !== null ? `${id} (${dist})` : `${id}`;
-      });
-      ctxLines.push(`Candidate threads: ${parts.join(", ")}`);
-    }
-
-    // Ambiguity gap (finite number guard)
-    const gap = payload.gap;
-    if (typeof gap === "number" && Number.isFinite(gap)) {
-      ctxLines.push(`Ambiguity gap: ${(gap as number).toFixed(3)}`);
+    // Inbound content (Codex P1 #1 — the Navigator decides over the actual text).
+    const inboundContent = payload.inboundContent;
+    if (typeof inboundContent === "string" && inboundContent.length > 0) {
+      // Cap very long inbound text so the prompt stays bounded.
+      const clipped = inboundContent.length > 4000
+        ? `${inboundContent.slice(0, 4000)}…[truncated]`
+        : inboundContent;
+      ctxLines.push(`Inbound content:\n${clipped}`);
     }
   } else {
     directive = ROLE_ACTION_DIRECTIVE[agentRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;

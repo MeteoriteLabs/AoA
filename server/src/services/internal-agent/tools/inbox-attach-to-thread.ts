@@ -141,6 +141,42 @@ export const attachToThreadTool: AgentTool = {
     }
 
     // ── Step 3: act path (auto_attach | full_auto | off) → shared service ─────
+    // Race-guard (Codex round-3 P1): if this item is resolving a routing
+    // escalation, atomically claim it so a stale 'processing' Navigator run
+    // can't auto-attach an item the reclaim sweep already handed to the founder.
+    const escalatedClaim = await ctx.db
+      .update(threadInboxItems)
+      .set({ routingStatus: "routing" })
+      .where(
+        and(
+          eq(threadInboxItems.id, inboxItemId),
+          eq(threadInboxItems.companyId, ctx.companyId),
+          eq(threadInboxItems.routingStatus, "escalated"),
+        ),
+      )
+      .returning({ id: threadInboxItems.id });
+
+    if (escalatedClaim.length === 0) {
+      // Not currently 'escalated'. Distinguish a sweep-finalized escalation
+      // (no-op) from a manual/direct attach on a never-escalated item (proceed).
+      const [cur] = await ctx.db
+        .select({
+          routingStatus: threadInboxItems.routingStatus,
+          routerDecision: threadInboxItems.routerDecision,
+        })
+        .from(threadInboxItems)
+        .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, ctx.companyId)))
+        .limit(1);
+      if (cur && cur.routingStatus === "routed" && cur.routerDecision === "human") {
+        return {
+          success: true,
+          data: { action: "already_finalized" },
+          summary: "Item was already finalized to the founder — no action",
+        };
+      }
+      // else: manual/direct attach on a non-escalated item — fall through.
+    }
+
     try {
       const { attachInboxItemToThread } = await import("../../inbox-attach.js");
       const res = await attachInboxItemToThread(ctx.db, {

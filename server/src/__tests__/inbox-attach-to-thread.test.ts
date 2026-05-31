@@ -89,7 +89,15 @@ function makeDb(opts: MakeDbOptions = {}) {
 
   const select = vi.fn(() => makeSelectChain(selectCallIndex++));
 
-  // update chain — tracks the set payload
+  // update chain — tracks the set payload.
+  //
+  // The act-path race-guard (Codex round-3 P1) issues an atomic escalated-claim
+  // UPDATE … .where(…).returning({ id }) before delegating to the shared service.
+  // The chain's where() therefore returns an object that is BOTH awaitable
+  // (resolves to [] — the suggest path awaits it directly) AND exposes
+  // .returning(). returning() resolves to a non-empty array so the guard treats
+  // the claim as "succeeded" and falls straight through to the act path (these
+  // dial-gate tests are not escalation-resolution scenarios).
   const capturedSets: any[] = [];
   const makeUpdateChain = () => {
     const chain: any = {};
@@ -98,7 +106,11 @@ function makeDb(opts: MakeDbOptions = {}) {
       if (onUpdateSet) onUpdateSet(vals);
       return chain;
     });
-    chain.where = vi.fn(() => Promise.resolve([]));
+    chain.where = vi.fn(() => {
+      const whereResult: any = Promise.resolve([]);
+      whereResult.returning = vi.fn().mockResolvedValue([{ id: INBOX_ITEM_ID }]);
+      return whereResult;
+    });
     return chain;
   };
   const update = vi.fn(() => makeUpdateChain());
@@ -262,7 +274,7 @@ describe("attach_to_thread tool (Task 1.8 — dial gate)", () => {
       entryId: "entry-xyz",
       alreadyHandled: false,
     });
-    const { db, updateFn } = makeDb({ dialLevel: "auto_attach" });
+    const { db, updateFn, capturedSets } = makeDb({ dialLevel: "auto_attach" });
     const ctx = makeCtx(db);
     const result = await attachToThreadTool.execute(
       { inboxItemId: INBOX_ITEM_ID, threadId: THREAD_ID },
@@ -280,8 +292,10 @@ describe("attach_to_thread tool (Task 1.8 — dial gate)", () => {
     expect(args.threadId).toBe(THREAD_ID);
     expect(args.actor.actorType).toBe("agent");
     expect(args.actor.agentId).toBe(AGENT_ID);
-    // No local update — shared service owns the write.
-    expect(updateFn).not.toHaveBeenCalled();
+    // The only local update is the race-guard's atomic escalated-claim
+    // (Codex round-3 P1); the shared service still owns the actual entry write.
+    expect(updateFn).toHaveBeenCalledOnce();
+    expect(capturedSets[0]).toEqual({ routingStatus: "routing" });
   });
 
   // full_auto — same as auto_attach
@@ -331,7 +345,17 @@ describe("attach_to_thread tool (Task 1.8 — dial gate)", () => {
       limit: vi.fn().mockResolvedValue(selectQueue[resultIndex] ?? []),
     });
     const selectFn = vi.fn(() => makeSelectChain(selectCallIndex++));
-    const db = { select: selectFn, update: vi.fn() } as any;
+    // update chain must support the act-path race-guard's
+    // .set().where().returning() (see makeDb's makeUpdateChain note).
+    const updateFn = vi.fn(() => ({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn(() => {
+        const whereResult: any = Promise.resolve([]);
+        whereResult.returning = vi.fn().mockResolvedValue([{ id: INBOX_ITEM_ID }]);
+        return whereResult;
+      }),
+    }));
+    const db = { select: selectFn, update: updateFn } as any;
 
     mockAttachInboxItemToThread.mockResolvedValue({
       posted: true,

@@ -126,6 +126,22 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).toContain("propose-only");
     });
 
+    it("chronicler → thread.updateSummary directive (NOT the generic directive)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep" },
+        agentName: "Chronicler",
+        agentRoleKey: "chronicler",
+      });
+      // Concrete chronicler directive (Codex P1 #5) — must update the thread summary
+      expect(out).toContain("thread.updateSummary");
+      expect(out).toContain("get_thread_summary");
+      // Must NOT fall back to the weak generic directive
+      expect(out).not.toContain("use the tools in your allowlist");
+      // Chronicler must never post_entry
+      expect(out).toMatch(/Never post_entry/i);
+    });
+
     it("commander → post_entry with synthesis", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,
@@ -252,9 +268,12 @@ describe("buildTriggerPrompt (T1.2)", () => {
   });
 });
 
-// Task 1.7 — inbox-routing trigger prompt
+// Task 1.7 / routing-card redesign — inbox-routing trigger prompt.
+// The Navigator now decides over the raw inbound content (rendered under
+// "Inbound content:") and fetches routing cards at runtime via list_thread_cards;
+// candidateThreadIds / distances / gap are no longer rendered (Codex P1 #1).
 describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
-  it("renders inboxItemId, candidateThreadIds with distances, and ambiguity gap", () => {
+  it("renders inboxItemId and the inbound content", () => {
     const out = buildTriggerPrompt({
       instruction: "BUNDLE",
       agentName: "Navigator",
@@ -263,24 +282,18 @@ describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
         companyId: "co-1",
         source: "inbox.routing_ambiguous",
         inboxItemId: "inbox-1",
-        candidateThreadIds: ["thread-a", "thread-b"],
-        distances: [0.12, 0.34],
-        gap: 0.22,
+        inboundContent: "Customer wants SSO before the pilot.",
       },
     });
     // Inbox item ID must appear
     expect(out).toContain("inbox-1");
-    // Both candidate thread IDs must appear
-    expect(out).toContain("thread-a");
-    expect(out).toContain("thread-b");
-    // Distances rendered to 3 decimal places
-    expect(out).toContain("0.120");
-    expect(out).toContain("0.340");
-    // Gap rendered to 3 decimal places
-    expect(out).toContain("0.220");
+    // The inbound content must be rendered under its labelled line
+    expect(out).toContain("Inbound content:");
+    expect(out).toContain("Customer wants SSO before the pilot.");
   });
 
-  it("contains attach_to_thread and spin_off_thread in the directive", () => {
+  it("truncates very long inbound content to keep the prompt bounded", () => {
+    const long = "x".repeat(5000);
     const out = buildTriggerPrompt({
       instruction: "BUNDLE",
       agentName: "Navigator",
@@ -288,17 +301,17 @@ describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
       payload: {
         companyId: "co-1",
         source: "inbox.routing_ambiguous",
-        inboxItemId: "inbox-1",
-        candidateThreadIds: ["thread-a"],
-        distances: [0.15],
-        gap: null,
+        inboxItemId: "inbox-long",
+        inboundContent: long,
       },
     });
-    expect(out).toContain("attach_to_thread");
-    expect(out).toContain("spin_off_thread");
+    expect(out).toContain("Inbound content:");
+    // Capped at 4000 chars with a truncation marker — the full 5000-char run must not survive.
+    expect(out).toContain("[truncated]");
+    expect(out).not.toContain(long);
   });
 
-  it("uses the inbox-routing directive — not the generic navigator role directive", () => {
+  it("uses INBOX_ROUTING_DIRECTIVE — names list_thread_cards / promote_inbox_to_thread / defer_inbox_to_human", () => {
     const out = buildTriggerPrompt({
       instruction: "BUNDLE",
       agentName: "Navigator",
@@ -307,18 +320,23 @@ describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
         companyId: "co-1",
         source: "inbox.routing_ambiguous",
         inboxItemId: "inbox-1",
-        candidateThreadIds: ["thread-a", "thread-b"],
-        distances: [0.12, 0.34],
-        gap: 0.22,
+        inboundContent: "Some inbound material.",
       },
     });
     // Distinctive phrase from INBOX_ROUTING_DIRECTIVE
     expect(out).toContain("An inbound item needs routing");
-    // The generic navigator ROLE_ACTION_DIRECTIVE must NOT appear instead
-    expect(out).not.toContain("decide whether to `attach_to_thread`");
+    // The three card/promote/defer tools the Navigator must choose between
+    expect(out).toContain("list_thread_cards");
+    expect(out).toContain("promote_inbox_to_thread");
+    expect(out).toContain("defer_inbox_to_human");
+    // Old candidate-thread framing must not appear
+    expect(out).not.toContain("Candidate threads:");
+    expect(out).not.toContain("Ambiguity gap:");
+    // And it must steer away from spin_off_thread for inbox items
+    expect(out).toContain("Do NOT call spin_off_thread for inbox items");
   });
 
-  it("guard case: empty candidateThreadIds + no gap still renders without throwing", () => {
+  it("guard case: no inboundContent still renders without throwing", () => {
     const out = buildTriggerPrompt({
       instruction: "BUNDLE",
       agentName: "Navigator",
@@ -327,38 +345,14 @@ describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
         companyId: "co-1",
         source: "inbox.routing_ambiguous",
         inboxItemId: "inbox-2",
-        candidateThreadIds: [],
-        distances: [],
-        gap: undefined,
       },
     });
     // Must still contain the inbox item ID
     expect(out).toContain("inbox-2");
     // Must not crash or produce "undefined"
     expect(out).not.toContain("undefined");
-    // Candidate threads line should be absent (empty array)
-    expect(out).not.toContain("Candidate threads:");
-    // Gap line should be absent (undefined / not a finite number)
-    expect(out).not.toContain("Ambiguity gap:");
-  });
-
-  it("guard case: gap=null renders without gap line", () => {
-    const out = buildTriggerPrompt({
-      instruction: "BUNDLE",
-      agentName: "Navigator",
-      agentRoleKey: "navigator",
-      payload: {
-        companyId: "co-1",
-        source: "inbox.routing_ambiguous",
-        inboxItemId: "inbox-3",
-        candidateThreadIds: ["thread-x"],
-        distances: [0.25],
-        gap: null,
-      },
-    });
-    expect(out).toContain("inbox-3");
-    expect(out).toContain("thread-x");
-    expect(out).not.toContain("Ambiguity gap:");
+    // The inbound-content line should be absent when no content was supplied
+    expect(out).not.toContain("Inbound content:");
   });
 
   it("non-inbox navigator wakeup still uses the role-table directive (regression guard)", () => {

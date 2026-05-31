@@ -48,9 +48,17 @@ function makeDb(opts: { dialLevel?: string } = {}) {
     limit: vi.fn().mockResolvedValue(selectQueue[idx] ?? []),
   });
   const select = vi.fn(() => makeChain(callIdx++));
+  // The act-path race-guard (Codex round-3 P1) issues an escalated-claim
+  // UPDATE … .where(…).returning({ id }). where() therefore returns an object
+  // that is both awaitable (→ []) and exposes .returning() (→ non-empty, so the
+  // guard treats the claim as succeeded and falls through to the act path).
   const update = vi.fn(() => ({
     set: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue([]),
+    where: vi.fn(() => {
+      const whereResult: any = Promise.resolve([]);
+      whereResult.returning = vi.fn().mockResolvedValue([{ id: "inbox-1" }]);
+      return whereResult;
+    }),
   }));
   return { db: { select, update } as any };
 }

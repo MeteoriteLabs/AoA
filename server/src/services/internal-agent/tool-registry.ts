@@ -54,6 +54,10 @@ import { agentDispatchTool } from "./tools/agent-dispatch.js";
 // Adjutant-only (ADJUTANT_TOOL_ALLOWLIST in ensure-adjutant.ts). Routes through
 // crewTaskService.proposeWork — the unified D11 gate — using ctx.effectiveAutonomy.
 import { proposeCrewWorkTool } from "./tools/propose-crew-work.js";
+// Routing-card redesign — new Navigator tools
+import { listThreadCardsTool } from "./tools/list-thread-cards.js";
+import { promoteInboxToThreadTool } from "./tools/promote-inbox-to-thread.js";
+import { deferInboxToHumanTool } from "./tools/defer-inbox-to-human.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -92,6 +96,9 @@ export function createToolRegistry(): AgentTool[] {
     // query_artifacts to read the plan before creating tasks.
     attachToThreadTool,
     spinOffThreadTool,
+    listThreadCardsTool,        // NEW — card-fetch tool for Navigator (T6)
+    promoteInboxToThreadTool,   // NEW — Navigator inbox→new-thread action (C1/T7)
+    deferInboxToHumanTool,      // NEW — Navigator "unsure" finalization (Codex P1 #2)
     createArtifactVersionTool,
     queryArtifactsTool,
     requestThreadWorkspaceTool,

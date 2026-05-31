@@ -77,6 +77,9 @@ export function roleToolAllowlist(
         "thread.createLink",
         "attach_to_thread",
         "spin_off_thread",
+        "list_thread_cards",           // NEW — fetch candidate routing cards (T6)
+        "promote_inbox_to_thread",     // NEW — create new thread from inbox item (C1/T7)
+        "defer_inbox_to_human",        // NEW — finalize an UNSURE item (Codex P1 #2)
       ];
     case "planner":
       // C2 batch 1: Planner owns scope proposals + setting intent on a thread
