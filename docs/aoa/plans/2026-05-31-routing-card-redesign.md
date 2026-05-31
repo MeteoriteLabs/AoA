@@ -845,7 +845,7 @@ export async function ensureChronicler(db: Db, companyId: string): Promise<strin
 // agentWakeupRequests(agentId, payload->>'threadId') WHERE status IN
 // ('queued','processing')) is a follow-up if/when the server scales out.
 
-import { and, eq, ne, gt, isNull, or, inArray, sql } from "drizzle-orm";
+import { and, eq, ne, gt, isNull, isNotNull, or, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers, discussions, agentWakeupRequests } from "@armyofagents/db";
 import { logger } from "../../../middleware/logger.js";
@@ -913,6 +913,11 @@ export async function runChroniclerSweep(db: Db): Promise<RunChroniclerSweepResu
 
 async function queueForCompany(db: Db, agentId: string, companyId: string): Promise<number> {
   // ── Threads with new entries since last card update ───────────────────────
+  // Eligibility: active thread that has at least one entry (lastEntryAt set) AND
+  // either no card yet (summaryUpdatedAt null) or new entries since the last card.
+  // The isNotNull(lastEntryAt) guard (Codex round-3 P2) avoids waking the
+  // Chronicler for brand-new no-entry threads (created with lastEntryAt=null) —
+  // there is nothing to summarize until a first entry lands.
   const staleThreads = await db
     .select({ id: discussions.id })
     .from(discussions)
@@ -920,6 +925,7 @@ async function queueForCompany(db: Db, agentId: string, companyId: string): Prom
       and(
         eq(discussions.companyId, companyId),
         eq(discussions.status, "active"),
+        isNotNull(discussions.lastEntryAt),
         or(
           isNull(discussions.summaryUpdatedAt),
           gt(discussions.lastEntryAt, discussions.summaryUpdatedAt),
@@ -1300,7 +1306,9 @@ const INBOX_ITEM_ID = "bbbbbbbb-0000-4bbb-8bbb-bbbbbbbbbbbb";
 
 // Sequence-based select mock: 1st select → inbox-item existence row (companyId),
 // 2nd select → dial. itemCompanyId controls the cross-tenant guard.
-function makeCtx(dial: string, itemCompanyId: string | null = COMPANY_ID) {
+// claimRows controls the escalated-guard UPDATE...returning() result:
+// [{id}] = still escalated (proceeds), [] = already finalized (no-op).
+function makeCtx(dial: string, itemCompanyId: string | null = COMPANY_ID, claimRows: object[] = [{ id: INBOX_ITEM_ID }]) {
   const selectResults: object[][] = [
     itemCompanyId === null ? [] : [{ companyId: itemCompanyId }],
     [{ inboundRoutingLevel: dial }],
@@ -1315,7 +1323,7 @@ function makeCtx(dial: string, itemCompanyId: string | null = COMPANY_ID) {
           }),
         }),
       }),
-      update: () => ({ set: () => ({ where: () => Promise.resolve([]) }) }),
+      update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve(claimRows) }) }) }),
     } as any,
     companyId: COMPANY_ID,
     services: {},
@@ -1370,6 +1378,15 @@ describe("promote_inbox_to_thread", () => {
     const result = await promoteInboxToThreadTool.execute({ inboxItemId: INBOX_ITEM_ID }, ctx);
     expect(result.success).toBe(false);
     expect(result.error).toBe("ITEM_NOT_FOUND");
+  });
+
+  it("no-ops when item already finalized (escalated-guard claim returns 0 rows)", async () => {
+    // claimRows=[] → the escalated-guard UPDATE matched nothing (sweep finalized first).
+    const ctx = makeCtx("full_auto", COMPANY_ID, []);
+    const result = await promoteInboxToThreadTool.execute({ inboxItemId: INBOX_ITEM_ID }, ctx);
+    expect(result.success).toBe(true);
+    expect(result.data.action).toBe("already_finalized");
+    expect(mockPromote).not.toHaveBeenCalled();
   });
 });
 ```
@@ -1456,7 +1473,34 @@ export const promoteInboxToThreadTool: AgentTool = {
     const dial = (configRows[0]?.inboundRoutingLevel ?? "off") as string;
 
     if (dial === "full_auto") {
-      // Auto-create the new thread.
+      // First-writer-wins guard (Codex round-3 P1): atomically claim the item
+      // ONLY if it is still 'escalated'. If the reclaim sweep already finalized
+      // it to routed+human (this run ran past the reclaim threshold), the claim
+      // returns 0 rows and we no-op — the sweep's human-finalization stands.
+      // This prevents a live 'processing' Navigator run from auto-creating a
+      // thread for an item the founder was already handed.
+      const claimed = await ctx.db
+        .update(threadInboxItems)
+        .set({ routingStatus: "routing" })
+        .where(
+          and(
+            eq(threadInboxItems.id, inboxItemId),
+            eq(threadInboxItems.companyId, ctx.companyId),
+            eq(threadInboxItems.routingStatus, "escalated"),
+          ),
+        )
+        .returning({ id: threadInboxItems.id });
+
+      if (claimed.length === 0) {
+        return {
+          success: true,
+          data: { action: "already_finalized" },
+          summary: "Item was already finalized (no longer escalated) — no action",
+        };
+      }
+
+      // Auto-create the new thread. promoteInboxItemToNewThread sets the inbox
+      // row's terminal status internally.
       const { promoteInboxItemToNewThread } = await import("../../inbox-attach.js");
       const result = await promoteInboxItemToNewThread(ctx.db, {
         companyId: ctx.companyId,
@@ -1474,8 +1518,8 @@ export const promoteInboxToThreadTool: AgentTool = {
     }
 
     // Suggest path (suggest | auto_attach): record suggest_new decision.
-    // companyId in WHERE is defense-in-depth (Codex P1 #6) on top of the guard above.
-    await ctx.db
+    // companyId guard (Codex P1 #6) + escalated guard (Codex round-3 P1) in WHERE.
+    const recorded = await ctx.db
       .update(threadInboxItems)
       .set({
         routerDecision: "suggest_new",
@@ -1487,8 +1531,18 @@ export const promoteInboxToThreadTool: AgentTool = {
         and(
           eq(threadInboxItems.id, inboxItemId),
           eq(threadInboxItems.companyId, ctx.companyId),
+          eq(threadInboxItems.routingStatus, "escalated"),
         ),
-      );
+      )
+      .returning({ id: threadInboxItems.id });
+
+    if (recorded.length === 0) {
+      return {
+        success: true,
+        data: { action: "already_finalized" },
+        summary: "Item was already finalized (no longer escalated) — no action",
+      };
+    }
 
     return {
       success: true,
@@ -1505,7 +1559,7 @@ export const promoteInboxToThreadTool: AgentTool = {
 pnpm test:run server/src/__tests__/promote-inbox-to-thread.test.ts
 ```
 
-Expected: 6 tests PASS.
+Expected: 7 tests PASS.
 
 - [ ] **Step 5: Write the failing test for `defer_inbox_to_human`**
 
@@ -1527,12 +1581,14 @@ import { deferInboxToHumanTool } from "../services/internal-agent/tools/defer-in
 const COMPANY_ID = "aaaaaaaa-0000-4aaa-8aaa-aaaaaaaaaaaa";
 const INBOX_ITEM_ID = "bbbbbbbb-0000-4bbb-8bbb-bbbbbbbbbbbb";
 
-function makeCtx(itemCompanyId: string | null = COMPANY_ID) {
+// claimRows controls the escalated-guard UPDATE...returning():
+// [{id}] = still escalated (finalizes), [] = already finalized (no-op).
+function makeCtx(itemCompanyId: string | null = COMPANY_ID, claimRows: object[] = [{ id: INBOX_ITEM_ID }]) {
   return {
     db: {
       select: () => ({ from: () => ({ where: () => ({ limit: () =>
         Promise.resolve(itemCompanyId === null ? [] : [{ companyId: itemCompanyId }]) }) }) }),
-      update: () => ({ set: () => ({ where: () => Promise.resolve([]) }) }),
+      update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve(claimRows) }) }) }),
     } as any,
     companyId: COMPANY_ID,
     services: {},
@@ -1545,6 +1601,13 @@ describe("defer_inbox_to_human", () => {
     const result = await deferInboxToHumanTool.execute({ inboxItemId: INBOX_ITEM_ID }, ctx);
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({ action: "deferred_to_human" });
+  });
+
+  it("no-ops when item already finalized (escalated-guard returns 0 rows)", async () => {
+    const ctx = makeCtx(COMPANY_ID, []);
+    const result = await deferInboxToHumanTool.execute({ inboxItemId: INBOX_ITEM_ID }, ctx);
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ action: "already_finalized" });
   });
 
   it("rejects an item from another company", async () => {
@@ -1633,15 +1696,31 @@ export const deferInboxToHumanTool: AgentTool = {
 
     // Terminal: routed + human. Item stays status='pending' (visible in Inbox),
     // routingStatus='routed' means the reclaim sweep will NOT re-escalate it.
-    await ctx.db
+    //
+    // First-writer-wins guard (Codex round-3 P1): require routingStatus='escalated'.
+    // If the reclaim sweep already finalized this item (because this Navigator run
+    // ran past the reclaim threshold), the claim returns 0 rows and we no-op —
+    // the sweep's finalization stands. This closes the processing-wakeup race
+    // (the sweep cancels only QUEUED wakeups; a live 'processing' run reaches here).
+    const claimed = await ctx.db
       .update(threadInboxItems)
       .set({ routingStatus: "routed", routerDecision: "human", routedAt: new Date() })
       .where(
         and(
           eq(threadInboxItems.id, inboxItemId),
           eq(threadInboxItems.companyId, ctx.companyId),
+          eq(threadInboxItems.routingStatus, "escalated"),
         ),
-      );
+      )
+      .returning({ id: threadInboxItems.id });
+
+    if (claimed.length === 0) {
+      return {
+        success: true,
+        data: { action: "already_finalized" },
+        summary: "Item was already finalized (no longer escalated) — no action",
+      };
+    }
 
     return {
       success: true,
@@ -1658,7 +1737,7 @@ export const deferInboxToHumanTool: AgentTool = {
 pnpm test:run server/src/__tests__/defer-inbox-to-human.test.ts
 ```
 
-Expected: 4 tests PASS.
+Expected: 5 tests PASS.
 
 - [ ] **Step 9: Commit**
 
@@ -2174,12 +2253,13 @@ git commit -m "feat(inbox-router): rewire routeInboxItem — Navigator-over-card
 
 ---
 
-## Task 9 — Navigator allowlist + trigger-prompt (inbound-content rendering) + Chronicler directive
+## Task 9 — Navigator allowlist + trigger-prompt (inbound-content rendering) + Chronicler directive + attach race-guard
 
 **Files:**
 - Modify: `server/src/services/internal-agent/aoa-agents/ensure-command-staff.ts`
 - Modify: `server/src/services/internal-agent/aoa-agents/aoa-trigger-prompt.ts`
 - Modify: `server/src/services/internal-agent/tool-registry.ts`
+- Modify: `server/src/services/internal-agent/tools/inbox-attach-to-thread.ts` (escalated race-guard — Codex round-3 P1)
 
 - [ ] **Step 1: Add the three new tools to the Navigator allowlist**
 
@@ -2252,6 +2332,54 @@ In the same file (`aoa-trigger-prompt.ts`), find the `ROLE_ACTION_DIRECTIVE` map
   chronicler:     "call `get_thread_summary` then `thread.listEntries` for the thread in this wakeup, then call `thread.updateSummary` exactly once with an updated factual summary + routingTerms. Never post_entry.",
 ```
 
+- [ ] **Step 4b: Race-guard `attach_to_thread`'s ACT path (Codex round-3 P1)**
+
+`attach_to_thread` is the auto-attach write-path the Navigator uses to file an inbox item. Its ACT path delegates to `attachInboxItemToThread`, which claims on `status='pending'`. A finalized item stays `status='pending'`, so a delayed `processing` Navigator run (one the sweep's queued-only cancel couldn't stop) could still auto-attach an item the founder was already handed.
+
+`attach_to_thread` is a SHARED tool — also used for manual/direct attaches (dial=`off`, @mention) on NON-escalated items — so a blanket `escalated` guard would break manual attach. The fix disambiguates: try to atomically claim `escalated`; on 0 rows, read the item to tell "sweep already finalized this escalation" (no-op) from "manual attach on a non-escalated item" (proceed).
+
+In `server/src/services/internal-agent/tools/inbox-attach-to-thread.ts`, at the TOP of the `// ── Step 3: act path` block (just before `try {`), insert:
+
+```typescript
+    // Race-guard (Codex round-3 P1): if this item is resolving a routing
+    // escalation, atomically claim it so a stale 'processing' Navigator run
+    // can't auto-attach an item the reclaim sweep already handed to the founder.
+    const escalatedClaim = await ctx.db
+      .update(threadInboxItems)
+      .set({ routingStatus: "routing" })
+      .where(
+        and(
+          eq(threadInboxItems.id, inboxItemId),
+          eq(threadInboxItems.companyId, ctx.companyId),
+          eq(threadInboxItems.routingStatus, "escalated"),
+        ),
+      )
+      .returning({ id: threadInboxItems.id });
+
+    if (escalatedClaim.length === 0) {
+      // Not currently 'escalated'. Distinguish a sweep-finalized escalation
+      // (no-op) from a manual/direct attach on a never-escalated item (proceed).
+      const [cur] = await ctx.db
+        .select({
+          routingStatus: threadInboxItems.routingStatus,
+          routerDecision: threadInboxItems.routerDecision,
+        })
+        .from(threadInboxItems)
+        .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, ctx.companyId)))
+        .limit(1);
+      if (cur && cur.routingStatus === "routed" && cur.routerDecision === "human") {
+        return {
+          success: true,
+          data: { action: "already_finalized" },
+          summary: "Item was already finalized to the founder — no action",
+        };
+      }
+      // else: manual/direct attach on a non-escalated item — fall through.
+    }
+```
+
+(`and`, `eq`, `threadInboxItems` are already imported in this file.)
+
 - [ ] **Step 5: Register the three new tools in `tool-registry.ts`**
 
 In `server/src/services/internal-agent/tool-registry.ts`, add imports after the last batch import block (~line 56):
@@ -2305,8 +2433,9 @@ Expected: all passing.
 git add server/src/services/internal-agent/aoa-agents/ensure-command-staff.ts \
         server/src/services/internal-agent/aoa-agents/aoa-trigger-prompt.ts \
         server/src/services/internal-agent/tool-registry.ts \
+        server/src/services/internal-agent/tools/inbox-attach-to-thread.ts \
         server/src/__tests__/aoa-trigger-prompt.test.ts
-git commit -m "feat(navigator): register card/promote/defer tools; render inboundContent; add chronicler directive (T8/T9, Codex P1 #1/#5)"
+git commit -m "feat(navigator): register card/promote/defer tools; render inboundContent; chronicler directive; attach race-guard (T8/T9, Codex P1 #1/#5/#C)"
 ```
 
 ---
@@ -2326,8 +2455,10 @@ Create `server/src/__tests__/inbox-router-reclaim.test.ts`. The sweep runs three
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@armyofagents/db", () => ({
-  threadInboxItems: new Proxy({} as any, { get: (_t, p) => p }),
-  agentWakeupRequests: new Proxy({} as any, { get: (_t, p) => p }),
+  // Each table proxy reports its own name via __table so the test can assert
+  // which table each db.update() targeted (and in what order).
+  threadInboxItems: new Proxy({ __table: "threadInboxItems" } as any, { get: (t: any, p) => (p === "__table" ? t.__table : p) }),
+  agentWakeupRequests: new Proxy({ __table: "agentWakeupRequests" } as any, { get: (t: any, p) => (p === "__table" ? t.__table : p) }),
 }));
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ _op: "and", a })),
@@ -2348,19 +2479,25 @@ vi.mock("../services/inbox-router.js", () => ({
 import { runInboxSweep } from "../services/internal-agent/aoa-agents/sweep-inbox.js";
 
 // Build a db whose 3 selects return [staleRouting, staleEscalated, pending] in order.
-// UPDATE supports both awaited form and `.catch()` (the wakeup-cancel uses .catch).
+// updateTargets records which table each update() touched, in order, so ordering
+// can be asserted (the wakeup cancel must precede the inbox finalize). UPDATE
+// supports both awaited form and `.catch()` (the wakeup-cancel uses .catch).
 function makeDb(staleRouting: object[], staleEscalated: object[], pending: object[]) {
   const seq = [staleRouting, staleEscalated, pending];
   let call = 0;
+  const updateTargets: string[] = [];
   const whereResult = { then: (r: Function) => r([]), catch: () => Promise.resolve([]) };
-  const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(whereResult) });
-  const updateSpy = vi.fn().mockReturnValue({ set: setSpy });
+  const updateSpy = vi.fn().mockImplementation((table: any) => {
+    updateTargets.push(table?.__table ?? "unknown");
+    return { set: () => ({ where: () => whereResult }) };
+  });
   return {
     db: {
       select: () => ({ from: () => ({ where: () => Promise.resolve(seq[call++] ?? []) }) }),
       update: updateSpy,
     } as any,
     updateSpy,
+    updateTargets,
   };
 }
 
@@ -2375,8 +2512,8 @@ describe("sweep-inbox reclaim (C4 / Codex P1 #2)", () => {
     expect(updateSpy).toHaveBeenCalledTimes(1); // only the routing reclaim
   });
 
-  it("finalizes stale escalated → routed+human + cancels the queued wakeup", async () => {
-    const { db, updateSpy } = makeDb(
+  it("finalizes stale escalated → routed+human, cancelling the wakeup FIRST", async () => {
+    const { db, updateTargets } = makeDb(
       [],
       [{ id: "e-1", navigatorWakeupId: "w-1" }, { id: "e-2", navigatorWakeupId: null }],
       [],
@@ -2385,8 +2522,9 @@ describe("sweep-inbox reclaim (C4 / Codex P1 #2)", () => {
     expect(result.reclaimed).toBe(0);
     expect(result.finalized).toBe(2);
     expect(mockRouteItem).not.toHaveBeenCalled(); // escalated is NOT re-routed
-    // 2 updates: finalize threadInboxItems + cancel agentWakeupRequests (w-1 present).
-    expect(updateSpy).toHaveBeenCalledTimes(2);
+    // Order matters (crash-safety): cancel agentWakeupRequests BEFORE finalizing
+    // threadInboxItems. Assert the exact sequence.
+    expect(updateTargets).toEqual(["agentWakeupRequests", "threadInboxItems"]);
   });
 
   it("drains pending_route via routeInboxItem", async () => {
@@ -2730,6 +2868,7 @@ vi.mock("drizzle-orm", () => ({
   gt: vi.fn((a: unknown, b: unknown) => ({ _op: "gt", a, b })),
   or: vi.fn((...a: unknown[]) => ({ _op: "or", a })),
   isNull: vi.fn((a: unknown) => ({ _op: "isNull", a })),
+  isNotNull: vi.fn((a: unknown) => ({ _op: "isNotNull", a })),
   inArray: vi.fn((a: unknown, b: unknown) => ({ _op: "inArray", a, b })),
   sql: Object.assign(vi.fn((s: TemplateStringsArray) => ({ _sql: s })), { raw: vi.fn() }),
 }));
@@ -3241,7 +3380,7 @@ No TBD, TODO, or "similar to Task N" placeholders. Each step contains the actual
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run |
-| Codex Review | `/codex` | Independent 2nd opinion | 2 | **RESOLVED** | Round 1: 9 P1 + 9 P2 → folded. Round 2 (confirmation): 8/9 confirmed resolved, #2 partial; 5 new P1 + 2 P2 from the revisions → all folded. |
+| Codex Review | `/codex` | Independent 2nd opinion | 3 | **RESOLVED** | R1: 9 P1+9 P2 folded. R2: 8/9 confirmed + 5 new P1 + 2 P2 folded. R3: confirmed all; 1 new P1 (processing-wakeup race) + 2 P2 folded; all source-verified. |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | not run yet |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run |
 | DX Review | `/plan-devex-review` | DX gaps | 0 | — | not run |
@@ -3264,6 +3403,12 @@ No TBD, TODO, or "similar to Task N" placeholders. Each step contains the actual
   - **#D** `chronicler.test.ts` drizzle mock missing `inArray` → added.
   - **#E** `promote-inbox-to-thread.test.ts` missing `beforeEach(clearAllMocks)` → added.
   - **#F/#G (P2):** Task 3 expected-count text fixed (5 tests); `enqueueNavigatorRoutingWakeup` now excludes paused Navigator.
-- **CROSS-MODEL:** Codex (2 rounds) caught real implementability blockers the inside pass missed (blind Navigator, unsure-loop, 3-site bundle reg, autonomy-gate skip, get_thread_summary contract, wakeup-cancel race, un-deleted orchestrator test) plus test-correctness bugs. One product fork (#9) decided by the user (Option A).
+- **CODEX ROUND 3 (final adversarial pass):** Confirmed every prior fix correct against source. Found 1 new P1 + 2 P2, all folded + source-verified:
+  - **R3 #2 [P1] — processing-wakeup race.** The sweep cancels only `queued` wakeups, but `dispatcher.ts:453` claims `queued→processing` before running, and `inbox-attach.ts:142` claims on `status='pending'` (which a finalized item keeps) — so a live `processing` Navigator run could still auto-act on an item the founder was handed. **Verified true** against both files. Fixed with a first-writer-wins `routingStatus='escalated'` atomic guard on the Navigator write tools: `defer_inbox_to_human` + `promote_inbox_to_thread` (both paths) no-op if already finalized; `attach_to_thread` (shared tool) uses a claim-then-disambiguate guard that preserves manual attach. (T7, T9 Step 4b.)
+  - **R3 #1 [P2]** chronicler eligibility — added `isNotNull(lastEntryAt)` so no-entry threads aren't woken. (T5.)
+  - **R3 #6 [P2]** reclaim test now asserts cancel-before-finalize ordering, not just call count. (T10.)
+  - R3 #3/#4/#5 (get_thread_summary additive, autonomy gate, AoaTriggerPayload `[k:string]:unknown`) all verified FINE by Codex against source — no change needed.
+- **CROSS-MODEL:** Codex (3 rounds) caught real implementability blockers the inside pass missed (blind Navigator, unsure-loop, 3-site bundle reg, autonomy-gate skip, get_thread_summary contract, wakeup races ×2, un-deleted orchestrator test) plus test-correctness bugs. Every code-integration finding was independently verified against the actual repo source before folding. One product fork (#9) decided by the user (Option A).
+- **SOURCE VERIFICATION:** all schema columns, function signatures (`logActivity`, `promoteInboxItemToNewThread`), imports, Drizzle operators (`gt(col,col)`), status enums, and claim-column behaviors the plan depends on were confirmed against the real files.
 - **UNRESOLVED:** 0.
-- **VERDICT:** Two Codex rounds, all blockers folded and the code-integration ones verified against source. Plan ready for subagent-driven build. Eng-review (`/plan-eng-review`) optional-but-recommended.
+- **VERDICT:** Three Codex rounds + full source verification. All blockers folded; every code-integration fix checked against the repo. Plan ready for subagent-driven build. Eng-review (`/plan-eng-review`) optional-but-recommended.
