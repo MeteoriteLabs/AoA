@@ -2835,8 +2835,12 @@ it("renders suggest_new banner with proposed title and Create thread button", ()
   };
   render(<UnlistedLane inboxItems={[item]} onTriaged={vi.fn()} />);
 
-  expect(screen.getByTestId("inbox-suggest-new-item-3")).toBeInTheDocument();
-  expect(screen.getByText(/Acme contract renewal/)).toBeInTheDocument();
+  const banner = screen.getByTestId("inbox-suggest-new-item-3");
+  expect(banner).toBeInTheDocument();
+  // Scope the title assertion to the banner — the same phrase also appears in the
+  // rawContent preview, so an unscoped getByText would be ambiguous. (Match the
+  // existing UnlistedLane.test render helper + add `within` to the import.)
+  expect(within(banner).getByText(/Acme contract renewal/)).toBeInTheDocument();
   expect(screen.getByTestId("inbox-suggest-new-confirm-item-3")).toBeInTheDocument();
   expect(screen.getByTestId("inbox-suggest-new-confirm-item-3")).toHaveTextContent("Create thread");
 });
