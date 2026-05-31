@@ -100,14 +100,21 @@ export function buildDeliverableInsert(
   proposal: DeliverableProposal,
   createdBy: { userId?: string; agentId?: string },
 ): Record<string, unknown> {
+  // `priority` is NOT NULL with a DB default ("medium"). The proposal mapping
+  // coerces an unspecified priority to `null`, and an explicit null OVERRIDES
+  // the default → 23502 not-null violation. Strip it here so the column is
+  // omitted and the DB default applies (matching normal task creation). Only a
+  // proposal that actually specified a priority forwards a value.
+  const { priority, ...rest } = proposal;
   return {
-    ...proposal,
+    ...rest,
     companyId,
     sourceDiscussionId: threadId,
     status: proposal.status ?? "todo",
     createdByUserId: createdBy.userId ?? null,
     createdByAgentId: createdBy.agentId ?? null,
     originKind: "crew_thread",
+    ...(priority != null ? { priority } : {}),
   };
 }
 

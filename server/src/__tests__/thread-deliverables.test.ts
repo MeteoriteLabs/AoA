@@ -120,6 +120,28 @@ describe("buildDeliverableInsert", () => {
     expect(payload.goalId).toBe("goal-1");
   });
 
+  it("omits priority when the proposal has none so the DB default applies (F4: 23502 not-null guard)", () => {
+    // issues.priority is NOT NULL DEFAULT 'medium'. The proposal mapping coerces
+    // an unspecified priority to null; an EXPLICIT null overrides the default and
+    // violates the constraint. The builder must OMIT the column entirely so the
+    // DB default applies (this is what blocked every Adjutant scope-approval).
+    const nullPriority = buildDeliverableInsert(
+      COMPANY_ID,
+      THREAD_ID,
+      { title: "No priority", priority: null },
+      { userId: USER_ID },
+    );
+    expect("priority" in nullPriority).toBe(false);
+
+    const undefPriority = buildDeliverableInsert(
+      COMPANY_ID,
+      THREAD_ID,
+      { title: "Unspecified priority" },
+      { userId: USER_ID },
+    );
+    expect("priority" in undefPriority).toBe(false);
+  });
+
   it("overwrites any sourceDiscussionId the proposal may already have", () => {
     const proposal: DeliverableProposal = {
       title: "Already has a stale id",
