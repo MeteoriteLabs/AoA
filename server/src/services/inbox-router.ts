@@ -1,31 +1,22 @@
 // server/src/services/inbox-router.ts
 //
-// Task 1.2 (Inbound Dirty-Data Routing) — pure routing gate functions.
-// Task 1.3 (Inbound Dirty-Data Routing) — routeInboxItem orchestrator +
-//   enqueueNavigatorRoutingWakeup.
+// Routing-card redesign (Navigator-decides-over-routing-cards).
 //
-// Gate functions (1.2):
+// routeInboxItem — the routing orchestrator. Replaces the former
+// classify→resolve→deterministic-act flow with:
+//   1. Atomic claim (pending_route → routing) — returns rawContent, writes routingClaimedAt.
+//   2. Load the company routing dial.
+//   3. dial='off' → leave in Inbox (routingStatus='routed', routerDecision='human').
+//   4. dial≥suggest → snapshot the active-thread cards (for reproducibility) → wake
+//      the Navigator with the inbound CONTENT (the Navigator fetches cards fresh via
+//      list_thread_cards) → routingStatus='escalated'.
 //
-//   classifyRouting — converts scored similarity results into one of 4 outcomes,
-//     using the top-1-vs-top-2 ambiguity gap (Codex #10) so near-ties are
-//     never auto-filed as confident matches.
+// Option A (Codex P1 #9): a ZERO-card company still wakes the Navigator — it creates
+// the first thread (full_auto) or suggests-new (suggest/auto_attach). Only a true
+// assembly/DB error or a missing Navigator fail-closes (routingStatus='failed').
 //
-//   resolveRoutingAction — maps (outcome × company routing dial) to the action
-//     to take.  Fail-closed on uncomputable (D2), Navigator-escalation on
-//     ambiguous (D3), auto-create only at full_auto (D2).
-//
-// Orchestrator (1.3):
-//
-//   enqueueNavigatorRoutingWakeup — inserts an agentWakeupRequests row addressed
-//     to the company's Navigator (kind='aoa', name='Navigator') with
-//     source='inbox.routing_ambiguous'. Candidates go in payload.candidateThreadIds
-//     (Codex #4 — payload.threadId triggers dispatcher skips; MUST NOT be set).
-//
-//   routeInboxItem — the routing heart. Loads the inbox item + company dial,
-//     runs findSimilarThreadsScored, classifies, resolves the action, writes
-//     lifecycle columns, performs the action (attach/create/escalate/suggest/human),
-//     logs activity (Codex #12), and returns {action, outcome}. Idempotent on
-//     already-routed/escalated/failed items.
+// classifyRouting / resolveRoutingAction / inbound-routing-constants are DELETED.
+// findSimilarThreadsScored is no longer called from this path.
 
 import { and, eq, ne } from "drizzle-orm";
 import {
@@ -33,210 +24,44 @@ import {
   agentWakeupRequests,
   threadInboxItems,
   internalAgentConfig,
+  discussions,
 } from "@armyofagents/db";
 import type { Db } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
-import {
-  ATTACH_CONFIDENCE,
-  AMBIGUITY_MARGIN,
-  type RoutingOutcome,
-  type RoutingAction,
-} from "./inbound-routing-constants.js";
-import { findSimilarThreadsScored } from "./internal-agent/tools/thread-find-similar.js";
-import { attachInboxItemToThread, promoteInboxItemToNewThread } from "./inbox-attach.js";
 import { logActivity } from "./activity-log.js";
-
-// ── resolveDefaultEmbedder ────────────────────────────────────────────────────
-//
-// Constructs a ctx-free embed function for use by the producer fire-and-forget
-// and sweep backstop paths (which have no request ctx and cannot use
-// ctx.services.embeddings.embedSync).
-//
-// Design:
-//   - Dynamic import of embeddings.js prevents an eager heavy static chain
-//     (the module pulls in OpenAI SDK, resolveApiKey, etc.). This mirrors the
-//     fire-and-forget pattern in inbox-producer.ts (Decision D5).
-//   - resolveApiKey is called per-embed (not cached) because API keys can
-//     rotate. The cost is one extra DB/secret lookup per routing call — cheap
-//     relative to the embedding API call itself.
-//   - Returns undefined if the module fails to import or the API key is absent,
-//     so the existing `uncomputable → human` fallback holds (fail-closed, D2).
-//
-// Called from routeInboxItem when embedText is not passed by the caller.
-
-async function resolveDefaultEmbedder(
-  companyId: string,
-): Promise<((text: string) => Promise<number[]>) | undefined> {
-  try {
-    const [embeddingsModule, apiCommonModule] = await Promise.all([
-      import("./embeddings.js"),
-      import("../adapters/api-common.js"),
-    ]);
-
-    let apiKey: string;
-    try {
-      apiKey = await apiCommonModule.resolveApiKey(companyId, "openai");
-    } catch {
-      // Missing API key → no embedder available. Fail-closed: human reviews.
-      return undefined;
-    }
-
-    return (text: string) => embeddingsModule.generateEmbedding(text, apiKey);
-  } catch {
-    // Dynamic import failed (rare — would indicate a packaging issue).
-    return undefined;
-  }
-}
 
 const log = logger.child({ service: "inbox-router" });
 
-// ── SYSTEM_ACTOR ──────────────────────────────────────────────────────────────
+// ── Exported types (retained for consumers that import RoutingAction) ─────────
 
-/** System actor shape used by all system-initiated services (mirrors heartbeat/deps pattern). */
-const SYSTEM_ACTOR = {
-  actorId: "system",
-  actorType: "system" as const,
-  agentId: null,
-};
+export type RoutingAction = "escalate_navigator" | "human";
 
-// ─── classifyRouting ──────────────────────────────────────────────────────────
-
-export interface ClassifyRoutingArgs {
-  /** Whether the embedding service is available. */
-  available: boolean;
-  /** Scored results from findSimilarThreadsScored, ordered by distance ascending. */
-  results: Array<{ threadId: string; distance: number }>;
+export interface RouteInboxItemArgs {
+  inboxItemId: string;
 }
 
-export interface ClassifyRoutingResult {
-  outcome: RoutingOutcome;
-  /** The thread recommended for attachment (null when no candidate). */
-  suggestedThreadId: string | null;
-  /** 1 - top.distance, or null when there is no candidate. */
-  confidence: number | null;
+export interface RouteInboxItemResult {
+  action: RoutingAction;
+  /** 'navigator_woken' | 'off' | 'already_claimed' | 'failed' */
+  outcome: string;
 }
 
-/**
- * Turn scored similarity results into one of 4 routing outcomes.
- *
- * Decision flow:
- * 1. !available → uncomputable (embedding service unavailable; fail-closed, D2).
- * 2. results.length === 0 → explicit_no_match (vector search returned nothing).
- * 3. top.distance <= ATTACH_CONFIDENCE (candidate zone):
- *    a. gap (top-2 distance − top-1 distance) >= AMBIGUITY_MARGIN → attach_confident.
- *    b. gap < AMBIGUITY_MARGIN (near-tie) → ambiguous (D3, Navigator decides).
- * 4. top.distance > ATTACH_CONFIDENCE → explicit_no_match.
- */
-export function classifyRouting(args: ClassifyRoutingArgs): ClassifyRoutingResult {
-  const { available, results } = args;
-
-  // Step 1 — fail-closed: embedding unavailable.
-  if (!available) {
-    return { outcome: "uncomputable", suggestedThreadId: null, confidence: null };
-  }
-
-  // Step 2 — no candidates from vector search.
-  if (results.length === 0) {
-    return { outcome: "explicit_no_match", suggestedThreadId: null, confidence: null };
-  }
-
-  const top = results[0];
-  const second = results[1];
-
-  // Step 3 — top result is in the candidate zone.
-  if (top.distance <= ATTACH_CONFIDENCE) {
-    // No runner-up → gap is infinite (unambiguously the best match).
-    const gap = second ? second.distance - top.distance : Infinity;
-
-    if (gap >= AMBIGUITY_MARGIN) {
-      return {
-        outcome: "attach_confident",
-        suggestedThreadId: top.threadId,
-        confidence: 1 - top.distance,
-      };
-    }
-
-    // Near-tie: Navigator must decide (Codex #10, D3).
-    return {
-      outcome: "ambiguous",
-      suggestedThreadId: top.threadId,
-      confidence: 1 - top.distance,
-    };
-  }
-
-  // Step 4 — top result is outside the threshold: no usable match.
-  return { outcome: "explicit_no_match", suggestedThreadId: null, confidence: null };
+/** Card snapshot stored on the routing record for reproducible-decision audit (A2). */
+export interface CandidateCard {
+  threadId: string;
+  title: string | null;
+  summaryText: string | null;
+  routingTerms: string[];
 }
 
-// ─── resolveRoutingAction ─────────────────────────────────────────────────────
-
-export interface ResolveRoutingActionArgs {
-  /** Company routing dial setting. */
-  level: "off" | "suggest" | "auto_attach" | "full_auto";
-  /** Outcome from classifyRouting. */
-  outcome: RoutingOutcome;
-}
-
-/**
- * Map (outcome × routing dial level) → action.
- *
- * Decision table (rows = outcome, cols = level):
- *
- * | outcome            | off   | suggest            | auto_attach        | full_auto   |
- * |--------------------|-------|--------------------|--------------------|-------------|
- * | uncomputable       | human | human              | human              | human       |
- * | attach_confident   | human | suggest            | auto_attach        | auto_attach |
- * | ambiguous          | human | escalate_navigator | escalate_navigator | escalate_navigator |
- * | explicit_no_match  | human | human              | human              | auto_create |
- *
- * Invariants:
- * - uncomputable → always human (fail-closed, D2).
- * - ambiguous → always escalate_navigator unless off (D3 — Navigator decides).
- * - explicit_no_match + auto_create only at full_auto (D2).
- */
-export function resolveRoutingAction(args: ResolveRoutingActionArgs): RoutingAction {
-  const { level, outcome } = args;
-
-  // Fail-closed: embedding was unavailable; human must route.
-  if (outcome === "uncomputable") {
-    return "human";
-  }
-
-  // Level "off": human handles everything.
-  if (level === "off") {
-    return "human";
-  }
-
-  switch (outcome) {
-    case "attach_confident":
-      // suggest → show suggestion, human confirms.
-      // auto_attach / full_auto → silently file.
-      if (level === "suggest") return "suggest";
-      return "auto_attach"; // auto_attach or full_auto
-
-    case "ambiguous":
-      // Any non-off level → Navigator decides (D3).
-      return "escalate_navigator";
-
-    case "explicit_no_match":
-      // Auto-create a new thread only at full_auto (D2); otherwise human.
-      if (level === "full_auto") return "auto_create";
-      return "human";
-  }
-}
-
-// ─── enqueueNavigatorRoutingWakeup ────────────────────────────────────────────
+// ── enqueueNavigatorRoutingWakeup ────────────────────────────────────────────
 
 export interface EnqueueNavigatorRoutingWakeupArgs {
   companyId: string;
   inboxItemId: string;
-  /** Ordered by distance ascending (closest first). Goes in payload.candidateThreadIds
-   *  — NOT payload.threadId (Codex #4: threadId in payload triggers dispatcher skips). */
-  candidateThreadIds: string[];
-  /** Raw cosine distances corresponding to candidateThreadIds. */
-  distances: number[];
-  /** top-2 distance minus top-1 distance, or null when fewer than 2 candidates. */
-  gap: number | null;
+  /** The raw inbound text — immutable, so safe to freeze in the payload. The
+   *  Navigator decides over THIS plus the cards it fetches fresh (Codex P1 #1). */
+  inboundContent: string;
 }
 
 export interface EnqueueNavigatorRoutingWakeupResult {
@@ -244,23 +69,23 @@ export interface EnqueueNavigatorRoutingWakeupResult {
 }
 
 /**
- * Look up the company's Navigator agent (kind='aoa', name='Navigator') and
- * insert an agentWakeupRequests row for routing disambiguation.
+ * Look up the company's Navigator and insert an agentWakeupRequests row.
  *
- * IMPORTANT (Codex #4): candidates go in `payload.candidateThreadIds`, NOT
- * `payload.threadId`. A threadId in the payload activates the dispatcher's
- * thread-level pause/controller-path skip logic — wrong context here.
+ * IMPORTANT (Codex #4): the payload carries inboxItemId + inboundContent, NOT
+ * payload.threadId. A threadId in the payload triggers dispatcher skips. Cards
+ * are NOT frozen here — the Navigator fetches them fresh via list_thread_cards (A2).
  *
- * @throws {Error} "NAVIGATOR_NOT_FOUND" when the company has no active Navigator.
+ * @throws {Error} "NAVIGATOR_NOT_FOUND" if no active Navigator exists.
  */
 export async function enqueueNavigatorRoutingWakeup(
   db: Db,
   args: EnqueueNavigatorRoutingWakeupArgs,
 ): Promise<EnqueueNavigatorRoutingWakeupResult> {
-  const { companyId, inboxItemId, candidateThreadIds, distances, gap } = args;
+  const { companyId, inboxItemId, inboundContent } = args;
 
-  // Resolve the company's Navigator (kind='aoa', name='Navigator').
-  // Mirror memory-extraction-on-close.ts: exclude terminated agents.
+  // Exclude terminated AND paused (Codex re-review P2 #G): the dispatcher ignores
+  // paused agents, so a wakeup addressed to a paused Navigator would sit queued
+  // until the sweep finalizes the item to human. Treat paused as "no router".
   const [nav] = await db
     .select({ id: agents.id })
     .from(agents)
@@ -270,96 +95,59 @@ export async function enqueueNavigatorRoutingWakeup(
         eq(agents.kind, "aoa"),
         eq(agents.name, "Navigator"),
         ne(agents.status, "terminated"),
+        ne(agents.status, "paused"),
       ),
     )
     .limit(1);
 
   if (!nav) {
-    throw new Error(
-      `NAVIGATOR_NOT_FOUND: no active Navigator agent for company ${companyId}`,
-    );
+    throw new Error(`NAVIGATOR_NOT_FOUND: no active Navigator for company ${companyId}`);
   }
 
-  // Codex #4: DO NOT put a threadId in the payload at top-level.
-  // The dispatcher reads payload.threadId to apply thread-level pauses and
-  // controller-path skip logic. Routing-ambiguous wakeups are not thread-scoped,
-  // so we use candidateThreadIds instead.
   const result = await db
     .insert(agentWakeupRequests)
     .values({
       companyId,
       agentId: nav.id,
       source: "inbox.routing_ambiguous",
-      reason: "routing_ambiguous",
+      reason: "routing_cards",
       payload: {
         inboxItemId,
-        candidateThreadIds,
-        distances,
-        gap,
+        inboundContent,
       } as Record<string, unknown>,
       status: "queued",
     })
     .returning({ id: agentWakeupRequests.id });
 
   const row = result[0];
-  if (!row?.id) {
-    throw new Error("enqueueNavigatorRoutingWakeup: insert returned no id");
-  }
+  if (!row?.id) throw new Error("enqueueNavigatorRoutingWakeup: insert returned no id");
 
   return { wakeupId: row.id };
 }
 
-// ─── routeInboxItem ──────────────────────────────────────────────────────────
-
-export interface RouteInboxItemArgs {
-  inboxItemId: string;
-  /** Async embedding function; pass `undefined` when the service is absent. */
-  embedText?: ((text: string) => Promise<number[]>) | null;
-}
-
-export interface RouteInboxItemResult {
-  action: RoutingAction;
-  outcome: RoutingOutcome;
-}
+// ── routeInboxItem ────────────────────────────────────────────────────────────
 
 /**
- * The routing orchestrator.
+ * Routing orchestrator.
  *
- * Atomically claims the inbox item (pending_route → routing) before acting, so
- * the producer fire-and-forget and the 2-minute sweep cannot both route the same
- * item concurrently (TOCTOU fix — P0 double-routing bug).
+ * Atomically claims the inbox item (pending_route → routing) before acting.
+ * The atomic claim writes routingClaimedAt so sweep-inbox.ts can reclaim
+ * items stranded in-flight past the reclaim threshold (C4 / #37).
  *
- * Loads the company routing dial, runs similarity scoring, classifies the outcome,
- * resolves the action, writes lifecycle columns, performs the action, logs activity,
- * and returns {action, outcome}.
- *
- * Idempotent: the atomic claim UPDATE only succeeds when routingStatus='pending_route'
- * AND status='pending'. A concurrent caller that loses the claim gets 0 rows back
- * and returns a no-op result immediately — no double-route, no duplicate thread.
- *
- * Error containment: if the action step throws, sets routingStatus='failed' +
- * routingErrorCode and returns — never crashes the caller.
- *
- * Crash-stranded 'routing' items: if this process dies after claiming but before
- * completing, the item stays routingStatus='routing' with status='pending'. There
- * is no updatedAt column on thread_inbox_items to enable timestamped reclaim in
- * the sweep (adding one requires a migration). Items stranded in 'routing' remain
- * visible in the Inbox (status='pending') for manual founder triage — this is the
- * correct fail-safe. Timestamped reclaim is a follow-up (add updatedAt migration).
+ * Error containment: action failures set routingStatus='failed'. Never throws.
  */
 export async function routeInboxItem(
   db: Db,
   args: RouteInboxItemArgs,
 ): Promise<RouteInboxItemResult> {
-  const { inboxItemId, embedText } = args;
+  const { inboxItemId } = args;
 
-  // ── 1. Atomic claim: pending_route → routing ───────────────────────────────
-  // Only ONE concurrent caller wins this UPDATE. The other(s) get 0 rows back
-  // and no-op. This closes the TOCTOU race between the producer fire-and-forget
-  // and the 2-minute sweep (P0: was a SELECT-then-act, not an atomic claim).
+  // ── 1. Atomic claim: pending_route → routing + stamp routingClaimedAt ─────
+  // Returns rawContent so the Navigator can decide over the actual inbound text
+  // (Codex P1 #1).
   const claimed = await db
     .update(threadInboxItems)
-    .set({ routingStatus: "routing" })
+    .set({ routingStatus: "routing", routingClaimedAt: new Date() })
     .where(
       and(
         eq(threadInboxItems.id, inboxItemId),
@@ -374,237 +162,119 @@ export async function routeInboxItem(
     });
 
   if (claimed.length === 0) {
-    // Already claimed/handled by a concurrent caller or the sweep — no-op.
-    log.debug(
-      { inboxItemId },
-      "routeInboxItem: claim returned 0 rows — already claimed or handled, no-op",
-    );
-    return { action: "human", outcome: "uncomputable" };
+    log.debug({ inboxItemId }, "routeInboxItem: already claimed — no-op");
+    return { action: "human", outcome: "already_claimed" };
   }
 
-  const item = claimed[0];
-  const { companyId, rawContent } = item;
+  const { companyId, rawContent } = claimed[0];
 
-  // ── 3. Load the company routing dial ──────────────────────────────────────
+  // ── 2. Load routing dial ──────────────────────────────────────────────────
   const configRows = await db
     .select({ inboundRoutingLevel: internalAgentConfig.inboundRoutingLevel })
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId))
     .limit(1);
 
-  // Default 'off' when not yet configured (mirrors D5 teaching default).
-  const level = (configRows[0]?.inboundRoutingLevel ?? "off") as
-    | "off"
-    | "suggest"
-    | "auto_attach"
-    | "full_auto";
+  const dial = (configRows[0]?.inboundRoutingLevel ?? "off") as string;
 
-  // ── 4. Similarity scoring ─────────────────────────────────────────────────
-  // Resolve the embed function: caller-supplied override takes priority (the ctx
-  // path passes ctx.services.embeddings.embedSync). When not supplied (producer
-  // fire-and-forget and sweep), self-resolve a ctx-free embedder via dynamic
-  // import of embeddings.js + resolveApiKey. If unavailable → undefined → the
-  // existing `uncomputable → human` fallback holds (fail-closed, D2).
-  const resolvedEmbedText: ((text: string) => Promise<number[]>) | null | undefined =
-    embedText !== undefined ? embedText : await resolveDefaultEmbedder(companyId);
+  // ── 3. dial='off' → leave in Inbox (terminal, human) ─────────────────────
+  if (dial === "off") {
+    await db
+      .update(threadInboxItems)
+      .set({ routingStatus: "routed", routerDecision: "human", routedAt: new Date() })
+      .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, companyId)));
 
-  const scored = await findSimilarThreadsScored({
-    db,
-    embedText: resolvedEmbedText,
-    companyId,
-    text: rawContent,
-    limit: 5,
-  });
+    return { action: "human", outcome: "off" };
+  }
 
-  // ── 5. Classify + resolve ─────────────────────────────────────────────────
-  const { outcome, suggestedThreadId, confidence } = classifyRouting(scored);
-  const action = resolveRoutingAction({ level, outcome });
-
-  // ── 6. Write routing fields (pre-action) ──────────────────────────────────
-  // Always write routerConfidence, routerDecision, suggestedThreadId.
-  // routingStatus and routedAt are set per-action below.
-  // companyId is threaded into WHERE as defense-in-depth (Lens A).
-  await db
-    .update(threadInboxItems)
-    .set({
-      routerConfidence: confidence,
-      routerDecision: action,
-      suggestedThreadId: suggestedThreadId ?? null,
-    })
-    .where(
-      and(
-        eq(threadInboxItems.id, inboxItemId),
-        eq(threadInboxItems.companyId, companyId),
-      ),
-    );
-
-  // ── 7. Perform action ─────────────────────────────────────────────────────
+  // ── 4. dial ≥ suggest → snapshot cards + wake Navigator ───────────────────
   try {
-    switch (action) {
-      case "auto_attach": {
-        // attachInboxItemToThread handles status='attached' + routingStatus='routed'
-        // inside its own transaction. We also set these fields here to ensure
-        // the lifecycle columns are always written even if attach's tx sets them.
-        await attachInboxItemToThread(db, {
-          companyId,
-          inboxItemId,
-          threadId: suggestedThreadId!,
-          actor: SYSTEM_ACTOR,
-        });
-        // attach sets status='attached' + routingStatus='routed' internally,
-        // but we also explicitly write the lifecycle fields to be self-contained.
-        // companyId in WHERE is defense-in-depth (Lens A).
-        await db
-          .update(threadInboxItems)
-          .set({ routingStatus: "routed", routedAt: new Date() })
-          .where(
-            and(
-              eq(threadInboxItems.id, inboxItemId),
-              eq(threadInboxItems.companyId, companyId),
-            ),
-          );
-        break;
-      }
+    // Assemble all active thread cards (small-scale path) FOR THE SNAPSHOT only.
+    // The Navigator fetches cards fresh via list_thread_cards at run time (A2).
+    // An EMPTY result is NOT an error (Option A) — the Navigator will create the
+    // first thread (full_auto) or suggest-new (suggest/auto_attach).
+    const cardRows = await db
+      .select({
+        id: discussions.id,
+        title: discussions.title,
+        summaryText: discussions.summaryText,
+        routingTerms: discussions.routingTerms,
+      })
+      .from(discussions)
+      .where(
+        and(
+          eq(discussions.companyId, companyId),
+          eq(discussions.status, "active"),
+        ),
+      )
+      .limit(100);
 
-      case "auto_create": {
-        const promoteResult = await promoteInboxItemToNewThread(db, {
-          companyId,
-          inboxItemId,
-          actor: SYSTEM_ACTOR,
-        });
-        // promote's claim-first sets status='attached' + routingStatus='routed' internally.
-        // If alreadyHandled (concurrent claim — extremely rare with Fix 1 in place),
-        // the promote was a no-op; still write routed lifecycle fields for self-containment.
-        if (!promoteResult.alreadyHandled) {
-          // Normal path: promote succeeded.
-          await db
-            .update(threadInboxItems)
-            .set({ routingStatus: "routed", routedAt: new Date() })
-            .where(
-              and(
-                eq(threadInboxItems.id, inboxItemId),
-                eq(threadInboxItems.companyId, companyId),
-              ),
-            );
-        }
-        break;
-      }
+    const cardSnapshot: CandidateCard[] = cardRows.map((r) => {
+      // routingTerms is a jsonb string[] column — read directly (defensive filter).
+      const terms = Array.isArray(r.routingTerms)
+        ? (r.routingTerms as unknown[]).filter((t): t is string => typeof t === "string")
+        : [];
+      return { threadId: r.id, title: r.title ?? null, summaryText: r.summaryText ?? null, routingTerms: terms };
+    });
 
-      case "escalate_navigator": {
-        // Compute gap: top-2 distance minus top-1 distance.
-        const gap =
-          scored.results.length >= 2
-            ? scored.results[1].distance - scored.results[0].distance
-            : null;
+    const { wakeupId } = await enqueueNavigatorRoutingWakeup(db, {
+      companyId,
+      inboxItemId,
+      inboundContent: rawContent,
+    });
 
-        const { wakeupId } = await enqueueNavigatorRoutingWakeup(db, {
-          companyId,
-          inboxItemId,
-          candidateThreadIds: scored.results.map((r) => r.threadId),
-          distances: scored.results.map((r) => r.distance),
-          gap,
-        });
+    // Single UPDATE: escalated status + wakeup id + reproducibility snapshot (A2).
+    await db
+      .update(threadInboxItems)
+      .set({
+        routingStatus: "escalated",
+        routedAt: new Date(),
+        navigatorWakeupId: wakeupId,
+        routingCardSnapshot: cardSnapshot,
+      })
+      .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, companyId)));
 
-        // Item stays status='pending' (Navigator hasn't acted yet).
-        // routingStatus='escalated' so the sweep knows not to re-route.
-        // companyId in WHERE is defense-in-depth (Lens A).
-        await db
-          .update(threadInboxItems)
-          .set({
-            routingStatus: "escalated",
-            routedAt: new Date(),
-            navigatorWakeupId: wakeupId,
-          })
-          .where(
-            and(
-              eq(threadInboxItems.id, inboxItemId),
-              eq(threadInboxItems.companyId, companyId),
-            ),
-          );
-        break;
-      }
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "thread.inbox_item.routed",
+      entityType: "thread_inbox_item",
+      entityId: inboxItemId,
+      details: { action: "escalate_navigator", cardCount: cardSnapshot.length },
+    }).catch((err) => log.warn({ err, inboxItemId }, "routeInboxItem: logActivity failed"));
 
-      case "suggest": {
-        // Router did its job: wrote routerDecision='suggest' + suggestedThreadId.
-        // Human confirms attachment from Inbox. Item stays status='pending'.
-        // routedAt records when routing completed (audit completeness).
-        // companyId in WHERE is defense-in-depth (Lens A).
-        await db
-          .update(threadInboxItems)
-          .set({ routingStatus: "routed", routedAt: new Date() })
-          .where(
-            and(
-              eq(threadInboxItems.id, inboxItemId),
-              eq(threadInboxItems.companyId, companyId),
-            ),
-          );
-        break;
-      }
+    return { action: "escalate_navigator", outcome: "navigator_woken" };
 
-      case "human": {
-        // No suggestion; item stays status='pending' for manual triage.
-        // routedAt records when routing completed (audit completeness).
-        // companyId in WHERE is defense-in-depth (Lens A).
-        await db
-          .update(threadInboxItems)
-          .set({ routingStatus: "routed", routedAt: new Date() })
-          .where(
-            and(
-              eq(threadInboxItems.id, inboxItemId),
-              eq(threadInboxItems.companyId, companyId),
-            ),
-          );
-        break;
-      }
-    }
   } catch (err: unknown) {
-    // Action step threw — mark failed so the sweep won't retry without
-    // intervention. Never crash the caller.
-    // companyId in WHERE is defense-in-depth (Lens A).
-    const errorCode =
-      err instanceof Error && err.message.startsWith("NAVIGATOR_NOT_FOUND")
-        ? "NAVIGATOR_NOT_FOUND"
-        : err instanceof Error && err.message.startsWith("COMPANY_MISMATCH")
-          ? "COMPANY_MISMATCH"
-          : "UNKNOWN";
+    const isNavMissing = err instanceof Error && err.message.startsWith("NAVIGATOR_NOT_FOUND");
+    const errorCode = isNavMissing ? "NAVIGATOR_NOT_FOUND" : "UNKNOWN";
 
-    log.error(
-      { err, inboxItemId, action, outcome },
-      "routeInboxItem: action step failed — marking routingStatus=failed",
-    );
+    log.error({ err, inboxItemId }, "routeInboxItem: action step failed");
+
+    // A4 degradation signal: the Navigator is the sole router now. If it's
+    // missing, log a distinct, auditable activity entry so the dial isn't a
+    // silent no-op. (Surfacing this in the Inbox UI is a follow-up — #38.)
+    if (isNavMissing) {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "thread.routing.navigator_unavailable",
+        entityType: "thread_inbox_item",
+        entityId: inboxItemId,
+        details: { reason: "NAVIGATOR_NOT_FOUND" },
+      }).catch((notifyErr) =>
+        log.warn({ notifyErr, companyId }, "routeInboxItem: could not log Navigator-unavailable signal"),
+      );
+    }
 
     await db
       .update(threadInboxItems)
       .set({ routingStatus: "failed", routingErrorCode: errorCode })
-      .where(
-        and(
-          eq(threadInboxItems.id, inboxItemId),
-          eq(threadInboxItems.companyId, companyId),
-        ),
-      )
-      .catch((updateErr) => {
-        log.error(
-          { updateErr, inboxItemId },
-          "routeInboxItem: could not write routingStatus=failed",
-        );
-      });
+      .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, companyId)))
+      .catch((updateErr) => log.error({ updateErr, inboxItemId }, "routeInboxItem: could not write failed"));
 
-    return { action, outcome };
+    return { action: "escalate_navigator", outcome: "failed" };
   }
-
-  // ── 8. Activity log (Codex #12) ───────────────────────────────────────────
-  await logActivity(db, {
-    companyId,
-    actorType: "system",
-    actorId: "system",
-    action: "thread.inbox_item.routed",
-    entityType: "thread_inbox_item",
-    entityId: inboxItemId,
-    details: { outcome, action, suggestedThreadId },
-  }).catch((err) => {
-    // Activity log failure must never block routing.
-    log.warn({ err, inboxItemId }, "routeInboxItem: logActivity failed — continuing");
-  });
-
-  return { action, outcome };
 }
