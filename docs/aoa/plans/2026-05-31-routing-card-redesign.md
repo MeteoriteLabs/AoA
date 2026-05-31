@@ -39,6 +39,8 @@
 - `packages/db/src/schema/threads.ts` — add `routingClaimedAt`, `suggestedThreadTitle`, `routingCardSnapshot` to `threadInboxItems`
 - `server/src/services/inbox-router.ts` — rewire (remove classify/resolve/score; add card-snapshot + Navigator wakeup carrying `inboundContent`)
 - `server/src/services/internal-agent/tools/thread-update-summary.ts` — accept optional `routingTerms` + `logActivity` audit (Codex P1 #8)
+- `server/src/services/internal-agent/tools/thread-get-summary.ts` — also return `routingTerms` so the Chronicler can merge incrementally (Codex re-review P1 #B)
+- `server/src/services/internal-agent/aoa-agents/autonomy.ts` — register `chronicler` in `CrewRole` + `ROLE_MIN_AUTONOMY: 0` (Codex re-review P1 #A — else the dispatcher autonomy gate skips it)
 - `server/src/services/internal-agent/tool-registry.ts` — register `listThreadCardsTool` + `promoteInboxToThreadTool` + `deferInboxToHumanTool`
 - `server/src/services/default-agent-instructions.ts` — register `chronicler` in `DEFAULT_AGENT_BUNDLE_FILES` + `DEFAULT_AGENT_BUNDLE_DIRS` (Codex P1 #4)
 - `server/src/services/internal-agent/aoa-agents/ensure-adjutant.ts` — remove summary-update instruction line
@@ -456,7 +458,7 @@ Note: confirm `logActivity`'s signature in `server/src/services/activity-log.js`
 pnpm test:run server/src/__tests__/thread-update-summary.test.ts
 ```
 
-Expected: 3 tests PASS.
+Expected: 5 tests PASS.
 
 - [ ] **Step 5: Run full test suite**
 
@@ -697,6 +699,71 @@ In `server/src/services/internal-agent/aoa-agents/seed-crew-agent.ts`, find the 
     | "scout"
     | "chronicler";
 ```
+
+- [ ] **Step 7a: Register `chronicler` in the autonomy gate (Codex re-review P1 #A)**
+
+The dispatcher gates every sweep/trigger role through `isRoleActiveAtAutonomy(role, level)` in `server/src/services/internal-agent/aoa-agents/autonomy.ts`. If `chronicler` is not in `ROLE_MIN_AUTONOMY`, the lookup is `undefined` and `level >= undefined` is `false` — the Chronicler would **never run**. It is infrastructure-grade (always-on, min autonomy 0, like `scribe`/`memory_keeper`).
+
+Add `| "chronicler"` to the `CrewRole` union (after `scout`):
+
+```typescript
+export type CrewRole =
+  | "scribe"
+  | "memory_keeper"
+  | "curator"
+  | "router"
+  | "navigator"
+  | "planner"
+  | "dispatcher"
+  | "adjutant"
+  | "maker"
+  | "engineer"
+  | "scout"
+  | "chronicler";
+```
+
+And add the entry to `ROLE_MIN_AUTONOMY` (after `scout: 1`):
+
+```typescript
+  scout: 1,
+  chronicler: 0,    // core infrastructure: card maintenance always runs (like scribe/memory_keeper)
+```
+
+- [ ] **Step 7b: Extend `get_thread_summary` to return `routingTerms` (Codex re-review P1 #B)**
+
+The Chronicler reads the existing card (summaryText + routingTerms) to merge incrementally. `get_thread_summary` currently does NOT return `routingTerms`, so the Chronicler can't see the existing terms and would regenerate them from scratch each run (drift). In `server/src/services/internal-agent/tools/thread-get-summary.ts`, add `routingTerms` to the SELECT and the returned `data`:
+
+In the `.select({...})`:
+```typescript
+        summaryText: discussions.summaryText,
+        routingTerms: discussions.routingTerms,   // NEW — Chronicler reads this to merge
+        summaryUpdatedAt: discussions.summaryUpdatedAt,
+```
+
+In the returned `data` object, parse the JSON-text column back to an array:
+```typescript
+      data: {
+        summaryText: thread.summaryText,
+        routingTerms: (() => {
+          if (typeof thread.routingTerms !== "string" || thread.routingTerms.trim().length === 0) return [];
+          try {
+            const parsed = JSON.parse(thread.routingTerms);
+            return Array.isArray(parsed) ? parsed.filter((t: unknown): t is string => typeof t === "string") : [];
+          } catch {
+            return [];
+          }
+        })(),
+        summaryUpdatedAt: thread.summaryUpdatedAt,
+        intent: thread.intent,
+        phase: thread.phase,
+        autonomyLevel: thread.autonomyLevel,
+        visibility: thread.visibility,
+        ownerUserId: thread.ownerUserId,
+        participants: participantList,
+      },
+```
+
+Note: `get_thread_summary` is a shared tool. Adding a field is additive — verify no existing consumer asserts the absence of `routingTerms` (none should; it's a new key).
 
 ### 5c — `ensure-chronicler.ts`
 
@@ -975,13 +1042,15 @@ Expected: no errors. If `loadDefaultAgentInstructionsBundle("chronicler")` error
 ```bash
 git add server/src/onboarding-assets/chronicler/ \
         server/src/services/default-agent-instructions.ts \
+        server/src/services/internal-agent/aoa-agents/autonomy.ts \
+        server/src/services/internal-agent/tools/thread-get-summary.ts \
         server/src/services/internal-agent/aoa-agents/ensure-chronicler.ts \
         server/src/services/internal-agent/aoa-agents/sweep-chronicler.ts \
         server/src/services/internal-agent/aoa-agents/seed-crew-agent.ts \
         server/src/services/internal-agent/aoa-agents/seed-commander-bundle.ts \
         server/src/services/companies.ts \
         server/src/index.ts
-git commit -m "feat(chronicler): seed Chronicler CLI agent (3-site bundle reg + create/boot seed) + sweep driver (T2)"
+git commit -m "feat(chronicler): seed Chronicler CLI agent (bundle+autonomy reg, create/boot seed) + read-card via get_thread_summary + sweep driver"
 ```
 
 ---
@@ -1208,7 +1277,7 @@ git commit -m "feat(tools): add list_thread_cards (small-scale card-fetch for Na
 Create `server/src/__tests__/promote-inbox-to-thread.test.ts`:
 
 ```typescript
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@armyofagents/db", () => ({
   internalAgentConfig: new Proxy({} as any, { get: (_t, p) => p }),
@@ -1254,6 +1323,8 @@ function makeCtx(dial: string, itemCompanyId: string | null = COMPANY_ID) {
 }
 
 describe("promote_inbox_to_thread", () => {
+  beforeEach(() => vi.clearAllMocks());
+
   it("auto-creates thread at full_auto", async () => {
     mockPromote.mockResolvedValue({ threadId: "new-thread-id", entryId: "e1", alreadyHandled: false });
     const ctx = makeCtx("full_auto");
@@ -1870,6 +1941,9 @@ export async function enqueueNavigatorRoutingWakeup(
 ): Promise<EnqueueNavigatorRoutingWakeupResult> {
   const { companyId, inboxItemId, inboundContent } = args;
 
+  // Exclude terminated AND paused (Codex re-review P2 #G): the dispatcher ignores
+  // paused agents, so a wakeup addressed to a paused Navigator would sit queued
+  // until the sweep finalizes the item to human. Treat paused as "no router".
   const [nav] = await db
     .select({ id: agents.id })
     .from(agents)
@@ -1879,6 +1953,7 @@ export async function enqueueNavigatorRoutingWakeup(
         eq(agents.kind, "aoa"),
         eq(agents.name, "Navigator"),
         ne(agents.status, "terminated"),
+        ne(agents.status, "paused"),
       ),
     )
     .limit(1);
@@ -2252,6 +2327,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@armyofagents/db", () => ({
   threadInboxItems: new Proxy({} as any, { get: (_t, p) => p }),
+  agentWakeupRequests: new Proxy({} as any, { get: (_t, p) => p }),
 }));
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ _op: "and", a })),
@@ -2272,10 +2348,12 @@ vi.mock("../services/inbox-router.js", () => ({
 import { runInboxSweep } from "../services/internal-agent/aoa-agents/sweep-inbox.js";
 
 // Build a db whose 3 selects return [staleRouting, staleEscalated, pending] in order.
+// UPDATE supports both awaited form and `.catch()` (the wakeup-cancel uses .catch).
 function makeDb(staleRouting: object[], staleEscalated: object[], pending: object[]) {
   const seq = [staleRouting, staleEscalated, pending];
   let call = 0;
-  const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) });
+  const whereResult = { then: (r: Function) => r([]), catch: () => Promise.resolve([]) };
+  const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(whereResult) });
   const updateSpy = vi.fn().mockReturnValue({ set: setSpy });
   return {
     db: {
@@ -2297,12 +2375,18 @@ describe("sweep-inbox reclaim (C4 / Codex P1 #2)", () => {
     expect(updateSpy).toHaveBeenCalledTimes(1); // only the routing reclaim
   });
 
-  it("finalizes stale escalated → routed+human (does NOT re-route)", async () => {
-    const { db, updateSpy } = makeDb([], [{ id: "e-1" }, { id: "e-2" }], []);
+  it("finalizes stale escalated → routed+human + cancels the queued wakeup", async () => {
+    const { db, updateSpy } = makeDb(
+      [],
+      [{ id: "e-1", navigatorWakeupId: "w-1" }, { id: "e-2", navigatorWakeupId: null }],
+      [],
+    );
     const result = await runInboxSweep(db);
     expect(result.reclaimed).toBe(0);
     expect(result.finalized).toBe(2);
     expect(mockRouteItem).not.toHaveBeenCalled(); // escalated is NOT re-routed
+    // 2 updates: finalize threadInboxItems + cancel agentWakeupRequests (w-1 present).
+    expect(updateSpy).toHaveBeenCalledTimes(2);
   });
 
   it("drains pending_route via routeInboxItem", async () => {
@@ -2352,7 +2436,7 @@ Replace the full file:
 // (Navigator running right now) is left alone.
 
 import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
-import { threadInboxItems } from "@armyofagents/db";
+import { threadInboxItems, agentWakeupRequests } from "@armyofagents/db";
 import type { Db } from "@armyofagents/db";
 import { routeInboxItem } from "../../inbox-router.js";
 import { logger } from "../../../middleware/logger.js";
@@ -2396,8 +2480,17 @@ export async function runInboxSweep(db: Db): Promise<RunInboxSweepResult> {
 
   // ── Phase 2: Finalize stale 'escalated' (Navigator woken, never acted) → routed+human
   // Terminal (NOT pending_route) — re-routing would re-escalate and loop (Codex P1 #2).
+  // Also CANCEL the still-queued Navigator wakeup (Codex re-review P1 #C): the
+  // attach/promote write-paths claim on status='pending', and a finalized item
+  // stays status='pending' (visible in Inbox), so a delayed queued wakeup could
+  // still attach/promote it after the human took over. Cancelling the queued
+  // wakeup closes that race. (A wakeup already 'processing' is not cancelled, but
+  // after 10min stranded that run is almost certainly dead.)
   const staleEscalated = await db
-    .select({ id: threadInboxItems.id })
+    .select({
+      id: threadInboxItems.id,
+      navigatorWakeupId: threadInboxItems.navigatorWakeupId,
+    })
     .from(threadInboxItems)
     .where(
       and(
@@ -2411,10 +2504,32 @@ export async function runInboxSweep(db: Db): Promise<RunInboxSweepResult> {
   let finalized = 0;
   if (staleEscalated.length > 0) {
     log.debug({ count: staleEscalated.length }, "sweep-inbox: finalizing stale escalated → routed+human");
+
+    // Cancel the orphaned queued wakeups FIRST (crash-safety): if the process
+    // dies between this and the finalize below, the item stays 'escalated' and is
+    // re-swept next cycle (safe) rather than ending terminal with a live wakeup.
+    const wakeupIds = staleEscalated
+      .map((r) => r.navigatorWakeupId)
+      .filter((id): id is string => typeof id === "string");
+    if (wakeupIds.length > 0) {
+      await db
+        .update(agentWakeupRequests)
+        .set({ status: "cancelled" })
+        .where(
+          and(
+            inArray(agentWakeupRequests.id, wakeupIds),
+            eq(agentWakeupRequests.status, "queued"),
+          ),
+        )
+        .catch((err) => log.warn({ err }, "sweep-inbox: could not cancel orphaned wakeups"));
+    }
+
+    // Then finalize the items to terminal routed+human.
     await db
       .update(threadInboxItems)
       .set({ routingStatus: "routed", routerDecision: "human", routedAt: new Date() })
       .where(inArray(threadInboxItems.id, staleEscalated.map((r) => r.id)));
+
     finalized = staleEscalated.length;
   }
 
@@ -2466,7 +2581,7 @@ Expected: all passing.
 ```bash
 git add server/src/services/internal-agent/aoa-agents/sweep-inbox.ts \
         server/src/__tests__/inbox-router-reclaim.test.ts
-git commit -m "feat(sweep-inbox): reclaim stale routing→pending_route + finalize stale escalated→human (C4/#37, Codex P1 #2 loop fix)"
+git commit -m "feat(sweep-inbox): reclaim routing→pending_route; finalize escalated→human + cancel orphaned wakeup (C4/#37, Codex P1 #2/#C)"
 ```
 
 ---
@@ -2615,6 +2730,7 @@ vi.mock("drizzle-orm", () => ({
   gt: vi.fn((a: unknown, b: unknown) => ({ _op: "gt", a, b })),
   or: vi.fn((...a: unknown[]) => ({ _op: "or", a })),
   isNull: vi.fn((a: unknown) => ({ _op: "isNull", a })),
+  inArray: vi.fn((a: unknown, b: unknown) => ({ _op: "inArray", a, b })),
   sql: Object.assign(vi.fn((s: TemplateStringsArray) => ({ _sql: s })), { raw: vi.fn() }),
 }));
 
@@ -3125,7 +3241,7 @@ No TBD, TODO, or "similar to Task N" placeholders. Each step contains the actual
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run |
-| Codex Review | `/codex` | Independent 2nd opinion | 1 | **RESOLVED** | 9 P1 + 9 P2 found → all folded into the plan |
+| Codex Review | `/codex` | Independent 2nd opinion | 2 | **RESOLVED** | Round 1: 9 P1 + 9 P2 → folded. Round 2 (confirmation): 8/9 confirmed resolved, #2 partial; 5 new P1 + 2 P2 from the revisions → all folded. |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | not run yet |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run |
 | DX Review | `/plan-devex-review` | DX gaps | 0 | — | not run |
@@ -3141,6 +3257,13 @@ No TBD, TODO, or "similar to Task N" placeholders. Each step contains the actual
   - **#8** `thread.updateSummary` no `logActivity` → T3 logs with the agent actor.
   - **#9** no-cards blocked full_auto new-thread → **Option A** (user decision): zero threads still wakes the Navigator; only a true error fail-closes.
   - **P2s:** debounce now checks `queued`+`processing`; `routerDecision` written on the off path; `routingTerms` validates string elements + caps; `list_thread_cards` logs when capped; weak/misordered test mocks rewritten (select-order, `.limit()` honored); Task 14 snapshot promoted to core (T1+T8). Multi-instance Chronicler dedupe documented as a known single-instance limitation (follow-up).
-- **CROSS-MODEL:** Codex caught real implementability blockers the inside pass missed (blind Navigator, unsure-loop, 3-site bundle registration, the un-deleted orchestrator test). One product fork (#9) surfaced and was decided by the user (Option A).
+- **CODEX ROUND 2 (confirmation re-review, same session):** Verified 8/9 round-1 P1s fully RESOLVED; #2 (unsure-loop) was PARTIAL — the loop was broken but a stranded queued wakeup could still fire after finalization. Caught **5 new P1s** the revisions introduced, all now folded:
+  - **#A** `chronicler` missing from `autonomy.ts` `CrewRole`/`ROLE_MIN_AUTONOMY` → dispatcher's `level >= undefined` would skip it → added `chronicler: 0` (T5 Step 7a). Verified against source.
+  - **#B** `get_thread_summary` didn't return `routingTerms` → Chronicler couldn't merge incrementally → extended the tool (T5 Step 7b). Verified against source.
+  - **#C** stranded `escalated→routed+human` didn't cancel the queued `navigatorWakeupId`; attach/promote claim on `status='pending'` (which stays pending) so a delayed wakeup could re-act → sweep now cancels the queued wakeup first (T10). Verified against `inbox-attach.ts`.
+  - **#D** `chronicler.test.ts` drizzle mock missing `inArray` → added.
+  - **#E** `promote-inbox-to-thread.test.ts` missing `beforeEach(clearAllMocks)` → added.
+  - **#F/#G (P2):** Task 3 expected-count text fixed (5 tests); `enqueueNavigatorRoutingWakeup` now excludes paused Navigator.
+- **CROSS-MODEL:** Codex (2 rounds) caught real implementability blockers the inside pass missed (blind Navigator, unsure-loop, 3-site bundle reg, autonomy-gate skip, get_thread_summary contract, wakeup-cancel race, un-deleted orchestrator test) plus test-correctness bugs. One product fork (#9) decided by the user (Option A).
 - **UNRESOLVED:** 0.
-- **VERDICT:** Codex blockers all folded. Recommend a confirmation `/codex` re-review of the revised plan before build, or proceed to subagent-driven build. Eng-review (`/plan-eng-review`) still optional-but-recommended.
+- **VERDICT:** Two Codex rounds, all blockers folded and the code-integration ones verified against source. Plan ready for subagent-driven build. Eng-review (`/plan-eng-review`) optional-but-recommended.
