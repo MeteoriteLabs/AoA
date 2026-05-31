@@ -6,6 +6,7 @@ import {
   integer,
   boolean,
   doublePrecision,
+  jsonb,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -130,6 +131,21 @@ export const threadInboxItems = pgTable(
     // item. Nullable — only populated when routerDecision='auto_attach' and
     // the navigator wakeup was actually queued.
     navigatorWakeupId: uuid("navigator_wakeup_id"),
+
+    // Timestamp when the atomic claim (pending_route → routing) was executed.
+    // Used by sweep-inbox.ts to reclaim items stranded in 'routing'/'escalated'
+    // that have been in-flight longer than RECLAIM_THRESHOLD_MS (C4 / #37).
+    routingClaimedAt: timestamp("routing_claimed_at", { withTimezone: true }),
+
+    // Proposed title when the Navigator suggests creating a new thread (D2 suggest_new).
+    // NULL for attach suggestions.
+    suggestedThreadTitle: text("suggested_thread_title"),
+
+    // Snapshot of the candidate cards the Navigator could see at decision time.
+    // Written by routeInboxItem in the escalate path. Enables reproducible-decision
+    // audit ("what did the Navigator have available?"). NULL for items routed
+    // before this column existed. (A2 / Codex #12 — now core, not deferred.)
+    routingCardSnapshot: jsonb("routing_card_snapshot"),
   },
   (table) => ({
     companyStatusIdx: index("thread_inbox_items_company_status_idx").on(table.companyId, table.status),

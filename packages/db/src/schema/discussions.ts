@@ -77,6 +77,10 @@ export const discussions = pgTable(
     summaryText: text("summary_text"),
     summaryNext: text("summary_next"),
     summaryUpdatedAt: timestamp("summary_updated_at", { withTimezone: true }),
+    // Routing card — key entities + aliases for routing retrieval (Chronicler-written).
+    // jsonb string[] (matches this table's tags/intent pattern; DB-validated, no
+    // serialize/parse in readers). NULL on threads created before a card was seeded.
+    routingTerms: jsonb("routing_terms").$type<string[]>(),
     entrySeq: integer("entry_seq").notNull().default(0), // atomic per-thread entry counter (Plan 7 seq assignment)
 
     // ── Phase 1 thread-native coordination (Task A2) ─────────────────────────
