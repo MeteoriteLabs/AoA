@@ -495,6 +495,65 @@ describe("promoteInboxItemToNewThread", () => {
     expect(txUpdate).toHaveBeenCalledTimes(2);
   });
 
+  it("promote: prefers the Navigator's suggestedThreadTitle as the thread title (suggest_new)", async () => {
+    // suggest_new path: the Navigator wrote a clean, human-readable title.
+    // The created thread must use THAT title, not the raw inbound content.
+    const ITEM_WITH_SUGGESTION = {
+      ...INBOX_ITEM_PENDING,
+      suggestedThreadTitle: "Senior Backend Engineer - Payments (Aug 2026)",
+    };
+    const select = vi.fn(() => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([ITEM_WITH_SUGGESTION]),
+    }));
+    const txUpdate = makeTxUpdateForPromote([{ id: "item-1" }]);
+    const mockCreate = vi.fn().mockResolvedValue({
+      id: "new-thread-1",
+      companyId: COMPANY_A,
+      entry: { id: "entry-first", seq: 1 },
+    });
+    discussionServiceMock.mockReturnValue({ create: mockCreate } as any);
+    const transaction = vi.fn(async (cb: any) => await cb({ update: txUpdate, insert: vi.fn() }));
+    const db = { select, transaction } as any;
+
+    await promoteInboxItemToNewThread(db, {
+      companyId: COMPANY_A,
+      inboxItemId: "item-1",
+      actor: ACTOR,
+    });
+
+    const [, calledData] = mockCreate.mock.calls[0];
+    expect(calledData.title).toBe("Senior Backend Engineer - Payments (Aug 2026)");
+    // The clean suggested title wins — the raw inbound content is NOT the title.
+    expect(calledData.title).not.toContain("Hello from inbound");
+  });
+
+  it("promote: falls back to rawContent-derived title when no suggestedThreadTitle (plain/override promote)", async () => {
+    // INBOX_ITEM_PENDING has no suggestedThreadTitle → rawContent-derived title.
+    const select = vi.fn(() => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([INBOX_ITEM_PENDING]),
+    }));
+    const txUpdate = makeTxUpdateForPromote([{ id: "item-1" }]);
+    const mockCreate = vi.fn().mockResolvedValue({
+      id: "new-thread-1",
+      companyId: COMPANY_A,
+      entry: { id: "entry-first", seq: 1 },
+    });
+    discussionServiceMock.mockReturnValue({ create: mockCreate } as any);
+    const transaction = vi.fn(async (cb: any) => await cb({ update: txUpdate, insert: vi.fn() }));
+    const db = { select, transaction } as any;
+
+    await promoteInboxItemToNewThread(db, {
+      companyId: COMPANY_A,
+      inboxItemId: "item-1",
+      actor: ACTOR,
+    });
+
+    const [, calledData] = mockCreate.mock.calls[0];
+    expect(calledData.title).toBe("Hello from inbound");
+  });
+
   it("promote: alreadyHandled — claim returns 0 rows → no thread created, returns alreadyHandled:true", async () => {
     const select = vi.fn(() => ({
       from: vi.fn().mockReturnThis(),

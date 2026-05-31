@@ -244,6 +244,7 @@ export async function promoteInboxItemToNewThread(
       rawContent: threadInboxItems.rawContent,
       originSource: threadInboxItems.originSource,
       originMedium: threadInboxItems.originMedium,
+      suggestedThreadTitle: threadInboxItems.suggestedThreadTitle,
     })
     .from(threadInboxItems)
     .where(eq(threadInboxItems.id, inboxItemId));
@@ -302,7 +303,13 @@ export async function promoteInboxItemToNewThread(
     const created = await txSvc.create(
       companyId,
       {
-        title: item.rawContent.slice(0, 80).replace(/\n/g, " ") || "New thread",
+        // Prefer the Navigator's suggest_new title (D2) when present — it's the
+        // clean human-readable title shown in the suggest_new banner. Fall back to
+        // the rawContent-derived title for plain/override promotes (no suggestion).
+        title:
+          item.suggestedThreadTitle?.trim() ||
+          item.rawContent.slice(0, 80).replace(/\n/g, " ") ||
+          "New thread",
         entry: {
           inputType,
           rawContent: item.rawContent,

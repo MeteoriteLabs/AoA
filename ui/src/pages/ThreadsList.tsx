@@ -262,7 +262,13 @@ export function ThreadsList() {
           archivedThreads={archivedThreads}
           inboxItems={inboxItems}
           onNewThread={openNewThread}
-          onInboxUpdate={() => void refetchInbox()}
+          onInboxUpdate={() => {
+            // Triage (attach / make_thread) mutates BOTH the inbox queue and the
+            // thread list — refetch both so a newly-created or newly-attached
+            // thread shows immediately without a manual reload.
+            void refetchInbox();
+            void refetch();
+          }}
         />
       )}
 
