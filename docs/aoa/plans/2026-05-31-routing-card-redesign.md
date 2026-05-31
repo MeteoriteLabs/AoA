@@ -89,11 +89,13 @@ These cross-task invariants were locked after the Codex review. Every task below
 In `packages/db/src/schema/discussions.ts`, after the `summaryUpdatedAt` line (~line 79):
 
 ```typescript
-    // Routing card — key entities + aliases for hybrid retrieval (Chronicler-written).
-    // Stored as a JSON array serialized to text: '["Acme Corp","ACME","the renewal"]'.
-    // NULL on threads created before the Chronicler seeded a card.
-    routingTerms: text("routing_terms"),
+    // Routing card — key entities + aliases for routing retrieval (Chronicler-written).
+    // jsonb string[] (matches this table's tags/intent pattern; DB-validated, no
+    // serialize/parse in readers). NULL on threads created before a card was seeded.
+    routingTerms: jsonb("routing_terms").$type<string[]>(),
 ```
+
+(`discussions.ts` already imports `jsonb` from `drizzle-orm/pg-core` — no import change needed there.)
 
 - [ ] **Step 2: Add `routingClaimedAt`, `suggestedThreadTitle`, `routingCardSnapshot` to `threadInboxItems`**
 
@@ -139,7 +141,7 @@ import {
 pnpm db:generate
 ```
 
-Expected output: a new migration file `packages/db/src/migrations/0133_*.sql` containing `ALTER TABLE "discussions" ADD COLUMN "routing_terms" text;`, `ALTER TABLE "thread_inbox_items" ADD COLUMN "routing_claimed_at" timestamp with time zone;`, `... "suggested_thread_title" text;`, `... "routing_card_snapshot" jsonb;`.
+Expected output: a new migration file `packages/db/src/migrations/0133_*.sql` containing `ALTER TABLE "discussions" ADD COLUMN "routing_terms" jsonb;`, `ALTER TABLE "thread_inbox_items" ADD COLUMN "routing_claimed_at" timestamp with time zone;`, `... "suggested_thread_title" text;`, `... "routing_card_snapshot" jsonb;`.
 
 If the migration number differs, that's fine — Drizzle assigns the next available number.
 
@@ -398,8 +400,8 @@ export const threadUpdateSummaryTool: AgentTool = {
 
     let routingTermsWritten = false;
     if (normalizedTerms !== undefined) {
-      // Serialize as JSON text so the existing `text` column stores it.
-      updatePayload.routingTerms = JSON.stringify(normalizedTerms);
+      // jsonb string[] column — store the array directly (no serialize).
+      updatePayload.routingTerms = normalizedTerms;
       routingTermsWritten = true;
     }
 
@@ -740,19 +742,13 @@ In the `.select({...})`:
         summaryUpdatedAt: discussions.summaryUpdatedAt,
 ```
 
-In the returned `data` object, parse the JSON-text column back to an array:
+In the returned `data` object, read the jsonb `string[]` column directly (defensive filter):
 ```typescript
       data: {
         summaryText: thread.summaryText,
-        routingTerms: (() => {
-          if (typeof thread.routingTerms !== "string" || thread.routingTerms.trim().length === 0) return [];
-          try {
-            const parsed = JSON.parse(thread.routingTerms);
-            return Array.isArray(parsed) ? parsed.filter((t: unknown): t is string => typeof t === "string") : [];
-          } catch {
-            return [];
-          }
-        })(),
+        routingTerms: Array.isArray(thread.routingTerms)
+          ? (thread.routingTerms as unknown[]).filter((t): t is string => typeof t === "string")
+          : [],
         summaryUpdatedAt: thread.summaryUpdatedAt,
         intent: thread.intent,
         phase: thread.phase,
@@ -1091,7 +1087,7 @@ import { listThreadCardsTool } from "../services/internal-agent/tools/list-threa
 
 const COMPANY_ID = "aaaaaaaa-0000-4aaa-8aaa-aaaaaaaaaaaa";
 
-function makeCtx(threadRows: Array<{ id: string; title: string | null; summaryText: string | null; routingTerms: string | null }>) {
+function makeCtx(threadRows: Array<{ id: string; title: string | null; summaryText: string | null; routingTerms: string[] | null }>) {
   return {
     db: {
       select: () => ({
@@ -1110,7 +1106,7 @@ function makeCtx(threadRows: Array<{ id: string; title: string | null; summaryTe
 describe("list_thread_cards", () => {
   it("returns all active thread cards for small scale", async () => {
     const rows = [
-      { id: "t1", title: "Acme renewal", summaryText: "About the Acme renewal deal", routingTerms: '["Acme Corp","renewal"]' },
+      { id: "t1", title: "Acme renewal", summaryText: "About the Acme renewal deal", routingTerms: ["Acme Corp", "renewal"] },
       { id: "t2", title: "Infra upgrade", summaryText: "Server migration discussion", routingTerms: null },
     ];
     const ctx = makeCtx(rows);
@@ -1212,15 +1208,10 @@ export const listThreadCardsTool: AgentTool = {
       .limit(SMALL_SCALE_LIMIT);
 
     const cards: ThreadCard[] = (Array.isArray(rows) ? rows : []).map((r) => {
-      let terms: string[] = [];
-      if (typeof r.routingTerms === "string" && r.routingTerms.trim().length > 0) {
-        try {
-          const parsed = JSON.parse(r.routingTerms);
-          if (Array.isArray(parsed)) terms = parsed.filter((t): t is string => typeof t === "string");
-        } catch {
-          // malformed JSON — treat as no terms
-        }
-      }
+      // routingTerms is a jsonb string[] column — read directly (defensive filter).
+      const terms = Array.isArray(r.routingTerms)
+        ? (r.routingTerms as unknown[]).filter((t): t is string => typeof t === "string")
+        : [];
       return {
         threadId: r.id,
         title: r.title ?? null,
@@ -1822,7 +1813,7 @@ function makeDb({
   dial = "suggest",
   claimRows = [{ id: INBOX_ITEM_ID, companyId: COMPANY_ID, rawContent: "Hello from Acme" }],
   navRows = [{ id: NAVIGATOR_ID }],
-  threadCardRows = [{ id: THREAD_1_ID, title: "Acme thread", summaryText: "About Acme", routingTerms: '["Acme"]' }],
+  threadCardRows = [{ id: THREAD_1_ID, title: "Acme thread", summaryText: "About Acme", routingTerms: ["Acme"] }],
 }: {
   dial?: string;
   claimRows?: object[];
@@ -2147,13 +2138,10 @@ export async function routeInboxItem(
       .limit(100);
 
     const cardSnapshot: CandidateCard[] = cardRows.map((r) => {
-      let terms: string[] = [];
-      if (typeof r.routingTerms === "string" && r.routingTerms.trim().length > 0) {
-        try {
-          const parsed = JSON.parse(r.routingTerms);
-          if (Array.isArray(parsed)) terms = parsed.filter((t): t is string => typeof t === "string");
-        } catch { /* ignore */ }
-      }
+      // routingTerms is a jsonb string[] column — read directly (defensive filter).
+      const terms = Array.isArray(r.routingTerms)
+        ? (r.routingTerms as unknown[]).filter((t): t is string => typeof t === "string")
+        : [];
       return { threadId: r.id, title: r.title ?? null, summaryText: r.summaryText ?? null, routingTerms: terms };
     });
 
