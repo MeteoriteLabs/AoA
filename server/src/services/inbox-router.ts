@@ -109,6 +109,9 @@ export async function enqueueNavigatorRoutingWakeup(
     .values({
       companyId,
       agentId: nav.id,
+      // Retained for wire-compat: the dispatcher dial-gate + aoa-trigger-prompt
+      // branch both match on this exact source string. (No "ambiguity"
+      // classification remains — every dial≥suggest item escalates.)
       source: "inbox.routing_ambiguous",
       reason: "routing_cards",
       payload: {
@@ -275,6 +278,9 @@ export async function routeInboxItem(
       .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, companyId)))
       .catch((updateErr) => log.error({ updateErr, inboxItemId }, "routeInboxItem: could not write failed"));
 
-    return { action: "escalate_navigator", outcome: "failed" };
+    // No escalation actually happened — the item is failed and stays in the Inbox
+    // for the human. Report action='human' so callers branching on action aren't
+    // misled (outcome='failed' distinguishes it from a clean human route).
+    return { action: "human", outcome: "failed" };
   }
 }

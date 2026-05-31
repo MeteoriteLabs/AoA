@@ -1794,7 +1794,9 @@ vi.mock("../middleware/logger.js", () => ({
   logger: { child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
-const mockLogActivity = vi.fn();
+// MUST resolve a promise — routeInboxItem calls `logActivity(...).catch(...)`,
+// so a bare vi.fn() (returns undefined) would throw on `.catch`.
+const mockLogActivity = vi.fn().mockResolvedValue(undefined);
 vi.mock("../services/activity-log.js", () => ({
   logActivity: (...a: any[]) => mockLogActivity(...a),
 }));
@@ -2037,6 +2039,9 @@ export async function enqueueNavigatorRoutingWakeup(
     .values({
       companyId,
       agentId: nav.id,
+      // Retained for wire-compat: the dispatcher dial-gate + aoa-trigger-prompt
+      // branch both match on this exact source string. (No "ambiguity"
+      // classification remains — every dial≥suggest item escalates.)
       source: "inbox.routing_ambiguous",
       reason: "routing_cards",
       payload: {
@@ -2203,7 +2208,10 @@ export async function routeInboxItem(
       .where(and(eq(threadInboxItems.id, inboxItemId), eq(threadInboxItems.companyId, companyId)))
       .catch((updateErr) => log.error({ updateErr, inboxItemId }, "routeInboxItem: could not write failed"));
 
-    return { action: "escalate_navigator", outcome: "failed" };
+    // No escalation actually happened — the item is failed and stays in the Inbox
+    // for the human. Report action='human' so callers branching on action aren't
+    // misled (outcome='failed' distinguishes it from a clean human route).
+    return { action: "human", outcome: "failed" };
   }
 }
 ```
