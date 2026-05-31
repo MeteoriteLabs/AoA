@@ -36,6 +36,7 @@ export const getThreadSummaryTool: AgentTool = {
       .select({
         id: discussions.id,
         summaryText: discussions.summaryText,
+        routingTerms: discussions.routingTerms,   // NEW — Chronicler reads this to merge
         summaryUpdatedAt: discussions.summaryUpdatedAt,
         intent: discussions.intent,
         phase: discussions.phase,
@@ -64,6 +65,9 @@ export const getThreadSummaryTool: AgentTool = {
       success: true,
       data: {
         summaryText: thread.summaryText,
+        routingTerms: Array.isArray(thread.routingTerms)
+          ? (thread.routingTerms as unknown[]).filter((t): t is string => typeof t === "string")
+          : [],
         summaryUpdatedAt: thread.summaryUpdatedAt,
         intent: thread.intent,
         phase: thread.phase,

@@ -7,6 +7,7 @@ import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-s
 import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
 import { ensureScout } from "./internal-agent/aoa-agents/ensure-scout.js";
 import { ensureEngineer } from "./internal-agent/aoa-agents/ensure-engineer.js";
+import { ensureChronicler } from "./internal-agent/aoa-agents/ensure-chronicler.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -182,6 +183,11 @@ export function companyService(db: Db) {
           // git history preserves it for rollback if ever needed.
           await ensureEngineer(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "Engineer agent seeding failed");
+          });
+          // Routing-card redesign: seed the Chronicler (keeps per-thread
+          // routing cards fresh for the Navigator).
+          await ensureChronicler(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Chronicler agent seeding failed");
           });
         }
         return company;

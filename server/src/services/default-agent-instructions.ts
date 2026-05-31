@@ -21,6 +21,8 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   navigator: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   engineer: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   scout: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  // Routing-card redesign — Chronicler keeps per-thread routing cards fresh.
+  chronicler: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -44,6 +46,7 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   // and researcher voices), no longer aliased to maker/ and default/.
   engineer: "engineer",
   scout: "scout",
+  chronicler: "chronicler",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {

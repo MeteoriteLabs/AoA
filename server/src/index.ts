@@ -64,6 +64,8 @@ import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-
 import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
 import { ensureScout } from "./services/internal-agent/aoa-agents/ensure-scout.js";
 import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engineer.js";
+import { ensureChronicler } from "./services/internal-agent/aoa-agents/ensure-chronicler.js";
+import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
@@ -737,6 +739,9 @@ void db
           ensureAdjutant(db as any, row.id).catch((err: unknown) =>
             logger.warn({ err, companyId: row.id }, "adjutant backfill failed"),
           ),
+          ensureChronicler(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "bootstrap: ensureChronicler failed"),
+          ),
           // Phase D batch 1: Maker → Engineer + new Scout. ensureEngineer's
           // first action renames any legacy Maker rows to Engineer so the
           // unique index never sees both names for one company.
@@ -992,6 +997,12 @@ setInterval(() => {
     .catch((err) => logger.warn({ err }, "inbox routing sweep tick failed"))
     .finally(() => { inboxSweepInFlight = false; });
 }, INBOX_SWEEP_INTERVAL_MS);
+
+setInterval(() => {
+  runChroniclerSweep(db as any).catch((err: unknown) =>
+    logger.warn({ err }, "chronicler sweep error"),
+  );
+}, CHRONICLER_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
