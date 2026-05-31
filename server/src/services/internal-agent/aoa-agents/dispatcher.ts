@@ -302,6 +302,14 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // #4: the payload deliberately omits threadId so the thread-level
           // pause/controller skips cannot silently swallow the escalation.
           const isInboxRouting = w.source === "inbox.routing_ambiguous";
+          // Chronicler is always-on infrastructure (autonomy 0): it maintains
+          // each thread's routing card regardless of the strangler controller
+          // path or crew-pause. Like inbox-routing, its sweep wakeups must NOT
+          // be swallowed by the thread-level crewPaused / useControllerPath
+          // gates below — otherwise cards never refresh on modern
+          // (useControllerPath=true) threads and the routing redesign is inert.
+          // It STILL passes through the autonomy gate (chronicler:0 → always on).
+          const isInfraSweep = w.source === "sweep.chronicler";
           if (isInboxRouting) {
             if (companyCfg.inboundRoutingLevel === "off") {
               await db
@@ -337,15 +345,20 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // The isInboxRouting branch above returns early on 'off', so by the
           // time we reach here, inbox-routing wakeups have inboundRoutingLevel
           // != 'off' and must fall straight through to dispatch.
+          // Infra sweeps (Chronicler) bypass the thread-level pause/controller
+          // gates, so we don't need the threadRow lookup for them.
           const threadIdInPayload = (w.payload as Record<string, unknown> | null)?.threadId;
-          const threadRow = !isInboxRouting && typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
+          const threadRow = !isInboxRouting && !isInfraSweep && typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
             ? await db
                 .select({ crewPaused: discussions.crewPaused, useControllerPath: discussions.useControllerPath })
                 .from(discussions)
                 .where(eq(discussions.id, threadIdInPayload))
                 .then((rows: Array<{ crewPaused: boolean | null; useControllerPath: boolean | null }>) => rows[0] ?? null)
             : null;
-          if (!isInboxRouting) {
+          // Thread-level pause + controller-path gates: skipped for inbox-routing
+          // (#3/#4) AND infra sweeps (Chronicler), both of which must run on every
+          // thread regardless of the strangler controller path.
+          if (!isInboxRouting && !isInfraSweep) {
             const threadPaused = Boolean(threadRow?.crewPaused);
             if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
               // P2 fix: distinct terminal status so the wakeup table tells you
@@ -372,7 +385,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               );
               return;
             }
+          }
 
+          // Autonomy gate applies to all non-inbox-routing wakeups (including
+          // the Chronicler, which passes at chronicler:0).
+          if (!isInboxRouting) {
             // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
             // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
             // (scribe, memory_keeper, curator) are always active (min = 0).

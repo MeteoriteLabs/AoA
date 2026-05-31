@@ -636,4 +636,41 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
       expect.objectContaining({ source: "inbox.routing_ambiguous", wakeupId: "wr-fa" }),
     );
   });
+
+  // Chronicler infra sweep: like inbox-routing, it must bypass the thread-level
+  // crewPaused + useControllerPath gates (it's always-on infrastructure). On a
+  // modern thread (useControllerPath=true) the wakeup MUST still reach
+  // runAoaAgent — the pre-fix behavior swallowed it at the controller-path gate.
+  it("infra sweep (sweep.chronicler) on a useControllerPath thread + autonomyLevel=0 → runAoaAgent IS called (not swallowed)", async () => {
+    // Slots: 0 Phase-1, 1 Phase-2, 2 Phase-3 wakeup, 3 resolveCompanyConfig,
+    // 4 D3 rate count, 5 agent row, 6 effectiveAutonomy threadId lookup
+    // (chronicler payload HAS threadId, so this DB call fires), 7 Phase-4.
+    // NOTE: the crewPaused/useControllerPath threadRow fetch is SKIPPED for
+    // infra sweeps, so there is no slot for it (mirrors inbox-routing).
+    const db = makeConcurrencyDb(
+      [
+        [],  // 0 Phase-1 orphan-select
+        [],  // 1 Phase-2 pending-drain
+        // 2 Phase-3 wakeup: chronicler sweep, threadId present, on a controller-path thread
+        [{ id: "wr-chr", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler" } }],
+        // 3 resolveCompanyConfig: autonomyLevel=0 (blocks agentic crew, but chronicler:0 passes)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [],  // 4 D3 run-rate window count
+        [{ runtimeConfig: {}, adapterConfig: {} }],  // 5 agent row
+        [{ autonomyLevel: 0 }],  // 6 effectiveAutonomy thread lookup (payload has threadId)
+        [],  // 7 Phase-4 reclaim-select
+      ],
+      [
+        [{ id: "wr-chr" }],  // update[0] = atomic claim RETURNING
+        [],                   // update[1] = final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-chr",
+      expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-chr" }),
+    );
+  });
 });

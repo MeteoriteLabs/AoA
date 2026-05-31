@@ -50,6 +50,7 @@
 - `server/src/services/internal-agent/aoa-agents/seed-commander-bundle.ts` — add `'chronicler'` to `role` union
 - `server/src/services/internal-agent/aoa-agents/sweep-inbox.ts` — add stale reclaim: `routing`→`pending_route`, `escalated`→`routed`+human (Codex P1 #2 loop fix / C4)
 - `server/src/services/companies.ts` — call `ensureChronicler` in the company-create seed path (Codex P2 seed-on-create)
+- `server/src/services/internal-agent/aoa-agents/dispatcher.ts` — let `sweep.chronicler` bypass the `crewPaused` + `useControllerPath` thread-gates (code-review CRITICAL — else the Chronicler never runs on modern threads)
 - `server/src/index.ts` — wire `runChroniclerSweep` on 45s interval + `ensureChronicler` on bootstrap
 - `ui/src/components/threads/ThreadBoard.tsx` — add `suggestedThreadTitle` to `InboxCardItem`
 - `ui/src/components/threads/UnlistedLane.tsx` — render `suggest_new` banner
@@ -1030,6 +1031,23 @@ setInterval(() => {
   );
 }, CHRONICLER_SWEEP_INTERVAL_MS);
 ```
+
+- [ ] **Step 13c: Let the Chronicler bypass the dispatcher's thread-level gates (code-review CRITICAL)**
+
+The sweep enqueues `agentWakeupRequests` with `source='sweep.chronicler'` + `payload.threadId`. The dispatcher's Phase-3 drain (`dispatcher.ts`) has a `useControllerPath` gate that early-`return`s any non-inbox-routing wakeup whose thread is on the strangler controller path — and **every modern thread is created `useControllerPath=true`**. Without this step the Chronicler wakeup is silently swallowed and cards never refresh (the whole redesign goes inert on new threads). The Navigator's `inbox.routing_ambiguous` path already solved the same gate; the Chronicler mirrors it.
+
+In `server/src/services/internal-agent/aoa-agents/dispatcher.ts`, just after `const isInboxRouting = w.source === "inbox.routing_ambiguous";`, add:
+
+```typescript
+          // Chronicler is always-on infrastructure (autonomy 0): it maintains
+          // each thread's routing card regardless of the strangler controller
+          // path or crew-pause. Like inbox-routing, its sweep wakeups must NOT
+          // be swallowed by the thread-level crewPaused / useControllerPath
+          // gates below. It STILL passes the autonomy gate (chronicler:0 → on).
+          const isInfraSweep = w.source === "sweep.chronicler";
+```
+
+Then exclude `isInfraSweep` from the threadRow fetch (`!isInboxRouting && !isInfraSweep && typeof threadIdInPayload === "string" …`), and split the gate block so the `crewPaused` + `useControllerPath` gates run under `if (!isInboxRouting && !isInfraSweep)` while the autonomy gate stays under `if (!isInboxRouting)` (the Chronicler passes it at `chronicler:0`). Add a test to `server/src/__tests__/aoa-dispatcher.test.ts` mirroring the D4 inbox-routing tests: a `sweep.chronicler` wakeup with `payload.threadId` at `autonomyLevel=0` → `runAoaAgent` IS called (the chronicler payload has a threadId, so the effectiveAutonomy lookup fires — one extra select slot vs the inbox-routing cases).
 
 - [ ] **Step 14: Run typecheck**
 
