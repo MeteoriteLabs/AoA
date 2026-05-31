@@ -48,7 +48,12 @@ function makeDb(staleRouting: object[], staleEscalated: object[], pending: objec
 }
 
 describe("sweep-inbox reclaim (C4 / Codex P1 #2)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Re-establish the default resolution each test so a persistent
+    // mockRejectedValue (set by the all-fail test) can't leak across cases.
+    mockRouteItem.mockResolvedValue({ action: "human", outcome: "off" });
+  });
 
   it("reclaims stale routing → pending_route", async () => {
     const { db, updateSpy } = makeDb([{ id: "r-1" }], [], []);
@@ -78,6 +83,22 @@ describe("sweep-inbox reclaim (C4 / Codex P1 #2)", () => {
     const result = await runInboxSweep(db);
     expect(result.swept).toBe(2);
     expect(mockRouteItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues + counts after a routeInboxItem failure (error containment)", async () => {
+    // One item's routeInboxItem rejects; the sweep must catch it, keep going,
+    // and still count both attempts (swept++ is unconditional). No throw.
+    mockRouteItem.mockRejectedValueOnce(new Error("boom"));
+    const { db } = makeDb([], [], [{ id: "p-1" }, { id: "p-2" }]);
+    const result = await runInboxSweep(db);
+    expect(result.swept).toBe(2);
+    expect(mockRouteItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not throw when every routeInboxItem rejects", async () => {
+    mockRouteItem.mockRejectedValue(new Error("all fail"));
+    const { db } = makeDb([], [], [{ id: "p-1" }, { id: "p-2" }]);
+    await expect(runInboxSweep(db)).resolves.toMatchObject({ swept: 2 });
   });
 
   it("no stale, no pending → all zero", async () => {
