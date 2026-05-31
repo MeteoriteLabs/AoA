@@ -2626,3 +2626,19 @@ No TBD, TODO, or "similar to Task N" placeholders detected. Each step contains t
 - `routingTerms` stored as JSON string in DB (text column), parsed to `string[]` on read — consistently handled in T3, T6, T8.
 - `routerDecision` values: `'suggest'` (existing attach), `'suggest_new'` (new) — distinct, no collision.
 - `InboxCardItem.suggestedThreadTitle` added in T11 matches what `promote_inbox_to_thread` writes in T7.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run |
+| Codex Review | `/codex` | Independent 2nd opinion | 1 | **NEEDS-WORK** | 9 P1 blockers, 9 P2 advisories — all require resolution before build |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | not run yet |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run |
+| DX Review | `/plan-devex-review` | DX gaps | 0 | — | not run |
+
+- **CODEX (session 019e7ecb):** Read 15 source files. Found 9 hard blockers: Navigator gets no `rawContent` to reason over (decides blind); Navigator unsure → escalated loop (no finalization path); Chronicler missing `thread.listEntries` in allowlist + no trigger-prompt branch; `default-agent-instructions.ts` must register 'chronicler' bundle; `ROLE_ACTION_DIRECTIVE` has no 'chronicler' entry; `promote_inbox_to_thread` missing company guard; `inbox-router.test.ts` (old tests) not deleted; `thread.updateSummary` missing `logActivity` for C6 audit; no-cards + full_auto still blocks Navigator wakeup. 9 P2 advisories (debounce only checks queued not processing; no DB-level dedupe for multi-instance; `routerDecision` not written on off/no-card path; weak test assertions; Task 14 should be P1 if reproducibility is claimed).
+- **UNRESOLVED:** 9 P1 blockers + 9 P2 advisories. Plan requires fixes before build.
+- **VERDICT:** NEEDS-WORK — Codex review found real implementability blockers. Fix P1s, then re-review or proceed to build with fixes noted.
