@@ -189,6 +189,35 @@ function InboxTriageCard({ item, onTriaged, threadsById }: InboxTriageCardProps)
         </div>
       )}
 
+      {/* Suggest-new-thread banner — shown when Navigator recommends creating a new thread */}
+      {item.routerDecision === "suggest_new" && (
+        <div
+          className="rounded border border-violet-300 dark:border-violet-700 bg-violet-50/60 dark:bg-violet-900/20 p-1.5 space-y-1.5"
+          data-testid={`inbox-suggest-new-${item.id}`}
+        >
+          <div className="flex items-center gap-1 text-[10px] text-violet-800 dark:text-violet-300 font-medium">
+            <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
+            <span className="truncate">
+              Suggested: new thread
+              {item.suggestedThreadTitle && (
+                <> &ldquo;<span className="font-semibold">{item.suggestedThreadTitle}</span>&rdquo;</>
+              )}
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => triage("make_thread")}
+            disabled={isPending}
+            className="h-6 w-full px-2 text-[10px] border-violet-400 dark:border-violet-600 text-violet-900 dark:text-violet-200 hover:bg-violet-200 dark:hover:bg-violet-800/50"
+            data-testid={`inbox-suggest-new-confirm-${item.id}`}
+          >
+            {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Create thread"}
+          </Button>
+          <p className="text-[9px] text-violet-700/60 dark:text-violet-400/60 text-center">or override below</p>
+        </div>
+      )}
+
       {/* Add to existing thread — dropdown */}
       {showAddTo && (
         <div className="relative">

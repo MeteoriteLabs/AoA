@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { UnlistedLane } from "../UnlistedLane";
@@ -283,5 +283,48 @@ describe("UnlistedLane", () => {
     expect(screen.getByText(/t-unknown/)).toBeInTheDocument();
     // No crash, Confirm button present
     expect(screen.getByTestId("inbox-suggestion-confirm-item-missing-thread")).toBeInTheDocument();
+  });
+
+  // ── Task 11 — suggest_new banner (Navigator new-thread suggestion) ─────────
+
+  it("renders suggest_new banner with proposed title and Create thread button", () => {
+    const items = [
+      makeItem({
+        id: "item-3",
+        rawContent: "About the Acme contract renewal",
+        routerDecision: "suggest_new",
+        suggestedThreadTitle: "Acme contract renewal",
+      }),
+    ];
+
+    renderWithProviders(
+      <UnlistedLane inboxItems={items} onTriaged={vi.fn()} />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    const banner = screen.getByTestId("inbox-suggest-new-item-3");
+    expect(banner).toBeInTheDocument();
+    // Scope to the banner — rawContent preview also contains the title phrase.
+    expect(within(banner).getByText(/Acme contract renewal/)).toBeInTheDocument();
+    expect(screen.getByTestId("inbox-suggest-new-confirm-item-3")).toBeInTheDocument();
+    expect(screen.getByTestId("inbox-suggest-new-confirm-item-3")).toHaveTextContent("Create thread");
+  });
+
+  it("does NOT render suggest_new banner when routerDecision is null", () => {
+    const items = [
+      makeItem({
+        id: "item-4",
+        rawContent: "Some content",
+        originSource: null,
+        routerDecision: null,
+      }),
+    ];
+
+    renderWithProviders(
+      <UnlistedLane inboxItems={items} onTriaged={vi.fn()} />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    expect(screen.queryByTestId("inbox-suggest-new-item-4")).not.toBeInTheDocument();
   });
 });

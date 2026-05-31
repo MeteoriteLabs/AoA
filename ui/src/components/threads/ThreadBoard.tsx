@@ -52,6 +52,7 @@ export interface InboxCardItem {
   // Inbound routing (Phase 1) — present when the router has scored this item.
   routerDecision?: string | null;     // 'suggest' → show the confirm affordance
   suggestedThreadId?: string | null;  // the thread the router recommends
+  suggestedThreadTitle?: string | null;  // NEW — for suggest_new decisions
   routerConfidence?: number | null;   // cosine distance of the top match (lower = closer)
   routingStatus?: string | null;
 }
