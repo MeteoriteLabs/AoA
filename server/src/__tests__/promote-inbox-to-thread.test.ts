@@ -29,6 +29,9 @@ function makeCtx(dial: string, itemCompanyId: string | null = COMPANY_ID, claimR
     [{ inboundRoutingLevel: dial }],
   ];
   let call = 0;
+  // Capture the payload passed to the claim/record UPDATE...set() so tests can
+  // assert what gets persisted (e.g. suggestedThreadTitle on the full_auto claim).
+  const setSpy = vi.fn(() => ({ where: () => ({ returning: () => Promise.resolve(claimRows) }) }));
   return {
     db: {
       select: () => ({
@@ -38,10 +41,11 @@ function makeCtx(dial: string, itemCompanyId: string | null = COMPANY_ID, claimR
           }),
         }),
       }),
-      update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve(claimRows) }) }) }),
+      update: () => ({ set: setSpy }),
     } as any,
     companyId: COMPANY_ID,
     services: {},
+    _setSpy: setSpy,
   };
 }
 
@@ -56,6 +60,24 @@ describe("promote_inbox_to_thread", () => {
     expect(result.data.action).toBe("created");
     expect(result.data.threadId).toBe("new-thread-id");
     expect(mockPromote).toHaveBeenCalledWith(ctx.db, expect.objectContaining({ inboxItemId: INBOX_ITEM_ID, companyId: COMPANY_ID }));
+  });
+
+  it("full_auto persists the Navigator's proposedTitle as suggestedThreadTitle on the claim", async () => {
+    // The auto-create path must title the new thread with the Navigator's clean
+    // proposed title (via suggestedThreadTitle on the row, which
+    // promoteInboxItemToNewThread reads) — NOT the raw inbound content.
+    mockPromote.mockResolvedValue({ threadId: "t1", entryId: "e1", alreadyHandled: false });
+    const ctx = makeCtx("full_auto");
+    await promoteInboxToThreadTool.execute(
+      { inboxItemId: INBOX_ITEM_ID, proposedTitle: "Checkout 500s incident" },
+      ctx,
+    );
+    expect((ctx as any)._setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routingStatus: "routing",
+        suggestedThreadTitle: "Checkout 500s incident",
+      }),
+    );
   });
 
   it("records suggest_new at auto_attach dial (does NOT create)", async () => {

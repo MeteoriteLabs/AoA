@@ -77,7 +77,13 @@ export const promoteInboxToThreadTool: AgentTool = {
       // thread for an item the founder was already handed.
       const claimed = await ctx.db
         .update(threadInboxItems)
-        .set({ routingStatus: "routing" })
+        .set({
+          routingStatus: "routing",
+          // Persist the Navigator's proposed title so promoteInboxItemToNewThread
+          // (which reads suggestedThreadTitle from the row) titles the auto-created
+          // thread with the clean title — consistent with the suggest_new human path.
+          suggestedThreadTitle: proposedTitle ?? null,
+        })
         .where(
           and(
             eq(threadInboxItems.id, inboxItemId),
