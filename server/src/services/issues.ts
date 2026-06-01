@@ -53,6 +53,7 @@ import {
   createIssueContextBundle,
   type CreateIssueContextBundleItemInput,
 } from "./issue-context-bundles.js";
+import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -1013,6 +1014,7 @@ export function issueService(db: Db) {
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & { labelIds?: string[]; monitorPolicy?: unknown },
+      actor?: { actorType?: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number },
     ) => {
       const existing = await db
         .select()
@@ -1147,6 +1149,21 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
+
+      // Service-level agent status-transition guard (A4). Runs an approval-lookup
+      // read, so it lives here alongside the assignable-agent asserts and BEFORE
+      // the transaction opens. Non-agent callers (default actorType "system") are
+      // unaffected — see issue-agent-status-guard.ts. The autonomy dial is
+      // resolved by the caller (e.g. the set_task_status tool) and forwarded as
+      // actor.effectiveDial; this service never reads internalAgentConfig.
+      await assertAgentStatusTransition(
+        {
+          existing: { id: existing.id, status: existing.status, assigneeAgentId: existing.assigneeAgentId },
+          updateFields: issueData,
+          actor: { actorType: actor?.actorType ?? "system", agentId: actor?.agentId ?? null, effectiveDial: actor?.effectiveDial },
+        },
+        db,
+      );
 
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
