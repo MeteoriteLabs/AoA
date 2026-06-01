@@ -72,6 +72,13 @@ import { getTaskTool } from "./tools/get-task-tool.js";
 // itself (getById/addComment/update have no company filter).
 import { postTaskCommentTool } from "./tools/post-task-comment-tool.js";
 import { attachTaskArtifactTool } from "./tools/attach-task-artifact-tool.js";
+// Spec B Task 4 — set_task_status. A crew agent moves its OWN task forward,
+// dial-gated. Re-implements NO policy: delegates ownership + dial enforcement to
+// the Task-1 A4 guard (assertAgentStatusTransition, invoked by issueService.update)
+// by forwarding effectiveDial = ctx.effectiveAutonomy ?? 0 via the actor arg.
+// `coordination` category — confers no capability, so it never widens the agent's
+// capability set (like the other three Spec B task tools).
+import { setTaskStatusTool } from "./tools/set-task-status-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -148,6 +155,11 @@ export function createToolRegistry(): AgentTool[] {
     // company-scopes the task itself.
     postTaskCommentTool,
     attachTaskArtifactTool,
+    // Spec B Task 4 — set_task_status. Coordination-category own-task transition
+    // tool (coordination confers no capability). Company-scopes the task itself
+    // and delegates ownership + autonomy-dial enforcement to the A4 guard via
+    // issueService.update's actor.effectiveDial.
+    setTaskStatusTool,
   ];
 }
 
