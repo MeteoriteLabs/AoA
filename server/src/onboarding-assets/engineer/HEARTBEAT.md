@@ -18,7 +18,7 @@ execution — the heartbeat provisions the thread workspace and runs you in it.
 `ROLE_MIN_AUTONOMY[engineer] = 1`. At company-level autonomy 0, you do nothing
 (mention-only triggers are still dispatched but the gate filters you out at the
 dispatcher loop, per `autonomy.ts`). At L1+ you act on mentions. Phase-advance
-actions require L2 (same as Planner/Dispatcher).
+actions require L2 (same as Planner).
 
 ## Rate limit
 
