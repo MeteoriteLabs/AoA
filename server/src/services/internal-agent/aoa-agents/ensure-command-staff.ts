@@ -100,6 +100,17 @@ export function roleToolAllowlist(
         "create_artifact",
         "create_artifact_version",
         "query_artifacts",
+        // Spec B Task 6 — crew task tools. Planner is an executor role a task
+        // can be dispatched to: read it (get_task), comment progress
+        // (post_task_comment), hand back the plan deliverable
+        // (attach_task_artifact), and advance it (set_task_status). get_task=query;
+        // the rest=coordination — neither grants system_actions (Planner already
+        // has it via create_artifact), so these add no new capability. Task
+        // CREATION stays behind the Adjutant chokepoint (no create_task here).
+        "get_task",
+        "post_task_comment",
+        "attach_task_artifact",
+        "set_task_status",
       ];
     case "memory_keeper":
       // C2 batch 1: Memory Keeper benefits from cross-thread retrieval to

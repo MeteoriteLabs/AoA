@@ -65,6 +65,22 @@ describe("ensureScout (Phase D batch 1 / T2)", () => {
     expect(spec.toolAllowlist).not.toContain("fetch_url");
   });
 
+  it("Scout's allowlist includes the 4 crew task tools (Spec B Task 6)", async () => {
+    // Task 6: the per-task tools (get_task / post_task_comment /
+    // attach_task_artifact / set_task_status) must be on Scout's allowlist so a
+    // crew agent dispatched onto a task can read it, comment progress, attach
+    // its deliverable, and move the task forward.
+    await ensureScout({} as any, "c1");
+    const spec = seedCrewAgentMock.mock.calls[0]![2] as {
+      toolAllowlist: string[];
+    };
+
+    expect(spec.toolAllowlist).toContain("get_task");
+    expect(spec.toolAllowlist).toContain("post_task_comment");
+    expect(spec.toolAllowlist).toContain("attach_task_artifact");
+    expect(spec.toolAllowlist).toContain("set_task_status");
+  });
+
   it("Scout fires on mention (single trigger)", async () => {
     await ensureScout({} as any, "c1");
     const spec = seedCrewAgentMock.mock.calls[0]![2] as {

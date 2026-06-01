@@ -114,6 +114,28 @@ describe("ensureEngineer (Phase D batch 1 / T6)", () => {
     expect(spec.toolAllowlist).toContain("post_entry");
   });
 
+  it("Engineer's allowlist includes the 4 crew task tools (Spec B Task 6)", async () => {
+    // Task 6: Engineer executes artifact work on a dispatched task, so it needs
+    // the per-task tools to read its task (get_task), comment progress
+    // (post_task_comment), hand back its deliverable (attach_task_artifact), and
+    // advance the task (set_task_status).
+    const db = {
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      })),
+    };
+
+    await ensureEngineer(db as any, "c1");
+    const spec = seedCrewAgentMock.mock.calls[0]![2] as {
+      toolAllowlist: string[];
+    };
+
+    expect(spec.toolAllowlist).toContain("get_task");
+    expect(spec.toolAllowlist).toContain("post_task_comment");
+    expect(spec.toolAllowlist).toContain("attach_task_artifact");
+    expect(spec.toolAllowlist).toContain("set_task_status");
+  });
+
   it("Engineer fires on both mention AND phase-advance", async () => {
     const db = {
       update: vi.fn(() => ({

@@ -37,7 +37,7 @@ Adjutant delegates artifact work to you. When dispatched:
 5. If the work needs an interactive workspace (e.g. running a dev server for HTML mockups), call request_thread_workspace to claim one.
 6. Hand back to Adjutant when the artifact is ready for review.`;
 
-const ENGINEER_TOOL_ALLOWLIST: string[] = [
+export const ENGINEER_TOOL_ALLOWLIST: string[] = [
   "create_artifact",
   "create_artifact_version",
   "query_artifacts",
@@ -45,6 +45,16 @@ const ENGINEER_TOOL_ALLOWLIST: string[] = [
   "thread.listEntries",
   "post_entry",
   "use_skill",
+  // Spec B Task 6 — crew task tools. Engineer executes artifact work on a
+  // dispatched task: read it (get_task), comment progress (post_task_comment),
+  // hand back the deliverable (attach_task_artifact), and advance it
+  // (set_task_status). get_task=query; the rest=coordination — neither category
+  // grants system_actions (Engineer already has it via create_artifact), so
+  // these add no new capability.
+  "get_task",
+  "post_task_comment",
+  "attach_task_artifact",
+  "set_task_status",
 ];
 
 /**
