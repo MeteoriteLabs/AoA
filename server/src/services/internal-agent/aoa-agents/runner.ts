@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentRuns, discussionEntries } from "@armyofagents/db";
+import { agents, internalAgentRuns, discussionEntries, issues } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
@@ -21,7 +21,7 @@ import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 
-export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
+export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
 type RunnerAgentShape = { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
 
@@ -111,8 +111,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const inserted = await db.insert(internalAgentRuns).values({
       companyId: payload.companyId, agentId, // Finding R1: per-agent attribution
       triggerType: "sub_agent", triggerSource: payload.source,
-      status: "running", relatedEntityType: payload.entryId ? "discussion" : null,
-      relatedEntityId: payload.entryId ?? null, userId: null,
+      // Spec B Task 5: a task wakeup stamps relatedEntityType="task" (the runs
+      // column vocabulary is 'discussion'|'task'|'agent'|'goal'|'memory' — NOT
+      // "issue"). issueId takes precedence over entryId (a task wakeup never
+      // also carries an entry to claim).
+      status: "running", relatedEntityType: payload.issueId ? "task" : payload.entryId ? "discussion" : null,
+      relatedEntityId: payload.issueId ?? payload.entryId ?? null, userId: null,
     }).returning();
     runId = inserted[0]?.id ?? null;
 
@@ -153,6 +157,29 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       // Claim succeeded — this run now OWNS the entry. Record it so a later
       // failure can terminalize it (FX1/B1).
       claimedEntryId = payload.entryId;
+    }
+
+    // Spec B Task 5 — TASK CHECKOUT CLAIM. A task wakeup must atomically CLAIM
+    // the issue before the adapter runs: issueService.checkout flips
+    // todo/backlog/in_progress → in_progress and sets executionRunId=runId
+    // (single-agent lock; assertAssignableAgent enforces company scope). A
+    // contended checkout THROWS conflict("Issue checkout conflict"). That is a
+    // BENIGN concurrency skip (another run already owns the task), not a true
+    // failure — so we mark the run ROW 'failed' (the runs enum has no
+    // 'succeeded') with a clear errorMessage, then return the AoaRunResult
+    // 'succeeded' so the dispatcher's failure-storm brake does not count it.
+    // Mirrors the entry-claim race precedent above (the not-claimable branch).
+    if (payload.issueId && runId) {
+      const { issueService } = await import("../../issues.js");
+      try {
+        await issueService(db).checkout(payload.issueId, agentId, ["todo", "backlog", "in_progress"], runId);
+      } catch (err) {
+        log.info({ issueId: payload.issueId, err: (err as Error)?.message }, "task checkout conflict — another run owns it; skipping");
+        await db.update(internalAgentRuns)
+          .set({ status: "failed", errorMessage: "task checkout conflict (concurrent)", completedAt: new Date(), durationMs: Date.now() - startedAt })
+          .where(eq(internalAgentRuns.id, runId));
+        return { status: "succeeded" }; // benign concurrency skip — mirror entry-claim race
+      }
     }
 
     const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -323,6 +350,28 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         throw new Error(
           "extraction agent run completed without submitting results",
         );
+      }
+    }
+
+    // Spec B Task 5 — TASK SILENT-STUCK GUARD. Symmetric to the entry guard
+    // above. A non-claude adapter (no MCP bridge) or a hung claude run can exit
+    // "successfully" WITHOUT ever calling set_task_status — leaving the task we
+    // checked out stuck 'in_progress' forever (silent stall). If the task is
+    // still 'in_progress' AND still locked by THIS run (executionRunId===runId),
+    // the agent did not move it: RELEASE it back to 'todo' (clear the execution
+    // lock so the founder/heartbeat can re-dispatch it) and THROW so the run is
+    // marked failed loudly via the catch below. The release is guarded on
+    // executionRunId=runId so a concurrent run that legitimately re-claimed the
+    // task is never clobbered.
+    if (payload.issueId && runId) {
+      const { issueService } = await import("../../issues.js");
+      const task = await issueService(db).getById(payload.issueId);
+      if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === runId) {
+        log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — releasing task to todo");
+        await db.update(issues)
+          .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
+          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId)));
+        throw new Error("crew task run completed without moving the task (no set_task_status call)");
       }
     }
 

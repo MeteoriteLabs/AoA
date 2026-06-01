@@ -369,6 +369,82 @@ describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
   });
 });
 
+// Spec B Task 5 — task-execution trigger directive.
+// When the dispatcher wakes a crew agent with an `issueId` (a task assignment,
+// not a thread), the prompt must steer the agent to the TASK tool surface
+// (get_task / post_task_comment / attach_task_artifact / set_task_status) and
+// AWAY from thread/post_entry tools. Inbox routing still takes precedence.
+describe("buildTriggerPrompt (Spec B Task 5) — task execution (issueId)", () => {
+  it("issueId present + non-inbox source → TASK directive (get_task), NOT a role directive", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      payload: { companyId: "co", source: "dispatcher.task", issueId: "TASK-7" },
+    });
+    // The task directive's stable anchors.
+    expect(out).toContain("get_task");
+    expect(out).toContain("set_task_status");
+    // Steers away from thread tooling — distinctive phrasing from the directive.
+    expect(out).toMatch(/this is a task, not a thread/i);
+    // The task id is rendered in the context block.
+    expect(out).toContain("Task: TASK-7");
+    // CRITICAL: it must NOT fall through to the scout role-map directive.
+    // (The task directive itself NEGATES post_entry — "Do NOT call post_entry"
+    // — so we cannot assert absence of the bare token; assert absence of the
+    // scout directive's distinctive POSITIVE phrasing instead.)
+    expect(out).not.toContain("investigate the thread context");
+    expect(out).not.toContain("thread.createLink");
+  });
+
+  it("issueId present even with a role that posts entries → still the TASK directive (overrides role map)", () => {
+    // maker's role directive normally says post_entry; issueId must win.
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Maker",
+      agentRoleKey: "maker",
+      payload: { companyId: "co", source: "dispatcher.task", issueId: "TASK-9" },
+    });
+    expect(out).toContain("get_task");
+    // Must NOT carry the maker role directive's distinctive positive phrasing
+    // (it instructs posting an entry with parentEntryId to the inviting entry).
+    // The task directive mentions post_entry only to FORBID it, so we key off
+    // "parentEntryId" — which appears only in the maker role directive.
+    expect(out).not.toContain("parentEntryId");
+    expect(out).not.toContain("attaching your artifact");
+  });
+
+  it("precedence: inbox.routing_ambiguous wins even if issueId is also present", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-x",
+        issueId: "TASK-stowaway",
+      },
+    });
+    // Inbox directive must appear; the task directive must NOT.
+    expect(out).toContain("An inbound item needs routing");
+    expect(out).not.toContain("get_task");
+  });
+
+  it("empty-string issueId does not trigger the task directive (falls back to role map)", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Scribe",
+      agentRoleKey: "scribe",
+      payload: { companyId: "co", source: "outbox", issueId: "" },
+    });
+    // Falls through to the scribe role directive, not the task directive.
+    expect(out).toContain("submit_extracted_items");
+    expect(out).not.toContain("get_task");
+    expect(out).not.toContain("Task: ");
+  });
+});
+
 // Task 0.4 — ensure-adjutant stale-framing guard
 describe("ensure-adjutant instruction (Task 0.4)", () => {
   it("does NOT contain stale 'Dispatcher and Engineer take over' framing", () => {

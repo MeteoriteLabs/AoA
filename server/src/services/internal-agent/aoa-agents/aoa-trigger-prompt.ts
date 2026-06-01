@@ -56,6 +56,18 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
 const GENERIC_DIRECTIVE =
   "use the tools in your allowlist appropriate to this trigger, then return";
 
+// Spec B Task 5 — task-execution directive. Fires when the dispatcher wakes a
+// crew agent with a `payload.issueId` (a TASK assignment, not a thread). Steers
+// the agent to the task tool surface and explicitly away from thread/post_entry
+// tooling. The set_task_status call is dial-gated server-side (A4 guard), so the
+// directive only asks the agent to "move the task forward" — the system decides
+// how far it may take it.
+const TASK_EXECUTION_DIRECTIVE =
+  "You have been assigned a task. Call `get_task` with the task id below to read its full context. " +
+  "Do the work the task describes. Post your result with `post_task_comment`, and if you produced a deliverable, attach it with `attach_task_artifact`. " +
+  "When the work is complete, call `set_task_status` to move the task forward (the system enforces how far you may take it based on the autonomy dial). " +
+  "Do NOT call post_entry / thread tools — this is a task, not a thread.";
+
 // Dedicated directive for inbox.routing_ambiguous wakeups (Task 1.7).
 // The Navigator receives an inboxItemId + the inbound content so it can make a
 // concrete routing decision rather than relying on generic guidance. It fetches
@@ -131,6 +143,12 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
         : inboundContent;
       ctxLines.push(`Inbound content:\n${clipped}`);
     }
+  } else if (typeof payload.issueId === "string" && payload.issueId.length > 0) {
+    // Spec B Task 5 — a task assignment wakeup. The task directive overrides the
+    // role-map directive (a Maker assigned a task must execute it, not post_entry).
+    // Inbox routing still takes precedence (handled above).
+    directive = TASK_EXECUTION_DIRECTIVE;
+    ctxLines.push(`Task: ${payload.issueId}`);
   } else {
     directive = ROLE_ACTION_DIRECTIVE[agentRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;
   }
