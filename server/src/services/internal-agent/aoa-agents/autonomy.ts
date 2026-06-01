@@ -26,7 +26,7 @@ export type CrewRole =
   | "chronicler";
 
 /** Minimum autonomy level at which each role auto-runs. Core roles are always on (0). */
-const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
+export const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   scribe: 0,        // core: extraction always runs
   memory_keeper: 0, // core: proposals always run
   curator: 0,       // core: proactive scan always runs
