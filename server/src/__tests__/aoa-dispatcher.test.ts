@@ -688,24 +688,28 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
   // modern thread (useControllerPath=true) the wakeup MUST still reach
   // runAoaAgent — the pre-fix behavior swallowed it at the controller-path gate.
   it("infra sweep (sweep.chronicler) on a useControllerPath thread + autonomyLevel=0 → runAoaAgent IS called (not swallowed)", async () => {
-    // Slots: 0 Phase-1, 1 Phase-2, 2 Phase-3 wakeup, 3 resolveCompanyConfig,
-    // 4 D3 spend-brake count, 5 A5/T1.9 run-COUNT brake count, 6 agent row,
-    // 7 effectiveAutonomy threadId lookup (chronicler payload HAS threadId, so
-    // this DB call fires), 8 Phase-4.
-    // NOTE: the crewPaused/useControllerPath threadRow fetch is SKIPPED for
-    // infra sweeps, so there is no slot for it (mirrors inbox-routing).
+    // C1/C2 reorder: effectiveAutonomy (thread override ?? company) is now
+    // resolved BEFORE the autonomy gate (was post-claim). For infra sweeps the
+    // crewPaused/useControllerPath threadRow fetch is SKIPPED, so the
+    // effectiveAutonomy lookup is the FIRST per-wakeup thread select. New slots:
+    //   0 Phase-1, 1 Phase-2, 2 Phase-3 wakeup, 3 resolveCompanyConfig,
+    //   4 effectiveAutonomy threadId lookup (chronicler payload HAS threadId),
+    //   5 D3 SPEND-brake count, 6 A5/T1.9 run-COUNT brake count, 7 agent row,
+    //   8 Phase-4.
     const db = makeConcurrencyDb(
       [
         [],  // 0 Phase-1 orphan-select
         [],  // 1 Phase-2 pending-drain
         // 2 Phase-3 wakeup: chronicler sweep, threadId present, on a controller-path thread
         [{ id: "wr-chr", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler" } }],
-        // 3 resolveCompanyConfig: autonomyLevel=0 (blocks agentic crew, but chronicler:0 passes)
+        // 3 resolveCompanyConfig: company autonomyLevel=0 (blocks agentic crew, but chronicler:0 passes)
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        [],  // 4 D3 SPEND-brake window count
-        [],  // 5 A5/T1.9 run-COUNT brake window count
-        [{ runtimeConfig: {}, adapterConfig: {} }],  // 6 agent row
-        [{ autonomyLevel: 0 }],  // 7 effectiveAutonomy thread lookup (payload has threadId)
+        // 4 effectiveAutonomy thread lookup — thread sets dial=2 (Drive) to make
+        //   the thread override observable in the forwarded payload below.
+        [{ autonomyLevel: 2 }],
+        [],  // 5 D3 SPEND-brake window count
+        [],  // 6 A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }],  // 7 agent row
         [],  // 8 Phase-4 reclaim-select
       ],
       [
@@ -716,9 +720,12 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
 
     await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
 
+    // chronicler:0 passes the gate regardless; the thread's Drive(2) dial flows
+    // through to the runner as effectiveAutonomy — pinning the new pre-gate
+    // resolution order against regression.
     expect(runAoaMock).toHaveBeenCalledWith(
       db, "a-chr",
-      expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-chr" }),
+      expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-chr", effectiveAutonomy: 2 }),
     );
   });
 });

@@ -205,13 +205,20 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
   // can pass the ORIGINAL trigger source through to runAoaAgent — previously
   // hardcoded "wakeup" in the runAoaAgent call below, which made the prompt's
   // trigger-context block lie about what actually triggered the run.
-  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; payload: Record<string, unknown> | null }> = await db
+  // C3: project agents.runtimeConfig (the fetch already INNER JOINs agents) so
+  // the activation gate can identify Commander (founder-proxy) by
+  // runtimeConfig.aoa.role === 'lead' WITHOUT an extra per-wakeup db.select.
+  // Commander has no trigger role → resolveCrewRole returns null → it would be
+  // treated Drive-only and wrongly skipped_autonomy at dial 0/1; the exemption
+  // below lets it run unconditionally (like inbox-routing).
+  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; payload: Record<string, unknown> | null; runtimeConfig: Record<string, unknown> | null }> = await db
     .select({
       id: agentWakeupRequests.id,
       agentId: agentWakeupRequests.agentId,
       companyId: agentWakeupRequests.companyId,
       source: agentWakeupRequests.source,
       payload: agentWakeupRequests.payload,
+      runtimeConfig: agents.runtimeConfig,
     })
     .from(agentWakeupRequests)
     .innerJoin(agents, eq(agents.id, agentWakeupRequests.agentId))
@@ -392,9 +399,41 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             }
           }
 
+          // C1/C2 — unify the dial. effectiveAutonomy = thread.autonomyLevel ??
+          // company is resolved HERE, BEFORE the activation gate, so the gate
+          // and the runner read the SAME dial. Previously this was computed
+          // AFTER the atomic claim and fed only to the runner, while the gate
+          // read companyCfg.autonomyLevel — they diverged for thread-bearing
+          // wakeups (C1: thread=Drive/company=Manual silently killed the
+          // per-thread override; C2: thread=Manual/company=Drive ran + burned an
+          // LLM call the completion gate then refused). Resolution logic is
+          // identical to the prior post-claim block: default company; if the
+          // payload carries a string threadId, look up discussions.autonomyLevel
+          // and use thread.autonomyLevel ?? company. Task wakeups (no threadId),
+          // infra-sweep, and inbox-routing therefore keep effectiveAutonomy =
+          // company exactly as before — only thread-bearing wakeups change.
+          const wkPayload = (w.payload ?? {}) as Record<string, unknown>;
+          let effectiveAutonomy: number = companyCfg.autonomyLevel;
+          if (typeof wkPayload.threadId === "string") {
+            const thread = await db
+              .select({ autonomyLevel: discussions.autonomyLevel })
+              .from(discussions)
+              .where(eq(discussions.id, wkPayload.threadId))
+              .then((rows: Array<{ autonomyLevel: number | null }>) => rows[0] ?? null);
+            if (thread) {
+              effectiveAutonomy = thread.autonomyLevel ?? companyCfg.autonomyLevel;
+            }
+          }
+
           // Autonomy gate applies to all non-inbox-routing wakeups (including
-          // the Chronicler, which passes at chronicler:0).
-          if (!isInboxRouting) {
+          // the Chronicler, which passes at chronicler:0). C3: Commander
+          // (founder-proxy, runtimeConfig.aoa.role==='lead') is ALSO exempt —
+          // it has no crew trigger role, so the fail-closed "no role → Drive-
+          // only" default would wrongly skip a founder delegation at dial 0/1.
+          // It runs unconditionally, like inbox-routing.
+          const isCommander = (w.runtimeConfig as Record<string, unknown> | null)?.aoa != null
+            && ((w.runtimeConfig as { aoa?: { role?: unknown } }).aoa?.role === "lead");
+          if (!isInboxRouting && !isCommander) {
             // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
             // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
             // (scribe, memory_keeper, curator) are always active (min = 0).
@@ -420,9 +459,14 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             const resolvedRole = (payloadRole && (Object.keys(ROLE_MIN_AUTONOMY) as string[]).includes(payloadRole))
               ? (payloadRole as CrewRole)
               : await resolveCrewRole(db, w.agentId);
+            // C1/C2: gate on effectiveAutonomy (thread override ?? company), NOT
+            // the raw company dial — so the activation gate and the completion
+            // gate read the SAME dial. For task wakeups / infra-sweep / inbox-
+            // routing effectiveAutonomy === companyCfg.autonomyLevel, so their
+            // behavior is unchanged.
             const roleActive = resolvedRole
-              ? isRoleActiveAtAutonomy(resolvedRole, companyCfg.autonomyLevel)
-              : companyCfg.autonomyLevel >= 2; // no role → only at Drive
+              ? isRoleActiveAtAutonomy(resolvedRole, effectiveAutonomy)
+              : effectiveAutonomy >= 2; // no role → only at Drive
             if (!roleActive) {
               // P2 fix: distinct terminal status (was 'done'). The wakeup was
               // correctly queued but the autonomy level prevents execution for
@@ -432,7 +476,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
                 .set({ status: "skipped_autonomy", finishedAt: new Date() })
                 .where(eq(agentWakeupRequests.id, w.id));
               logger.child({ subagent: "aoa-dispatcher" }).info(
-                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: companyCfg.autonomyLevel, companyId: w.companyId },
+                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.autonomyLevel, companyId: w.companyId },
                 "aoa wakeup skipped: autonomy gate (fail-closed)",
               );
               return;
@@ -533,20 +577,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             .returning({ id: agentWakeupRequests.id });
           if (claimed.length === 0) return; // already claimed by concurrent tick
 
-          // D10: compute effectiveAutonomy = threadLevel ?? companyLevel
-          const wkPayload = (w.payload ?? {}) as Record<string, unknown>;
-          let effectiveAutonomy: number | null = companyCfg.autonomyLevel;
-          if (typeof wkPayload.threadId === "string") {
-            const thread = await db
-              .select({ autonomyLevel: discussions.autonomyLevel })
-              .from(discussions)
-              .where(eq(discussions.id, wkPayload.threadId))
-              .then((rows: Array<{ autonomyLevel: number | null }>) => rows[0] ?? null);
-            if (thread) {
-              effectiveAutonomy = thread.autonomyLevel ?? companyCfg.autonomyLevel;
-            }
-          }
-
+          // D10/C1/C2: effectiveAutonomy (thread override ?? company) was already
+          // resolved BEFORE the activation gate above and reused here, so the gate
+          // and the runner read the SAME dial. (Previously a SECOND, post-claim
+          // lookup computed it only for the runner while the gate read the raw
+          // company dial — the divergence this fix removes.)
           try {
             // T1.0: runAoaAgent now returns AoaRunResult. The wakeup row
             // reflects the actual outcome (succeeded/failed) the runner
