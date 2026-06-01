@@ -1,45 +1,31 @@
 /**
  * Unit tests for assertAgentStatusTransition — the service-level guard that
  * prevents crew agents (calling issueService.update directly via tools) from
- * bypassing the route-only in_review guard, and enforces the autonomy dial for
- * completion-ish transitions (in_review requires Assist≥1, done requires Drive≥2).
+ * self-completing without the autonomy dial, and enforces ownership.
  *
- * These test the PURE guard function. The only DB dependency is the approval
- * lookup inside assertAgentInReviewReviewPath (reached for the in_review path),
- * which we mock with a fluent select chain (mirrors agent-in-review-guard.test.ts).
+ * Dial semantics: in_review requires Assist (>=1), done requires Drive (>=2).
+ *
+ * LIVE-QA FIX (Scenario B): a crew agent moving its OWN task to `in_review` is
+ * gated by ownership + dial ONLY. It does NOT require a separate review path
+ * (human assignee or linked pending approval) — for a crew task the `in_review`
+ * status IS the founder's review queue. As a result the crew guard is now a PURE
+ * function that NEVER queries the DB; every test passes `explodingDb` (which
+ * throws if `.select()` is called) to prove the guard touches no database.
+ * The route-level assertAgentInReviewReviewPath (org-agent HTTP path) is tested
+ * separately in agent-in-review-guard.test.ts.
  */
 import { describe, it, expect } from "vitest";
 
 import { assertAgentStatusTransition } from "../services/issue-agent-status-guard.js";
 import { HttpError } from "../errors.js";
 
-// ── Mock DB ──────────────────────────────────────────────────────────────────
-
-/**
- * Build a minimal mock DB for the approval lookup inside the in_review path.
- * approvalRows: what the inner join SELECT returns.
- */
-function buildMockDb(approvalRows: Array<{ status: string }>) {
-  const chain = {
-    from: () => chain,
-    innerJoin: () => chain,
-    where: () => Promise.resolve(approvalRows),
-    select: () => chain,
-  };
-  return {
-    select: () => chain,
-  };
-}
-
-// A DB whose approval lookup would throw if called — used to prove a code path
-// returns BEFORE touching the database (dial gates, ownership, non-agent actors).
+// A DB whose select would throw if called — proves the crew guard is pure and
+// never touches the database (no approval lookup, no review-path query).
 const explodingDb = {
   select: () => {
-    throw new Error("DB should not be queried on this path");
+    throw new Error("DB should not be queried — crew status guard is pure");
   },
 };
-
-// ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("assertAgentStatusTransition", () => {
   // ── done at Drive (dial 2), own task → resolves ──
@@ -70,8 +56,25 @@ describe("assertAgentStatusTransition", () => {
     ).rejects.toThrow(HttpError);
   });
 
-  // ── in_review at Assist (dial 1), own task, human assignee in update → resolves ──
-  it("resolves for in_review at Assist (dial 1) when update sets a human assignee", async () => {
+  // ── LIVE-QA FIX: in_review at Assist (dial 1), own task, NO review path → resolves ──
+  // This is the exact scenario the live QA surfaced: a crew-only task (no human
+  // assigneeUserId, no linked approval) MUST be allowed to reach in_review at Assist.
+  // Uses explodingDb to prove the guard does NOT query the DB for a review path.
+  it("resolves for in_review at Assist (dial 1) with NO review path (crew card IS the review queue)", async () => {
+    await expect(
+      assertAgentStatusTransition(
+        {
+          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
+          updateFields: { status: "in_review" }, // no assigneeUserId, no approval
+          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 1 },
+        },
+        explodingDb as never,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  // ── in_review at Assist (dial 1), own task, also sets human assignee → still resolves ──
+  it("resolves for in_review at Assist (dial 1) when update also sets a human assignee", async () => {
     await expect(
       assertAgentStatusTransition(
         {
@@ -79,23 +82,7 @@ describe("assertAgentStatusTransition", () => {
           updateFields: { status: "in_review", assigneeUserId: "user-1" },
           actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 1 },
         },
-        // assignee path returns before DB lookup; use exploding db to prove it
         explodingDb as never,
-      ),
-    ).resolves.toBeUndefined();
-  });
-
-  // ── in_review at Assist (dial 1), own task, linked pending approval → resolves ──
-  it("resolves for in_review at Assist (dial 1) when a linked pending approval exists", async () => {
-    const db = buildMockDb([{ status: "pending" }]);
-    await expect(
-      assertAgentStatusTransition(
-        {
-          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
-          updateFields: { status: "in_review" },
-          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 1 },
-        },
-        db as never,
       ),
     ).resolves.toBeUndefined();
   });
@@ -106,25 +93,10 @@ describe("assertAgentStatusTransition", () => {
       assertAgentStatusTransition(
         {
           existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
-          updateFields: { status: "in_review", assigneeUserId: "user-1" },
+          updateFields: { status: "in_review" },
           actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 0 },
         },
         explodingDb as never,
-      ),
-    ).rejects.toThrow(HttpError);
-  });
-
-  // ── in_review at Assist, own task, NO review path → throws (delegates to in_review guard) ──
-  it("throws for in_review at Assist when there is no review path", async () => {
-    const db = buildMockDb([]); // no approvals
-    await expect(
-      assertAgentStatusTransition(
-        {
-          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
-          updateFields: { status: "in_review" },
-          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 1 },
-        },
-        db as never,
       ),
     ).rejects.toThrow(HttpError);
   });

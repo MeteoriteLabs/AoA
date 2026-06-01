@@ -93,7 +93,7 @@ export async function assertAgentStatusTransition(
     updateFields: { status?: string; assigneeUserId?: string | null; [k: string]: unknown };
     actor: { actorType: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number };
   },
-  db: Db,
+  _db: Db,
 ): Promise<void> {
   if (input.actor.actorType !== "agent") return;            // humans/system/Commander(system-default) unaffected
   const next = typeof input.updateFields.status === "string" ? input.updateFields.status : input.existing.status;
@@ -105,7 +105,13 @@ export async function assertAgentStatusTransition(
   const dial = input.actor.effectiveDial ?? 0;
   if (next === "in_review" && dial < 1) throw unprocessable("Dial is Manual — agent cannot move task to review yet", { code: "invalid_issue_disposition" });
   if (next === "done" && dial < 2) throw unprocessable("Only at Drive may a crew agent complete its own task", { code: "invalid_issue_disposition" });
-  if (next === "in_review") {
-    await assertAgentInReviewReviewPath({ existing: input.existing, updateFields: input.updateFields, actorType: "agent" }, db);
-  }
+  // Live-QA fix (Scenario B): a crew agent moving its OWN task to `in_review` is gated
+  // by ownership + dial (>=1) ONLY. We deliberately do NOT call assertAgentInReviewReviewPath
+  // here. For a crew task the `in_review` status IS the founder's review queue (founder
+  // then approves in_review -> done). Requiring a SEPARATE review path (a human
+  // assigneeUserId or a linked pending approval) made the Assist tier impossible for a
+  // crew-only task: the live QA proved a crew task could never reach in_review and got
+  // released back to `todo` by the runner's silent-stuck guard. The route-level guard
+  // (routes/issues.ts) still enforces the review-path for ORG agents on the HTTP PATCH
+  // path; this service path is crew-only (actorType='agent', reached via the crew tools).
 }
