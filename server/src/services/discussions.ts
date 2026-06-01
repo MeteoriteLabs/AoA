@@ -21,6 +21,11 @@ import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
 import { threadOrchestrationService } from "./thread-orchestration.js";
+// parseMentions is a pure regex helper (no DB). threads.ts is already in the
+// module graph via live-events.ts → threads.ts, so this static import adds no
+// new load-time cost or cycle (discussions → threads is one-directional;
+// threads.ts does not import discussions.ts).
+import { parseMentions } from "./threads.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
 // Several test suites (notably cli-mode.test.ts) partially mock node:child_process
@@ -645,6 +650,32 @@ export function discussionService(db: Db) {
         },
       });
 
+      // Task 1.3 — de-dup the double-drive. Resolve whether this entry directly
+      // @mentions a kind='aoa' crew agent BEFORE notifying the listener. If it
+      // does, that agent answers directly via the controller participation path
+      // (processMentions → requestParticipation, Task 1.2), so the proactive
+      // Adjutant debounce must NOT also arm on the same entry. We stamp
+      // `hasCrewMention` onto the event and let onEntryCreated skip arming when
+      // true. The lookup is a single lightweight `name IN (...)` query and only
+      // runs when the text actually contains an @mention (no extra round-trip
+      // for the common case of plain chatter).
+      let hasCrewMention = false;
+      const mentionNames = parseMentions(data.rawContent).map((m) => m.name);
+      if (mentionNames.length > 0) {
+        const crewRows = await db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(
+            and(
+              eq(agents.companyId, companyId),
+              eq(agents.kind, "aoa"),
+              inArray(agents.name, mentionNames),
+            ),
+          )
+          .limit(1);
+        hasCrewMention = crewRows.length > 0;
+      }
+
       // Task B2: notify the thread-event listener so it can debounce and wake
       // Adjutant 30s after the last *human* entry. The listener filters out
       // agent/system/scope_proposal entries internally — we pass everything and
@@ -661,6 +692,7 @@ export function discussionService(db: Db) {
             authorAgentId: entry.authorAgentId,
             inputType: entry.inputType,
             createdBy: entry.createdBy,
+            hasCrewMention,
           })
           .catch(() => {
             // Listener already logs its own errors; we swallow here so the

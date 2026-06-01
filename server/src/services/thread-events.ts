@@ -42,7 +42,18 @@ import { makeControllerAdjutantRunner } from "./internal-agent/aoa-agents/contro
 
 const log = logger.child({ service: "thread-events" });
 
-/** Max hop count before agent→agent cascade is blocked. Humans always reset to 0. */
+/**
+ * Max hop count before agent→agent cascade is blocked. Humans always reset to 0.
+ *
+ * Task 1.3 hop-cap reconciliation: this cap governs ONLY the LEGACY peer-wake
+ * `dispatchMention` path (still used by non-controller threads and the
+ * `agent.dispatch` MCP tool, which mirrors this literal). The unified
+ * controller/participation path — what a controller-path @mention now flows
+ * through (processMentions → requestParticipation, Tasks 1.2/2.1) — is governed
+ * by `HOP_CAP=5` in `thread-orchestration.ts`, NOT this constant. Kept here
+ * (not retired) because legacy threads + the dispatch tool still depend on it;
+ * do NOT route controller-path mentions through `dispatchMention`/this cap.
+ */
 export const MAX_HOP_COUNT = 3;
 
 /** Debounce window after the last human entry, in milliseconds. */
@@ -60,6 +71,18 @@ export interface EntryCreatedEvent {
   authorAgentId: string | null;
   inputType: string;
   createdBy: string;
+  /**
+   * Task 1.3 (de-dup the double-drive): true when `discussions.addEntry` resolved
+   * that this entry's `rawContent` @mentions a kind='aoa' crew agent in the
+   * company. When true, the mentioned agent answers DIRECTLY via the controller
+   * participation path (`processMentions` → `requestParticipation`, Task 1.2), so
+   * `onEntryCreated` must NOT also arm the proactive Adjutant debounce — otherwise
+   * a single `@Scout …` drives twice (Scout directly + the ambient Adjutant). The
+   * event payload itself carries no text, so the resolution happens upstream in
+   * `addEntry` and is passed through here. Absent/false ⇒ ambient human chatter ⇒
+   * arm the debounce as before (back-compat: older callers omit the field).
+   */
+  hasCrewMention?: boolean;
 }
 
 export interface DispatchMentionParams {
@@ -242,6 +265,25 @@ export function createThreadEventListener(
   return {
     async onEntryCreated(event: EntryCreatedEvent) {
       if (!isHumanEntry(event)) return;
+
+      // Task 1.3 — de-dup the double-drive. If this human entry directly
+      // @mentions a crew agent, that agent answers via the controller
+      // participation path (processMentions → requestParticipation, Task 1.2).
+      // The proactive Adjutant debounce must NOT also fire on the same entry, or
+      // a single `@Scout …` drives twice. So we skip arming the debounce here.
+      // Ambient human chatter (no crew @mention) still arms it below — that is
+      // the "Adjutant weighs in after humans pause" signal this listener exists
+      // for. Note the controller participation path counts toward HOP_CAP=5
+      // (thread-orchestration.ts), which is the cap that governs the unified
+      // controller/participation path; the peer-wake-only MAX_HOP_COUNT below
+      // governs the legacy dispatchMention path exclusively.
+      if (event.hasCrewMention) {
+        log.debug(
+          { threadId: event.discussionId, entryId: event.id },
+          "skip arming adjutant debounce — entry @mentions a crew agent (answered directly via participation)",
+        );
+        return;
+      }
 
       // Trailing-edge debounce: kill any existing timer for this thread, then
       // schedule a fresh one. Last human entry wins.
