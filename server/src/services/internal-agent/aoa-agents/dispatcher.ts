@@ -12,6 +12,10 @@ import { isRoleActiveAtAutonomy, ROLE_MIN_AUTONOMY, type CrewRole } from "./auto
 import { resolveCrewRole } from "./resolve-crew-role.js";
 import { isCrewPaused } from "./kill-switch.js";
 import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT } from "../cost-caps.js";
+// A3: pre-spend budget hard-stop. budgets.ts lives at services/ root (sibling
+// of live-events.ts, imported as ../../live-events.js above), so from
+// internal-agent/aoa-agents/ it resolves up TWO levels: ../../budgets.js.
+import { budgetService } from "../../budgets.js";
 
 export interface DispatchOptions {
   /** Max simultaneous extractions per dispatch tick. */
@@ -478,6 +482,21 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             roleModel: (agentRc.model ?? agentAdapterCfg.model ?? null) as string | null,
             companyDefault: companyCfg.model,
           });
+
+          // A3: pre-spend budget hard-stop (per-agent + company). Returns a reason
+          // string when blocked, null when clear. Runs as the LAST gate before the
+          // atomic claim so we never spend on a run the budget policy forbids.
+          const budgetBlock = await budgetService(db).getInvocationBlock(w.agentId, w.companyId);
+          if (budgetBlock) {
+            await db.update(agentWakeupRequests)
+              .set({ status: "skipped_budget", finishedAt: new Date() })
+              .where(eq(agentWakeupRequests.id, w.id));
+            logger.child({ subagent: "aoa-dispatcher" }).warn(
+              { agentId: w.agentId, companyId: w.companyId, reason: budgetBlock },
+              "aoa wakeup skipped: budget hard-stop",
+            );
+            return;
+          }
 
           // Atomic claim: queued → processing
           const claimed = await db

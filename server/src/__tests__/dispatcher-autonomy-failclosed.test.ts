@@ -83,6 +83,14 @@ vi.mock("../services/internal-agent/cost-caps.js", () => ({
 vi.mock("../services/internal-agent/aoa-agents/resolve-crew-role.js", () => ({
   resolveCrewRole: mockResolveCrewRole,
 }));
+// A3: pre-spend budget hard-stop. The dispatch path (test 3) now runs a budget
+// pre-flight before the atomic claim. Module-mock budgetService → getInvocationBlock
+// returns null (budget clear) so it issues NO real db.select on budgetPolicies and
+// the positional select-slot order in makeConcurrencyDb stays identical to the
+// other dispatcher suites (a real call would consume slots 4-5 and shift them).
+vi.mock("../services/budgets.js", () => ({
+  budgetService: () => ({ getInvocationBlock: vi.fn().mockResolvedValue(null) }),
+}));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
   runAoaAgent: runAoaMock,
 }));

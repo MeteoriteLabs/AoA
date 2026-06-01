@@ -32,6 +32,12 @@ vi.mock("../services/internal-agent/aoa-agents/triggers.js", () => ({
 vi.mock("../services/internal-agent/aoa-agents/resolve-crew-role.js", () => ({
   resolveCrewRole: vi.fn().mockResolvedValue(null),
 }));
+// A3: pre-spend budget hard-stop. Module-mock budgetService → getInvocationBlock
+// returns null (budget clear) so it adds NO real db.select on budgetPolicies and
+// the positional select sequence in makePhase3Db stays intact.
+vi.mock("../services/budgets.js", () => ({
+  budgetService: () => ({ getInvocationBlock: vi.fn().mockResolvedValue(null) }),
+}));
 vi.mock("../middleware/logger.js", () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));

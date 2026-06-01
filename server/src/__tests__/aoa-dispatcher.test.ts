@@ -78,6 +78,14 @@ vi.mock("../services/internal-agent/aoa-agents/autonomy.js", () => ({
 vi.mock("../services/internal-agent/aoa-agents/resolve-crew-role.js", () => ({
   resolveCrewRole: vi.fn().mockResolvedValue(null),
 }));
+// A3: pre-spend budget hard-stop. Module-mock budgetService so getInvocationBlock
+// returns null (budget clear) and adds NO real db.select on budgetPolicies —
+// the positional _selectOrder sequences below stay byte-stable. (A real call
+// would issue agent- and company-scoped budgetPolicies selects and shift the
+// sequence, breaking these fixtures.)
+vi.mock("../services/budgets.js", () => ({
+  budgetService: () => ({ getInvocationBlock: vi.fn().mockResolvedValue(null) }),
+}));
 vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
   isCrewPaused: () => false, // never paused in dispatcher contract tests
 }));
