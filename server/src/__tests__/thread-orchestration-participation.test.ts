@@ -843,3 +843,146 @@ describe("requestParticipation — actorId option", () => {
     expect(postedEntries[0].createdBy).toBe("adjutant-service");
   });
 });
+
+// =============================================================================
+// Phase 2 / Task 2.1 — B1 regression lock: skip the entry-insert when the
+// runner returns empty (the crew agent self-posts via the post_entry MCP tool
+// DURING its run; the participation runner returns "" so requestParticipation
+// must NOT also post a second, empty entry → NO double-post). A NON-empty
+// return (legacy / other callers) still inserts as before.
+// =============================================================================
+
+describe("requestParticipation — skip-on-empty (no double-post; B1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
+  });
+
+  it("runner returns \"\" → NO discussion_entry inserted (agent self-posted)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-empty-noinsert",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    const result = await svc.requestParticipation(
+      "thread-empty-noinsert",
+      { agentId: "agent-scout-self", prompt: "@Scout recon" },
+      { participantRunner: async () => "" }, // crew runner contract: "" = self-posted
+    );
+
+    // The participation succeeded (it ran the agent) …
+    expect(result.spawned).toBe(true);
+    // … but NO entry was inserted — the agent already posted via post_entry.
+    expect(postedEntries).toHaveLength(0);
+  });
+
+  it("runner returns \"\" → NO live events fire (nothing was inserted here)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-empty-noevent",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    await svc.requestParticipation(
+      "thread-empty-noevent",
+      { agentId: "agent-scout-self2", prompt: "@Scout recon" },
+      { participantRunner: async () => "" },
+    );
+
+    // The agent self-post emits its OWN live events from inside its run (via the
+    // post_entry tool). requestParticipation must not emit a duplicate pair for
+    // an entry it did not insert.
+    expect(mockPublishLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("runner returns \"\" → hop IS still incremented + state updated (cap still advances)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-empty-hop",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 2,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    const result = await svc.requestParticipation(
+      "thread-empty-hop",
+      { agentId: "agent-planner-self", prompt: "@Planner plan it" },
+      { participantRunner: async () => "" },
+    );
+
+    expect(result.spawned).toBe(true);
+    if (!result.spawned) throw new Error("unreachable");
+    // Hop still counts toward the cap — this round happened even though the
+    // agent self-posted. (Prevents infinite ping-pong from self-posting agents.)
+    expect(result.hopCount).toBe(3);
+    expect(controller.hopCount).toBe(3);
+    // entryId is null — there is no entry this call inserted.
+    expect(result.entryId).toBeNull();
+    expect(postedEntries).toHaveLength(0);
+  });
+
+  it("whitespace-only return is treated as empty (still skips the insert)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-ws-noinsert",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    const result = await svc.requestParticipation(
+      "thread-ws-noinsert",
+      { agentId: "agent-eng-self", prompt: "@Engineer build" },
+      { participantRunner: async () => "   \n  " },
+    );
+
+    expect(result.spawned).toBe(true);
+    expect(postedEntries).toHaveLength(0);
+  });
+
+  it("NON-empty return still inserts the entry (legacy / other callers unaffected)", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-nonempty-insert",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+
+    const result = await svc.requestParticipation(
+      "thread-nonempty-insert",
+      { agentId: "agent-scout-text", prompt: "What do you see?" },
+      { participantRunner: async () => "Scout says: coast is clear" },
+    );
+
+    expect(result.spawned).toBe(true);
+    if (!result.spawned) throw new Error("unreachable");
+    // Legacy contract preserved: a runner that returns text gets that text posted.
+    expect(postedEntries).toHaveLength(1);
+    expect(postedEntries[0].rawContent).toBe("Scout says: coast is clear");
+    expect(postedEntries[0].inputType).toBe("agent");
+    expect(result.entryId).toBe(postedEntries[0].id);
+    // And the live events fire for the inserted entry.
+    expect(mockPublishLiveEvent).toHaveBeenCalledTimes(2);
+  });
+});
