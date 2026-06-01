@@ -128,7 +128,8 @@ describe("aoa-wakeup-dispatch", () => {
         // asserted to flow through; role is not asserted (objectContaining).
         [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { role: "adjutant", note: "x" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
-        [], // D3 run-rate window count (internalAgentRuns gt)
+        [], // D3 SPEND-brake window count (paid runs only: internalAgentRuns gt costCents 0)
+        [], // A5/T1.9 run-COUNT brake window count (ALL runs; real runRateExceeded → 0 < 40 passes)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
         [], // Phase 4 failedRunRows
       ],
@@ -164,7 +165,8 @@ describe("aoa-wakeup-dispatch", () => {
         // the claim-race assertion below would pass for the wrong reason.
         [{ id: "w2", agentId: "a2", companyId: "co-2", source: "sweep.adjutant", payload: { role: "adjutant" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
-        [], // D3 run-rate window count (internalAgentRuns gt)
+        [], // D3 SPEND-brake window count (paid runs only)
+        [], // A5/T1.9 run-COUNT brake window count (ALL runs → 0 < 40 passes)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
         [], // Phase 4 failedRunRows
       ],
@@ -192,7 +194,8 @@ describe("aoa-wakeup-dispatch", () => {
         // throws, exercising the failure path).
         [{ id: "w3", agentId: "a3", companyId: "co-3", source: "phase-advance", payload: { role: "adjutant" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
-        [], // D3 run-rate window count (internalAgentRuns gt)
+        [], // D3 SPEND-brake window count (paid runs only)
+        [], // A5/T1.9 run-COUNT brake window count (ALL runs → 0 < 40 passes)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
         [], // Phase 4 failedRunRows
       ],

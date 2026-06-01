@@ -76,6 +76,10 @@ vi.mock("../services/internal-agent/cost-caps.js", () => ({
   runRateExceeded: () => false,
   resolveRoleModel: ({ companyDefault }: { roleModel: string | null; companyDefault: string }) => companyDefault,
   DEFAULT_CREW_RATE_LIMIT: { maxRunsPerWindow: 10, windowMinutes: 10 },
+  // A5: run-COUNT brake constant. runRateExceeded mocked → false so it never
+  // fires; its select still runs (one extra slot AFTER the D3 spend-brake count)
+  // on the dispatch path (test 3). Tests 1/2 skip at the autonomy gate first.
+  DEFAULT_CREW_RUN_COUNT_LIMIT: { windowMinutes: 5, maxRunsPerWindow: 40 },
 }));
 // THE KEY MOCK: the leaf role resolver. Module-mocked so it issues NO real
 // db.select (keeps the positional select-slot order identical to the existing
@@ -244,11 +248,13 @@ describe("runAoaDispatch — fail-closed autonomy gate (A2)", () => {
         [{ id: "w-drive", agentId: "a3", companyId: "co-3", source: "thread_mention", payload: {} }],
         // slot 3 — resolveCompanyConfig: autonomyLevel 2 (Drive)
         [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        // slot 4 — D3 run-rate window count (proceeds past the gate now)
+        // slot 4 — D3 SPEND-brake window count (proceeds past the gate now)
         [],
-        // slot 5 — agent-row select for per-role model resolution
+        // slot 5 — A5/T1.9 run-COUNT brake window count (proceeds; mocked → false)
+        [],
+        // slot 6 — agent-row select for per-role model resolution
         [{ runtimeConfig: {}, adapterConfig: {} }],
-        // slot 6 — Phase-4 reclaim-select (after Promise.all; no threadId → no
+        // slot 7 — Phase-4 reclaim-select (after Promise.all; no threadId → no
         // effectiveAutonomy lookup slot).
         [],
       ],

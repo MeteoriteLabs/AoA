@@ -93,6 +93,10 @@ vi.mock("../services/internal-agent/cost-caps.js", () => ({
   runRateExceeded: () => false, // run-rate never exceeded in dispatcher contract tests
   resolveRoleModel: ({ companyDefault }: { roleModel: string | null; companyDefault: string }) => companyDefault,
   DEFAULT_CREW_RATE_LIMIT: { maxRunsPerWindow: 10, windowMinutes: 10 },
+  // A5: run-COUNT brake constant. runRateExceeded is mocked → false above, so the
+  // count brake never fires here; the brake's select still runs (one extra slot
+  // per dispatching wakeup, AFTER the D3 spend-brake count select).
+  DEFAULT_CREW_RUN_COUNT_LIMIT: { windowMinutes: 5, maxRunsPerWindow: 40 },
 }));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
   runAoaAgent: runAoaMock,
@@ -462,11 +466,14 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // (default) and autonomyLevel=0 (default). Autonomy+kill-switch gates
         // are mocked to always pass, so this select is a no-op for the test.
         [],
-        // slot 5 — Plan-3 Task 9: D3 run-rate brake count select.
+        // slot 5 — Plan-3 Task 9: D3 SPEND-brake count select (paid runs only).
         // runRateExceeded is mocked to always return false so 0 runs here is
         // safe; the select still runs to count internal_agent_runs in the window.
         [],
-        // slot 6 — Plan-3 Task 9: agent row select for per-role model resolution.
+        // slot 6 — A5/T1.9: run-COUNT brake select (ALL runs, no cost filter).
+        // runRateExceeded mocked → false so 0 runs is safe; the select still runs.
+        [],
+        // slot 7 — Plan-3 Task 9: agent row select for per-role model resolution.
         // Returns empty so agentRow=null → falls back to company default model.
         // resolveRoleModel is mocked to return companyDefault directly.
         [],
@@ -509,10 +516,11 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     // (slot 1), and both before the wakeup select (slot 2) and Phase-4 (slot
     // 3). Plan-3 Task 4/8 adds a resolveCompanyConfig select (slot 4) per
     // wakeup that is always AFTER the wakeup select. Plan-3 Task 9 adds a
-    // run-rate count select (slot 5) and an agent-row select (slot 6), both
-    // per wakeup, memoized by the gate mocks so gating is bypassed in this test.
-    // The DRAINS overlap, selects are issued in the original positional order.
-    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // D3 spend-brake count select (slot 5); A5/T1.9 adds the run-COUNT brake
+    // select (slot 6); then the agent-row select (slot 7) — all per wakeup,
+    // memoized by the gate mocks so gating is bypassed in this test. The DRAINS
+    // overlap, selects are issued in the original positional order.
+    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 
     // Phase-4 still runs last (its select slot was consumed; nothing to do).
     expect(db._sets.some(entryFailReclaim)).toBe(false);
@@ -583,13 +591,14 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     // Select slots (dispatch path — dial != off):
     //   0 = Phase-1 orphan, 1 = Phase-2 pending, 2 = Phase-3 wakeup,
     //   3 = resolveCompanyConfig (inside closure, concurrent with Phase-2),
-    //   4 = D3 run-rate window count,
-    //   5 = agent row select,
-    //   6 = effectiveAutonomy threadId lookup (no-op: payload has no threadId),
-    //   7 = Phase-4 reclaim-select (after Promise.all).
+    //   4 = D3 SPEND-brake window count,
+    //   5 = A5/T1.9 run-COUNT brake window count,
+    //   6 = agent row select,
+    //   7 = effectiveAutonomy threadId lookup (no-op: payload has no threadId),
+    //   8 = Phase-4 reclaim-select (after Promise.all).
     // NOTE: effectiveAutonomy lookup only fires if payload.threadId is present.
     // Inbox-routing payload has no threadId, so that DB call is skipped and
-    // Phase-4 is slot 6, not slot 7.
+    // Phase-4 is slot 7, not slot 8.
     const db = makeConcurrencyDb(
       [
         [],  // slot 0 — Phase-1 orphan-select
@@ -598,9 +607,10 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [{ id: "wr-sug", agentId: "a-nav", companyId: "co-r2", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-2", candidateThreadIds: [], distances: [], gap: true } }],
         // slot 3 — resolveCompanyConfig: dial=suggest, autonomyLevel=0 (crew would block)
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "suggest" }],
-        [],  // slot 4 — D3 run-rate window count
-        [{ runtimeConfig: {}, adapterConfig: {} }], // slot 5 — agent row
-        [],  // slot 6 — Phase-4 reclaim-select
+        [],  // slot 4 — D3 SPEND-brake window count
+        [],  // slot 5 — A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }], // slot 6 — agent row
+        [],  // slot 7 — Phase-4 reclaim-select
       ],
       [
         [{ id: "wr-sug" }], // update[0] = atomic claim RETURNING
@@ -629,7 +639,8 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [], [],  // slots 0-1
         [{ id: "wr-aa", agentId: "a-nav", companyId: "co-r3", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-3", candidateThreadIds: ["t5"], distances: [0.1], gap: false } }],
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "auto_attach" }],
-        [],  // D3 rate count
+        [],  // D3 SPEND-brake count
+        [],  // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }],
         [],  // Phase-4
       ],
@@ -653,7 +664,8 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [], [],
         [{ id: "wr-fa", agentId: "a-nav", companyId: "co-r4", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-4" } }],
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "full_auto" }],
-        [],
+        [],  // D3 SPEND-brake count
+        [],  // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }],
         [],  // Phase-4
       ],
@@ -677,8 +689,9 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
   // runAoaAgent — the pre-fix behavior swallowed it at the controller-path gate.
   it("infra sweep (sweep.chronicler) on a useControllerPath thread + autonomyLevel=0 → runAoaAgent IS called (not swallowed)", async () => {
     // Slots: 0 Phase-1, 1 Phase-2, 2 Phase-3 wakeup, 3 resolveCompanyConfig,
-    // 4 D3 rate count, 5 agent row, 6 effectiveAutonomy threadId lookup
-    // (chronicler payload HAS threadId, so this DB call fires), 7 Phase-4.
+    // 4 D3 spend-brake count, 5 A5/T1.9 run-COUNT brake count, 6 agent row,
+    // 7 effectiveAutonomy threadId lookup (chronicler payload HAS threadId, so
+    // this DB call fires), 8 Phase-4.
     // NOTE: the crewPaused/useControllerPath threadRow fetch is SKIPPED for
     // infra sweeps, so there is no slot for it (mirrors inbox-routing).
     const db = makeConcurrencyDb(
@@ -689,10 +702,11 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [{ id: "wr-chr", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler" } }],
         // 3 resolveCompanyConfig: autonomyLevel=0 (blocks agentic crew, but chronicler:0 passes)
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        [],  // 4 D3 run-rate window count
-        [{ runtimeConfig: {}, adapterConfig: {} }],  // 5 agent row
-        [{ autonomyLevel: 0 }],  // 6 effectiveAutonomy thread lookup (payload has threadId)
-        [],  // 7 Phase-4 reclaim-select
+        [],  // 4 D3 SPEND-brake window count
+        [],  // 5 A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }],  // 6 agent row
+        [{ autonomyLevel: 0 }],  // 7 effectiveAutonomy thread lookup (payload has threadId)
+        [],  // 8 Phase-4 reclaim-select
       ],
       [
         [{ id: "wr-chr" }],  // update[0] = atomic claim RETURNING

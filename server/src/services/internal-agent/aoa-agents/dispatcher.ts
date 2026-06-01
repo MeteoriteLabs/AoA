@@ -11,7 +11,7 @@ import { logger } from "../../../middleware/logger.js";
 import { isRoleActiveAtAutonomy, ROLE_MIN_AUTONOMY, type CrewRole } from "./autonomy.js";
 import { resolveCrewRole } from "./resolve-crew-role.js";
 import { isCrewPaused } from "./kill-switch.js";
-import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT } from "../cost-caps.js";
+import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT, DEFAULT_CREW_RUN_COUNT_LIMIT } from "../cost-caps.js";
 // A3: pre-spend budget hard-stop. budgets.ts lives at services/ root (sibling
 // of live-events.ts, imported as ../../live-events.js above), so from
 // internal-agent/aoa-agents/ it resolves up TWO levels: ../../budgets.js.
@@ -465,6 +465,33 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, windowRuns, limit: DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow, companyId: w.companyId },
               "aoa wakeup skipped: run-rate brake (D3)",
+            );
+            return;
+          }
+
+          // A5 (T1.9): run-COUNT brake. The D3 spend brake above counts ONLY
+          // paid runs (costCents > 0), so it is BLIND to $0 CLI-subscription
+          // runs — exactly what a runaway crew loop produces. This separate
+          // brake counts EVERY crew run in the window (no cost filter), so a
+          // tight $0 loop is caught regardless of spend. Kept SEPARATE from the
+          // spend brake (different window + threshold) so neither weakens the
+          // other.
+          const countWindowStart = new Date(Date.now() - DEFAULT_CREW_RUN_COUNT_LIMIT.windowMinutes * 60_000);
+          const allWindowRuns = await db
+            .select({ id: internalAgentRuns.id })
+            .from(internalAgentRuns)
+            .where(and(
+              eq(internalAgentRuns.companyId, w.companyId),
+              gt(internalAgentRuns.createdAt, countWindowStart),
+            )) // NO costCents filter — count every run
+            .then((r: Array<{ id: string }>) => r.length);
+          if (runRateExceeded(allWindowRuns, DEFAULT_CREW_RUN_COUNT_LIMIT.maxRunsPerWindow)) {
+            await db.update(agentWakeupRequests)
+              .set({ status: "skipped_rate_limit", finishedAt: new Date() })
+              .where(eq(agentWakeupRequests.id, w.id));
+            logger.child({ subagent: "aoa-dispatcher" }).warn(
+              { agentId: w.agentId, allWindowRuns, limit: DEFAULT_CREW_RUN_COUNT_LIMIT.maxRunsPerWindow, companyId: w.companyId },
+              "aoa wakeup skipped: run-count brake (T1.9)",
             );
             return;
           }

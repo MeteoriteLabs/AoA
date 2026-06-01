@@ -84,6 +84,10 @@ vi.mock("../services/internal-agent/cost-caps.js", () => ({
   runRateExceeded: () => false, // run-rate never exceeded → reach the budget check
   resolveRoleModel: ({ companyDefault }: { roleModel: string | null; companyDefault: string }) => companyDefault,
   DEFAULT_CREW_RATE_LIMIT: { maxRunsPerWindow: 10, windowMinutes: 10 },
+  // A5: run-COUNT brake constant. runRateExceeded mocked → false so it never
+  // fires; its select still runs (one extra slot AFTER the D3 spend-brake count)
+  // before the budget pre-flight on both the blocked and clear paths.
+  DEFAULT_CREW_RUN_COUNT_LIMIT: { windowMinutes: 5, maxRunsPerWindow: 40 },
 }));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
   runAoaAgent: runAoaMock,
@@ -171,10 +175,11 @@ describe("runAoaDispatch — Phase-3 pre-spend budget hard-stop (A3)", () => {
     //   1 = Phase-2 pending-drain
     //   2 = Phase-3 wakeup-select (one queued aoa wakeup)
     //   3 = resolveCompanyConfig (inside drainPhase3 closure)
-    //   4 = D3 run-rate window count
-    //   5 = agent row select (per-role model resolution)
-    //   6 = Phase-4 reclaim-select (after Promise.all)
-    // The budget pre-flight fires AFTER slot 5 (model resolution) and BEFORE
+    //   4 = D3 SPEND-brake window count
+    //   5 = A5/T1.9 run-COUNT brake window count
+    //   6 = agent row select (per-role model resolution)
+    //   7 = Phase-4 reclaim-select (after Promise.all)
+    // The budget pre-flight fires AFTER slot 6 (model resolution) and BEFORE
     // the atomic claim — on the blocked path it returns early, so NO claim
     // update and NO effectiveAutonomy threadId lookup occur.
     const db = makeConcurrencyDb(
@@ -183,7 +188,8 @@ describe("runAoaDispatch — Phase-3 pre-spend budget hard-stop (A3)", () => {
         [],
         [{ id: "w-blk", agentId: "a-blk", companyId: "co-blk", source: "thread_mention", payload: { role: "scout", note: "x" } }],
         [{ autonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        [], // D3 run-rate count
+        [], // D3 SPEND-brake count
+        [], // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row
         [], // Phase-4
       ],
@@ -212,15 +218,17 @@ describe("runAoaDispatch — Phase-3 pre-spend budget hard-stop (A3)", () => {
 
     // Select slots (single wakeup, clear path — proceeds to claim + dispatch):
     //   0 Phase-1, 1 Phase-2, 2 Phase-3 wakeup, 3 resolveCompanyConfig,
-    //   4 D3 run-rate count, 5 agent row, 6 Phase-4.
-    // payload has no threadId → no effectiveAutonomy lookup; Phase-4 is slot 6.
+    //   4 D3 SPEND-brake count, 5 A5/T1.9 run-COUNT brake count, 6 agent row,
+    //   7 Phase-4.
+    // payload has no threadId → no effectiveAutonomy lookup; Phase-4 is slot 7.
     const db = makeConcurrencyDb(
       [
         [],
         [],
         [{ id: "w-ok", agentId: "a-ok", companyId: "co-ok", source: "thread_mention", payload: { role: "scout", note: "y" } }],
         [{ autonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        [], // D3 run-rate count
+        [], // D3 SPEND-brake count
+        [], // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row
         [], // Phase-4
       ],
