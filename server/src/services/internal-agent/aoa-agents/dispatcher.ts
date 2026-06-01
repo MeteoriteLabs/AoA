@@ -390,10 +390,21 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // P1-T11: Defense-in-depth gate — controller-path threads are driven
             // by the orchestration controller, not the peer-wake pipeline. Any
             // wakeup that slipped through (e.g. from a pre-T11 row) is skipped.
+            //
+            // Task 1.1: TERMINALIZE before returning. Pre-fix this branch just
+            // `return`ed, leaving the wakeup 'queued' forever (confirmed live: a
+            // stranded queued row, re-evaluated every tick, never reaped). Mirror
+            // the sibling skip branches (skipped_paused / skipped_autonomy /
+            // skipped_rate_limit / skipped_budget): write a distinct terminal
+            // status + finishedAt so the wakeup table records WHY it ended.
             if (threadRow?.useControllerPath) {
+              await db
+                .update(agentWakeupRequests)
+                .set({ status: "skipped_controller_path", finishedAt: new Date() })
+                .where(eq(agentWakeupRequests.id, w.id));
               logger.child({ subagent: "aoa-dispatcher" }).debug(
                 { wakeupId: w.id },
-                "aoa wakeup skipped: controller-path thread (peer-wake dormant)",
+                "peer-wake skipped: controller-path thread",
               );
               return;
             }
