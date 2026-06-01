@@ -24,8 +24,9 @@
  *   2. createDeliverableTasks (stamps originKind='crew_thread')
  *   3. Returns taskIds + createdTasks with assigneeAgentId per task
  *
- * Dispatch: heartbeat.wakeup fired once per DISTINCT assigneeAgentId across
- * all created tasks. Null/missing assignees are skipped.
+ * Dispatch: routed once per created task through the kind-aware chokepoint
+ * (enqueueIssueAssigneeWakeup) so crew (AoA) assignees reach the AoA dispatcher
+ * and org assignees reach heartbeat. Null/planning-mode assignees are skipped.
  */
 
 import { and, eq, ne, gt, isNull, desc } from "drizzle-orm";
@@ -34,8 +35,9 @@ import { discussionEntries } from "@armyofagents/db";
 import { writeScopeProposal } from "./scope-proposal-writer.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
 import { threadDeliverablesService } from "./thread-deliverables.js";
-import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
+import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
+import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 
 // ─── Pure gate ────────────────────────────────────────────────────────────────
 
@@ -51,6 +53,34 @@ export function resolveCreationGate(
   autonomy: number | null | undefined,
 ): "auto_approve" | "await_human" {
   return typeof autonomy === "number" && autonomy >= 2 ? "auto_approve" : "await_human";
+}
+
+// ─── Dispatch helper ────────────────────────────────────────────────────────────
+
+/**
+ * Dispatch wakeups for crew tasks created by an auto-approved proposal.
+ *
+ * Routes EACH task through the kind-aware chokepoint (`enqueueIssueAssigneeWakeup`)
+ * so crew (AoA) assignees are dispatched via the AoA dispatcher and org assignees
+ * via heartbeat — instead of the old per-distinct-assignee raw `heartbeat.wakeup`
+ * which silently dropped crew assignees.
+ *
+ * One wakeup is enqueued PER task (each carries its own issueId). Tasks with a
+ * null assignee or in planning mode are skipped.
+ */
+export async function dispatchCreatedCrewTasks(
+  db: Db,
+  companyId: string,
+  createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }>,
+): Promise<void> {
+  for (const t of createdTasks) {
+    if (!t.assigneeAgentId) continue;
+    if (!shouldDispatchIssueWakeup({ workMode: t.workMode })) continue;
+    await enqueueIssueAssigneeWakeup(db, {
+      companyId, agentId: t.assigneeAgentId, issueId: t.id,
+      source: "automation", reason: "crew_task_auto_approved",
+    });
+  }
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -113,7 +143,6 @@ export interface ProposeWorkResult {
 // ─── Service factory ──────────────────────────────────────────────────────────
 
 export function crewTaskService(db: Db) {
-  const hb = heartbeatService(db);
   const deliverables = threadDeliverablesService(db);
 
   return {
@@ -128,7 +157,7 @@ export function crewTaskService(db: Db) {
      *   1. preflightCrewDispatch (budget gate — if not allowed, card stays pending).
      *   2. deliverables.approveProposal (claim-first atomic, createDeliverableTasks).
      *   3. activity_log for auto-approval.
-     *   4. heartbeat.wakeup once per distinct assigneeAgentId.
+     *   4. dispatchCreatedCrewTasks — once per task, kind-aware chokepoint.
      *
      * Returns:
      *   - approved=true + createdIssueIds when tasks were created and dispatched.
@@ -194,21 +223,9 @@ export function crewTaskService(db: Db) {
         },
       });
 
-      // Step 4: Dispatch — once per DISTINCT assigneeAgentId.
-      // Null assignees are skipped (no agent to dispatch).
-      const distinctAssignees = new Set<string>(
-        createdTasks
-          .map((t: { id: string; assigneeAgentId: string | null; workMode: string | null }) => t.assigneeAgentId)
-          .filter((id): id is string => typeof id === "string" && id.length > 0),
-      );
-
-      for (const assigneeAgentId of distinctAssignees) {
-        await hb.wakeup(assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "crew_task_auto_approved",
-        });
-      }
+      // Step 4: Dispatch — once per task, through the kind-aware chokepoint.
+      // Null/planning-mode assignees are skipped inside the helper.
+      await dispatchCreatedCrewTasks(db, companyId, createdTasks);
 
       return {
         approved: true,

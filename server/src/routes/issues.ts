@@ -31,6 +31,7 @@ import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js"
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
+import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
@@ -1019,17 +1020,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
       issue.assigneeAgentId &&
       shouldWakeAssignedAgent
     ) {
-      void heartbeat
-        .wakeup(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: { issueId: issue.id, mutation: "create" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.create" },
-        })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue create"));
+      void enqueueIssueAssigneeWakeup(db, {
+        companyId: issue.companyId,
+        agentId: issue.assigneeAgentId,
+        issueId: issue.id,
+        source: "assignment",
+        reason: "issue_assigned",
+        mutation: "create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      }).catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on create"));
     } else if (wakeSkippedReason) {
       logger.info({ issueId: issue.id, assigneeAgentId: issue.assigneeAgentId, wakeSkippedReason }, "skipped assignment wakeup");
     }

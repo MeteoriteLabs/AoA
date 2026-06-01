@@ -86,6 +86,10 @@ const mockRoutineService = vi.hoisted(() => ({}));
 const mockMemoryLifecycleService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockCreateEagerWorkspaceForIssue = vi.hoisted(() => vi.fn());
+// CREATE-path assignment dispatch now routes through the kind-aware chokepoint
+// (crew → AoA dispatcher, org → heartbeat). We assert on this mock for the
+// POST /issues delegation tests. (Comment @mention dispatch still uses heartbeat.)
+const mockEnqueueAssignee = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -106,6 +110,10 @@ vi.mock("../services/documents.js", () => ({
 
 vi.mock("../services/eager-workspace.js", () => ({
   createEagerWorkspaceForIssue: mockCreateEagerWorkspaceForIssue,
+}));
+
+vi.mock("../services/issue-assignee-wakeup.js", () => ({
+  enqueueIssueAssigneeWakeup: mockEnqueueAssignee,
 }));
 
 const { issueRoutes } = await import("../routes/issues.js");
@@ -171,6 +179,7 @@ beforeEach(() => {
   mockIssueService.findMentionedAgents.mockResolvedValue([]);
   mockIssueService.notifyMentionedHumans.mockResolvedValue([]);
   mockHeartbeatService.wakeup.mockResolvedValue({ id: "run-1" });
+  mockEnqueueAssignee.mockResolvedValue(undefined);
   mockCreateEagerWorkspaceForIssue.mockResolvedValue(null);
   mockProjectService.getById.mockResolvedValue({ id: "99999999-9999-4999-8999-999999999999", companyId });
   mockIssueService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
@@ -489,7 +498,11 @@ describe("POST /companies/:companyId/issues agent delegation", () => {
         createdByAgentId: leadAgentId,
       }),
     );
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mockEnqueueAssignee).toHaveBeenCalledTimes(1));
+    expect(mockEnqueueAssignee).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentId: assigneeAgentId, issueId: "new-issue", reason: "issue_assigned", source: "assignment" }),
+    );
   });
 
   it("blocks a lead assigning a child task outside direct reports", async () => {
@@ -512,7 +525,7 @@ describe("POST /companies/:companyId/issues agent delegation", () => {
       allowedActions: ["create_unassigned", "assign_to_self", "request_routing_from_lead"],
     });
     expect(mockIssueService.create).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
   });
 
   it("queues assignment to a paused direct report without waking it", async () => {
@@ -541,7 +554,7 @@ describe("POST /companies/:companyId/issues agent delegation", () => {
     expect(res.body.wakeSkippedReason).toBe("assignee_paused");
     expect(mockIssueService.create).toHaveBeenCalledOnce();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
   });
 
   it("ensures project workspace before waking an assigned agent", async () => {
@@ -570,9 +583,9 @@ describe("POST /companies/:companyId/issues agent delegation", () => {
         projectId,
       }),
     );
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mockEnqueueAssignee).toHaveBeenCalledTimes(1));
     expect(mockCreateEagerWorkspaceForIssue.mock.invocationCallOrder[0]).toBeLessThan(
-      mockHeartbeatService.wakeup.mock.invocationCallOrder[0],
+      mockEnqueueAssignee.mock.invocationCallOrder[0],
     );
   });
 
@@ -595,6 +608,6 @@ describe("POST /companies/:companyId/issues agent delegation", () => {
     expect(res.status).toBe(201);
     expect(res.body.wakeSkippedReason).toBe("workspace_setup_failed");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
   });
 });

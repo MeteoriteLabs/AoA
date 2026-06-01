@@ -21,7 +21,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { threadService, parseMentions, processMentions } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 import { attachInboxItemToThread, promoteInboxItemToNewThread } from "../services/inbox-attach.js";
@@ -1412,21 +1412,21 @@ export function discussionRoutes(db: Db) {
           },
         });
 
-        // Dispatch heartbeat for each task that has an agent assignee.
+        // Dispatch each task that has an agent assignee through the kind-aware
+        // chokepoint (crew → AoA dispatcher, org → heartbeat).
         // Mirrors the assignment-wakeup pattern in routes/issues.ts POST /issues.
-        const heartbeat = heartbeatService(db);
         for (const task of result.createdTasks) {
           if (task.assigneeAgentId && shouldDispatchIssueWakeup({ workMode: task.workMode })) {
-            void heartbeat
-              .wakeup(task.assigneeAgentId, {
-                source: "assignment",
-                triggerDetail: "system",
-                reason: "deliverable_created",
-                payload: { issueId: task.id, mutation: "create" },
-              })
-              .catch((err) =>
-                logger.warn({ err, issueId: task.id }, "failed to wake deliverable assignee on approve"),
-              );
+            void enqueueIssueAssigneeWakeup(db, {
+              companyId,
+              agentId: task.assigneeAgentId,
+              issueId: task.id,
+              source: "assignment",
+              reason: "deliverable_created",
+              mutation: "create",
+            }).catch((err) =>
+              logger.warn({ err, issueId: task.id }, "failed to wake deliverable assignee on approve"),
+            );
           }
         }
 

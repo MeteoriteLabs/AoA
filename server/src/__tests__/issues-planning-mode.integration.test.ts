@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
+
+const { mockEnqueueAssignee } = vi.hoisted(() => ({ mockEnqueueAssignee: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../services/issue-assignee-wakeup.js", () => ({ enqueueIssueAssigneeWakeup: mockEnqueueAssignee }));
+
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 
 describe("planning-mode dispatch gate — integration", () => {
@@ -65,33 +69,32 @@ describe("planning-mode dispatch gate — integration", () => {
 });
 
 describe("automated-dispatch gates", () => {
-  it("queueIssueAssignmentWakeup skips planning-mode issues", async () => {
-    const wakeup = vi.fn().mockResolvedValue(null);
-    const heartbeat = { wakeup };
+  beforeEach(() => {
+    mockEnqueueAssignee.mockClear();
+  });
 
+  it("queueIssueAssignmentWakeup skips planning-mode issues", async () => {
     await queueIssueAssignmentWakeup({
-      heartbeat,
-      issue: { id: "i1", assigneeAgentId: "agent-1", status: "todo", workMode: "planning" },
+      db: {} as any,
+      issue: { id: "i1", companyId: "co", assigneeAgentId: "agent-1", status: "todo", workMode: "planning" },
       reason: "routine assignment",
       mutation: "create",
       contextSource: "routine",
     });
 
-    expect(wakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
   });
 
   it("queueIssueAssignmentWakeup fires for standard-mode issues", async () => {
-    const wakeup = vi.fn().mockResolvedValue(null);
-    const heartbeat = { wakeup };
-
     await queueIssueAssignmentWakeup({
-      heartbeat,
-      issue: { id: "i2", assigneeAgentId: "agent-1", status: "todo", workMode: "standard" },
+      db: {} as any,
+      issue: { id: "i2", companyId: "co", assigneeAgentId: "agent-1", status: "todo", workMode: "standard" },
       reason: "routine assignment",
       mutation: "create",
       contextSource: "routine",
     });
 
-    expect(wakeup).toHaveBeenCalledOnce();
+    expect(mockEnqueueAssignee).toHaveBeenCalledOnce();
+    expect(mockEnqueueAssignee).toHaveBeenCalledWith({} as any, expect.objectContaining({ issueId: "i2", agentId: "agent-1", reason: "routine assignment" }));
   });
 });

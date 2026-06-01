@@ -33,7 +33,7 @@ import type {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService } from "./dependencies.js";
-import { heartbeatService } from "./heartbeat.js";
+import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
 import {
@@ -442,7 +442,6 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const deps = dependencyService(db);
-  const heartbeat = heartbeatService(db);
 
   async function hasUnmetDependencies(companyId: string, issueId: string): Promise<boolean> {
     const upstream = await db
@@ -1289,11 +1288,12 @@ export function issueService(db: Db) {
       // Fire wakeups after transaction commits (side effects)
       for (const wake of tasksToWake) {
         if (!shouldDispatchIssueWakeup({ workMode: wake.workMode ?? null })) continue;
-        await heartbeat.wakeup(wake.agentId, {
+        await enqueueIssueAssigneeWakeup(db, {
+          companyId: existing.companyId,
+          agentId: wake.agentId,
+          issueId: wake.issueId,
           source: "automation",
-          triggerDetail: "system",
           reason: "dependency_unblocked",
-          payload: { issueId: wake.issueId },
         });
       }
 
