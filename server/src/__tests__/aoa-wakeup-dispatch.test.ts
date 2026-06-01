@@ -23,6 +23,15 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("../services/internal-agent/aoa-agents/triggers.js", () => ({
   listEnabledOutboxAgents: vi.fn().mockResolvedValue([]),
 }));
+// A2 (fail-closed autonomy): the dispatcher now resolves an absent/unknown
+// payload.role via the leaf resolveCrewRole. Module-mock it (→ null) so it adds
+// NO real db.select — the positional select sequence in makePhase3Db stays
+// intact. Fixtures that must DISPATCH carry a known payload.role (adjutant,
+// min-autonomy 0) so they legitimately pass the gate at autonomyLevel 0; pre-A2
+// these dispatched with no role, which was the bug the gate fixes.
+vi.mock("../services/internal-agent/aoa-agents/resolve-crew-role.js", () => ({
+  resolveCrewRole: vi.fn().mockResolvedValue(null),
+}));
 vi.mock("../middleware/logger.js", () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
@@ -108,7 +117,10 @@ describe("aoa-wakeup-dispatch", () => {
         // agentWakeupRequests and passes it through to runAoaAgent unchanged
         // (previously hardcoded "wakeup", losing the real trigger context).
         // Test fixtures must include source so the pass-through is observable.
-        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { note: "x" } }], // Phase 3 wakeup rows
+        // A2: payload carries a known role (adjutant, min-autonomy 0) so the
+        // fail-closed gate dispatches it at autonomyLevel 0. note:"x" is still
+        // asserted to flow through; role is not asserted (objectContaining).
+        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { role: "adjutant", note: "x" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 run-rate window count (internalAgentRuns gt)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -139,7 +151,12 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [],
         [],
-        [{ id: "w2", agentId: "a2", companyId: "co-2", source: "sweep.adjutant", payload: null }], // Phase 3 wakeup rows
+        // A2: known role so this wakeup PASSES the autonomy gate and reaches
+        // the atomic claim — the claim then returns [] (already taken by a
+        // concurrent tick), which is the race path this test actually pins.
+        // Without a role the fail-closed gate would skip it at autonomy 0 and
+        // the claim-race assertion below would pass for the wrong reason.
+        [{ id: "w2", agentId: "a2", companyId: "co-2", source: "sweep.adjutant", payload: { role: "adjutant" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 run-rate window count (internalAgentRuns gt)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -164,7 +181,10 @@ describe("aoa-wakeup-dispatch", () => {
       [
         [],
         [],
-        [{ id: "w3", agentId: "a3", companyId: "co-3", source: "phase-advance", payload: {} }], // Phase 3 wakeup rows
+        // A2: known role (adjutant, min-autonomy 0) so the fail-closed gate
+        // dispatches it at autonomyLevel 0 and runAoaAgent is invoked (then
+        // throws, exercising the failure path).
+        [{ id: "w3", agentId: "a3", companyId: "co-3", source: "phase-advance", payload: { role: "adjutant" } }], // Phase 3 wakeup rows
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 run-rate window count (internalAgentRuns gt)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select

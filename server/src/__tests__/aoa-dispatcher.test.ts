@@ -58,6 +58,25 @@ vi.mock("@armyofagents/db", () => {
 // crew-cost-caps.
 vi.mock("../services/internal-agent/aoa-agents/autonomy.js", () => ({
   isRoleActiveAtAutonomy: () => true, // all roles active in dispatcher contract tests
+  // A2: the fail-closed gate calls Object.keys(ROLE_MIN_AUTONOMY) to decide
+  // whether a payload.role is a KNOWN crew role. Mirror the real role-key set
+  // so a fixture's payload.role (e.g. "chronicler") is recognized and the gate
+  // takes the payload-role branch instead of falling to resolveCrewRole.
+  ROLE_MIN_AUTONOMY: {
+    scribe: 0, memory_keeper: 0, curator: 0, router: 2, navigator: 2,
+    planner: 2, dispatcher: 2, adjutant: 0, maker: 1, engineer: 1,
+    scout: 1, chronicler: 0,
+  },
+}));
+// A2: the dispatcher's fail-closed autonomy gate now resolves an absent/unknown
+// payload.role via the leaf resolveCrewRole. Module-mock it (→ null) so it adds
+// NO real db.select — the positional _selectOrder sequences below stay byte-
+// stable. With isRoleActiveAtAutonomy mocked → true, any RESOLVED role is active;
+// the only behavioral consequence is that a role-LESS wakeup at autonomy < 2 is
+// now (correctly) skipped_autonomy. Fixtures that exercise dispatch therefore
+// carry a known payload.role (see the M4/FX5 fixture's role).
+vi.mock("../services/internal-agent/aoa-agents/resolve-crew-role.js", () => ({
+  resolveCrewRole: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
   isCrewPaused: () => false, // never paused in dispatcher contract tests
@@ -420,7 +439,14 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // wakeup's original source (was hardcoded "wakeup" in runAoaAgent
         // call). Fixture must include source for the codex-F6 assertion
         // below to be meaningful.
-        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { note: "x" } }],
+        // A2 (fail-closed autonomy): payload now carries a KNOWN crew role
+        // (adjutant, min-autonomy 0 → active at L0). Pre-A2 this fixture had no
+        // role and still dispatched at autonomy 0 — but that was the BUG the
+        // fail-closed gate fixes (no-role → Drive-only). This test exercises the
+        // Phase-2/Phase-3 DRAIN-OVERLAP invariant, not autonomy, so the wakeup
+        // must legitimately pass the gate. With a role present resolveCrewRole is
+        // not consulted; the role makes the wakeup a valid dispatch at L0.
+        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { role: "adjutant", note: "x" } }],
         // slot 3 — Phase-4 reclaim-select: nothing failed-linked
         [],
         // slot 4 — Plan-3 Task 4/8: resolveCompanyConfig select (per wakeup,

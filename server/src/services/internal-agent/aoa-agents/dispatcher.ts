@@ -8,7 +8,8 @@ import { runAoaAgent } from "./runner.js";
 import { createLimiter } from "../subagents/concurrency-limiter.js";
 import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
-import { isRoleActiveAtAutonomy, type CrewRole } from "./autonomy.js";
+import { isRoleActiveAtAutonomy, ROLE_MIN_AUTONOMY, type CrewRole } from "./autonomy.js";
+import { resolveCrewRole } from "./resolve-crew-role.js";
 import { isCrewPaused } from "./kill-switch.js";
 import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT } from "../cost-caps.js";
 
@@ -403,8 +404,22 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // runtimeConfig.aoa.role is NOT the source — that field is always
             // the literal string "member" (a template default, never
             // specialized per agent). Don't read it.
+            // A2 — FAIL CLOSED. The pre-fix gate only fired
+            // `if (payloadRole && !isRoleActiveAtAutonomy(...))`, so a wakeup
+            // with NO payload.role skipped the gate and ran regardless of the
+            // dial (the live bug). Now resolve the role — payload.role first
+            // (only if it's a KNOWN crew role), else the durable
+            // aoaAgentTriggers lookup (resolveCrewRole). An unresolved/unknown
+            // role must NOT be a free pass: treat it as Drive-only (the most
+            // restrictive default — only autonomyLevel ≥ 2 runs it).
             const payloadRole = (w.payload as Record<string, unknown> | null)?.role as string | undefined;
-            if (payloadRole && !isRoleActiveAtAutonomy(payloadRole as CrewRole, companyCfg.autonomyLevel)) {
+            const resolvedRole = (payloadRole && (Object.keys(ROLE_MIN_AUTONOMY) as string[]).includes(payloadRole))
+              ? (payloadRole as CrewRole)
+              : await resolveCrewRole(db, w.agentId);
+            const roleActive = resolvedRole
+              ? isRoleActiveAtAutonomy(resolvedRole, companyCfg.autonomyLevel)
+              : companyCfg.autonomyLevel >= 2; // no role → only at Drive
+            if (!roleActive) {
               // P2 fix: distinct terminal status (was 'done'). The wakeup was
               // correctly queued but the autonomy level prevents execution for
               // agentic roles. Mark explicitly so the wakeup table is debuggable.
@@ -413,8 +428,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
                 .set({ status: "skipped_autonomy", finishedAt: new Date() })
                 .where(eq(agentWakeupRequests.id, w.id));
               logger.child({ subagent: "aoa-dispatcher" }).info(
-                { agentId: w.agentId, role: payloadRole, companyId: w.companyId },
-                "aoa wakeup skipped: autonomy gate (role requires L2)",
+                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: companyCfg.autonomyLevel, companyId: w.companyId },
+                "aoa wakeup skipped: autonomy gate (fail-closed)",
               );
               return;
             }
