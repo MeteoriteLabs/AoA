@@ -97,7 +97,14 @@ export const setTaskStatusTool: AgentTool = {
       // escape `execute` as an exception.
       const message =
         error instanceof Error ? error.message : "Status transition rejected";
-      const code = (error as { code?: unknown })?.code;
+      // The guard throws `unprocessable(msg, { code })` = HttpError(422, msg,
+      // details). Per server/src/errors.ts the structured code lives at
+      // `error.details.code`, NOT `error.code`. Read its real location first,
+      // then fall back to a top-level `code` for any other thrower, then to the
+      // message so `error` is never empty.
+      const code =
+        (error as { details?: { code?: unknown } })?.details?.code ??
+        (error as { code?: unknown })?.code;
       return {
         success: false,
         data: null,

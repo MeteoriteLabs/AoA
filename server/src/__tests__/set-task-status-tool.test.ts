@@ -14,6 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { setTaskStatusTool } from "../services/internal-agent/tools/set-task-status-tool.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
+import { unprocessable } from "../errors.js";
 
 function makeCtx(
   overrides: {
@@ -100,14 +101,20 @@ describe("set_task_status tool — delegation contract", () => {
     );
   });
 
-  // (c) update throws (simulate guard rejection) → tool returns {success:false}, NOT an exception
-  it("maps a guard rejection (update throws) to { success:false } without throwing", async () => {
-    const update = vi.fn().mockRejectedValue(
-      Object.assign(new Error("Only at Drive may a crew agent complete its own task"), {
-        status: 422,
-        code: "invalid_issue_disposition",
-      }),
-    );
+  // (c) update throws (simulate guard rejection) → tool returns {success:false}, NOT an exception.
+  // The fixture models the REAL guard rejection: issue-agent-status-guard.ts throws
+  // `unprocessable(msg, { code: "invalid_issue_disposition" })` = HttpError(422, msg,
+  // { code }), so per server/src/errors.ts the code lives at error.details.code — NOT
+  // top-level error.code. We construct it via the same `unprocessable` helper to
+  // guarantee shape fidelity (matches agent-in-review-guard.test.ts's assertions).
+  it("maps a guard rejection (update throws) to { success:false } and surfaces the structured code", async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValue(
+        unprocessable("Only at Drive may a crew agent complete its own task", {
+          code: "invalid_issue_disposition",
+        }),
+      );
     const { ctx } = makeCtx({ effectiveAutonomy: 1, update });
 
     // Must resolve (not reject) — execute must never throw.
@@ -115,8 +122,13 @@ describe("set_task_status tool — delegation contract", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBeTruthy();
-    // The guard's message should be surfaced (not swallowed into a generic).
-    expect(String(result.error) + String(result.summary)).toContain("Drive");
+    // The structured code (at HttpError.details.code) must be surfaced in `error`.
+    // This assertion FAILS against the pre-fix tool, which read error.code (always
+    // undefined here) and fell back to the message — proving the code now reaches
+    // the caller, not just the human-readable message.
+    expect(result.error).toBe("invalid_issue_disposition");
+    // The guard's message is still surfaced (via summary) — not swallowed into a generic.
+    expect(result.summary).toContain("Drive");
   });
 
   // (d) cross-company task → not-found, update NOT called
