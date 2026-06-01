@@ -41,8 +41,9 @@ describe("Tool Registry", () => {
       // propose_crew_work.
       // Routing-card redesign (T8/T9) added 3 Navigator tools:
       // list_thread_cards, promote_inbox_to_thread, defer_inbox_to_human.
+      // Spec B Task 2 added 1 query tool: get_task (company-scoped task read).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(64);
+      expect(tools).toHaveLength(65);
     });
 
     it("every tool has required fields", () => {

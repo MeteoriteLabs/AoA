@@ -58,6 +58,11 @@ import { proposeCrewWorkTool } from "./tools/propose-crew-work.js";
 import { listThreadCardsTool } from "./tools/list-thread-cards.js";
 import { promoteInboxToThreadTool } from "./tools/promote-inbox-to-thread.js";
 import { deferInboxToHumanTool } from "./tools/defer-inbox-to-human.js";
+// Spec B Task 2 — get_task (query category, company-scoped). Lets a crew agent
+// read its assigned task's full context. `query` confers no capability, so it
+// does NOT widen system_actions; getById has no company filter, so the tool
+// enforces row.companyId === ctx.companyId itself (returns not-found on miss).
+import { getTaskTool } from "./tools/get-task-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -126,6 +131,9 @@ export function createToolRegistry(): AgentTool[] {
     // Allowlisted ONLY in ensure-adjutant.ts — default-deny for all other
     // AoA roles and for Commander (not in commanderToolPermissions).
     proposeCrewWorkTool,
+    // Spec B Task 2 — get_task. Query-category read tool: a crew agent reads
+    // its assigned task's full context. Company-scoped inside the tool.
+    getTaskTool,
   ];
 }
 
