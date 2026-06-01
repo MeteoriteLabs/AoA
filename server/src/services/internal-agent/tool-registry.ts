@@ -63,6 +63,15 @@ import { deferInboxToHumanTool } from "./tools/defer-inbox-to-human.js";
 // does NOT widen system_actions; getById has no company filter, so the tool
 // enforces row.companyId === ctx.companyId itself (returns not-found on miss).
 import { getTaskTool } from "./tools/get-task-tool.js";
+// Spec B Task 3 — result-write tools. A crew agent writes its task result back:
+// post_task_comment (comment authored by the agent) + attach_task_artifact
+// (agent-sourced artifact linked to the task + recorded in task_outputs). BOTH
+// are `coordination` category — coordination confers no capability (it is absent
+// from authorize-tool.ts's CAPABILITY_TO_CATEGORY), so exposing these write tools
+// never widens the calling agent's capability set. Each company-scopes the task
+// itself (getById/addComment/update have no company filter).
+import { postTaskCommentTool } from "./tools/post-task-comment-tool.js";
+import { attachTaskArtifactTool } from "./tools/attach-task-artifact-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -134,6 +143,11 @@ export function createToolRegistry(): AgentTool[] {
     // Spec B Task 2 — get_task. Query-category read tool: a crew agent reads
     // its assigned task's full context. Company-scoped inside the tool.
     getTaskTool,
+    // Spec B Task 3 — post_task_comment + attach_task_artifact. Coordination-
+    // category result-write tools (coordination confers no capability). Each
+    // company-scopes the task itself.
+    postTaskCommentTool,
+    attachTaskArtifactTool,
   ];
 }
 

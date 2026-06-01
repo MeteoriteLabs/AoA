@@ -17,6 +17,7 @@ import { secretService } from "../secrets.js";
 import { notificationService } from "../notifications.js";
 import { discussionService } from "../discussions.js";
 import { threadService } from "../threads.js";
+import { taskOutputService } from "../task-outputs.js";
 import { companyService } from "../companies.js";
 import {
   createEmbeddingService,
@@ -118,6 +119,7 @@ export function createServiceContainer(db: Db): ServiceContainer {
     notifications: notificationService(db),
     discussions: discussionService(db),
     threads: threadService(db),
+    taskOutputs: taskOutputService(db),
     companies: {
       get: (id: string) => companySvc.getById(id).then((row) => {
         if (!row) return null;

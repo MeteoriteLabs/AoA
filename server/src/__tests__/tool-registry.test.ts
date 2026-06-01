@@ -23,7 +23,7 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 64 tools", () => {
+    it("returns all 67 tools", () => {
       // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
       // thread.listEntries, thread.setIntent, thread.postScopeProposal,
       // thread.updateSummary, thread.createLink, get_thread_summary,
@@ -42,8 +42,10 @@ describe("Tool Registry", () => {
       // Routing-card redesign (T8/T9) added 3 Navigator tools:
       // list_thread_cards, promote_inbox_to_thread, defer_inbox_to_human.
       // Spec B Task 2 added 1 query tool: get_task (company-scoped task read).
+      // Spec B Task 3 added 2 coordination tools: post_task_comment +
+      // attach_task_artifact (crew result-write; coordination confers no capability).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(65);
+      expect(tools).toHaveLength(67);
     });
 
     it("every tool has required fields", () => {
