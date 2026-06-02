@@ -35,4 +35,14 @@ describe("enqueueIssueAssigneeWakeup", () => {
     await enqueueIssueAssigneeWakeup({} as any, { companyId: "co", agentId: "a3", issueId: "i3", source: "assignment", reason: "issue_assigned" });
     expect("role" in mockEnqueueAoa.mock.calls[0][2].payload).toBe(false);
   });
+  it("L3: crew enqueue failure is swallowed (best-effort, symmetric with org branch)", async () => {
+    // Caller awaits this post-commit; a crew enqueue throw must NOT propagate
+    // out and unwind the already-committed DB mutation.
+    mockResolveAgentKinds.mockResolvedValue(new Map([["a4", "aoa"]]));
+    mockResolveCrewRole.mockResolvedValue("engineer");
+    mockEnqueueAoa.mockRejectedValueOnce(new Error("dispatcher boom"));
+    await expect(
+      enqueueIssueAssigneeWakeup({} as any, { companyId: "co", agentId: "a4", issueId: "i4", source: "assignment", reason: "issue_assigned" }),
+    ).resolves.toBeUndefined();
+  });
 });

@@ -195,6 +195,43 @@ describe("attach_to_thread tool (Task 1.8 — dial gate)", () => {
     expect(capturedSets[0].status).toBeUndefined();
   });
 
+  // suggest path — L9 first-writer guard: item already finalized by reclaim sweep
+  it("suggest + already finalized (0 rows updated): returns already_finalized, does NOT call shared service", async () => {
+    // A stale Navigator suggest must not clobber an item the reclaim sweep already
+    // finalized to the founder. The escalated-guarded UPDATE matches 0 rows.
+    const selectQueue: any[][] = [
+      [{ level: "suggest" }], // 0: dial
+      [{ id: INBOX_ITEM_ID, companyId: COMPANY_ID }], // 1: item exists, same company
+      [{ id: THREAD_ID }], // 2: thread exists in company
+    ];
+    let selectCallIndex = 0;
+    const makeSelectChain = (resultIndex: number) => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue(selectQueue[resultIndex] ?? []),
+    });
+    const selectFn = vi.fn(() => makeSelectChain(selectCallIndex++));
+    // suggest update's .returning() resolves to [] → already finalized.
+    const updateFn = vi.fn(() => ({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+    }));
+    const db = { select: selectFn, update: updateFn } as any;
+    const ctx = makeCtx(db);
+
+    const result = await attachToThreadTool.execute(
+      { inboxItemId: INBOX_ITEM_ID, threadId: THREAD_ID },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).action).toBe("already_finalized");
+    expect((result.data as any).suggested).toBeUndefined();
+    expect(mockAttachInboxItemToThread).not.toHaveBeenCalled();
+    // The escalated-guarded suggest update was attempted exactly once.
+    expect(updateFn).toHaveBeenCalledOnce();
+  });
+
   // suggest path — cross-company item
   it("suggest + cross-company item: returns COMPANY_MISMATCH, no update", async () => {
     const { db, updateFn } = makeDb({

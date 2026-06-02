@@ -106,6 +106,24 @@ export function makeControllerAdjutantRunner(
     const effectiveAutonomy: number =
       thread.autonomyLevel != null ? thread.autonomyLevel : companyAutonomyLevel;
 
+    // Step 3b: dial-as-experience belt-and-suspenders (Finding #6).
+    // The "no PROACTIVE Adjutant at Manual" invariant is primarily enforced in
+    // thread-events.ts:fireAdjutantWakeup (it returns BEFORE driving runController
+    // when effectiveAutonomy < 1). This is a cheap, independent re-check so the
+    // invariant survives even if a future caller drives runController for a Manual
+    // thread (e.g. a backstop sweep, or a pendingRun set by a non-gated path):
+    // a Manual dial must never produce a proactive Adjutant post. A DIRECT @mention
+    // does NOT flow through this runner — it answers via the controller participation
+    // path (processMentions → requestParticipation), which is dial-exempt for
+    // activation — so suppressing here cannot block a mention reply.
+    if (effectiveAutonomy < 1) {
+      log.debug(
+        { threadId, companyId: thread.companyId, effectiveAutonomy },
+        "controller runner: Manual dial — no proactive Adjutant run (belt-and-suspenders)",
+      );
+      return { output: { status: "no-pending" }, error: undefined };
+    }
+
     // Step 4: run the Adjutant. wakeupId is intentionally omitted — the controller
     // path has no agentWakeupRequests row. runAoaAgent treats wakeupId as an
     // optional payload extra ([k: string]: unknown) and does not reference it

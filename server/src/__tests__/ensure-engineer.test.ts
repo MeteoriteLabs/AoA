@@ -34,7 +34,14 @@ describe("ensureEngineer (Phase D batch 1 / T6)", () => {
   it("renames any Maker → Engineer before delegating to seedCrewAgent", async () => {
     const updateSet = vi.fn();
     const where = vi.fn().mockResolvedValue(undefined);
+    // L13: ensureEngineer first SELECTs for an existing Engineer row; return []
+    // (none yet) so the rename proceeds on this common path.
     const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([]),
+      })),
       update: vi.fn(() => ({
         set: vi.fn((s: unknown) => {
           updateSet(s);
@@ -74,8 +81,36 @@ describe("ensureEngineer (Phase D batch 1 / T6)", () => {
     );
   });
 
+  it("L13: SKIPS the Maker rename when an Engineer row already exists (no unique-index collision)", async () => {
+    const updateFn = vi.fn(() => ({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    }));
+    // SELECT returns an existing Engineer → the rename UPDATE must NOT run.
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([{ id: "engineer-existing" }]),
+      })),
+      update: updateFn,
+    };
+
+    await ensureEngineer(db as any, "company-dup");
+
+    // No rename UPDATE issued (would have collided on agents_aoa_name_per_company_idx).
+    expect(updateFn).not.toHaveBeenCalled();
+    // Still idempotently delegates to the seeder (keeps the Engineer canonical).
+    expect(seedCrewAgentMock).toHaveBeenCalledTimes(1);
+  });
+
   it("delegates to seedCrewAgent with the Engineer spec", async () => {
     const db = {
+      // L13: no existing Engineer → rename path; the SELECT precedes the rename.
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([]),
+      })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       })),
@@ -95,6 +130,12 @@ describe("ensureEngineer (Phase D batch 1 / T6)", () => {
 
   it("Engineer allowlist closes the Phase D TODO: artifact-version + workspace tools", async () => {
     const db = {
+      // L13: no existing Engineer → rename path; the SELECT precedes the rename.
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([]),
+      })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       })),
@@ -120,6 +161,12 @@ describe("ensureEngineer (Phase D batch 1 / T6)", () => {
     // (post_task_comment), hand back its deliverable (attach_task_artifact), and
     // advance the task (set_task_status).
     const db = {
+      // L13: no existing Engineer → rename path; the SELECT precedes the rename.
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([]),
+      })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       })),
@@ -138,6 +185,12 @@ describe("ensureEngineer (Phase D batch 1 / T6)", () => {
 
   it("Engineer fires on both mention AND phase-advance", async () => {
     const db = {
+      // L13: no existing Engineer → rename path; the SELECT precedes the rename.
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([]),
+      })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       })),

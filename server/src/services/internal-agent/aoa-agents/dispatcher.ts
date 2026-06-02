@@ -607,8 +607,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               source: w.source,
               wakeupId: w.id,
               resolvedModel: roleModel, // Plan 3 Task 9: pass resolved model to runner
-              effectiveAutonomy,
+              // L2: spread the stored payload FIRST so the trusted, server-resolved
+              // effectiveAutonomy (thread override ?? company dial) ALWAYS wins. A
+              // stray `payload.effectiveAutonomy` (e.g. an attacker- or bug-seeded
+              // wakeup) must NOT override the dial the activation gate read — keep
+              // gate and runner reading the same value.
               ...(w.payload ?? {}),
+              effectiveAutonomy,
             });
             // P2 + T1.0: status reflects what the runner actually saw.
             // 'succeeded' = adapter exited cleanly with no errorMessage.

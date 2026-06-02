@@ -158,8 +158,23 @@ async function emitEntryCreatedSideEffects(
   // true. The lookup is a single lightweight `name IN (...)` query and only
   // runs when the text actually contains an @mention (no extra round-trip
   // for the common case of plain chatter).
+  //
+  // L5: short-circuit for non-human entries (agent self-posts, system, and
+  // scope_proposal). `onEntryCreated` already rejects these via isHumanEntry
+  // (thread-events.ts) — and `hasCrewMention` is only ever consumed to GATE that
+  // human-entry debounce — so computing it for a non-human entry is wasted work
+  // (parseMentions + the agents query). Mirror the isHumanEntry predicate here:
+  // skip when an agent authored the entry or its inputType is a non-human signal.
+  const isHuman =
+    entry.authorAgentId === null &&
+    entry.inputType !== "agent" &&
+    entry.inputType !== "system" &&
+    entry.inputType !== "scope_proposal";
+
   let hasCrewMention = false;
-  const mentionNames = parseMentions(entry.rawContent).map((m) => m.name);
+  const mentionNames = isHuman
+    ? parseMentions(entry.rawContent).map((m) => m.name)
+    : [];
   if (mentionNames.length > 0) {
     const crewRows = await db
       .select({ id: agents.id })
@@ -445,6 +460,13 @@ export function discussionService(db: Db) {
             scopeId: data.scopeId ?? null,
             tags: data.tags ?? [],
             entryCount: hasEntry ? 1 : 0,
+            // L8: when we seed a first entry, advance entrySeq to 1 so it stays
+            // consistent with addEntry (which bumps entrySeq before each insert).
+            // Without this the counter would stay at 0 while the first entry also
+            // carried seq 0, and the NEXT addEntry would bump 0→1 and re-issue
+            // seq 1 — a duplicate seq. Seeding entrySeq=1 here reserves seq 1 for
+            // the first entry below.
+            entrySeq: hasEntry ? 1 : 0,
             lastEntryAt: hasEntry ? now : null,
             createdBy: actorId,
             useControllerPath: true,   // P1-T11: new threads use orchestration controller path
@@ -469,6 +491,10 @@ export function discussionService(db: Db) {
               // auto-extracted; extraction is a deliberate done-phase /
               // Adjutant-judgment activity.
               extractionStatus: "skipped",
+              // L8: first entry gets seq 1 (matches addEntry's first-entry seq),
+              // so the BUG-1 proactive poke carries seq:1 and a catch-up
+              // entriesSince(gt(seq, 0)) includes it instead of skipping it.
+              seq: 1,
               createdBy: actorId,
             })
             .returning();

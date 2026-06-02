@@ -5,10 +5,22 @@ import { discussions, internalAgentConfig } from "@armyofagents/db";
 /**
  * One-time startup reconciliation: clamp any stored autonomy_level > 2 → 2.
  *
- * Background: the UI autonomy scale was remapped from old 1/2/3
- * (Manual/Semi/Auto) to canonical 0/1/2 (Manual/Assist/Drive). Rows written
- * before the migration may hold autonomy_level = 3 (old "Auto"). The new max
- * is 2 (Drive). Clamp them so the runtime never sees an out-of-range value.
+ * Background: the autonomy scale is canonical 0/1/2 (Manual/Assist/Drive); the
+ * pre-canonical UI exposed a top "Auto" rung that persisted autonomy_level = 3.
+ * The ONLY at-rest value that can fall outside the canonical range is that
+ * legacy 3 (old "Auto" → now Drive), and the `> 2` clamp below maps it to 2.
+ *
+ * NOTE on the absence of a low-end remap (L6): this reconciliation deliberately
+ * does NOT remap old 1→0 or 2→1. Verified against the writers — both persistence
+ * paths already clamp to the canonical 0..2 scale: the company config route
+ * (`internal-agent.ts`: `z.number().int().min(0).max(2)` + explicit < 0 / > 2
+ * guard) and the per-thread `setAutonomyLevel` PATCH (same `/discussions/:id`
+ * endpoint). The schema defaults are canonical too (`internal_agent_config`
+ * defaults 0; `discussions.autonomy_level` is nullable). So no row was ever
+ * written under a 1-based scale where a stored `1` means "Manual" — a stored
+ * `1` always means the canonical Assist, and a stored `2` always means Drive.
+ * Adding a 1→0 / 2→1 remap here would MIS-MIGRATE legitimate Assist(1)/Drive(2)
+ * rows. The legacy `3` is the sole concern, handled by the clamp.
  *
  * Tables updated:
  *   - discussions.autonomy_level  (per-thread override)

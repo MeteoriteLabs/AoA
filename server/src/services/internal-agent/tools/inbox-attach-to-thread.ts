@@ -119,7 +119,13 @@ export const attachToThreadTool: AgentTool = {
         };
       }
       // Record the suggestion — leave status='pending' so the item awaits human confirm.
-      await ctx.db
+      // First-writer guard (Codex L9): mirror the act path's escalated-claim WHERE
+      // (~line 147 below) — only write when the item is still 'escalated'. Without
+      // this a stale Navigator run could overwrite routerDecision/suggestedThreadId
+      // on an item the reclaim sweep already finalized to the founder
+      // (routingStatus 'routed' + routerDecision 'human'). On 0 rows updated the
+      // item was already finalized → no-op.
+      const suggestClaim = await ctx.db
         .update(threadInboxItems)
         .set({
           routerDecision: "suggest",
@@ -130,8 +136,17 @@ export const attachToThreadTool: AgentTool = {
           and(
             eq(threadInboxItems.id, inboxItemId),
             eq(threadInboxItems.companyId, ctx.companyId),
+            eq(threadInboxItems.routingStatus, "escalated"),
           ),
-        );
+        )
+        .returning({ id: threadInboxItems.id });
+      if (suggestClaim.length === 0) {
+        return {
+          success: true,
+          data: { action: "already_finalized" },
+          summary: "Item was already finalized to the founder — no action",
+        };
+      }
       return {
         success: true,
         data: { suggested: true, suggestedThreadId: threadId },

@@ -20,10 +20,16 @@ export async function enqueueIssueAssigneeWakeup(db: Db, input: AssigneeWakeupIn
   };
   if (isAoa) {
     const role = await resolveCrewRole(db, input.agentId);
-    await issuesSvc.enqueueAoaMentionWakeup(input.companyId, input.agentId, {
-      source: input.source, reason: input.reason,
-      payload: role ? { ...basePayload, role } : basePayload,
-    });
+    // L3: best-effort, symmetric with the org `heartbeat.wakeup` branch below.
+    // The caller awaits this post-commit (after the DB write committed), so a
+    // crew enqueue failure must not throw and unwind a committed mutation —
+    // log + swallow, exactly as the org branch does.
+    await issuesSvc
+      .enqueueAoaMentionWakeup(input.companyId, input.agentId, {
+        source: input.source, reason: input.reason,
+        payload: role ? { ...basePayload, role } : basePayload,
+      })
+      .catch((err) => logger.warn({ err, issueId: input.issueId, agentId: input.agentId }, "failed to wake crew assignee"));
     return;
   }
   await heartbeatService(db)

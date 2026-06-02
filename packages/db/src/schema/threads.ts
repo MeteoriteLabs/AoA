@@ -109,10 +109,20 @@ export const threadInboxItems = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 
     // Task 0.2 (Inbound Dirty-Data Routing) ─────────────────────────────────
-    // Durable dedup key — set by inbound adapter from message-id / hash.
+    // Durable dedup key — a PURE CONTENT HASH derived in inbox-producer.ts
+    // (`computeDedupKey`): SHA-256 of NUL-delimited
+    // (companyId + originMedium + (originSource ?? "") + rawContent). It is NOT
+    // a transport/message-id — there is no inbound-adapter-provided id involved.
     // Paired with the unique index below to prevent double-insert on retry
     // across ALL statuses (Codex #8: status moves pending→attached must not
     // allow a re-delivered item to sneak in as a second row).
+    //
+    // COLLISION SEMANTICS: because the key is a content hash, byte-identical
+    // content from the SAME (company, medium, source) is treated as a DUPLICATE
+    // and silently deduped to the existing row — even a legitimately distinct
+    // re-send. A producer that must force a distinct row for identical content
+    // has to vary one of the hashed fields (e.g. originSource). This is the
+    // intended trade-off (idempotent re-delivery > guaranteed-distinct re-sends).
     dedupKey: text("dedup_key"),
 
     // Router lifecycle (Codex #9): sweep distinguishes not-yet-routed vs
