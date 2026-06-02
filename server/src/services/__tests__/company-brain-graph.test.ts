@@ -48,6 +48,17 @@ const founder: GraphActorScope = {
   activeCompanyMember: true,
 };
 
+describe("memory item graph query columns", () => {
+  it("omits vector embeddings from graph reads", () => {
+    const columns = __companyBrainGraphTest.memoryItemGraphSelectColumnNames();
+
+    expect(columns).toContain("id");
+    expect(columns).toContain("title");
+    expect(columns).toContain("visibility");
+    expect(columns).not.toContain("embedding");
+  });
+});
+
 describe("canSeeMemoryItemForGraph", () => {
   it("allows company-wide identity memory to active company members", () => {
     const item = memory({

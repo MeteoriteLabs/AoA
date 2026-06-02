@@ -61,6 +61,33 @@ export interface MemoryItemGraphRow {
   updatedAt?: Date | string | null;
 }
 
+function memoryItemGraphSelectColumns() {
+  return {
+    id: memoryItems.id,
+    companyId: memoryItems.companyId,
+    title: memoryItems.title,
+    content: memoryItems.content,
+    status: memoryItems.status,
+    category: memoryItems.category,
+    layer: memoryItems.layer,
+    visibility: memoryItems.visibility,
+    departmentId: memoryItems.departmentId,
+    projectId: memoryItems.projectId,
+    goalId: memoryItems.goalId,
+    taskId: memoryItems.taskId,
+    sourceArtifactId: memoryItems.sourceArtifactId,
+    agentId: memoryItems.agentId,
+    folderPath: memoryItems.folderPath,
+    createdBy: memoryItems.createdBy,
+    createdAt: memoryItems.createdAt,
+    updatedAt: memoryItems.updatedAt,
+  };
+}
+
+function memoryItemGraphSelectColumnNames() {
+  return Object.keys(memoryItemGraphSelectColumns());
+}
+
 export interface CompanyBrainSemanticEdgeGraphRow {
   id: string;
   fromType: string;
@@ -791,7 +818,7 @@ async function assertVisibleMemoryEndpoints(
   if (itemIds.length === 0) return;
 
   const rows = await db
-    .select()
+    .select(memoryItemGraphSelectColumns())
     .from(memoryItems)
     .where(and(eq(memoryItems.companyId, companyId), inArray(memoryItems.id, itemIds)));
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -877,7 +904,7 @@ export function companyBrainGraphService(db: Db) {
     ) => {
       const scope = await loadActorScope(db, companyId, actor);
       const sampledItems = await db
-        .select()
+        .select(memoryItemGraphSelectColumns())
         .from(memoryItems)
         .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.status, "approved")))
         .limit(options.limit + 1);
@@ -1010,7 +1037,7 @@ export function companyBrainGraphService(db: Db) {
     ) => {
       const scope = await loadActorScope(db, companyId, actor);
       const center = await db
-        .select()
+        .select(memoryItemGraphSelectColumns())
         .from(memoryItems)
         .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.id, memoryItemId)))
         .then((rows) => rows[0] ?? null);
@@ -1051,7 +1078,7 @@ export function companyBrainGraphService(db: Db) {
 
       const relatedItems = relatedItemIds.length > 0
         ? await db
-            .select()
+            .select(memoryItemGraphSelectColumns())
             .from(memoryItems)
             .where(and(eq(memoryItems.companyId, companyId), inArray(memoryItems.id, relatedItemIds)))
         : [];
@@ -1141,7 +1168,7 @@ export function companyBrainGraphService(db: Db) {
     ) => {
       const scope = await loadActorScope(db, companyId, actor);
       const center = await db
-        .select()
+        .select(memoryItemGraphSelectColumns())
         .from(memoryItems)
         .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.id, memoryItemId)))
         .then((rows) => rows[0] ?? null);
@@ -1255,5 +1282,6 @@ export function companyBrainGraphService(db: Db) {
 
 export const __companyBrainGraphTest = {
   aggregateMemoryUsage,
+  memoryItemGraphSelectColumnNames,
   prepareSemanticEdgeCreate,
 };
