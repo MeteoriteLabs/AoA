@@ -161,6 +161,27 @@ export function discussionRoutes(db: Db) {
       const actor = getActorInfo(req);
       try {
         const discussion = await svc.create(companyId, req.body, actor.actorId);
+
+        // Live-QA BUG-1: a thread opened WITH a first message must dispatch any
+        // @mentions in that first message — exactly like the add-entry route
+        // does. Without this an @mention in the opening message is dropped.
+        // Fire-and-forget; the entry is already committed, so errors must not
+        // fail the request. Mirrors the /entries route's processMentions wiring.
+        if (discussion.entry) {
+          const mentions = parseMentions(discussion.entry.rawContent ?? "");
+          if (mentions.length > 0) {
+            processMentions(
+              db,
+              companyId,
+              discussion.id,
+              discussion.entry.id,
+              mentions,
+            ).catch((err) =>
+              console.error("[threads] processMentions error:", err),
+            );
+          }
+        }
+
         res.status(201).json(discussion);
       } catch (err) {
         if (err instanceof HttpError) {

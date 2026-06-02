@@ -93,6 +93,113 @@ function isMemoryType(
   );
 }
 
+/**
+ * Minimal entry shape consumed by `emitEntryCreatedSideEffects`. Mirrors the
+ * fields read off a freshly-inserted `discussion_entries` row — both `addEntry`'s
+ * `entry` and `create()`'s `result.entry` satisfy this.
+ */
+interface EmittableEntry {
+  id: string;
+  discussionId: string;
+  authorAgentId: string | null;
+  inputType: string;
+  createdBy: string;
+  seq: number;
+  rawContent: string;
+}
+
+/**
+ * Post-entry side effects shared by `addEntry` and `create()` (live-QA BUG-1).
+ *
+ * After a discussion entry is committed, both the add-entry path AND the
+ * create-with-first-entry path must:
+ *   1. publish the thread-scoped `thread.entry.created` poke (Plan 7) so live
+ *      thread viewers refetch (RBAC-scoped fan-out keyed by `threadId`); and
+ *   2. resolve whether the entry directly @mentions a kind='aoa' crew agent
+ *      (Task 1.3 de-dup), then notify the thread-event listener's
+ *      `onEntryCreated` so it can arm the 30s human-silence Adjutant debounce
+ *      (skipping when `hasCrewMention` — the mentioned agent answers directly).
+ *
+ * Extracted DRY from `addEntry` so `create()` arms proactive crew engagement on
+ * the FIRST message of a thread. Behavior-preserving for `addEntry`: same calls,
+ * same order. The crew lookup runs only when `rawContent` actually contains an
+ * @mention (no extra round-trip for plain chatter). Fire-and-forget: the
+ * `onEntryCreated` promise is not awaited and its rejection is swallowed so the
+ * caller's happy path is never blocked by listener failures.
+ *
+ * NOTE: the legacy company-scoped `discussion.entry.created` publish is NOT part
+ * of this helper — both callers publish it inline (before invoking this helper)
+ * so existing consumers of that event are unaffected and no double-publish occurs.
+ */
+async function emitEntryCreatedSideEffects(
+  db: Db,
+  companyId: string,
+  entry: EmittableEntry,
+): Promise<void> {
+  // Plan 7: thread-scoped poke for the live thread view. Carries threadId so
+  // the WS envelope-RBAC fan-out only delivers it to viewers who can see the
+  // thread. The frontend refetches the thread (refetch-on-poke) using seq.
+  publishLiveEvent({
+    companyId,
+    type: "thread.entry.created",
+    payload: {
+      threadId: entry.discussionId,
+      entryId: entry.id,
+      seq: entry.seq,
+    },
+  });
+
+  // Task 1.3 — de-dup the double-drive. Resolve whether this entry directly
+  // @mentions a kind='aoa' crew agent BEFORE notifying the listener. If it
+  // does, that agent answers directly via the controller participation path
+  // (processMentions → requestParticipation, Task 1.2), so the proactive
+  // Adjutant debounce must NOT also arm on the same entry. We stamp
+  // `hasCrewMention` onto the event and let onEntryCreated skip arming when
+  // true. The lookup is a single lightweight `name IN (...)` query and only
+  // runs when the text actually contains an @mention (no extra round-trip
+  // for the common case of plain chatter).
+  let hasCrewMention = false;
+  const mentionNames = parseMentions(entry.rawContent).map((m) => m.name);
+  if (mentionNames.length > 0) {
+    const crewRows = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          eq(agents.kind, "aoa"),
+          inArray(agents.name, mentionNames),
+        ),
+      )
+      .limit(1);
+    hasCrewMention = crewRows.length > 0;
+  }
+
+  // Task B2: notify the thread-event listener so it can debounce and wake
+  // Adjutant 30s after the last *human* entry. The listener filters out
+  // agent/system/scope_proposal entries internally — we pass everything and
+  // let it decide. Fire-and-forget: any failure inside the listener is its
+  // own concern (logged there) and must not block the caller's response.
+  // getThreadEventListener() returns null in test/bootstrap contexts where
+  // the singleton isn't initialized — that's expected, treat as no-op.
+  const threadListener = getThreadEventListener();
+  if (threadListener) {
+    void threadListener
+      .onEntryCreated({
+        id: entry.id,
+        discussionId: entry.discussionId,
+        authorAgentId: entry.authorAgentId,
+        inputType: entry.inputType,
+        createdBy: entry.createdBy,
+        hasCrewMention,
+      })
+      .catch(() => {
+        // Listener already logs its own errors; we swallow here so the
+        // caller's happy path is unaffected by listener failures.
+      });
+  }
+}
+
 export function discussionService(db: Db) {
   const issues = issueService(db);
   const memory = memoryService(db);
@@ -405,6 +512,23 @@ export function discussionService(db: Db) {
             inputType: data.entry.inputType,
           },
         });
+
+        // Live-QA BUG-1: a thread opened WITH a first message must arm proactive
+        // crew engagement (and resolve @mentions) exactly like a follow-up entry
+        // does. Run the same post-entry side effects addEntry runs — the
+        // thread-scoped poke + crew-mention resolution + onEntryCreated debounce
+        // arm. Without this the first message never wakes the Adjutant (until a
+        // 2nd message) and an @mention in it is dropped. result.entry carries
+        // rawContent + seq off the inserted row.
+        await emitEntryCreatedSideEffects(db, companyId, {
+          id: result.entry.id,
+          discussionId: result.id,
+          authorAgentId: result.entry.authorAgentId,
+          inputType: result.entry.inputType,
+          createdBy: result.entry.createdBy,
+          seq: result.entry.seq,
+          rawContent: result.entry.rawContent,
+        });
       }
 
       return result;
@@ -637,68 +761,20 @@ export function discussionService(db: Db) {
         },
       });
 
-      // Plan 7: thread-scoped poke for the live thread view. Carries threadId so
-      // the WS envelope-RBAC fan-out only delivers it to viewers who can see the
-      // thread. The frontend refetches the thread (refetch-on-poke) using seq.
-      publishLiveEvent({
-        companyId,
-        type: "thread.entry.created",
-        payload: {
-          threadId: discussionId,
-          entryId: entry.id,
-          seq: entry.seq,
-        },
+      // Plan 7 + Task 1.3 + Task B2 — thread-scoped poke, crew-mention
+      // resolution, and the proactive Adjutant debounce arm. DRY-extracted into
+      // emitEntryCreatedSideEffects so create()'s first-entry path runs the
+      // identical wiring (live-QA BUG-1). Behavior-preserving for addEntry:
+      // same publish, same crew lookup, same fire-and-forget onEntryCreated.
+      await emitEntryCreatedSideEffects(db, companyId, {
+        id: entry.id,
+        discussionId: entry.discussionId,
+        authorAgentId: entry.authorAgentId,
+        inputType: entry.inputType,
+        createdBy: entry.createdBy,
+        seq: entry.seq,
+        rawContent: data.rawContent,
       });
-
-      // Task 1.3 — de-dup the double-drive. Resolve whether this entry directly
-      // @mentions a kind='aoa' crew agent BEFORE notifying the listener. If it
-      // does, that agent answers directly via the controller participation path
-      // (processMentions → requestParticipation, Task 1.2), so the proactive
-      // Adjutant debounce must NOT also arm on the same entry. We stamp
-      // `hasCrewMention` onto the event and let onEntryCreated skip arming when
-      // true. The lookup is a single lightweight `name IN (...)` query and only
-      // runs when the text actually contains an @mention (no extra round-trip
-      // for the common case of plain chatter).
-      let hasCrewMention = false;
-      const mentionNames = parseMentions(data.rawContent).map((m) => m.name);
-      if (mentionNames.length > 0) {
-        const crewRows = await db
-          .select({ id: agents.id })
-          .from(agents)
-          .where(
-            and(
-              eq(agents.companyId, companyId),
-              eq(agents.kind, "aoa"),
-              inArray(agents.name, mentionNames),
-            ),
-          )
-          .limit(1);
-        hasCrewMention = crewRows.length > 0;
-      }
-
-      // Task B2: notify the thread-event listener so it can debounce and wake
-      // Adjutant 30s after the last *human* entry. The listener filters out
-      // agent/system/scope_proposal entries internally — we pass everything and
-      // let it decide. Fire-and-forget: any failure inside the listener is its
-      // own concern (logged there) and must not block the addEntry response.
-      // getThreadEventListener() returns null in test/bootstrap contexts where
-      // the singleton isn't initialized — that's expected, treat as no-op.
-      const threadListener = getThreadEventListener();
-      if (threadListener) {
-        void threadListener
-          .onEntryCreated({
-            id: entry.id,
-            discussionId: entry.discussionId,
-            authorAgentId: entry.authorAgentId,
-            inputType: entry.inputType,
-            createdBy: entry.createdBy,
-            hasCrewMention,
-          })
-          .catch(() => {
-            // Listener already logs its own errors; we swallow here so the
-            // addEntry happy path is unaffected by listener failures.
-          });
-      }
 
       // Design §4.9 + §5 (locked): the `discuss` phase is a pure conversation
       // between humans and the crew (Adjutant facilitating, delegating to
