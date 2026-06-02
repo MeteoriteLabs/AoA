@@ -2,6 +2,7 @@ import type {
   CompanyBrainEdgeKind,
   CompanyBrainMemoryUsageResponse,
   CompanyBrainNeighborsResponse,
+  CompanyBrainOverviewResponse,
   CompanyBrainSemanticEdgeRecord,
   CreateCompanyBrainSemanticEdge,
   MemoryItem,
@@ -64,6 +65,27 @@ export const memoryApi = {
     api.get<CompanyBrainMemoryUsageResponse>(
       `/companies/${companyId}/memory/items/${encodeURIComponent(id)}/usage`,
     ),
+  companyGraph: (
+    companyId: string,
+    options?: {
+      limit?: number;
+      includeStructural?: boolean;
+      kinds?: CompanyBrainEdgeKind[];
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.includeStructural !== undefined) {
+      params.set("includeStructural", String(options.includeStructural));
+    }
+    if (options?.kinds && options.kinds.length > 0) {
+      params.set("kinds", options.kinds.join(","));
+    }
+    const qs = params.toString();
+    return api.get<CompanyBrainOverviewResponse>(
+      `/companies/${companyId}/memory/graph${qs ? `?${qs}` : ""}`,
+    );
+  },
   createGraphEdge: (companyId: string, data: CreateCompanyBrainSemanticEdge) =>
     api.post<CompanyBrainSemanticEdgeRecord>(`/companies/${companyId}/memory/graph/edges`, data),
   updateGraphEdge: (companyId: string, edgeId: string, data: UpdateCompanyBrainSemanticEdge) =>

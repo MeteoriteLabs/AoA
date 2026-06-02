@@ -56,6 +56,31 @@ describe("memoryApi.usage", () => {
   });
 });
 
+describe("memoryApi.companyGraph", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("forwards company graph overview options", async () => {
+    vi.mocked(api.get).mockResolvedValueOnce({
+      nodes: [],
+      edges: [],
+      limit: 150,
+      truncated: false,
+    });
+
+    await memoryApi.companyGraph("company-1", {
+      limit: 150,
+      includeStructural: false,
+      kinds: ["related_to", "supports"],
+    });
+
+    expect(api.get).toHaveBeenCalledWith(
+      "/companies/company-1/memory/graph?limit=150&includeStructural=false&kinds=related_to%2Csupports",
+    );
+  });
+});
+
 describe("memoryApi graph edge CRUD", () => {
   beforeEach(() => {
     vi.clearAllMocks();
