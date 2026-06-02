@@ -24,19 +24,37 @@ import { agents, issues } from "@armyofagents/db";
 
 /**
  * `EXISTS(SELECT 1 FROM agents WHERE agents.id = issues.assignee_agent_id AND
- * agents.company_id = :cid AND agents.kind = 'aoa' AND agents.status <>
+ * agents.company_id = <…> AND agents.kind = 'aoa' AND agents.status <>
  * 'terminated')` — true when the task is assigned to an active crew agent.
  *
  * Lifted verbatim from the previous inline `crewBoard` block in
  * `services/issues.ts` so the crew-board surface is byte-equivalent.
+ *
+ * `companyId` is **optional**:
+ *  - **Provided** (every existing call site) → the company filter binds the
+ *    given id as a parameter: `agents.company_id = :companyId`. Use this on
+ *    single-company surfaces (crew board, list, home/dashboard count tiles).
+ *  - **Omitted** → the company filter *correlates to the issue's own company*:
+ *    `agents.company_id = issues.company_id`. This is required for cross-company
+ *    BATCH queries (e.g. the lobby `companyService.stats()` rollup that groups by
+ *    `issues.company_id` with no fixed company in scope). It is equally valid on
+ *    a single-company query because an assignee is always same-company as its
+ *    issue, so the correlation is redundant-but-correct there.
  */
-export function crewAssigneeExists(companyId: string): SQL<boolean> {
+export function crewAssigneeExists(companyId?: string): SQL<boolean> {
+  // The only difference between the two forms is the company-correlation chunk:
+  // a bound parameter when a companyId is supplied, else a correlation to the
+  // outer issue's own company column (works inside a cross-company batch).
+  const companyMatch =
+    companyId === undefined
+      ? sql`${agents.companyId} = ${issues.companyId}`
+      : sql`${agents.companyId} = ${companyId}`;
   return sql<boolean>`
     EXISTS (
       SELECT 1
       FROM ${agents}
       WHERE ${agents.id} = ${issues.assigneeAgentId}
-        AND ${agents.companyId} = ${companyId}
+        AND ${companyMatch}
         AND ${agents.kind} = 'aoa'
         AND ${agents.status} <> 'terminated'
     )
@@ -48,8 +66,12 @@ export function crewAssigneeExists(companyId: string): SQL<boolean> {
  * a human, a non-aoa agent, or a terminated crew agent. This is the fail-safe
  * predicate pushed by the default `'org'` scope, so a caller that forgets to
  * scope now *hides* crew tasks (safe) instead of leaking them.
+ *
+ * `companyId` is optional with the same semantics as {@link crewAssigneeExists}:
+ * provide it on single-company surfaces; omit it to correlate to the issue's own
+ * company inside a cross-company batch (lobby stats).
  */
-export function notCrewAssigned(companyId: string): SQL<boolean> {
+export function notCrewAssigned(companyId?: string): SQL<boolean> {
   // drizzle's `not()` is typed SQL<unknown>; the negation of a boolean predicate
   // is still boolean — re-assert the element type for callers/condition arrays.
   return not(crewAssigneeExists(companyId)) as SQL<boolean>;

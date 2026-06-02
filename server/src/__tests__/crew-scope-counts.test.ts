@@ -25,6 +25,7 @@ vi.mock("../middleware/logger.js", () => ({
 import { issueService } from "../services/issues.js";
 import { homeService } from "../services/home.js";
 import { dashboardService } from "../services/dashboard.js";
+import { companyService } from "../services/companies.js";
 
 const dialect = new PgDialect();
 
@@ -253,6 +254,32 @@ describe("dashboard.summary status + stale counts push notCrewAssigned", () => {
     // Two issue queries: status rollup (groupBy) + stale count. Both exclude crew.
     expect(issueWheres.length).toBeGreaterThanOrEqual(2);
     expect(issueWheres.every(hasCrewNotExists)).toBe(true);
+  });
+});
+
+describe("companyService.stats() excludes crew from the per-company issue (active-tasks) count", () => {
+  // The lobby card "Active tasks" reads `issueCount` from companyService.stats().
+  // stats() is a CROSS-COMPANY batch (groupBy issues.company_id, no fixed company),
+  // so it pushes the CORRELATED crew predicate (notCrewAssigned() with no arg →
+  // agents.company_id = issues.company_id). Mirrors the agent count, which already
+  // excludes non-org agents. Crew-agent tasks must not inflate the org surface.
+  it("the issues-count select carries the (correlated) crew NOT-EXISTS predicate", async () => {
+    const { db, captured } = capturingDb([]);
+    await companyService(db).stats();
+
+    const issueWheres = wheresFor(captured, issues);
+    // Exactly one issues select runs in stats() and it excludes crew tasks.
+    expect(issueWheres.length).toBeGreaterThan(0);
+    expect(issueWheres.some(hasCrewNotExists)).toBe(true);
+
+    // And it is the CORRELATED form (no fixed company param) — required for the
+    // cross-company batch: the company match is column-to-column on issues.
+    const crewWheres = issueWheres.filter(hasCrewNotExists);
+    expect(
+      crewWheres.some((w) =>
+        w.replace(/\s+/g, " ").includes('"agents"."company_id" = "issues"."company_id"'),
+      ),
+    ).toBe(true);
   });
 });
 

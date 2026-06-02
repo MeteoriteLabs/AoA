@@ -54,6 +54,7 @@ import {
   workspaceOperations,
   workspaceRuntimeServices,
 } from "@armyofagents/db";
+import { notCrewAssigned } from "./issue-crew-scope.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -309,6 +310,12 @@ export function companyService(db: Db) {
         db
           .select({ companyId: issues.companyId, count: count() })
           .from(issues)
+          // Per-company issue (active-tasks) counts exclude crew-agent tasks, so
+          // the lobby card mirrors the agent count's org-only intent. This is a
+          // CROSS-COMPANY batch (groupBy company_id, no fixed company), so the
+          // crew predicate is the CORRELATED form (no arg → agents.company_id =
+          // issues.company_id). Crew tasks live only on the Crew Board.
+          .where(notCrewAssigned())
           .groupBy(issues.companyId),
         db
           .select({ companyId: approvals.companyId, count: count() })

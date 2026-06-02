@@ -60,6 +60,54 @@ describe("crew/org predicate — SQL shape", () => {
   });
 });
 
+describe("crew/org predicate — optional companyId (fixed vs correlated company match)", () => {
+  // The lobby `companyService.stats()` rollup is a CROSS-COMPANY batch (groups by
+  // issues.company_id with no fixed company in scope). The fixed-company form
+  // (agents.company_id = :param) can't express "same company as this row", so the
+  // helpers accept an OPTIONAL companyId: omit it to correlate to the issue's own
+  // company. Existing single-company call sites (list/home/dashboard) keep passing
+  // a companyId and must be byte-identical to before.
+  it("crewAssigneeExists() with NO companyId correlates to the issue's own company", () => {
+    const { sql, params } = serialize(crewAssigneeExists());
+    const flat = sql.replace(/\s+/g, " ").trim();
+    // Correlated company match — no bound company parameter.
+    expect(flat).toContain('"agents"."company_id" = "issues"."company_id"');
+    // The rest of the predicate is unchanged.
+    expect(flat).toMatch(/EXISTS \( SELECT 1 FROM "agents"/i);
+    expect(flat).toContain('"agents"."id" = "issues"."assignee_agent_id"');
+    expect(flat).toContain(`"agents"."kind" = 'aoa'`);
+    expect(flat).toContain(`"agents"."status" <> 'terminated'`);
+    // No company id is bound as a parameter in the correlated form.
+    expect(params).not.toContain(COMPANY);
+  });
+
+  it("crewAssigneeExists(companyId) still binds the company id as a parameter (fixed form unchanged)", () => {
+    const { sql, params } = serialize(crewAssigneeExists(COMPANY));
+    const flat = sql.replace(/\s+/g, " ").trim();
+    // Fixed form: parameterized company match, NOT the correlated column compare.
+    expect(flat).toContain('"agents"."company_id" =');
+    expect(flat).not.toContain('"agents"."company_id" = "issues"."company_id"');
+    expect(params).toContain(COMPANY);
+  });
+
+  it("notCrewAssigned() with NO companyId emits the correlated NOT-EXISTS form", () => {
+    const { sql, params } = serialize(notCrewAssigned());
+    const flat = sql.replace(/\s+/g, " ").trim();
+    expect(flat).toMatch(/^not EXISTS \( SELECT 1 FROM "agents"/i);
+    expect(flat).toContain('"agents"."company_id" = "issues"."company_id"');
+    expect(flat).toContain('"agents"."id" = "issues"."assignee_agent_id"');
+    expect(params).not.toContain(COMPANY);
+  });
+
+  it("notCrewAssigned(companyId) still emits the fixed (parameterized) NOT-EXISTS form", () => {
+    const { sql, params } = serialize(notCrewAssigned(COMPANY));
+    const flat = sql.replace(/\s+/g, " ").trim();
+    expect(flat).toMatch(/^not EXISTS \( SELECT 1 FROM "agents"/i);
+    expect(flat).not.toContain('"agents"."company_id" = "issues"."company_id"');
+    expect(params).toContain(COMPANY);
+  });
+});
+
 describe("resolveTaskScope — fail-safe default + crewBoard back-compat", () => {
   it("defaults to 'org' when nothing is passed (fail-safe — a forgotten filter hides crew)", () => {
     expect(resolveTaskScope()).toBe("org");
