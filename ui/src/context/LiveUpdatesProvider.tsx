@@ -784,6 +784,14 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           delete copy[threadId];
           return copy;
         });
+        // Mirror the presence cleanup so stale working-agent state doesn't
+        // accumulate per visited thread for the session.
+        setWorkingAgentsByThread((prev) => {
+          if (!(threadId in prev)) return prev;
+          const copy = { ...prev };
+          delete copy[threadId];
+          return copy;
+        });
       } else {
         map.set(threadId, current - 1);
       }

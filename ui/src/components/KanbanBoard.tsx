@@ -109,6 +109,44 @@ function formatElapsed(startedAt: string | Date | null | undefined, nowMs: numbe
   return `${h}h${m.toString().padStart(2, "0")}m`;
 }
 
+/**
+ * The animated "Live" pill (Task 5.5/5.7). Owns its OWN 1 Hz ticker so the
+ * per-second elapsed update re-renders only this element — not the whole board.
+ * Only live cards mount a `LivePill`, so non-live cards never re-render on the
+ * clock. The ticker stops when the start time is absent (bare "Live"), so a
+ * label without an elapsed counter costs no timer.
+ */
+function LivePill({ liveRun }: { liveRun?: LiveRunInfo }) {
+  const startedAt = liveRun?.startedAt ?? null;
+  const name = liveRun?.agentName ?? null;
+  // Tick a 1s clock only while we actually have an elapsed anchor to advance.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+
+  const elapsed = formatElapsed(startedAt, nowMs);
+  const label = name && elapsed ? `${name} · ${elapsed}` : name ? name : "Live";
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 shrink-0 ml-auto max-w-[160px]"
+      title={name && elapsed ? `${name} · running ${elapsed}` : "Live run in progress"}
+    >
+      <span className="relative flex h-2 w-2 shrink-0">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+      </span>
+      <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400 truncate">
+        {label}
+      </span>
+    </span>
+  );
+}
+
 /* ── Source badge (lineage) ── */
 
 /**
@@ -221,7 +259,6 @@ function KanbanColumn({
   cardVariant,
   liveIssueIds,
   liveRunsByIssue,
-  nowMs,
   onSelectIssue,
 }: {
   status: string;
@@ -230,7 +267,6 @@ function KanbanColumn({
   cardVariant: KanbanCardVariant;
   liveIssueIds?: Set<string>;
   liveRunsByIssue?: Map<string, LiveRunInfo>;
-  nowMs: number;
   onSelectIssue?: (issueIdentifier: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -264,7 +300,6 @@ function KanbanColumn({
               cardVariant={cardVariant}
               isLive={liveIssueIds?.has(issue.id)}
               liveRun={liveRunsByIssue?.get(issue.id)}
-              nowMs={nowMs}
               onSelectIssue={onSelectIssue}
             />
           ))}
@@ -432,7 +467,6 @@ function KanbanCard({
   cardVariant = "standard",
   isLive,
   liveRun,
-  nowMs,
   isOverlay,
   onSelectIssue,
 }: {
@@ -441,7 +475,6 @@ function KanbanCard({
   cardVariant?: KanbanCardVariant;
   isLive?: boolean;
   liveRun?: LiveRunInfo;
-  nowMs?: number;
   isOverlay?: boolean;
   onSelectIssue?: (issueIdentifier: string) => void;
 }) {
@@ -490,29 +523,9 @@ function KanbanCard({
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
-          {isLive && (() => {
-            // Task 5.5/5.7: when a live-run row carries the executing agent +
-            // start time, label the pill "{agentName} · {elapsed}"; otherwise
-            // fall back to the bare "Live".
-            const elapsed = formatElapsed(liveRun?.startedAt, nowMs ?? Date.now());
-            const name = liveRun?.agentName ?? null;
-            const label =
-              name && elapsed ? `${name} · ${elapsed}` : name ? name : "Live";
-            return (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 shrink-0 ml-auto max-w-[160px]"
-                title={name && elapsed ? `${name} · running ${elapsed}` : "Live run in progress"}
-              >
-                <span className="relative flex h-2 w-2 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                </span>
-                <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400 truncate">
-                  {label}
-                </span>
-              </span>
-            );
-          })()}
+          {/* Task 5.5/5.7: the live pill owns its own 1 Hz ticker (LivePill) so
+              only this element re-renders per second — not the whole board. */}
+          {isLive && <LivePill liveRun={liveRun} />}
           {issue.status === "blocked" && !isLive && (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
@@ -578,16 +591,9 @@ export function KanbanBoard({
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Task 5.5/5.7: tick a 1s clock so the live pill's elapsed counter advances,
-  // but only while at least one card is live (no idle timer churn).
-  const hasLive = (liveIssueIds?.size ?? 0) > 0;
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!hasLive) return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [hasLive]);
+  // Note: the live pill's 1 Hz elapsed counter is owned per-card by `LivePill`,
+  // so the board no longer holds a board-wide clock — only live cards tick, and
+  // only their pill element re-renders each second (not the whole board).
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -664,7 +670,6 @@ export function KanbanBoard({
             cardVariant={cardVariant}
             liveIssueIds={liveIssueIds}
             liveRunsByIssue={liveRunsByIssue}
-            nowMs={nowMs}
             onSelectIssue={onSelectIssue}
           />
         ))}
