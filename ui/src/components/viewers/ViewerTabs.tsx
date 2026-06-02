@@ -109,18 +109,18 @@ export function ViewerTabs({
             </div>
           );
         })}
+        {onAdd && (
+          <button
+            type="button"
+            title={addLabel}
+            aria-label={addLabel}
+            onClick={onAdd}
+            className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          >
+            <Plus className="size-3.5" aria-hidden />
+          </button>
+        )}
       </div>
-      {onAdd && (
-        <button
-          type="button"
-          title={addLabel}
-          aria-label={addLabel}
-          onClick={onAdd}
-          className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-        >
-          <Plus className="size-3.5" aria-hidden />
-        </button>
-      )}
       {onToggleCollapse && (
         <button
           type="button"

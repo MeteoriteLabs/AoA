@@ -81,4 +81,26 @@ describe("ViewerTabs", () => {
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
+
+  it("places the add button beside the tabs while keeping collapse outside the tablist", () => {
+    const { getByRole } = render(
+      <ViewerTabs
+        tabs={tabs}
+        activeKey={{ id: "one", kind: "memory_item" }}
+        onActivate={() => {}}
+        onAdd={() => {}}
+        onToggleCollapse={() => {}}
+      />,
+    );
+
+    const tablist = getByRole("tablist", { name: "Open viewer tabs" });
+    const addButton = getByRole("button", { name: "New viewer tab" });
+    const collapseButton = getByRole("button", { name: "Close viewer" });
+    const tabItems = tablist.querySelectorAll("[role='tab']");
+
+    expect(tablist).toContainElement(addButton);
+    expect(tablist).not.toContainElement(collapseButton);
+    expect(tabItems).toHaveLength(2);
+    expect(tabItems[1].nextElementSibling).toBe(addButton);
+  });
 });
