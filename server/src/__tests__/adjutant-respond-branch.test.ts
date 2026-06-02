@@ -104,4 +104,27 @@ describe("Adjutant respond branch (live-QA BUG-2)", () => {
     expect(prompt).toContain("propose_crew_work");
     expect(prompt).toMatch(/return without posting|silence is correct/i);
   });
+
+  // ── Crew-collaboration retune (Phases 1+2): convene the crew in-thread,
+  //    don't auto-scope, don't fake advancing the phase. ──
+  it("convenes the relevant crew in-thread via agent.dispatch when the founder wants the team's input", () => {
+    const prompt = buildAdjutantPrompt();
+    expect(prompt).toMatch(/convene the relevant crew/i);
+    expect(prompt).toContain("agent.dispatch");
+    expect(prompt).toMatch(/Scout/);
+    expect(prompt).toMatch(/Engineer/);
+  });
+
+  it("does NOT auto-scope — propose_crew_work is founder-gated, not a convergence reflex", () => {
+    const prompt = buildAdjutantPrompt();
+    expect(prompt).toMatch(/do NOT jump to scoping/i);
+    expect(prompt).toMatch(/only when the founder explicitly asks/i);
+    expect(prompt).toMatch(/the founder's decision|not your reflex/i);
+  });
+
+  it("points to the inline Approve card and never fakes advancing the phase at Manual/Assist", () => {
+    const prompt = buildAdjutantPrompt();
+    expect(prompt).toMatch(/Approve control|inline scope card/i);
+    expect(prompt).toMatch(/never claim you advanced the phase/i);
+  });
 });
