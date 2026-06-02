@@ -43,6 +43,12 @@ export type {
   MemoryAssetUpdateInput,
 } from "./memory-asset.js";
 export type {
+  CompanyBrainNodeRef,
+  CompanyBrainNode,
+  CompanyBrainEdge,
+  CompanyBrainNeighborsResponse,
+} from "./company-brain-graph.js";
+export type {
   MemoryFolderRecord,
   MemoryFolderCreateInput,
   MemoryFolderUpdateInput,

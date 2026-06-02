@@ -383,6 +383,110 @@ export const MEMORY_RELATION_KINDS = [
 ] as const;
 export type MemoryRelationKind = (typeof MEMORY_RELATION_KINDS)[number];
 
+export const COMPANY_BRAIN_NODE_TYPES = [
+  "company",
+  "department",
+  "project",
+  "team",
+  "human",
+  "agent",
+  "goal",
+  "task",
+  "discussion",
+  "discussion_entry",
+  "memory_item",
+  "memory_asset",
+  "artifact",
+] as const;
+export type CompanyBrainNodeType = (typeof COMPANY_BRAIN_NODE_TYPES)[number];
+
+export const COMPANY_BRAIN_EDGE_KINDS = [
+  "belongs_to",
+  "member_of",
+  "participates_in",
+  "owns",
+  "owned_by",
+  "created_by",
+  "assigned_to",
+  "blocks",
+  "mentioned_in",
+  "extracted_from",
+  "derived_from",
+  "retrieved_by",
+  "used_by",
+  "applies_to",
+  "related_to",
+  "supports",
+  "conflicts_with",
+  "supersedes",
+  "duplicate_of",
+] as const;
+export type CompanyBrainEdgeKind = (typeof COMPANY_BRAIN_EDGE_KINDS)[number];
+
+export const COMPANY_BRAIN_EDGE_SOURCE_CLASSES = [
+  "derived",
+  "aggregated",
+  "semantic",
+] as const;
+export type CompanyBrainEdgeSourceClass = (typeof COMPANY_BRAIN_EDGE_SOURCE_CLASSES)[number];
+
+export const COMPANY_BRAIN_EDGE_EDITABILITY = [
+  "source_row_only",
+  "append_only",
+  "editable",
+] as const;
+export type CompanyBrainEdgeEditability = (typeof COMPANY_BRAIN_EDGE_EDITABILITY)[number];
+
+export const COMPANY_BRAIN_DERIVED_EDGE_KINDS = [
+  "belongs_to",
+  "member_of",
+  "participates_in",
+  "owns",
+  "owned_by",
+  "created_by",
+  "assigned_to",
+  "blocks",
+] as const satisfies readonly CompanyBrainEdgeKind[];
+
+export const COMPANY_BRAIN_APPEND_ONLY_EDGE_KINDS = [
+  "mentioned_in",
+  "extracted_from",
+  "derived_from",
+  "retrieved_by",
+  "used_by",
+] as const satisfies readonly CompanyBrainEdgeKind[];
+
+export const COMPANY_BRAIN_EDITABLE_EDGE_KINDS = [
+  "applies_to",
+  "related_to",
+  "supports",
+  "conflicts_with",
+  "supersedes",
+  "duplicate_of",
+] as const satisfies readonly CompanyBrainEdgeKind[];
+
+export const COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND = {
+  belongs_to: "source_row_only",
+  member_of: "source_row_only",
+  participates_in: "source_row_only",
+  owns: "source_row_only",
+  owned_by: "source_row_only",
+  created_by: "source_row_only",
+  assigned_to: "source_row_only",
+  blocks: "source_row_only",
+  mentioned_in: "append_only",
+  extracted_from: "append_only",
+  derived_from: "append_only",
+  retrieved_by: "append_only",
+  used_by: "append_only",
+  applies_to: "editable",
+  related_to: "editable",
+  supports: "editable",
+  conflicts_with: "editable",
+  supersedes: "editable",
+  duplicate_of: "editable",
+} as const satisfies Record<CompanyBrainEdgeKind, CompanyBrainEdgeEditability>;
+
 // V2.6: per-call retrieval audit triggers.
 export const MEMORY_RETRIEVAL_TRIGGERS = [
   "auto",                  // pre-run injection at heartbeat start

@@ -127,6 +127,23 @@ export {
 } from "./memory.js";
 
 export {
+  companyBrainNodeRefSchema,
+  companyBrainNodeSchema,
+  companyBrainEdgeSchema,
+  companyBrainNeighborQuerySchema,
+  companyBrainNeighborsResponseSchema,
+  createCompanyBrainSemanticEdgeSchema,
+  updateCompanyBrainSemanticEdgeSchema,
+  type CompanyBrainNodeRefInput,
+  type CompanyBrainNodeInput,
+  type CompanyBrainEdgeInput,
+  type CompanyBrainNeighborQuery,
+  type CompanyBrainNeighborsResponseInput,
+  type CreateCompanyBrainSemanticEdge,
+  type UpdateCompanyBrainSemanticEdge,
+} from "./company-brain-graph.js";
+
+export {
   memoryFolderCreateSchema,
   memoryFolderUpdateSchema,
   normalizeMemoryFolderPath,
