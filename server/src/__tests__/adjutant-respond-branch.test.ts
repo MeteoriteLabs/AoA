@@ -48,6 +48,19 @@ describe("Adjutant respond branch (live-QA BUG-2)", () => {
     expect(prompt).toContain("post_entry");
   });
 
+  it("scopes the respond branch to the founder's LATEST message — a follow-up after an earlier answer is still unanswered (live-QA follow-up-silence)", () => {
+    // Follow-up-silence bug: the first respond-branch guard was thread-global
+    // ("no agent has substantively responded yet"), so once ANY agent replied
+    // in the thread the Adjutant treated it as handled and went silent on the
+    // founder's later follow-up questions. The directive must scope to the
+    // founder's most-recent message and explicitly count a follow-up as
+    // unanswered — and must NOT carry the old thread-global guard.
+    const prompt = buildAdjutantPrompt();
+    expect(prompt).toMatch(/most recent|latest message/i);
+    expect(prompt).toMatch(/follow-up/i);
+    expect(prompt).not.toMatch(/no agent has substantively responded yet/i);
+  });
+
   it("still names propose_crew_work as the convergence tool", () => {
     const prompt = buildAdjutantPrompt();
     expect(prompt).toContain("propose_crew_work");
