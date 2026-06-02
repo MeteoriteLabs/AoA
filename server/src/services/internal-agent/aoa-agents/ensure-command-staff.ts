@@ -97,6 +97,11 @@ export function roleToolAllowlist(
         "thread.setIntent",
         "thread.postScopeProposal",
         "thread.updateSummary",
+        // Crew-collab: Planner must be able to weigh in conversationally when
+        // convened into a discussion (not only produce a plan artifact). Without
+        // post_entry it ran on an @mention but could call no tool and stayed
+        // silent. (Task execution still produces deliverables via the issueId path.)
+        "post_entry",
         "create_artifact",
         "create_artifact_version",
         "query_artifacts",
