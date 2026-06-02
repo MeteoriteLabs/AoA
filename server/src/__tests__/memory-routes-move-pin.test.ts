@@ -23,6 +23,7 @@ vi.mock("../services/index.js", () => {
         return { id, companyId: _companyId, founderPinnedToTop: pinned };
       }),
     }),
+    companyBrainGraphService: () => ({}),
     logActivity: vi.fn(async () => undefined),
   };
 });

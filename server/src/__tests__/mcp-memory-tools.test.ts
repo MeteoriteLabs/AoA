@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -30,11 +30,25 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 const auditInsertCalls: unknown[] = [];
+let graphResponsesBySeed = new Map<string, unknown>();
+const getMemoryItemNeighborsMock = vi.fn(async (_companyId: string, memoryItemId: string) => {
+  return graphResponsesBySeed.get(memoryItemId) ?? {
+    center: { type: "memory_item", id: memoryItemId, companyId: "company-1", label: memoryItemId },
+    nodes: [],
+    edges: [],
+  };
+});
 
 vi.mock("../services/memory-retrieval-audit.js", () => ({
   recordMemoryRetrievals: vi.fn(async (_db: unknown, input: unknown) => {
     auditInsertCalls.push(input);
   }),
+}));
+
+vi.mock("../services/company-brain-graph.js", () => ({
+  companyBrainGraphService: vi.fn(() => ({
+    getMemoryItemNeighbors: getMemoryItemNeighborsMock,
+  })),
 }));
 
 vi.mock("../services/index.js", () => {
@@ -75,6 +89,7 @@ interface MemoryItemFixture {
 interface BuildOpts {
   actor: Record<string, unknown>;
   searchResults?: MemoryItemFixture[];
+  getResultsById?: Record<string, MemoryItemFixture | null>;
   getResult?: MemoryItemFixture | null;
   createResult?: MemoryItemFixture;
   approveResult?: MemoryItemFixture;
@@ -91,7 +106,11 @@ function buildApp(opts: BuildOpts) {
 
   const memorySvc = {
     searchMultiPath: vi.fn(async () => opts.searchResults ?? []),
-    getById: vi.fn(async () => opts.getResult ?? null),
+    getById: vi.fn(async (_companyId: string, id: string) =>
+      opts.getResultsById && id in opts.getResultsById
+        ? opts.getResultsById[id]
+        : (opts.getResult ?? null),
+    ),
     create: vi.fn(async (_cid: string, data: Record<string, unknown>) =>
       opts.createResult ?? {
         id: "new-mem-1",
@@ -160,6 +179,11 @@ const callTool = (app: express.Express, name: string, args: Record<string, unkno
     });
 
 describe("MCP memory.search tool", () => {
+  beforeEach(() => {
+    graphResponsesBySeed = new Map();
+    getMemoryItemNeighborsMock.mockClear();
+  });
+
   it("returns items via searchMultiPath, filtered by founder scope", async () => {
     const item1: MemoryItemFixture = {
       id: "mem-1",
@@ -185,6 +209,7 @@ describe("MCP memory.search tool", () => {
     const data = JSON.parse(res.body.result.content[0].text);
     expect(data.items).toHaveLength(1);
     expect(data.items[0].id).toBe("mem-1");
+    expect(data.graphContext).toEqual([]);
   });
 
   it("logs each retrieved item to memory_retrievals", async () => {
@@ -204,6 +229,65 @@ describe("MCP memory.search tool", () => {
     expect(auditInput.runId).toBe("run-99");
     expect(auditInput.query).toBe("test");
     expect((auditInput.items as unknown[]).length).toBe(2);
+  });
+
+  it("returns compact graph context without adding neighbors to the audit", async () => {
+    const item1: MemoryItemFixture = {
+      id: "mem-1",
+      companyId: "company-1",
+      title: "Brand voice",
+      status: "approved",
+      similarity: 0.9,
+    };
+    const related: MemoryItemFixture = {
+      id: "mem-related",
+      companyId: "company-1",
+      title: "Tone examples",
+      status: "approved",
+    };
+    graphResponsesBySeed.set("mem-1", {
+      center: { type: "memory_item", id: "mem-1", companyId: "company-1", label: "Brand voice" },
+      nodes: [
+        { type: "memory_item", id: "mem-1", companyId: "company-1", label: "Brand voice" },
+        { type: "memory_item", id: "mem-related", companyId: "company-1", label: "Tone examples" },
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          companyId: "company-1",
+          from: { type: "memory_item", id: "mem-1" },
+          to: { type: "memory_item", id: "mem-related" },
+          kind: "supports",
+          sourceClass: "semantic",
+          editability: "editable",
+        },
+      ],
+    });
+    const { app } = buildApp({
+      actor: agentActor,
+      searchResults: [item1],
+      getResultsById: { "mem-related": related },
+    });
+
+    auditInsertCalls.length = 0;
+    const res = await callTool(app, "memory.search", { query: "brand" });
+
+    expect(res.status).toBe(200);
+    const data = JSON.parse(res.body.result.content[0].text);
+    expect(data.items.map((item: MemoryItemFixture) => item.id)).toEqual(["mem-1"]);
+    expect(data.graphContext).toEqual([
+      {
+        itemId: "mem-related",
+        title: "Tone examples",
+        sourceItemId: "mem-1",
+        sourceTitle: "Brand voice",
+        edgeKind: "supports",
+        why: "supports Brand voice",
+      },
+    ]);
+    expect(auditInsertCalls).toHaveLength(1);
+    const auditInput = auditInsertCalls[0] as Record<string, unknown>;
+    expect((auditInput.items as Array<{ id: string }>).map((item) => item.id)).toEqual(["mem-1"]);
   });
 
   it("rejects empty query (zod validation)", async () => {

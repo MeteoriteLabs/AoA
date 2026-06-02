@@ -8,6 +8,8 @@ import {
   ok,
 } from "./types.js";
 import { assertScopedProjectAccess, canAccessProjectScopedEntity, filterMemoryForScope } from "./scope.js";
+import { companyBrainGraphService } from "../../services/company-brain-graph.js";
+import { expandRetrievalWithCompanyGraph } from "../../services/company-brain/retrieval-expansion.js";
 import { recordMemoryRetrievals } from "../../services/memory-retrieval-audit.js";
 
 async function handleMe(ctx: ToolContext): Promise<ToolResult> {
@@ -202,7 +204,7 @@ async function handleMemorySearch(
   // RBAC filter — items the caller can't see drop out before being
   // returned, but their audit rows are still emitted with
   // shownToAgent=false so "queried but not shown" is debuggable.
-  const allowed = await filterMemoryForScope(ctx.db, ctx.scope, results);
+  const allowed = (await filterMemoryForScope(ctx.db, ctx.scope, results)) as typeof results;
   const allowedIds = new Set(allowed.map((row) => row.id));
 
   void recordMemoryRetrievals(ctx.db, {
@@ -219,7 +221,22 @@ async function handleMemorySearch(
     })),
   });
 
-  return ok({ items: allowed });
+  const graphSvc = companyBrainGraphService(ctx.db);
+  const graphActor =
+    (ctx.actor.source === "agent" || ctx.actor.source === "commander") && ctx.actor.agentId
+      ? { type: "agent" as const, principalId: ctx.actor.agentId }
+      : { type: "user" as const, principalId: ctx.actor.userId };
+  const expanded = await expandRetrievalWithCompanyGraph({
+    companyId: ctx.companyId,
+    seeds: allowed,
+    loadNeighbors: (memoryItemId) =>
+      graphSvc.getMemoryItemNeighbors(ctx.companyId, memoryItemId, graphActor),
+    loadMemoryItem: (memoryItemId) => ctx.services.memorySvc.getById(ctx.companyId, memoryItemId),
+    filterMemoryItems: async (items) =>
+      (await filterMemoryForScope(ctx.db, ctx.scope, items)) as typeof items,
+  });
+
+  return ok({ items: expanded.items, graphContext: expanded.graphContext });
 }
 
 /**
