@@ -23,6 +23,8 @@ import {
   type CompanyBrainEdgeKind,
   type CompanyBrainMemoryUsageResponse,
   type CompanyBrainNeighborsResponse,
+  type CompanyBrainOverviewQuery,
+  type CompanyBrainOverviewResponse,
   type CompanyBrainNode,
   type CompanyBrainNodeRef,
   type CreateCompanyBrainSemanticEdge,
@@ -120,6 +122,17 @@ export interface MemoryItemNeighborGraphInput {
     artifacts?: LinkedArtifactRow[];
     agents?: LinkedAgentRow[];
   };
+}
+
+export interface CompanyGraphOverviewInput {
+  companyId: string;
+  actor: GraphActorScope;
+  memoryItems: MemoryItemGraphRow[];
+  semanticEdges: CompanyBrainSemanticEdgeGraphRow[];
+  linked: MemoryItemNeighborGraphInput["linked"];
+  includeStructural: boolean;
+  limit: number;
+  kinds?: CompanyBrainEdgeKind[];
 }
 
 interface SemanticEdgeDuplicateRow {
@@ -509,6 +522,148 @@ export function buildMemoryItemNeighborGraph(
   };
 }
 
+export function buildCompanyGraphOverview(
+  input: CompanyGraphOverviewInput,
+): CompanyBrainOverviewResponse {
+  const visibleItems = input.memoryItems.filter(
+    (item) => item.status === "approved" && canSeeMemoryItemForGraph(item, input.actor),
+  );
+  const boundedItems = visibleItems.slice(0, input.limit);
+  const visibleItemIds = new Set(boundedItems.map((item) => item.id));
+  const nodes = new Map<string, CompanyBrainNode>();
+  const edges = new Map<string, CompanyBrainEdge>();
+  const kinds = input.kinds && input.kinds.length > 0 ? new Set(input.kinds) : null;
+
+  for (const item of boundedItems) {
+    addNode(nodes, memoryNode(item));
+  }
+
+  if (input.includeStructural) {
+    const departments = new Map((input.linked.departments ?? []).map((row) => [row.id, row]));
+    const projectsById = new Map((input.linked.projects ?? []).map((row) => [row.id, row]));
+    const goalsById = new Map((input.linked.goals ?? []).map((row) => [row.id, row]));
+    const tasksById = new Map((input.linked.tasks ?? []).map((row) => [row.id, row]));
+    const artifactsById = new Map((input.linked.artifacts ?? []).map((row) => [row.id, row]));
+    const agentsById = new Map((input.linked.agents ?? []).map((row) => [row.id, row]));
+
+    for (const item of boundedItems) {
+      const itemRef: CompanyBrainNodeRef = { type: "memory_item", id: item.id };
+
+      if (item.departmentId) {
+        const department = departments.get(item.departmentId);
+        if (department) {
+          const ref: CompanyBrainNodeRef = { type: "department", id: department.id };
+          addNode(nodes, {
+            ...ref,
+            companyId: input.companyId,
+            label: department.name,
+            status: department.status,
+            scope: { departmentId: department.id, isCompanyWide: false },
+            href: `/memory/explore?dept=${department.id}`,
+            metadata: { projectType: department.type },
+          });
+          addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "belongs_to" }));
+        }
+      }
+
+      if (item.projectId) {
+        const project = projectsById.get(item.projectId);
+        if (project) {
+          const ref: CompanyBrainNodeRef = { type: "project", id: project.id };
+          addNode(nodes, {
+            ...ref,
+            companyId: input.companyId,
+            label: project.name,
+            status: project.status,
+            scope: { projectId: project.id, isCompanyWide: false },
+            href: `/projects/${project.id}`,
+            metadata: { projectType: project.type },
+          });
+          addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "belongs_to" }));
+        }
+      }
+
+      if (item.goalId) {
+        const goal = goalsById.get(item.goalId);
+        if (goal) {
+          const ref: CompanyBrainNodeRef = { type: "goal", id: goal.id };
+          addNode(nodes, {
+            ...ref,
+            companyId: input.companyId,
+            label: goal.title,
+            status: goal.status,
+            scope: { goalId: goal.id, isCompanyWide: false },
+            href: `/goals/${goal.id}`,
+          });
+          addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "applies_to" }));
+        }
+      }
+
+      if (item.taskId) {
+        const task = tasksById.get(item.taskId);
+        if (task) {
+          const ref: CompanyBrainNodeRef = { type: "task", id: task.id };
+          addNode(nodes, {
+            ...ref,
+            companyId: input.companyId,
+            label: task.title,
+            status: task.status,
+            scope: { isCompanyWide: false },
+            href: `/issues/${task.id}`,
+          });
+          addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "applies_to" }));
+        }
+      }
+
+      if (item.sourceArtifactId) {
+        const artifact = artifactsById.get(item.sourceArtifactId);
+        if (artifact) {
+          const ref: CompanyBrainNodeRef = { type: "artifact", id: artifact.id };
+          addNode(nodes, {
+            ...ref,
+            companyId: input.companyId,
+            label: artifact.title,
+            status: artifact.status,
+            href: `/artifacts/${artifact.id}`,
+          });
+          addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "derived_from" }));
+        }
+      }
+
+      if (item.agentId) {
+        const agent = agentsById.get(item.agentId);
+        if (agent) {
+          const ref: CompanyBrainNodeRef = { type: "agent", id: agent.id };
+          addNode(nodes, {
+            ...ref,
+            companyId: input.companyId,
+            label: agent.name,
+            status: agent.status,
+            href: `/agents/${agent.id}`,
+          });
+          addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "created_by" }));
+        }
+      }
+    }
+  }
+
+  for (const edge of input.semanticEdges) {
+    if (kinds && !kinds.has(edge.kind as CompanyBrainEdgeKind)) continue;
+    if (edge.fromType !== "memory_item" || edge.toType !== "memory_item") continue;
+    if (!visibleItemIds.has(edge.fromId) || !visibleItemIds.has(edge.toId)) continue;
+
+    const dto = semanticEdgeToDto(input.companyId, edge);
+    if (dto) addEdge(edges, dto);
+  }
+
+  return {
+    nodes: Array.from(nodes.values()),
+    edges: Array.from(edges.values()),
+    limit: input.limit,
+    truncated: visibleItems.length > input.limit,
+  };
+}
+
 function uniqueIds(ids: Array<string | null | undefined>): string[] {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
 }
@@ -714,6 +869,139 @@ export function companyBrainGraphService(db: Db) {
       companyId: string,
       actor: { type: "user" | "agent"; principalId: string },
     ) => loadActorScope(db, companyId, actor),
+
+    getCompanyGraphOverview: async (
+      companyId: string,
+      actor: { type: "user" | "agent"; principalId: string },
+      options: CompanyBrainOverviewQuery,
+    ) => {
+      const scope = await loadActorScope(db, companyId, actor);
+      const sampledItems = await db
+        .select()
+        .from(memoryItems)
+        .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.status, "approved")))
+        .limit(options.limit + 1);
+      const visibleItems = sampledItems.filter((item) => canSeeMemoryItemForGraph(item, scope));
+      const boundedVisibleItems = visibleItems.slice(0, options.limit);
+      const visibleMemoryIds = boundedVisibleItems.map((item) => item.id);
+
+      const semanticEdges = visibleMemoryIds.length > 0
+        ? await db
+            .select({
+              id: companyBrainEdges.id,
+              fromType: companyBrainEdges.fromType,
+              fromId: companyBrainEdges.fromId,
+              toType: companyBrainEdges.toType,
+              toId: companyBrainEdges.toId,
+              kind: companyBrainEdges.kind,
+              confidence: companyBrainEdges.confidence,
+              evidence: companyBrainEdges.evidence,
+              createdByPrincipalType: companyBrainEdges.createdByPrincipalType,
+              createdByPrincipalId: companyBrainEdges.createdByPrincipalId,
+              source: companyBrainEdges.source,
+              status: companyBrainEdges.status,
+              createdAt: companyBrainEdges.createdAt,
+            })
+            .from(companyBrainEdges)
+            .where(
+              and(
+                eq(companyBrainEdges.companyId, companyId),
+                eq(companyBrainEdges.status, "active"),
+                or(
+                  and(
+                    eq(companyBrainEdges.fromType, "memory_item"),
+                    inArray(companyBrainEdges.fromId, visibleMemoryIds),
+                  ),
+                  and(
+                    eq(companyBrainEdges.toType, "memory_item"),
+                    inArray(companyBrainEdges.toId, visibleMemoryIds),
+                  ),
+                )!,
+              ),
+            )
+        : [];
+
+      const departmentIds = uniqueIds(boundedVisibleItems.map((item) => item.departmentId));
+      const projectIds = uniqueIds(boundedVisibleItems.map((item) => item.projectId));
+      const goalIds = uniqueIds(boundedVisibleItems.map((item) => item.goalId));
+      const taskIds = uniqueIds(boundedVisibleItems.map((item) => item.taskId));
+      const artifactIds = uniqueIds(boundedVisibleItems.map((item) => item.sourceArtifactId));
+      const agentIds = uniqueIds(boundedVisibleItems.map((item) => item.agentId));
+
+      const [
+        departmentRows,
+        projectRows,
+        goalRows,
+        taskRows,
+        artifactRows,
+        agentRows,
+      ] = options.includeStructural
+        ? await Promise.all([
+            departmentIds.length
+              ? db.select({
+                  id: projects.id,
+                  name: projects.name,
+                  type: projects.type,
+                  status: projects.status,
+                }).from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, departmentIds)))
+              : Promise.resolve([]),
+            projectIds.length
+              ? db.select({
+                  id: projects.id,
+                  name: projects.name,
+                  type: projects.type,
+                  status: projects.status,
+                }).from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)))
+              : Promise.resolve([]),
+            goalIds.length
+              ? db.select({
+                  id: goals.id,
+                  title: goals.title,
+                  status: goals.status,
+                }).from(goals).where(and(eq(goals.companyId, companyId), inArray(goals.id, goalIds)))
+              : Promise.resolve([]),
+            taskIds.length
+              ? db.select({
+                  id: issues.id,
+                  title: issues.title,
+                  status: issues.status,
+                }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, taskIds)))
+              : Promise.resolve([]),
+            artifactIds.length
+              ? db.select({
+                  id: artifacts.id,
+                  title: artifacts.title,
+                  status: artifacts.status,
+                }).from(artifacts).where(and(eq(artifacts.companyId, companyId), inArray(artifacts.id, artifactIds)))
+              : Promise.resolve([]),
+            agentIds.length
+              ? db.select({
+                  id: agents.id,
+                  name: agents.name,
+                  status: agents.status,
+                }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)))
+              : Promise.resolve([]),
+          ])
+        : [[], [], [], [], [], []];
+
+      return buildCompanyGraphOverview({
+        companyId,
+        actor: scope,
+        memoryItems: visibleItems,
+        semanticEdges,
+        linked: {
+          departments: departmentRows,
+          projects: projectRows,
+          goals: goalRows,
+          tasks: taskRows,
+          artifacts: artifactRows,
+          agents: agentRows,
+        },
+        includeStructural: options.includeStructural,
+        limit: options.limit,
+        kinds: options.kinds,
+      });
+    },
 
     getMemoryItemNeighbors: async (
       companyId: string,

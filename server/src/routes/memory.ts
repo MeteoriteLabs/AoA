@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import {
   createMemoryItemSchema,
   companyBrainNeighborQuerySchema,
+  companyBrainOverviewQuerySchema,
   createCompanyBrainSemanticEdgeSchema,
   memoryFolderUpdateSchema,
   suggestMemoryArchiveSchema,
@@ -259,6 +260,32 @@ export function memoryRoutes(db: Db) {
     });
 
     res.json(edge);
+  });
+
+  router.get("/companies/:companyId/memory/graph", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
+
+    const parsed = companyBrainOverviewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const principalId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? "unknown-agent"
+        : req.actor.type === "mcp"
+          ? req.actor.userId ?? "mcp-user"
+          : req.actor.userId ?? "local-board";
+
+    const graph = await graphSvc.getCompanyGraphOverview(companyId, {
+      type: req.actor.type === "agent" ? "agent" : "user",
+      principalId,
+    }, parsed.data);
+
+    res.json(graph);
   });
 
   router.get("/companies/:companyId/memory/:id", async (req, res) => {

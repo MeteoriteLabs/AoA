@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   __companyBrainGraphTest,
+  buildCompanyGraphOverview,
   buildMemoryItemNeighborGraph,
   canSeeMemoryItemForGraph,
   type GraphActorScope,
@@ -195,6 +196,143 @@ describe("buildMemoryItemNeighborGraph", () => {
     expect(graph.nodes.map((node) => node.id)).toContain(visible.id);
     expect(graph.nodes.map((node) => node.id)).not.toContain(privateTarget.id);
     expect(graph.edges.map((edge) => edge.id)).toEqual(["rel-visible"]);
+  });
+});
+
+describe("buildCompanyGraphOverview", () => {
+  it("shows approved visible memory nodes and semantic edges", () => {
+    const first = memory({ id: "00000000-0000-0000-0000-000000000911", title: "Pricing policy", agentId: null });
+    const second = memory({ id: "00000000-0000-0000-0000-000000000912", title: "Seat billing", agentId: null });
+
+    const graph = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: founder,
+      memoryItems: [first, second],
+      semanticEdges: [
+        {
+          id: "edge-visible",
+          fromType: "memory_item",
+          fromId: first.id,
+          toType: "memory_item",
+          toId: second.id,
+          kind: "supports",
+          confidence: null,
+          evidence: null,
+          createdByPrincipalType: "user",
+          createdByPrincipalId: "founder@example.com",
+          source: "manual",
+          status: "active",
+          createdAt: new Date("2026-06-02T00:00:00.000Z"),
+        },
+      ],
+      linked: {},
+      includeStructural: false,
+      limit: 100,
+    });
+
+    expect(graph.nodes.map((node) => node.label)).toEqual(["Pricing policy", "Seat billing"]);
+    expect(graph.edges.map((edge) => edge.id)).toEqual(["edge-visible"]);
+    expect(graph.truncated).toBe(false);
+  });
+
+  it("hides pending, archived, and scoped-invisible endpoints", () => {
+    const visible = memory({ id: "00000000-0000-0000-0000-000000000921", title: "Visible", agentId: null });
+    const pending = memory({ id: "00000000-0000-0000-0000-000000000922", title: "Pending", status: "pending", agentId: null });
+    const archived = memory({ id: "00000000-0000-0000-0000-000000000923", title: "Archived", status: "archived", agentId: null });
+    const privateTarget = memory({
+      id: "00000000-0000-0000-0000-000000000924",
+      title: "Agent private",
+      agentId: AGENT_ID,
+    });
+
+    const graph = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: {
+        actorType: "user",
+        principalId: "member@example.com",
+        role: "team_member",
+        departmentIds: [MARKETING_ID],
+        activeCompanyMember: true,
+      },
+      memoryItems: [visible, pending, archived, privateTarget],
+      semanticEdges: [
+        {
+          id: "edge-hidden",
+          fromType: "memory_item",
+          fromId: visible.id,
+          toType: "memory_item",
+          toId: privateTarget.id,
+          kind: "related_to",
+          confidence: null,
+          evidence: null,
+          createdByPrincipalType: "system",
+          createdByPrincipalId: "system",
+          source: "manual",
+          status: "active",
+          createdAt: new Date("2026-06-02T00:00:00.000Z"),
+        },
+      ],
+      linked: {},
+      includeStructural: false,
+      limit: 100,
+    });
+
+    expect(graph.nodes.map((node) => node.label)).toEqual(["Visible"]);
+    expect(graph.edges).toEqual([]);
+  });
+
+  it("bounds visible memory nodes and reports truncation", () => {
+    const rows = [
+      memory({ id: "00000000-0000-0000-0000-000000000931", title: "One", agentId: null }),
+      memory({ id: "00000000-0000-0000-0000-000000000932", title: "Two", agentId: null }),
+      memory({ id: "00000000-0000-0000-0000-000000000933", title: "Three", agentId: null }),
+    ];
+
+    const graph = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: founder,
+      memoryItems: rows,
+      semanticEdges: [],
+      linked: {},
+      includeStructural: false,
+      limit: 2,
+    });
+
+    expect(graph.nodes.map((node) => node.label)).toEqual(["One", "Two"]);
+    expect(graph.truncated).toBe(true);
+    expect(graph.limit).toBe(2);
+  });
+
+  it("can include or exclude structural nodes", () => {
+    const center = memory({ agentId: null });
+
+    const withStructural = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: founder,
+      memoryItems: [center],
+      semanticEdges: [],
+      linked: {
+        departments: [{ id: MARKETING_ID, name: "Marketing", type: "department", status: "active" }],
+      },
+      includeStructural: true,
+      limit: 100,
+    });
+    const withoutStructural = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: founder,
+      memoryItems: [center],
+      semanticEdges: [],
+      linked: {
+        departments: [{ id: MARKETING_ID, name: "Marketing", type: "department", status: "active" }],
+      },
+      includeStructural: false,
+      limit: 100,
+    });
+
+    expect(withStructural.nodes.map((node) => `${node.type}:${node.id}`)).toContain(`department:${MARKETING_ID}`);
+    expect(withStructural.edges.map((edge) => edge.kind)).toContain("belongs_to");
+    expect(withoutStructural.nodes.map((node) => `${node.type}:${node.id}`)).not.toContain(`department:${MARKETING_ID}`);
+    expect(withoutStructural.edges).toEqual([]);
   });
 });
 
