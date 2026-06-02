@@ -150,14 +150,19 @@ export function CommandPalette() {
   }, [open]);
 
   const { data: issues = [] } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    // cmd+K must surface crew tasks too, so this list is 'all'. Use a distinct
+    // cache key from the org-default board list to avoid cross-contaminating
+    // the main Tasks board (which shares queryKeys.issues.list).
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "scope-all"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { taskScope: "all" }),
     enabled: !!selectedCompanyId && open,
   });
 
   const { data: searchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, searchQuery),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery }),
+    // Distinct from IssuesList's org-scoped search (same search key shape) so
+    // the 'all' results stay isolated from the main board's search cache.
+    queryKey: [...queryKeys.issues.search(selectedCompanyId!, searchQuery), "scope-all"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery, taskScope: "all" }),
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
   });
 

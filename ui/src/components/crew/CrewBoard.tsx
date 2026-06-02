@@ -15,7 +15,7 @@ import { EmptyState } from "../EmptyState";
  * Design: docs/aoa/plans/2026-06-02-unified-crew-board-design.md.
  *
  * Scope is "assignee is an active crew (kind='aoa') agent", resolved server-side
- * by the `crewBoard=true` filter. That pulls in every crew-agent task —
+ * by the `taskScope: 'crew'` filter. That pulls in every crew-agent task —
  * regardless of whether it was born from a discussion, goal, routine, MCP, or
  * direct capture — into one pane. Each task carries its owner and its lineage
  * (source badge) on the shared `KanbanCard`, so the board no longer groups by
@@ -43,7 +43,7 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
 
   const tasksQuery = useQuery({
     queryKey: ["tasks", "crew-board", companyId],
-    queryFn: () => issuesApi.list(companyId, { crewBoard: true }),
+    queryFn: () => issuesApi.list(companyId, { taskScope: "crew" }),
     enabled: Boolean(companyId),
   });
 
@@ -126,6 +126,7 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
         <KanbanBoard
           issues={tasks}
           agents={crewAgents}
+          cardVariant="crew"
           liveIssueIds={liveIssueIds}
           liveRunsByIssue={liveRunsByIssue}
           onUpdateIssue={(id, data) => updateMutation.mutate({ id, data })}

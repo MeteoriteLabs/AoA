@@ -36,8 +36,24 @@ export const issuesApi = {
        * into a LEFT JOIN that populates `Issue.sourceThreadTitle` so the
        * TeamPage Tasks tab can group results by source thread title.
        * Renamed from `sourceDiscussionIdNotNull`.
+       *
+       * @deprecated Prefer `taskScope: 'crew'`. The server maps a bare
+       * `crewBoard=true` to `taskScope='crew'`, and an explicit `taskScope`
+       * always wins, so the two are interchangeable. Kept for back-compat.
        */
       crewBoard?: boolean;
+      /**
+       * Crew/org board separation (unified-crew-board design 2026-06-02).
+       *   `org`  — exclude crew-agent tasks (the fail-safe DEFAULT applied
+       *            server-side when omitted). Board surfaces that should NOT
+       *            show crew work pass nothing and inherit this.
+       *   `crew` — only crew-agent tasks (the Crew Board).
+       *   `all`  — include both. The task GRAPH (dependencies, children,
+       *            live-run labeling, search, an agent's own task list) MUST
+       *            pass `all` so crew tasks stay visible there.
+       * Forwarded verbatim as the `taskScope` query param.
+       */
+      taskScope?: "org" | "crew" | "all";
     },
   ) => {
     const params = new URLSearchParams();
@@ -54,6 +70,9 @@ export const issuesApi = {
     }
     if (filters?.crewBoard) {
       params.set("crewBoard", "true");
+    }
+    if (filters?.taskScope) {
+      params.set("taskScope", filters.taskScope);
     }
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);

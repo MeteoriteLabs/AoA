@@ -69,9 +69,23 @@ export interface LiveRunInfo {
   startedAt?: string | Date | null;
 }
 
+/**
+ * Card chrome variant (unified-crew-board design 2026-06-02, T-D).
+ *   `standard` — the main Tasks board + department/project boards. Footer is
+ *                PriorityIcon + the bare assignee name (the pre-enrichment look
+ *                from 74d603770^). NO owner avatar, source badge, or artifact
+ *                chip.
+ *   `crew`     — the Crew Board only. Footer is the enriched meta row (owner
+ *                avatar 🤖/👤, clickable source-lineage badge, artifact chip).
+ * The live pill + blocked chip predate the enrichment and render in BOTH.
+ */
+export type KanbanCardVariant = "standard" | "crew";
+
 interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
+  /** Card chrome. Defaults to "standard" — only the Crew Board opts into "crew". */
+  cardVariant?: KanbanCardVariant;
   liveIssueIds?: Set<string>;
   /** Optional richer live-run info per issue id for the "Live" pill. */
   liveRunsByIssue?: Map<string, LiveRunInfo>;
@@ -204,6 +218,7 @@ function KanbanColumn({
   status,
   issues,
   agents,
+  cardVariant,
   liveIssueIds,
   liveRunsByIssue,
   nowMs,
@@ -212,6 +227,7 @@ function KanbanColumn({
   status: string;
   issues: Issue[];
   agents?: Agent[];
+  cardVariant: KanbanCardVariant;
   liveIssueIds?: Set<string>;
   liveRunsByIssue?: Map<string, LiveRunInfo>;
   nowMs: number;
@@ -245,6 +261,7 @@ function KanbanColumn({
               key={issue.id}
               issue={issue}
               agents={agents}
+              cardVariant={cardVariant}
               isLive={liveIssueIds?.has(issue.id)}
               liveRun={liveRunsByIssue?.get(issue.id)}
               nowMs={nowMs}
@@ -373,11 +390,46 @@ function CardMetaRow({
   );
 }
 
+/* ── Standard card footer (pre-enrichment) ── */
+
+/**
+ * The original, un-enriched footer used by the main Tasks board and
+ * department/project boards (`cardVariant="standard"`). This is an EXACT
+ * reproduction of the footer that shipped before commit 74d603770 — just
+ * PriorityIcon + the bare assignee name (Identity, size "xs"), with the
+ * id-prefix fallback when the agent name isn't resolved. No owner avatar,
+ * source-lineage badge, or artifact chip — those are crew-only.
+ */
+function StandardCardFooter({
+  issue,
+  agentName,
+}: {
+  issue: Issue;
+  agentName: (id: string | null) => string | null;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <PriorityIcon priority={issue.priority} />
+      {issue.assigneeAgentId && (() => {
+        const name = agentName(issue.assigneeAgentId);
+        return name ? (
+          <Identity name={name} size="xs" />
+        ) : (
+          <span className="text-xs text-muted-foreground font-mono">
+            {issue.assigneeAgentId.slice(0, 8)}
+          </span>
+        );
+      })()}
+    </div>
+  );
+}
+
 /* ── Draggable Card ── */
 
 function KanbanCard({
   issue,
   agents,
+  cardVariant = "standard",
   isLive,
   liveRun,
   nowMs,
@@ -386,6 +438,7 @@ function KanbanCard({
 }: {
   issue: Issue;
   agents?: Agent[];
+  cardVariant?: KanbanCardVariant;
   isLive?: boolean;
   liveRun?: LiveRunInfo;
   nowMs?: number;
@@ -502,7 +555,11 @@ function KanbanCard({
             )}
           </div>
         )}
-        <CardMetaRow issue={issue} agentName={agentName} />
+        {cardVariant === "crew" ? (
+          <CardMetaRow issue={issue} agentName={agentName} />
+        ) : (
+          <StandardCardFooter issue={issue} agentName={agentName} />
+        )}
       </Link>
     </div>
   );
@@ -513,6 +570,7 @@ function KanbanCard({
 export function KanbanBoard({
   issues,
   agents,
+  cardVariant = "standard",
   liveIssueIds,
   liveRunsByIssue,
   onUpdateIssue,
@@ -603,6 +661,7 @@ export function KanbanBoard({
             status={status}
             issues={columnIssues[status] ?? []}
             agents={agents}
+            cardVariant={cardVariant}
             liveIssueIds={liveIssueIds}
             liveRunsByIssue={liveRunsByIssue}
             nowMs={nowMs}
@@ -612,7 +671,7 @@ export function KanbanBoard({
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCard issue={activeIssue} agents={agents} cardVariant={cardVariant} isOverlay />
         ) : null}
       </DragOverlay>
     </DndContext>

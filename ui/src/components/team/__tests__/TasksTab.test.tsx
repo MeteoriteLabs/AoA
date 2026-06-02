@@ -35,12 +35,14 @@ vi.mock("../../../api/issues", () => ({
 vi.mock("../../KanbanBoard", () => ({
   KanbanBoard: ({
     issues,
+    cardVariant,
     onSelectIssue,
   }: {
     issues: any[];
+    cardVariant?: string;
     onSelectIssue?: (id: string) => void;
   }) => (
-    <div data-testid="kanban-stub">
+    <div data-testid="kanban-stub" data-card-variant={cardVariant ?? "(default)"}>
       {issues.map((i) => (
         <button
           key={i.id}
@@ -136,14 +138,21 @@ describe("CrewBoard (TasksTab)", () => {
       expect(screen.getByTestId("crew-board")).toBeInTheDocument(),
     );
 
-    // The query is issued with the crewBoard filter (crew-assignee predicate +
-    // the source-thread JOIN), and no agent filter is appended.
+    // The query is issued with taskScope:'crew' (crew-assignee predicate + the
+    // source-thread JOIN), and no agent filter is appended.
     expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
-      crewBoard: true,
+      taskScope: "crew",
     });
 
     // Exactly one KanbanBoard (no per-thread boards/headers).
     expect(screen.getAllByTestId("kanban-stub")).toHaveLength(1);
+
+    // The Crew Board opts into the enriched "crew" card variant (owner avatar +
+    // source badge + artifact chip). Only this surface passes it.
+    expect(screen.getByTestId("kanban-stub")).toHaveAttribute(
+      "data-card-variant",
+      "crew",
+    );
 
     // Every returned task renders flat — including the goal-origin task that has
     // no sourceDiscussionId (the old grouped board would have dropped it).
@@ -219,6 +228,6 @@ describe("CrewBoard (TasksTab)", () => {
 
     // And the query is never re-issued with assigneeAgentId from the board.
     expect(mockIssuesList).toHaveBeenCalledTimes(1);
-    expect(mockIssuesList).toHaveBeenCalledWith("comp-1", { crewBoard: true });
+    expect(mockIssuesList).toHaveBeenCalledWith("comp-1", { taskScope: "crew" });
   });
 });

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "../components/CommandPalette";
+import { issuesApi } from "../api/issues";
 
 const navigate = vi.fn();
 
@@ -170,6 +171,30 @@ function renderPalette() {
 describe("CommandPalette", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("scopes its task queries to taskScope:'all' so crew tasks are findable", async () => {
+    const user = userEvent.setup();
+    renderPalette();
+
+    // Instant list fires on open.
+    await user.keyboard("{Control>}k{/Control}");
+    expect(issuesApi.list).toHaveBeenCalledWith("company-1", { taskScope: "all" });
+
+    // The {q} search list fires once a query is typed.
+    await user.type(screen.getByLabelText(/search tasks, goals, agents/i), "auth");
+    await vi.waitFor(() =>
+      expect(issuesApi.list).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        taskScope: "all",
+      }),
+    );
+
+    // Crucially, cmd+K never issues an org-scoped (scope-less) task list.
+    const calls = (issuesApi.list as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    for (const [, filters] of calls) {
+      expect((filters as { taskScope?: string } | undefined)?.taskScope).toBe("all");
+    }
   });
 
   it("renders grouped global search results with memory and artifact badges", async () => {
