@@ -19,6 +19,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 
 import type { ThreadPresenceMember } from "../../context/LiveUpdatesProvider";
+import { AgentAvatar } from "./AgentAvatar";
 
 const MAX_VISIBLE_AVATARS = 3;
 
@@ -115,33 +116,38 @@ export function PresenceStrip({
           </div>
         )}
 
-        {/* Agent "working" indicator — humanized activity + placeholder loader.
-            Distinct from human presence (violet token chip). One chip per agent
-            (up to 2 shown individually; 3+ collapses to a count). */}
+        {/* Agent "working" indicator — a per-agent default avatar carries the
+            identity (not a color badge), beside humanized activity + the
+            placeholder loader. Up to 2 agents shown individually; 3+ collapses
+            to a compact avatar stack + count. */}
         {workingAgents.length > 0 && workingAgents.length <= 2 ? (
           workingAgents.map((a) => (
             <span
               key={a.id}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--token-skill,theme(colors.violet.100))] px-2 py-0.5 text-[10px] font-medium text-violet-800 dark:text-violet-300"
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground"
               data-testid="agent-working-indicator"
               title={`${a.name} is ${activityOf(a)}`}
             >
-              <span className="text-violet-500 dark:text-violet-400">
-                <TypingLoader />
+              <AgentAvatar name={a.name} size={20} />
+              <span>
+                {a.name} is {activityOf(a)}…
               </span>
-              {a.name} is {activityOf(a)}…
+              <TypingLoader />
             </span>
           ))
         ) : workingAgents.length > 2 ? (
           <span
-            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--token-skill,theme(colors.violet.100))] px-2 py-0.5 text-[10px] font-medium text-violet-800 dark:text-violet-300"
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground"
             data-testid="agent-working-indicator"
             title={workingAgents.map((a) => `${a.name} is ${activityOf(a)}`).join(", ")}
           >
-            <span className="text-violet-500 dark:text-violet-400">
-              <TypingLoader />
+            <span className="flex items-center -space-x-1.5">
+              {workingAgents.slice(0, 3).map((a) => (
+                <AgentAvatar key={a.id} name={a.name} size={20} />
+              ))}
             </span>
-            {workingAgents.length} agents working…
+            <span>{workingAgents.length} agents working…</span>
+            <TypingLoader />
           </span>
         ) : null}
       </div>

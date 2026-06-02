@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { EntryRow } from "../EntryRow";
@@ -165,6 +165,42 @@ describe("EntryRow — system notices", () => {
 /* ════════════════════════════════════════════════════════════════════════
    Phase E2 — attribution, attachments, reply count
    ════════════════════════════════════════════════════════════════════════ */
+
+describe("EntryRow — bubble alignment + system-notice layout", () => {
+  it("RC2: the me-bubble's bubble+avatar row is justified to the right (justify-end)", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({ id: "e-me", createdBy: "user-1" })}
+        currentUserId="user-1"
+        onReprocess={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId("entry-row-e-me");
+    // The inner flex row that holds the bubble + avatar must justify-end so the
+    // bubble sits flush against the right edge (no dead space on the right).
+    const justified = row.querySelector(".justify-end");
+    expect(justified).not.toBeNull();
+    expect(justified?.className).toContain("items-end");
+  });
+
+  it("RC1b: the system-notice text span wraps (no whitespace-nowrap, has break-words + a width cap)", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({
+          sourceInfo: { systemNotice: true },
+          rawContent:
+            "This is an unusually long system notice that should wrap onto multiple lines instead of overflowing the thread horizontally.",
+        })}
+        onReprocess={vi.fn()}
+      />,
+    );
+    const notice = screen.getByTestId("entry-system-notice");
+    const span = within(notice).getByText(/unusually long system notice/);
+    expect(span.className).not.toMatch(/whitespace-nowrap/);
+    expect(span.className).toMatch(/break-words/);
+    expect(span.className).toMatch(/max-w-\[70%\]/);
+  });
+});
 
 describe("EntryRow — Phase E2 attribution", () => {
   it("renders the agent attribution badge when authorAgentId + authorAgentName are present", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { PresenceStrip } from "../PresenceStrip";
 
 /**
@@ -21,6 +21,26 @@ describe("PresenceStrip", () => {
     expect(chip.textContent ?? "").toMatch(/Scout is researching/);
     // Placeholder loader is present (founder-provided asset is a follow-up).
     expect(screen.getByTestId("presence-typing-loader")).toBeInTheDocument();
+  });
+
+  it("renders a default agent avatar (not a color chip) beside the activity text", () => {
+    render(
+      <PresenceStrip
+        presence={[]}
+        typingMembers={[]}
+        workingAgents={[{ id: "a1", name: "Scout", activity: "researching" }]}
+      />,
+    );
+    const chip = screen.getByTestId("agent-working-indicator");
+    // The per-agent identity is now carried by an AgentAvatar (role-colored
+    // robot icon), NOT the old violet token chip.
+    const avatar = within(chip).getByTestId("agent-avatar");
+    expect(avatar).toBeInTheDocument();
+    // Default avatar renders the robot svg (no custom avatarUrl supplied).
+    expect(avatar.querySelector("svg")).not.toBeNull();
+    // The old violet chip styling is gone.
+    expect(chip.className).not.toMatch(/violet/);
+    expect(chip.className).not.toMatch(/token-skill/);
   });
 
   it("falls back to 'is typing…' when no activity is supplied", () => {
