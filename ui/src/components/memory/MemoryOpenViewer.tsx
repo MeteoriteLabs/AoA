@@ -26,7 +26,7 @@ const OPEN_OPTIONS: Array<{
   {
     tab: MEMORY_BRAIN_TAB,
     icon: Network,
-    description: "Company memory graph",
+    description: "Company knowledge map",
   },
   {
     tab: MEMORY_RECENT_TAB,

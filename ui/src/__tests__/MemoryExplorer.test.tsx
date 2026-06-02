@@ -230,13 +230,13 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
   });
 
-  it("renders Brain in the viewer on Home instead of a blank right pane", async () => {
+  it("renders Map in the viewer on Home instead of a blank right pane", async () => {
     renderPage();
     // Center pane should still render the home dashboard.
     await waitFor(() =>
       expect(screen.getByText(/Identity/i)).toBeInTheDocument(),
     );
-    expect(screen.getByRole("tab", { name: /Brain/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Map/i })).toBeInTheDocument();
     expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
     expect(screen.queryByText(/Pick a memory item or upload a file to start/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
@@ -297,7 +297,7 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
   });
 
-  it("defaults the Memory Home viewer to Brain", async () => {
+  it("defaults the Memory Home viewer to Map", async () => {
     renderPage();
 
     await waitFor(() =>
@@ -307,7 +307,7 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
       }),
     );
 
-    expect(screen.getByRole("tab", { name: /Brain/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Map/i })).toBeInTheDocument();
     expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
     expect(screen.queryByText("Pick a memory item or upload a file to start")).not.toBeInTheDocument();
   });
@@ -315,11 +315,11 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
   it("opens one closeable Open tab from the viewer add button", async () => {
     renderPage();
 
-    await screen.findByRole("tab", { name: /Brain/i });
+    await screen.findByRole("tab", { name: /Map/i });
 
     fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
     expect(screen.getByRole("tab", { name: /Open/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open Brain" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Map" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Recent" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Unlinked" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Review Queue" })).toBeInTheDocument();
@@ -331,13 +331,13 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     expect(screen.queryByRole("tab", { name: /Open/i })).not.toBeInTheDocument();
   });
 
-  it("activates Brain from the Open tab in the shared viewer", async () => {
+  it("activates Map from the Open tab in the shared viewer", async () => {
     renderPage();
 
-    await screen.findByRole("tab", { name: /Brain/i });
+    await screen.findByRole("tab", { name: /Map/i });
 
     fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Open Brain" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Map" }));
 
     await waitFor(() =>
       expect(memoryApiMock.companyGraph).toHaveBeenCalledWith("co-1", {

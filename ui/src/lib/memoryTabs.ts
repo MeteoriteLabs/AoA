@@ -9,7 +9,7 @@ export const MEMORY_HOME_TAB: MemoryTab = {
 export const MEMORY_BRAIN_TAB: MemoryTab = {
   id: "company-graph",
   kind: "graph",
-  title: "Brain",
+  title: "Map",
 };
 
 export const MEMORY_OPEN_TAB: MemoryTab = {

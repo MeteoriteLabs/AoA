@@ -71,7 +71,7 @@ export function MemoryGraphViewer({
         <div className="border-b border-border px-5 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Network className="h-4 w-4" />
-            Company graph
+            Map
           </div>
         </div>
         <div className="flex-1 min-h-0 overflow-auto p-5">

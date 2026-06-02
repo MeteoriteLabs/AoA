@@ -26,7 +26,7 @@ export function MemoryViewerHome({ companyId, onOpenTab }: MemoryViewerHomeProps
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
               Graph
             </div>
-            <div className="mt-1 text-sm font-medium">Company graph</div>
+            <div className="mt-1 text-sm font-medium">Map</div>
           </div>
           <Button
             size="sm"
@@ -36,7 +36,7 @@ export function MemoryViewerHome({ companyId, onOpenTab }: MemoryViewerHomeProps
             onClick={() => onOpenTab?.({
               id: "company-graph",
               kind: "graph",
-              title: "Company graph",
+              title: "Map",
             })}
           >
             <Network className="h-3.5 w-3.5" />
