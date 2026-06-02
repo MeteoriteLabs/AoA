@@ -488,10 +488,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     await svc.notifyMentionedHumans(issue.companyId, body, currentIssue.id, actor);
 
+    // Kind-aware dispatch (crew arc review #1 — CRITICAL). Crew agents (kind='aoa')
+    // run via the AoA dispatcher, NOT the heartbeat — heartbeat.wakeup refuses
+    // kind='aoa' (Decision #100) and silently drops the request. Without this
+    // branch, a founder commenting on (or @mentioning a crew agent in) a crew
+    // task produced no dispatch and no error. Mirrors the PATCH/update path
+    // chokepoint (resolveAgentKinds → enqueueAoaMentionWakeup vs heartbeat.wakeup).
+    const aoaKinds = await svc
+      .resolveAgentKinds([...wakeups.keys()])
+      .catch(() => new Map<string, string>());
     for (const [agentId, wakeup] of wakeups.entries()) {
-      heartbeat
-        .wakeup(agentId, wakeup)
-        .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+      if (aoaKinds.get(agentId) === "aoa") {
+        svc
+          .enqueueAoaMentionWakeup(issue.companyId, agentId, {
+            source: wakeup?.source,
+            reason: wakeup?.reason,
+            payload: wakeup?.payload,
+          })
+          .catch((err) =>
+            logger.warn(
+              { err, issueId: currentIssue.id, agentId },
+              "failed to enqueue aoa mention wakeup on issue comment",
+            ),
+          );
+      } else {
+        heartbeat
+          .wakeup(agentId, wakeup)
+          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+      }
     }
   }
 

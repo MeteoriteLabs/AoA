@@ -53,6 +53,8 @@ const mockIssueService = vi.hoisted(() => ({
   countUnreadTouchedByUser: vi.fn(),
   markRead: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  resolveAgentKinds: vi.fn(),
+  enqueueAoaMentionWakeup: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -88,7 +90,9 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockCreateEagerWorkspaceForIssue = vi.hoisted(() => vi.fn());
 // CREATE-path assignment dispatch now routes through the kind-aware chokepoint
 // (crew → AoA dispatcher, org → heartbeat). We assert on this mock for the
-// POST /issues delegation tests. (Comment @mention dispatch still uses heartbeat.)
+// POST /issues delegation tests. Comment-path dispatch is ALSO kind-aware
+// (crew arc review #1): org assignees → heartbeat.wakeup, crew (kind='aoa')
+// assignees → svc.enqueueAoaMentionWakeup.
 const mockEnqueueAssignee = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
@@ -156,6 +160,9 @@ beforeEach(() => {
   mockAccessService.canUser.mockResolvedValue(true);
   mockAccessService.hasPermission.mockResolvedValue(true);
   mockIssueService.getById.mockResolvedValue(makeIssue());
+  // Default: no crew assignees → comment wakeups route to heartbeat (org path).
+  mockIssueService.resolveAgentKinds.mockResolvedValue(new Map());
+  mockIssueService.enqueueAoaMentionWakeup.mockResolvedValue(undefined);
   mockIssueService.addComment.mockResolvedValue({
     id: "comment-1",
     issueId,
@@ -268,6 +275,32 @@ describe("POST /issues/:id/comments-with-attachments", () => {
         }),
       }),
     );
+  });
+
+  it("routes a crew (kind='aoa') assignee's comment wakeup to the AoA dispatcher, NOT heartbeat (crew arc review #1)", async () => {
+    // The task assignee is a crew agent → heartbeat.wakeup would be silently
+    // refused (Decision #100, heartbeat.ts:4355) and the crew agent would never
+    // run. The comment route must enqueue an AoA dispatcher wakeup instead.
+    mockIssueService.resolveAgentKinds.mockResolvedValue(new Map([[assigneeAgentId, "aoa"]]));
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Please take a look")
+      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() =>
+      expect(mockIssueService.enqueueAoaMentionWakeup).toHaveBeenCalledTimes(1),
+    );
+    expect(mockIssueService.enqueueAoaMentionWakeup).toHaveBeenCalledWith(
+      companyId,
+      assigneeAgentId,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({ issueId, commentId: "comment-1" }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("honors reopen=true for attachment comments and wakes with reopen context", async () => {
