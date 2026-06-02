@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Graph from "graphology";
-import Sigma from "sigma";
 import { ExternalLink, Network } from "lucide-react";
 import type {
   CompanyBrainEdge,
@@ -121,14 +120,22 @@ export function CompanyGraphCanvas({
   useEffect(() => {
     if (!containerRef.current || graph.nodes.length === 0) return;
 
+    let active = true;
+    let renderer: { kill: () => void; on: (event: "clickNode", handler: (event: { node: string }) => void) => void } | null = null;
     const sigmaGraph = buildSigmaGraph(graph);
-    const renderer = new Sigma(sigmaGraph, containerRef.current);
-    renderer.on("clickNode", (event: { node: string }) => {
-      setSelectedKey(event.node);
+    const container = containerRef.current;
+
+    void import("sigma").then(({ default: Sigma }) => {
+      if (!active || !container) return;
+      renderer = new Sigma(sigmaGraph, container);
+      renderer.on("clickNode", (event: { node: string }) => {
+        setSelectedKey(event.node);
+      });
     });
 
     return () => {
-      renderer.kill();
+      active = false;
+      renderer?.kill();
     };
   }, [graph]);
 
