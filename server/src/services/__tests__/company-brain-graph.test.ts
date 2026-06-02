@@ -400,6 +400,43 @@ describe("buildCompanyGraphOverview", () => {
     ]);
   });
 
+  it("lets the local board operator see structural department folders", () => {
+    const graph = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: {
+        actorType: "user",
+        principalId: "local-board",
+        role: "team_member",
+        departmentIds: [],
+        activeCompanyMember: true,
+      },
+      memoryItems: [],
+      semanticEdges: [],
+      linked: {
+        departments: [{ id: MARKETING_ID, name: "Marketing", type: "department", status: "active" }],
+        memoryFolders: [
+          {
+            id: MARKETING_FOLDER_ID,
+            displayName: "Decisions",
+            path: "marketing/Decisions",
+            departmentId: MARKETING_ID,
+            seedKey: "marketing.decisions",
+            sortOrder: 30,
+          },
+        ],
+      },
+      includeStructural: true,
+      limit: 100,
+    });
+
+    expect(graph.nodes.map((node) => `${node.type}:${node.label}`)).toEqual([
+      "department:Marketing",
+      "memory_folder:Decisions",
+    ]);
+    expect(graph.edges.map((edge) => `${edge.from.type}:${edge.from.id}->${edge.to.type}:${edge.to.id}`))
+      .toContain(`memory_folder:${MARKETING_FOLDER_ID}->department:${MARKETING_ID}`);
+  });
+
   it("connects memory items to matching folder nodes", () => {
     const item = memory({
       id: "00000000-0000-0000-0000-000000000941",

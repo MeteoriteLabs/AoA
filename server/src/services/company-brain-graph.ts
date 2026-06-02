@@ -222,6 +222,10 @@ function isEditableEdgeKind(kind: string): kind is CompanyBrainEdgeKind {
   return (COMPANY_BRAIN_EDITABLE_EDGE_KINDS as readonly string[]).includes(kind);
 }
 
+function isBoardOperatorScope(actor: GraphActorScope): boolean {
+  return actor.actorType === "user" && actor.principalId === "local-board";
+}
+
 function addNode(nodes: Map<string, CompanyBrainNode>, node: CompanyBrainNode): void {
   nodes.set(nodeKey(node), node);
 }
@@ -416,6 +420,7 @@ function memoryNode(item: MemoryItemGraphRow): CompanyBrainNode {
 
 function canSeeStructuralDepartment(departmentId: string, actor: GraphActorScope): boolean {
   if (!actor.activeCompanyMember) return false;
+  if (isBoardOperatorScope(actor)) return true;
   if (roleAtLeast(actor.role, "team_lead")) return true;
   return actor.departmentIds.includes(departmentId);
 }
