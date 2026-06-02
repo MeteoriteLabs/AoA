@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import {
   DndContext,
   DragOverlay,
@@ -20,13 +20,21 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { AgentAvatar } from "./threads/AgentAvatar";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Link2 } from "lucide-react";
+import {
+  Link2,
+  MessageSquare,
+  Clock,
+  Target,
+  FileText,
+  type LucideIcon,
+} from "lucide-react";
 import type { Issue } from "@armyofagents/shared";
 
 const boardStatuses = [
@@ -87,6 +95,109 @@ function formatElapsed(startedAt: string | Date | null | undefined, nowMs: numbe
   return `${h}h${m.toString().padStart(2, "0")}m`;
 }
 
+/* ── Source badge (lineage) ── */
+
+/**
+ * The lineage descriptor rendered as the card's "source" pill — the most
+ * important new meta element. Computed purely from existing `issues` columns
+ * (no new backend data; see unified-crew-board design 2026-06-02).
+ *
+ *   `href`   — when set, the badge navigates to the origin on click
+ *              (discussion / goal); `null` for context-free origins (direct,
+ *              or a routine without a navigable id) which render non-clickable.
+ *   `strong` — direct/context-free tasks are the exception: they render as a
+ *              faint "· direct" with no chip chrome (`strong = false`).
+ */
+interface SourceBadge {
+  icon: LucideIcon;
+  label: string;
+  title: string;
+  href: string | null;
+  strong: boolean;
+}
+
+/** Truncate a source title to keep the pill compact (≈18 chars + ellipsis). */
+function truncateSource(text: string, max = 18): string {
+  const t = text.trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * `originKind` is a free-text `issues` column (e.g. "crew_thread",
+ * "routine_execution") that is NOT yet surfaced on the shared `Issue` type —
+ * only `sourceDiscussionId` / `sourceThreadTitle` are. Read it defensively so
+ * the badge still works whether or not the field is present on a given row.
+ */
+function issueOriginKind(issue: Issue): string | null {
+  const v = (issue as { originKind?: unknown }).originKind;
+  return typeof v === "string" ? v : null;
+}
+
+/**
+ * Derive the source badge from an issue, degrading gracefully when richer data
+ * (e.g. `sourceThreadTitle`, which only the Crew Board query populates) is
+ * absent. Priority: thread title › routine › goal › discussion (no title) ›
+ * direct. Returns `null` only when there is genuinely nothing to show — but in
+ * practice every task resolves to at least the faint "· direct" fallback.
+ */
+function deriveSourceBadge(issue: Issue): SourceBadge | null {
+  const originKind = issueOriginKind(issue);
+
+  // 1. Discussion with a known title — the richest lineage signal.
+  if (issue.sourceThreadTitle) {
+    return {
+      icon: MessageSquare,
+      label: truncateSource(issue.sourceThreadTitle),
+      title: `From discussion: ${issue.sourceThreadTitle}`,
+      href: issue.sourceDiscussionId ? `/discussions/${issue.sourceDiscussionId}` : null,
+      strong: true,
+    };
+  }
+
+  // 2. Routine-fired task.
+  if (originKind === "routine_execution") {
+    return {
+      icon: Clock,
+      label: "routine",
+      title: "Created by a routine",
+      href: null,
+      strong: true,
+    };
+  }
+
+  // 3. Goal-scoped task.
+  if (issue.goalId) {
+    return {
+      icon: Target,
+      label: "goal",
+      title: "Serves a goal",
+      href: `/goals/${issue.goalId}`,
+      strong: true,
+    };
+  }
+
+  // 4. Crew thread without a denormalized title (e.g. main Tasks board, which
+  //    doesn't run the JOIN) — still link to the discussion if we have its id.
+  if (originKind === "crew_thread" || issue.sourceDiscussionId) {
+    return {
+      icon: MessageSquare,
+      label: "discussion",
+      title: "From a discussion",
+      href: issue.sourceDiscussionId ? `/discussions/${issue.sourceDiscussionId}` : null,
+      strong: true,
+    };
+  }
+
+  // 5. Direct / quick-capture — the exception; faint, no strong chip.
+  return {
+    icon: MessageSquare,
+    label: "direct",
+    title: "Created directly",
+    href: null,
+    strong: false,
+  };
+}
+
 /* ── Droppable Column ── */
 
 function KanbanColumn({
@@ -142,6 +253,122 @@ function KanbanColumn({
           ))}
         </SortableContext>
       </div>
+    </div>
+  );
+}
+
+/* ── Card meta row (owner · source · artifact) ── */
+
+/**
+ * The source-badge pill. When `badge.href` is set it navigates to the origin
+ * on click — and crucially stops the event from bubbling to the card's outer
+ * `Link`/`onSelectIssue`, so clicking the lineage jumps to the thread/goal
+ * instead of opening the task slide-over. Rendered as a `<span role="link">`
+ * (not an `<a>`) because it lives inside the card's outer anchor and nesting
+ * `<a>` in `<a>` is invalid HTML.
+ */
+function SourceBadgeChip({ badge }: { badge: SourceBadge }) {
+  const navigate = useNavigate();
+  const Icon = badge.icon;
+  const clickable = badge.href !== null;
+
+  // Faint, chip-less treatment for direct/context-free tasks (the exception).
+  if (!badge.strong) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 min-w-0"
+        title={badge.title}
+      >
+        <Icon className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate">{badge.label}</span>
+      </span>
+    );
+  }
+
+  const onActivate = (e: React.MouseEvent | React.KeyboardEvent) => {
+    if (!badge.href) return;
+    // Do NOT also open the card slide-over / navigate the outer Link.
+    e.stopPropagation();
+    e.preventDefault();
+    navigate(badge.href);
+  };
+
+  return (
+    <span
+      role={clickable ? "link" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={clickable ? onActivate : undefined}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onActivate(e);
+            }
+          : undefined
+      }
+      title={badge.title}
+      className={`inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground min-w-0 max-w-[140px] ${
+        clickable
+          ? "cursor-pointer transition-colors hover:bg-muted hover:text-foreground"
+          : ""
+      }`}
+    >
+      <Icon className="h-2.5 w-2.5 shrink-0" />
+      <span className="truncate">{badge.label}</span>
+    </span>
+  );
+}
+
+/**
+ * Bottom meta row: priority · owner (🤖 agent avatar / 👤 person initials) ·
+ * source lineage badge · artifact chip. Every element degrades gracefully when
+ * its backing column is absent — no empty/broken chips are ever rendered.
+ */
+function CardMetaRow({
+  issue,
+  agentName,
+}: {
+  issue: Issue;
+  agentName: (id: string | null) => string | null;
+}) {
+  const badge = deriveSourceBadge(issue);
+  const ownerAgentName = issue.assigneeAgentId ? agentName(issue.assigneeAgentId) : null;
+  const showAgentOwner = Boolean(issue.assigneeAgentId);
+  const showHumanOwner = !issue.assigneeAgentId && Boolean(issue.assigneeUserId);
+
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      <PriorityIcon priority={issue.priority} />
+
+      {/* Owner — 🤖 agent vs 👤 person reads at a glance via distinct avatars. */}
+      {showAgentOwner && (
+        <span className="inline-flex items-center gap-1 min-w-0 max-w-[120px]">
+          <AgentAvatar name={ownerAgentName ?? "Agent"} size={18} />
+          {ownerAgentName ? (
+            <span className="text-[11px] text-muted-foreground truncate">{ownerAgentName}</span>
+          ) : (
+            <span className="text-[10px] text-muted-foreground/70 font-mono truncate">
+              {issue.assigneeAgentId!.slice(0, 8)}
+            </span>
+          )}
+        </span>
+      )}
+      {showHumanOwner && (
+        <Identity name={issue.assigneeUserId!} size="xs" />
+      )}
+
+      {/* Source lineage + artifact pushed to the right edge. */}
+      <span className="flex items-center gap-1.5 ml-auto min-w-0">
+        {badge && <SourceBadgeChip badge={badge} />}
+        {issue.artifactId && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0"
+            title="This task produced a deliverable"
+            data-testid="kanban-artifact-chip"
+          >
+            <FileText className="h-2.5 w-2.5 shrink-0" />
+          </span>
+        )}
+      </span>
     </div>
   );
 }
@@ -275,19 +502,7 @@ function KanbanCard({
             )}
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <PriorityIcon priority={issue.priority} />
-          {issue.assigneeAgentId && (() => {
-            const name = agentName(issue.assigneeAgentId);
-            return name ? (
-              <Identity name={name} size="xs" />
-            ) : (
-              <span className="text-xs text-muted-foreground font-mono">
-                {issue.assigneeAgentId.slice(0, 8)}
-              </span>
-            );
-          })()}
-        </div>
+        <CardMetaRow issue={issue} agentName={agentName} />
       </Link>
     </div>
   );
