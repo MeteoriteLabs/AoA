@@ -2,15 +2,17 @@ import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import {
   createMemoryItemSchema,
+  companyBrainNeighborQuerySchema,
   memoryFolderUpdateSchema,
   suggestMemoryArchiveSchema,
   suggestMemoryUpdateSchema,
   updateMemoryItemSchema,
+  type CompanyBrainEdgeKind,
 } from "@armyofagents/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
-import { memoryService, logActivity } from "../services/index.js";
+import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
 
@@ -36,6 +38,7 @@ function resolveAgentRequestId(
 export function memoryRoutes(db: Db) {
   const router = Router();
   const svc = memoryService(db);
+  const graphSvc = companyBrainGraphService(db);
 
   // Semantic search — must be before /:id route
   router.get("/companies/:companyId/memory/search", async (req, res) => {
@@ -97,6 +100,50 @@ export function memoryRoutes(db: Db) {
     await assertMemoryAccess(db, req, companyId, "read");
     const result = await svc.listPending(companyId);
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/memory/items/:id/neighbors", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
+
+    const parsed = companyBrainNeighborQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const principalId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? "unknown-agent"
+        : req.actor.type === "mcp"
+          ? req.actor.userId ?? "mcp-user"
+          : req.actor.userId ?? "local-board";
+
+    const graph = await graphSvc.getMemoryItemNeighbors(companyId, id, {
+      type: req.actor.type === "agent" ? "agent" : "user",
+      principalId,
+    });
+
+    const kinds = parsed.data.kinds as CompanyBrainEdgeKind[] | undefined;
+    if (!kinds || kinds.length === 0) {
+      res.json(graph);
+      return;
+    }
+
+    const visibleNodeKeys = new Set([
+      `${graph.center.type}:${graph.center.id}`,
+    ]);
+    const edges = graph.edges.filter((edge) => {
+      if (!kinds.includes(edge.kind)) return false;
+      visibleNodeKeys.add(`${edge.from.type}:${edge.from.id}`);
+      visibleNodeKeys.add(`${edge.to.type}:${edge.to.id}`);
+      return true;
+    });
+    const nodes = graph.nodes.filter((node) => visibleNodeKeys.has(`${node.type}:${node.id}`));
+
+    res.json({ ...graph, nodes, edges });
   });
 
   router.get("/companies/:companyId/memory/:id", async (req, res) => {

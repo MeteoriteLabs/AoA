@@ -1,4 +1,11 @@
-import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@armyofagents/shared";
+import type {
+  CompanyBrainEdgeKind,
+  CompanyBrainNeighborsResponse,
+  MemoryItem,
+  MemoryItemVersion,
+  PendingMemoryQueue,
+  Suggestion,
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export type SimilarMemoryItem = MemoryItem & {
@@ -33,6 +40,22 @@ export const memoryApi = {
   },
   get: (companyId: string, id: string) =>
     api.get<MemoryItem>(`/companies/${companyId}/memory/${id}`),
+  neighbors: (
+    companyId: string,
+    id: string,
+    options?: {
+      depth?: 1;
+      kinds?: CompanyBrainEdgeKind[];
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.depth !== undefined) params.set("depth", String(options.depth));
+    if (options?.kinds && options.kinds.length > 0) params.set("kinds", options.kinds.join(","));
+    const qs = params.toString();
+    return api.get<CompanyBrainNeighborsResponse>(
+      `/companies/${companyId}/memory/items/${encodeURIComponent(id)}/neighbors${qs ? `?${qs}` : ""}`,
+    );
+  },
   listPending: (companyId: string) =>
     api.get<PendingMemoryQueue>(`/companies/${companyId}/memory-pending`),
   findSimilarItems: (
