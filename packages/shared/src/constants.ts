@@ -395,6 +395,7 @@ export const COMPANY_BRAIN_NODE_TYPES = [
   "discussion",
   "discussion_entry",
   "memory_item",
+  "memory_folder",
   "memory_asset",
   "artifact",
 ] as const;

@@ -26,6 +26,11 @@ describe("companyBrainNodeRefSchema", () => {
       type: "human",
       id: "founder@example.com",
     }).success).toBe(true);
+
+    expect(companyBrainNodeRefSchema.safeParse({
+      type: "memory_folder",
+      id: "Company/People/Agents",
+    }).success).toBe(true);
   });
 
   it("rejects unknown node types and empty ids", () => {
@@ -192,6 +197,7 @@ describe("companyBrainOverviewResponseSchema", () => {
 describe("company brain constants", () => {
   it("models product graph nodes without adding run nodes to the default graph", () => {
     expect(COMPANY_BRAIN_NODE_TYPES).toContain("memory_item");
+    expect(COMPANY_BRAIN_NODE_TYPES).toContain("memory_folder");
     expect(COMPANY_BRAIN_NODE_TYPES).toContain("human");
     expect(COMPANY_BRAIN_NODE_TYPES).toContain("agent");
     expect(COMPANY_BRAIN_NODE_TYPES).not.toContain("run");

@@ -15,6 +15,9 @@ const GOAL_ID = "00000000-0000-0000-0000-000000000201";
 const TASK_ID = "00000000-0000-0000-0000-000000000301";
 const ARTIFACT_ID = "00000000-0000-0000-0000-000000000401";
 const AGENT_ID = "00000000-0000-0000-0000-000000000501";
+const COMPANY_FOLDER_ID = "00000000-0000-0000-0000-000000000601";
+const COMPANY_PEOPLE_FOLDER_ID = "00000000-0000-0000-0000-000000000602";
+const MARKETING_FOLDER_ID = "00000000-0000-0000-0000-000000000603";
 
 function memory(overrides: Partial<MemoryItemGraphRow> = {}): MemoryItemGraphRow {
   return {
@@ -344,6 +347,92 @@ describe("buildCompanyGraphOverview", () => {
     expect(withStructural.edges.map((edge) => edge.kind)).toContain("belongs_to");
     expect(withoutStructural.nodes.map((node) => `${node.type}:${node.id}`)).not.toContain(`department:${MARKETING_ID}`);
     expect(withoutStructural.edges).toEqual([]);
+  });
+
+  it("includes seeded memory folders even when no memory exists inside them", () => {
+    const graph = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: founder,
+      memoryItems: [],
+      semanticEdges: [],
+      linked: {
+        departments: [{ id: MARKETING_ID, name: "Marketing", type: "department", status: "active" }],
+        memoryFolders: [
+          {
+            id: COMPANY_FOLDER_ID,
+            displayName: "Company",
+            path: "Company",
+            departmentId: null,
+            seedKey: "company.root",
+            sortOrder: 0,
+          },
+          {
+            id: COMPANY_PEOPLE_FOLDER_ID,
+            displayName: "People",
+            path: "Company/People",
+            departmentId: null,
+            seedKey: "company.people",
+            sortOrder: 50,
+          },
+          {
+            id: MARKETING_FOLDER_ID,
+            displayName: "Decisions",
+            path: "marketing/Decisions",
+            departmentId: MARKETING_ID,
+            seedKey: "marketing.decisions",
+            sortOrder: 30,
+          },
+        ],
+      },
+      includeStructural: true,
+      limit: 100,
+    });
+
+    expect(graph.nodes.map((node) => `${node.type}:${node.label}`)).toEqual([
+      "department:Marketing",
+      "memory_folder:Company",
+      "memory_folder:People",
+      "memory_folder:Decisions",
+    ]);
+    expect(graph.edges.map((edge) => `${edge.from.type}:${edge.from.id}->${edge.to.type}:${edge.to.id}`)).toEqual([
+      `memory_folder:${COMPANY_PEOPLE_FOLDER_ID}->memory_folder:${COMPANY_FOLDER_ID}`,
+      `memory_folder:${MARKETING_FOLDER_ID}->department:${MARKETING_ID}`,
+    ]);
+  });
+
+  it("connects memory items to matching folder nodes", () => {
+    const item = memory({
+      id: "00000000-0000-0000-0000-000000000941",
+      title: "Campaign decision",
+      folderPath: "marketing/Decisions",
+      agentId: null,
+    });
+
+    const graph = buildCompanyGraphOverview({
+      companyId: COMPANY_ID,
+      actor: founder,
+      memoryItems: [item],
+      semanticEdges: [],
+      linked: {
+        departments: [{ id: MARKETING_ID, name: "Marketing", type: "department", status: "active" }],
+        memoryFolders: [
+          {
+            id: MARKETING_FOLDER_ID,
+            displayName: "Decisions",
+            path: "marketing/Decisions",
+            departmentId: MARKETING_ID,
+            seedKey: "marketing.decisions",
+            sortOrder: 30,
+          },
+        ],
+      },
+      includeStructural: true,
+      limit: 100,
+    });
+
+    expect(graph.nodes.map((node) => `${node.type}:${node.label}`)).toContain("memory_folder:Decisions");
+    expect(graph.edges.map((edge) => `${edge.from.type}:${edge.from.id}->${edge.to.type}:${edge.to.id}:${edge.kind}`))
+      .toContain(`memory_item:${item.id}->memory_folder:${MARKETING_FOLDER_ID}:belongs_to`);
   });
 });
 

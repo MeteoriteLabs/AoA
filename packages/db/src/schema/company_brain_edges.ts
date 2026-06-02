@@ -24,6 +24,7 @@ const nodeTypes = [
   "discussion",
   "discussion_entry",
   "memory_item",
+  "memory_folder",
   "memory_asset",
   "artifact",
 ].map((type) => `'${type}'`).join(", ");

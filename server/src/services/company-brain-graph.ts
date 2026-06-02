@@ -8,6 +8,7 @@ import {
   companyMemberships,
   goals,
   issues,
+  memoryFolders,
   memoryItems,
   memoryRelations,
   memoryRetrievals,
@@ -135,6 +136,15 @@ interface LinkedAgentRow {
   status: string;
 }
 
+interface LinkedMemoryFolderRow {
+  id: string;
+  displayName: string;
+  path: string;
+  departmentId: string | null;
+  seedKey?: string | null;
+  sortOrder?: number | null;
+}
+
 export interface MemoryItemNeighborGraphInput {
   companyId: string;
   center: MemoryItemGraphRow;
@@ -148,6 +158,7 @@ export interface MemoryItemNeighborGraphInput {
     tasks?: LinkedTaskRow[];
     artifacts?: LinkedArtifactRow[];
     agents?: LinkedAgentRow[];
+    memoryFolders?: LinkedMemoryFolderRow[];
   };
 }
 
@@ -248,6 +259,7 @@ const STRUCTURAL_APPLIES_TO_TARGET_TYPES = new Set<CompanyBrainNodeType>([
   "task",
   "artifact",
   "agent",
+  "memory_folder",
 ]);
 
 function parseConfidence(value: unknown): string | null {
@@ -400,6 +412,65 @@ function memoryNode(item: MemoryItemGraphRow): CompanyBrainNode {
       updatedAt: dateToIso(item.updatedAt),
     },
   };
+}
+
+function canSeeStructuralDepartment(departmentId: string, actor: GraphActorScope): boolean {
+  if (!actor.activeCompanyMember) return false;
+  if (roleAtLeast(actor.role, "team_lead")) return true;
+  return actor.departmentIds.includes(departmentId);
+}
+
+function canSeeMemoryFolderForGraph(
+  folder: LinkedMemoryFolderRow,
+  actor: GraphActorScope,
+): boolean {
+  if (!actor.activeCompanyMember) return false;
+  if (!folder.departmentId) return true;
+  return canSeeStructuralDepartment(folder.departmentId, actor);
+}
+
+function departmentNode(
+  companyId: string,
+  department: LinkedProjectRow,
+): CompanyBrainNode {
+  return {
+    type: "department",
+    id: department.id,
+    companyId,
+    label: department.name,
+    status: department.status,
+    scope: { departmentId: department.id, isCompanyWide: false },
+    href: `/memory/explore?dept=${department.id}`,
+    metadata: { projectType: department.type },
+  };
+}
+
+function memoryFolderNode(
+  companyId: string,
+  folder: LinkedMemoryFolderRow,
+): CompanyBrainNode {
+  return {
+    type: "memory_folder",
+    id: folder.id,
+    companyId,
+    label: folder.displayName,
+    scope: {
+      departmentId: folder.departmentId,
+      isCompanyWide: !folder.departmentId,
+      visibility: "shared",
+    },
+    href: `/memory/explore?folder=${encodeURIComponent(folder.path)}`,
+    metadata: {
+      path: folder.path,
+      seedKey: folder.seedKey ?? null,
+      sortOrder: folder.sortOrder ?? 0,
+      layer: folder.departmentId ? "domain" : "identity",
+    },
+  };
+}
+
+function memoryFolderMapKey(folder: Pick<LinkedMemoryFolderRow, "departmentId" | "path">): string {
+  return `${folder.departmentId ?? "company"}:${folder.path}`;
 }
 
 export function buildMemoryItemNeighborGraph(
@@ -572,6 +643,44 @@ export function buildCompanyGraphOverview(
     const tasksById = new Map((input.linked.tasks ?? []).map((row) => [row.id, row]));
     const artifactsById = new Map((input.linked.artifacts ?? []).map((row) => [row.id, row]));
     const agentsById = new Map((input.linked.agents ?? []).map((row) => [row.id, row]));
+    const visibleFolders = (input.linked.memoryFolders ?? [])
+      .filter((folder) => canSeeMemoryFolderForGraph(folder, input.actor));
+    const foldersByPath = new Map(visibleFolders.map((folder) => [memoryFolderMapKey(folder), folder]));
+
+    for (const department of departments.values()) {
+      if (!canSeeStructuralDepartment(department.id, input.actor)) continue;
+      addNode(nodes, departmentNode(input.companyId, department));
+    }
+
+    for (const folder of visibleFolders) {
+      addNode(nodes, memoryFolderNode(input.companyId, folder));
+    }
+
+    for (const folder of visibleFolders) {
+      const folderRef: CompanyBrainNodeRef = { type: "memory_folder", id: folder.id };
+      const parentPath = folder.path.includes("/")
+        ? folder.path.slice(0, folder.path.lastIndexOf("/"))
+        : "";
+      const parentFolder = parentPath
+        ? foldersByPath.get(memoryFolderMapKey({ departmentId: folder.departmentId, path: parentPath }))
+        : null;
+
+      if (parentFolder) {
+        addEdge(edges, derivedEdge({
+          companyId: input.companyId,
+          from: folderRef,
+          to: { type: "memory_folder", id: parentFolder.id },
+          kind: "belongs_to",
+        }));
+      } else if (folder.departmentId && departments.has(folder.departmentId)) {
+        addEdge(edges, derivedEdge({
+          companyId: input.companyId,
+          from: folderRef,
+          to: { type: "department", id: folder.departmentId },
+          kind: "belongs_to",
+        }));
+      }
+    }
 
     for (const item of boundedItems) {
       const itemRef: CompanyBrainNodeRef = { type: "memory_item", id: item.id };
@@ -580,16 +689,26 @@ export function buildCompanyGraphOverview(
         const department = departments.get(item.departmentId);
         if (department) {
           const ref: CompanyBrainNodeRef = { type: "department", id: department.id };
-          addNode(nodes, {
-            ...ref,
-            companyId: input.companyId,
-            label: department.name,
-            status: department.status,
-            scope: { departmentId: department.id, isCompanyWide: false },
-            href: `/memory/explore?dept=${department.id}`,
-            metadata: { projectType: department.type },
-          });
+          addNode(nodes, departmentNode(input.companyId, department));
           addEdge(edges, derivedEdge({ companyId: input.companyId, from: itemRef, to: ref, kind: "belongs_to" }));
+        }
+      }
+
+      if (item.folderPath) {
+        const folder = foldersByPath.get(memoryFolderMapKey({
+          departmentId: item.departmentId,
+          path: item.folderPath,
+        })) ?? foldersByPath.get(memoryFolderMapKey({
+          departmentId: null,
+          path: item.folderPath,
+        }));
+        if (folder) {
+          addEdge(edges, derivedEdge({
+            companyId: input.companyId,
+            from: itemRef,
+            to: { type: "memory_folder", id: folder.id },
+            kind: "belongs_to",
+          }));
         }
       }
 
@@ -962,16 +1081,18 @@ export function companyBrainGraphService(db: Db) {
         taskRows,
         artifactRows,
         agentRows,
+        memoryFolderRows,
       ] = options.includeStructural
         ? await Promise.all([
-            departmentIds.length
-              ? db.select({
+            db.select({
                   id: projects.id,
                   name: projects.name,
                   type: projects.type,
                   status: projects.status,
-                }).from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, departmentIds)))
-              : Promise.resolve([]),
+                }).from(projects).where(and(
+                  eq(projects.companyId, companyId),
+                  eq(projects.type, "department"),
+                )),
             projectIds.length
               ? db.select({
                   id: projects.id,
@@ -1008,8 +1129,16 @@ export function companyBrainGraphService(db: Db) {
                   status: agents.status,
                 }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)))
               : Promise.resolve([]),
+            db.select({
+              id: memoryFolders.id,
+              displayName: memoryFolders.displayName,
+              path: memoryFolders.path,
+              departmentId: memoryFolders.departmentId,
+              seedKey: memoryFolders.seedKey,
+              sortOrder: memoryFolders.sortOrder,
+            }).from(memoryFolders).where(eq(memoryFolders.companyId, companyId)),
           ])
-        : [[], [], [], [], [], []];
+        : [[], [], [], [], [], [], []];
 
       return buildCompanyGraphOverview({
         companyId,
@@ -1023,6 +1152,7 @@ export function companyBrainGraphService(db: Db) {
           tasks: taskRows,
           artifacts: artifactRows,
           agents: agentRows,
+          memoryFolders: memoryFolderRows,
         },
         includeStructural: options.includeStructural,
         limit: options.limit,
