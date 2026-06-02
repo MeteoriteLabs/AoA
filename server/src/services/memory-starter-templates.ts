@@ -787,6 +787,29 @@ export function listStarterTemplates(): MemoryStarterTemplate[] {
   return MEMORY_STARTER_TEMPLATES;
 }
 
+const TEMPLATE_FUNCTION_TYPE_ALIASES: Record<string, string[]> = {
+  software_development: ["software_development", "product_management"],
+  marketing: ["marketing", "sales", "design"],
+  finance: ["finance"],
+  support: ["support", "customer_support"],
+  hr: ["hr", "people_ops"],
+  legal: ["legal"],
+  research: ["research", "data_analytics"],
+  operations: ["operations"],
+  general: ["general", "custom"],
+  custom: ["general", "custom"],
+};
+
+export function getStarterTemplatesForFunctionType(
+  functionType: string | null | undefined,
+): MemoryStarterTemplate[] {
+  if (!functionType) return [];
+  const aliases = TEMPLATE_FUNCTION_TYPE_ALIASES[functionType] ?? [functionType];
+  return MEMORY_STARTER_TEMPLATES.filter((template) =>
+    aliases.includes(template.functionType),
+  );
+}
+
 export interface ApplyStarterTemplateResult {
   count: number;
   alreadyApplied: boolean;

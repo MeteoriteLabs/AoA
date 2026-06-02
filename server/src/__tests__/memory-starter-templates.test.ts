@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   MEMORY_STARTER_TEMPLATES,
   listStarterTemplates,
+  getStarterTemplatesForFunctionType,
   applyStarterTemplate,
 } from "../services/memory-starter-templates.js";
 
@@ -54,6 +55,22 @@ describe("MEMORY_STARTER_TEMPLATES static data", () => {
 
   it("listStarterTemplates returns the full array", () => {
     expect(listStarterTemplates()).toBe(MEMORY_STARTER_TEMPLATES);
+  });
+
+  it("resolves canonical department function types to existing starter templates", () => {
+    expect(getStarterTemplatesForFunctionType("support").map((t) => t.id)).toContain("customer-support");
+    expect(getStarterTemplatesForFunctionType("hr").map((t) => t.id)).toContain("people");
+    expect(getStarterTemplatesForFunctionType("research").map((t) => t.id)).toContain("data");
+    expect(getStarterTemplatesForFunctionType("software_development").map((t) => t.id)).toContain("engineering");
+  });
+
+  it("keeps legacy function type aliases compatible with canonical lookups", () => {
+    expect(getStarterTemplatesForFunctionType("customer_support").map((t) => t.id)).toEqual(
+      getStarterTemplatesForFunctionType("support").map((t) => t.id),
+    );
+    expect(getStarterTemplatesForFunctionType("people_ops").map((t) => t.id)).toEqual(
+      getStarterTemplatesForFunctionType("hr").map((t) => t.id),
+    );
   });
 });
 
