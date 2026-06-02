@@ -24,6 +24,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
+import { MemoryViewerHome } from "../components/memory/MemoryViewerHome";
 
 function renderHome() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -31,6 +32,17 @@ function renderHome() {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <MemoryHomeDashboard companyId="co-1" />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderViewerHome() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <MemoryViewerHome companyId="co-1" />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -57,5 +69,17 @@ describe("MemoryHomeDashboard (Phase 6.2a)", () => {
     // The 2 items mock above sorted by updatedAt — Item two newer, Item one older
     await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
     expect(screen.getByText("Item one")).toBeInTheDocument();
+  });
+
+  it("renders viewer home content with an honest graph slot", async () => {
+    renderViewerHome();
+
+    expect(screen.getByTestId("memory-viewer-home")).toBeInTheDocument();
+    expect(screen.getByText(/Quick-jump to a memory item or file/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
+    expect(screen.getByTestId("memory-home-graph-slot")).toHaveTextContent(
+      /Memory graph will appear here/i,
+    );
   });
 });

@@ -11,6 +11,7 @@ import { DocxFileViewer } from "./viewers/DocxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 import { MemoryViewerTabs } from "./MemoryViewerTabs";
+import { MemoryViewerHome } from "./MemoryViewerHome";
 import type { MemoryTab, MemoryTabKind, TabKey } from "../../lib/memoryTabs";
 
 interface MemoryViewerProps {
@@ -71,7 +72,9 @@ export function MemoryViewer({
     : null;
 
   let inner: React.ReactNode;
-  if (activeTab && activeTab.kind === "memory_item") {
+  if (activeTab && activeTab.kind === "home") {
+    inner = <MemoryViewerHome companyId={companyId} />;
+  } else if (activeTab && activeTab.kind === "memory_item") {
     inner = <MarkdownItemViewer companyId={companyId} itemId={activeTab.id} />;
   } else if (activeTab && activeTab.kind === "asset") {
     inner = <AssetViewerSlot companyId={companyId} assetId={activeTab.id} />;
