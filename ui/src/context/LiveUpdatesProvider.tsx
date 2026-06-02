@@ -29,6 +29,12 @@ export interface ThreadPresenceMember {
 export interface ThreadWorkingAgent {
   agentId: string;
   name: string;
+  /**
+   * Humanized activity label pushed by the crew runner (e.g. "researching",
+   * "writing the plan", "creating an artifact"). Absent for heartbeat-fed
+   * presence and older servers — consumers fall back to "typing".
+   */
+  activity?: string;
 }
 
 interface LiveUpdatesContextValue {
@@ -591,6 +597,28 @@ function handleLiveEvent(
     return;
   }
 
+  // Thread chat experience Phase 5 (Task 5.6 / plan R3): crew agents (and the
+  // founder) moving a card emit a company-broadcast `issue.status_changed`
+  // {companyId, issueId, status} — NOT a thread.* envelope. Invalidate the
+  // issues list and the Crew Board task query so the card moves columns live.
+  if (event.type === "issue.status_changed") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(expectedCompanyId) });
+    // Crew Board key is ["tasks", "from-discussions", companyId, agentFilter];
+    // a prefix match (the default predicate) refetches every agent-filter variant.
+    queryClient.invalidateQueries({ queryKey: ["tasks", "from-discussions", expectedCompanyId] });
+    // Also nudge the live-runs query so the "Live" pill clears/updates promptly.
+    queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(expectedCompanyId) });
+    const issueId = readString(payload.issueId);
+    if (issueId) {
+      const details = readRecord(payload.details);
+      const issueRefs = resolveIssueQueryRefs(queryClient, expectedCompanyId, issueId, details);
+      for (const ref of issueRefs) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+      }
+    }
+    return;
+  }
+
   if (event.type === "discussion.entry.created") {
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
     const discussionId = readString(payload.discussionId);
@@ -693,7 +721,10 @@ function parseWorkingAgents(payload: Record<string, unknown>): ThreadWorkingAgen
     if (item && typeof item === "object") {
       const rec = item as Record<string, unknown>;
       if (typeof rec.agentId === "string" && typeof rec.name === "string") {
-        out.push({ agentId: rec.agentId, name: rec.name });
+        // activity is optional — the server adds it for crew runs; heartbeat
+        // presence and older servers omit it, in which case the pill says "typing".
+        const activity = typeof rec.activity === "string" && rec.activity.length > 0 ? rec.activity : undefined;
+        out.push({ agentId: rec.agentId, name: rec.name, activity });
       }
     }
   }

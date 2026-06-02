@@ -3,8 +3,9 @@ import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare } from "lucide-react";
 import type { Agent, Issue } from "@armyofagents/shared";
-import { KanbanBoard } from "../KanbanBoard";
+import { KanbanBoard, type LiveRunInfo } from "../KanbanBoard";
 import { issuesApi } from "../../api/issues";
+import { heartbeatsApi } from "../../api/heartbeats";
 import { queryKeys } from "../../lib/queryKeys";
 import { EmptyState } from "../EmptyState";
 import { CrewTaskAuditCard } from "./CrewTaskAuditCard";
@@ -63,6 +64,35 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
       }),
     enabled: Boolean(companyId),
   });
+
+  // Task 5.7: live crew activity. `liveRunsForCompany` now UNIONs crew
+  // (internal_agent) runs, so a task a crew agent is executing shows the "Live"
+  // pill — labelled "{agentName} · {elapsed}" via liveRunsByIssue. The
+  // issue.status_changed live event (LiveUpdatesProvider) also invalidates this
+  // query so the pill clears promptly when a run ends; refetchInterval is the
+  // belt-and-suspenders fallback (mirrors Issues.tsx / ProjectDetail.tsx).
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(companyId),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: Boolean(companyId),
+    refetchInterval: 5000,
+  });
+
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns ?? []) {
+      if (run.issueId) ids.add(run.issueId);
+    }
+    return ids;
+  }, [liveRuns]);
+
+  const liveRunsByIssue = useMemo(() => {
+    const map = new Map<string, LiveRunInfo>();
+    for (const run of liveRuns ?? []) {
+      if (run.issueId) map.set(run.issueId, { agentName: run.agentName, startedAt: run.startedAt });
+    }
+    return map;
+  }, [liveRuns]);
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -179,6 +209,9 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
               </div>
               <KanbanBoard
                 issues={g.tasks}
+                agents={crewAgents}
+                liveIssueIds={liveIssueIds}
+                liveRunsByIssue={liveRunsByIssue}
                 onUpdateIssue={(id, data) =>
                   updateMutation.mutate({ id, data })
                 }

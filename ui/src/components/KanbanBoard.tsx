@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import {
   DndContext,
@@ -48,12 +48,43 @@ interface Agent {
   name: string;
 }
 
+/**
+ * Per-issue live-run detail for the "Live" pill (thread-chat-experience Task
+ * 5.5/5.7). When supplied, the pill renders "{agentName} · {elapsed}" instead of
+ * the bare "Live" — surfaced from `liveRunsForCompany`, which now includes crew
+ * (internal_agent) runs with { agentName, startedAt }. Optional: callers that
+ * only pass `liveIssueIds` keep the plain "Live" pill.
+ */
+export interface LiveRunInfo {
+  agentName?: string | null;
+  /** ISO timestamp (or Date) the run started; the elapsed anchor. */
+  startedAt?: string | Date | null;
+}
+
 interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  /** Optional richer live-run info per issue id for the "Live" pill. */
+  liveRunsByIssue?: Map<string, LiveRunInfo>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
   onSelectIssue?: (issueIdentifier: string) => void;
+}
+
+/** Compact elapsed label from a start time, e.g. "0:42", "3:05", "1h12m". */
+function formatElapsed(startedAt: string | Date | null | undefined, nowMs: number): string | null {
+  if (!startedAt) return null;
+  const start = typeof startedAt === "string" ? Date.parse(startedAt) : startedAt.getTime();
+  if (!Number.isFinite(start)) return null;
+  const secs = Math.max(0, Math.floor((nowMs - start) / 1000));
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${h}h${m.toString().padStart(2, "0")}m`;
 }
 
 /* ── Droppable Column ── */
@@ -63,12 +94,16 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  liveRunsByIssue,
+  nowMs,
   onSelectIssue,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  liveRunsByIssue?: Map<string, LiveRunInfo>;
+  nowMs: number;
   onSelectIssue?: (issueIdentifier: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -100,6 +135,8 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              liveRun={liveRunsByIssue?.get(issue.id)}
+              nowMs={nowMs}
               onSelectIssue={onSelectIssue}
             />
           ))}
@@ -115,12 +152,16 @@ function KanbanCard({
   issue,
   agents,
   isLive,
+  liveRun,
+  nowMs,
   isOverlay,
   onSelectIssue,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
+  liveRun?: LiveRunInfo;
+  nowMs?: number;
   isOverlay?: boolean;
   onSelectIssue?: (issueIdentifier: string) => void;
 }) {
@@ -169,15 +210,29 @@ function KanbanCard({
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
-          {isLive && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 shrink-0 ml-auto">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+          {isLive && (() => {
+            // Task 5.5/5.7: when a live-run row carries the executing agent +
+            // start time, label the pill "{agentName} · {elapsed}"; otherwise
+            // fall back to the bare "Live".
+            const elapsed = formatElapsed(liveRun?.startedAt, nowMs ?? Date.now());
+            const name = liveRun?.agentName ?? null;
+            const label =
+              name && elapsed ? `${name} · ${elapsed}` : name ? name : "Live";
+            return (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 shrink-0 ml-auto max-w-[160px]"
+                title={name && elapsed ? `${name} · running ${elapsed}` : "Live run in progress"}
+              >
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                </span>
+                <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400 truncate">
+                  {label}
+                </span>
               </span>
-              <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400">Live</span>
-            </span>
-          )}
+            );
+          })()}
           {issue.status === "blocked" && !isLive && (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
@@ -244,10 +299,22 @@ export function KanbanBoard({
   issues,
   agents,
   liveIssueIds,
+  liveRunsByIssue,
   onUpdateIssue,
   onSelectIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  // Task 5.5/5.7: tick a 1s clock so the live pill's elapsed counter advances,
+  // but only while at least one card is live (no idle timer churn).
+  const hasLive = (liveIssueIds?.size ?? 0) > 0;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasLive) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasLive]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -322,6 +389,8 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            liveRunsByIssue={liveRunsByIssue}
+            nowMs={nowMs}
             onSelectIssue={onSelectIssue}
           />
         ))}

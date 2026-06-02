@@ -17,6 +17,12 @@ export interface ActiveRunForIssue extends HeartbeatRun {
 export interface LiveRunForIssue {
   id: string;
   status: string;
+  // Heartbeat-run columns. Thread-chat-experience Task 5.5 UNIONs crew
+  // (internal_agent) live rows into this response. Crew rows carry
+  // { id, status, agentId, agentName, issueId, startedAt, createdAt, source } and
+  // omit the heartbeat-only fields below — they stay non-optional here to avoid
+  // churning the many heartbeat-only consumers (ActiveAgentsPanel, LiveRunWidget);
+  // crew rows simply leave them undefined at runtime, which those panels tolerate.
   invocationSource: string;
   triggerDetail: string | null;
   startedAt: string | null;
@@ -31,6 +37,8 @@ export interface LiveRunForIssue {
   agentName: string;
   adapterType: string;
   issueId?: string | null;
+  /** Discriminator present on crew rows; absent on heartbeat rows. */
+  source?: "internal_agent";
 }
 
 export const heartbeatsApi = {
