@@ -99,6 +99,14 @@ export interface BuildTriggerPromptArgs {
    *  Used to look up the action directive. Case-insensitive. Fragile-by-name
    *  fallback is documented at codex F7. */
   agentRoleKey: string;
+  /** Phase 4 (Task 4.3) — pre-assembled crew context bundle (thread history +
+   *  Chronicler summary + relevant memory, and for tasks the task body +
+   *  upstream artifact). Built best-effort by the runner via
+   *  buildCrewContextBundle. Rendered as a `## Context` section between the
+   *  persona/instruction and the `## This wakeup` block — ONLY when non-empty.
+   *  Empty/whitespace/undefined ⇒ no Context section (back-compat: callers that
+   *  don't pass it get the byte-identical pre-Phase-4 prompt). */
+  contextBundle?: string;
 }
 
 /**
@@ -106,7 +114,7 @@ export interface BuildTriggerPromptArgs {
  * Pure function — no side effects, exhaustively unit-tested.
  */
 export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
-  const { instruction, payload, agentName, agentRoleKey } = args;
+  const { instruction, payload, agentName, agentRoleKey, contextBundle } = args;
 
   // Trigger context block. Filter out empty fields so the LLM doesn't see
   // "Inviting entry: undefined" lines (which would confuse it).
@@ -153,9 +161,22 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     directive = ROLE_ACTION_DIRECTIVE[agentRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;
   }
 
+  // Phase 4 (Task 4.3): the crew context bundle. Rendered as a `## Context`
+  // section BETWEEN the persona/instruction and the `## This wakeup` block so
+  // the agent reads WHO/WHAT it's dealing with (the conversation, the summary,
+  // relevant memory, the task body) before the action directive. Omitted
+  // entirely when empty/whitespace — keeps the prompt byte-identical to the
+  // pre-Phase-4 form for callers that don't supply a bundle (and for runs where
+  // the bundle came back empty, e.g. a brand-new thread with no precedent).
+  const contextSection =
+    typeof contextBundle === "string" && contextBundle.trim().length > 0
+      ? ["## Context", contextBundle.trim(), ""]
+      : [];
+
   return [
     instruction,
     "",
+    ...contextSection,
     "## This wakeup",
     ctxLines.join("\n"),
     "",

@@ -445,6 +445,72 @@ describe("buildTriggerPrompt (Spec B Task 5) — task execution (issueId)", () =
   });
 });
 
+// Phase 4 / Task 4.3 — contextBundle injection.
+// The runner builds a crew context bundle (thread history + summary + memory,
+// and for tasks the task body + upstream artifact) and passes it as
+// `contextBundle`. buildTriggerPrompt renders it as a `## Context` section
+// BETWEEN the persona/instruction and the `## This wakeup` block — only when
+// non-empty.
+describe("buildTriggerPrompt (Task 4.3) — contextBundle injection", () => {
+  it("renders a ## Context section with the bundle text when contextBundle is non-empty", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1", mention: "@Scout" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "Recent conversation:\nfounder: we need SSO precedent",
+    });
+    expect(out).toContain("## Context");
+    expect(out).toContain("founder: we need SSO precedent");
+  });
+
+  it("places ## Context BETWEEN the persona/instruction and the ## This wakeup block", () => {
+    const out = buildTriggerPrompt({
+      instruction: "## INSTRUCTION_MARKER\n",
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "CONTEXT_BUNDLE_MARKER",
+    });
+    const instructionIdx = out.indexOf("INSTRUCTION_MARKER");
+    const contextIdx = out.indexOf("## Context");
+    const bundleIdx = out.indexOf("CONTEXT_BUNDLE_MARKER");
+    const wakeupIdx = out.indexOf("## This wakeup");
+    expect(instructionIdx).toBeGreaterThanOrEqual(0);
+    expect(contextIdx).toBeGreaterThan(instructionIdx);
+    expect(bundleIdx).toBeGreaterThan(contextIdx);
+    expect(wakeupIdx).toBeGreaterThan(bundleIdx);
+  });
+
+  it("omits the ## Context section entirely when contextBundle is empty/whitespace/undefined", () => {
+    const empty = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "",
+    });
+    expect(empty).not.toContain("## Context");
+
+    const ws = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "   \n  ",
+    });
+    expect(ws).not.toContain("## Context");
+
+    const undef = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+    });
+    expect(undef).not.toContain("## Context");
+  });
+});
+
 // Task 0.4 — ensure-adjutant stale-framing guard
 describe("ensure-adjutant instruction (Task 0.4)", () => {
   it("does NOT contain stale 'Dispatcher and Engineer take over' framing", () => {

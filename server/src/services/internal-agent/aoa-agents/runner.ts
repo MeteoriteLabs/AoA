@@ -276,11 +276,43 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       typeof aoaCfg.role === "string" && aoaCfg.role.length > 0
         ? aoaCfg.role
         : agent.name.toLowerCase().replace(/\s+/g, "_");
+
+    // Phase 4 (Task 4.3): build the crew context bundle so the agent does NOT
+    // start blind. Before this, a thread/mention run's dynamic prompt block was
+    // IDs only (Thread/Inviting entry/Mention) → an @mentioned agent had to
+    // fetch everything via tools and often answered "no precedent found". The
+    // bundle injects the conversation + the Chronicler summary + relevant
+    // memory (and, for tasks, the task body + upstream artifact) directly.
+    //
+    // Gated on threadId|issueId: an entry-only extraction run (Scribe/outbox)
+    // has no thread or task to summarize, so there's nothing to inject and we
+    // skip the work entirely. BEST-EFFORT: wrapped in try/catch exactly like
+    // the redactAndCapPrompt snapshot below — a bundle failure (e.g. memory/
+    // pgvector hiccup) must NEVER break a run. Empty bundle ⇒ no `## Context`
+    // section (the prompt stays byte-identical to the pre-Phase-4 form).
+    let contextBundle = "";
+    const bundleThreadId = typeof payload.threadId === "string" ? payload.threadId : undefined;
+    const bundleIssueId = typeof payload.issueId === "string" ? payload.issueId : undefined;
+    if (bundleThreadId || bundleIssueId) {
+      try {
+        const { buildCrewContextBundle } = await import("./crew-context-bundle.js");
+        contextBundle = await buildCrewContextBundle(db, {
+          companyId: payload.companyId,
+          threadId: bundleThreadId,
+          issueId: bundleIssueId,
+          agentId,
+        });
+      } catch (bundleErr) {
+        log.warn({ err: bundleErr }, "aoa-runner: failed to build crew context bundle (best-effort, ignored)");
+      }
+    }
+
     const triggerPrompt = buildTriggerPrompt({
       instruction,
       payload,
       agentName: agent.name,
       agentRoleKey,
+      contextBundle,
     });
 
     // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
