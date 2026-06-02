@@ -35,4 +35,20 @@ describe("persona bundle coherence (Task 0.2)", () => {
     const soul = readFileSync(join(root, "engineer", "SOUL.md"), "utf8").toLowerCase();
     expect(soul).not.toMatch(/dispatcher/);
   });
+
+  it("Adjutant HEARTBEAT no longer blanket-instructs systemNotice on every post_entry", () => {
+    // Thread-chat bug root cause: HEARTBEAT.md told the Adjutant to set
+    // sourceInfo.systemNotice on EVERY post_entry. Now that the Adjutant
+    // converses, that flag made its chat replies render as muted "System
+    // notice" dividers instead of chat bubbles. The unconditional rule must be
+    // gone — systemNotice is reserved for rare procedural notices only.
+    const heartbeat = readFileSync(join(root, "adjutant", "HEARTBEAT.md"), "utf8");
+    // No "If you call post_entry, set ... systemNotice: true" unconditional rule.
+    expect(heartbeat).not.toMatch(/If you call `?post_entry`?,?\s*set[^.]*systemNotice/i);
+    // And the new guidance: conversational replies are normal chat, no systemNotice.
+    expect(heartbeat).toMatch(/do NOT set `?sourceInfo\.systemNotice`?/i);
+    expect(heartbeat).toMatch(/normal chat/i);
+    // systemNotice is now reserved for a rare procedural notice.
+    expect(heartbeat).toMatch(/procedural notice|never for conversation/i);
+  });
 });

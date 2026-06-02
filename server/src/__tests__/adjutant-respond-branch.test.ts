@@ -69,6 +69,17 @@ describe("Adjutant respond branch (live-QA BUG-2)", () => {
     expect(prompt).not.toMatch(/returning without taking the directed action is a bug/i);
   });
 
+  it("instructs the reply to be normal chat — do NOT set sourceInfo.systemNotice", () => {
+    // Thread-chat bug: EntryRow renders any entry with sourceInfo.systemNotice
+    // as a muted "System notice" divider BEFORE the agent-bubble branch. A
+    // conversational Adjutant reply that carries that flag therefore renders as
+    // a faint divider, not a chat bubble. The directive must steer the Adjutant
+    // to post conversational replies as NORMAL chat (no systemNotice).
+    const prompt = buildAdjutantPrompt();
+    expect(prompt).toMatch(/do NOT set `?sourceInfo\.systemNotice`?/i);
+    expect(prompt).toMatch(/normal conversational reply/i);
+  });
+
   it("works with a non-empty instruction bundle too (regression guard)", () => {
     const prompt = buildTriggerPrompt({
       instruction: BASE_INSTRUCTION,

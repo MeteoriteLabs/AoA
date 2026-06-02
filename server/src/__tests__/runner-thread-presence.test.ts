@@ -171,6 +171,47 @@ describe("runAoaAgent — thread presence feed (Tasks 5.1 + 5.2)", () => {
     expect(addMock).toHaveBeenCalledWith("t-m", "misc-1", "Mystery", "typing");
   });
 
+  it("background sweep run (source 'sweep.chronicler') does NOT light thread presence", async () => {
+    // Thread-chat bug: the Chronicler's background summary sweep
+    // (trigger_source = sweep.chronicler) carries a threadId but never POSTS to
+    // the thread. Lighting presence for it surfaced a phantom "Chronicler is
+    // typing…" pill. Presence must be gated to CONVERSATIONAL runs — any
+    // `sweep.*` source skips the presence add entirely (and so the symmetric
+    // finally-remove also no-ops, since presenceThreadId was never set).
+    const db = dbForAgent({ id: "chron-1", companyId: "co-1", name: "Chronicler", adapterType: "process", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "Chronicler.", role: "chronicler" } } });
+
+    await runAoaAgent(db, "chron-1", {
+      companyId: "co-1",
+      source: "sweep.chronicler",
+      threadId: "thread-sweep",
+      effectiveAutonomy: 1,
+    });
+
+    expect(addMock).not.toHaveBeenCalled();
+    expect(removeMock).not.toHaveBeenCalled();
+    expect(broadcastMock).not.toHaveBeenCalled();
+    expect(callLog).toEqual(["execute"]);
+  });
+
+  it("conversational thread run (source 'thread.controller') DOES light thread presence", async () => {
+    // Counterpart to the sweep gate above: a real conversational dispatch
+    // (thread.controller / thread.participation / mention / agent.dispatch)
+    // still lights the pill. Here the Adjutant runs the thread controller.
+    const db = dbForAgent({ id: "adj-2", companyId: "co-1", name: "Adjutant", adapterType: "process", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "Adjutant.", role: "adjutant" } } });
+
+    await runAoaAgent(db, "adj-2", {
+      companyId: "co-1",
+      source: "thread.controller",
+      threadId: "thread-ctrl",
+      effectiveAutonomy: 1,
+    });
+
+    expect(addMock).toHaveBeenCalledTimes(1);
+    expect(addMock).toHaveBeenCalledWith("thread-ctrl", "adj-2", "Adjutant", "reviewing the thread");
+    expect(removeMock).toHaveBeenCalledWith("thread-ctrl", "adj-2");
+    expect(callLog).toEqual(["add:thread-ctrl", "execute", "remove:thread-ctrl"]);
+  });
+
   it("NON-thread run (entry-only extraction) does NOT touch thread presence", async () => {
     const db = dbForAgent({ id: "scribe-1", companyId: "co-1", name: "Scribe", adapterType: "process", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "Scribe.", role: "scribe" } } });
 

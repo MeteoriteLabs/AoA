@@ -386,7 +386,17 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // activity is derived from the crew role key. Added BEFORE execute and
     // REMOVED in the `finally` (guaranteed even on throw). Best-effort — a
     // presence failure must never break the run (mirrors heartbeat.ts:2610-2615).
-    if (bundleThreadId) {
+    //
+    // Source gate: ONLY light presence for CONVERSATIONAL runs. A background
+    // sweep (`sweep.*` — e.g. `sweep.chronicler`, `sweep.adjutant`) carries a
+    // threadId but does NOT post to the thread (the Chronicler's summary sweep
+    // never posts), so a typing-presence pill for it is phantom ("Chronicler is
+    // typing…" with nothing ever arriving). Skip the add for sweeps; keep it for
+    // `thread.controller` / `thread.participation` / `mention` / `agent.dispatch`.
+    // presenceThreadId is set ONLY when we add, so the `finally` removal below
+    // stays symmetric automatically — it never clears a presence we didn't set.
+    const isBackgroundSweep = String(payload.source).startsWith("sweep.");
+    if (bundleThreadId && !isBackgroundSweep) {
       presenceThreadId = bundleThreadId;
       presenceAgentName = agent.name;
       try {

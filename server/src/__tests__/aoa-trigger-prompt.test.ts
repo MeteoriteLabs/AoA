@@ -79,6 +79,20 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).not.toMatch(/returning without taking the directed action is a bug/i);
     });
 
+    it("adjutant → conversational replies are normal chat (no sourceInfo.systemNotice)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep.adjutant" },
+        agentName: "Adjutant",
+        agentRoleKey: "adjutant",
+      });
+      // Thread-chat bug: an Adjutant reply carrying sourceInfo.systemNotice
+      // renders as a muted "System notice" divider, not a chat bubble. The
+      // respond directive must tell it to post as a normal conversational reply.
+      expect(out).toMatch(/do NOT set `?sourceInfo\.systemNotice`?/i);
+      expect(out).toMatch(/normal conversational reply/i);
+    });
+
     it("router → attach_to_thread or spin_off_thread (NOT post_entry)", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,

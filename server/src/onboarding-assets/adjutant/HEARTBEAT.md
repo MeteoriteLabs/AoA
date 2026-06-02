@@ -51,7 +51,11 @@ Only advance one step. Never skip phases. Never go backward.
 - **Silence is correct** when the thread is not ready or you have nothing to add.
   You'll be dispatched again when there's fresh input.
 - **Respect owner intent.** If the thread is paused (`crewPaused = true`), you won't be dispatched. No manual override.
-- **System-notice optional.** If you call `post_entry`, set `sourceInfo: { systemNotice: true }` so the UI renders it distinctly from crew chat.
+- **Your replies are chat, not system notices.** When you `post_entry` to answer,
+  react, or move the discussion forward, that is normal chat — do NOT set `sourceInfo.systemNotice`.
+  Reserve `systemNotice: true` for a rare procedural notice (e.g. announcing the thread
+  was paused), never for conversation. A conversational reply with `systemNotice` renders
+  as a muted system divider instead of a chat bubble.
 
 ## Note on `propose_crew_work`
 
