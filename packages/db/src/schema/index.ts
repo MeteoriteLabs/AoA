@@ -58,6 +58,7 @@ export { taskOutputs } from "./task_outputs.js";
 export { memoryItemVersions } from "./memory_item_versions.js";
 export { memoryFeedbackPatterns } from "./memory_feedback_patterns.js";
 export { memoryRelations } from "./memory_relations.js";
+export { companyBrainEdges } from "./company_brain_edges.js";
 export { memoryRetrievals } from "./memory_retrievals.js";
 export { memoryExtractionBatches } from "./memory_extraction_batches.js";
 export { memoryExtractions } from "./memory_extractions.js";

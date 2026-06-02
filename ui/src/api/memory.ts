@@ -2,10 +2,13 @@ import type {
   CompanyBrainEdgeKind,
   CompanyBrainMemoryUsageResponse,
   CompanyBrainNeighborsResponse,
+  CompanyBrainSemanticEdgeRecord,
+  CreateCompanyBrainSemanticEdge,
   MemoryItem,
   MemoryItemVersion,
   PendingMemoryQueue,
   Suggestion,
+  UpdateCompanyBrainSemanticEdge,
 } from "@armyofagents/shared";
 import { api } from "./client";
 
@@ -60,6 +63,17 @@ export const memoryApi = {
   usage: (companyId: string, id: string) =>
     api.get<CompanyBrainMemoryUsageResponse>(
       `/companies/${companyId}/memory/items/${encodeURIComponent(id)}/usage`,
+    ),
+  createGraphEdge: (companyId: string, data: CreateCompanyBrainSemanticEdge) =>
+    api.post<CompanyBrainSemanticEdgeRecord>(`/companies/${companyId}/memory/graph/edges`, data),
+  updateGraphEdge: (companyId: string, edgeId: string, data: UpdateCompanyBrainSemanticEdge) =>
+    api.patch<CompanyBrainSemanticEdgeRecord>(
+      `/companies/${companyId}/memory/graph/edges/${encodeURIComponent(edgeId)}`,
+      data,
+    ),
+  archiveGraphEdge: (companyId: string, edgeId: string) =>
+    api.delete<CompanyBrainSemanticEdgeRecord>(
+      `/companies/${companyId}/memory/graph/edges/${encodeURIComponent(edgeId)}`,
     ),
   listPending: (companyId: string) =>
     api.get<PendingMemoryQueue>(`/companies/${companyId}/memory-pending`),

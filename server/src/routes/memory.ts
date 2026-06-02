@@ -3,9 +3,11 @@ import type { Db } from "@armyofagents/db";
 import {
   createMemoryItemSchema,
   companyBrainNeighborQuerySchema,
+  createCompanyBrainSemanticEdgeSchema,
   memoryFolderUpdateSchema,
   suggestMemoryArchiveSchema,
   suggestMemoryUpdateSchema,
+  updateCompanyBrainSemanticEdgeSchema,
   updateMemoryItemSchema,
   type CompanyBrainEdgeKind,
 } from "@armyofagents/shared";
@@ -165,6 +167,98 @@ export function memoryRoutes(db: Db) {
     });
 
     res.json(usage);
+  });
+
+  router.post("/companies/:companyId/memory/graph/edges", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "update");
+
+    const parsed = createCompanyBrainSemanticEdgeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const edge = await graphSvc.createSemanticEdge(companyId, parsed.data, {
+      type: actor.actorType === "agent" ? "agent" : "user",
+      principalId: actor.actorId,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company_brain_edge.created",
+      entityType: "company_brain_edge",
+      entityId: edge.id,
+      details: {
+        kind: edge.kind,
+        fromType: edge.fromType,
+        fromId: edge.fromId,
+        toType: edge.toType,
+        toId: edge.toId,
+      },
+    });
+
+    res.status(201).json(edge);
+  });
+
+  router.patch("/companies/:companyId/memory/graph/edges/:edgeId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const edgeId = req.params.edgeId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "update");
+
+    const parsed = updateCompanyBrainSemanticEdgeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const edge = await graphSvc.updateSemanticEdge(companyId, edgeId, parsed.data);
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company_brain_edge.updated",
+      entityType: "company_brain_edge",
+      entityId: edge.id,
+      details: { kind: edge.kind },
+    });
+
+    res.json(edge);
+  });
+
+  router.delete("/companies/:companyId/memory/graph/edges/:edgeId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const edgeId = req.params.edgeId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "update");
+
+    const actor = getActorInfo(req);
+    const edge = await graphSvc.archiveSemanticEdge(companyId, edgeId);
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company_brain_edge.archived",
+      entityType: "company_brain_edge",
+      entityId: edge.id,
+      details: { kind: edge.kind },
+    });
+
+    res.json(edge);
   });
 
   router.get("/companies/:companyId/memory/:id", async (req, res) => {

@@ -41,6 +41,26 @@ export interface CompanyBrainEdge {
   metadata?: Record<string, unknown>;
 }
 
+export interface CompanyBrainSemanticEdgeRecord {
+  id: string;
+  companyId: string;
+  fromType: CompanyBrainNodeType;
+  fromId: string;
+  toType: CompanyBrainNodeType;
+  toId: string;
+  kind: CompanyBrainEdgeKind;
+  confidence?: string | number | null;
+  evidence?: string | null;
+  createdByPrincipalType: "agent" | "user" | "system";
+  createdByPrincipalId: string;
+  source: string;
+  status: "active" | "archived";
+  metadata?: Record<string, unknown>;
+  createdAt?: string | Date | null;
+  updatedAt?: string | Date | null;
+  archivedAt?: string | Date | null;
+}
+
 export interface CompanyBrainNeighborsResponse {
   center: CompanyBrainNode;
   nodes: CompanyBrainNode[];

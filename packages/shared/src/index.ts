@@ -346,6 +346,7 @@ export type {
   CompanyBrainNodeRef,
   CompanyBrainNode,
   CompanyBrainEdge,
+  CompanyBrainSemanticEdgeRecord,
   CompanyBrainNeighborsResponse,
   CompanyBrainMemoryUsageAgent,
   CompanyBrainMemoryUsageResponse,

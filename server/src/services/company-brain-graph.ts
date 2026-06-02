@@ -4,6 +4,7 @@ import {
   agentProjects,
   agents,
   artifacts,
+  companyBrainEdges,
   companyMemberships,
   goals,
   issues,
@@ -15,15 +16,19 @@ import {
 } from "@armyofagents/db";
 import {
   COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND,
+  COMPANY_BRAIN_EDITABLE_EDGE_KINDS,
   roleAtLeast,
+  type CompanyBrainNodeType,
   type CompanyBrainEdge,
   type CompanyBrainEdgeKind,
   type CompanyBrainMemoryUsageResponse,
   type CompanyBrainNeighborsResponse,
   type CompanyBrainNode,
   type CompanyBrainNodeRef,
+  type CreateCompanyBrainSemanticEdge,
+  type UpdateCompanyBrainSemanticEdge,
 } from "@armyofagents/shared";
-import { notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 
 export interface GraphActorScope {
   actorType: "user" | "agent";
@@ -54,12 +59,19 @@ export interface MemoryItemGraphRow {
   updatedAt?: Date | string | null;
 }
 
-export interface MemoryRelationGraphRow {
+export interface CompanyBrainSemanticEdgeGraphRow {
   id: string;
-  fromItemId: string;
-  toItemId: string;
+  fromType: string;
+  fromId: string;
+  toType: string;
+  toId: string;
   kind: string;
-  createdBy: string;
+  confidence?: string | number | null;
+  evidence?: string | null;
+  createdByPrincipalType: string;
+  createdByPrincipalId: string;
+  source: string;
+  status: string;
   createdAt?: Date | string | null;
 }
 
@@ -99,7 +111,7 @@ export interface MemoryItemNeighborGraphInput {
   center: MemoryItemGraphRow;
   actor: GraphActorScope;
   relatedItems: MemoryItemGraphRow[];
-  semanticRelations: MemoryRelationGraphRow[];
+  semanticEdges: CompanyBrainSemanticEdgeGraphRow[];
   linked: {
     departments?: LinkedProjectRow[];
     projects?: LinkedProjectRow[];
@@ -108,6 +120,27 @@ export interface MemoryItemNeighborGraphInput {
     artifacts?: LinkedArtifactRow[];
     agents?: LinkedAgentRow[];
   };
+}
+
+interface SemanticEdgeDuplicateRow {
+  id: string;
+  status: string;
+}
+
+interface PreparedSemanticEdgeInsert {
+  companyId: string;
+  fromType: CompanyBrainNodeType;
+  fromId: string;
+  toType: CompanyBrainNodeType;
+  toId: string;
+  kind: CompanyBrainEdgeKind;
+  confidence: string | null;
+  evidence: string | null;
+  createdByPrincipalType: "agent" | "user" | "system";
+  createdByPrincipalId: string;
+  source: string;
+  status: string;
+  metadata: Record<string, unknown>;
 }
 
 interface MemoryUsageRow {
@@ -132,6 +165,10 @@ function edgeKey(edge: CompanyBrainEdge): string {
 
 function isValidEdgeKind(kind: string): kind is CompanyBrainEdgeKind {
   return Object.prototype.hasOwnProperty.call(COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND, kind);
+}
+
+function isEditableEdgeKind(kind: string): kind is CompanyBrainEdgeKind {
+  return (COMPANY_BRAIN_EDITABLE_EDGE_KINDS as readonly string[]).includes(kind);
 }
 
 function addNode(nodes: Map<string, CompanyBrainNode>, node: CompanyBrainNode): void {
@@ -161,6 +198,98 @@ function derivedEdge(input: {
     editability: COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND[input.kind],
     evidence: input.evidence ?? null,
     metadata: input.metadata,
+  };
+}
+
+const STRUCTURAL_APPLIES_TO_TARGET_TYPES = new Set<CompanyBrainNodeType>([
+  "department",
+  "project",
+  "goal",
+  "task",
+  "artifact",
+  "agent",
+]);
+
+function parseConfidence(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const numeric = typeof value === "string" ? Number(value) : value;
+  if (typeof numeric !== "number" || Number.isNaN(numeric) || numeric < 0 || numeric > 1) {
+    throw badRequest("confidence must be between 0 and 1");
+  }
+  return String(numeric);
+}
+
+function prepareSemanticEdgeCreate(input: {
+  companyId: string;
+  input: CreateCompanyBrainSemanticEdge | {
+    from: CompanyBrainNodeRef;
+    to: CompanyBrainNodeRef;
+    kind: string;
+    confidence?: number | null;
+    evidence?: string | null;
+    metadata?: Record<string, unknown>;
+  };
+  actor: { actorType: "agent" | "user" | "system"; actorId: string };
+  duplicateRows: SemanticEdgeDuplicateRow[];
+}): PreparedSemanticEdgeInsert {
+  const kind = input.input.kind;
+  if (!isEditableEdgeKind(kind)) {
+    throw badRequest("Edge kind cannot be created manually");
+  }
+  if (
+    input.input.from.type === input.input.to.type &&
+    input.input.from.id === input.input.to.id
+  ) {
+    throw badRequest("Semantic edge cannot point to itself");
+  }
+  if (kind === "applies_to" && STRUCTURAL_APPLIES_TO_TARGET_TYPES.has(input.input.to.type)) {
+    throw badRequest("applies_to cannot target structural nodes manually");
+  }
+  if (input.duplicateRows.some((row) => row.status === "active")) {
+    throw conflict("Semantic edge already exists");
+  }
+
+  return {
+    companyId: input.companyId,
+    fromType: input.input.from.type,
+    fromId: input.input.from.id,
+    toType: input.input.to.type,
+    toId: input.input.to.id,
+    kind,
+    confidence: parseConfidence(input.input.confidence),
+    evidence: input.input.evidence ?? null,
+    createdByPrincipalType: input.actor.actorType,
+    createdByPrincipalId: input.actor.actorId,
+    source: "manual",
+    status: "active",
+    metadata: input.input.metadata ?? {},
+  };
+}
+
+function semanticEdgeToDto(
+  companyId: string,
+  edge: CompanyBrainSemanticEdgeGraphRow,
+): CompanyBrainEdge | null {
+  if (edge.status !== "active") return null;
+  if (!isValidEdgeKind(edge.kind)) return null;
+  return {
+    id: edge.id,
+    companyId,
+    from: { type: edge.fromType as CompanyBrainNodeType, id: edge.fromId },
+    to: { type: edge.toType as CompanyBrainNodeType, id: edge.toId },
+    kind: edge.kind,
+    sourceClass: "semantic",
+    editability: COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND[edge.kind],
+    confidence: edge.confidence === null || edge.confidence === undefined
+      ? null
+      : Number(edge.confidence),
+    evidence: edge.evidence ?? null,
+    createdBy: edge.createdByPrincipalId,
+    createdAt: dateToIso(edge.createdAt),
+    metadata: {
+      createdByPrincipalType: edge.createdByPrincipalType,
+      source: edge.source,
+    },
   };
 }
 
@@ -362,23 +491,15 @@ export function buildMemoryItemNeighborGraph(
     }));
   }
 
-  for (const relation of input.semanticRelations) {
-    if (!isValidEdgeKind(relation.kind)) continue;
-    const from = visibleItems.get(relation.fromItemId);
-    const to = visibleItems.get(relation.toItemId);
-    if (!from || !to) continue;
+  for (const edge of input.semanticEdges) {
+    const fromVisible =
+      edge.fromType === "memory_item" ? visibleItems.has(edge.fromId) : nodes.has(`${edge.fromType}:${edge.fromId}`);
+    const toVisible =
+      edge.toType === "memory_item" ? visibleItems.has(edge.toId) : nodes.has(`${edge.toType}:${edge.toId}`);
+    if (!fromVisible || !toVisible) continue;
 
-    addEdge(edges, {
-      id: relation.id,
-      companyId: input.companyId,
-      from: { type: "memory_item", id: relation.fromItemId },
-      to: { type: "memory_item", id: relation.toItemId },
-      kind: relation.kind,
-      sourceClass: "semantic",
-      editability: COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND[relation.kind],
-      createdBy: relation.createdBy,
-      createdAt: dateToIso(relation.createdAt),
-    });
+    const dto = semanticEdgeToDto(input.companyId, edge);
+    if (dto) addEdge(edges, dto);
   }
 
   return {
@@ -496,6 +617,97 @@ async function loadActorScope(
   };
 }
 
+function semanticEdgeEndpointItemIds(edges: CompanyBrainSemanticEdgeGraphRow[]): string[] {
+  return uniqueIds(
+    edges.flatMap((edge) => [
+      edge.fromType === "memory_item" ? edge.fromId : null,
+      edge.toType === "memory_item" ? edge.toId : null,
+    ]),
+  );
+}
+
+async function assertVisibleMemoryEndpoints(
+  db: Db,
+  companyId: string,
+  refs: CompanyBrainNodeRef[],
+  scope: GraphActorScope,
+): Promise<void> {
+  const itemIds = uniqueIds(refs.map((ref) => ref.type === "memory_item" ? ref.id : null));
+  if (itemIds.length === 0) return;
+
+  const rows = await db
+    .select()
+    .from(memoryItems)
+    .where(and(eq(memoryItems.companyId, companyId), inArray(memoryItems.id, itemIds)));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const itemId of itemIds) {
+    const row = byId.get(itemId);
+    if (!row || !canSeeMemoryItemForGraph(row, scope)) {
+      throw notFound("Memory item not found");
+    }
+  }
+}
+
+async function backfillLegacyMemoryRelationsForItem(
+  db: Db,
+  companyId: string,
+  memoryItemId: string,
+): Promise<void> {
+  const legacyRows = await db
+    .select({
+      id: memoryRelations.id,
+      fromItemId: memoryRelations.fromItemId,
+      toItemId: memoryRelations.toItemId,
+      kind: memoryRelations.kind,
+      createdBy: memoryRelations.createdBy,
+      createdAt: memoryRelations.createdAt,
+    })
+    .from(memoryRelations)
+    .where(
+      and(
+        eq(memoryRelations.companyId, companyId),
+        or(eq(memoryRelations.fromItemId, memoryItemId), eq(memoryRelations.toItemId, memoryItemId))!,
+      ),
+    );
+
+  for (const row of legacyRows) {
+    if (!isEditableEdgeKind(row.kind)) continue;
+    const existing = await db
+      .select({ id: companyBrainEdges.id, status: companyBrainEdges.status })
+      .from(companyBrainEdges)
+      .where(
+        and(
+          eq(companyBrainEdges.companyId, companyId),
+          eq(companyBrainEdges.fromType, "memory_item"),
+          eq(companyBrainEdges.fromId, row.fromItemId),
+          eq(companyBrainEdges.toType, "memory_item"),
+          eq(companyBrainEdges.toId, row.toItemId),
+          eq(companyBrainEdges.kind, row.kind),
+          eq(companyBrainEdges.status, "active"),
+        ),
+      );
+    if (existing.length > 0) continue;
+
+    await db.insert(companyBrainEdges).values({
+      companyId,
+      fromType: "memory_item",
+      fromId: row.fromItemId,
+      toType: "memory_item",
+      toId: row.toItemId,
+      kind: row.kind,
+      confidence: null,
+      evidence: null,
+      createdByPrincipalType: "system",
+      createdByPrincipalId: row.createdBy || "legacy_memory_relations",
+      source: "legacy_memory_relations",
+      status: "active",
+      metadata: { legacyRelationId: row.id },
+      createdAt: row.createdAt,
+      updatedAt: row.createdAt,
+    });
+  }
+}
+
 export function companyBrainGraphService(db: Db) {
   return {
     loadActorScope: (
@@ -515,28 +727,38 @@ export function companyBrainGraphService(db: Db) {
         .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.id, memoryItemId)))
         .then((rows) => rows[0] ?? null);
       if (!center) throw notFound("Memory item not found");
+      await backfillLegacyMemoryRelationsForItem(db, companyId, memoryItemId);
 
-      const semanticRelations = await db
+      const semanticEdges = await db
         .select({
-          id: memoryRelations.id,
-          fromItemId: memoryRelations.fromItemId,
-          toItemId: memoryRelations.toItemId,
-          kind: memoryRelations.kind,
-          createdBy: memoryRelations.createdBy,
-          createdAt: memoryRelations.createdAt,
+          id: companyBrainEdges.id,
+          fromType: companyBrainEdges.fromType,
+          fromId: companyBrainEdges.fromId,
+          toType: companyBrainEdges.toType,
+          toId: companyBrainEdges.toId,
+          kind: companyBrainEdges.kind,
+          confidence: companyBrainEdges.confidence,
+          evidence: companyBrainEdges.evidence,
+          createdByPrincipalType: companyBrainEdges.createdByPrincipalType,
+          createdByPrincipalId: companyBrainEdges.createdByPrincipalId,
+          source: companyBrainEdges.source,
+          status: companyBrainEdges.status,
+          createdAt: companyBrainEdges.createdAt,
         })
-        .from(memoryRelations)
+        .from(companyBrainEdges)
         .where(
           and(
-            eq(memoryRelations.companyId, companyId),
-            or(eq(memoryRelations.fromItemId, memoryItemId), eq(memoryRelations.toItemId, memoryItemId))!,
+            eq(companyBrainEdges.companyId, companyId),
+            eq(companyBrainEdges.status, "active"),
+            or(
+              and(eq(companyBrainEdges.fromType, "memory_item"), eq(companyBrainEdges.fromId, memoryItemId)),
+              and(eq(companyBrainEdges.toType, "memory_item"), eq(companyBrainEdges.toId, memoryItemId)),
+            )!,
           ),
         );
 
       const relatedItemIds = uniqueIds(
-        semanticRelations.flatMap((relation) => [
-          relation.fromItemId === memoryItemId ? relation.toItemId : relation.fromItemId,
-        ]),
+        semanticEdgeEndpointItemIds(semanticEdges).filter((id) => id !== memoryItemId),
       );
 
       const relatedItems = relatedItemIds.length > 0
@@ -612,7 +834,7 @@ export function companyBrainGraphService(db: Db) {
         center,
         actor: scope,
         relatedItems,
-        semanticRelations,
+        semanticEdges,
         linked: {
           departments: departmentRows,
           projects: projectRows,
@@ -658,9 +880,92 @@ export function companyBrainGraphService(db: Db) {
 
       return aggregateMemoryUsage(memoryItemId, rows);
     },
+
+    createSemanticEdge: async (
+      companyId: string,
+      input: CreateCompanyBrainSemanticEdge,
+      actor: { type: "user" | "agent"; principalId: string },
+    ) => {
+      const scope = await loadActorScope(db, companyId, actor);
+      await assertVisibleMemoryEndpoints(db, companyId, [input.from, input.to], scope);
+      const duplicates = await db
+        .select({ id: companyBrainEdges.id, status: companyBrainEdges.status })
+        .from(companyBrainEdges)
+        .where(
+          and(
+            eq(companyBrainEdges.companyId, companyId),
+            eq(companyBrainEdges.fromType, input.from.type),
+            eq(companyBrainEdges.fromId, input.from.id),
+            eq(companyBrainEdges.toType, input.to.type),
+            eq(companyBrainEdges.toId, input.to.id),
+            eq(companyBrainEdges.kind, input.kind),
+            eq(companyBrainEdges.status, "active"),
+          ),
+        );
+      const prepared = prepareSemanticEdgeCreate({
+        companyId,
+        input,
+        actor: {
+          actorType: actor.type,
+          actorId: actor.principalId,
+        },
+        duplicateRows: duplicates,
+      });
+      const [edge] = await db.insert(companyBrainEdges).values(prepared).returning();
+      return edge;
+    },
+
+    updateSemanticEdge: async (
+      companyId: string,
+      edgeId: string,
+      input: UpdateCompanyBrainSemanticEdge,
+    ) => {
+      const existing = await db
+        .select()
+        .from(companyBrainEdges)
+        .where(and(eq(companyBrainEdges.companyId, companyId), eq(companyBrainEdges.id, edgeId)))
+        .then((rows) => rows[0] ?? null);
+      if (!existing || existing.status !== "active") throw notFound("Semantic edge not found");
+      if (input.kind && !isEditableEdgeKind(input.kind)) {
+        throw badRequest("Edge kind cannot be created manually");
+      }
+      if (input.kind === "applies_to" && STRUCTURAL_APPLIES_TO_TARGET_TYPES.has(existing.toType as CompanyBrainNodeType)) {
+        throw badRequest("applies_to cannot target structural nodes manually");
+      }
+      const [edge] = await db
+        .update(companyBrainEdges)
+        .set({
+          kind: input.kind ?? existing.kind,
+          confidence: input.confidence === undefined ? existing.confidence : parseConfidence(input.confidence),
+          evidence: input.evidence === undefined ? existing.evidence : input.evidence,
+          metadata: input.metadata === undefined ? existing.metadata : input.metadata,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(companyBrainEdges.companyId, companyId), eq(companyBrainEdges.id, edgeId)))
+        .returning();
+      return edge;
+    },
+
+    archiveSemanticEdge: async (
+      companyId: string,
+      edgeId: string,
+    ) => {
+      const [edge] = await db
+        .update(companyBrainEdges)
+        .set({
+          status: "archived",
+          archivedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(companyBrainEdges.companyId, companyId), eq(companyBrainEdges.id, edgeId)))
+        .returning();
+      if (!edge) throw notFound("Semantic edge not found");
+      return edge;
+    },
   };
 }
 
 export const __companyBrainGraphTest = {
   aggregateMemoryUsage,
+  prepareSemanticEdgeCreate,
 };

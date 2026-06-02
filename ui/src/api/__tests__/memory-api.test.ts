@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../client", () => ({
   api: {
     get: vi.fn(),
+    post: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -49,6 +52,49 @@ describe("memoryApi.usage", () => {
 
     expect(api.get).toHaveBeenCalledWith(
       "/companies/company-1/memory/items/item%2F1/usage",
+    );
+  });
+});
+
+describe("memoryApi graph edge CRUD", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("posts semantic edge creates to the graph edge endpoint", async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ id: "edge-1" });
+
+    await memoryApi.createGraphEdge("company-1", {
+      from: { type: "memory_item", id: "item-1" },
+      to: { type: "memory_item", id: "item-2" },
+      kind: "related_to",
+      evidence: "Same policy area",
+    });
+
+    expect(api.post).toHaveBeenCalledWith(
+      "/companies/company-1/memory/graph/edges",
+      {
+        from: { type: "memory_item", id: "item-1" },
+        to: { type: "memory_item", id: "item-2" },
+        kind: "related_to",
+        evidence: "Same policy area",
+      },
+    );
+  });
+
+  it("URL-encodes edge ids for update and archive", async () => {
+    vi.mocked(api.patch).mockResolvedValueOnce({ id: "edge/1" });
+    vi.mocked(api.delete).mockResolvedValueOnce({ id: "edge/1" });
+
+    await memoryApi.updateGraphEdge("company-1", "edge/1", { evidence: "Updated" });
+    await memoryApi.archiveGraphEdge("company-1", "edge/1");
+
+    expect(api.patch).toHaveBeenCalledWith(
+      "/companies/company-1/memory/graph/edges/edge%2F1",
+      { evidence: "Updated" },
+    );
+    expect(api.delete).toHaveBeenCalledWith(
+      "/companies/company-1/memory/graph/edges/edge%2F1",
     );
   });
 });
