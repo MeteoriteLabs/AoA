@@ -6,6 +6,8 @@ import {
   COMPANY_BRAIN_NODE_TYPES,
 } from "../../constants.js";
 import {
+  companyBrainOverviewQuerySchema,
+  companyBrainOverviewResponseSchema,
   companyBrainNeighborQuerySchema,
   companyBrainNeighborsResponseSchema,
   companyBrainNodeRefSchema,
@@ -52,6 +54,34 @@ describe("companyBrainNeighborQuerySchema", () => {
   it("accepts a comma-separated edge kind filter", () => {
     const result = companyBrainNeighborQuerySchema.parse({ kinds: "belongs_to,related_to" });
     expect(result.kinds).toEqual(["belongs_to", "related_to"]);
+  });
+});
+
+describe("companyBrainOverviewQuerySchema", () => {
+  it("defaults to a bounded company graph overview with structural edges", () => {
+    expect(companyBrainOverviewQuerySchema.parse({})).toEqual({
+      limit: 100,
+      includeStructural: true,
+      kinds: undefined,
+    });
+  });
+
+  it("coerces numeric limits and explicit boolean query strings", () => {
+    expect(companyBrainOverviewQuerySchema.parse({
+      limit: "150",
+      includeStructural: "false",
+      kinds: "related_to,supports",
+    })).toEqual({
+      limit: 150,
+      includeStructural: false,
+      kinds: ["related_to", "supports"],
+    });
+  });
+
+  it("rejects invalid overview limits and boolean strings", () => {
+    expect(companyBrainOverviewQuerySchema.safeParse({ limit: "0" }).success).toBe(false);
+    expect(companyBrainOverviewQuerySchema.safeParse({ limit: "251" }).success).toBe(false);
+    expect(companyBrainOverviewQuerySchema.safeParse({ includeStructural: "no" }).success).toBe(false);
   });
 });
 
@@ -114,6 +144,45 @@ describe("companyBrainNeighborsResponseSchema", () => {
           editability: "source_row_only",
         },
       ],
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("companyBrainOverviewResponseSchema", () => {
+  it("validates a bounded company graph overview response", () => {
+    const companyId = "00000000-0000-0000-0000-000000000010";
+    const memoryA = {
+      type: "memory_item",
+      id: "00000000-0000-0000-0000-000000000001",
+      companyId,
+      label: "Pricing policy",
+      status: "approved",
+    };
+    const memoryB = {
+      type: "memory_item",
+      id: "00000000-0000-0000-0000-000000000002",
+      companyId,
+      label: "Seat billing",
+      status: "approved",
+    };
+
+    const result = companyBrainOverviewResponseSchema.safeParse({
+      nodes: [memoryA, memoryB],
+      edges: [
+        {
+          id: "edge-1",
+          companyId,
+          from: { type: "memory_item", id: memoryA.id },
+          to: { type: "memory_item", id: memoryB.id },
+          kind: "supports",
+          sourceClass: "semantic",
+          editability: "editable",
+        },
+      ],
+      limit: 100,
+      truncated: false,
     });
 
     expect(result.success).toBe(true);

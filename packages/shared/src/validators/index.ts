@@ -132,6 +132,8 @@ export {
   companyBrainEdgeSchema,
   companyBrainNeighborQuerySchema,
   companyBrainNeighborsResponseSchema,
+  companyBrainOverviewQuerySchema,
+  companyBrainOverviewResponseSchema,
   createCompanyBrainSemanticEdgeSchema,
   updateCompanyBrainSemanticEdgeSchema,
   type CompanyBrainNodeRefInput,
@@ -139,6 +141,8 @@ export {
   type CompanyBrainEdgeInput,
   type CompanyBrainNeighborQuery,
   type CompanyBrainNeighborsResponseInput,
+  type CompanyBrainOverviewQuery,
+  type CompanyBrainOverviewResponseInput,
   type CreateCompanyBrainSemanticEdge,
   type UpdateCompanyBrainSemanticEdge,
 } from "./company-brain-graph.js";

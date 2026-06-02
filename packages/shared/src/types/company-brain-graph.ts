@@ -67,6 +67,13 @@ export interface CompanyBrainNeighborsResponse {
   edges: CompanyBrainEdge[];
 }
 
+export interface CompanyBrainOverviewResponse {
+  nodes: CompanyBrainNode[];
+  edges: CompanyBrainEdge[];
+  limit: number;
+  truncated: boolean;
+}
+
 export interface CompanyBrainMemoryUsageAgent {
   agentId: string | null;
   agentName: string;

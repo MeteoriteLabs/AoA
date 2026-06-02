@@ -48,6 +48,7 @@ export type {
   CompanyBrainEdge,
   CompanyBrainSemanticEdgeRecord,
   CompanyBrainNeighborsResponse,
+  CompanyBrainOverviewResponse,
   CompanyBrainMemoryUsageAgent,
   CompanyBrainMemoryUsageResponse,
 } from "./company-brain-graph.js";

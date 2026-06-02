@@ -62,6 +62,16 @@ export const companyBrainNeighborsResponseSchema = z.object({
 export type CompanyBrainNeighborsResponseInput =
   z.infer<typeof companyBrainNeighborsResponseSchema>;
 
+export const companyBrainOverviewResponseSchema = z.object({
+  nodes: z.array(companyBrainNodeSchema),
+  edges: z.array(companyBrainEdgeSchema),
+  limit: z.number().int().min(1).max(250),
+  truncated: z.boolean(),
+});
+
+export type CompanyBrainOverviewResponseInput =
+  z.infer<typeof companyBrainOverviewResponseSchema>;
+
 const edgeKindListSchema = z.preprocess((value) => {
   if (typeof value === "string") {
     return value.split(",").map((kind) => kind.trim()).filter(Boolean);
@@ -69,12 +79,29 @@ const edgeKindListSchema = z.preprocess((value) => {
   return value;
 }, z.array(z.enum(COMPANY_BRAIN_EDGE_KINDS)).optional());
 
+const booleanQueryParamSchema = z
+  .union([z.boolean(), z.enum(["true", "false"])])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) return true;
+    if (typeof value === "boolean") return value;
+    return value === "true";
+  });
+
 export const companyBrainNeighborQuerySchema = z.object({
   depth: z.coerce.number().int().min(1).max(1).default(1),
   kinds: edgeKindListSchema,
 });
 
 export type CompanyBrainNeighborQuery = z.infer<typeof companyBrainNeighborQuerySchema>;
+
+export const companyBrainOverviewQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(250).default(100),
+  includeStructural: booleanQueryParamSchema,
+  kinds: edgeKindListSchema,
+});
+
+export type CompanyBrainOverviewQuery = z.infer<typeof companyBrainOverviewQuerySchema>;
 
 export const createCompanyBrainSemanticEdgeSchema = z.object({
   from: companyBrainNodeRefSchema,
