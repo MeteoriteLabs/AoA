@@ -12,6 +12,8 @@ import {
   Clock,
   Inbox,
   Archive,
+  Folder,
+  HardDrive,
   PanelLeftClose,
   type LucideIcon,
 } from "lucide-react";
@@ -25,6 +27,7 @@ import { memoryFoldersApi } from "../../api/memoryFolders";
 import { memoryApi } from "../../api/memory";
 import { projectsApi } from "../../api/projects";
 import { goalsApi } from "../../api/goals";
+import { filesystemApi, type FsBrowseEntry } from "../../api/filesystem";
 import { queryKeys } from "../../lib/queryKeys";
 import { LAYER_LABELS } from "../../lib/memoryItemView";
 import { useCompany } from "../../context/CompanyContext";
@@ -41,6 +44,7 @@ interface MemoryTreeProps {
   selectedDepartmentId: string | null;
   selectedLayer: string | null;
   selectedGoalId: string | null;
+  selectedLocalPath?: string | null;
   onToggleCollapse?: () => void;
 }
 
@@ -56,7 +60,7 @@ interface TreeNode {
   depth: number;
   hasChildren: boolean;
   /** When set, click navigates here. When null, clicking only toggles expand. */
-  target: { folder: string; dept: string | null; layer?: string; goal?: string } | null;
+  target: { folder: string; dept: string | null; layer?: string; goal?: string; localPath?: string } | null;
   children?: TreeNode[];
   /** Optional soft-warn shown as a native browser tooltip on hover (e.g. deep-nesting). */
   tooltip?: string;
@@ -77,6 +81,7 @@ const LAYER_META: Record<LayerKey, { Icon: LucideIcon; tone: string }> = {
 const DEFAULT_EXPANDED = new Set<string>([
   "__layer-identity",
   "__layer-domain",
+  "__local",
 ]);
 
 export function MemoryTree({
@@ -85,6 +90,7 @@ export function MemoryTree({
   selectedDepartmentId,
   selectedLayer,
   selectedGoalId,
+  selectedLocalPath,
   onToggleCollapse,
 }: MemoryTreeProps) {
   const navigate = useNavigate();
@@ -123,6 +129,21 @@ export function MemoryTree({
     queryKey: queryKeys.goals.list(companyId),
     queryFn: () => goalsApi.list(companyId),
     enabled: Boolean(companyId),
+  });
+
+  const { data: localHome } = useQuery({
+    queryKey: ["filesystem", "memory-local-home"],
+    queryFn: () => filesystemApi.home(),
+  });
+
+  const localBrowsePath = selectedLocalPath ?? localHome?.homePath ?? "";
+  const { data: localBrowse } = useQuery({
+    queryKey: ["filesystem", "memory-local-tree", localBrowsePath],
+    queryFn: () => filesystemApi.browse(localBrowsePath, {
+      gitAware: true,
+      includeFiles: false,
+    }),
+    enabled: Boolean(localBrowsePath),
   });
 
   const departments = useMemo<Project[]>(
@@ -192,15 +213,34 @@ export function MemoryTree({
         departments,
         activeGoals,
         counts,
+        local: localBrowse
+          ? {
+              currentPath: localBrowse.currentPath,
+              homePath: localBrowse.homePath,
+              entries: localBrowse.entries,
+              selectedPath: selectedLocalPath ?? localBrowse.currentPath,
+            }
+          : localHome
+            ? {
+                currentPath: localHome.homePath,
+                homePath: localHome.homePath,
+                entries: [],
+                selectedPath: selectedLocalPath ?? localHome.homePath,
+              }
+            : null,
       }),
-    [folders, departments, activeGoals, counts],
+    [folders, departments, activeGoals, counts, localBrowse, localHome, selectedLocalPath],
   );
 
   // Auto-expand the ancestor chain of the selected scope.
   useEffect(() => {
-    if (!selectedFolderPath && !selectedDepartmentId) return;
+    if (!selectedFolderPath && !selectedDepartmentId && !selectedLocalPath) return;
     setExpanded((prev) => {
       const next = new Set(prev);
+      if (selectedLocalPath) {
+        next.add("__local");
+        next.add("__local-current");
+      }
       // Domain dept selection -> expand Domain layer.
       if (selectedDepartmentId) {
         next.add("__layer-domain");
@@ -218,7 +258,7 @@ export function MemoryTree({
       }
       return next;
     });
-  }, [selectedFolderPath, selectedDepartmentId, selectedLayer, selectedGoalId]);
+  }, [selectedFolderPath, selectedDepartmentId, selectedLayer, selectedGoalId, selectedLocalPath]);
 
   function toggleExpand(key: string) {
     setExpanded((prev) => {
@@ -245,6 +285,7 @@ export function MemoryTree({
     if (t.folder) params.set("folder", t.folder);
     if (t.dept) params.set("dept", t.dept);
     if (t.goal) params.set("goal", t.goal);
+    if (t.localPath) params.set("localPath", t.localPath);
     const search = params.toString();
     navigate(
       search
@@ -256,6 +297,7 @@ export function MemoryTree({
   function isSelected(target: TreeNode["target"]): boolean {
     if (!target) return false;
     return (
+      (target.localPath ?? null) === (selectedLocalPath ?? null) &&
       (target.folder ?? "") === selectedFolderPath &&
       (target.dept ?? null) === selectedDepartmentId &&
       (target.layer ?? null) === selectedLayer &&
@@ -478,6 +520,12 @@ interface BuildTreeArgs {
   folders: MemoryFolderRecord[];
   departments: Project[];
   activeGoals: Goal[];
+  local: {
+    currentPath: string;
+    homePath: string;
+    selectedPath: string;
+    entries: FsBrowseEntry[];
+  } | null;
   counts: {
     byLayer: Record<LayerKey, number>;
     byDeptDomain: Map<string, number>;
@@ -493,6 +541,7 @@ function buildTree({
   folders,
   departments,
   activeGoals,
+  local,
   counts,
 }: BuildTreeArgs): TreeNode[] {
   const top: TreeNode[] = [];
@@ -544,6 +593,8 @@ function buildTree({
     hasChildren: false,
     target: { folder: "__archived", dept: null },
   });
+
+  top.push(buildLocalTreeNode(local));
 
   // Identity layer.
   const companyFolders = folders.filter((f) => f.departmentId === null);
@@ -657,6 +708,72 @@ function buildTree({
   });
 
   return top;
+}
+
+function localBaseName(value: string): string {
+  const normalized = value.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? value;
+}
+
+function buildLocalTreeNode(local: BuildTreeArgs["local"]): TreeNode {
+  const currentPath = local?.currentPath ?? "";
+  const homePath = local?.homePath ?? "";
+  const directoryChildren: TreeNode[] = (local?.entries ?? [])
+    .filter((entry) => entry.isDirectory)
+    .slice(0, 30)
+    .map((entry) => ({
+      key: `__local-dir-${entry.path}`,
+      label: entry.name,
+      Icon: Folder,
+      depth: 2,
+      hasChildren: false,
+      target: {
+        folder: "",
+        dept: null,
+        localPath: entry.path,
+      },
+      tooltip: entry.path,
+    }));
+
+  const currentLabel = currentPath ? localBaseName(currentPath) : "Local files";
+  const children: TreeNode[] = currentPath
+    ? [
+        {
+          key: "__local-current",
+          label: currentLabel,
+          Icon: Folder,
+          count: local?.entries.length,
+          depth: 1,
+          hasChildren: directoryChildren.length > 0,
+          target: { folder: "", dept: null, localPath: currentPath },
+          children: directoryChildren,
+          tooltip: currentPath,
+        },
+      ]
+    : [];
+
+  if (homePath && homePath !== currentPath) {
+    children.unshift({
+      key: "__local-home",
+      label: "Home",
+      Icon: Folder,
+      depth: 1,
+      hasChildren: false,
+      target: { folder: "", dept: null, localPath: homePath },
+      tooltip: homePath,
+    });
+  }
+
+  return {
+    key: "__local",
+    label: "Local",
+    Icon: HardDrive,
+    depth: 0,
+    hasChildren: children.length > 0,
+    target: null,
+    children,
+  };
 }
 
 function buildFolderChildren({

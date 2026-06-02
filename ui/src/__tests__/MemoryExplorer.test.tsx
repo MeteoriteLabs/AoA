@@ -164,6 +164,35 @@ vi.mock("../api/memory", () => ({
   memoryApi: memoryApiMock,
 }));
 
+vi.mock("../api/filesystem", () => ({
+  filesystemApi: {
+    home: vi.fn(async () => ({
+      homePath: "C:\\Users\\TK",
+      platform: "win32",
+    })),
+    browse: vi.fn(async () => ({
+      currentPath: "C:\\Users\\TK\\AoA Company",
+      parentPath: "C:\\Users\\TK",
+      homePath: "C:\\Users\\TK",
+      platform: "win32",
+      entries: [
+        {
+          name: "Company",
+          path: "C:\\Users\\TK\\AoA Company\\Company",
+          isDirectory: true,
+          isGitRepo: false,
+        },
+        {
+          name: "brand.md",
+          path: "C:\\Users\\TK\\AoA Company\\brand.md",
+          isDirectory: false,
+          isGitRepo: false,
+        },
+      ],
+    })),
+  },
+}));
+
 vi.mock("../api/projects", () => ({
   projectsApi: {
     list: vi.fn(async () => [
@@ -347,5 +376,17 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
     expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Select Company strategy" })).toBeInTheDocument();
+  });
+
+  it("shows local folders and files when a local path is selected", async () => {
+    renderPage("/co1/memory/explore?localPath=C%3A%5CUsers%5CTK%5CAoA%20Company");
+
+    await waitFor(() =>
+      expect(screen.getByText("Local")).toBeInTheDocument(),
+    );
+    expect(await screen.findByTestId("memory-local-list")).toBeInTheDocument();
+    expect(screen.getAllByText("AoA Company").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Company").length).toBeGreaterThan(0);
+    expect(screen.getByText("brand.md")).toBeInTheDocument();
   });
 });

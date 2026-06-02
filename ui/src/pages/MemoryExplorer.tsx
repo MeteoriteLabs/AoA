@@ -7,6 +7,7 @@ import type { PanelImperativeHandle } from "react-resizable-panels";
 import { Button } from "@/components/ui/button";
 import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
+import { MemoryLocalFileList } from "../components/memory/MemoryLocalFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
 import { MemoryCollapsedTabStrip } from "../components/memory/MemoryCollapsedTabStrip";
 import { MemoryFolderRail } from "../components/memory/MemoryFolderRail";
@@ -32,6 +33,7 @@ export function MemoryExplorer() {
   const departmentId = searchParams.get("dept") ?? null;
   const layer = searchParams.get("layer");
   const goalId = searchParams.get("goal");
+  const localPath = searchParams.get("localPath");
 
   // Legacy URL params: ?item=X&type=Y deep-link support.
   const selectedItemId = searchParams.get("item");
@@ -68,7 +70,7 @@ export function MemoryExplorer() {
 
   // Phase 6.2a: synthetic Home selection — no folder, no dept, no layer, no item.
   const isHomeSelected =
-    !folderPath && !departmentId && !layer && !selectedItemId;
+    !folderPath && !departmentId && !layer && !selectedItemId && !localPath;
   const selectedFileListType =
     activeKey?.kind === "memory_item" || activeKey?.kind === "asset"
       ? activeKey.kind
@@ -185,6 +187,7 @@ export function MemoryExplorer() {
                 selectedDepartmentId={departmentId}
                 selectedLayer={layer ?? null}
                 selectedGoalId={goalId ?? null}
+                selectedLocalPath={localPath}
                 onToggleCollapse={() => {
                   setTreeCollapsed(true);
                   treePanelRef.current?.collapse();
@@ -208,7 +211,9 @@ export function MemoryExplorer() {
             className="h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm"
             data-testid="memory-list-shell"
           >
-            {isHomeSelected ? (
+            {localPath ? (
+              <MemoryLocalFileList localPath={localPath} />
+            ) : isHomeSelected ? (
               <div className="h-full flex flex-col bg-card/30">
                 <div
                   className="flex h-[42px] shrink-0 items-center gap-3 border-b border-border bg-card px-3"
