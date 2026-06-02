@@ -138,6 +138,32 @@ export function getSeedFoldersForFunctionType(
   return SEEDS_BY_FUNCTION_TYPE[functionType] ?? GENERIC_SEEDS;
 }
 
+function companySeed(path: string, icon?: string): FolderSeed {
+  const displayName = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+  const seedKey = path === "Company"
+    ? "company.root"
+    : `company.${seedKeySegment(path.slice("Company/".length)).replace(/\//g, "-")}`;
+  return { path, displayName, seedKey, ...(icon ? { icon } : {}) };
+}
+
 export const COMPANY_SEED_FOLDERS: FolderSeed[] = [
-  { path: "Company", displayName: "Company", seedKey: "company.root", icon: "🏛️" },
+  companySeed("Company", "🏛️"),
+  companySeed("Company/Profile"),
+  companySeed("Company/Mission & Vision"),
+  companySeed("Company/Strategy"),
+  companySeed("Company/Operating Principles"),
+  companySeed("Company/Brand & Voice"),
+  companySeed("Company/Policies"),
+  companySeed("Company/People"),
+  companySeed("Company/People/Humans"),
+  companySeed("Company/People/Teams"),
+  companySeed("Company/People/Roles"),
+  companySeed("Company/Agents"),
+  companySeed("Company/Agents/Directory"),
+  companySeed("Company/Agents/Responsibilities"),
+  companySeed("Company/Agents/Agent Teams"),
+  companySeed("Company/Decisions"),
+  companySeed("Company/Processes"),
+  companySeed("Company/References"),
+  companySeed("Company/Files", FILES_ICON),
 ];

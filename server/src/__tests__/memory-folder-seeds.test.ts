@@ -128,10 +128,33 @@ describe("memory-folder-seeds", () => {
     );
   });
 
-  it("COMPANY_SEED_FOLDERS exposes the company-root folder", () => {
-    expect(COMPANY_SEED_FOLDERS).toEqual([
-      { path: "Company", displayName: "Company", seedKey: "company.root", icon: "🏛️" },
+  it("COMPANY_SEED_FOLDERS exposes the expanded company identity folders", () => {
+    expect(COMPANY_SEED_FOLDERS.map((s) => s.path)).toEqual([
+      "Company",
+      "Company/Profile",
+      "Company/Mission & Vision",
+      "Company/Strategy",
+      "Company/Operating Principles",
+      "Company/Brand & Voice",
+      "Company/Policies",
+      "Company/People",
+      "Company/People/Humans",
+      "Company/People/Teams",
+      "Company/People/Roles",
+      "Company/Agents",
+      "Company/Agents/Directory",
+      "Company/Agents/Responsibilities",
+      "Company/Agents/Agent Teams",
+      "Company/Decisions",
+      "Company/Processes",
+      "Company/References",
+      "Company/Files",
     ]);
+    expect(COMPANY_SEED_FOLDERS[0]).toMatchObject({
+      path: "Company",
+      displayName: "Company",
+      seedKey: "company.root",
+    });
   });
 });
 

@@ -19,30 +19,50 @@ vi.mock("../middleware/logger.js", () => ({
 import { seedCompanyRootFolder } from "../services/memory-folders.js";
 
 describe("seedCompanyRootFolder", () => {
-  it("creates the Company folder for a new company", async () => {
-    const createSpy = vi.fn(async () => ({ id: "f-1", path: "Company" }));
+  it("creates the expanded Company folder set for a new company", async () => {
+    const createSpy = vi.fn(async (input) => ({ id: `f-${input.seedKey}`, path: input.path }));
     const fakeSvc = { create: createSpy };
+
     await seedCompanyRootFolder(fakeSvc as never, { companyId: "co-1" });
-    expect(createSpy).toHaveBeenCalledWith({
+
+    expect(createSpy).toHaveBeenCalledTimes(19);
+    expect(createSpy).toHaveBeenNthCalledWith(1, expect.objectContaining({
       companyId: "co-1",
       departmentId: null,
       path: "Company",
       displayName: "Company",
-      icon: "🏛️",
       seedKey: "company.root",
-    });
+    }));
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
+      path: "Company/People/Humans",
+      seedKey: "company.people-humans",
+    }));
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
+      path: "Company/Agents/Agent Teams",
+      seedKey: "company.agents-agent-teams",
+    }));
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
+      path: "Company/Files",
+      seedKey: "company.files",
+    }));
   });
 
-  it("is idempotent — does not throw on duplicate seed", async () => {
-    // The unique index on (companyId, path) will reject the second insert; the
-    // helper catches and treats as "already seeded".
-    const createSpy = vi.fn(async () => {
-      throw new Error("duplicate key value violates unique constraint \"memory_folders_unique_path_per_company\"");
+  it("is idempotent and continues creating missing folders after duplicate seeds", async () => {
+    const createdPaths: string[] = [];
+    const createSpy = vi.fn(async (input) => {
+      if (input.path === "Company") {
+        throw new Error("duplicate key value violates unique constraint \"memory_folders_unique_path_per_company\"");
+      }
+      createdPaths.push(input.path);
+      return { id: `f-${input.seedKey}`, path: input.path };
     });
     const fakeSvc = { create: createSpy };
-    // Should not throw.
+
     await expect(
       seedCompanyRootFolder(fakeSvc as never, { companyId: "co-1" }),
     ).resolves.toBeUndefined();
+
+    expect(createdPaths).toContain("Company/Profile");
+    expect(createdPaths).toContain("Company/Files");
   });
 });
