@@ -12,6 +12,7 @@ import type {
   CompanyBrainNode,
   CompanyBrainOverviewResponse,
 } from "@armyofagents/shared";
+import { graphNodeColor } from "./graphTheme";
 
 interface CompanyGraphD3ViewProps {
   graph: CompanyBrainOverviewResponse;
@@ -42,28 +43,6 @@ const HEIGHT = 420;
 
 function nodeKey(node: Pick<CompanyBrainNode, "type" | "id">): string {
   return `${node.type}:${node.id}`;
-}
-
-function nodeColor(type: CompanyBrainNode["type"]): string {
-  switch (type) {
-    case "memory_item":
-      return "#38bdf8";
-    case "memory_folder":
-      return "#2dd4bf";
-    case "department":
-    case "project":
-      return "#a78bfa";
-    case "goal":
-      return "#34d399";
-    case "task":
-      return "#fbbf24";
-    case "agent":
-      return "#f472b6";
-    case "artifact":
-      return "#fb7185";
-    default:
-      return "#94a3b8";
-  }
 }
 
 function nodeTypeLabel(type: string): string {
@@ -110,14 +89,15 @@ export function CompanyGraphNetworkView({ graph }: CompanyGraphD3ViewProps) {
 
   return (
     <section
-      className="min-h-[420px] overflow-hidden rounded-md border border-border bg-card"
+      className="h-full min-h-0 overflow-hidden rounded-md border border-border bg-card text-text"
       data-testid="company-graph-network-view"
     >
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
         aria-label="Network graph view"
-        className="h-full min-h-[420px] w-full bg-background"
+        preserveAspectRatio="xMidYMid meet"
+        className="h-full min-h-0 w-full bg-background text-text"
       >
         {layout.links.map((link, index) => {
           const sourceKey = typeof link.source === "string" ? link.source : link.source.key;
@@ -134,7 +114,7 @@ export function CompanyGraphNetworkView({ graph }: CompanyGraphD3ViewProps) {
               y1={s.y}
               x2={t.x}
               y2={t.y}
-              stroke="#475569"
+              stroke="var(--border-strong, #3a3a3a)"
               strokeWidth="1.2"
               opacity="0.7"
             />
@@ -144,7 +124,7 @@ export function CompanyGraphNetworkView({ graph }: CompanyGraphD3ViewProps) {
           const point = coordinates(node, index, layout.nodes.length);
           return (
             <g key={node.key} transform={`translate(${point.x} ${point.y})`}>
-              <circle r={node.type === "memory_item" ? 10 : 8} fill={nodeColor(node.type)} />
+              <circle r={node.type === "memory_item" ? 10 : 8} fill={graphNodeColor(node.type)} />
               <text
                 x="14"
                 y="4"
@@ -194,24 +174,25 @@ export function CompanyGraphClusterView({ graph }: CompanyGraphD3ViewProps) {
 
   return (
     <section
-      className="min-h-[420px] overflow-hidden rounded-md border border-border bg-card"
+      className="h-full min-h-0 overflow-hidden rounded-md border border-border bg-card text-text"
       data-testid="company-graph-cluster-view"
     >
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
         aria-label="Cluster graph view"
-        className="h-full min-h-[420px] w-full bg-background"
+        preserveAspectRatio="xMidYMid meet"
+        className="h-full min-h-0 w-full bg-background text-text"
       >
         {circles.slice(1).map((circle) => {
           const isLeaf = Boolean(circle.data.node);
-          const color = nodeColor(circle.data.type ?? "memory_item");
+          const color = graphNodeColor(circle.data.type ?? "memory_item");
           return (
             <g key={`${circle.data.name}-${circle.x}-${circle.y}`} transform={`translate(${circle.x} ${circle.y})`}>
               <circle
                 r={circle.r}
-                fill={isLeaf ? color : `${color}22`}
-                stroke={isLeaf ? "transparent" : `${color}88`}
+                fill={isLeaf ? color : `color-mix(in srgb, ${color} 14%, transparent)`}
+                stroke={isLeaf ? "transparent" : `color-mix(in srgb, ${color} 55%, transparent)`}
                 strokeWidth={isLeaf ? 0 : 1.2}
               />
               {(isLeaf || circle.r > 34) && (

@@ -88,12 +88,12 @@ export function MemoryGraphViewer({
       } else if (companyGraphMode === "cluster") {
         graphContent = <CompanyGraphClusterView graph={companyGraphQuery.data} />;
       } else {
-      graphContent = (
-        <CompanyGraphCanvas
-          graph={companyGraphQuery.data}
-          onOpenMemoryItem={onOpenMemoryItem}
-        />
-      );
+        graphContent = (
+          <CompanyGraphCanvas
+            graph={companyGraphQuery.data}
+            onOpenMemoryItem={onOpenMemoryItem}
+          />
+        );
       }
     }
 
@@ -125,10 +125,11 @@ export function MemoryGraphViewer({
             </div>
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto p-5">
-          <div className="grid gap-3">
-            {graphContent}
-          </div>
+        <div
+          className="flex-1 min-h-0 overflow-hidden p-3"
+          data-testid="company-graph-mode-shell"
+        >
+          {graphContent}
         </div>
       </div>
     );

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
+import Sigma from "sigma";
 import { MemoryGraphViewer } from "../MemoryGraphViewer";
 
 const memoryApiMock = vi.hoisted(() => ({
@@ -45,12 +46,13 @@ const memoryApiMock = vi.hoisted(() => ({
 
 const sigmaKillMock = vi.hoisted(() => vi.fn());
 const sigmaOnMock = vi.hoisted(() => vi.fn());
+const sigmaConstructorMock = vi.hoisted(() => vi.fn().mockImplementation(() => ({
+  kill: sigmaKillMock,
+  on: sigmaOnMock,
+})));
 
 vi.mock("sigma", () => ({
-  default: vi.fn().mockImplementation(() => ({
-    kill: sigmaKillMock,
-    on: sigmaOnMock,
-  })),
+  default: sigmaConstructorMock,
 }));
 
 vi.mock("../../../api/memory", () => ({
@@ -89,7 +91,20 @@ describe("MemoryGraphViewer", () => {
     );
 
     expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+    expect(screen.getByTestId("company-graph-map-view")).toHaveClass("text-text");
+    expect(screen.getByTestId("company-graph-mode-shell")).toHaveClass("overflow-hidden");
     expect(screen.getAllByText("2 nodes / 1 edges")).toHaveLength(2);
+    await waitFor(() =>
+      expect(vi.mocked(Sigma)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.any(HTMLElement),
+        expect.objectContaining({
+          labelColor: { color: expect.any(String) },
+          edgeLabelColor: { color: expect.any(String) },
+          renderLabels: true,
+        }),
+      ),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Open Launch plan" }));
     expect(onOpenMemoryItem).toHaveBeenCalledWith({
@@ -110,9 +125,13 @@ describe("MemoryGraphViewer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Network view" }));
     expect(screen.getByTestId("company-graph-network-view")).toBeInTheDocument();
+    expect(screen.getByTestId("company-graph-network-view")).toHaveClass("h-full");
+    expect(screen.getByTestId("company-graph-network-view")).toHaveClass("text-text");
 
     fireEvent.click(screen.getByRole("button", { name: "Cluster view" }));
     expect(screen.getByTestId("company-graph-cluster-view")).toBeInTheDocument();
+    expect(screen.getByTestId("company-graph-cluster-view")).toHaveClass("h-full");
+    expect(screen.getByTestId("company-graph-cluster-view")).toHaveClass("text-text");
 
     fireEvent.click(screen.getByRole("button", { name: "Map view" }));
     expect(screen.getByTestId("company-graph-sigma-canvas")).toBeInTheDocument();

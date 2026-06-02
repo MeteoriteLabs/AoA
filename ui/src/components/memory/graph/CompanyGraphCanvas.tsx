@@ -7,6 +7,12 @@ import type {
   CompanyBrainOverviewResponse,
 } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
+import {
+  graphCssColor,
+  graphEdgeCanvasColor,
+  graphNodeCanvasColor,
+  graphNodeColor,
+} from "./graphTheme";
 
 interface CompanyGraphCanvasProps {
   graph: CompanyBrainOverviewResponse;
@@ -20,26 +26,6 @@ interface ConnectedEdge {
 
 function nodeKey(node: Pick<CompanyBrainNode, "type" | "id">): string {
   return `${node.type}:${node.id}`;
-}
-
-function nodeColor(type: CompanyBrainNode["type"]): string {
-  switch (type) {
-    case "memory_item":
-      return "#38bdf8";
-    case "department":
-    case "project":
-      return "#a78bfa";
-    case "goal":
-      return "#34d399";
-    case "task":
-      return "#fbbf24";
-    case "agent":
-      return "#f472b6";
-    case "artifact":
-      return "#fb7185";
-    default:
-      return "#94a3b8";
-  }
 }
 
 function nodeSize(type: CompanyBrainNode["type"]): number {
@@ -61,7 +47,7 @@ function buildSigmaGraph(response: CompanyBrainOverviewResponse) {
       x: Math.cos(angle) * radius,
       y: Math.sin(angle) * radius,
       size: nodeSize(node.type),
-      color: nodeColor(node.type),
+      color: graphNodeCanvasColor(node.type),
       nodeType: node.type,
       memoryId: node.type === "memory_item" ? node.id : null,
     });
@@ -74,7 +60,7 @@ function buildSigmaGraph(response: CompanyBrainOverviewResponse) {
     next.addDirectedEdgeWithKey(edge.id, from, to, {
       label: edge.kind,
       size: edge.sourceClass === "semantic" ? 2.2 : 1,
-      color: edge.sourceClass === "semantic" ? "#e5e7eb" : "#64748b",
+      color: graphEdgeCanvasColor(edge.sourceClass),
       edgeKind: edge.kind,
       sourceClass: edge.sourceClass,
     });
@@ -124,10 +110,20 @@ export function CompanyGraphCanvas({
     let renderer: { kill: () => void; on: (event: "clickNode", handler: (event: { node: string }) => void) => void } | null = null;
     const sigmaGraph = buildSigmaGraph(graph);
     const container = containerRef.current;
+    const labelColor = graphCssColor("--text", "#eeeeee");
+    const edgeLabelColor = graphCssColor("--dim", "#999999");
+    const defaultEdgeColor = graphCssColor("--border-strong", "#3a3a3a");
 
     void import("sigma").then(({ default: Sigma }) => {
       if (!active || !container) return;
-      renderer = new Sigma(sigmaGraph, container);
+      renderer = new Sigma(sigmaGraph, container, {
+        labelColor: { color: labelColor },
+        edgeLabelColor: { color: edgeLabelColor },
+        defaultEdgeColor,
+        renderLabels: true,
+        labelSize: 11,
+        labelWeight: "500",
+      });
       renderer.on("clickNode", (event: { node: string }) => {
         setSelectedKey(event.node);
       });
@@ -141,7 +137,7 @@ export function CompanyGraphCanvas({
 
   if (graph.nodes.length === 0) {
     return (
-      <div className="flex min-h-[420px] items-center justify-center rounded-md border border-dashed border-border bg-card/40 p-6 text-center">
+      <div className="flex h-full min-h-0 items-center justify-center rounded-md border border-dashed border-border bg-card/40 p-6 text-center text-text">
         <div>
           <Network className="mx-auto h-6 w-6 text-muted-foreground" aria-hidden />
           <div className="mt-3 text-sm font-medium">No visible graph relationships yet</div>
@@ -154,8 +150,11 @@ export function CompanyGraphCanvas({
   }
 
   return (
-    <section className="grid min-h-[420px] grid-cols-[minmax(0,1fr)_260px] overflow-hidden rounded-md border border-border bg-card">
-      <div className="relative min-h-[420px] bg-background">
+    <section
+      className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-md border border-border bg-card text-text xl:grid-cols-[minmax(0,1fr)_260px]"
+      data-testid="company-graph-map-view"
+    >
+      <div className="relative h-full min-h-0 bg-background">
         <div ref={containerRef} className="absolute inset-0" data-testid="company-graph-sigma-canvas" />
         <div className="absolute left-3 top-3 rounded-md border border-border bg-card/90 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
           {graph.nodes.length} nodes / {graph.edges.length} edges
@@ -163,7 +162,7 @@ export function CompanyGraphCanvas({
         </div>
       </div>
 
-      <aside className="flex min-h-0 flex-col border-l border-border bg-card">
+      <aside className="hidden min-h-0 flex-col border-l border-border bg-card xl:flex">
         <div className="border-b border-border px-3 py-2">
           <div className="text-xs font-semibold">Graph details</div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">
@@ -191,7 +190,7 @@ export function CompanyGraphCanvas({
                   >
                     <span
                       className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: nodeColor(node.type) }}
+                      style={{ backgroundColor: graphNodeColor(node.type) }}
                       aria-hidden
                     />
                     <span className="min-w-0 flex-1">
