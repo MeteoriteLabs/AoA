@@ -1,7 +1,9 @@
+import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Network } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
+import { CompanyGraphCanvas } from "./graph/CompanyGraphCanvas";
 import { LocalGraphPreview } from "./graph/LocalGraphPreview";
 import { UsedByAgentsPanel } from "./graph/UsedByAgentsPanel";
 
@@ -17,6 +19,14 @@ export function MemoryGraphViewer({
   onOpenMemoryItem,
 }: MemoryGraphViewerProps) {
   const isItemGraph = Boolean(itemId);
+  const companyGraphQuery = useQuery({
+    queryKey: queryKeys.memory.companyGraph(companyId),
+    queryFn: () => memoryApi.companyGraph(companyId, {
+      includeStructural: true,
+      limit: 100,
+    }),
+    enabled: Boolean(companyId && !isItemGraph),
+  });
   const graphQuery = useQuery({
     queryKey: itemId
       ? queryKeys.memory.neighbors(companyId, itemId)
@@ -33,6 +43,29 @@ export function MemoryGraphViewer({
   });
 
   if (!isItemGraph) {
+    let graphContent: ReactNode;
+    if (companyGraphQuery.isLoading) {
+      graphContent = (
+        <div className="flex min-h-[420px] items-center justify-center rounded-md border border-border bg-card/40 text-xs text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading company graph
+        </div>
+      );
+    } else if (companyGraphQuery.isError || !companyGraphQuery.data) {
+      graphContent = (
+        <div className="flex min-h-[420px] items-center justify-center rounded-md border border-border bg-card/40 text-sm text-muted-foreground">
+          Could not load company graph.
+        </div>
+      );
+    } else {
+      graphContent = (
+        <CompanyGraphCanvas
+          graph={companyGraphQuery.data}
+          onOpenMemoryItem={onOpenMemoryItem}
+        />
+      );
+    }
+
     return (
       <div className="h-full flex flex-col">
         <div className="border-b border-border px-5 py-3">
@@ -41,12 +74,9 @@ export function MemoryGraphViewer({
             Company graph
           </div>
         </div>
-        <div className="flex-1 min-h-0 p-5">
-          <div className="rounded-md border border-border bg-card p-4">
-            <div className="text-sm font-medium">Graph workspace</div>
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              Full company graph visualization is staged for the Sigma.js graph slice. Memory item tabs already show local backlinks from the graph API.
-            </p>
+        <div className="flex-1 min-h-0 overflow-auto p-5">
+          <div className="grid gap-3">
+            {graphContent}
           </div>
         </div>
       </div>

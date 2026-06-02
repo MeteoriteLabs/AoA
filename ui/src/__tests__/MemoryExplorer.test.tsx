@@ -7,6 +7,37 @@ import { ToastProvider } from "../context/ToastContext";
 
 const memoryApiMock = vi.hoisted(() => ({
   list: vi.fn(async () => []),
+  companyGraph: vi.fn(async () => ({
+    nodes: [
+      {
+        type: "memory_item",
+        id: "mem-graph-1",
+        companyId: "co-1",
+        label: "Company strategy",
+        status: "approved",
+      },
+      {
+        type: "department",
+        id: "dept-eng",
+        companyId: "co-1",
+        label: "Engineering",
+        status: "active",
+      },
+    ],
+    edges: [
+      {
+        id: "edge-company-strategy",
+        companyId: "co-1",
+        from: { type: "memory_item", id: "mem-graph-1" },
+        to: { type: "department", id: "dept-eng" },
+        kind: "belongs_to",
+        sourceClass: "derived",
+        editability: "source_row_only",
+      },
+    ],
+    limit: 100,
+    truncated: false,
+  })),
   get: vi.fn(async () => ({
     id: "mem-1",
     companyId: "co-1",
@@ -41,8 +72,24 @@ const memoryApiMock = vi.hoisted(() => ({
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   })),
+  neighbors: vi.fn(async () => ({
+    center: { id: "mem-1", label: "Deep linked memory" },
+    nodes: [],
+    edges: [],
+  })),
+  usage: vi.fn(async () => ({ agents: [] })),
   moveItem: vi.fn(),
   setPinnedToTop: vi.fn(),
+}));
+
+const sigmaKillMock = vi.hoisted(() => vi.fn());
+const sigmaOnMock = vi.hoisted(() => vi.fn());
+
+vi.mock("sigma", () => ({
+  default: vi.fn().mockImplementation(() => ({
+    kill: sigmaKillMock,
+    on: sigmaOnMock,
+  })),
 }));
 
 // Mock react-pdf and pdfjs-dist to avoid DOMMatrix/canvas issues in jsdom
@@ -267,5 +314,25 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close Memory Home" }));
     expect(screen.queryByRole("tab", { name: /Memory Home/i })).not.toBeInTheDocument();
+  });
+
+  it("opens the company graph from Memory Home in the shared viewer", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open company graph" }));
+
+    await waitFor(() =>
+      expect(memoryApiMock.companyGraph).toHaveBeenCalledWith("co-1", {
+        includeStructural: true,
+        limit: 100,
+      }),
+    );
+    expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select Company strategy" })).toBeInTheDocument();
   });
 });
