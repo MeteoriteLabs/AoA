@@ -89,8 +89,10 @@ export interface Issue {
   /**
    * Provenance of the task — how it was born. Values include `'crew_thread'`
    * (scoped from a discussion), goal/routine/MCP/direct origins, and `null` for
-   * tasks with no recorded origin. Returned on the `crewBoard=true` list so the
-   * shared card can label the source badge (e.g. routine vs. direct vs. thread).
+   * tasks with no recorded origin. This is a base `issues` column and is
+   * returned on EVERY list shape (any taskScope), not just the crew board — the
+   * shared card uses it to label the source badge (routine vs. direct vs.
+   * thread). Only the joined `sourceThreadTitle` below is crew-scope-gated.
    */
   originKind?: string | null;
   /**

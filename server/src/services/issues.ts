@@ -2350,6 +2350,10 @@ export function issueService(db: Db) {
             eq(issues.status, "in_progress"),
             isNull(issues.hiddenAt),
             sql`${issues.startedAt} < ${cutoff.toISOString()}`,
+            // Org-workload count (review #5): a stale crew (kind='aoa') task
+            // lives on the Crew Board and must NOT inflate the founder's org
+            // sidebar Inbox badge. Mirrors countUnreadTouchedByUser / dashboard.
+            notCrewAssigned(companyId),
           ),
         )
         .then((rows) => rows[0]);
