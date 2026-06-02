@@ -31,6 +31,7 @@ const {
   buildMcpMock,
   buildBridgeSpecMock,
   publishLiveEventMock,
+  publishIssueStatusChangedMock,
   checkoutMock,
   getByIdMock,
 } = vi.hoisted(() => ({
@@ -45,6 +46,7 @@ const {
     env: { AOA_SESSION_COMPANY_ID: "c" },
   })),
   publishLiveEventMock: vi.fn(),
+  publishIssueStatusChangedMock: vi.fn(),
   checkoutMock: vi.fn().mockResolvedValue({ id: "TASK-1", status: "in_progress" }),
   getByIdMock: vi.fn().mockResolvedValue(null),
 }));
@@ -110,6 +112,14 @@ vi.mock("../services/costs.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: publishLiveEventMock,
+  // Task 5.6: runner.ts now also imports these from live-events. The silent-
+  // stuck → todo release publishes issue.status_changed via this helper; stub it
+  // so the call is observable (and never an undefined-call swallowed by the
+  // best-effort wrapper). Presence helpers are stubbed for the (no-threadId)
+  // task path where they are never invoked.
+  publishIssueStatusChanged: publishIssueStatusChangedMock,
+  threadWorkingAgents: { add: vi.fn(), remove: vi.fn(() => []), list: vi.fn(() => []) },
+  broadcastThreadPresence: vi.fn(),
 }));
 
 // The runner reaches the issue surface via a DYNAMIC import("../../issues.js").
@@ -196,6 +206,7 @@ describe("Spec B Task 5: runner issueId branch", () => {
     createEventMock.mockClear().mockResolvedValue(undefined);
     buildMcpMock.mockClear().mockReturnValue({});
     publishLiveEventMock.mockClear();
+    publishIssueStatusChangedMock.mockClear();
     checkoutMock.mockClear().mockResolvedValue({ id: "TASK-1", status: "in_progress" });
     // Default getById → a non-stuck task so the silent-stuck guard is a no-op
     // (status not in_progress). Individual tests override.
@@ -274,6 +285,11 @@ describe("Spec B Task 5: runner issueId branch", () => {
     );
     expect(release).toBeDefined();
     expect(release.set.checkoutRunId).toBe(null);
+
+    // Task 5.6: the silent-stuck release is a crew status-MOVE (in_progress →
+    // todo) that bypasses issueService.update — it must publish
+    // issue.status_changed (company-broadcast) so the board drops the card back.
+    expect(publishIssueStatusChangedMock).toHaveBeenCalledWith("co-1", "TASK-1", "todo");
   });
 
   it("(d') no release when task already moved on (status not in_progress) — guard is a no-op", async () => {

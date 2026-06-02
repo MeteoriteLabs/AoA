@@ -54,6 +54,7 @@ import {
   type CreateIssueContextBundleItemInput,
 } from "./issue-context-bundles.js";
 import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
+import { publishIssueStatusChanged } from "./live-events.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -1302,6 +1303,20 @@ export function issueService(db: Db) {
         return { result: enriched, tasksToWake: wake };
       });
 
+      // Task 5.6: publish issue.status_changed when the status ACTUALLY changed
+      // (the canonical crew-move chokepoint that goes through update — incl.
+      // set_task_status). Company-broadcast (R3) so the kanban/Crew Board move
+      // the card live. Best-effort — a publish failure must never fail the
+      // write. Gated on a real status delta so a non-status update (or a
+      // same-status no-op) is silent.
+      if (result && issueData.status && issueData.status !== existing.status) {
+        try {
+          publishIssueStatusChanged(existing.companyId, id, issueData.status);
+        } catch (publishErr) {
+          logger.warn({ err: publishErr, issueId: id }, "issue.status_changed publish failed (best-effort, ignored)");
+        }
+      }
+
       // Fire wakeups after transaction commits (side effects)
       for (const wake of tasksToWake) {
         if (!shouldDispatchIssueWakeup({ workMode: wake.workMode ?? null })) continue;
@@ -1459,6 +1474,15 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        // Task 5.6: checkout is a CREW status-MOVE that bypasses
+        // issueService.update (raw atomic write → in_progress). Publish
+        // issue.status_changed (company-broadcast, R3) so the board reflects
+        // the card going in_progress live. Best-effort — never break checkout.
+        try {
+          publishIssueStatusChanged(updated.companyId, updated.id, "in_progress");
+        } catch (publishErr) {
+          logger.warn({ err: publishErr, issueId: updated.id }, "issue.status_changed publish failed on checkout (best-effort, ignored)");
+        }
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }

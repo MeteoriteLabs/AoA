@@ -148,6 +148,11 @@ vi.mock("../services/costs.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: publishLiveEventMock,
+  // Phase 5: runner.ts imports these too. Stubbed so the (no-threadId) task
+  // chain never calls an undefined export.
+  publishIssueStatusChanged: vi.fn(),
+  threadWorkingAgents: { add: vi.fn(), remove: vi.fn(() => []), list: vi.fn(() => []) },
+  broadcastThreadPresence: vi.fn(),
 }));
 
 // SINGLE issue-surface mock for BOTH seams. The chokepoint (static import) uses

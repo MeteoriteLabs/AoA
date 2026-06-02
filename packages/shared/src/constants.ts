@@ -263,6 +263,10 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.outputs_detected",
   "agent.status",
   "activity.logged",
+  // Thread chat experience Phase 5 (Task 5.6): a task's status changed —
+  // company-broadcast (NOT a thread.* envelope event) so the kanban/Crew Board
+  // can move the card live when a crew agent (or the founder) moves it.
+  "issue.status_changed",
   // V2.5: Discussions
   "discussion.entry.created",
   "discussion.extraction.completed",
