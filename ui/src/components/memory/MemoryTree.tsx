@@ -407,7 +407,7 @@ export function MemoryTree({
         />
       );
     return (
-      <div key={node.key}>
+      <div key={node.key} data-memory-tree-row={node.depth === 0 ? "top" : undefined}>
         <FolderTreeNode
           label={node.label}
           icon={node.Icon ?? node.icon}
@@ -594,8 +594,6 @@ function buildTree({
     target: { folder: "__archived", dept: null },
   });
 
-  top.push(buildLocalTreeNode(local));
-
   // Identity layer.
   const companyFolders = folders.filter((f) => f.departmentId === null);
   const companyRoot = companyFolders.find((f) => f.path === "Company");
@@ -706,6 +704,8 @@ function buildTree({
     hasChildren: false,
     target: { folder: "", dept: null, layer: "working" },
   });
+
+  top.push(buildLocalTreeNode(local));
 
   return top;
 }
