@@ -65,6 +65,7 @@ import { ensureScout } from "./services/internal-agent/aoa-agents/ensure-scout.j
 import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engineer.js";
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
+import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
@@ -773,6 +774,16 @@ void backfillGoalParents(db as any)
     }
   })
   .catch((err) => logger.warn({ err }, "goal_parents startup backfill failed"));
+
+// Idempotent backfill: ensure older companies and existing department projects
+// have the expanded company brain folder seed template used by new companies.
+void backfillMemoryFolderSeeds(db as any)
+  .then((res) => {
+    if (res.companies > 0 || res.departments > 0) {
+      logger.info(res, "memory folder seed backfill complete");
+    }
+  })
+  .catch((err) => logger.warn({ err }, "memory folder seed startup backfill failed"));
 
 // Idempotent backfill: stamp @legacy templateOrigin onto pre-marketplace crew
 // agents (kind='aoa', templateOrigin IS NULL). Runs once per deploy; second run

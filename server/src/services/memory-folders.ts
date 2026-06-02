@@ -203,7 +203,13 @@ export function memoryFoldersService(db: Db) {
       const existingKeys = new Set(
         existing.map((row: { seedKey: string | null }) => row.seedKey).filter(Boolean),
       );
-      const toCreate = seeds.filter((s) => !existingKeys.has(s.seedKey));
+      const existingPaths = new Set(
+        existing.map((row: { path: string }) => normalizeMemoryFolderPath(row.path)),
+      );
+      const toCreate = seeds.filter((s) => {
+        const path = normalizeMemoryFolderPath(`${input.departmentSlug}/${s.path}`);
+        return !existingKeys.has(s.seedKey) && !existingPaths.has(path);
+      });
       if (toCreate.length === 0) return [];
       const created = [];
       for (const seed of toCreate) {
