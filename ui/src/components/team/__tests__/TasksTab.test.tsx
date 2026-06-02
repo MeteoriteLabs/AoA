@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 
-// Mock @/lib/router so the company-prefix-aware Link doesn't pull in
+// Mock @/lib/router so any company-prefix-aware Link/navigate doesn't pull in
 // CompanyProvider (we render outside a real CompanyContext here).
 vi.mock("@/lib/router", async () => {
   const actual =
@@ -29,34 +29,41 @@ vi.mock("../../../api/issues", () => ({
 }));
 
 // KanbanBoard pulls in dnd-kit which is heavy in jsdom; stub it down to the
-// surface this test cares about: each card shows the issue title, so we can
-// assert grouping/filtering without exercising drag-and-drop.
+// surface this test cares about: the flat list of cards, and the click→select
+// wiring. Each card is a button that fires onSelectIssue with the identifier
+// (falling back to id) — mirroring the real board's behavior.
 vi.mock("../../KanbanBoard", () => ({
-  KanbanBoard: ({ issues }: { issues: any[] }) => (
+  KanbanBoard: ({
+    issues,
+    onSelectIssue,
+  }: {
+    issues: any[];
+    onSelectIssue?: (id: string) => void;
+  }) => (
     <div data-testid="kanban-stub">
       {issues.map((i) => (
-        <div key={i.id} data-testid={`kb-card-${i.id}`}>
+        <button
+          key={i.id}
+          type="button"
+          data-testid={`kb-card-${i.id}`}
+          onClick={() => onSelectIssue?.(i.identifier ?? i.id)}
+        >
           {i.title}
-        </div>
+        </button>
       ))}
     </div>
   ),
 }));
 
-vi.mock("@/components/ui/select", () => ({
-  Select: ({ value, onValueChange, children }: any) => (
-    <select
-      data-testid="agent-filter-select"
-      value={value}
-      onChange={(e) => onValueChange?.(e.target.value)}
-    >
-      {children}
-    </select>
-  ),
-  SelectTrigger: ({ children }: any) => <>{children}</>,
-  SelectValue: ({ placeholder }: any) => <span>{placeholder}</span>,
-  SelectContent: ({ children }: any) => <>{children}</>,
-  SelectItem: ({ value, children }: any) => <option value={value}>{children}</option>,
+// TaskSlideOver is the rich detail panel (many queries) — stub it to a marker
+// that reflects whether it's open and which issue it's showing.
+vi.mock("../../TaskSlideOver", () => ({
+  TaskSlideOver: ({ issueId, open }: { issueId: string | null; open: boolean }) =>
+    open ? (
+      <div data-testid="task-slide-over" data-issue-id={issueId ?? ""}>
+        slide-over
+      </div>
+    ) : null,
 }));
 
 function makeIssue(overrides: Record<string, any> = {}) {
@@ -89,6 +96,7 @@ function makeIssue(overrides: Record<string, any> = {}) {
     billingCode: null,
     assigneeAdapterOverrides: null,
     source: null,
+    originKind: "crew_thread",
     sourceDiscussionId: "thread-A",
     sourceThreadTitle: "Plan landing page redesign",
     reviewerUserId: null,
@@ -104,20 +112,21 @@ function makeIssue(overrides: Record<string, any> = {}) {
   };
 }
 
-describe("TasksTab", () => {
+describe("CrewBoard (TasksTab)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("shows loading then groups tasks by source thread", async () => {
+  it("shows loading then renders one flat board with all crew tasks (no source grouping)", async () => {
     mockIssuesList.mockResolvedValue([
       makeIssue({ id: "i-1", title: "Hero copy" }),
       makeIssue({ id: "i-2", title: "Pricing card" }),
       makeIssue({
         id: "i-3",
         title: "Backend API stub",
-        sourceDiscussionId: "thread-B",
-        sourceThreadTitle: "Design system upgrade",
+        originKind: "goal",
+        sourceDiscussionId: null,
+        sourceThreadTitle: null,
       }),
     ]);
 
@@ -127,26 +136,52 @@ describe("TasksTab", () => {
       expect(screen.getByTestId("crew-board")).toBeInTheDocument(),
     );
 
-    // The query was issued with the crewBoard filter so the server knows to JOIN.
+    // The query is issued with the crewBoard filter (crew-assignee predicate +
+    // the source-thread JOIN), and no agent filter is appended.
     expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
       crewBoard: true,
     });
 
-    // Both group headings render.
-    expect(screen.getByText("Plan landing page redesign")).toBeInTheDocument();
-    expect(screen.getByText("Design system upgrade")).toBeInTheDocument();
+    // Exactly one KanbanBoard (no per-thread boards/headers).
+    expect(screen.getAllByTestId("kanban-stub")).toHaveLength(1);
 
-    // Each group renders its own KanbanBoard with the right cards.
+    // Every returned task renders flat — including the goal-origin task that has
+    // no sourceDiscussionId (the old grouped board would have dropped it).
     expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument();
     expect(screen.getByTestId("kb-card-i-2")).toBeInTheDocument();
     expect(screen.getByTestId("kb-card-i-3")).toBeInTheDocument();
 
-    // Group containers are present (one per source thread).
-    expect(screen.getByTestId("crew-board-group-thread-A")).toBeInTheDocument();
-    expect(screen.getByTestId("crew-board-group-thread-B")).toBeInTheDocument();
+    // No "From: <thread>" group headers remain.
+    expect(
+      screen.queryByText("Plan landing page redesign"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("crew-board-group-thread-A")).not.toBeInTheDocument();
   });
 
-  it("renders the empty state when no tasks come back from the server", async () => {
+  it("clicking a card opens the full TaskSlideOver for that task", async () => {
+    const user = userEvent.setup();
+    mockIssuesList.mockResolvedValue([
+      makeIssue({ id: "i-1", identifier: "QAC-13", title: "Hero copy" }),
+    ]);
+
+    renderWithProviders(<TasksTab companyId="comp-1" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument(),
+    );
+
+    // Closed by default.
+    expect(screen.queryByTestId("task-slide-over")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("kb-card-i-1"));
+
+    const slideOver = await screen.findByTestId("task-slide-over");
+    expect(slideOver).toBeInTheDocument();
+    // Opens with the identifier (resolved server-side); not the audit card.
+    expect(slideOver).toHaveAttribute("data-issue-id", "QAC-13");
+  });
+
+  it("renders the empty state when no crew tasks come back from the server", async () => {
     mockIssuesList.mockResolvedValue([]);
 
     renderWithProviders(<TasksTab companyId="comp-1" />);
@@ -155,32 +190,13 @@ describe("TasksTab", () => {
       expect(screen.getByTestId("crew-board-empty")).toBeInTheDocument(),
     );
     expect(
-      screen.getByText(/No tasks yet. Crew-created tasks will appear here\./),
+      screen.getByText(/No crew tasks yet\. Crew-agent tasks will appear here\./),
     ).toBeInTheDocument();
   });
 
-  it("filters out tasks missing sourceDiscussionId defensively", async () => {
-    mockIssuesList.mockResolvedValue([
-      makeIssue({ id: "i-1", title: "Real task" }),
-      // Defensive case: server should never return this when the filter is on,
-      // but the component should not crash or create an "(unknown thread)"
-      // group either.
-      makeIssue({ id: "i-stray", title: "Stray", sourceDiscussionId: null }),
-    ]);
-
-    renderWithProviders(<TasksTab companyId="comp-1" />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument(),
-    );
-    expect(screen.queryByTestId("kb-card-i-stray")).not.toBeInTheDocument();
-  });
-
-  it("narrows to a single crew agent via the dropdown", async () => {
-    const user = userEvent.setup();
+  it("does not render an agent-filter dropdown (board is one flat list)", async () => {
     mockIssuesList.mockResolvedValue([
       makeIssue({ id: "i-1", title: "Task by A", assigneeAgentId: "agent-1" }),
-      makeIssue({ id: "i-2", title: "Task by B", assigneeAgentId: "agent-2" }),
     ]);
 
     renderWithProviders(
@@ -193,92 +209,16 @@ describe("TasksTab", () => {
       />,
     );
 
-    await waitFor(() =>
-      expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument(),
-    );
-
-    // Both visible by default.
-    expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument();
-    expect(screen.getByTestId("kb-card-i-2")).toBeInTheDocument();
-
-    // Pick Adjutant from the dropdown.
-    await user.selectOptions(
-      screen.getByTestId("agent-filter-select"),
-      "agent-1",
-    );
-
-    expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument();
-    expect(screen.queryByTestId("kb-card-i-2")).not.toBeInTheDocument();
-  });
-
-  it("triggers a server re-query with assigneeAgentId when an agent is selected", async () => {
-    const user = userEvent.setup();
-
-    // Initial load: both agents' tasks returned (no agent filter).
-    mockIssuesList.mockResolvedValueOnce([
-      makeIssue({
-        id: "i-1",
-        title: "Task by A",
-        assigneeAgentId: "agent-1",
-        sourceDiscussionId: "thread-A",
-        sourceThreadTitle: "Thread A",
-      }),
-      makeIssue({
-        id: "i-2",
-        title: "Task by B",
-        assigneeAgentId: "agent-2",
-        sourceDiscussionId: "thread-A",
-        sourceThreadTitle: "Thread A",
-      }),
-    ]);
-
-    // Second query (after filter): only agent-1's task.
-    mockIssuesList.mockResolvedValueOnce([
-      makeIssue({
-        id: "i-1",
-        title: "Task by A",
-        assigneeAgentId: "agent-1",
-        sourceDiscussionId: "thread-A",
-        sourceThreadTitle: "Thread A",
-      }),
-    ]);
-
-    renderWithProviders(
-      <TasksTab
-        companyId="comp-1"
-        crewAgents={[
-          { id: "agent-1", name: "Adjutant" },
-          { id: "agent-2", name: "Planner" },
-        ]}
-      />,
-    );
-
-    // Wait for initial board to render.
     await waitFor(() =>
       expect(screen.getByTestId("crew-board")).toBeInTheDocument(),
     );
 
-    // First call: no assigneeAgentId.
-    expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
-      crewBoard: true,
-    });
+    // The old crew-board-agent-filter dropdown is gone — owner lives on the card.
+    expect(screen.queryByTestId("crew-board-agent-filter")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-filter-select")).not.toBeInTheDocument();
 
-    // Select agent-1.
-    await user.selectOptions(
-      screen.getByTestId("agent-filter-select"),
-      "agent-1",
-    );
-
-    // The component should issue a second API call that includes assigneeAgentId.
-    await waitFor(() =>
-      expect(mockIssuesList).toHaveBeenCalledWith("comp-1", {
-        crewBoard: true,
-        assigneeAgentId: "agent-1",
-      }),
-    );
-
-    // After the re-query only agent-1's task is visible.
-    expect(screen.getByTestId("kb-card-i-1")).toBeInTheDocument();
-    expect(screen.queryByTestId("kb-card-i-2")).not.toBeInTheDocument();
+    // And the query is never re-issued with assigneeAgentId from the board.
+    expect(mockIssuesList).toHaveBeenCalledTimes(1);
+    expect(mockIssuesList).toHaveBeenCalledWith("comp-1", { crewBoard: true });
   });
 });

@@ -1,76 +1,58 @@
 import { useMemo, useState } from "react";
-import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare } from "lucide-react";
-import type { Agent, Issue } from "@armyofagents/shared";
+import type { Agent } from "@armyofagents/shared";
 import { KanbanBoard, type LiveRunInfo } from "../KanbanBoard";
+import { TaskSlideOver } from "../TaskSlideOver";
 import { issuesApi } from "../../api/issues";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { queryKeys } from "../../lib/queryKeys";
 import { EmptyState } from "../EmptyState";
-import { CrewTaskAuditCard } from "./CrewTaskAuditCard";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 /**
- * P1-T9: Crew Board — filtered deliverable view for tasks spawned from
- * discussion threads (originKind = 'crew_thread').
+ * Crew Board — the unified, flat tracker for ALL crew-agent task activity.
  *
- * Lists every issue produced by the Adjutant's propose_crew_work chokepoint
- * (D11), grouped by the source thread. The Dispatcher is retired; scope cards
- * now flow through crew-task-service.proposeWork with autonomy gating. Backs
- * the team expectation that crew-created tasks show up alongside the rest of
- * the team without trawling through individual discussions.
+ * Design: docs/aoa/plans/2026-06-02-unified-crew-board-design.md.
  *
- * Filter dropdown narrows by crew agent (assignee) — defensive client-side
- * filter on top of the server filter so the dropdown reflects what's actually
- * visible.
+ * Scope is "assignee is an active crew (kind='aoa') agent", resolved server-side
+ * by the `crewBoard=true` filter. That pulls in every crew-agent task —
+ * regardless of whether it was born from a discussion, goal, routine, MCP, or
+ * direct capture — into one pane. Each task carries its owner and its lineage
+ * (source badge) on the shared `KanbanCard`, so the board no longer groups by
+ * source thread: it renders one flat `KanbanBoard` and you watch the whole
+ * crew's work move backlog → in progress → review → done.
+ *
+ * View-only: tasks are created in context (discussions / goals / routines /
+ * MCP), never hand-made here. There is no create affordance. Clicking a card
+ * opens the full `TaskSlideOver` (assignee, dependencies, workspace, live runs,
+ * comments, the run/activity timeline with tools · cost · outcome, artifacts,
+ * and the review bar) — the same rich detail the main Tasks board opens. The
+ * old per-task `CrewTaskAuditCard` is retired; its content lives in the
+ * slide-over's activity timeline.
  */
 
 export interface CrewBoardProps {
   companyId: string;
-  /** Pre-loaded list of crew/AoA agents to populate the assignee dropdown. */
+  /** Crew/AoA agents — supplies owner names + avatars on each card. */
   crewAgents?: Pick<Agent, "id" | "name">[];
 }
 
-interface ThreadGroup {
-  threadId: string;
-  threadTitle: string;
-  tasks: Issue[];
-}
-
-const ALL_AGENTS_VALUE = "__all__";
-
 export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
   const queryClient = useQueryClient();
-  const [selectedAgentId, setSelectedAgentId] = useState<string>(ALL_AGENTS_VALUE);
-  const [auditIssue, setAuditIssue] = useState<Issue | null>(null);
-  const [auditOpen, setAuditOpen] = useState(false);
-
-  const agentFilter =
-    selectedAgentId === ALL_AGENTS_VALUE ? undefined : selectedAgentId;
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   const tasksQuery = useQuery({
-    queryKey: ["tasks", "from-discussions", companyId, agentFilter ?? null],
-    queryFn: () =>
-      issuesApi.list(companyId, {
-        crewBoard: true,
-        ...(agentFilter ? { assigneeAgentId: agentFilter } : {}),
-      }),
+    queryKey: ["tasks", "crew-board", companyId],
+    queryFn: () => issuesApi.list(companyId, { crewBoard: true }),
     enabled: Boolean(companyId),
   });
 
-  // Task 5.7: live crew activity. `liveRunsForCompany` now UNIONs crew
-  // (internal_agent) runs, so a task a crew agent is executing shows the "Live"
-  // pill — labelled "{agentName} · {elapsed}" via liveRunsByIssue. The
-  // issue.status_changed live event (LiveUpdatesProvider) also invalidates this
-  // query so the pill clears promptly when a run ends; refetchInterval is the
-  // belt-and-suspenders fallback (mirrors Issues.tsx / ProjectDetail.tsx).
+  // Live crew activity. `liveRunsForCompany` UNIONs crew (internal_agent) runs,
+  // so a task a crew agent is executing shows the "Live" pill — labelled
+  // "{agentName} · {elapsed}" via liveRunsByIssue. The issue.status_changed live
+  // event (LiveUpdatesProvider) also invalidates this query so the pill clears
+  // promptly when a run ends; refetchInterval is the belt-and-suspenders
+  // fallback (mirrors Issues.tsx / ProjectDetail.tsx).
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(companyId),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
@@ -99,7 +81,7 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
       issuesApi.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ["tasks", "from-discussions", companyId],
+        queryKey: ["tasks", "crew-board", companyId],
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.list(companyId),
@@ -107,39 +89,14 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
     },
   });
 
-  const filteredTasks = useMemo(() => {
-    const tasks = tasksQuery.data ?? [];
-    if (selectedAgentId === ALL_AGENTS_VALUE) return tasks;
-    return tasks.filter((t) => t.assigneeAgentId === selectedAgentId);
-  }, [tasksQuery.data, selectedAgentId]);
+  const tasks = tasksQuery.data ?? [];
 
+  // KanbanBoard fires onSelectIssue with `issue.identifier ?? issue.id`; the
+  // /issues/:id route + TaskSlideOver both resolve identifiers to UUIDs, so we
+  // can hand the value straight through (matches the Issues.tsx pattern).
   const handleSelectIssue = (identifierOrId: string) => {
-    const found =
-      filteredTasks.find((t) => t.identifier === identifierOrId) ??
-      filteredTasks.find((t) => t.id === identifierOrId) ??
-      null;
-    setAuditIssue(found);
-    setAuditOpen(true);
+    setSelectedIssueId(identifierOrId);
   };
-
-  const grouped = useMemo<ThreadGroup[]>(() => {
-    const map = new Map<string, ThreadGroup>();
-    for (const t of filteredTasks) {
-      // Defensive: backend already filters but if a downstream consumer mocks
-      // a row without sourceDiscussionId, skip silently to keep the UI clean.
-      if (!t.sourceDiscussionId) continue;
-      const key = t.sourceDiscussionId;
-      if (!map.has(key)) {
-        map.set(key, {
-          threadId: key,
-          threadTitle: t.sourceThreadTitle ?? "(unknown thread)",
-          tasks: [],
-        });
-      }
-      map.get(key)!.tasks.push(t);
-    }
-    return Array.from(map.values());
-  }, [filteredTasks]);
 
   if (tasksQuery.isLoading) {
     return (
@@ -152,12 +109,12 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
     );
   }
 
-  if (!tasksQuery.data?.length) {
+  if (tasks.length === 0) {
     return (
       <div className="px-5 py-8" data-testid="crew-board-empty">
         <EmptyState
           icon={MessageSquare}
-          message="No tasks yet. Crew-created tasks will appear here."
+          message="No crew tasks yet. Crew-agent tasks will appear here."
         />
       </div>
     );
@@ -165,68 +122,22 @@ export function CrewBoard({ companyId, crewAgents = [] }: CrewBoardProps) {
 
   return (
     <>
-      <div className="px-5 py-4 space-y-6" data-testid="crew-board">
-        {crewAgents.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">Filter:</span>
-            <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
-              <SelectTrigger
-                className="h-8 w-[220px] text-xs"
-                data-testid="crew-board-agent-filter"
-              >
-                <SelectValue placeholder="All crew agents" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_AGENTS_VALUE}>All crew agents</SelectItem>
-                {crewAgents.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-
-        {grouped.length === 0 ? (
-          <div
-            className="text-center py-12 text-sm text-muted-foreground"
-            data-testid="crew-board-filtered-empty"
-          >
-            No tasks match this filter.
-          </div>
-        ) : (
-          grouped.map((g) => (
-            <div key={g.threadId} data-testid={`crew-board-group-${g.threadId}`}>
-              <div className="text-sm text-muted-foreground mb-2">
-                From:{" "}
-                <Link
-                  to={`/discussions/${g.threadId}`}
-                  className="font-medium text-foreground hover:underline"
-                >
-                  {g.threadTitle}
-                </Link>
-              </div>
-              <KanbanBoard
-                issues={g.tasks}
-                agents={crewAgents}
-                liveIssueIds={liveIssueIds}
-                liveRunsByIssue={liveRunsByIssue}
-                onUpdateIssue={(id, data) =>
-                  updateMutation.mutate({ id, data })
-                }
-                onSelectIssue={handleSelectIssue}
-              />
-            </div>
-          ))
-        )}
+      <div className="px-5 py-4" data-testid="crew-board">
+        <KanbanBoard
+          issues={tasks}
+          agents={crewAgents}
+          liveIssueIds={liveIssueIds}
+          liveRunsByIssue={liveRunsByIssue}
+          onUpdateIssue={(id, data) => updateMutation.mutate({ id, data })}
+          onSelectIssue={handleSelectIssue}
+        />
       </div>
 
-      {/* Audit sheet — opens when a card is clicked on the crew board */}
-      <CrewTaskAuditCard
-        issue={auditIssue}
-        open={auditOpen}
-        onOpenChange={setAuditOpen}
+      {/* Full task detail — opens when a card is clicked on the crew board. */}
+      <TaskSlideOver
+        issueId={selectedIssueId}
+        open={!!selectedIssueId}
+        onClose={() => setSelectedIssueId(null)}
       />
     </>
   );

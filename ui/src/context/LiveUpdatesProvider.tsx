@@ -603,9 +603,9 @@ function handleLiveEvent(
   // issues list and the Crew Board task query so the card moves columns live.
   if (event.type === "issue.status_changed") {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(expectedCompanyId) });
-    // Crew Board key is ["tasks", "from-discussions", companyId, agentFilter];
-    // a prefix match (the default predicate) refetches every agent-filter variant.
-    queryClient.invalidateQueries({ queryKey: ["tasks", "from-discussions", expectedCompanyId] });
+    // Crew Board (unified flat tracker) key is ["tasks", "crew-board", companyId];
+    // a prefix match (the default predicate) refetches it.
+    queryClient.invalidateQueries({ queryKey: ["tasks", "crew-board", expectedCompanyId] });
     // Also nudge the live-runs query so the "Live" pill clears/updates promptly.
     queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(expectedCompanyId) });
     const issueId = readString(payload.issueId);

@@ -6,11 +6,12 @@ import { errorHandler } from "../middleware/index.js";
 const companyId = "11111111-1111-4111-8111-111111111111";
 
 /**
- * Task 1.4: the GET /companies/:cid/issues route must translate the
- * `crewBoard=true` query param into a service filter (renamed from
- * `sourceDiscussionIdNotNull`). The service then applies the
- * `origin_kind='crew_thread'` predicate and opts into a LEFT JOIN against
- * `discussions` to populate `Issue.sourceThreadTitle`. Other values for the
+ * The GET /companies/:cid/issues route must translate the `crewBoard=true`
+ * query param into a service filter. The service then applies the crew-assignee
+ * predicate (assignee is an active `kind='aoa'` agent) and opts into a LEFT JOIN
+ * against `discussions` to populate `Issue.sourceThreadTitle`. This route-level
+ * test only verifies the param→filter wiring (the service is mocked); the
+ * predicate itself is covered in crew-board-filter.test.ts. Other values for the
  * param must NOT trigger the filter — we treat it strictly as the literal
  * string "true".
  */

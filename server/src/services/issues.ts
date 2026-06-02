@@ -117,12 +117,14 @@ export interface IssueFilters {
    */
   parentId?: string | null;
   /**
-   * Task 1.4: when true, restrict to tasks whose origin_kind='crew_thread'
-   * (crew-board provenance, decision D10). Also enables the server-side LEFT
-   * JOIN that populates the `sourceThreadTitle` denormalization on returned
-   * rows so the TeamPage Tasks tab can group results without a follow-up fetch.
-   * Renamed from `sourceDiscussionIdNotNull` — the old name was misleading once
-   * the predicate changed from sourceDiscussionId IS NOT NULL to originKind eq.
+   * Unified Crew Board (2026-06-02): when true, restrict to tasks assigned to an
+   * active crew agent (an `agents` row with kind='aoa' that is not terminated).
+   * This is the flat tracker for ALL crew-agent work — tasks from discussions,
+   * goals, routines, MCP, and direct capture. Also enables the server-side LEFT
+   * JOIN that populates the `sourceThreadTitle` denormalization on returned rows
+   * so discussion-sourced cards keep their source-thread label.
+   * Previously restricted to origin_kind='crew_thread' (renamed earlier from
+   * `sourceDiscussionIdNotNull`); broadened to crew-assignee for the unified board.
    */
   crewBoard?: boolean;
 }
@@ -646,14 +648,27 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      // Task 1.4: restrict to tasks with origin_kind='crew_thread' (decision D10).
-      // Also opts the query into the LEFT JOIN below so the TeamPage Tasks tab
-      // can group by source thread title without a follow-up fetch.
-      // The assigneeAgentId filter (line ~610) is already pushed unconditionally
+      // Unified Crew Board (2026-06-02): the crew board is now the flat tracker
+      // for ALL crew-agent tasks, not just thread-sourced ones. The predicate is
+      // "assignee is an active crew agent" — any task whose assigneeAgentId is an
+      // agent with kind='aoa' (Commander team) that is not terminated. This pulls
+      // in tasks born from goals, routines, MCP, and direct capture alongside the
+      // discussion-sourced ones. The LEFT JOIN below still supplies the source
+      // thread title so discussion-origin cards keep their lineage label.
+      // The assigneeAgentId filter (line ~610) is still pushed unconditionally
       // above; it works for both the crew-board path and generic list calls.
       const fromDiscussions = filters?.crewBoard === true;
       if (fromDiscussions) {
-        conditions.push(eq(issues.originKind, "crew_thread"));
+        conditions.push(sql<boolean>`
+          EXISTS (
+            SELECT 1
+            FROM ${agents}
+            WHERE ${agents.id} = ${issues.assigneeAgentId}
+              AND ${agents.companyId} = ${companyId}
+              AND ${agents.kind} = 'aoa'
+              AND ${agents.status} <> 'terminated'
+          )
+        `);
       }
       conditions.push(isNull(issues.hiddenAt));
 

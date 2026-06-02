@@ -563,9 +563,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
     }
 
-    // Task 1.4: crew-board filter — origin_kind='crew_thread'. Accepts the
-    // literal string "true" — all other values (including absent) leave the
-    // filter off so behavior is unchanged for all non-crew-board callers.
+    // Crew-board filter — restrict to tasks assigned to an active crew agent
+    // (kind='aoa', not terminated); the unified flat tracker for all crew-agent
+    // work. Accepts the literal string "true" — all other values (including
+    // absent) leave the filter off so behavior is unchanged for non-crew-board
+    // callers.
     const crewBoard = req.query.crewBoard === "true";
 
     const result = await svc.list(companyId, {
