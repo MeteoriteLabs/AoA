@@ -4,6 +4,8 @@ import {
   SECRET_MANAGED_MODES,
   SECRET_PROVIDER_CONFIG_STATUSES,
   SECRET_PROVIDERS,
+  RUNTIME_PROVIDER_KEY_PROVIDERS,
+  RUNTIME_PROVIDER_KEY_STATUSES,
 } from "../constants.js";
 
 export const envBindingPlainSchema = z.object({
@@ -155,3 +157,23 @@ export const remoteSecretImportCommitSchema = z.object({
 });
 
 export type RemoteSecretImportCommit = z.infer<typeof remoteSecretImportCommitSchema>;
+
+export const createRuntimeProviderKeySchema = z.object({
+  provider: z.enum(RUNTIME_PROVIDER_KEY_PROVIDERS),
+  displayName: z.string().min(1).max(120),
+  secretId: z.string().uuid(),
+  isDefault: z.boolean().optional().default(false),
+  metadata: z.record(z.unknown()).optional().nullable(),
+});
+
+export type CreateRuntimeProviderKey = z.infer<typeof createRuntimeProviderKeySchema>;
+
+export const updateRuntimeProviderKeySchema = z.object({
+  displayName: z.string().min(1).max(120).optional(),
+  secretId: z.string().uuid().optional(),
+  status: z.enum(RUNTIME_PROVIDER_KEY_STATUSES).optional(),
+  isDefault: z.boolean().optional(),
+  metadata: z.record(z.unknown()).optional().nullable(),
+});
+
+export type UpdateRuntimeProviderKey = z.infer<typeof updateRuntimeProviderKeySchema>;

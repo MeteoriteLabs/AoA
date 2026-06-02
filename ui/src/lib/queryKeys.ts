@@ -95,6 +95,9 @@ export const queryKeys = {
     session: ["auth", "session"] as const,
     profile: ["auth", "profile"] as const,
   },
+  adapters: {
+    all: ["adapters"] as const,
+  },
   health: ["health"] as const,
   companyHealth: (companyId: string) => ["health", "company", companyId] as const,
   instanceHealth: ["health", "instance"] as const,
@@ -102,6 +105,7 @@ export const queryKeys = {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
     providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
+    runtimeProviderKeys: (companyId: string) => ["runtime-provider-keys", companyId] as const,
     bindings: (secretId: string) => ["secret-bindings", secretId] as const,
     accessEvents: (secretId: string) => ["secret-access-events", secretId] as const,
   },

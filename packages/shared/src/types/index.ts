@@ -67,6 +67,7 @@ export type {
   RemoteSecretImportCandidate,
   RemoteSecretImportPreviewResult,
   RemoteSecretImportResult,
+  RuntimeProviderKey,
 } from "./secrets.js";
 export type { CostEvent, CostSummary, CostByAgent } from "./cost.js";
 export type {
@@ -312,7 +313,12 @@ export type {
   GitHubAuthStatus,
 } from "./github.js";
 
-export type { Environment } from "./environment.js";
+export type {
+  Environment,
+  EnvironmentLease,
+  EnvironmentProbeCheck,
+  EnvironmentProbeResult,
+} from "./environment.js";
 
 export type {
   GitPrReviewState,

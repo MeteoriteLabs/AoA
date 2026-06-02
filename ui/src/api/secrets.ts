@@ -2,12 +2,15 @@ import type {
   CompanySecret,
   CompanySecretBinding,
   CompanySecretProviderConfig,
+  CreateRuntimeProviderKey,
   RemoteSecretImportResult,
   RemoteSecretImportPreviewResult,
+  RuntimeProviderKey,
   SecretAccessEvent,
   SecretProvider,
   SecretProviderConfigHealthResponse,
   SecretProviderDescriptor,
+  UpdateRuntimeProviderKey,
 } from "@armyofagents/shared";
 import { api } from "./client";
 
@@ -94,6 +97,15 @@ export const secretsApi = {
     remove: (id: string) => api.delete<{ ok: true }>(`/secret-provider-configs/${id}`),
     check: (id: string) =>
       api.post<SecretProviderConfigHealthResponse>(`/secret-provider-configs/${id}/check`, {}),
+  },
+  runtimeProviderKeys: {
+    list: (companyId: string) =>
+      api.get<RuntimeProviderKey[]>(`/companies/${companyId}/runtime-provider-keys`),
+    create: (companyId: string, data: CreateRuntimeProviderKey) =>
+      api.post<RuntimeProviderKey>(`/companies/${companyId}/runtime-provider-keys`, data),
+    update: (id: string, data: UpdateRuntimeProviderKey) =>
+      api.patch<RuntimeProviderKey>(`/runtime-provider-keys/${id}`, data),
+    remove: (id: string) => api.delete<{ ok: true }>(`/runtime-provider-keys/${id}`),
   },
   create: (companyId: string, data: CreateSecretInput) =>
     api.post<CompanySecret>(`/companies/${companyId}/secrets`, data),

@@ -24,9 +24,10 @@ import {
   teamMembers,
   teamCoordinations,
   teams,
-  internalAgentRuns,
 } from "@armyofagents/db";
 import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
+import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
+import { environmentRuntimeService } from "./environment-runtime.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
@@ -55,6 +56,15 @@ import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { buildRunInputBundle } from "./run-input-bundles.js";
 import { redactAndCapPrompt } from "./prompt-snapshot.js";
+import {
+  cancelCrewRunsForAgent,
+  cancelCrewRunsForCompany,
+} from "./crew-cancellation.js";
+
+export {
+  cancelCrewRunsForAgent,
+  cancelCrewRunsForCompany,
+} from "./crew-cancellation.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
 function sanitizeForDb(text: string): string {
@@ -199,6 +209,19 @@ export function applyEnvironmentRuntimeTarget(
     ? {
         ...config,
         executionTarget: environmentRuntime.target,
+      }
+    : config;
+}
+
+export function applyEnvironmentAcquisitionConfig(
+  config: Record<string, unknown>,
+  acquisition: Pick<EnvironmentAcquisitionResult, "configPatch"> | null,
+): Record<string, unknown> {
+  const configPatch = parseObject(acquisition?.configPatch);
+  return Object.keys(configPatch).length > 0
+    ? {
+        ...config,
+        ...configPatch,
       }
     : config;
 }
@@ -883,43 +906,6 @@ export async function buildTeamCoordinationSkillEntries(
       trustLevel: c.trustLevel,
     };
   });
-}
-
-// ── Plan 3 Task 7: crew run cancellation helpers ─────────────────────────────
-// These are exported as pure helpers so they can be called from
-// cancelActiveForAgent / cancelBudgetScopeWork AND tested independently
-// without importing the full heartbeatService (which has deep dependencies).
-// They cancel internal_agent_runs rows that are still 'running' for the given
-// scope — mirroring the heartbeat_runs cancel pattern.
-
-/**
- * Cancel all running internal_agent_runs for a specific agent.
- * Called by cancelActiveForAgent to reach crew sub-agent runs.
- */
-export async function cancelCrewRunsForAgent(db: Db, agentId: string): Promise<void> {
-  await db
-    .update(internalAgentRuns)
-    .set({
-      status: "cancelled",
-      errorMessage: "Cancelled due to agent pause",
-      completedAt: new Date(),
-    })
-    .where(and(eq(internalAgentRuns.agentId, agentId), eq(internalAgentRuns.status, "running")));
-}
-
-/**
- * Cancel all running internal_agent_runs for a company.
- * Called by cancelBudgetScopeWork (company scope) to reach crew sub-agent runs.
- */
-export async function cancelCrewRunsForCompany(db: Db, companyId: string): Promise<void> {
-  await db
-    .update(internalAgentRuns)
-    .set({
-      status: "cancelled",
-      errorMessage: "Cancelled due to company budget hard-stop",
-      completedAt: new Date(),
-    })
-    .where(and(eq(internalAgentRuns.companyId, companyId), eq(internalAgentRuns.status, "running")));
 }
 
 export function heartbeatService(db: Db) {
@@ -3247,8 +3233,29 @@ export function heartbeatService(db: Db) {
       }
 
       // ── Runtime services (ensureRuntimeServicesForRun) — gated ─────
+      let resolvedConfigWithEnvironmentAcquisition = resolvedConfig;
+      if (environmentRuntime.environmentId) {
+        const environmentAcquisition = await environmentRunOrchestrator(db).acquireForRun({
+          companyId: agent.companyId,
+          environmentId: environmentRuntime.environmentId,
+          adapterType: agent.adapterType,
+          issueId,
+          heartbeatRunId: run.id,
+          persistedExecutionWorkspace: persistedExecutionWorkspace
+            ? {
+                id: persistedExecutionWorkspace.id,
+                mode: persistedExecutionWorkspace.mode,
+              }
+            : null,
+        });
+        resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
+          resolvedConfig,
+          environmentAcquisition,
+        );
+      }
+
       const adapterEnv = Object.fromEntries(
-        Object.entries(parseObject(resolvedConfig.env)).filter(
+        Object.entries(parseObject(resolvedConfigWithEnvironmentAcquisition.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
@@ -3265,7 +3272,7 @@ export function heartbeatService(db: Db) {
           issue: issueRef,
           workspace: realizedWorkspace,
           executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-          config: resolvedConfig,
+          config: resolvedConfigWithEnvironmentAcquisition,
           adapterEnv,
           onLog,
         });
@@ -3462,14 +3469,14 @@ export function heartbeatService(db: Db) {
       }
 
       // ── Auto-enable skills mentioned in the issue body/comments ──────
-      let runScopedConfig: Record<string, unknown> = resolvedConfig;
+      let runScopedConfig: Record<string, unknown> = resolvedConfigWithEnvironmentAcquisition;
       try {
         const mentionedSkillKeys = await resolveRunScopedMentionedSkillKeys(
           db,
           agent.companyId,
           issueId,
         );
-        runScopedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, mentionedSkillKeys);
+        runScopedConfig = applyRunScopedMentionedSkillKeys(resolvedConfigWithEnvironmentAcquisition, mentionedSkillKeys);
         if (mentionedSkillKeys.length > 0) {
           logger.info(
             {
@@ -4138,6 +4145,11 @@ export function heartbeatService(db: Db) {
       if (isolatedWorkspacesEnabled) {
         await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
       }
+      await environmentRuntimeService(db)
+        .releaseRunLeases(run.id)
+        .catch((leaseReleaseErr: unknown) => {
+          logger.warn({ err: leaseReleaseErr, runId: run.id }, "heartbeat: failed to release environment leases in finally");
+        });
       await startNextQueuedRunForAgent(agent.id);
     }
   }

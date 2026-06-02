@@ -2,11 +2,14 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import {
   createEnvironmentSchema,
+  probeEnvironmentSchema,
   updateEnvironmentSchema,
 } from "@armyofagents/shared";
+import { probeEnvironmentConfig } from "../services/environment-probe.js";
 import { environmentService, type EnvironmentService } from "../services/environments.js";
 import { logActivity } from "../services/index.js";
 import { secretService } from "../services/secrets.js";
+import { runtimeProviderKeyService } from "../services/runtime-provider-keys.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 interface RoutesOptions {
@@ -19,6 +22,7 @@ export function environmentRoutes(opts: RoutesOptions) {
   const router = Router();
   const svc = opts.svc ?? environmentService(opts.db!);
   const secretsSvc = opts.db ? secretService(opts.db) : null;
+  const runtimeKeysSvc = opts.db ? runtimeProviderKeyService(opts.db) : null;
 
   async function runEnvironmentMutation<T>(
     operation: (services: {
@@ -88,6 +92,33 @@ export function environmentRoutes(opts: RoutesOptions) {
       },
     });
   }
+
+  // POST probe unsaved environment config
+  router.post(
+    "/companies/:companyId/environments/probe",
+    async (req: Request, res: Response, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertBoard(req);
+        assertCompanyAccess(req, companyId);
+        const parsed = probeEnvironmentSchema.safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ error: parsed.error.flatten() });
+          return;
+        }
+
+        const result = await probeEnvironmentConfig({
+          companyId,
+          driver: parsed.data.driver,
+          config: parsed.data.config,
+          ...(runtimeKeysSvc ? { runtimeProviderKeys: runtimeKeysSvc } : {}),
+        });
+        res.status(result.ok ? 200 : 422).json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   // GET list
   router.get(

@@ -3,9 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
   runAdapterExecutionTargetProcess,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
+  type AdapterRuntimeCommandSpec,
 } from "@armyofagents/adapter-utils";
 import {
   asString,
@@ -33,6 +36,7 @@ const AOA_SKILLS_CANDIDATES = [
 ];
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const REMOTE_CODEX_HOME_DIR_NAME = ".aoa-codex-home";
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -284,9 +288,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent.companyId,
     { apiKey: configuredOpenAiApiKey },
   );
-  env.CODEX_HOME = executionTarget.type === "sandbox-docker"
-    ? "/tmp/aoa-codex-home"
-    : managedCodexHome;
+  const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
+  const remoteCodexHome = `${adapterExecutionTargetRemoteCwd(executionTarget, cwd).replace(/\/+$/, "")}/${REMOTE_CODEX_HOME_DIR_NAME}`;
+  env.CODEX_HOME = isRemoteExecutionTarget ? remoteCodexHome : managedCodexHome;
+  const runtimeCommandSpec: AdapterRuntimeCommandSpec | null | undefined = isRemoteExecutionTarget
+    ? {
+        command: ctx.runtimeCommandSpec?.command ?? command,
+        detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? null,
+        installCommand: [
+          `mkdir -p "${remoteCodexHome.replace(/"/g, '\\"')}"`,
+          ctx.runtimeCommandSpec?.installCommand,
+          `if [ -n "$OPENAI_API_KEY" ]; then printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key; fi`,
+        ].filter(Boolean).join("\n"),
+      }
+    : ctx.runtimeCommandSpec;
 
   // MX3: deliver the internal-agent MCP bridge to codex via its native
   // discovery mechanism — a [mcp_servers.aoa] (+ .env) table in the
@@ -440,7 +455,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
-      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
+      runtimeCommandSpec,
       timeoutSec,
       graceSec,
       onLog: async (stream, chunk) => {

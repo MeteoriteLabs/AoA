@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
+  prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetDirectory,
+  syncAdapterExecutionTargetFile,
   type AdapterBillingType,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -302,6 +310,7 @@ export async function runClaudeLogin(input: {
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -344,24 +353,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
-  if (executionTarget.type !== "local" && (instructionsFilePath || dbSkills.length > 0)) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
-      errorMessage:
-        "Claude sandbox-docker target does not yet support host-local instruction files or DB-backed skills. Remove instructionsFilePath/context skills or use target local.",
-      errorCode: "unsupported_execution_target_config",
-      resultJson: {
-        executionTarget: executionTarget.type,
-        unsupported: {
-          instructionsFilePath: Boolean(instructionsFilePath),
-          dbSkills: dbSkills.length,
-        },
-      },
-    };
-  }
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
+  const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+    target: executionTarget,
+    workspaceLocalDir: cwd,
+    adapterKey: "claude",
+    runId,
+    timeoutSec,
+    installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
+    detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
+  });
+  const runtimeRootDir = preparedRuntime.runtimeRootDir;
+  if (runtimeRootDir && adapterExecutionTargetUsesManagedHome(executionTarget)) {
+    env.HOME = runtimeRootDir;
+  }
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
@@ -374,18 +380,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
     effectiveInstructionsFilePath = combinedPath;
   }
+  let effectiveRemoteInstructionsFilePath: string | null = null;
+  let effectiveRemoteSkillsDir: string | null = null;
+  if (isRemoteExecutionTarget && runtimeRootDir) {
+    effectiveRemoteSkillsDir = `${runtimeRootDir}/.claude/skills`;
+    await syncAdapterExecutionTargetDirectory({
+      runId: `${runId}-claude-skills`,
+      target: executionTarget,
+      localDir: path.join(skillsDir, ".claude", "skills"),
+      remoteDir: effectiveRemoteSkillsDir,
+      cwd: executionCwd,
+      env,
+      timeoutSec,
+      graceSec,
+      followSymlinks: true,
+      onLog,
+    });
+    if (effectiveInstructionsFilePath) {
+      effectiveRemoteInstructionsFilePath = `${runtimeRootDir}/agent-instructions.md`;
+      await syncAdapterExecutionTargetFile({
+        runId: `${runId}-claude-instructions`,
+        target: executionTarget,
+        localPath: effectiveInstructionsFilePath,
+        remotePath: effectiveRemoteInstructionsFilePath,
+        cwd: executionCwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onLog,
+      });
+    }
+  }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwdMatches = runtimeSessionCwd.length === 0 || (
+    isRemoteExecutionTarget
+      ? runtimeSessionCwd === executionCwd
+      : path.resolve(runtimeSessionCwd) === path.resolve(executionCwd)
+  );
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    sessionCwdMatches &&
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${executionCwd}".\n`,
     );
   }
   const prompt = renderTemplate(promptTemplate, {
@@ -406,11 +450,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && !isBedrockAuth(env)) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath && executionTarget.type === "local") {
-      args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
+    const instructionsArg = isRemoteExecutionTarget
+      ? effectiveRemoteInstructionsFilePath
+      : effectiveInstructionsFilePath;
+    const skillsArg = isRemoteExecutionTarget ? effectiveRemoteSkillsDir : skillsDir;
+    if (instructionsArg) {
+      args.push("--append-system-prompt-file", instructionsArg);
     }
-    if (executionTarget.type === "local") {
-      args.push("--add-dir", skillsDir);
+    if (skillsArg) {
+      args.push("--add-dir", skillsArg);
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
@@ -438,7 +486,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({
         adapterType: "claude_local",
         command,
-        cwd,
+        cwd: executionCwd,
         commandArgs: args,
         commandNotes,
         env: redactEnvForLogs(env),
@@ -451,7 +499,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId,
       command,
       args,
-      cwd,
+      cwd: executionCwd,
       env,
       stdin: prompt,
       authToken: env.AOA_API_KEY ?? authToken ?? null,
@@ -498,7 +546,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
-        executionCwd: cwd,
+        executionCwd,
       };
     }
 
@@ -515,7 +563,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: proc.stderr,
         },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
-        executionCwd: cwd,
+        executionCwd,
       };
     }
 
@@ -536,10 +584,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: executionCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(isRemoteExecutionTarget
+          ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+          : {}),
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
@@ -566,7 +617,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
-      executionCwd: cwd,
+      executionCwd,
       resultJson: parsed,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),

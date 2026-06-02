@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
   runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetFile,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -76,6 +81,7 @@ function joinPromptSections(sections: string[]): string {
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -101,6 +107,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   // T2.2: deliver the internal-agent MCP bridge to gemini via its native
@@ -115,6 +122,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // gemini-settings-json.ts header.
   if (ctx.mcpBridge) {
     await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge);
+    if (executionTargetIsRemote) {
+      await syncAdapterExecutionTargetFile({
+        runId,
+        target: executionTarget,
+        localPath: path.join(cwd, ".gemini", "settings.json"),
+        remotePath: `${effectiveExecutionCwd}/.gemini/settings.json`,
+        cwd: effectiveExecutionCwd,
+        env: {},
+        timeoutSec: 30,
+        graceSec: 5,
+        onLog,
+      });
+    }
     await onLog("stdout", "[aoa] Wired gemini MCP bridge via .gemini/settings.json\n");
   }
 
@@ -193,14 +213,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || (
+      executionTargetIsRemote
+        ? runtimeSessionCwd === sessionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(sessionCwd)
+    )) &&
+    sessionTargetMatches;
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
-      `[aoa] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${sessionCwd}".\n`,
     );
   }
 
@@ -350,7 +378,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
         clearSession: clearSessionOnMissingSession,
-        executionCwd: cwd,
+        executionCwd: sessionCwd,
       };
     }
 
@@ -362,10 +390,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: sessionCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(executionTargetIsRemote
+          ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+          : {}),
       } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
@@ -397,7 +428,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
-      executionCwd: cwd,
+      executionCwd: sessionCwd,
       resultJson: attempt.parsed.resultEvent ?? {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

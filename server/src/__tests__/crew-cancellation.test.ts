@@ -1,11 +1,11 @@
 /**
  * Plan 3 Task 7 — in-flight cancellation reaches internal_agent_runs.
  *
- * Contract test: the crew cancellation helpers exported by heartbeat.ts
+ * Contract test: the crew cancellation helpers
  * must cancel internal_agent_runs records when invoked.
  *
- * Uses a comprehensive drizzle mock that covers .as() and template literals
- * so heartbeat.ts's module-level code doesn't crash during load.
+ * The helpers live outside heartbeat.ts so this test does not import the full
+ * heartbeat service graph.
  */
 import { describe, it, expect, vi } from "vitest";
 
@@ -172,7 +172,7 @@ function makeDb() {
 
 describe("cancelCrewRunsForAgent", () => {
   it("cancels internal_agent_runs for the given agentId", async () => {
-    const { cancelCrewRunsForAgent } = await import("../services/heartbeat.js");
+    const { cancelCrewRunsForAgent } = await import("../services/crew-cancellation.js");
     const db = makeDb();
     await cancelCrewRunsForAgent(db, "agent-abc");
     expect(db._capturedSets.length).toBeGreaterThan(0);
@@ -182,7 +182,7 @@ describe("cancelCrewRunsForAgent", () => {
 
 describe("cancelCrewRunsForCompany", () => {
   it("cancels internal_agent_runs for the given companyId", async () => {
-    const { cancelCrewRunsForCompany } = await import("../services/heartbeat.js");
+    const { cancelCrewRunsForCompany } = await import("../services/crew-cancellation.js");
     const db = makeDb();
     await cancelCrewRunsForCompany(db, "co-xyz");
     expect(db._capturedSets.length).toBeGreaterThan(0);

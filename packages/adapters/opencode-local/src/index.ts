@@ -1,7 +1,35 @@
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
-export const models: Array<{ id: string; label: string }> = [];
+export const SANDBOX_INSTALL_COMMAND =
+  "curl -fsSL https://opencode.ai/install | bash && " +
+  'if [ -x "$HOME/.opencode/bin/opencode" ]; then ' +
+  'if [ "$(id -u)" -eq 0 ]; then ' +
+  'ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
+  "elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then " +
+  'sudo ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
+  "else " +
+  'mkdir -p "$HOME/.local/bin" && ' +
+  'ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"; ' +
+  "fi; " +
+  "fi";
+
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+
+export function isValidOpenCodeModelId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  const slashIndex = trimmed.indexOf("/");
+  return Boolean(trimmed) && slashIndex > 0 && slashIndex !== trimmed.length - 1;
+}
+
+export const models: Array<{ id: string; label: string }> = [
+  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
+  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
+  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
+  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
+  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 
@@ -22,6 +50,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific model variant (for example minimal|low|medium|high|max)
+- dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended AoA runs
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
@@ -37,4 +66,6 @@ Notes:
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
+- The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true during model discovery to prevent OpenCode from writing an opencode.json config file into the project working directory.
+- When \`dangerouslySkipPermissions\` is enabled, AoA injects a temporary runtime config with \`permission.external_directory=allow\` so headless runs do not stall on approval prompts.
 `;

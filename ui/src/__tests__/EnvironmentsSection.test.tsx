@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EnvironmentsSection } from "../components/settings/sections/EnvironmentsSection";
-import type { Environment } from "@armyofagents/shared";
+import type { CompanySecret, Environment } from "@armyofagents/shared";
 
 // ─── API hook mocks ──────────────────────────────────────────────────────────
 
@@ -13,13 +13,23 @@ const useEnvironmentsMock = vi.fn();
 const useCreateEnvironmentMock = vi.fn();
 const useUpdateEnvironmentMock = vi.fn();
 const useDeleteEnvironmentMock = vi.fn();
+const useProbeEnvironmentMock = vi.fn();
 
 vi.mock("@/api/environments", () => ({
   useEnvironments: (...args: unknown[]) => useEnvironmentsMock(...args),
   useCreateEnvironment: (...args: unknown[]) => useCreateEnvironmentMock(...args),
   useUpdateEnvironment: (...args: unknown[]) => useUpdateEnvironmentMock(...args),
   useDeleteEnvironment: (...args: unknown[]) => useDeleteEnvironmentMock(...args),
+  useProbeEnvironment: (...args: unknown[]) => useProbeEnvironmentMock(...args),
 }));
+
+vi.mock("@/api/secrets", () => ({
+  secretsApi: {
+    list: vi.fn(async () => []),
+  },
+}));
+
+import { secretsApi } from "@/api/secrets";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -28,11 +38,41 @@ function makeEnvironment(overrides: Partial<Environment> = {}): Environment {
     id: "env-1",
     companyId: "comp-1",
     name: "production",
+    description: null,
+    driver: "local",
+    status: "active",
+    config: {},
+    metadata: null,
     envVars: { NODE_ENV: "production", PORT: "3000" },
     connectionTarget: null,
     target: null,
     createdAt: "2026-01-15T10:00:00Z",
     updatedAt: "2026-01-15T10:00:00Z",
+    ...overrides,
+  };
+}
+
+function makeSecret(overrides: Partial<CompanySecret> = {}): CompanySecret {
+  return {
+    id: overrides.id ?? "secret-1",
+    companyId: "comp-1",
+    name: overrides.name ?? "E2B API Key",
+    key: overrides.key ?? "E2B_API_KEY",
+    status: overrides.status ?? "active",
+    managedMode: "aoa_managed",
+    provider: "local_encrypted",
+    providerConfigId: null,
+    providerMetadata: null,
+    externalRef: null,
+    latestVersion: 1,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
   };
 }
@@ -81,6 +121,8 @@ beforeEach(() => {
   useCreateEnvironmentMock.mockReturnValue(idleMutation());
   useUpdateEnvironmentMock.mockReturnValue(idleMutation());
   useDeleteEnvironmentMock.mockReturnValue(idleMutation());
+  useProbeEnvironmentMock.mockReturnValue(idleMutation());
+  vi.mocked(secretsApi.list).mockResolvedValue([]);
 });
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -246,6 +288,80 @@ describe("EnvironmentsSection", () => {
         expect.any(Object),
       );
     });
+  });
+
+  it("probes and submits create form with E2B sandbox config", async () => {
+    const user = userEvent.setup();
+    const captureMutate = vi.fn();
+    const probeMutate = vi.fn((_vars: unknown, opts: Record<string, unknown>) => {
+      (opts?.onSuccess as (data: unknown) => void)?.({
+        ok: true,
+        driver: "sandbox",
+        provider: "e2b",
+        summary: "E2B sandbox created and workspace directory prepared.",
+      });
+    });
+
+    useCreateEnvironmentMock.mockReturnValue({
+      ...idleMutation(),
+      mutate: captureMutate,
+    });
+    useProbeEnvironmentMock.mockReturnValue({
+      ...idleMutation(),
+      mutate: probeMutate,
+    });
+    vi.mocked(secretsApi.list).mockResolvedValue([makeSecret({ id: "secret-e2b" })]);
+
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: /new environment/i }));
+    await user.type(screen.getByPlaceholderText(/e\.g\. production/i), "cloud");
+    await user.selectOptions(screen.getByTestId("environment-target-select"), "e2b");
+    await user.clear(screen.getByTestId("environment-e2b-template-input"));
+    await user.type(screen.getByTestId("environment-e2b-template-input"), "base");
+    await user.clear(screen.getByTestId("environment-e2b-timeout-input"));
+    await user.type(screen.getByTestId("environment-e2b-timeout-input"), "60000");
+    await user.click(screen.getByRole("button", { name: /test environment/i }));
+
+    await waitFor(() => {
+      expect(probeMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          companyId: "comp-1",
+          input: {
+            driver: "sandbox",
+            config: {
+              provider: "e2b",
+              credentialRef: "default",
+              template: "base",
+              timeoutMs: 60000,
+              reuseLease: false,
+            },
+          },
+        }),
+        expect.any(Object),
+      );
+    });
+    expect(screen.getByText(/E2B sandbox created/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(captureMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "comp-1",
+        input: expect.objectContaining({
+          name: "cloud",
+          driver: "sandbox",
+          config: {
+            provider: "e2b",
+            credentialRef: "default",
+            template: "base",
+            timeoutMs: 60000,
+            reuseLease: false,
+          },
+          target: null,
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it("keeps create dialog open and shows API validation errors when create rejects", async () => {
@@ -460,5 +576,24 @@ describe("EnvironmentsSection", () => {
     renderSection();
 
     expect(screen.getByText(/sandbox-docker: node:22-bookworm/)).toBeInTheDocument();
+  });
+
+  it("shows E2B target summary for E2B sandbox environments", () => {
+    useEnvironmentsMock.mockReturnValue({
+      data: [
+        makeEnvironment({
+          driver: "sandbox",
+          config: { provider: "e2b", credentialRef: "default", template: "base" },
+          target: null,
+        }),
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+
+    renderSection();
+
+    expect(screen.getByText(/E2B Sandbox: base/)).toBeInTheDocument();
   });
 });

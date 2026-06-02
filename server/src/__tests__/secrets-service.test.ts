@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { companySecretBindings, companySecretProviderConfigs, companySecrets, companySecretVersions, secretAccessEvents } from "@armyofagents/db";
+import {
+  companySecretBindings,
+  companySecretProviderConfigs,
+  companySecrets,
+  companySecretVersions,
+  runtimeProviderKeys,
+  secretAccessEvents,
+} from "@armyofagents/db";
 import {
   normalizeProviderConfigDefault,
   normalizeProviderConfigStatus,
@@ -25,11 +32,13 @@ function makeThenable<T>(rows: T[]) {
 function makeFakeDb(input: {
   bindings?: unknown[];
   providerConfigs?: unknown[];
+  providerKeys?: unknown[];
   secret: any;
   version: any;
 }) {
   const inserted: Array<{ table: unknown; values: unknown }> = [];
   const updates: Array<{ table: unknown; values: unknown }> = [];
+  const updatedRows = input.secret ? [{ ...input.secret, status: "deleted", deletedAt: new Date() }] : [];
   const db = {
     inserted,
     updates,
@@ -45,7 +54,9 @@ function makeFakeDb(input: {
                   ? (input.bindings ?? [])
                   : table === companySecretProviderConfigs
                     ? (input.providerConfigs ?? [])
-                    : [];
+                    : table === runtimeProviderKeys
+                      ? (input.providerKeys ?? [])
+                      : [];
           return {
             where() {
               return makeThenable(rows);
@@ -72,7 +83,12 @@ function makeFakeDb(input: {
           updates.push({ table, values });
           return {
             where() {
-              return Promise.resolve();
+              return {
+                returning() {
+                  return makeThenable(updatedRows);
+                },
+                then: makeThenable(updatedRows).then,
+              };
             },
           };
         },
@@ -286,5 +302,54 @@ describe("secretService", () => {
       providerConfigId: "11111111-1111-4111-8111-111111111111",
       query: "OPENAI",
     })).rejects.toThrow("Provider vault is disabled");
+  });
+
+  it("blocks deleting a secret referenced by an active runtime provider key", async () => {
+    const db = makeFakeDb({
+      secret: {
+        id: "secret-1",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerConfigId: null,
+        externalRef: null,
+        latestVersion: 1,
+        status: "active",
+      },
+      version: null,
+      providerKeys: [{
+        id: "runtime-key-1",
+        companyId: "company-1",
+        provider: "e2b",
+        secretId: "secret-1",
+        status: "active",
+      }],
+    });
+
+    await expect(secretService(db as any).remove("secret-1")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("blocks disabling a secret referenced by an active runtime provider key", async () => {
+    const db = makeFakeDb({
+      secret: {
+        id: "secret-1",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerConfigId: null,
+        externalRef: null,
+        latestVersion: 1,
+        status: "active",
+      },
+      version: null,
+      providerKeys: [{
+        id: "runtime-key-1",
+        companyId: "company-1",
+        provider: "e2b",
+        secretId: "secret-1",
+        status: "active",
+      }],
+    });
+
+    await expect(secretService(db as any).update("secret-1", { status: "disabled" }))
+      .rejects.toMatchObject({ status: 409 });
   });
 });

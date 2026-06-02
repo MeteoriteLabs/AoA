@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { CompanySecret, CompanySecretBinding } from "@armyofagents/shared";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SecretsWorkspace } from "@/components/secrets/SecretsWorkspace";
 import { renderWithProviders } from "@/__tests__/test-utils";
 import { secretsApi } from "@/api/secrets";
@@ -28,6 +28,12 @@ vi.mock("@/api/secrets", () => ({
       list: vi.fn(),
       create: vi.fn(),
       check: vi.fn(),
+    },
+    runtimeProviderKeys: {
+      list: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
     },
     remoteImport: {
       preview: vi.fn(),
@@ -82,11 +88,19 @@ function makeBinding(partial: Partial<CompanySecretBinding>): CompanySecretBindi
   };
 }
 
+beforeEach(() => {
+  vi.mocked(secretsApi.runtimeProviderKeys.list).mockResolvedValue([]);
+  vi.mocked(secretsApi.runtimeProviderKeys.create).mockResolvedValue({} as never);
+  vi.mocked(secretsApi.runtimeProviderKeys.update).mockResolvedValue({} as never);
+  vi.mocked(secretsApi.runtimeProviderKeys.remove).mockResolvedValue({ ok: true });
+});
+
 describe("SecretsWorkspace", () => {
   it("renders the secrets settings shell", async () => {
     vi.mocked(secretsApi.list).mockResolvedValue([]);
     vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.runtimeProviderKeys.list).mockResolvedValue([]);
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
 
@@ -99,6 +113,7 @@ describe("SecretsWorkspace", () => {
 
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Bindings" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Provider Keys" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Vault providers" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Audit" })).toBeTruthy();
   });

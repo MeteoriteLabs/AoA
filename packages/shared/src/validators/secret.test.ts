@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  createRuntimeProviderKeySchema,
   createSecretBindingSchema,
   createSecretProviderConfigSchema,
   remoteSecretImportCommitSchema,
   remoteSecretImportPreviewSchema,
   secretProviderConfigPayloadSchema,
+  updateRuntimeProviderKeySchema,
 } from "./secret.js";
 
 describe("secret validators", () => {
@@ -57,5 +59,43 @@ describe("secret validators", () => {
         secrets: [{ externalRef: "arn:aws:secretsmanager:us-east-1:123:secret:aoa/prod/key" }],
       }).secrets,
     ).toHaveLength(1);
+  });
+
+  it("accepts an E2B runtime provider key backed by a company secret", () => {
+    const parsed = createRuntimeProviderKeySchema.parse({
+      provider: "e2b",
+      displayName: "Default E2B",
+      secretId: "00000000-0000-4000-8000-000000000001",
+      isDefault: true,
+    });
+
+    expect(parsed).toEqual({
+      provider: "e2b",
+      displayName: "Default E2B",
+      secretId: "00000000-0000-4000-8000-000000000001",
+      isDefault: true,
+    });
+  });
+
+  it("rejects unsupported runtime provider keys", () => {
+    expect(() =>
+      createRuntimeProviderKeySchema.parse({
+        provider: "unknown",
+        displayName: "Unknown",
+        secretId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toThrow();
+  });
+
+  it("accepts runtime provider key metadata updates without secret values", () => {
+    expect(updateRuntimeProviderKeySchema.parse({
+      displayName: "Team E2B",
+      isDefault: false,
+      status: "disabled",
+    })).toEqual({
+      displayName: "Team E2B",
+      isDefault: false,
+      status: "disabled",
+    });
   });
 });

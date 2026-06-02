@@ -6,11 +6,15 @@ export type {
   AdapterExecutionTargetType,
   AdapterLocalExecutionTarget,
   AdapterDockerExecutionTarget,
+  AdapterProviderSandboxRunInput,
+  AdapterProviderSandboxRunner,
+  AdapterProviderSandboxExecutionTarget,
   AdapterExecutionTarget,
   AdapterRuntimeCommandSpec,
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
   AdapterInvocationMeta,
+  AdapterModelProfileDefinition,
   AdapterExecutionContext,
   McpBridgeSpec,
   AdapterEnvironmentCheckLevel,
@@ -26,6 +30,9 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
+  AdapterConfigFieldType,
+  AdapterConfigFieldSchema,
+  AdapterConfigSchema,
   HireApprovedPayload,
   HireApprovedHookResult,
   ServerAdapterModule,
@@ -43,6 +50,9 @@ export type {
   MergeChangedWorkspaceFilesOptions,
 } from "./workspace-restore-merge.js";
 export type {
+  AdapterModelProfile,
+} from "./model-profiles.js";
+export type {
   SessionCompactionPolicy,
   NativeContextManagement,
   AdapterSessionManagement,
@@ -50,13 +60,34 @@ export type {
 } from "./session-compaction.js";
 export {
   buildDockerRunArgs,
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  ensureAdapterExecutionTargetFile,
   formatDockerBindSource,
   isDockerAvailable,
   prepareWorkspaceForExecutionTarget,
+  prepareAdapterExecutionTargetRuntime,
+  overrideAdapterExecutionTargetRemoteCwd,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCommandForLogs,
+  resolveAdapterExecutionTargetCwd,
+  resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTarget,
+  runAdapterExecutionTargetShellCommand,
   runAdapterExecutionTargetProcess,
   runLocalTargetProcess,
+  syncAdapterExecutionTargetDirectory,
+  syncAdapterExecutionTargetFile,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  maybeRunSandboxInstallCommand,
+  adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetUsesPaperclipBridge,
+  startAdapterExecutionTargetPaperclipBridge,
 } from "./execution-target.js";
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 export { preferredShellForSandbox } from "./sandbox-shell.js";
@@ -69,6 +100,25 @@ export {
   captureWorkspaceSnapshot,
   mergeChangedWorkspaceFiles,
 } from "./workspace-restore-merge.js";
+export {
+  findAdapterModelProfile,
+  normalizeAdapterModelProfiles,
+} from "./model-profiles.js";
+export {
+  buildNpmGlobalInstallIfMissingCommand,
+  buildSandboxNpmInstallCommand,
+  shellQuote,
+} from "./sandbox-install.js";
+
+export function inferOpenAiCompatibleBiller(
+  env: Record<string, string>,
+  fallback: string | null = null,
+): string | null {
+  if (env.OPENAI_API_KEY) return "openai";
+  if (env.AZURE_OPENAI_API_KEY || env.AZURE_OPENAI_ENDPOINT) return "azure_openai";
+  if (env.OPENROUTER_API_KEY) return "openrouter";
+  return fallback;
+}
 export {
   ADAPTER_SESSION_MANAGEMENT,
   LEGACY_SESSIONED_ADAPTER_TYPES,

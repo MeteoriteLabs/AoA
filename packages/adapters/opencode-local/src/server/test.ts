@@ -7,11 +7,17 @@ import {
   asString,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@armyofagents/adapter-utils/server-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
+} from "@armyofagents/adapter-utils/execution-target";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 
@@ -56,10 +62,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "opencode");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = adapterExecutionTargetIsRemote(target);
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `opencode-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "opencode_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "opencode_cwd_valid",
       level: "info",
@@ -79,7 +103,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...(targetIsRemote ? {} : process.env), ...env }));
 
   if ("OPENAI_API_KEY" in envConfig && asString(envConfig.OPENAI_API_KEY, "").trim() === "") {
     checks.push({
@@ -100,7 +124,9 @@ export async function testEnvironment(
     });
   } else {
     try {
-      await ensureCommandResolvable(command, cwd, runtimeEnv);
+      await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, {
+        installCommand: SANDBOX_INSTALL_COMMAND,
+      });
       checks.push({
         code: "opencode_command_resolvable",
         level: "info",
@@ -120,7 +146,13 @@ export async function testEnvironment(
     checks.every((check) => check.code !== "opencode_cwd_invalid" && check.code !== "opencode_command_unresolvable");
 
   let modelValidationPassed = false;
-  if (canRunProbe) {
+  if (targetIsRemote && canRunProbe) {
+    checks.push({
+      code: "opencode_models_discovery_skipped_remote",
+      level: "info",
+      message: `Skipped local model discovery; will be validated by the hello probe inside ${targetLabel}.`,
+    });
+  } else if (canRunProbe) {
     try {
       const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
       if (discovered.length > 0) {
@@ -155,6 +187,13 @@ export async function testEnvironment(
       message: "OpenCode requires a configured model in provider/model format.",
       hint: "Set adapterConfig.model using an ID from `opencode models`.",
     });
+  } else if (targetIsRemote && canRunProbe) {
+    checks.push({
+      code: "opencode_model_validation_skipped_remote",
+      level: "info",
+      message: `Skipped local model validation; will be validated by the hello probe inside ${targetLabel}.`,
+    });
+    modelValidationPassed = true;
   } else if (canRunProbe) {
     try {
       await ensureOpenCodeModelConfiguredAndAvailable({
@@ -194,11 +233,12 @@ export async function testEnvironment(
     if (extraArgs.length > 0) args.push(...extraArgs);
 
     try {
-      const probe = await runChildProcess(
-        `opencode-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        command,
-        args,
+      const probe = await runAdapterExecutionTargetProcess(
+        target ?? { type: "local" },
         {
+          runId,
+          command,
+          args,
           cwd,
           env: runtimeEnv,
           timeoutSec: 60,

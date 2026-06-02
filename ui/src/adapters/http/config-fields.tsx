@@ -16,23 +16,60 @@ export function HttpConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const read = (key: string) =>
+    isCreate
+      ? String(values?.[key as keyof typeof values] ?? "")
+      : eff("adapterConfig", key, String(config[key] ?? ""));
+  const write = (key: string, value: string) =>
+    isCreate ? set!({ [key]: value }) : mark("adapterConfig", key, value || undefined);
+
   return (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
-      <DraftInput
-        value={
-          isCreate
-            ? values!.url
-            : eff("adapterConfig", "url", String(config.url ?? ""))
-        }
-        onCommit={(v) =>
-          isCreate
-            ? set!({ url: v })
-            : mark("adapterConfig", "url", v || undefined)
-        }
-        immediate
-        className={inputClass}
-        placeholder="https://..."
-      />
-    </Field>
+    <>
+      <Field label="Webhook URL" hint={help.webhookUrl}>
+        <DraftInput
+          value={read("url")}
+          onCommit={(v) => write("url", v)}
+          immediate
+          className={inputClass}
+          placeholder="https://..."
+        />
+      </Field>
+      <Field label="Method" hint="HTTP method used when invoking the webhook. Defaults to POST.">
+        <DraftInput
+          value={read("method")}
+          onCommit={(v) => write("method", v.toUpperCase())}
+          immediate
+          className={inputClass}
+          placeholder="POST"
+        />
+      </Field>
+      <Field label="Headers JSON" hint="Optional JSON object of request headers. Secret bindings should be provided through environment secrets where possible.">
+        <DraftInput
+          value={read("headers")}
+          onCommit={(v) => write("headers", v)}
+          immediate
+          className={inputClass}
+          placeholder='{"authorization":"Bearer ..."}'
+        />
+      </Field>
+      <Field label="Payload template JSON" hint="Optional JSON object merged into the webhook payload before agent/run context is added.">
+        <DraftInput
+          value={read("payloadTemplate")}
+          onCommit={(v) => write("payloadTemplate", v)}
+          immediate
+          className={inputClass}
+          placeholder='{"source":"aoa"}'
+        />
+      </Field>
+      <Field label="Timeout ms" hint="Optional request timeout in milliseconds. Empty means no adapter-level timeout.">
+        <DraftInput
+          value={read("timeoutMs")}
+          onCommit={(v) => write("timeoutMs", v)}
+          immediate
+          className={inputClass}
+          placeholder="30000"
+        />
+      </Field>
+    </>
   );
 }

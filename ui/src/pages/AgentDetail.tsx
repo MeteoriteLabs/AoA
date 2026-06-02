@@ -223,6 +223,23 @@ function runMetrics(run: HeartbeatRun) {
   };
 }
 
+export function getAdapterResultOutput(
+  run: Pick<HeartbeatRun, "resultJson" | "status">,
+  adapterType: string,
+): { stdout: string | null; stderr: string | null } | null {
+  if (adapterType !== "process") return null;
+  if (run.status === "failed" || run.status === "timed_out") return null;
+
+  const result = asRecord(run.resultJson);
+  if (!result) return null;
+
+  const stdout = typeof result.stdout === "string" && result.stdout.trim() ? result.stdout : null;
+  const stderr = typeof result.stderr === "string" && result.stderr.trim() ? result.stderr : null;
+  if (!stdout && !stderr) return null;
+
+  return { stdout, stderr };
+}
+
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1427,6 +1444,7 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const metrics = runMetrics(run);
+  const adapterResultOutput = getAdapterResultOutput(run, adapterType);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
   const [clearSessionConfirmOpen, setClearSessionConfirmOpen] = useState(false);
@@ -1811,6 +1829,24 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
         <div className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">stdout</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+        </div>
+      )}
+
+      {adapterResultOutput && (
+        <div className="space-y-2 rounded-lg border border-border bg-card p-3">
+          <div className="text-xs font-medium text-muted-foreground">Adapter output</div>
+          {adapterResultOutput.stdout && (
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">stdout</span>
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{adapterResultOutput.stdout}</pre>
+            </div>
+          )}
+          {adapterResultOutput.stderr && (
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">stderr</span>
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{adapterResultOutput.stderr}</pre>
+            </div>
+          )}
         </div>
       )}
 

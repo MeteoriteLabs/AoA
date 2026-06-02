@@ -25,10 +25,15 @@ export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
   "claude_local",
+  "acpx_local",
   "codex_local",
   "opencode_local",
   "cursor",
+  "cursor_cloud",
+  "grok_local",
+  "pi_local",
   "openclaw",
+  "openclaw_gateway",
   "hermes_local",
   "gemini_local",
 ] as const;
@@ -217,6 +222,12 @@ export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[numbe
 export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
+export const RUNTIME_PROVIDER_KEY_PROVIDERS = ["e2b"] as const;
+export type RuntimeProviderKeyProvider = (typeof RUNTIME_PROVIDER_KEY_PROVIDERS)[number];
+
+export const RUNTIME_PROVIDER_KEY_STATUSES = ["active", "disabled"] as const;
+export type RuntimeProviderKeyStatus = (typeof RUNTIME_PROVIDER_KEY_STATUSES)[number];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
@@ -331,6 +342,25 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
+
+export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
+export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
+
+export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
+export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained"] as const;
+export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_POLICIES = [
+  "ephemeral",
+  "reuse_by_workspace",
+  "reuse_by_environment",
+] as const;
+export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
+
+export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
+export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
 
 export const MEMORY_ITEM_CATEGORIES = [
   "decision",

@@ -4,8 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
   prepareWorkspaceForExecutionTarget,
+  prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetDirectory,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -203,6 +210,7 @@ async function cleanupDbSkillDirs(
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -227,9 +235,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
-  const injectedDbDirs = await ensureCursorSkillsInjected(onLog, { dbSkills: dbSkills.length > 0 ? dbSkills : undefined });
+  let injectedDbDirs: string[] = [];
+  let remoteSkillsTempRoot: string | null = null;
+  let remoteRuntimeRootDir: string | null = null;
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -297,6 +308,51 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.AOA_API_KEY = authToken;
   }
+
+  if (executionTargetIsRemote) {
+    const preparedRemoteRuntime = await prepareAdapterExecutionTargetRuntime({
+      runId,
+      target: executionTarget,
+      adapterKey: "cursor",
+      workspaceLocalDir: cwd,
+      timeoutSec: asNumber(config.timeoutSec, 0),
+      installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
+      detectCommand: command,
+    });
+    remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
+    if (adapterExecutionTargetUsesManagedHome(executionTarget) && remoteRuntimeRootDir) {
+      env.HOME = remoteRuntimeRootDir;
+    }
+
+    if (remoteRuntimeRootDir) {
+      remoteSkillsTempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-cursor-remote-skills-"));
+      const localSkillsHome = path.join(remoteSkillsTempRoot, "skills");
+      await ensureCursorSkillsInjected(onLog, {
+        dbSkills: dbSkills.length > 0 ? dbSkills : undefined,
+        skillsHome: localSkillsHome,
+        linkSkill: async (source, target) => {
+          await fs.cp(source, target, { recursive: true, force: true });
+        },
+      });
+      if (await fs.stat(localSkillsHome).then((stat) => stat.isDirectory()).catch(() => false)) {
+        await syncAdapterExecutionTargetDirectory({
+          runId,
+          target: executionTarget,
+          localDir: localSkillsHome,
+          remoteDir: `${remoteRuntimeRootDir}/.cursor/skills`,
+          cwd: prepareWorkspaceForExecutionTarget(executionTarget, cwd).executionCwd,
+          env,
+          timeoutSec: 30,
+          graceSec: 5,
+          followSymlinks: true,
+          onLog,
+        });
+      }
+    }
+  } else {
+    injectedDbDirs = await ensureCursorSkillsInjected(onLog, { dbSkills: dbSkills.length > 0 ? dbSkills : undefined });
+  }
+
   const billingType = resolveCursorBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   if (executionTarget.type === "local") {
@@ -315,14 +371,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || (
+      executionTargetIsRemote
+        ? runtimeSessionCwd === sessionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(sessionCwd)
+    )) &&
+    sessionTargetMatches;
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] Cursor session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] Cursor session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${sessionCwd}".\n`,
     );
   }
 
@@ -481,7 +545,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
-        executionCwd: cwd,
+        executionCwd: sessionCwd,
       };
     }
 
@@ -489,10 +553,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
-          cwd,
+          cwd: sessionCwd,
           ...(workspaceId ? { workspaceId } : {}),
           ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(executionTargetIsRemote
+            ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+            : {}),
         } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
@@ -518,7 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
-      executionCwd: cwd,
+      executionCwd: sessionCwd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -548,6 +615,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } finally {
     if (injectedDbDirs.length > 0) {
       await cleanupDbSkillDirs(injectedDbDirs, onLog);
+    }
+    if (remoteSkillsTempRoot) {
+      await fs.rm(remoteSkillsTempRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 }

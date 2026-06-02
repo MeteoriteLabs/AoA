@@ -6,7 +6,23 @@ import {
   testEnvironment as claudeTestEnvironment,
   sessionCodec as claudeSessionCodec,
 } from "@armyofagents/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@armyofagents/adapter-claude-local";
+import {
+  agentConfigurationDoc as claudeAgentConfigurationDoc,
+  models as claudeModels,
+  SANDBOX_INSTALL_COMMAND as claudeSandboxInstallCommand,
+} from "@armyofagents/adapter-claude-local";
+import {
+  execute as acpxExecute,
+  listAcpxSkills,
+  syncAcpxSkills,
+  testEnvironment as acpxTestEnvironment,
+  sessionCodec as acpxSessionCodec,
+  getConfigSchema as getAcpxConfigSchema,
+} from "@armyofagents/adapter-acpx-local/server";
+import {
+  agentConfigurationDoc as acpxAgentConfigurationDoc,
+  models as acpxModels,
+} from "@armyofagents/adapter-acpx-local";
 import {
   execute as codexExecute,
   listCodexSkills,
@@ -14,7 +30,11 @@ import {
   testEnvironment as codexTestEnvironment,
   sessionCodec as codexSessionCodec,
 } from "@armyofagents/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@armyofagents/adapter-codex-local";
+import {
+  agentConfigurationDoc as codexAgentConfigurationDoc,
+  models as codexModels,
+  SANDBOX_INSTALL_COMMAND as codexSandboxInstallCommand,
+} from "@armyofagents/adapter-codex-local";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -22,7 +42,20 @@ import {
   testEnvironment as cursorTestEnvironment,
   sessionCodec as cursorSessionCodec,
 } from "@armyofagents/adapter-cursor-local/server";
-import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@armyofagents/adapter-cursor-local";
+import {
+  agentConfigurationDoc as cursorAgentConfigurationDoc,
+  models as cursorModels,
+  SANDBOX_INSTALL_COMMAND as cursorSandboxInstallCommand,
+} from "@armyofagents/adapter-cursor-local";
+import {
+  execute as cursorCloudExecute,
+  testEnvironment as cursorCloudTestEnvironment,
+  sessionCodec as cursorCloudSessionCodec,
+  getConfigSchema as getCursorCloudConfigSchema,
+} from "@armyofagents/adapter-cursor-cloud/server";
+import {
+  agentConfigurationDoc as cursorCloudAgentConfigurationDoc,
+} from "@armyofagents/adapter-cursor-cloud";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -33,6 +66,8 @@ import {
 } from "@armyofagents/adapter-opencode-local/server";
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
+  models as openCodeModels,
+  SANDBOX_INSTALL_COMMAND as openCodeSandboxInstallCommand,
 } from "@armyofagents/adapter-opencode-local";
 import {
   execute as openclawExecute,
@@ -43,6 +78,15 @@ import {
   agentConfigurationDoc as openclawAgentConfigurationDoc,
   models as openclawModels,
 } from "@armyofagents/adapter-openclaw";
+import {
+  execute as openclawGatewayExecute,
+  testEnvironment as openclawGatewayTestEnvironment,
+  getConfigSchema as getOpenclawGatewayConfigSchema,
+} from "@armyofagents/adapter-openclaw-gateway/server";
+import {
+  agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
+  models as openclawGatewayModels,
+} from "@armyofagents/adapter-openclaw-gateway";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -52,7 +96,35 @@ import {
   testEnvironment as geminiTestEnvironment,
   sessionCodec as geminiSessionCodec,
 } from "@armyofagents/adapter-gemini-local/server";
-import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@armyofagents/adapter-gemini-local";
+import {
+  agentConfigurationDoc as geminiAgentConfigurationDoc,
+  models as geminiModels,
+  SANDBOX_INSTALL_COMMAND as geminiSandboxInstallCommand,
+} from "@armyofagents/adapter-gemini-local";
+import {
+  execute as grokExecute,
+  listGrokSkills,
+  syncGrokSkills,
+  testEnvironment as grokTestEnvironment,
+  sessionCodec as grokSessionCodec,
+} from "@armyofagents/adapter-grok-local/server";
+import {
+  agentConfigurationDoc as grokAgentConfigurationDoc,
+  models as grokModels,
+} from "@armyofagents/adapter-grok-local";
+import {
+  execute as piExecute,
+  listPiSkills,
+  syncPiSkills,
+  testEnvironment as piTestEnvironment,
+  sessionCodec as piSessionCodec,
+  listPiModels,
+} from "@armyofagents/adapter-pi-local/server";
+import {
+  agentConfigurationDoc as piAgentConfigurationDoc,
+  models as piModels,
+  SANDBOX_INSTALL_COMMAND as piSandboxInstallCommand,
+} from "@armyofagents/adapter-pi-local";
 import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
@@ -66,6 +138,7 @@ import {
   parseObject,
   asString,
 } from "@armyofagents/adapter-utils/server-utils";
+import { getAdapterSessionManagement } from "@armyofagents/adapter-utils";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
@@ -76,14 +149,29 @@ function buildNpmRuntimeCommandSpec(
   packageName: string | null,
   configuredCommand: unknown,
 ) {
+  const installCommand = packageName
+    ? `if ! command -v ${command} >/dev/null 2>&1; then npm install -g ${packageName}; fi`
+    : null;
+  return buildRuntimeCommandSpec(command, installCommand, configuredCommand);
+}
+
+function buildRuntimeCommandSpec(
+  command: string,
+  installCommand: string | null,
+  configuredCommand: unknown,
+) {
   const resolved = asString(configuredCommand, command).trim() || command;
   return {
     command: resolved,
     detectCommand: `command -v ${resolved}`,
-    installCommand: packageName && resolved === command
-      ? `if ! command -v ${resolved} >/dev/null 2>&1; then npm install -g ${packageName}; fi`
-      : null,
+    installCommand: resolved === command ? installCommand : null,
   };
+}
+
+function normalizeServerAdapter(adapter: ServerAdapterModule): ServerAdapterModule {
+  if (adapter.sessionManagement) return adapter;
+  const sessionManagement = getAdapterSessionManagement(adapter.type);
+  return sessionManagement ? { ...adapter, sessionManagement } : adapter;
 }
 
 const claudeLocalAdapter: ServerAdapterModule = {
@@ -100,7 +188,25 @@ const claudeLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec("claude", "@anthropic-ai/claude-code", config.command),
+    buildRuntimeCommandSpec("claude", claudeSandboxInstallCommand, config.command),
+};
+
+const acpxLocalAdapter: ServerAdapterModule = {
+  type: "acpx_local",
+  execute: acpxExecute,
+  testEnvironment: acpxTestEnvironment,
+  listSkills: listAcpxSkills,
+  syncSkills: syncAcpxSkills,
+  sessionCodec: acpxSessionCodec,
+  models: acpxModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: acpxAgentConfigurationDoc,
+  getConfigSchema: async () => getAcpxConfigSchema(),
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("acpx", "acpx", config.command),
 };
 
 const codexLocalAdapter: ServerAdapterModule = {
@@ -118,7 +224,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec("codex", "@openai/codex", config.command),
+    buildRuntimeCommandSpec("codex", codexSandboxInstallCommand, config.command),
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
@@ -136,7 +242,21 @@ const cursorLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec("agent", null, config.command),
+    buildRuntimeCommandSpec("agent", cursorSandboxInstallCommand, config.command),
+};
+
+const cursorCloudAdapter: ServerAdapterModule = {
+  type: "cursor_cloud",
+  execute: cursorCloudExecute,
+  testEnvironment: cursorCloudTestEnvironment,
+  sessionCodec: cursorCloudSessionCodec,
+  models: [],
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: cursorCloudAgentConfigurationDoc,
+  getConfigSchema: async () => getCursorCloudConfigSchema(),
 };
 
 const openclawAdapter: ServerAdapterModule = {
@@ -158,7 +278,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   listSkills: listOpenCodeSkills,
   syncSkills: syncOpenCodeSkills,
   sessionCodec: openCodeSessionCodec,
-  models: [],
+  models: openCodeModels,
   listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -166,7 +286,17 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec("opencode", "opencode-ai", config.command),
+    buildRuntimeCommandSpec("opencode", openCodeSandboxInstallCommand, config.command),
+};
+
+const openclawGatewayAdapter: ServerAdapterModule = {
+  type: "openclaw_gateway",
+  execute: openclawGatewayExecute,
+  testEnvironment: openclawGatewayTestEnvironment,
+  models: openclawGatewayModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
+  getConfigSchema: async () => getOpenclawGatewayConfigSchema(),
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -183,7 +313,42 @@ const geminiLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: geminiAgentConfigurationDoc,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec("gemini", "@google/gemini-cli", config.command),
+    buildRuntimeCommandSpec("gemini", geminiSandboxInstallCommand, config.command),
+};
+
+const grokLocalAdapter: ServerAdapterModule = {
+  type: "grok_local",
+  execute: grokExecute,
+  testEnvironment: grokTestEnvironment,
+  listSkills: listGrokSkills,
+  syncSkills: syncGrokSkills,
+  sessionCodec: grokSessionCodec,
+  models: grokModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: grokAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildRuntimeCommandSpec("grok", null, config.command),
+};
+
+const piLocalAdapter: ServerAdapterModule = {
+  type: "pi_local",
+  execute: piExecute,
+  testEnvironment: piTestEnvironment,
+  listSkills: listPiSkills,
+  syncSkills: syncPiSkills,
+  sessionCodec: piSessionCodec,
+  models: piModels,
+  listModels: listPiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: piAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildRuntimeCommandSpec("pi", piSandboxInstallCommand, config.command),
 };
 
 const hermesLocalAdapter: ServerAdapterModule = {
@@ -235,7 +400,9 @@ const hermesLocalAdapter: ServerAdapterModule = {
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>(
-  [claudeLocalAdapter, codexLocalAdapter, openCodeLocalAdapter, cursorLocalAdapter, openclawAdapter, geminiLocalAdapter, hermesLocalAdapter, processAdapter, httpAdapter].map((a) => [a.type, a]),
+  [claudeLocalAdapter, acpxLocalAdapter, codexLocalAdapter, openCodeLocalAdapter, cursorLocalAdapter, cursorCloudAdapter, openclawAdapter, openclawGatewayAdapter, geminiLocalAdapter, grokLocalAdapter, piLocalAdapter, hermesLocalAdapter, processAdapter, httpAdapter]
+    .map((a) => normalizeServerAdapter(a))
+    .map((a) => [a.type, a]),
 );
 
 // Builtin adapters that have been replaced by an external adapter of the same
@@ -302,13 +469,14 @@ export function listEnabledServerAdapters(): ServerAdapterModule[] {
  * unregistered.
  */
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  const normalizedAdapter = normalizeServerAdapter(adapter);
   if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
     const existing = adaptersByType.get(adapter.type);
     if (existing) {
       builtinFallbacks.set(adapter.type, existing);
     }
   }
-  adaptersByType.set(adapter.type, adapter);
+  adaptersByType.set(adapter.type, normalizedAdapter);
 }
 
 /**

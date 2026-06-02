@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
   runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetFile,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -23,6 +28,7 @@ import {
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { writeOpenCodeMcpConfigJson } from "./opencode-config-json.js";
+import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -90,6 +96,7 @@ async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLo
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -114,6 +121,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   await ensureOpenCodeSkillsInjected(onLog);
 
@@ -126,6 +134,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // top-level config (theme, model, other mcp servers) — see its header.
   if (ctx.mcpBridge) {
     await writeOpenCodeMcpConfigJson(cwd, ctx.mcpBridge);
+    if (executionTargetIsRemote) {
+      await syncAdapterExecutionTargetFile({
+        runId,
+        target: executionTarget,
+        localPath: path.join(cwd, "opencode.json"),
+        remotePath: `${effectiveExecutionCwd}/opencode.json`,
+        cwd: effectiveExecutionCwd,
+        env: {},
+        timeoutSec: 30,
+        graceSec: 5,
+        onLog,
+      });
+    }
     await onLog("stderr", "[aoa] Wired opencode MCP bridge via opencode.json\n");
   }
 
@@ -187,13 +208,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const baseExecutionEnv = executionTarget.type === "local" ? runtimeEnv : env;
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env: baseExecutionEnv,
+    config,
+    targetIsRemote: executionTarget.type !== "local",
+  });
+  const preparedRuntimeEnv = preparedRuntimeConfig.env;
   if (executionTarget.type === "local") {
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureCommandResolvable(command, cwd, preparedRuntimeEnv);
     await ensureOpenCodeModelConfiguredAndAvailable({
       model,
       command,
       cwd,
-      env: runtimeEnv,
+      env: preparedRuntimeEnv,
     });
   } else if (!model) {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
@@ -210,14 +238,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || (
+      executionTargetIsRemote
+        ? runtimeSessionCwd === sessionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(sessionCwd)
+    )) &&
+    sessionTargetMatches;
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${sessionCwd}".\n`,
     );
   }
 
@@ -248,7 +284,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const commandNotes = (() => {
-    const notes = [`Execution target: ${executionTarget.type}`];
+    const notes = [`Execution target: ${executionTarget.type}`, ...preparedRuntimeConfig.notes];
     if (!resolvedInstructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       return [
@@ -292,7 +328,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd,
         commandNotes,
         commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
-        env: redactEnvForLogs(env),
+        env: redactEnvForLogs(preparedRuntimeEnv),
         prompt,
         context,
       });
@@ -303,10 +339,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command,
       args,
       cwd,
-      env,
+      env: preparedRuntimeEnv,
       stdin: prompt,
-      authToken: env.AOA_API_KEY ?? authToken ?? null,
-      apiBaseUrl: env.AOA_API_URL ?? null,
+      authToken: preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: preparedRuntimeEnv.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,
       graceSec,
@@ -335,7 +371,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
-        executionCwd: cwd,
+        executionCwd: sessionCwd,
       };
     }
 
@@ -345,10 +381,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
-          cwd,
+          cwd: sessionCwd,
           ...(workspaceId ? { workspaceId } : {}),
           ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(executionTargetIsRemote
+            ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+            : {}),
         } as Record<string, unknown>)
       : null;
 
@@ -379,7 +418,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: modelId,
       billingType: "unknown",
       costUsd: attempt.parsed.costUsd,
-      executionCwd: cwd,
+      executionCwd: sessionCwd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -389,21 +428,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  const initialFailed =
-    !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-  if (
-    sessionId &&
-    initialFailed &&
-    isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-  ) {
-    await onLog(
-      "stderr",
-      `[aoa] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true);
-  }
+  try {
+    const initial = await runAttempt(sessionId);
+    const initialFailed =
+      !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+    if (
+      sessionId &&
+      initialFailed &&
+      isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+    ) {
+      await onLog(
+        "stderr",
+        `[aoa] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial);
+  } finally {
+    await preparedRuntimeConfig.cleanup();
+  }
 }

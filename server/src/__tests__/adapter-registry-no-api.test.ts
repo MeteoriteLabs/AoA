@@ -19,14 +19,24 @@ describe("adapter registry after Sprint 2A", () => {
 
   it("still includes expected CLI adapters (regression guard)", () => {
     expect(AGENT_ADAPTER_TYPES).toContain("claude_local");
+    expect(AGENT_ADAPTER_TYPES).toContain("acpx_local");
     expect(AGENT_ADAPTER_TYPES).toContain("codex_local");
     expect(AGENT_ADAPTER_TYPES).toContain("opencode_local");
     expect(AGENT_ADAPTER_TYPES).toContain("openclaw");
     expect(AGENT_ADAPTER_TYPES).toContain("cursor");
+    expect(AGENT_ADAPTER_TYPES).toContain("cursor_cloud");
     expect(AGENT_ADAPTER_TYPES).toContain("hermes_local");
     expect(AGENT_ADAPTER_TYPES).toContain("gemini_local");
+    expect(AGENT_ADAPTER_TYPES).toContain("grok_local");
+    expect(AGENT_ADAPTER_TYPES).toContain("pi_local");
+    expect(AGENT_ADAPTER_TYPES).toContain("openclaw_gateway");
     expect(BUILTIN_ADAPTER_TYPES.has("claude_local")).toBe(true);
+    expect(BUILTIN_ADAPTER_TYPES.has("acpx_local")).toBe(true);
     expect(BUILTIN_ADAPTER_TYPES.has("codex_local")).toBe(true);
     expect(BUILTIN_ADAPTER_TYPES.has("openclaw")).toBe(true);
+    expect(BUILTIN_ADAPTER_TYPES.has("cursor_cloud")).toBe(true);
+    expect(BUILTIN_ADAPTER_TYPES.has("grok_local")).toBe(true);
+    expect(BUILTIN_ADAPTER_TYPES.has("pi_local")).toBe(true);
+    expect(BUILTIN_ADAPTER_TYPES.has("openclaw_gateway")).toBe(true);
   });
 });

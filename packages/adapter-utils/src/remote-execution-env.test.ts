@@ -37,4 +37,20 @@ describe("sanitizeRemoteExecutionEnv", () => {
       Path: "C:\\sandbox\\bin",
     });
   });
+
+  it("drops host environment keys that cannot be exported by POSIX shells", () => {
+    expect(
+      sanitizeRemoteExecutionEnv(
+        {
+          "CommonProgramFiles(x86)": "C:\\Program Files (x86)\\Common Files",
+          ProgramFiles: "C:\\Program Files",
+          AOA_RUN_ID: "run_1",
+        },
+        {},
+      ),
+    ).toEqual({
+      ProgramFiles: "C:\\Program Files",
+      AOA_RUN_ID: "run_1",
+    });
+  });
 });

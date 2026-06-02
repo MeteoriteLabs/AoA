@@ -1,4 +1,10 @@
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  describeAdapterExecutionTarget,
+  readAdapterExecutionTarget,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@armyofagents/adapter-utils";
 import { asString } from "@armyofagents/adapter-utils/server-utils";
 import { isHookEndpoint } from "./execute-common.js";
 import { executeSse } from "./execute-sse.js";
@@ -12,6 +18,26 @@ function normalizeTransport(value: unknown): "sse" | "webhook" | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+  });
+  if (adapterExecutionTargetIsRemote(executionTarget)) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        `openclaw sends HTTP/SSE/webhook requests to an OpenClaw endpoint from the AoA server and cannot execute inside ${describeAdapterExecutionTarget(executionTarget)}. ` +
+        "Use an OpenClaw endpoint reachable from the AoA server, or choose a local CLI adapter for sandbox execution.",
+      errorCode: "unsupported_execution_target",
+      provider: "openclaw",
+      resultJson: {
+        executionTarget,
+        supportedTargets: ["openclaw_endpoint"],
+      },
+    };
+  }
+
   const url = asString(ctx.config.url, "").trim();
   if (!url) {
     return {

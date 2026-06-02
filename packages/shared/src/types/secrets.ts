@@ -6,6 +6,8 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretStatus,
+  RuntimeProviderKeyProvider,
+  RuntimeProviderKeyStatus,
 } from "../constants.js";
 
 export type { SecretProvider };
@@ -151,4 +153,17 @@ export interface RemoteSecretImportResult {
     secretId?: string | null;
     error?: string | null;
   }>;
+}
+
+export interface RuntimeProviderKey {
+  id: string;
+  companyId: string;
+  provider: RuntimeProviderKeyProvider;
+  displayName: string;
+  secretId: string;
+  status: RuntimeProviderKeyStatus;
+  isDefault: boolean;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
 }

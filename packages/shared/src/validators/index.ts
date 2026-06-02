@@ -182,8 +182,10 @@ export {
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
   createSecretBindingSchema,
+  createRuntimeProviderKeySchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportCommitSchema,
+  updateRuntimeProviderKeySchema,
   type CreateSecret,
   type RotateSecret,
   type UpdateSecret,
@@ -192,6 +194,8 @@ export {
   type CreateSecretBinding,
   type RemoteSecretImportPreview,
   type RemoteSecretImportCommit,
+  type CreateRuntimeProviderKey,
+  type UpdateRuntimeProviderKey,
 } from "./secret.js";
 
 export {
@@ -422,7 +426,16 @@ export {
 
 export {
   createEnvironmentSchema,
+  e2bEnvironmentConfigSchema,
+  environmentDriverSchema,
+  environmentLeaseCleanupStatusSchema,
+  environmentLeasePolicySchema,
+  environmentLeaseStatusSchema,
+  environmentStatusSchema,
+  probeEnvironmentSchema,
   updateEnvironmentSchema,
   type CreateEnvironmentInput,
+  type E2bEnvironmentConfig,
+  type ProbeEnvironmentInput,
   type UpdateEnvironmentInput,
 } from "./environment.js";

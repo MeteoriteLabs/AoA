@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "../server/execute.js";
-import type { AdapterInvocationMeta } from "@armyofagents/adapter-utils";
+import type { AdapterInvocationMeta, AdapterProviderSandboxRunInput } from "@armyofagents/adapter-utils";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<string> {
   const script = `#!/usr/bin/env node
@@ -184,6 +184,89 @@ describe("codex execute target", () => {
       expect(capture.prompt).toContain("- Identifier: MAN-1");
       expect(capture.prompt).toContain("Start a localhost preview app.");
       expect(capture.prompt).not.toContain("AOA_PREVIEW_URL=<full localhost URL>");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a remote Codex home for provider-sandbox targets", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-provider-target-"));
+    const hostCodexHome = path.join(root, "host-codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = hostCodexHome;
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout: [
+            JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }),
+            JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: { input_tokens: 1, output_tokens: 2, cached_input_tokens: 0 },
+            }),
+          ].join("\n"),
+        };
+      }),
+    };
+
+    try {
+      const result = await execute({
+        runId: "run-codex-provider",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          env: {
+            CUSTOM_ENV: "custom-value",
+          },
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: {
+          type: "provider-sandbox",
+          provider: "e2b",
+          providerLeaseId: "sandbox-1",
+          remoteCwd: "/home/user/aoa-workspace",
+          shell: "bash",
+          runner: providerRunner,
+        },
+        runtimeCommandSpec: { command: "codex", installCommand: "npm install -g @openai/codex" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const providerInput = providerInputs[0];
+      expect(providerInput).toBeDefined();
+      expect(providerInput!.env.CODEX_HOME).toBe("/home/user/aoa-workspace/.aoa-codex-home");
+      expect(providerInput!.env.CODEX_HOME).not.toContain(hostCodexHome);
+      expect(providerInput!.env.CUSTOM_ENV).toBe("custom-value");
+      expect(providerInput!.command).toBe("bash");
+      expect(providerInput!.args[1]).toContain('mkdir -p "/home/user/aoa-workspace/.aoa-codex-home"');
+      expect(providerInput!.args[1]).toContain("codex login --with-api-key");
     } finally {
       if (previousCodexHome === undefined) {
         delete process.env.CODEX_HOME;

@@ -8,15 +8,22 @@ import {
   asBoolean,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@armyofagents/adapter-utils/server-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
+} from "@armyofagents/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { prepareManagedCodexHome, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -53,16 +60,38 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
+function shellDoubleQuote(value: string): string {
+  return `"${value.replace(/["\\$`]/g, "\\$&")}"`;
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = adapterExecutionTargetIsRemote(target);
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "codex_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "codex_cwd_valid",
       level: "info",
@@ -82,9 +111,11 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...(targetIsRemote ? {} : process.env), ...env });
   try {
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, {
+      installCommand: SANDBOX_INSTALL_COMMAND,
+    });
     checks.push({
       code: "codex_command_resolvable",
       level: "info",
@@ -100,7 +131,7 @@ export async function testEnvironment(
   }
 
   const configOpenAiKey = env.OPENAI_API_KEY;
-  const hostOpenAiKey = process.env.OPENAI_API_KEY;
+  const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
   if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({
@@ -177,22 +208,35 @@ export async function testEnvironment(
             ? process.env.OPENAI_API_KEY.trim()
             : null;
 
-      const probeRunId = `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const managedCodexHome = await prepareManagedCodexHome(
-        process.env,
-        () => {},
-        ctx.companyId,
-        { apiKey: configuredOpenAiApiKey },
-      );
+      const managedCodexHome = targetIsRemote
+        ? `${adapterExecutionTargetRemoteCwd(target, cwd).replace(/\/+$/, "")}/.aoa-codex-home`
+        : await prepareManagedCodexHome(
+            process.env,
+            () => {},
+            ctx.companyId,
+            { apiKey: configuredOpenAiApiKey },
+          );
       const probeEnv = { ...env, CODEX_HOME: managedCodexHome };
+      const runtimeCommandSpec = targetIsRemote
+        ? {
+            command,
+            installCommand: [
+              `mkdir -p ${shellDoubleQuote(managedCodexHome)}`,
+              SANDBOX_INSTALL_COMMAND,
+              `if [ -n "$OPENAI_API_KEY" ]; then printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key; fi`,
+            ].join("\n"),
+          }
+        : null;
 
-      const probe = await runChildProcess(
-        probeRunId,
-        command,
-        args,
+      const probe = await runAdapterExecutionTargetProcess(
+        target ?? { type: "local" },
         {
+          runId,
+          command,
+          args,
           cwd,
           env: probeEnv,
+          runtimeCommandSpec,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",

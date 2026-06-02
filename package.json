@@ -60,6 +60,8 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
+      "@cursor/sdk>sqlite3": "-",
+      "sqlite3": "-",
       "rollup": ">=4.59.0"
     }
   }

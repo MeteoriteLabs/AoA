@@ -120,6 +120,9 @@ vi.mock("@armyofagents/adapter-utils/server-utils", () => ({
 }));
 
 vi.mock("@armyofagents/adapter-utils", () => ({
+  buildNpmGlobalInstallIfMissingCommand: () => null,
+  buildSandboxNpmInstallCommand: () => null,
+  getAdapterSessionManagement: () => null,
   hasSessionCompactionThresholds: () => false,
   resolveAdapterExecutionTarget: (v: unknown) => v ?? null,
   resolveSessionCompactionPolicy: () => ({}),

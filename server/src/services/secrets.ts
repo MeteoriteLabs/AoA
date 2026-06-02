@@ -5,6 +5,7 @@ import {
   companySecretProviderConfigs,
   companySecrets,
   companySecretVersions,
+  runtimeProviderKeys,
   secretAccessEvents,
 } from "@armyofagents/db";
 import type {
@@ -151,6 +152,16 @@ export function secretService(db: Db) {
     if (!secret || secret.deletedAt) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     return secret;
+  }
+
+  async function assertSecretNotUsedByActiveProviderKey(secretId: string) {
+    const rows = await db
+      .select()
+      .from(runtimeProviderKeys)
+      .where(and(eq(runtimeProviderKeys.secretId, secretId), eq(runtimeProviderKeys.status, "active")));
+    if (rows.length > 0) {
+      throw conflict("Secret is used by an active runtime provider key.");
+    }
   }
 
   async function getProviderConfigById(id: string) {
@@ -623,6 +634,9 @@ export function secretService(db: Db) {
         const duplicate = await getByName(secret.companyId, patch.name);
         if (duplicate && duplicate.id !== secret.id) throw conflict(`Secret already exists: ${patch.name}`);
       }
+      if (patch.status && patch.status !== "active" && patch.status !== secret.status) {
+        await assertSecretNotUsedByActiveProviderKey(secret.id);
+      }
       return db
         .update(companySecrets)
         .set({
@@ -641,6 +655,7 @@ export function secretService(db: Db) {
     remove: async (secretId: string) => {
       const secret = await getById(secretId);
       if (!secret) return null;
+      await assertSecretNotUsedByActiveProviderKey(secret.id);
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const latestVersion = await getSecretVersion(secret.id, secret.latestVersion);
       if (provider.deleteOrArchive) {
@@ -662,6 +677,7 @@ export function secretService(db: Db) {
     delete: async (companyId: string, name: string): Promise<boolean> => {
       const existing = await getByName(companyId, name);
       if (!existing) return false;
+      await assertSecretNotUsedByActiveProviderKey(existing.id);
       await db.update(companySecrets).set({ status: "deleted", deletedAt: new Date(), updatedAt: new Date() }).where(eq(companySecrets.id, existing.id));
       return true;
     },

@@ -2,6 +2,8 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { AdapterModelProfile } from "./model-profiles.js";
+
 export interface AdapterAgent {
   id: string;
   companyId: string;
@@ -40,7 +42,7 @@ export type AdapterBillingType =
   | "fixed"
   | "unknown";
 
-export type AdapterExecutionTargetType = "local" | "sandbox-docker";
+export type AdapterExecutionTargetType = "local" | "sandbox-docker" | "provider-sandbox";
 
 export interface AdapterLocalExecutionTarget {
   type: "local";
@@ -57,9 +59,45 @@ export interface AdapterDockerExecutionTarget {
   installCommand?: string | null;
 }
 
+export interface AdapterProviderSandboxRunInput {
+  runId: string;
+  provider: string;
+  providerLeaseId: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+  stdin?: string;
+  timeoutSec: number;
+  graceSec: number;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
+}
+
+export interface AdapterProviderSandboxRunner {
+  execute(input: AdapterProviderSandboxRunInput): Promise<{
+    exitCode: number | null;
+    signal: string | null;
+    timedOut: boolean;
+    stdout: string;
+    stderr: string;
+  }>;
+}
+
+export interface AdapterProviderSandboxExecutionTarget {
+  type: "provider-sandbox";
+  provider: string;
+  providerLeaseId: string;
+  remoteCwd: string;
+  shell?: "sh" | "bash" | null;
+  env?: Record<string, string>;
+  runner: AdapterProviderSandboxRunner;
+}
+
 export type AdapterExecutionTarget =
   | AdapterLocalExecutionTarget
-  | AdapterDockerExecutionTarget;
+  | AdapterDockerExecutionTarget
+  | AdapterProviderSandboxExecutionTarget;
 
 export interface AdapterRuntimeCommandSpec {
   command: string;
@@ -138,8 +176,11 @@ export interface AdapterInvocationMeta {
   commandNotes?: string[];
   env?: Record<string, string>;
   prompt?: string;
+  promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
 }
+
+export type AdapterModelProfileDefinition = AdapterModelProfile;
 
 /**
  * Provider-neutral MCP bridge spec ({command,args,env}). Local copy of the
@@ -257,6 +298,8 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  executionTarget?: AdapterExecutionTarget;
+  environmentName?: string | null;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";
@@ -299,6 +342,8 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  modelProfiles?: AdapterModelProfile[];
+  listModelProfiles?: () => Promise<AdapterModelProfile[]>;
   getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
   agentConfigurationDoc?: string;
   /**
@@ -362,6 +407,35 @@ export interface CLIAdapterModule {
 // UI config form values (moved from ui/src/components/AgentConfigForm.tsx)
 // ---------------------------------------------------------------------------
 
+export type AdapterConfigFieldType =
+  | "text"
+  | "textarea"
+  | "number"
+  | "boolean"
+  | "toggle"
+  | "select"
+  | "secret"
+  | "json"
+  | "env";
+
+export interface AdapterConfigFieldSchema {
+  key: string;
+  type: AdapterConfigFieldType;
+  label: string;
+  description?: string;
+  hint?: string;
+  required?: boolean;
+  default?: unknown;
+  defaultValue?: unknown;
+  options?: Array<{ value: string; label: string }>;
+  meta?: Record<string, unknown>;
+}
+
+export interface AdapterConfigSchema {
+  version: 1;
+  fields: AdapterConfigFieldSchema[];
+}
+
 export interface CreateConfigValues {
   adapterType: string;
   cwd: string;
@@ -384,4 +458,11 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  adapterSchemaValues?: Record<string, unknown>;
+  workspaceStrategyType?: string;
+  workspaceBaseRef?: string;
+  workspaceBranchTemplate?: string;
+  worktreeParentDir?: string;
+  runtimeServicesJson?: string;
+  payloadTemplateJson?: string;
 }

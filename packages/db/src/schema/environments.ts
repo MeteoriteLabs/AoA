@@ -7,6 +7,11 @@ export const environments = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    description: text("description"),
+    driver: text("driver").notNull().default("local"),
+    status: text("status").notNull().default("active"),
+    config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     envVars: jsonb("env_vars").$type<Record<string, unknown>>().notNull().default({}),
     connectionTarget: jsonb("connection_target").$type<Record<string, unknown>>(),
     target: jsonb("target").$type<Record<string, unknown>>(),
@@ -15,6 +20,7 @@ export const environments = pgTable(
   },
   (table) => ({
     companyIdx: index("environments_company_idx").on(table.companyId),
+    companyStatusIdx: index("environments_company_status_idx").on(table.companyId, table.status),
     companyNameUq: uniqueIndex("environments_company_name_uq").on(table.companyId, table.name),
   }),
 );

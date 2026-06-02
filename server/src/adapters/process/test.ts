@@ -6,10 +6,14 @@ import type {
 import {
   asString,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
 } from "../utils.js";
+import {
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  resolveAdapterExecutionTargetCwd,
+} from "@armyofagents/adapter-utils/execution-target";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -23,7 +27,17 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = target ? ctx.environmentName ?? describeAdapterExecutionTarget(target) : null;
+
+  if (targetLabel) {
+    checks.push({
+      code: "process_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   if (!command) {
     checks.push({
@@ -41,7 +55,16 @@ export async function testEnvironment(
   }
 
   try {
-    await ensureAbsoluteDirectory(cwd);
+    await ensureAdapterExecutionTargetDirectory(
+      `process-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      target,
+      cwd,
+      {
+        cwd,
+        env: {},
+        createIfMissing: true,
+      },
+    );
     checks.push({
       code: "process_cwd_valid",
       level: "info",
@@ -64,7 +87,7 @@ export async function testEnvironment(
     }
     const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
     try {
-      await ensureCommandResolvable(command, cwd, runtimeEnv);
+      await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
       checks.push({
         code: "process_command_resolvable",
         level: "info",

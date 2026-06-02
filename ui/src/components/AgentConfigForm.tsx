@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES, AGENT_ROLES } from "@armyofagents/shared";
+import { AGENT_ROLES } from "@armyofagents/shared";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
@@ -48,11 +48,15 @@ import {
 import { ReportsToSelect } from "./team/ReportsToSelect";
 import type { UnifiedOrgNode } from "./team/ReportsToSelect";
 import { defaultCreateValues } from "./agent-config-defaults";
-import { getUIAdapter } from "../adapters";
+import { getAdapterLabel, getUIAdapter, listAdapterOptions, useDisabledAdaptersSync } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { FolderBrowserDialog } from "./FolderBrowserDialog";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import {
+  SecretBindingPicker,
+  type SecretBindingPickerValue,
+} from "./SecretBindingPicker";
 
 /* ---- Create mode values ---- */
 
@@ -165,6 +169,42 @@ const claudeThinkingEffortOptions = [
   { id: "high", label: "High" },
 ] as const;
 
+const adapterModelKeyEnv: Record<string, string> = {
+  codex_local: "OPENAI_API_KEY",
+  claude_local: "ANTHROPIC_API_KEY",
+};
+
+function readSecretBinding(value: EnvBinding | undefined): SecretBindingPickerValue {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "secret_ref" &&
+    typeof value.secretId === "string"
+  ) {
+    return {
+      type: "secret_ref",
+      secretId: value.secretId,
+      version: value.version,
+    };
+  }
+  return null;
+}
+
+function mergeEnvSecretBinding(
+  env: Record<string, EnvBinding>,
+  key: string,
+  binding: SecretBindingPickerValue,
+): Record<string, EnvBinding> | undefined {
+  const next = { ...env };
+  if (binding) {
+    next[key] = binding;
+  } else {
+    delete next[key];
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 
 /* ---- Form ---- */
 
@@ -174,6 +214,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const cards = props.sectionLayout === "cards";
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  useDisabledAdaptersSync();
   const [cwdBrowserOpen, setCwdBrowserOpen] = useState(false);
 
   const { data: availableSecrets = [] } = useQuery({
@@ -366,6 +407,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return { ...base, ...overlay.adapterConfig };
   }
 
+  function buildEnvironmentIdForTest(): string | null {
+    if (isCreate) return null;
+    const value = eff("runtime", "defaultEnvironmentId", props.agent.defaultEnvironmentId);
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
@@ -373,6 +420,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
         adapterConfig: buildAdapterConfigForTest(),
+        environmentId: buildEnvironmentIdForTest(),
       });
     },
   });
@@ -414,6 +462,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
+  const requiredModelKeyEnv = adapterModelKeyEnv[adapterType] ?? null;
+  const effectiveEnv = isCreate
+    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+    : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+    );
 
   return (
     <div className={cn("relative", cards && "space-y-6")}>
@@ -834,6 +887,35 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
 
+              {requiredModelKeyEnv && selectedCompanyId && (
+                <Field
+                  label="Model API key"
+                  hint={`${requiredModelKeyEnv} is resolved from company Secrets at runtime.`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="rounded border border-border bg-muted px-2 py-1 text-xs text-muted-foreground">
+                      {requiredModelKeyEnv}
+                    </code>
+                    <SecretBindingPicker
+                      companyId={selectedCompanyId}
+                      value={readSecretBinding(effectiveEnv[requiredModelKeyEnv])}
+                      onChange={(binding) => {
+                        const next = mergeEnvSecretBinding(effectiveEnv, requiredModelKeyEnv, binding);
+                        if (isCreate) {
+                          set!({ envBindings: next ?? {}, envVars: "" });
+                        } else {
+                          mark("adapterConfig", "env", next);
+                        }
+                      }}
+                      configPath={`env.${requiredModelKeyEnv}`}
+                      targetType="agent"
+                      targetId={isCreate ? "new-agent" : props.agent.id}
+                      secretsOverride={availableSecrets}
+                    />
+                  </div>
+                </Field>
+              )}
+
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
                   value={
@@ -854,12 +936,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvVarEditor
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                      )
-                  }
+                  value={effectiveEnv}
                   secrets={availableSecrets}
                   onCreateSecret={async (name, value) => {
                     const created = await createSecret.mutateAsync({ name, value });
@@ -1087,17 +1164,6 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor", "hermes_local", "gemini_local"]);
-
-/** Display list includes all real adapter types plus UI-only coming-soon entries. */
-const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
-  ...AGENT_ADAPTER_TYPES.map((t) => ({
-    value: t,
-    label: adapterLabels[t] ?? t,
-    comingSoon: !ENABLED_ADAPTER_TYPES.has(t),
-  })),
-];
-
 function AdapterTypeDropdown({
   value,
   onChange,
@@ -1105,19 +1171,22 @@ function AdapterTypeDropdown({
   value: string;
   onChange: (type: string) => void;
 }) {
+  const adapterOptions = listAdapterOptions()
+    .filter((item) => !item.hidden);
+
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className="inline-flex items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span>{adapterLabels[value] ?? value}</span>
+            <span>{getAdapterLabel(value)}</span>
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-        {ADAPTER_DISPLAY_LIST.map((item) => (
+        {adapterOptions.map((item) => (
           <button
             key={item.value}
             disabled={item.comingSoon}

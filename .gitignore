@@ -62,6 +62,7 @@ ui/src/aoa-marketplace-snapshot.json
 
 # Codex CLI scratch dir — dev-server logs & UAT screenshots from agent runs
 .codex/
+.qa-logs/
 
 # Arc-layout visual harness build artifact (rebuild with esbuild — see arc-harness.ts header)
 ui/dev-harness/*.bundle.js

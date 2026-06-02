@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
+import os from "node:os";
 import type { AdapterModel } from "@armyofagents/adapter-utils";
 import {
   asString,
   ensurePathInEnv,
   runChildProcess,
 } from "@armyofagents/adapter-utils/server-utils";
+import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
+const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -19,7 +22,15 @@ function resolveOpenCodeCommand(input: unknown): string {
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
 const VOLATILE_ENV_KEY_PREFIXES = ["AOA_", "npm_", "NPM_"] as const;
-const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID"]);
+const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
+
+export function requireOpenCodeModelId(input: unknown): string {
+  const model = asString(input, "").trim();
+  if (!isValidOpenCodeModelId(model)) {
+    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
+  }
+  return model;
+}
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
@@ -48,7 +59,7 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function parseModelsOutput(stdout: string): AdapterModel[] {
+export function parseOpenCodeModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
   for (const raw of stdout.split(/\r?\n/)) {
     const line = raw.trim();
@@ -106,7 +117,21 @@ export async function discoverOpenCodeModels(input: {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+  let resolvedHome: string | undefined;
+  try {
+    resolvedHome = os.userInfo().homedir || undefined;
+  } catch {
+    // Some containers run with a UID that has no passwd entry; process.env.HOME
+    // is the best fallback in that case.
+  }
+  const runtimeEnv = normalizeEnv(
+    ensurePathInEnv({
+      ...process.env,
+      ...env,
+      ...(resolvedHome ? { HOME: resolvedHome } : {}),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+    }),
+  );
 
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -115,21 +140,21 @@ export async function discoverOpenCodeModels(input: {
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: 20,
+      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
       graceSec: 3,
       onLog: async () => {},
     },
   );
 
   if (result.timedOut) {
-    throw new Error("`opencode models` timed out.");
+    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
     throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
   }
 
-  return sortModels(parseModelsOutput(result.stdout));
+  return sortModels(parseOpenCodeModelsOutput(result.stdout));
 }
 
 export async function discoverOpenCodeModelsCached(input: {
@@ -157,10 +182,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   cwd?: unknown;
   env?: unknown;
 }): Promise<AdapterModel[]> {
-  const model = asString(input.model, "").trim();
-  if (!model) {
-    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
-  }
+  const model = requireOpenCodeModelId(input.model);
 
   const models = await discoverOpenCodeModelsCached({
     command: input.command,

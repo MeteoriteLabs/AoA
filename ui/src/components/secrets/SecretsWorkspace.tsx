@@ -9,6 +9,7 @@ import {
   type CreateSecretProviderConfigInput,
   type UpdateSecretInput,
 } from "@/api/secrets";
+import type { CreateRuntimeProviderKey, UpdateRuntimeProviderKey } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { ImportFromVaultDialog } from "@/pages/secrets/ImportFromVaultDialog";
 import { queryKeys } from "@/lib/queryKeys";
@@ -23,10 +24,12 @@ import { SecretBindingsTab } from "./SecretBindingsTab";
 import { SecretEmptyState } from "./SecretEmptyState";
 import { SecretInventoryTab } from "./SecretInventoryTab";
 import { SecretVaultProvidersTab } from "./SecretVaultProvidersTab";
+import { ProviderKeysTab } from "./ProviderKeysTab";
 
 const TABS = [
   { id: "inventory", label: "Inventory" },
   { id: "bindings", label: "Bindings" },
+  { id: "providerKeys", label: "Provider Keys" },
   { id: "vaults", label: "Vault providers" },
   { id: "audit", label: "Audit" },
 ] as const;
@@ -57,6 +60,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const providerConfigsQuery = useQuery({
     queryKey: queryKeys.secrets.providerConfigs(companyId),
     queryFn: () => secretsApi.providerConfigs.list(companyId),
+  });
+  const runtimeProviderKeysQuery = useQuery({
+    queryKey: queryKeys.secrets.runtimeProviderKeys(companyId),
+    queryFn: () => secretsApi.runtimeProviderKeys.list(companyId),
   });
   const rotateBindingsQuery = useQuery({
     queryKey: rotateTarget ? queryKeys.secrets.bindings(rotateTarget.id) : ["secret-bindings", "__none__"],
@@ -159,6 +166,40 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     },
   });
 
+  const createRuntimeProviderKey = useMutation({
+    mutationFn: (input: CreateRuntimeProviderKey) => secretsApi.runtimeProviderKeys.create(companyId, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
+      toast.success("Provider key saved");
+    },
+    onError: (err) => {
+      toast.error("Provider key save failed", { description: err instanceof Error ? err.message : undefined });
+    },
+  });
+
+  const updateRuntimeProviderKey = useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateRuntimeProviderKey }) =>
+      secretsApi.runtimeProviderKeys.update(id, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
+      toast.success("Provider key updated");
+    },
+    onError: (err) => {
+      toast.error("Provider key update failed", { description: err instanceof Error ? err.message : undefined });
+    },
+  });
+
+  const deleteRuntimeProviderKey = useMutation({
+    mutationFn: (id: string) => secretsApi.runtimeProviderKeys.remove(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
+      toast.success("Provider key deleted");
+    },
+    onError: (err) => {
+      toast.error("Provider key delete failed", { description: err instanceof Error ? err.message : undefined });
+    },
+  });
+
   const createBinding = useMutation({
     mutationFn: ({ secretId, input }: { secretId: string; input: CreateSecretBindingInput }) =>
       secretsApi.bindings.create(secretId, input),
@@ -206,6 +247,14 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
         : null;
   const createProviderErrorMessage =
     createProviderConfig.error instanceof Error ? createProviderConfig.error.message : null;
+  const providerKeyActionErrorMessage =
+    createRuntimeProviderKey.error instanceof Error
+      ? createRuntimeProviderKey.error.message
+      : updateRuntimeProviderKey.error instanceof Error
+        ? updateRuntimeProviderKey.error.message
+        : deleteRuntimeProviderKey.error instanceof Error
+          ? deleteRuntimeProviderKey.error.message
+          : null;
   const statusUpdateSecretId =
     updateSecret.isPending &&
     (updateSecret.variables?.input.status === "active" || updateSecret.variables?.input.status === "disabled")
@@ -399,6 +448,16 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
           />
         ) : activeTab === "bindings" ? (
           renderSelectedSecretRequiredTab("bindings")
+        ) : activeTab === "providerKeys" ? (
+          <ProviderKeysTab
+            providerKeys={runtimeProviderKeysQuery.data ?? []}
+            secrets={secrets}
+            errorMessage={runtimeProviderKeysQuery.error instanceof Error ? runtimeProviderKeysQuery.error.message : null}
+            actionErrorMessage={providerKeyActionErrorMessage}
+            onCreate={(input) => createRuntimeProviderKey.mutateAsync(input)}
+            onUpdate={(id, input) => updateRuntimeProviderKey.mutateAsync({ id, input })}
+            onRemove={(id) => deleteRuntimeProviderKey.mutateAsync(id)}
+          />
         ) : activeTab === "vaults" ? (
           <SecretVaultProvidersTab
             providers={providersQuery.data ?? []}

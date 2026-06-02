@@ -27,11 +27,12 @@ vi.mock("@armyofagents/db", () => {
   };
   return {
     environments: makeTable("environments"),
+    environmentLeases: makeTable("environment_leases"),
   };
 });
 
 import { environmentService } from "../services/environments.js";
-import { environments } from "@armyofagents/db";
+import { environmentLeases, environments } from "@armyofagents/db";
 
 type MockRow = Record<string, unknown>;
 
@@ -85,9 +86,39 @@ function makeEnv(overrides: Partial<MockRow> = {}): MockRow {
     id: "e1",
     companyId: COMPANY,
     name: "production",
+    description: null,
+    driver: "local",
+    status: "active",
+    config: {},
+    metadata: null,
     envVars: {},
     connectionTarget: null,
     target: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
+function makeLease(overrides: Partial<MockRow> = {}): MockRow {
+  return {
+    id: "lease-1",
+    companyId: COMPANY,
+    environmentId: "e1",
+    executionWorkspaceId: null,
+    issueId: "issue-1",
+    heartbeatRunId: "run-1",
+    status: "active",
+    leasePolicy: "ephemeral",
+    provider: "local",
+    providerLeaseId: null,
+    acquiredAt: new Date("2026-01-01T00:00:00Z"),
+    lastUsedAt: new Date("2026-01-01T00:00:00Z"),
+    expiresAt: null,
+    releasedAt: null,
+    failureReason: null,
+    cleanupStatus: null,
+    metadata: { driver: "local" },
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
@@ -230,6 +261,64 @@ describe("environmentService", () => {
       await svc.delete(COMPANY, "e1");
       expect(mockEq).toHaveBeenCalledWith(environments.id, "e1");
       expect(mockEq).toHaveBeenCalledWith(environments.companyId, COMPANY);
+    });
+  });
+
+  describe("leases", () => {
+    it("acquires a company-scoped lease for an owned environment", async () => {
+      const lease = makeLease();
+      const db = createSequenceDb({
+        selects: [[makeEnv({ id: "e1" })]],
+        inserts: [[lease]],
+      });
+      const svc = environmentService(db);
+      const result = await svc.acquireLease({
+        companyId: COMPANY,
+        environmentId: "e1",
+        issueId: "issue-1",
+        heartbeatRunId: "run-1",
+        provider: "local",
+        metadata: { driver: "local" },
+      });
+      expect(result).toEqual(lease);
+      expect(mockEq).toHaveBeenCalledWith(environments.companyId, COMPANY);
+      expect(mockEq).toHaveBeenCalledWith(environments.id, "e1");
+    });
+
+    it("rejects cross-company lease acquisition when the environment is not visible", async () => {
+      const db = createSequenceDb({ selects: [[]] });
+      const svc = environmentService(db);
+      await expect(svc.acquireLease({
+        companyId: COMPANY,
+        environmentId: "other-company-env",
+        heartbeatRunId: "run-1",
+      })).rejects.toThrow(/environment not found/i);
+    });
+
+    it("releases active leases for a completed heartbeat run", async () => {
+      const released = makeLease({ status: "released", releasedAt: new Date("2026-01-01T00:01:00Z") });
+      const db = createSequenceDb({ updates: [[released]] });
+      const svc = environmentService(db);
+      const result = await svc.releaseLeasesForRun("run-1");
+      expect(result).toEqual([released]);
+      expect(mockEq).toHaveBeenCalledWith(environmentLeases.heartbeatRunId, "run-1");
+      expect(mockEq).toHaveBeenCalledWith(environmentLeases.status, "active");
+    });
+
+    it("marks a lease failed with cleanup metadata", async () => {
+      const failed = makeLease({
+        status: "failed",
+        failureReason: "provision command failed",
+        cleanupStatus: "pending",
+      });
+      const db = createSequenceDb({ updates: [[failed]] });
+      const svc = environmentService(db);
+      const result = await svc.releaseLease("lease-1", "failed", {
+        failureReason: "provision command failed",
+        cleanupStatus: "pending",
+      });
+      expect(result).toEqual(failed);
+      expect(mockEq).toHaveBeenCalledWith(environmentLeases.id, "lease-1");
     });
   });
 });

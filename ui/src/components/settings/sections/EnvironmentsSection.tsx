@@ -5,9 +5,13 @@ import {
   useCreateEnvironment,
   useUpdateEnvironment,
   useDeleteEnvironment,
+  useProbeEnvironment,
 } from "@/api/environments";
-import type { Environment } from "@armyofagents/shared";
-import type { CreateEnvironmentInput, UpdateEnvironmentInput } from "@armyofagents/shared";
+import { secretsApi } from "@/api/secrets";
+import { queryKeys } from "@/lib/queryKeys";
+import { useQuery } from "@tanstack/react-query";
+import type { CompanySecret, Environment } from "@armyofagents/shared";
+import type { CreateEnvironmentInput, EnvironmentProbeResult, UpdateEnvironmentInput } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -68,11 +72,31 @@ function formatDate(iso: string): string {
   }
 }
 
-type EnvTargetType = "local" | "sandbox-docker";
+type EnvTargetType = "local" | "sandbox-docker" | "e2b";
 type EnvTargetShell = "sh" | "bash";
 type EnvTargetNetwork = "bridge" | "host" | "none";
 
-function readTarget(raw: Record<string, unknown> | null | undefined) {
+function readTarget(initial: Environment | undefined) {
+  const raw = initial?.target;
+  const config = initial?.config ?? {};
+  if (initial?.driver === "sandbox" && config.provider === "e2b") {
+    const credentialSecretId = typeof config.credentialSecretId === "string" ? config.credentialSecretId : "";
+    return {
+      targetType: "e2b" as EnvTargetType,
+      targetImage: "",
+      targetWorkdir: "/workspace",
+      targetShell: "bash" as EnvTargetShell,
+      targetNetwork: "bridge" as EnvTargetNetwork,
+      targetRemove: true,
+      targetInstallCommand: "",
+      configRaw: safeStringify(config),
+      e2bCredentialMode: credentialSecretId ? "secret" as const : "default" as const,
+      e2bCredentialSecretId: credentialSecretId,
+      e2bTemplate: typeof config.template === "string" ? config.template : "base",
+      e2bTimeoutMs: typeof config.timeoutMs === "number" ? String(config.timeoutMs) : "60000",
+      e2bReuseLease: config.reuseLease === true,
+    };
+  }
   if (raw?.type !== "sandbox-docker") {
     return {
       targetType: "local" as EnvTargetType,
@@ -82,6 +106,12 @@ function readTarget(raw: Record<string, unknown> | null | undefined) {
       targetNetwork: "bridge" as EnvTargetNetwork,
       targetRemove: true,
       targetInstallCommand: "",
+      configRaw: "",
+      e2bCredentialMode: "default" as const,
+      e2bCredentialSecretId: "",
+      e2bTemplate: "base",
+      e2bTimeoutMs: "60000",
+      e2bReuseLease: false,
     };
   }
   return {
@@ -92,10 +122,22 @@ function readTarget(raw: Record<string, unknown> | null | undefined) {
     targetNetwork: raw.network === "host" || raw.network === "none" ? raw.network : "bridge" as EnvTargetNetwork,
     targetRemove: raw.remove !== false,
     targetInstallCommand: typeof raw.installCommand === "string" ? raw.installCommand : "",
+    configRaw: safeStringify(initial?.config),
+    e2bCredentialMode: "default" as const,
+    e2bCredentialSecretId: "",
+    e2bTemplate: "base",
+    e2bTimeoutMs: "60000",
+    e2bReuseLease: false,
   };
 }
 
 function formatTargetSummary(env: Environment): string {
+  if (env.driver === "sandbox" && env.config?.provider === "e2b") {
+    const template = typeof env.config.template === "string" && env.config.template.trim()
+      ? env.config.template.trim()
+      : "base";
+    return `E2B Sandbox: ${template}`;
+  }
   if (env.target?.type === "sandbox-docker") {
     const image = typeof env.target.image === "string" && env.target.image.trim()
       ? env.target.image
@@ -113,6 +155,7 @@ interface EnvFormState {
   name: string;
   envVarsRaw: string;
   connectionTargetRaw: string;
+  configRaw: string;
   targetType: EnvTargetType;
   targetImage: string;
   targetWorkdir: string;
@@ -120,36 +163,48 @@ interface EnvFormState {
   targetNetwork: EnvTargetNetwork;
   targetRemove: boolean;
   targetInstallCommand: string;
+  e2bCredentialMode: "default" | "secret";
+  e2bCredentialSecretId: string;
+  e2bTemplate: string;
+  e2bTimeoutMs: string;
+  e2bReuseLease: boolean;
 }
 
 interface EnvironmentDialogProps {
+  companyId: string;
   open: boolean;
   mode: "create" | "edit";
   initial?: Environment;
   isPending: boolean;
   submitError?: string | null;
+  secrets: CompanySecret[];
   onClose: () => void;
   onSubmit: (data: CreateEnvironmentInput | UpdateEnvironmentInput) => void;
 }
 
 function EnvironmentDialog({
+  companyId,
   open,
   mode,
   initial,
   isPending,
   submitError,
+  secrets,
   onClose,
   onSubmit,
 }: EnvironmentDialogProps) {
+  const probeMutation = useProbeEnvironment();
   const [form, setForm] = useState<EnvFormState>(() => ({
     name: initial?.name ?? "",
     envVarsRaw: safeStringify(initial?.envVars),
     connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
-    ...readTarget(initial?.target),
+    ...readTarget(initial),
   }));
 
   const [envVarsError, setEnvVarsError] = useState<string | null>(null);
   const [connectionTargetError, setConnectionTargetError] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [probeResult, setProbeResult] = useState<EnvironmentProbeResult | null>(null);
 
   // Reset form when dialog opens with fresh initial values
   const [prevOpen, setPrevOpen] = useState(open);
@@ -160,34 +215,64 @@ function EnvironmentDialog({
         name: initial?.name ?? "",
         envVarsRaw: safeStringify(initial?.envVars),
         connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
-        ...readTarget(initial?.target),
+        ...readTarget(initial),
       });
       setEnvVarsError(null);
       setConnectionTargetError(null);
+      setConfigError(null);
+      setProbeResult(null);
+      probeMutation.reset();
     }
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  function buildEnvironmentInput(): { ok: true; value: CreateEnvironmentInput | UpdateEnvironmentInput } | { ok: false } {
     const evResult = safeParse(form.envVarsRaw);
     const ctResult = safeParse(form.connectionTargetRaw);
+    const configResult = form.targetType === "e2b" ? { ok: true as const, value: {} } : safeParse(form.configRaw);
 
     if (!evResult.ok) {
       setEnvVarsError(evResult.error);
-      return;
+      return { ok: false };
     }
     if (!ctResult.ok) {
       setConnectionTargetError(ctResult.error);
-      return;
+      return { ok: false };
+    }
+    if (!configResult.ok) {
+      setConfigError(configResult.error);
+      return { ok: false };
     }
     if (form.targetType === "sandbox-docker" && !form.targetImage.trim()) {
       setConnectionTargetError("Docker image is required for sandbox-docker.");
-      return;
+      return { ok: false };
+    }
+    if (form.targetType === "e2b" && form.e2bCredentialMode === "secret" && !form.e2bCredentialSecretId) {
+      setConfigError("Choose a secret for this E2B environment.");
+      return { ok: false };
+    }
+    const timeoutMs = Number(form.e2bTimeoutMs);
+    if (form.targetType === "e2b" && (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 86_400_000)) {
+      setConfigError("Timeout must be between 1000 and 86400000 ms.");
+      return { ok: false };
     }
     setEnvVarsError(null);
     setConnectionTargetError(null);
+    setConfigError(null);
 
     const trimmedCt = form.connectionTargetRaw.trim();
+    const dockerConfig = form.targetType === "sandbox-docker"
+      ? {
+          provider: "sandbox-docker",
+          image: form.targetImage.trim(),
+          workdir: form.targetWorkdir.trim() || "/workspace",
+          shell: form.targetShell,
+          network: form.targetNetwork,
+          remove: form.targetRemove,
+          ...(form.targetInstallCommand.trim()
+            ? { installCommand: form.targetInstallCommand.trim() }
+            : {}),
+        }
+      : {};
     const target: CreateEnvironmentInput["target"] = form.targetType === "sandbox-docker"
       ? {
           type: "sandbox-docker" as const,
@@ -200,13 +285,50 @@ function EnvironmentDialog({
             ? { installCommand: form.targetInstallCommand.trim() }
             : {}),
         }
-      : { type: "local" as const };
-    onSubmit({
+      : form.targetType === "e2b"
+        ? null
+        : { type: "local" as const };
+    const config = form.targetType === "e2b"
+      ? {
+          provider: "e2b",
+          ...(form.e2bCredentialMode === "secret"
+            ? { credentialSecretId: form.e2bCredentialSecretId }
+            : { credentialRef: "default" }),
+          template: form.e2bTemplate.trim() || "base",
+          timeoutMs,
+          reuseLease: form.e2bReuseLease,
+        }
+      : dockerConfig;
+    return { ok: true, value: {
       name: form.name.trim(),
+      driver: form.targetType === "local" ? "local" : "sandbox",
+      config,
       envVars: evResult.value,
       connectionTarget: trimmedCt ? ctResult.value : null,
       target,
-    });
+    } };
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const input = buildEnvironmentInput();
+    if (!input.ok) return;
+    onSubmit(input.value);
+  }
+
+  function handleProbe() {
+    const input = buildEnvironmentInput();
+    if (!input.ok) return;
+    probeMutation.mutate(
+      {
+        companyId,
+        input: {
+          driver: input.value.driver ?? "local",
+          config: input.value.config ?? {},
+        },
+      },
+      { onSuccess: setProbeResult },
+    );
   }
 
   return (
@@ -275,13 +397,18 @@ function EnvironmentDialog({
               onChange={(e) =>
                 setForm((f) => ({
                   ...f,
-                  targetType: e.target.value === "sandbox-docker" ? "sandbox-docker" : "local",
+                  targetType: e.target.value === "sandbox-docker"
+                    ? "sandbox-docker"
+                    : e.target.value === "e2b"
+                      ? "e2b"
+                      : "local",
                 }))
               }
               data-testid="environment-target-select"
             >
               <option value="local">Local</option>
               <option value="sandbox-docker">Sandbox Docker</option>
+              <option value="e2b">E2B Sandbox</option>
             </select>
           </div>
 
@@ -363,6 +490,105 @@ function EnvironmentDialog({
             </div>
           )}
 
+          {form.targetType === "e2b" && (
+            <div className="grid gap-3 rounded-md border border-border p-3">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                E2B Credentials
+              </label>
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                value={form.e2bCredentialMode}
+                onChange={(e) => {
+                  setForm((f) => ({
+                    ...f,
+                    e2bCredentialMode: e.target.value === "secret" ? "secret" : "default",
+                  }));
+                  setConfigError(null);
+                  setProbeResult(null);
+                }}
+                data-testid="environment-e2b-credential-mode"
+              >
+                <option value="default">Company default provider key</option>
+                <option value="secret">Specific secret</option>
+              </select>
+              {form.e2bCredentialMode === "secret" && (
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  value={form.e2bCredentialSecretId}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, e2bCredentialSecretId: e.target.value }));
+                    setConfigError(null);
+                    setProbeResult(null);
+                  }}
+                  data-testid="environment-e2b-secret-select"
+                >
+                  <option value="">Choose secret</option>
+                  {secrets.filter((secret) => secret.status === "active" && !secret.deletedAt).map((secret) => (
+                    <option key={secret.id} value={secret.id}>
+                      {secret.name}{secret.key ? ` (${secret.key})` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Template
+                  </label>
+                  <Input
+                    value={form.e2bTemplate}
+                    onChange={(e) => setForm((f) => ({ ...f, e2bTemplate: e.target.value }))}
+                    placeholder="base"
+                    data-testid="environment-e2b-template-input"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Timeout ms
+                  </label>
+                  <Input
+                    value={form.e2bTimeoutMs}
+                    onChange={(e) => setForm((f) => ({ ...f, e2bTimeoutMs: e.target.value }))}
+                    placeholder="60000"
+                    inputMode="numeric"
+                    data-testid="environment-e2b-timeout-input"
+                  />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={form.e2bReuseLease}
+                  onChange={(e) => setForm((f) => ({ ...f, e2bReuseLease: e.target.checked }))}
+                  className="h-4 w-4 rounded border-input"
+                />
+                Reuse sandbox lease when possible
+              </label>
+              {configError && (
+                <p className="text-xs text-destructive">{configError}</p>
+              )}
+              {probeResult && (
+                <p className={cn("text-xs", probeResult.ok ? "text-emerald-600" : "text-destructive")}>
+                  {probeResult.summary}
+                </p>
+              )}
+              {probeMutation.isError && (
+                <p className="text-xs text-destructive">
+                  {probeMutation.error instanceof Error ? probeMutation.error.message : "Environment test failed"}
+                </p>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleProbe}
+                disabled={probeMutation.isPending}
+              >
+                {probeMutation.isPending ? "Testing..." : "Test Environment"}
+              </Button>
+            </div>
+          )}
+
           {/* Connection target */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -435,6 +661,10 @@ function RowSkeleton() {
 
 export function EnvironmentsSection({ companyId }: { companyId: string }) {
   const { data: environments, isLoading, isError } = useEnvironments(companyId);
+  const secretsQuery = useQuery({
+    queryKey: queryKeys.secrets.list(companyId),
+    queryFn: () => secretsApi.list(companyId),
+  });
 
   const createMutation = useCreateEnvironment();
   const updateMutation = useUpdateEnvironment();
@@ -615,10 +845,12 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
       {/* Create dialog                                                       */}
       {/* ------------------------------------------------------------------ */}
       <EnvironmentDialog
+        companyId={companyId}
         open={createOpen}
         mode="create"
         isPending={createMutation.isPending}
         submitError={createErrorMessage}
+        secrets={secretsQuery.data ?? []}
         onClose={() => { setCreateOpen(false); createMutation.reset(); }}
         onSubmit={handleCreate}
       />
@@ -627,11 +859,13 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
       {/* Edit dialog                                                         */}
       {/* ------------------------------------------------------------------ */}
       <EnvironmentDialog
+        companyId={companyId}
         open={!!editTarget}
         mode="edit"
         initial={editTarget ?? undefined}
         isPending={updateMutation.isPending}
         submitError={updateErrorMessage}
+        secrets={secretsQuery.data ?? []}
         onClose={() => { setEditTarget(null); updateMutation.reset(); }}
         onSubmit={handleUpdate}
       />

@@ -210,6 +210,18 @@ describe("adapter routes — GET /adapters/:type/config-schema", () => {
     expect(res.status).toBe(404);
     expect(res.body.error).toMatch(/does not provide/i);
   });
+
+  it("returns OpenClaw Gateway's schema-driven config fields", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/adapters/openclaw_gateway/config-schema");
+    expect(res.status).toBe(200);
+    expect(res.body.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "url", label: "Gateway URL" }),
+        expect.objectContaining({ key: "sessionKeyStrategy", label: "Session strategy" }),
+      ]),
+    );
+  });
 });
 
 describe("adapter routes — GET /adapters/:type/ui-parser.js", () => {

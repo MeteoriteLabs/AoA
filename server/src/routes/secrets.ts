@@ -3,22 +3,26 @@ import type { Db } from "@armyofagents/db";
 import {
   SECRET_PROVIDERS,
   type SecretProvider,
+  createRuntimeProviderKeySchema,
   createSecretBindingSchema,
   createSecretProviderConfigSchema,
   createSecretSchema,
   remoteSecretImportCommitSchema,
   remoteSecretImportPreviewSchema,
   rotateSecretSchema,
+  updateRuntimeProviderKeySchema,
   updateSecretProviderConfigSchema,
   updateSecretSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+import { runtimeProviderKeyService } from "../services/runtime-provider-keys.js";
 
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
+  const runtimeKeysSvc = runtimeProviderKeyService(db);
   const configuredDefaultProvider = process.env.AOA_SECRETS_PROVIDER;
   const defaultProvider = (
     configuredDefaultProvider && SECRET_PROVIDERS.includes(configuredDefaultProvider as SecretProvider)
@@ -137,6 +141,76 @@ export function secretRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets);
+  });
+
+  router.get("/companies/:companyId/runtime-provider-keys", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await runtimeKeysSvc.list(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/runtime-provider-keys",
+    validate(createRuntimeProviderKeySchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const created = await runtimeKeysSvc.create(companyId, req.body);
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "runtime_provider_key.created",
+        entityType: "runtime_provider_key",
+        entityId: created.id,
+        details: { provider: created.provider, displayName: created.displayName, isDefault: created.isDefault },
+      });
+      res.status(201).json(created);
+    },
+  );
+
+  router.patch("/runtime-provider-keys/:id", validate(updateRuntimeProviderKeySchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await runtimeKeysSvc.getById(req.params.id as string);
+    if (!existing) {
+      res.status(404).json({ error: "Provider key not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const updated = await runtimeKeysSvc.update(existing.id, req.body);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "runtime_provider_key.updated",
+      entityType: "runtime_provider_key",
+      entityId: existing.id,
+      details: { provider: existing.provider, changedFields: Object.keys(req.body).sort() },
+    });
+    res.json(updated);
+  });
+
+  router.delete("/runtime-provider-keys/:id", async (req, res) => {
+    assertBoard(req);
+    const existing = await runtimeKeysSvc.getById(req.params.id as string);
+    if (!existing) {
+      res.status(404).json({ error: "Provider key not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await runtimeKeysSvc.remove(existing.id);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "runtime_provider_key.deleted",
+      entityType: "runtime_provider_key",
+      entityId: existing.id,
+      details: { provider: existing.provider },
+    });
+    res.json({ ok: true });
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {

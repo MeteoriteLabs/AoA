@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { AdapterSkillEntry, AdapterSkillSnapshot } from "./types.js";
 
@@ -479,6 +480,36 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export const buildPaperclipEnv = buildAoaEnv;
+
+const DEFAULT_AOA_INSTANCE_ID = "default";
+const PATH_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+function expandHomePrefix(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  return value;
+}
+
+export function resolveAoaInstanceRootForAdapter(input: {
+  homeDir?: string;
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const homeRaw = input.homeDir?.trim() || env.AOA_HOME?.trim();
+  const homeDir = path.resolve(homeRaw ? expandHomePrefix(homeRaw) : path.resolve(os.homedir(), ".aoa"));
+  const instanceId = input.instanceId?.trim() || env.AOA_INSTANCE_ID?.trim() || DEFAULT_AOA_INSTANCE_ID;
+  if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid AOA_INSTANCE_ID '${instanceId}'.`);
+  return path.resolve(homeDir, "instances", instanceId);
+}
+
+export const resolvePaperclipInstanceRootForAdapter = resolveAoaInstanceRootForAdapter;
+
+export const DEFAULT_AOA_AGENT_PROMPT_TEMPLATE =
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.";
+export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = DEFAULT_AOA_AGENT_PROMPT_TEMPLATE;
+
 // ---------------------------------------------------------------------------
 // Wake payload normalization / prompt rendering
 // ---------------------------------------------------------------------------
@@ -773,6 +804,21 @@ export function renderAoaWakePrompt(
 }
 export const renderPaperclipWakePrompt = renderAoaWakePrompt;
 
+export function readAoaIssueWorkModeFromContext(context: Record<string, unknown>): string | null {
+  const candidates = [
+    parseObject(context.paperclipWake).issue,
+    parseObject(context.aoaWake).issue,
+    context.issue,
+    context.task,
+  ];
+  for (const candidate of candidates) {
+    const workMode = asString(parseObject(candidate).workMode, "").trim();
+    if (workMode) return workMode;
+  }
+  return null;
+}
+export const readPaperclipIssueWorkModeFromContext = readAoaIssueWorkModeFromContext;
+
 // ---------------------------------------------------------------------------
 // Log-friendly env + command resolution
 // ---------------------------------------------------------------------------
@@ -1055,6 +1101,18 @@ export async function readAoaRuntimeSkillEntries(
 }
 export const readPaperclipRuntimeSkillEntries = readAoaRuntimeSkillEntries;
 
+export async function materializeAoaSkillCopy(source: string, target: string): Promise<{ skippedSymlinks: string[] }> {
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.cp(source, target, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    dereference: false,
+  });
+  return { skippedSymlinks: [] };
+}
+export const materializePaperclipSkillCopy = materializeAoaSkillCopy;
+
 export async function readAoaSkillMarkdown(
   moduleDir: string,
   skillKey: string,
@@ -1287,6 +1345,47 @@ export function applyAoaWorkspaceEnv(
   return env;
 }
 
+export function refreshAoaWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  envConfig?: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  workspaceSource?: string | null;
+  workspaceStrategy?: string | null;
+  workspaceId?: string | null;
+  workspaceRepoUrl?: string | null;
+  workspaceRepoRef?: string | null;
+  workspaceBranch?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  agentHome?: string | null;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): Record<string, string> {
+  const workspaceCwd = input.executionTargetIsRemote
+    ? input.executionCwd || input.workspaceCwd || null
+    : input.workspaceCwd || null;
+  applyAoaWorkspaceEnv(input.env, {
+    workspaceCwd,
+    workspaceSource: input.workspaceSource ?? null,
+    workspaceStrategy: input.workspaceStrategy ?? null,
+    workspaceId: input.workspaceId ?? null,
+    workspaceRepoUrl: input.workspaceRepoUrl ?? null,
+    workspaceRepoRef: input.workspaceRepoRef ?? null,
+    workspaceBranch: input.workspaceBranch ?? null,
+    workspaceWorktreePath: input.executionTargetIsRemote ? null : input.workspaceWorktreePath ?? null,
+    agentHome: input.agentHome ?? null,
+  });
+  if (input.workspaceHints && input.workspaceHints.length > 0) {
+    input.env.AOA_WORKSPACES_JSON = JSON.stringify(input.workspaceHints);
+  }
+  const envConfig = parseObject(input.envConfig);
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") input.env[key] = value;
+  }
+  return input.env;
+}
+export const refreshPaperclipWorkspaceEnvForExecution = refreshAoaWorkspaceEnvForExecution;
+
 export function shapeAoaWorkspaceEnvForExecution(input: {
   env: Record<string, string>;
   targetType: "local" | "sandbox-docker";
@@ -1325,4 +1424,61 @@ export function shapeAoaWorkspaceEnvForExecution(input: {
   }
 
   return next;
+}
+
+export const applyPaperclipWorkspaceEnv = applyAoaWorkspaceEnv;
+export function shapePaperclipWorkspaceEnvForExecution(input: {
+  workspaceCwd?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const workspaceCwd =
+    input.executionTargetIsRemote ? input.executionCwd || input.workspaceCwd || null : input.workspaceCwd || null;
+  const workspaceWorktreePath = input.executionTargetIsRemote ? null : input.workspaceWorktreePath || null;
+  const workspaceHints = (input.workspaceHints ?? []).map((hint) => {
+    if (!input.executionTargetIsRemote || !input.workspaceCwd || !input.executionCwd) return hint;
+    if (hint.cwd === input.workspaceCwd) return { ...hint, cwd: input.executionCwd };
+    return hint;
+  });
+  return { workspaceCwd, workspaceWorktreePath, workspaceHints };
+}
+
+export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
+  env: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  executionCwd?: string | null;
+  executionTargetIsRemote?: boolean;
+}): Record<string, string> {
+  const nextEnv = Object.fromEntries(
+    Object.entries(input.env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const localWorkspaceCwd =
+    typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+      ? path.resolve(input.workspaceCwd)
+      : null;
+  const remoteWorkspaceCwd =
+    typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+      ? input.executionCwd.trim()
+      : null;
+
+  if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
+    return nextEnv;
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!key.endsWith("_WORKSPACE_CWD")) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (path.resolve(trimmed) !== localWorkspaceCwd) continue;
+    nextEnv[key] = remoteWorkspaceCwd;
+  }
+  return nextEnv;
 }

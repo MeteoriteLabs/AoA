@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   environmentService: vi.fn(() => ({})),
   logActivity: vi.fn(async () => undefined),
   normalizeEnvConfigForPersistence: vi.fn(async (_companyId: string, value: unknown) => value),
+  probeEnvironmentConfig: vi.fn(),
   syncEnvBindingsForTarget: vi.fn(),
 }));
 
@@ -31,6 +32,10 @@ vi.mock("../services/secrets.js", () => ({
     normalizeEnvConfigForPersistence: mocks.normalizeEnvConfigForPersistence,
     syncEnvBindingsForTarget: mocks.syncEnvBindingsForTarget,
   })),
+}));
+
+vi.mock("../services/environment-probe.js", () => ({
+  probeEnvironmentConfig: mocks.probeEnvironmentConfig,
 }));
 
 import { environmentRoutes } from "../routes/environments.js";
@@ -68,6 +73,12 @@ describe("environments routes", () => {
     mocks.assertCompanyAccess.mockReturnValue(undefined);
     mocks.environmentService.mockReturnValue({});
     mocks.normalizeEnvConfigForPersistence.mockImplementation(async (_companyId: string, value: unknown) => value);
+    mocks.probeEnvironmentConfig.mockResolvedValue({
+      ok: true,
+      driver: "local",
+      summary: "Local environment configuration is valid.",
+      checks: [{ name: "config", status: "passed", message: "Local runtime does not require provider config." }],
+    });
   });
 
   it.each([
@@ -273,6 +284,88 @@ describe("environments routes", () => {
       companyId,
       expect.objectContaining({ target }),
     );
+  });
+
+  it("POST /companies/:cid/environments/probe probes an unsaved E2B environment config", async () => {
+    mocks.probeEnvironmentConfig.mockResolvedValueOnce({
+      ok: true,
+      driver: "sandbox",
+      provider: "e2b",
+      summary: "E2B sandbox created and workspace directory prepared.",
+      metadata: {
+        template: "base",
+        timeoutMs: 60_000,
+        sandboxId: "e2b-probe-1",
+      },
+    });
+    const svc = {
+      create: vi.fn(),
+    };
+    const app = buildApp(svc);
+
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments/probe`)
+      .send({
+        driver: "sandbox",
+        config: {
+          provider: "e2b",
+          credentialRef: "default",
+          template: "base",
+          timeoutMs: 60_000,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      driver: "sandbox",
+      provider: "e2b",
+      summary: "E2B sandbox created and workspace directory prepared.",
+      metadata: {
+        template: "base",
+        timeoutMs: 60_000,
+        sandboxId: "e2b-probe-1",
+      },
+    });
+    expect(mocks.probeEnvironmentConfig).toHaveBeenCalledWith({
+      companyId,
+      driver: "sandbox",
+      config: {
+        provider: "e2b",
+        credentialRef: "default",
+        template: "base",
+        timeoutMs: 60_000,
+      },
+    });
+    expect(svc.create).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.body)).not.toContain("secret-key");
+  });
+
+  it("POST /companies/:cid/environments/probe returns 400 for raw E2B API keys", async () => {
+    mocks.probeEnvironmentConfig.mockResolvedValueOnce({
+      ok: false,
+      driver: "sandbox",
+      provider: "e2b",
+      summary: "E2B sandbox configuration is invalid.",
+      checks: [{
+        name: "config",
+        status: "failed",
+        message: "E2B sandbox environments require an API key in config or E2B_API_KEY.",
+      }],
+    });
+    const svc = {
+      create: vi.fn(),
+    };
+    const app = buildApp(svc);
+
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments/probe`)
+      .send({ driver: "sandbox", config: { provider: "e2b", apiKey: "secret-key" } });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/unrecognized key/i);
+    expect(mocks.probeEnvironmentConfig).not.toHaveBeenCalled();
+    expect(svc.create).not.toHaveBeenCalled();
   });
 
   // POST create — invalid body (missing name)

@@ -57,9 +57,15 @@ vi.mock("../adapters/api-common.js", () => ({ setSecretResolver: vi.fn() }));
 vi.mock("../services/secrets.js", () => ({ secretService: vi.fn(() => ({})) }));
 vi.mock("../services/output-detection.js", () => ({ outputDetectionService: vi.fn(() => ({})) }));
 vi.mock("../services/run-summary.js", () => ({ formatRunSummary: vi.fn() }));
+vi.mock("../services/environment-run-orchestrator.js", () => ({
+  environmentRunOrchestrator: vi.fn(() => ({
+    acquireForRun: vi.fn(),
+  })),
+}));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import {
+  applyEnvironmentAcquisitionConfig,
   applyEnvironmentRuntimeTarget,
   mergeAdapterRuntimeServiceReports,
   resolveOutputDetectionCwd,
@@ -153,6 +159,25 @@ describe("heartbeat adapter execution target context", () => {
     };
 
     expect(applyEnvironmentRuntimeTarget(config, { target: null })).toBe(config);
+  });
+
+  it("applies acquired environment config patch over existing adapter config", () => {
+    const result = applyEnvironmentAcquisitionConfig(
+      {
+        executionTarget: { type: "sandbox-docker", image: "node:20-bookworm" },
+        env: { AGENT_ONLY: "1" },
+      },
+      {
+        configPatch: {
+          executionTarget: { type: "local" },
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      executionTarget: { type: "local" },
+      env: { AGENT_ONLY: "1" },
+    });
   });
 
   it("uses the persisted execution workspace id for adapter-managed runtime services", () => {

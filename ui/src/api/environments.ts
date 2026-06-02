@@ -1,6 +1,8 @@
 import type {
   Environment,
   CreateEnvironmentInput,
+  EnvironmentProbeResult,
+  ProbeEnvironmentInput,
   UpdateEnvironmentInput,
 } from "@armyofagents/shared";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -36,6 +38,13 @@ export function updateEnvironment(
 
 export function deleteEnvironment(companyId: string, id: string): Promise<void> {
   return api.delete<void>(`/companies/${companyId}/environments/${id}`);
+}
+
+export function probeEnvironment(
+  companyId: string,
+  input: ProbeEnvironmentInput,
+): Promise<EnvironmentProbeResult> {
+  return api.post<EnvironmentProbeResult>(`/companies/${companyId}/environments/probe`, input);
 }
 
 // ---------------------------------------------------------------------------
@@ -109,5 +118,17 @@ export function useDeleteEnvironment() {
         queryKey: queryKeys.environments.list(companyId),
       });
     },
+  });
+}
+
+export function useProbeEnvironment() {
+  return useMutation({
+    mutationFn: ({
+      companyId,
+      input,
+    }: {
+      companyId: string;
+      input: ProbeEnvironmentInput;
+    }) => probeEnvironment(companyId, input),
   });
 }

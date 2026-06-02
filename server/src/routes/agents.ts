@@ -50,6 +50,9 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+import { environmentRunOrchestrator } from "../services/environment-run-orchestrator.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { logger } from "../middleware/logger.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -76,6 +79,10 @@ export function agentRoutes(db: Db) {
   const secretsSvc = secretService(db);
   const skillSvc = companySkillService(db);
   const instructions = agentInstructionsService();
+  const environmentRuntime = environmentRuntimeService(db);
+  const environmentRuns = environmentRunOrchestrator(db, {
+    environmentRuntime,
+  });
   const strictSecretsMode = process.env.AOA_SECRETS_STRICT_MODE === "true";
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
@@ -480,13 +487,51 @@ export function agentRoutes(db: Db) {
         },
       );
 
-      const result = await adapter.testEnvironment({
-        companyId,
-        adapterType: type,
-        config: runtimeAdapterConfig,
-      });
+      const environmentId =
+        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
+          ? req.body.environmentId.trim()
+          : null;
+      const acquiredEnvironment = environmentId
+        ? await environmentRuns.acquireForRun({
+            companyId,
+            environmentId,
+            adapterType: type,
+            issueId: null,
+            heartbeatRunId: null,
+            persistedExecutionWorkspace: null,
+          })
+        : null;
 
-      res.json(result);
+      try {
+        const result = await adapter.testEnvironment({
+          companyId,
+          adapterType: type,
+          config: runtimeAdapterConfig,
+          executionTarget: acquiredEnvironment?.configPatch.executionTarget,
+          environmentName: acquiredEnvironment?.environment.name ?? null,
+        });
+
+        res.json(result);
+      } finally {
+        if (acquiredEnvironment) {
+          await environmentRuntime.releaseRunLease({
+            environment: acquiredEnvironment.environment,
+            lease: acquiredEnvironment.lease,
+            status: "released",
+          }).catch((err) => {
+            logger.warn(
+              {
+                err,
+                companyId,
+                environmentId,
+                adapterType: type,
+                leaseId: acquiredEnvironment.lease.id,
+              },
+              "Failed to release adapter environment test lease",
+            );
+          });
+        }
+      }
     },
   );
 

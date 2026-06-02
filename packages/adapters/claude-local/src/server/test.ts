@@ -9,14 +9,20 @@ import {
   asNumber,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@armyofagents/adapter-utils/server-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
+} from "@armyofagents/adapter-utils/execution-target";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockAuth } from "./execute.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -70,10 +76,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = adapterExecutionTargetIsRemote(target);
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "claude_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "claude_cwd_valid",
       level: "info",
@@ -93,9 +117,11 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...(targetIsRemote ? {} : process.env), ...env });
   try {
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, {
+      installCommand: SANDBOX_INSTALL_COMMAND,
+    });
     checks.push({
       code: "claude_command_resolvable",
       level: "info",
@@ -122,7 +148,7 @@ export async function testEnvironment(
   }
 
   const configApiKey = env.ANTHROPIC_API_KEY;
-  const hostApiKey = process.env.ANTHROPIC_API_KEY;
+  const hostApiKey = targetIsRemote ? undefined : process.env.ANTHROPIC_API_KEY;
   if (!isBedrockAuth(effectiveEnv) && (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey))) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
@@ -172,13 +198,17 @@ export async function testEnvironment(
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      const probe = await runChildProcess(
-        `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        command,
-        args,
+      const probe = await runAdapterExecutionTargetProcess(
+        target ?? { type: "local" },
         {
+          runId,
+          command,
+          args,
           cwd,
           env,
+          runtimeCommandSpec: targetIsRemote
+            ? { command, installCommand: SANDBOX_INSTALL_COMMAND }
+            : null,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",
