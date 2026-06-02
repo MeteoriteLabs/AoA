@@ -184,4 +184,32 @@ describe("assertAgentStatusTransition", () => {
       ),
     ).resolves.toBeUndefined();
   });
+
+  // ── review #2: ownership now applies to NON-completion transitions too ──
+  it("throws when agent cancels/reverts a task assigned to a DIFFERENT agent (non-completion status)", async () => {
+    await expect(
+      assertAgentStatusTransition(
+        {
+          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-OTHER" },
+          updateFields: { status: "cancelled" },
+          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 0 },
+        },
+        explodingDb as never,
+      ),
+    ).rejects.toThrow(HttpError);
+  });
+
+  // ── own task, non-completion status (backlog) at Manual → resolves (dial only gates completion) ──
+  it("resolves when agent moves its OWN task to a non-completion status (backlog) at Manual", async () => {
+    await expect(
+      assertAgentStatusTransition(
+        {
+          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
+          updateFields: { status: "backlog" },
+          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 0 },
+        },
+        explodingDb as never,
+      ),
+    ).resolves.toBeUndefined();
+  });
 });

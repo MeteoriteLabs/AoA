@@ -101,6 +101,23 @@ export const attachTaskArtifactTool: AgentTool = {
       };
     }
 
+    // Ownership (review #4). A crew agent may only attach a deliverable to a task
+    // it is assigned to. Without this, any crew agent could overwrite the primary
+    // `issues.artifactId` pointer (the artifact-as-input source, Decision #71) on
+    // ANOTHER agent's task. A non-agent caller (no ctx.agentId — e.g. a trusted
+    // system/Commander path) is exempt, matching the A4 status-transition guard.
+    if (
+      ctx.agentId &&
+      (row as { assigneeAgentId?: string | null }).assigneeAgentId !== ctx.agentId
+    ) {
+      return {
+        success: false,
+        data: null,
+        summary: "You can only attach a deliverable to a task you are assigned to",
+        error: "FORBIDDEN",
+      };
+    }
+
     // Create the artifact as agent-sourced. createdById must be a string; when
     // the creator is an agent (not a user) we pass ctx.agentId, falling back to
     // a sentinel exactly as the sibling create_artifact tool does. The artifacts

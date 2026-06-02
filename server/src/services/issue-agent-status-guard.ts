@@ -97,11 +97,17 @@ export async function assertAgentStatusTransition(
 ): Promise<void> {
   if (input.actor.actorType !== "agent") return;            // humans/system/Commander(system-default) unaffected
   const next = typeof input.updateFields.status === "string" ? input.updateFields.status : input.existing.status;
-  if (next !== "in_review" && next !== "done") return;       // only gate completion-ish transitions
+  if (next === input.existing.status) return;                // no status transition → nothing to gate
   const me = input.actor.agentId ?? null;
+  // Ownership applies to EVERY agent-initiated status transition, not just
+  // completion (review #2 — HIGH). The old `in_review`/`done`-only gate let a
+  // crew agent move ANOTHER agent's task to cancelled/backlog/in_progress —
+  // clearing its execution lock or discarding its in-flight work. An agent may
+  // only change the status of its OWN assigned task.
   if (!me || input.existing.assigneeAgentId !== me) {
     throw unprocessable("Agent may only transition its own assigned task", { code: "invalid_issue_disposition" });
   }
+  // The autonomy dial additionally gates completion-ish transitions.
   const dial = input.actor.effectiveDial ?? 0;
   if (next === "in_review" && dial < 1) throw unprocessable("Dial is Manual — agent cannot move task to review yet", { code: "invalid_issue_disposition" });
   if (next === "done" && dial < 2) throw unprocessable("Only at Drive may a crew agent complete its own task", { code: "invalid_issue_disposition" });

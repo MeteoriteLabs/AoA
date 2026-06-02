@@ -15,11 +15,16 @@ import type { ToolContext } from "../services/internal-agent/types.js";
 // agent's capability set. getById/update have no company filter, so the tool
 // enforces row.companyId === ctx.companyId itself.
 
-function makeIssues(overrides: Partial<{ companyId: string | null }> = {}) {
+function makeIssues(
+  overrides: Partial<{ companyId: string | null; assigneeAgentId: string | null }> = {},
+) {
   return {
     getById: vi.fn().mockResolvedValue({
       id: "task-1",
       companyId: overrides.companyId === undefined ? "co-1" : overrides.companyId,
+      // Default owner = the default ctx.agentId ("agent-1") so owned-path tests pass.
+      assigneeAgentId:
+        overrides.assigneeAgentId === undefined ? "agent-1" : overrides.assigneeAgentId,
     }),
     update: vi
       .fn()
@@ -75,7 +80,7 @@ describe("attach_task_artifact tool (Spec B Task 3)", () => {
   });
 
   it("happy path: creates agent artifact, links it, records a task_outputs row", async () => {
-    const issues = makeIssues();
+    const issues = makeIssues({ assigneeAgentId: "agent-9" }); // owned by the caller
     const artifacts = makeArtifacts();
     const taskOutputs = makeTaskOutputs();
     const ctx = makeCtx({ issues, artifacts, taskOutputs, agentId: "agent-9" });
@@ -153,6 +158,26 @@ describe("attach_task_artifact tool (Spec B Task 3)", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("NOT_FOUND");
+    expect(artifacts.create).not.toHaveBeenCalled();
+    expect(issues.update).not.toHaveBeenCalled();
+    expect(taskOutputs.upsertForIssue).not.toHaveBeenCalled();
+  });
+
+  it("non-owned task → FORBIDDEN and writes NOTHING (review #4)", async () => {
+    // The task belongs to a different crew agent; the caller may not overwrite
+    // its artifactId pointer.
+    const issues = makeIssues({ assigneeAgentId: "agent-OTHER" });
+    const artifacts = makeArtifacts();
+    const taskOutputs = makeTaskOutputs();
+    const ctx = makeCtx({ issues, artifacts, taskOutputs, agentId: "agent-9" });
+
+    const result = await attachTaskArtifactTool.execute(
+      { taskId: "task-1", title: "hijack", content: "x" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("FORBIDDEN");
     expect(artifacts.create).not.toHaveBeenCalled();
     expect(issues.update).not.toHaveBeenCalled();
     expect(taskOutputs.upsertForIssue).not.toHaveBeenCalled();
