@@ -449,8 +449,8 @@ describe("WorkspaceRightPanel cockpit contract", () => {
     await user.click(await screen.findByTestId("workspace-cockpit-menu-archive"));
     expect(onOpenArchive).toHaveBeenCalledTimes(1);
 
-    expect(screen.getByTestId("workspace-right-panel-collapse").className).toContain("h-9");
-    expect(screen.getByTestId("workspace-right-panel-collapse").className).toContain("w-9");
+    expect(screen.getByTestId("workspace-right-panel-collapse").className).toContain("h-7");
+    expect(screen.getByTestId("workspace-right-panel-collapse").className).toContain("w-7");
     fireEvent.click(screen.getByTestId("workspace-right-panel-collapse"));
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
