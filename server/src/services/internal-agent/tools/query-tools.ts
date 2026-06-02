@@ -18,7 +18,12 @@ export function createQueryTools(): AgentTool[] {
       requiresConfirmation: false,
       execute: async (params: unknown, ctx) => {
         const { status, departmentId, limit } = (params ?? {}) as Record<string, unknown>;
+        // Commander monitors the whole company including its own crew (eng-review
+        // locked decision #3 — Commander scans = 'all'). The list() default
+        // flipped to 'org' on 2026-06-02; pass 'all' so Commander's task queries
+        // still see crew-agent work alongside org/human tasks.
         const tasks = await ctx.services.issues.list(ctx.companyId, {
+          taskScope: "all",
           ...(status ? { status: status as string } : {}),
           ...(departmentId ? { projectId: departmentId as string } : {}),
         });

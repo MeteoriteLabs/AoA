@@ -13,6 +13,7 @@ import {
   agents,
 } from "@armyofagents/db";
 import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@armyofagents/shared";
+import { notCrewAssigned } from "./issue-crew-scope.js";
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
 
@@ -37,18 +38,20 @@ export function homeService(db: Db) {
           .where(and(eq(discussions.companyId, companyId), gt(discussions.pendingItemCount, 0)))
           .then((rows) => Number(rows[0]?.count ?? 0)),
 
-        // 2. Tasks in review (status = 'in_review')
+        // 2. Tasks in review (status = 'in_review') — org workload only.
+        // Crew-agent tasks surface via the Crew Board / Inbox, not this Home
+        // tile, so exclude them (2026-06-02 unified crew/org separation, T-B).
         db
           .select({ count: sql<number>`count(*)` })
           .from(issues)
-          .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review")))
+          .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), notCrewAssigned(companyId)))
           .then((rows) => Number(rows[0]?.count ?? 0)),
 
-        // 3. Blocked tasks
+        // 3. Blocked tasks — org workload only (exclude crew, T-B).
         db
           .select({ count: sql<number>`count(*)` })
           .from(issues)
-          .where(and(eq(issues.companyId, companyId), eq(issues.status, "blocked")))
+          .where(and(eq(issues.companyId, companyId), eq(issues.status, "blocked"), notCrewAssigned(companyId)))
           .then((rows) => Number(rows[0]?.count ?? 0)),
 
         // 4. Pending memory items

@@ -563,12 +563,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
       parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
     }
 
-    // Crew-board filter — restrict to tasks assigned to an active crew agent
-    // (kind='aoa', not terminated); the unified flat tracker for all crew-agent
-    // work. Accepts the literal string "true" — all other values (including
-    // absent) leave the filter off so behavior is unchanged for non-crew-board
-    // callers.
+    // Crew/org task scope (2026-06-02 unified separation, T-A). The service
+    // applies its own fail-safe default of 'org' when no scope is passed, so the
+    // route only forwards an explicit scope:
+    //  - `taskScope=org|crew|all` is forwarded verbatim (junk → undefined).
+    //  - legacy `crewBoard=true` maps to taskScope='crew' (literal "true" only).
+    //  - an explicit `taskScope` wins over `crewBoard`.
+    const taskScopeRaw = req.query.taskScope;
+    const taskScopeParam =
+      taskScopeRaw === "org" || taskScopeRaw === "crew" || taskScopeRaw === "all"
+        ? taskScopeRaw
+        : undefined;
     const crewBoard = req.query.crewBoard === "true";
+    const taskScope = taskScopeParam ?? (crewBoard ? "crew" : undefined);
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
@@ -580,7 +587,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
       ...(parentIdFilter !== undefined ? { parentId: parentIdFilter } : {}),
-      ...(crewBoard ? { crewBoard: true } : {}),
+      ...(taskScope ? { taskScope } : {}),
     });
     res.json(result);
   });

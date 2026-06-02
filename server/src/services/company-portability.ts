@@ -1182,7 +1182,10 @@ export function companyPortabilityService(db: Db) {
     const issueIdToSlug = new Map<string, string>();
     const needIssueSlugs = include.issues || costEventsEnabled || financeEventsEnabled;
     if (needIssueSlugs) {
-      const issueRows = await issues.list(companyId);
+      // Company export = the full task graph. Crew-agent tasks must be included
+      // in the bundle (the fail-safe list() default is 'org' as of 2026-06-02;
+      // pass 'all' explicitly so an export never silently drops crew tasks).
+      const issueRows = await issues.list(companyId, { taskScope: "all" });
       const usedIssueSlugs = new Set<string>();
       const issueManifest: CompanyPortabilityIssueManifestEntry[] = [];
       for (const issue of issueRows) {

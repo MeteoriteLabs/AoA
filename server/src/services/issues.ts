@@ -55,6 +55,13 @@ import {
 } from "./issue-context-bundles.js";
 import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
 import { publishIssueStatusChanged } from "./live-events.js";
+import {
+  crewAssigneeExists,
+  notCrewAssigned,
+  resolveTaskScope,
+  scopeUsesCrewJoin,
+  type TaskScope,
+} from "./issue-crew-scope.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -117,14 +124,30 @@ export interface IssueFilters {
    */
   parentId?: string | null;
   /**
-   * Unified Crew Board (2026-06-02): when true, restrict to tasks assigned to an
-   * active crew agent (an `agents` row with kind='aoa' that is not terminated).
-   * This is the flat tracker for ALL crew-agent work — tasks from discussions,
-   * goals, routines, MCP, and direct capture. Also enables the server-side LEFT
-   * JOIN that populates the `sourceThreadTitle` denormalization on returned rows
-   * so discussion-sourced cards keep their source-thread label.
-   * Previously restricted to origin_kind='crew_thread' (renamed earlier from
-   * `sourceDiscussionIdNotNull`); broadened to crew-assignee for the unified board.
+   * Board-surface scope (2026-06-02 unified crew/org separation, T-A). The ONE
+   * dial that decides whether a list query shows crew-agent tasks, org/human
+   * tasks, or both. Resolved by `resolveTaskScope()` with a **fail-safe default
+   * of `'org'`** when undefined.
+   *  - `'org'`  (default): org agents + humans + unassigned. Pushes
+   *    `notCrewAssigned`. Every generic `list(companyId)` caller is org/human-only
+   *    with zero per-call changes; a forgotten filter now HIDES crew (safe).
+   *  - `'crew'` : active-crew-assigned tasks only. The Crew Board. Pushes
+   *    `crewAssigneeExists` AND opts into the `sourceThreadTitle` LEFT JOIN.
+   *  - `'all'`  : no scope predicate. The task GRAPH (deps, goal rollups, search,
+   *    delete-safety, portability) and explicit admin/debug/Commander paths.
+   */
+  taskScope?: TaskScope;
+  /**
+   * @deprecated Back-compat alias for `taskScope: 'crew'`. `crewBoard === true`
+   * resolves to the crew scope (keeps the existing CrewBoard UI param working).
+   * If both are passed, `taskScope` wins. Prefer `taskScope` in new code.
+   *
+   * Unified Crew Board (2026-06-02): the crew scope is the flat tracker for ALL
+   * crew-agent work — tasks from discussions, goals, routines, MCP, and direct
+   * capture. The crew predicate is "assignee is an active `kind='aoa'` agent that
+   * is not terminated", and it enables the LEFT JOIN that populates the
+   * `sourceThreadTitle` denormalization so discussion-sourced cards keep their
+   * source-thread label.
    */
   crewBoard?: boolean;
 }
@@ -648,28 +671,25 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      // Unified Crew Board (2026-06-02): the crew board is now the flat tracker
-      // for ALL crew-agent tasks, not just thread-sourced ones. The predicate is
-      // "assignee is an active crew agent" — any task whose assigneeAgentId is an
-      // agent with kind='aoa' (Commander team) that is not terminated. This pulls
-      // in tasks born from goals, routines, MCP, and direct capture alongside the
-      // discussion-sourced ones. The LEFT JOIN below still supplies the source
-      // thread title so discussion-origin cards keep their lineage label.
-      // The assigneeAgentId filter (line ~610) is still pushed unconditionally
-      // above; it works for both the crew-board path and generic list calls.
-      const fromDiscussions = filters?.crewBoard === true;
-      if (fromDiscussions) {
-        conditions.push(sql<boolean>`
-          EXISTS (
-            SELECT 1
-            FROM ${agents}
-            WHERE ${agents.id} = ${issues.assigneeAgentId}
-              AND ${agents.companyId} = ${companyId}
-              AND ${agents.kind} = 'aoa'
-              AND ${agents.status} <> 'terminated'
-          )
-        `);
+      // Crew/org task scope (2026-06-02 unified separation, T-A). The ONE place
+      // the crew predicate is applied to the list surface — resolved via the
+      // shared `resolveTaskScope` with a fail-safe default of 'org':
+      //   'org'  → push notCrewAssigned  (org agents + humans + unassigned)
+      //   'crew' → push crewAssigneeExists + opt into the sourceThreadTitle JOIN
+      //   'all'  → push nothing (the task GRAPH + admin/debug escape hatch)
+      // `taskScope` wins over the legacy `crewBoard` boolean. The crew board is
+      // the flat tracker for ALL crew-agent work (tasks from discussions, goals,
+      // routines, MCP, direct capture) — the discriminator is the assignee's
+      // agent kind, not the task's origin. The assigneeAgentId filter (line ~610)
+      // is still pushed unconditionally above and composes with any scope.
+      const taskScope: TaskScope = resolveTaskScope(filters);
+      if (taskScope === "org") {
+        conditions.push(notCrewAssigned(companyId));
+      } else if (taskScope === "crew") {
+        conditions.push(crewAssigneeExists(companyId));
       }
+      // taskScope === "all": no scope predicate.
+      const usesCrewJoin = scopeUsesCrewJoin(taskScope);
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
@@ -697,7 +717,7 @@ export function issueService(db: Db) {
       // rows ({ issues: {...}, discussions: {...} }) which would break every
       // downstream consumer.
       let rows: IssueRow[];
-      if (fromDiscussions) {
+      if (usesCrewJoin) {
         const joinedRows = await db
           .select({
             // Spread issues columns via Drizzle's column reference. We rely on
@@ -779,9 +799,13 @@ export function issueService(db: Db) {
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
+      // Org-workload count (sidebar unread badge). Crew-agent tasks live only on
+      // the Crew Board and must NOT inflate this badge — push notCrewAssigned
+      // (2026-06-02 unified crew/org separation, T-B).
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
+        notCrewAssigned(companyId),
         unreadForUserCondition(companyId, userId),
       ];
       if (status) {
