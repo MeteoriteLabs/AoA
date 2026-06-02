@@ -6,6 +6,7 @@ interface MemoryHomeDashboardProps {
   companyId: string;
   showQuickJump?: boolean;
   variant?: "page" | "viewer";
+  onOpenTab?: (tab: { id: string; kind: "memory_item" | "asset"; title: string }) => void;
 }
 
 /**
@@ -23,6 +24,7 @@ export function MemoryHomeDashboard({
   companyId,
   showQuickJump = true,
   variant = "page",
+  onOpenTab,
 }: MemoryHomeDashboardProps) {
   return (
     <div className="h-full overflow-auto">
@@ -48,7 +50,7 @@ export function MemoryHomeDashboard({
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-3">
             Recent
           </div>
-          <MemoryRecentsStrip companyId={companyId} />
+          <MemoryRecentsStrip companyId={companyId} onOpenTab={onOpenTab} />
         </div>
       </div>
     </div>

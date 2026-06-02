@@ -10,6 +10,7 @@ import { MemoryItemRow, type MemoryItemRowData } from "./MemoryItemRow";
 
 interface MemoryRecentsStripProps {
   companyId: string;
+  onOpenTab?: (tab: { id: string; kind: "memory_item" | "asset"; title: string }) => void;
 }
 
 /** Returns a fallback ISO string if `value` can't be parsed to a finite timestamp. */
@@ -29,7 +30,7 @@ interface RecentSource {
   departmentId?: string | null;
 }
 
-export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
+export function MemoryRecentsStrip({ companyId, onOpenTab }: MemoryRecentsStripProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
   const companyPrefix = (selectedCompany as { issuePrefix?: string } | null)?.issuePrefix ?? "";
@@ -85,6 +86,15 @@ export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
   }, [itemsQuery.data, assetsQuery.data]);
 
   function openRow(source: RecentSource) {
+    if (onOpenTab) {
+      onOpenTab({
+        id: source.id,
+        kind: source.kind,
+        title: source.rowData.title,
+      });
+      return;
+    }
+
     const params = new URLSearchParams();
     if (source.folderPath) params.set("folder", source.folderPath);
     if (source.departmentId) params.set("dept", source.departmentId);

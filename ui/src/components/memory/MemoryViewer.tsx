@@ -19,6 +19,7 @@ interface MemoryViewerProps {
   onActivate: (id: string, kind: MemoryTabKind) => void;
   onClose: (id: string, kind: MemoryTabKind) => void;
   onAdd?: () => void;
+  onOpenTab?: (tab: MemoryTab) => void;
   onToggleCollapse?: () => void;
   /** Optional folder fallback for the empty-pane / folder-summary view. */
   folderPath?: string;
@@ -60,6 +61,7 @@ export function MemoryViewer({
   onActivate,
   onClose,
   onAdd,
+  onOpenTab,
   onToggleCollapse,
   folderPath,
 }: MemoryViewerProps) {
@@ -70,7 +72,7 @@ export function MemoryViewer({
 
   let inner: React.ReactNode;
   if (activeTab && activeTab.kind === "home") {
-    inner = <MemoryViewerHome companyId={companyId} />;
+    inner = <MemoryViewerHome companyId={companyId} onOpenTab={onOpenTab} />;
   } else if (activeTab && activeTab.kind === "memory_item") {
     inner = <MarkdownItemViewer companyId={companyId} itemId={activeTab.id} />;
   } else if (activeTab && activeTab.kind === "asset") {

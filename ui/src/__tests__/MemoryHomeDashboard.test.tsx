@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
@@ -37,12 +37,12 @@ function renderHome() {
   );
 }
 
-function renderViewerHome() {
+function renderViewerHome(onOpenTab?: (tab: { id: string; kind: "memory_item" | "asset"; title: string }) => void) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <MemoryViewerHome companyId="co-1" />
+        <MemoryViewerHome companyId="co-1" onOpenTab={onOpenTab} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -81,5 +81,19 @@ describe("MemoryHomeDashboard (Phase 6.2a)", () => {
     expect(screen.getByTestId("memory-home-graph-slot")).toHaveTextContent(
       /Memory graph will appear here/i,
     );
+  });
+
+  it("opens viewer home recents as tabs when a tab opener is provided", async () => {
+    const onOpenTab = vi.fn();
+    renderViewerHome(onOpenTab);
+
+    await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Item two"));
+
+    expect(onOpenTab).toHaveBeenCalledWith({
+      id: "i-2",
+      kind: "memory_item",
+      title: "Item two",
+    });
   });
 });

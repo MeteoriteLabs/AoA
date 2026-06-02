@@ -1,9 +1,20 @@
 import { MemoryHomeDashboard } from "./MemoryHomeDashboard";
+import type { MemoryTab } from "../../lib/memoryTabs";
 
-export function MemoryViewerHome({ companyId }: { companyId: string }) {
+interface MemoryViewerHomeProps {
+  companyId: string;
+  onOpenTab?: (tab: MemoryTab) => void;
+}
+
+export function MemoryViewerHome({ companyId, onOpenTab }: MemoryViewerHomeProps) {
   return (
     <div className="h-full min-h-0 overflow-auto" data-testid="memory-viewer-home">
-      <MemoryHomeDashboard companyId={companyId} variant="viewer" showQuickJump />
+      <MemoryHomeDashboard
+        companyId={companyId}
+        variant="viewer"
+        showQuickJump
+        onOpenTab={onOpenTab}
+      />
       <section
         data-testid="memory-home-graph-slot"
         className="border-t border-border p-4"

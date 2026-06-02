@@ -68,6 +68,10 @@ export function MemoryExplorer() {
   // Phase 6.2a: synthetic Home selection — no folder, no dept, no layer, no item.
   const isHomeSelected =
     !folderPath && !departmentId && !layer && !selectedItemId;
+  const selectedFileListType =
+    activeKey?.kind === "memory_item" || activeKey?.kind === "asset"
+      ? activeKey.kind
+      : null;
 
   // Codex P1 round 2: only show the upload button in scopes where the
   // resulting asset is reachable from the central pane. Layer-only views and
@@ -238,7 +242,7 @@ export function MemoryExplorer() {
                 departmentId={departmentId}
                 layer={layer ?? null}
                 selectedItemId={activeKey?.id ?? null}
-                selectedItemType={activeKey?.kind ?? null}
+                selectedItemType={selectedFileListType}
                 searchQuery={searchQuery}
                 onSearchChange={setSearchQuery}
                 onNewItem={() => setNewItemOpen(true)}
@@ -299,6 +303,11 @@ export function MemoryExplorer() {
                 onActivate={setActive}
                 onClose={close}
                 onAdd={openHome}
+                onOpenTab={(tab) => {
+                  openOrActivate(tab);
+                  setViewerCollapsed(false);
+                  viewerPanelRef.current?.expand();
+                }}
                 onToggleCollapse={() => {
                   setViewerCollapsed(true);
                   viewerPanelRef.current?.collapse();
