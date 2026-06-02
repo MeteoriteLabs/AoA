@@ -226,21 +226,19 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
       expect(screen.getByText("Company")).toBeInTheDocument(),
     );
     await waitFor(() =>
-      expect(screen.getByText("Engineering")).toBeInTheDocument(),
+      expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0),
     );
   });
 
-  it("renders the viewer empty state on Home instead of a blank right pane", async () => {
-    // Phase 1 UI audit removed the "📊 Memory graph view — Coming soon"
-    // placeholder. The right pane on Home is now intentionally empty until
-    // Phase 2/3 lands the tabbed viewer + graph. Ensure the placeholder copy
-    // is gone.
+  it("renders Brain in the viewer on Home instead of a blank right pane", async () => {
     renderPage();
     // Center pane should still render the home dashboard.
     await waitFor(() =>
       expect(screen.getByText(/Identity/i)).toBeInTheDocument(),
     );
-    expect(screen.getByText(/Pick a memory item or upload a file to start/i)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Brain/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+    expect(screen.queryByText(/Pick a memory item or upload a file to start/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Memory graph view/i)).not.toBeInTheDocument();
   });
@@ -299,32 +297,47 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
   });
 
-  it("opens one closeable Memory Home tab from the viewer add button", async () => {
+  it("defaults the Memory Home viewer to Brain", async () => {
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
+      expect(memoryApiMock.companyGraph).toHaveBeenCalledWith("co-1", {
+        includeStructural: true,
+        limit: 100,
+      }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
-    expect(screen.getByRole("tab", { name: /Memory Home/i })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
-    expect(screen.getAllByRole("tab", { name: /Memory Home/i })).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "Close Memory Home" }));
-    expect(screen.queryByRole("tab", { name: /Memory Home/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Brain/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+    expect(screen.queryByText("Pick a memory item or upload a file to start")).not.toBeInTheDocument();
   });
 
-  it("opens the company graph from Memory Home in the shared viewer", async () => {
+  it("opens one closeable Open tab from the viewer add button", async () => {
     renderPage();
 
-    await waitFor(() =>
-      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
-    );
+    await screen.findByRole("tab", { name: /Brain/i });
 
     fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Open company graph" }));
+    expect(screen.getByRole("tab", { name: /Open/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Brain" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Recent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Unlinked" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Review Queue" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
+    expect(screen.getAllByRole("tab", { name: /Open/i })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Open" }));
+    expect(screen.queryByRole("tab", { name: /Open/i })).not.toBeInTheDocument();
+  });
+
+  it("activates Brain from the Open tab in the shared viewer", async () => {
+    renderPage();
+
+    await screen.findByRole("tab", { name: /Brain/i });
+
+    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Brain" }));
 
     await waitFor(() =>
       expect(memoryApiMock.companyGraph).toHaveBeenCalledWith("co-1", {

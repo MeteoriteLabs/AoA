@@ -21,6 +21,7 @@ import { useQuery } from "@tanstack/react-query";
 import { memoryApi } from "../api/memory";
 import { queryKeys } from "../lib/queryKeys";
 import { deriveMemoryCounts, activeRailKindFromUrl, railKindToParams } from "../lib/memoryRail";
+import { MEMORY_BRAIN_TAB, MEMORY_OPEN_TAB } from "../lib/memoryTabs";
 
 export function MemoryExplorer() {
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -39,7 +40,7 @@ export function MemoryExplorer() {
   ) as "memory_item" | "asset" | null;
 
   // Tab state — owned here, passed down to viewer + list.
-  const { tabs, activeKey, openOrActivate, openHome, close, setActive } = useMemoryTabs();
+  const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();
 
   // Rail counts — derived from the flat items list (same query key as MemoryTree; cache hit).
   const { data: allItems } = useQuery({
@@ -93,6 +94,22 @@ export function MemoryExplorer() {
   // Tracks whether the tree was auto-collapsed when the viewer opened, so we
   // can restore it automatically when all tabs are closed (Option B interaction).
   const treeAutoCollapsedRef = useRef(false);
+  const autoOpenedBrainCompanyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    if (!isHomeSelected) {
+      autoOpenedBrainCompanyRef.current = null;
+      return;
+    }
+    if (tabs.length > 0) return;
+    if (autoOpenedBrainCompanyRef.current === selectedCompanyId) return;
+
+    autoOpenedBrainCompanyRef.current = selectedCompanyId;
+    openOrActivate(MEMORY_BRAIN_TAB);
+    setViewerCollapsed(false);
+    viewerPanelRef.current?.expand();
+  }, [selectedCompanyId, isHomeSelected, tabs.length, openOrActivate]);
 
   // Collapse viewer when all tabs are closed; restore tree if we auto-collapsed it.
   const prevTabsLengthRef = useRef(tabs.length);
@@ -302,7 +319,7 @@ export function MemoryExplorer() {
                 activeKey={activeKey}
                 onActivate={setActive}
                 onClose={close}
-                onAdd={openHome}
+                onAdd={() => openOrActivate(MEMORY_OPEN_TAB)}
                 onOpenTab={(tab) => {
                   openOrActivate(tab);
                   setViewerCollapsed(false);

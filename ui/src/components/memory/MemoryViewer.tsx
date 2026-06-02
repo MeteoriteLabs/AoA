@@ -9,8 +9,8 @@ import { DocxFileViewer } from "./viewers/DocxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 import { MemoryViewerTabs } from "./MemoryViewerTabs";
-import { MemoryViewerHome } from "./MemoryViewerHome";
 import { MemoryGraphViewer } from "./MemoryGraphViewer";
+import { MemoryOpenViewer } from "./MemoryOpenViewer";
 import type { MemoryTab, MemoryTabKind, TabKey } from "../../lib/memoryTabs";
 
 interface MemoryViewerProps {
@@ -55,6 +55,25 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
   return <SharedContentViewer viewer={viewer} filename={asset.fileName} />;
 }
 
+function MemoryCollectionViewer({ tab }: { tab: MemoryTab }) {
+  const descriptions: Record<string, string> = {
+    recent: "Recent memory activity will appear here.",
+    unlinked: "Memory items without graph links will appear here.",
+    "review-queue": "Memory items waiting for review will appear here.",
+  };
+
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center p-6">
+      <div className="max-w-xs text-center">
+        <div className="text-sm font-semibold">{tab.title}</div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          {descriptions[tab.id] ?? "Memory collection details will appear here."}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function MemoryViewer({
   companyId,
   tabs,
@@ -73,7 +92,7 @@ export function MemoryViewer({
 
   let inner: React.ReactNode;
   if (activeTab && activeTab.kind === "home") {
-    inner = <MemoryViewerHome companyId={companyId} onOpenTab={onOpenTab} />;
+    inner = <MemoryOpenViewer onOpenTab={onOpenTab} />;
   } else if (activeTab && activeTab.kind === "memory_item") {
     inner = <MarkdownItemViewer companyId={companyId} itemId={activeTab.id} />;
   } else if (activeTab && activeTab.kind === "asset") {
@@ -90,6 +109,10 @@ export function MemoryViewer({
         })}
       />
     );
+  } else if (activeTab && activeTab.kind === "open") {
+    inner = <MemoryOpenViewer onOpenTab={onOpenTab} />;
+  } else if (activeTab && activeTab.kind === "collection") {
+    inner = <MemoryCollectionViewer tab={activeTab} />;
   } else if (folderPath) {
     inner = (
       <MemoryFolderSummary

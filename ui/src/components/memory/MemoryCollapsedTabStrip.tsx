@@ -2,6 +2,8 @@ import {
   FileText,
   Home,
   Image as ImageIcon,
+  LayoutGrid,
+  ListTree,
   Network,
   PanelRightOpen,
   type LucideIcon,
@@ -21,6 +23,8 @@ const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
   memory_item: FileText,
   asset: ImageIcon,
   graph: Network,
+  open: LayoutGrid,
+  collection: ListTree,
 };
 
 function isActive(tab: MemoryTab, key: TabKey | null): boolean {

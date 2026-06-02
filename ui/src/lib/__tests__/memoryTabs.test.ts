@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  MEMORY_BRAIN_TAB,
+  MEMORY_OPEN_TAB,
   openOrActivate,
   closeTab,
   type MemoryTab,
@@ -56,6 +58,17 @@ describe("memoryTabs reducer", () => {
         title: "COMPANY-GRAPH",
       });
       expect(next.activeKey).toEqual({ id: "company-graph", kind: "graph" });
+    });
+
+    it("supports Brain and Open viewer tabs", () => {
+      const withBrain = openOrActivate(empty, MEMORY_BRAIN_TAB);
+      const withOpen = openOrActivate(withBrain, MEMORY_OPEN_TAB);
+
+      expect(withOpen.tabs).toEqual([
+        { id: "company-graph", kind: "graph", title: "Brain" },
+        { id: "memory-open", kind: "open", title: "Open" },
+      ]);
+      expect(withOpen.activeKey).toEqual({ id: "memory-open", kind: "open" });
     });
   });
 

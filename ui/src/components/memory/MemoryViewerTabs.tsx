@@ -2,6 +2,8 @@ import {
   FileText,
   Home,
   Image as ImageIcon,
+  LayoutGrid,
+  ListTree,
   Network,
   type LucideIcon,
 } from "lucide-react";
@@ -22,6 +24,8 @@ const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
   memory_item: FileText,
   asset: ImageIcon,
   graph: Network,
+  open: LayoutGrid,
+  collection: ListTree,
 };
 
 export function MemoryViewerTabs({
