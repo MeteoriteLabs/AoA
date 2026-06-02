@@ -4,6 +4,7 @@ import { MemoryCollapsedTabStrip } from "../MemoryCollapsedTabStrip";
 import type { MemoryTab, TabKey } from "../../../lib/memoryTabs";
 
 const tabs: MemoryTab[] = [
+  { id: "memory-home", kind: "home", title: "Memory Home" },
   { id: "a", kind: "memory_item", title: "README.md" },
   { id: "b", kind: "asset", title: "logo.png" },
 ];
@@ -20,7 +21,19 @@ const baseProps = {
 describe("MemoryCollapsedTabStrip", () => {
   it("renders one icon per open tab", () => {
     const { container } = render(<MemoryCollapsedTabStrip {...baseProps} />);
-    expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(3);
+  });
+
+  it("activates and expands the Memory Home tab from the collapsed rail", () => {
+    const onActivate = vi.fn();
+    const { container } = render(
+      <MemoryCollapsedTabStrip {...baseProps} onActivate={onActivate} />,
+    );
+    const homeBtn = container.querySelector(
+      "[data-tab-id='memory-home'][data-tab-kind='home']",
+    ) as HTMLElement;
+    fireEvent.click(homeBtn);
+    expect(onActivate).toHaveBeenCalledWith("memory-home", "home");
   });
 
   it("marks the active tab with data-active and brand wash", () => {

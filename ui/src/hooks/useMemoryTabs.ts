@@ -3,6 +3,7 @@ import { useSearchParams, useLocation } from "@/lib/router";
 import {
   openOrActivate as openOrActivateReducer,
   closeTab as closeTabReducer,
+  MEMORY_HOME_TAB,
   type MemoryTab,
   type MemoryTabKind,
   type TabKey,
@@ -12,7 +13,7 @@ import {
 const TABS_PARAM = "tabs";
 const ACTIVE_PARAM = "active";
 
-const KINDS: ReadonlyArray<MemoryTabKind> = ["memory_item", "asset"];
+const KINDS: ReadonlyArray<MemoryTabKind> = ["home", "memory_item", "asset"];
 
 function isValidKind(value: string): value is MemoryTabKind {
   return (KINDS as readonly string[]).includes(value);
@@ -194,6 +195,7 @@ export interface UseMemoryTabsResult {
   tabs: MemoryTab[];
   activeKey: TabKey | null;
   openOrActivate: (tab: MemoryTab) => void;
+  openHome: () => void;
   close: (id: string, kind: MemoryTabKind) => void;
   setActive: (id: string, kind: MemoryTabKind) => void;
 }
@@ -249,10 +251,15 @@ export function useMemoryTabs(): UseMemoryTabsResult {
     [setParams],
   );
 
+  const openHome = useCallback(() => {
+    openOrActivate(MEMORY_HOME_TAB);
+  }, [openOrActivate]);
+
   return {
     tabs: state.tabs,
     activeKey: state.activeKey,
     openOrActivate,
+    openHome,
     close,
     setActive,
   };

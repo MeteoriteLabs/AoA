@@ -1,4 +1,10 @@
-export type MemoryTabKind = "memory_item" | "asset";
+export type MemoryTabKind = "home" | "memory_item" | "asset";
+
+export const MEMORY_HOME_TAB: MemoryTab = {
+  id: "memory-home",
+  kind: "home",
+  title: "Memory Home",
+};
 
 export interface MemoryTab {
   id: string;

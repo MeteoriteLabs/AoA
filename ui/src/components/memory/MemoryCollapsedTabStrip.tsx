@@ -1,5 +1,6 @@
 import {
   FileText,
+  Home,
   Image as ImageIcon,
   PanelRightOpen,
   type LucideIcon,
@@ -15,6 +16,7 @@ interface Props {
 }
 
 const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
+  home: Home,
   memory_item: FileText,
   asset: ImageIcon,
 };

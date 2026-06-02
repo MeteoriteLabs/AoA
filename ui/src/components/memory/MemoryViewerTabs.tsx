@@ -1,5 +1,6 @@
 import {
   FileText,
+  Home,
   Image as ImageIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -16,6 +17,7 @@ interface Props {
 }
 
 const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
+  home: Home,
   memory_item: FileText,
   asset: ImageIcon,
 };
@@ -43,6 +45,7 @@ export function MemoryViewerTabs({
       addLabel="New memory viewer tab"
       onToggleCollapse={onToggleCollapse}
       tabListLabel="Open memory items"
+      headerTestId="memory-viewer-header"
     />
   );
 }

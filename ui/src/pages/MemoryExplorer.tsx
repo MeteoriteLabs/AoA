@@ -39,7 +39,7 @@ export function MemoryExplorer() {
   ) as "memory_item" | "asset" | null;
 
   // Tab state — owned here, passed down to viewer + list.
-  const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();
+  const { tabs, activeKey, openOrActivate, openHome, close, setActive } = useMemoryTabs();
 
   // Rail counts — derived from the flat items list (same query key as MemoryTree; cache hit).
   const { data: allItems } = useQuery({
@@ -298,6 +298,7 @@ export function MemoryExplorer() {
                 activeKey={activeKey}
                 onActivate={setActive}
                 onClose={close}
+                onAdd={openHome}
                 onToggleCollapse={() => {
                   setViewerCollapsed(true);
                   viewerPanelRef.current?.collapse();

@@ -19,6 +19,7 @@ interface MemoryViewerProps {
   activeKey: TabKey | null;
   onActivate: (id: string, kind: MemoryTabKind) => void;
   onClose: (id: string, kind: MemoryTabKind) => void;
+  onAdd?: () => void;
   onToggleCollapse?: () => void;
   /** Optional folder fallback for the empty-pane / folder-summary view. */
   folderPath?: string;
@@ -60,6 +61,7 @@ export function MemoryViewer({
   activeKey,
   onActivate,
   onClose,
+  onAdd,
   onToggleCollapse,
   folderPath,
 }: MemoryViewerProps) {
@@ -92,6 +94,7 @@ export function MemoryViewer({
         activeKey={activeKey}
         onActivate={onActivate}
         onClose={onClose}
+        onAdd={onAdd}
         onToggleCollapse={onToggleCollapse}
       />
       <div className="flex-1 min-h-0 overflow-auto">

@@ -24,6 +24,7 @@ interface ViewerTabsProps {
   addLabel?: string;
   onToggleCollapse?: () => void;
   tabListLabel?: string;
+  headerTestId?: string;
 }
 
 function isActive(tab: ViewerTabModel, key: ViewerTabKey | null): boolean {
@@ -39,11 +40,12 @@ export function ViewerTabs({
   addLabel = "New viewer tab",
   onToggleCollapse,
   tabListLabel = "Open viewer tabs",
+  headerTestId = "viewer-tabs-header",
 }: ViewerTabsProps) {
   return (
     <div
       className="flex h-[42px] shrink-0 items-center border-b border-border bg-card px-2"
-      data-testid="viewer-tabs-header"
+      data-testid={headerTestId}
     >
       <div
         role="tablist"

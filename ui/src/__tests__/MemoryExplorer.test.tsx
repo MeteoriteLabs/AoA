@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../context/ToastContext";
@@ -250,5 +250,22 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     await waitFor(() =>
       expect(memoryApiMock.get).toHaveBeenCalledWith("co-1", "mem-1"),
     );
+  });
+
+  it("opens one closeable Memory Home tab from the viewer add button", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
+    expect(screen.getByRole("tab", { name: /Memory Home/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New memory viewer tab" }));
+    expect(screen.getAllByRole("tab", { name: /Memory Home/i })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Memory Home" }));
+    expect(screen.queryByRole("tab", { name: /Memory Home/i })).not.toBeInTheDocument();
   });
 });
