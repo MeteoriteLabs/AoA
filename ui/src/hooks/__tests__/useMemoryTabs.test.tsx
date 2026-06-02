@@ -96,16 +96,16 @@ describe("useMemoryTabs", () => {
     expect(result.current.activeKey).toEqual({ id: "a1", kind: "asset" });
   });
 
-  it("hydrates Brain and Open viewer tabs from the URL", () => {
+  it("hydrates Map and Open viewer tabs from the URL", () => {
     const path =
       "/x?tabs=graph:company-graph:" +
-      encodeURIComponent("Brain") +
+      encodeURIComponent("Map") +
       ",open:memory-open:" +
       encodeURIComponent("Open") +
       "&active=open:memory-open";
     const { result } = renderHook(() => useMemoryTabs(), { wrapper: wrapper(path) });
     expect(result.current.tabs).toEqual([
-      { id: "company-graph", kind: "graph", title: "Brain" },
+      { id: "company-graph", kind: "graph", title: "Map" },
       { id: "memory-open", kind: "open", title: "Open" },
     ]);
     expect(result.current.activeKey).toEqual({ id: "memory-open", kind: "open" });

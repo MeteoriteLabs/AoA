@@ -1,9 +1,20 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Network } from "lucide-react";
+import {
+  CircleDot,
+  Loader2,
+  Map as MapIcon,
+  Network,
+  type LucideIcon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
 import { CompanyGraphCanvas } from "./graph/CompanyGraphCanvas";
+import {
+  CompanyGraphClusterView,
+  CompanyGraphNetworkView,
+} from "./graph/CompanyGraphD3Views";
 import { LocalGraphPreview } from "./graph/LocalGraphPreview";
 import { UsedByAgentsPanel } from "./graph/UsedByAgentsPanel";
 
@@ -13,12 +24,26 @@ interface MemoryGraphViewerProps {
   onOpenMemoryItem?: (item: { id: string; title: string }) => void;
 }
 
+type CompanyGraphMode = "map" | "network" | "cluster";
+
+const COMPANY_GRAPH_MODES: Array<{
+  id: CompanyGraphMode;
+  label: string;
+  ariaLabel: string;
+  Icon: LucideIcon;
+}> = [
+  { id: "map", label: "Map", ariaLabel: "Map view", Icon: MapIcon },
+  { id: "network", label: "Network", ariaLabel: "Network view", Icon: Network },
+  { id: "cluster", label: "Clusters", ariaLabel: "Cluster view", Icon: CircleDot },
+];
+
 export function MemoryGraphViewer({
   companyId,
   itemId,
   onOpenMemoryItem,
 }: MemoryGraphViewerProps) {
   const isItemGraph = Boolean(itemId);
+  const [companyGraphMode, setCompanyGraphMode] = useState<CompanyGraphMode>("map");
   const companyGraphQuery = useQuery({
     queryKey: queryKeys.memory.companyGraph(companyId),
     queryFn: () => memoryApi.companyGraph(companyId, {
@@ -58,20 +83,46 @@ export function MemoryGraphViewer({
         </div>
       );
     } else {
+      if (companyGraphMode === "network") {
+        graphContent = <CompanyGraphNetworkView graph={companyGraphQuery.data} />;
+      } else if (companyGraphMode === "cluster") {
+        graphContent = <CompanyGraphClusterView graph={companyGraphQuery.data} />;
+      } else {
       graphContent = (
         <CompanyGraphCanvas
           graph={companyGraphQuery.data}
           onOpenMemoryItem={onOpenMemoryItem}
         />
       );
+      }
     }
 
     return (
       <div className="h-full flex flex-col">
         <div className="border-b border-border px-5 py-3">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Network className="h-4 w-4" />
-            Map
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <MapIcon className="h-4 w-4" />
+              Map
+            </div>
+            <div className="flex items-center gap-1" role="group" aria-label="Map view mode">
+              {COMPANY_GRAPH_MODES.map(({ id, label, ariaLabel, Icon }) => (
+                <Button
+                  key={id}
+                  type="button"
+                  size="sm"
+                  variant={companyGraphMode === id ? "secondary" : "ghost"}
+                  className="h-7 gap-1 px-2 text-xs"
+                  aria-label={ariaLabel}
+                  aria-pressed={companyGraphMode === id}
+                  title={label}
+                  onClick={() => setCompanyGraphMode(id)}
+                >
+                  <Icon className="h-3.5 w-3.5" aria-hidden />
+                  <span className="hidden sm:inline">{label}</span>
+                </Button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="flex-1 min-h-0 overflow-auto p-5">

@@ -1,15 +1,30 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import type { MemoryAssetRecord } from "@armyofagents/shared";
 import { MemoryViewer } from "../MemoryViewer";
+import { memoryApi } from "../../../api/memory";
 import { memoryAssetsApi } from "../../../api/memoryAssets";
 import type { MemoryTab } from "../../../lib/memoryTabs";
+
+vi.mock("../../../context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompany: { issuePrefix: "THR" },
+  }),
+}));
+
+vi.mock("../../../api/memory", () => ({
+  memoryApi: {
+    list: vi.fn(),
+  },
+}));
 
 vi.mock("../../../api/memoryAssets", () => ({
   memoryAssetsApi: {
     get: vi.fn(),
     contentUrl: vi.fn((companyId: string, id: string) => `/api/companies/${companyId}/memory/assets/${id}/content`),
+    list: vi.fn(),
   },
 }));
 
@@ -61,21 +76,25 @@ function renderAssetViewer(record: MemoryAssetRecord) {
   const tabs: MemoryTab[] = [{ id: record.id, kind: "asset", title: record.fileName }];
 
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryViewer
-        companyId="co-1"
-        tabs={tabs}
-        activeKey={{ id: record.id, kind: "asset" }}
-        onActivate={vi.fn()}
-        onClose={vi.fn()}
-      />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <MemoryViewer
+          companyId="co-1"
+          tabs={tabs}
+          activeKey={{ id: record.id, kind: "asset" }}
+          onActivate={vi.fn()}
+          onClose={vi.fn()}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
 describe("MemoryViewer asset routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(memoryApi.list).mockResolvedValue([]);
+    vi.mocked(memoryAssetsApi.list).mockResolvedValue([]);
   });
 
   it.each([
@@ -99,5 +118,60 @@ describe("MemoryViewer asset routing", () => {
     await waitFor(() => expect(screen.getByTestId("docx-file-viewer")).toBeInTheDocument());
     expect(screen.getByTestId("docx-file-viewer")).toHaveTextContent("co-1:asset-1");
     expect(screen.queryByTestId("shared-content-viewer")).not.toBeInTheDocument();
+  });
+});
+
+describe("MemoryViewer collection tabs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(memoryAssetsApi.list).mockResolvedValue([]);
+  });
+
+  it("renders recent memories with real recents data", async () => {
+    vi.mocked(memoryApi.list).mockResolvedValue([
+      {
+        id: "mem-1",
+        companyId: "co-1",
+        title: "Pricing memo",
+        content: "Seat pricing notes",
+        status: "approved",
+        category: "decision",
+        layer: "domain",
+        visibility: "shared",
+        departmentId: null,
+        projectId: null,
+        goalId: null,
+        taskId: null,
+        sourceArtifactId: null,
+        agentId: null,
+        folderPath: "Company/Decisions",
+        tags: [],
+        embedding: null,
+        createdBy: "founder@example.com",
+        createdAt: "2026-06-02T00:00:00.000Z",
+        updatedAt: "2026-06-02T10:00:00.000Z",
+      },
+    ] as never);
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tabs: MemoryTab[] = [{ id: "recent", kind: "collection", title: "Recent" }];
+
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <MemoryViewer
+            companyId="co-1"
+            tabs={tabs}
+            activeKey={{ id: "recent", kind: "collection" }}
+            onActivate={vi.fn()}
+            onClose={vi.fn()}
+            onOpenTab={vi.fn()}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Pricing memo")).toBeInTheDocument();
+    expect(screen.queryByText("Recent memory activity will appear here.")).not.toBeInTheDocument();
   });
 });

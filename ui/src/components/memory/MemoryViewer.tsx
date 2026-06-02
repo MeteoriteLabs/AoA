@@ -11,6 +11,7 @@ import { queryKeys } from "../../lib/queryKeys";
 import { MemoryViewerTabs } from "./MemoryViewerTabs";
 import { MemoryGraphViewer } from "./MemoryGraphViewer";
 import { MemoryOpenViewer } from "./MemoryOpenViewer";
+import { MemoryRecentsStrip } from "./MemoryRecentsStrip";
 import type { MemoryTab, MemoryTabKind, TabKey } from "../../lib/memoryTabs";
 
 interface MemoryViewerProps {
@@ -55,12 +56,36 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
   return <SharedContentViewer viewer={viewer} filename={asset.fileName} />;
 }
 
-function MemoryCollectionViewer({ tab }: { tab: MemoryTab }) {
+function MemoryCollectionViewer({
+  companyId,
+  tab,
+  onOpenTab,
+}: {
+  companyId: string;
+  tab: MemoryTab;
+  onOpenTab?: (tab: MemoryTab) => void;
+}) {
   const descriptions: Record<string, string> = {
-    recent: "Recent memory activity will appear here.",
     unlinked: "Memory items without graph links will appear here.",
     "review-queue": "Memory items waiting for review will appear here.",
   };
+
+  if (tab.id === "recent") {
+    return (
+      <div className="h-full min-h-0 overflow-auto p-4" data-testid="memory-recent-viewer">
+        <div className="mb-3">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Recent
+          </div>
+          <h2 className="mt-1 text-sm font-semibold">Recently opened memory</h2>
+        </div>
+        <MemoryRecentsStrip
+          companyId={companyId}
+          onOpenTab={(next) => onOpenTab?.(next)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 items-center justify-center p-6">
@@ -112,7 +137,13 @@ export function MemoryViewer({
   } else if (activeTab && activeTab.kind === "open") {
     inner = <MemoryOpenViewer onOpenTab={onOpenTab} />;
   } else if (activeTab && activeTab.kind === "collection") {
-    inner = <MemoryCollectionViewer tab={activeTab} />;
+    inner = (
+      <MemoryCollectionViewer
+        companyId={companyId}
+        tab={activeTab}
+        onOpenTab={onOpenTab}
+      />
+    );
   } else if (folderPath) {
     inner = (
       <MemoryFolderSummary

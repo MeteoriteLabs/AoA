@@ -78,7 +78,7 @@ describe("MemoryHomeDashboard (Phase 6.2a)", () => {
     expect(screen.getByText(/Quick-jump to a memory item or file/i)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
-    expect(screen.getByTestId("memory-home-graph-launcher")).toHaveTextContent(/Company graph/i);
+    expect(screen.getByTestId("memory-home-graph-launcher")).toHaveTextContent(/Map/i);
   });
 
   it("opens the company graph as a viewer tab", async () => {
@@ -90,7 +90,7 @@ describe("MemoryHomeDashboard (Phase 6.2a)", () => {
     expect(onOpenTab).toHaveBeenCalledWith({
       id: "company-graph",
       kind: "graph",
-      title: "Company graph",
+      title: "Map",
     });
   });
 

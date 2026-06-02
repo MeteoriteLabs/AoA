@@ -97,4 +97,24 @@ describe("MemoryGraphViewer", () => {
       title: "Launch plan",
     });
   });
+
+  it("switches between map, network, and cluster graph views", async () => {
+    renderViewer(
+      <MemoryGraphViewer
+        companyId="co-1"
+        itemId={null}
+      />,
+    );
+
+    expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Network view" }));
+    expect(screen.getByTestId("company-graph-network-view")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cluster view" }));
+    expect(screen.getByTestId("company-graph-cluster-view")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Map view" }));
+    expect(screen.getByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+  });
 });
