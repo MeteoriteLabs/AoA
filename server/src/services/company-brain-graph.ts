@@ -9,6 +9,7 @@ import {
   issues,
   memoryItems,
   memoryRelations,
+  memoryRetrievals,
   projects,
   userRoles,
 } from "@armyofagents/db";
@@ -17,6 +18,7 @@ import {
   roleAtLeast,
   type CompanyBrainEdge,
   type CompanyBrainEdgeKind,
+  type CompanyBrainMemoryUsageResponse,
   type CompanyBrainNeighborsResponse,
   type CompanyBrainNode,
   type CompanyBrainNodeRef,
@@ -106,6 +108,13 @@ export interface MemoryItemNeighborGraphInput {
     artifacts?: LinkedArtifactRow[];
     agents?: LinkedAgentRow[];
   };
+}
+
+interface MemoryUsageRow {
+  agentId: string | null;
+  agentName: string | null;
+  taskId: string | null;
+  createdAt: Date | string | null;
 }
 
 function dateToIso(value: Date | string | null | undefined): string | null {
@@ -383,6 +392,55 @@ function uniqueIds(ids: Array<string | null | undefined>): string[] {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
 }
 
+function aggregateMemoryUsage(
+  itemId: string,
+  rows: MemoryUsageRow[],
+): CompanyBrainMemoryUsageResponse {
+  const agentsById = new Map<string, {
+    agentId: string | null;
+    agentName: string;
+    retrievalCount: number;
+    lastRetrievedAt: string | null;
+    taskIds: Set<string>;
+  }>();
+
+  for (const row of rows) {
+    const key = row.agentId ?? "__unknown_agent__";
+    const existing = agentsById.get(key) ?? {
+      agentId: row.agentId,
+      agentName: row.agentName ?? "Unknown agent",
+      retrievalCount: 0,
+      lastRetrievedAt: null,
+      taskIds: new Set<string>(),
+    };
+
+    existing.retrievalCount += 1;
+    if (row.taskId) existing.taskIds.add(row.taskId);
+
+    const createdAt = dateToIso(row.createdAt);
+    if (createdAt && (!existing.lastRetrievedAt || createdAt > existing.lastRetrievedAt)) {
+      existing.lastRetrievedAt = createdAt;
+    }
+    agentsById.set(key, existing);
+  }
+
+  return {
+    itemId,
+    agents: Array.from(agentsById.values())
+      .map((agent) => ({
+        agentId: agent.agentId,
+        agentName: agent.agentName,
+        retrievalCount: agent.retrievalCount,
+        lastRetrievedAt: agent.lastRetrievedAt,
+        linkedTaskCount: agent.taskIds.size,
+      }))
+      .sort((a, b) => {
+        if (a.retrievalCount !== b.retrievalCount) return b.retrievalCount - a.retrievalCount;
+        return a.agentName.localeCompare(b.agentName);
+      }),
+  };
+}
+
 async function loadActorScope(
   db: Db,
   companyId: string,
@@ -565,5 +623,44 @@ export function companyBrainGraphService(db: Db) {
         },
       });
     },
+
+    getMemoryItemUsage: async (
+      companyId: string,
+      memoryItemId: string,
+      actor: { type: "user" | "agent"; principalId: string },
+    ) => {
+      const scope = await loadActorScope(db, companyId, actor);
+      const center = await db
+        .select()
+        .from(memoryItems)
+        .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.id, memoryItemId)))
+        .then((rows) => rows[0] ?? null);
+      if (!center || !canSeeMemoryItemForGraph(center, scope)) {
+        throw notFound("Memory item not found");
+      }
+
+      const rows = await db
+        .select({
+          agentId: memoryRetrievals.agentId,
+          agentName: agents.name,
+          taskId: memoryRetrievals.taskId,
+          createdAt: memoryRetrievals.createdAt,
+        })
+        .from(memoryRetrievals)
+        .leftJoin(agents, eq(memoryRetrievals.agentId, agents.id))
+        .where(
+          and(
+            eq(memoryRetrievals.companyId, companyId),
+            eq(memoryRetrievals.itemId, memoryItemId),
+            eq(memoryRetrievals.shownToAgent, true),
+          ),
+        );
+
+      return aggregateMemoryUsage(memoryItemId, rows);
+    },
   };
 }
+
+export const __companyBrainGraphTest = {
+  aggregateMemoryUsage,
+};

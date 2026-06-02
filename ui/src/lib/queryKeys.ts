@@ -134,6 +134,8 @@ export const queryKeys = {
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     neighbors: (companyId: string, id: string) =>
       ["memory", companyId, id, "neighbors"] as const,
+    usage: (companyId: string, id: string) =>
+      ["memory", companyId, id, "usage"] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
     // V2.6 Phase 3

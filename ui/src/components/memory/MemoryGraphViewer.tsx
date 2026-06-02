@@ -2,19 +2,33 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2, Network } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
+import { LocalGraphPreview } from "./graph/LocalGraphPreview";
+import { UsedByAgentsPanel } from "./graph/UsedByAgentsPanel";
 
 interface MemoryGraphViewerProps {
   companyId: string;
   itemId?: string | null;
+  onOpenMemoryItem?: (item: { id: string; title: string }) => void;
 }
 
-export function MemoryGraphViewer({ companyId, itemId }: MemoryGraphViewerProps) {
+export function MemoryGraphViewer({
+  companyId,
+  itemId,
+  onOpenMemoryItem,
+}: MemoryGraphViewerProps) {
   const isItemGraph = Boolean(itemId);
   const graphQuery = useQuery({
     queryKey: itemId
       ? queryKeys.memory.neighbors(companyId, itemId)
       : ["memory", companyId, "company-graph-shell"],
     queryFn: () => memoryApi.neighbors(companyId, itemId!, { depth: 1 }),
+    enabled: Boolean(companyId && itemId),
+  });
+  const usageQuery = useQuery({
+    queryKey: itemId
+      ? queryKeys.memory.usage(companyId, itemId)
+      : ["memory", companyId, "company-graph-usage-shell"],
+    queryFn: () => memoryApi.usage(companyId, itemId!),
     enabled: Boolean(companyId && itemId),
   });
 
@@ -61,23 +75,20 @@ export function MemoryGraphViewer({ companyId, itemId }: MemoryGraphViewerProps)
       <div className="border-b border-border px-5 py-3">
         <div className="text-sm font-semibold">{graphQuery.data.center.label}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {graphQuery.data.nodes.length} nodes · {graphQuery.data.edges.length} edges
+          {graphQuery.data.nodes.length} nodes / {graphQuery.data.edges.length} edges
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-auto p-5">
-        <div className="grid gap-3">
-          {graphQuery.data.edges.map((edge) => {
-            const from = graphQuery.data.nodes.find((node) => node.type === edge.from.type && node.id === edge.from.id);
-            const to = graphQuery.data.nodes.find((node) => node.type === edge.to.type && node.id === edge.to.id);
-            return (
-              <div key={edge.id} className="rounded-md border border-border bg-card p-3">
-                <div className="text-xs font-medium">{edge.kind}</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {from?.label ?? edge.from.id} → {to?.label ?? edge.to.id}
-                </div>
-              </div>
-            );
-          })}
+        <div className="grid gap-4">
+          <LocalGraphPreview
+            graph={graphQuery.data}
+            centerId={itemId!}
+            onOpenMemoryItem={onOpenMemoryItem}
+          />
+          <UsedByAgentsPanel
+            usage={usageQuery.data?.agents ?? []}
+            isLoading={usageQuery.isLoading}
+          />
         </div>
       </div>
     </div>

@@ -347,6 +347,8 @@ export type {
   CompanyBrainNode,
   CompanyBrainEdge,
   CompanyBrainNeighborsResponse,
+  CompanyBrainMemoryUsageAgent,
+  CompanyBrainMemoryUsageResponse,
   MemoryAssetRecord,
   MemoryAssetCreateInput,
   MemoryAssetUpdateInput,

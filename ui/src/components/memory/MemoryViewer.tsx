@@ -83,6 +83,11 @@ export function MemoryViewer({
       <MemoryGraphViewer
         companyId={companyId}
         itemId={activeTab.id === "company-graph" ? null : activeTab.id}
+        onOpenMemoryItem={(item) => onOpenTab?.({
+          id: item.id,
+          kind: "memory_item",
+          title: item.title,
+        })}
       />
     );
   } else if (folderPath) {

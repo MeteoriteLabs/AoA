@@ -1,5 +1,6 @@
 import type {
   CompanyBrainEdgeKind,
+  CompanyBrainMemoryUsageResponse,
   CompanyBrainNeighborsResponse,
   MemoryItem,
   MemoryItemVersion,
@@ -56,6 +57,10 @@ export const memoryApi = {
       `/companies/${companyId}/memory/items/${encodeURIComponent(id)}/neighbors${qs ? `?${qs}` : ""}`,
     );
   },
+  usage: (companyId: string, id: string) =>
+    api.get<CompanyBrainMemoryUsageResponse>(
+      `/companies/${companyId}/memory/items/${encodeURIComponent(id)}/usage`,
+    ),
   listPending: (companyId: string) =>
     api.get<PendingMemoryQueue>(`/companies/${companyId}/memory-pending`),
   findSimilarItems: (

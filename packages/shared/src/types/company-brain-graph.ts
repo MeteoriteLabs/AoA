@@ -46,3 +46,16 @@ export interface CompanyBrainNeighborsResponse {
   nodes: CompanyBrainNode[];
   edges: CompanyBrainEdge[];
 }
+
+export interface CompanyBrainMemoryUsageAgent {
+  agentId: string | null;
+  agentName: string;
+  retrievalCount: number;
+  lastRetrievedAt: string | null;
+  linkedTaskCount: number;
+}
+
+export interface CompanyBrainMemoryUsageResponse {
+  itemId: string;
+  agents: CompanyBrainMemoryUsageAgent[];
+}

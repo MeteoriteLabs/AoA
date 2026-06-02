@@ -146,6 +146,27 @@ export function memoryRoutes(db: Db) {
     res.json({ ...graph, nodes, edges });
   });
 
+  router.get("/companies/:companyId/memory/items/:id/usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
+
+    const principalId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? "unknown-agent"
+        : req.actor.type === "mcp"
+          ? req.actor.userId ?? "mcp-user"
+          : req.actor.userId ?? "local-board";
+
+    const usage = await graphSvc.getMemoryItemUsage(companyId, id, {
+      type: req.actor.type === "agent" ? "agent" : "user",
+      principalId,
+    });
+
+    res.json(usage);
+  });
+
   router.get("/companies/:companyId/memory/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;

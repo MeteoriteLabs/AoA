@@ -36,3 +36,19 @@ describe("memoryApi.neighbors", () => {
     );
   });
 });
+
+describe("memoryApi.usage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("URL-encodes memory item ids for usage lookup", async () => {
+    vi.mocked(api.get).mockResolvedValueOnce({ itemId: "item/1", agents: [] });
+
+    await memoryApi.usage("company-1", "item/1");
+
+    expect(api.get).toHaveBeenCalledWith(
+      "/companies/company-1/memory/items/item%2F1/usage",
+    );
+  });
+});

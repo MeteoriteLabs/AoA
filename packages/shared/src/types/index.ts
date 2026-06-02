@@ -47,6 +47,8 @@ export type {
   CompanyBrainNode,
   CompanyBrainEdge,
   CompanyBrainNeighborsResponse,
+  CompanyBrainMemoryUsageAgent,
+  CompanyBrainMemoryUsageResponse,
 } from "./company-brain-graph.js";
 export type {
   MemoryFolderRecord,

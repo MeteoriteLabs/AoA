@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  __companyBrainGraphTest,
   buildMemoryItemNeighborGraph,
   canSeeMemoryItemForGraph,
   type GraphActorScope,
@@ -180,5 +181,43 @@ describe("buildMemoryItemNeighborGraph", () => {
     expect(graph.nodes.map((node) => node.id)).toContain(visible.id);
     expect(graph.nodes.map((node) => node.id)).not.toContain(privateTarget.id);
     expect(graph.edges.map((edge) => edge.id)).toEqual(["rel-visible"]);
+  });
+});
+
+describe("aggregateMemoryUsage", () => {
+  it("aggregates retrievals by agent without exposing run rows", () => {
+    const usage = __companyBrainGraphTest.aggregateMemoryUsage("item-1", [
+      {
+        agentId: AGENT_ID,
+        agentName: "Memory Keeper",
+        taskId: TASK_ID,
+        createdAt: new Date("2026-06-02T08:00:00.000Z"),
+      },
+      {
+        agentId: AGENT_ID,
+        agentName: "Memory Keeper",
+        taskId: TASK_ID,
+        createdAt: new Date("2026-06-02T09:00:00.000Z"),
+      },
+      {
+        agentId: AGENT_ID,
+        agentName: "Memory Keeper",
+        taskId: "00000000-0000-0000-0000-000000000302",
+        createdAt: new Date("2026-06-02T07:00:00.000Z"),
+      },
+    ]);
+
+    expect(usage).toEqual({
+      itemId: "item-1",
+      agents: [
+        {
+          agentId: AGENT_ID,
+          agentName: "Memory Keeper",
+          retrievalCount: 3,
+          lastRetrievedAt: "2026-06-02T09:00:00.000Z",
+          linkedTaskCount: 2,
+        },
+      ],
+    });
   });
 });
