@@ -1,5 +1,7 @@
 import { MemoryHomeDashboard } from "./MemoryHomeDashboard";
 import type { MemoryTab } from "../../lib/memoryTabs";
+import { Button } from "@/components/ui/button";
+import { Network } from "lucide-react";
 
 interface MemoryViewerHomeProps {
   companyId: string;
@@ -16,14 +18,30 @@ export function MemoryViewerHome({ companyId, onOpenTab }: MemoryViewerHomeProps
         onOpenTab={onOpenTab}
       />
       <section
-        data-testid="memory-home-graph-slot"
+        data-testid="memory-home-graph-launcher"
         className="border-t border-border p-4"
       >
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          Graph
-        </div>
-        <div className="mt-2 rounded-md border border-dashed border-border bg-muted/20 p-4 text-xs text-muted-foreground">
-          Memory graph will appear here after relation and graph APIs are implemented.
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Graph
+            </div>
+            <div className="mt-1 text-sm font-medium">Company graph</div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1"
+            aria-label="Open company graph"
+            onClick={() => onOpenTab?.({
+              id: "company-graph",
+              kind: "graph",
+              title: "Company graph",
+            })}
+          >
+            <Network className="h-3.5 w-3.5" />
+            Open
+          </Button>
         </div>
       </section>
     </div>

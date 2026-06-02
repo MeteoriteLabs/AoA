@@ -13,7 +13,7 @@ import {
 const TABS_PARAM = "tabs";
 const ACTIVE_PARAM = "active";
 
-const KINDS: ReadonlyArray<MemoryTabKind> = ["home", "memory_item", "asset"];
+const KINDS: ReadonlyArray<MemoryTabKind> = ["home", "memory_item", "asset", "graph"];
 
 function isValidKind(value: string): value is MemoryTabKind {
   return (KINDS as readonly string[]).includes(value);

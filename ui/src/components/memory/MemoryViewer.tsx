@@ -10,6 +10,7 @@ import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 import { MemoryViewerTabs } from "./MemoryViewerTabs";
 import { MemoryViewerHome } from "./MemoryViewerHome";
+import { MemoryGraphViewer } from "./MemoryGraphViewer";
 import type { MemoryTab, MemoryTabKind, TabKey } from "../../lib/memoryTabs";
 
 interface MemoryViewerProps {
@@ -77,6 +78,13 @@ export function MemoryViewer({
     inner = <MarkdownItemViewer companyId={companyId} itemId={activeTab.id} />;
   } else if (activeTab && activeTab.kind === "asset") {
     inner = <AssetViewerSlot companyId={companyId} assetId={activeTab.id} />;
+  } else if (activeTab && activeTab.kind === "graph") {
+    inner = (
+      <MemoryGraphViewer
+        companyId={companyId}
+        itemId={activeTab.id === "company-graph" ? null : activeTab.id}
+      />
+    );
   } else if (folderPath) {
     inner = (
       <MemoryFolderSummary

@@ -47,6 +47,16 @@ describe("memoryTabs reducer", () => {
       expect(s2.activeKey).toEqual({ id: "x", kind: "asset" });
       expect(s2.tabs[1].kind).toBe("asset");
     });
+
+    it("supports a dedicated graph tab", () => {
+      const next = openOrActivate(empty, tab("company-graph", "graph"));
+      expect(next.tabs[0]).toEqual({
+        id: "company-graph",
+        kind: "graph",
+        title: "COMPANY-GRAPH",
+      });
+      expect(next.activeKey).toEqual({ id: "company-graph", kind: "graph" });
+    });
   });
 
   describe("closeTab", () => {

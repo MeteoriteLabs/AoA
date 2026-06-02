@@ -2,6 +2,7 @@ import {
   FileText,
   Home,
   Image as ImageIcon,
+  Network,
   type LucideIcon,
 } from "lucide-react";
 import { ViewerTabs, type ViewerTabModel } from "@/components/viewers/ViewerTabs";
@@ -20,6 +21,7 @@ const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
   home: Home,
   memory_item: FileText,
   asset: ImageIcon,
+  graph: Network,
 };
 
 export function MemoryViewerTabs({

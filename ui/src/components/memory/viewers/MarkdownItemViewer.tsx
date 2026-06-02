@@ -2,8 +2,12 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Pin, Eye, Pencil, ExternalLink } from "lucide-react";
-import type { MemoryItem } from "@armyofagents/shared";
+import { Pin, Eye, Pencil, ExternalLink, Link2 } from "lucide-react";
+import {
+  COMPANY_BRAIN_EDITABLE_EDGE_KINDS,
+  type CompanyBrainNeighborsResponse,
+  type MemoryItem,
+} from "@armyofagents/shared";
 import { memoryApi } from "../../../api/memory";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,10 +31,72 @@ interface MarkdownItemViewerProps {
 
 const EDIT_DEFAULT_STATUSES = new Set(["pending", "draft", "rejected"]);
 
+function MemoryBacklinks({
+  itemId,
+  graph,
+  isLoading,
+}: {
+  itemId: string;
+  graph: CompanyBrainNeighborsResponse | undefined;
+  isLoading: boolean;
+}) {
+  const linked = (graph?.edges ?? [])
+    .map((edge) => {
+      const otherRef = edge.from.type === "memory_item" && edge.from.id === itemId
+        ? edge.to
+        : edge.to.type === "memory_item" && edge.to.id === itemId
+          ? edge.from
+          : null;
+      if (!otherRef || otherRef.type !== "memory_item") return null;
+      const node = graph?.nodes.find((candidate) => (
+        candidate.type === otherRef.type && candidate.id === otherRef.id
+      ));
+      if (!node) return null;
+      return { edge, node };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+  return (
+    <aside className="border-t border-border px-6 py-3 bg-card/20">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs font-medium">
+          <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
+          Backlinks
+        </div>
+        <span className="text-[11px] text-muted-foreground">
+          {isLoading ? "Loading" : `${linked.length} linked`}
+        </span>
+      </div>
+      {linked.length > 0 && (
+        <div className="mt-2 grid gap-1.5">
+          {linked.slice(0, 4).map(({ edge, node }) => (
+            <div
+              key={edge.id}
+              className="rounded-md border border-border bg-background px-3 py-2"
+            >
+              <div className="truncate text-xs font-medium">{node.label}</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">{edge.kind}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </aside>
+  );
+}
+
 export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProps) {
   const { data: item, isLoading, isError } = useQuery({
     queryKey: queryKeys.memory.detail(companyId, itemId),
     queryFn: () => memoryApi.get(companyId, itemId),
+    enabled: Boolean(companyId && itemId),
+  });
+
+  const backlinksQuery = useQuery({
+    queryKey: queryKeys.memory.neighbors(companyId, itemId),
+    queryFn: () => memoryApi.neighbors(companyId, itemId, {
+      depth: 1,
+      kinds: [...COMPANY_BRAIN_EDITABLE_EDGE_KINDS],
+    }),
     enabled: Boolean(companyId && itemId),
   });
 
@@ -171,6 +237,12 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
           }
         />
       )}
+
+      <MemoryBacklinks
+        itemId={itemId}
+        graph={backlinksQuery.data}
+        isLoading={backlinksQuery.isLoading}
+      />
 
       {importJobId && (
         <div className="border-t border-border px-6 py-2 text-xs flex items-center gap-2 bg-card/30">

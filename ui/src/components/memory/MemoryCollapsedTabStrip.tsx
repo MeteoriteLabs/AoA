@@ -2,6 +2,7 @@ import {
   FileText,
   Home,
   Image as ImageIcon,
+  Network,
   PanelRightOpen,
   type LucideIcon,
 } from "lucide-react";
@@ -19,6 +20,7 @@ const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
   home: Home,
   memory_item: FileText,
   asset: ImageIcon,
+  graph: Network,
 };
 
 function isActive(tab: MemoryTab, key: TabKey | null): boolean {
