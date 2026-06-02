@@ -61,10 +61,10 @@ export function Sidebar() {
           collapsed ? "w-[56px]" : "w-[220px]",
         )}
       >
-        {/* Header — h-14, logo + company-name (click → lobby). No internal collapse toggle. */}
+        {/* Header — h-11, logo + company-name (click → lobby). No internal collapse toggle. */}
         <div
           className={cn(
-            "flex items-center shrink-0 h-14 border-b border-border",
+            "flex items-center shrink-0 h-11 border-b border-border",
             collapsed ? "justify-center px-0" : "gap-2 px-3",
           )}
         >

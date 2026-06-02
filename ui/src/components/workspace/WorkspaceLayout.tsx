@@ -222,7 +222,7 @@ export function WorkspaceLayout({
       });
     } else if (kind === "browser") {
       openPreviewTab({
-        id: `browser:manual:${workspace.id}`,
+        id: `browser:manual:${workspace.id}:${Date.now()}`,
         kind: "browser",
         title: "Browser",
         url: "about:blank",
@@ -423,11 +423,11 @@ export function WorkspaceLayout({
           </>
         ) : (
         /* Desktop layout — existing code */
-        <div className="flex flex-1 min-h-0 overflow-hidden">
+        <div className="flex flex-1 min-h-0 gap-2 overflow-hidden bg-muted/30 p-2">
           {/* Left panel */}
           <div
             className={cn(
-              "shrink-0 h-full overflow-hidden border-r border-border transition-[width] duration-200",
+              "shrink-0 h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm transition-[width] duration-200",
               leftCollapsed ? "w-[48px]" : "w-[250px]",
             )}
             data-testid="workspace-left-panel"
@@ -451,7 +451,7 @@ export function WorkspaceLayout({
           {/* Center */}
           <Group
             orientation="horizontal"
-            className="flex-1 min-w-0 h-full"
+            className="h-full min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-background shadow-sm"
             defaultLayout={defaultLayout}
             onLayoutChanged={onLayoutChanged}
             data-testid="workspace-center-group"
@@ -463,7 +463,7 @@ export function WorkspaceLayout({
               data-testid="workspace-center-panel"
             >
               {selectedIssueId && (
-                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0">
+                <div className="flex h-[42px] items-center gap-2 border-b border-border px-3 shrink-0" data-testid="workspace-center-header">
                   <div className="min-w-0 flex-1">
                     <DependencyChain
                       issueId={selectedIssueId}
@@ -494,13 +494,13 @@ export function WorkspaceLayout({
               <>
                 <Separator
                   id="center-separator"
-                  className="w-1 bg-transparent hover:bg-brand/50 transition-colors cursor-col-resize"
+                  className="w-2 bg-muted/40 transition-colors hover:bg-brand/50 cursor-col-resize"
                   data-testid="workspace-resizable-handle"
                 />
                 <Panel
                   id="center-right"
                   minSize="20%"
-                  className="min-w-0 h-full overflow-hidden"
+                  className="min-w-0 h-full overflow-hidden bg-card"
                   data-testid="workspace-preview-panel"
                 >
                   {selectedIssueId && (
@@ -524,7 +524,7 @@ export function WorkspaceLayout({
           {/* Right panel */}
           <div
             className={cn(
-              "shrink-0 h-full overflow-hidden border-l border-border transition-[width] duration-200",
+              "shrink-0 h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm transition-[width] duration-200",
               rightCollapsed ? "w-[48px]" : "w-[280px]",
             )}
             data-testid="workspace-right-panel"

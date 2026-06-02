@@ -297,7 +297,7 @@ describe("WorkspacePreviewPanel tab deck", () => {
     expect(onCloseTab).toHaveBeenCalledWith("browser:svc-1");
   });
 
-  it("uses the add-tab button to focus Viewer Home without opening a picker", () => {
+  it("uses the add-tab button to add a browser tab without opening a picker", () => {
     const onOpenTab = vi.fn();
     const tabs: WorkspacePreviewTab[] = [
       {
@@ -322,7 +322,7 @@ describe("WorkspacePreviewPanel tab deck", () => {
 
     fireEvent.click(screen.getByTestId("preview-tab-add"));
 
-    expect(onOpenTab).toHaveBeenCalledWith("home");
+    expect(onOpenTab).toHaveBeenCalledWith("browser");
     expect(screen.queryByTestId("preview-tab-add-menu")).not.toBeInTheDocument();
   });
 

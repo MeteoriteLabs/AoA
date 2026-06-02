@@ -248,8 +248,8 @@ function PreviewTabBar({
   onOpenTab?: (kind: PreviewTabKind) => void;
 }) {
   return (
-    <div className="flex min-w-0 shrink-0 items-center gap-1 border-b border-border px-2 py-1" data-testid="workspace-preview-tabs">
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Workspace preview tabs">
+    <div className="flex h-[42px] min-w-0 shrink-0 items-center gap-1 border-b border-border px-2" data-testid="workspace-preview-tabs">
+      <div className="flex min-w-0 max-w-[calc(100%-2.25rem)] items-center gap-1 overflow-x-auto" role="tablist" aria-label="Workspace preview tabs">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
           const Icon = previewTabIcon(tab.kind);
@@ -258,7 +258,9 @@ function PreviewTabBar({
               key={tab.id}
               className={cn(
                 "flex h-7 min-w-0 max-w-[180px] items-center rounded-md border border-transparent",
-                active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                active
+                  ? "border-brand/40 bg-accent text-accent-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
             >
               <button
@@ -292,11 +294,11 @@ function PreviewTabBar({
           type="button"
           variant="ghost"
           size="icon"
-          className="h-7 w-7 shrink-0"
-          aria-label="Open Viewer Home"
-          title="Open Viewer Home"
+          className="h-7 w-7 shrink-0 rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          aria-label="Add browser tab"
+          title="Add browser tab"
           data-testid="preview-tab-add"
-          onClick={() => onOpenTab("home")}
+          onClick={() => onOpenTab("browser")}
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>

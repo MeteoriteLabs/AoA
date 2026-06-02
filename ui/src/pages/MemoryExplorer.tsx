@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NewMemoryItemDialog } from "../components/memory/NewMemoryItemDialog";
 import { useSearchParams, useNavigate } from "@/lib/router";
-import { Brain, Plus, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Brain, Plus, Search } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { Button } from "@/components/ui/button";
@@ -124,7 +124,7 @@ export function MemoryExplorer() {
       <Group
         orientation="horizontal"
         id="memory-explorer-panes"
-        className="flex-1"
+        className="flex-1 min-h-0 gap-2 overflow-hidden bg-muted/30 p-2"
       >
         <Panel
           id="memory-explorer-tree"
@@ -135,13 +135,21 @@ export function MemoryExplorer() {
           collapsedSize="3%"
           panelRef={treePanelRef}
           onResize={(size) => setTreeCollapsed(size.asPercentage <= 4)}
-          className="border-r border-border"
+          className="min-w-0 h-full overflow-hidden"
         >
-          <div className="h-full">
+          <div
+            className="h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm"
+            data-testid="memory-tree-shell"
+          >
             {treeCollapsed ? (
               <MemoryFolderRail
                 counts={railCounts}
                 activeKind={activeRailKind}
+                onExpand={() => {
+                  setTreeCollapsed(false);
+                  treePanelRef.current?.expand();
+                  treeAutoCollapsedRef.current = false;
+                }}
                 onSelect={(kind) => {
                   const params = railKindToParams(kind);
                   navigate(`/${companyPrefix}/memory/explore${params}`);
@@ -156,46 +164,35 @@ export function MemoryExplorer() {
                 selectedDepartmentId={departmentId}
                 selectedLayer={layer ?? null}
                 selectedGoalId={goalId ?? null}
+                onToggleCollapse={() => {
+                  setTreeCollapsed(true);
+                  treePanelRef.current?.collapse();
+                  treeAutoCollapsedRef.current = false;
+                }}
               />
             )}
           </div>
         </Panel>
         <Separator
           id="memory-explorer-sep-1"
-          className="relative w-1 bg-transparent hover:bg-border/80 transition-colors cursor-col-resize"
-        >
-          <button
-            type="button"
-            title={treeCollapsed ? "Expand folders" : "Collapse folders"}
-            aria-label={treeCollapsed ? "Expand folders" : "Collapse folders"}
-            onClick={() => {
-              if (treeCollapsed) {
-                setTreeCollapsed(false);
-                treePanelRef.current?.expand();
-                treeAutoCollapsedRef.current = false;
-              } else {
-                setTreeCollapsed(true);
-                treePanelRef.current?.collapse();
-                treeAutoCollapsedRef.current = false;
-              }
-            }}
-            className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 z-30 hidden md:inline-flex size-[26px] items-center justify-center rounded-md border border-border-strong bg-card-2 text-very-dim shadow-[0_2px_6px_rgba(0,0,0,0.4)] transition-[background,color,border-color,transform] duration-[120ms] hover:scale-105 hover:border-brand hover:bg-card hover:text-text focus-visible:outline-none focus-visible:border-brand focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
-          >
-            {treeCollapsed
-              ? <PanelLeftOpen className="size-3.5" aria-hidden />
-              : <PanelLeftClose className="size-3.5" aria-hidden />}
-          </button>
-        </Separator>
+          className="relative w-1 bg-transparent transition-colors hover:bg-border/70 cursor-col-resize"
+        />
         <Panel
           id="memory-explorer-list"
           defaultSize={isHomeSelected ? "55%" : "28%"}
           minSize="20%"
-          className="border-r border-border"
+          className="min-w-0 h-full overflow-hidden"
         >
-          <div className="h-full">
+          <div
+            className="h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm"
+            data-testid="memory-list-shell"
+          >
             {isHomeSelected ? (
               <div className="h-full flex flex-col bg-card/30">
-                <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-3">
+                <div
+                  className="flex h-[42px] shrink-0 items-center gap-3 border-b border-border bg-card px-3"
+                  data-testid="memory-list-header"
+                >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">Memory</div>
                     <div className="truncate text-[11px] text-muted-foreground">
@@ -264,28 +261,8 @@ export function MemoryExplorer() {
         </Panel>
         <Separator
           id="memory-explorer-sep-2"
-          className="relative w-1 bg-transparent hover:bg-border/80 transition-colors cursor-col-resize"
-        >
-          <button
-            type="button"
-            title={viewerCollapsed ? "Open viewer" : "Close viewer"}
-            aria-label={viewerCollapsed ? "Open viewer" : "Close viewer"}
-            onClick={() => {
-              if (viewerCollapsed) {
-                setViewerCollapsed(false);
-                viewerPanelRef.current?.expand();
-              } else {
-                setViewerCollapsed(true);
-                viewerPanelRef.current?.collapse();
-              }
-            }}
-            className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 z-30 hidden md:inline-flex size-[26px] items-center justify-center rounded-md border border-border-strong bg-card-2 text-very-dim shadow-[0_2px_6px_rgba(0,0,0,0.4)] transition-[background,color,border-color,transform] duration-[120ms] hover:scale-105 hover:border-brand hover:bg-card hover:text-text focus-visible:outline-none focus-visible:border-brand focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
-          >
-            {viewerCollapsed
-              ? <PanelRightOpen className="size-3.5" aria-hidden />
-              : <PanelRightClose className="size-3.5" aria-hidden />}
-          </button>
-        </Separator>
+          className="relative w-1 bg-transparent transition-colors hover:bg-border/70 cursor-col-resize"
+        />
         <Panel
           id="memory-explorer-viewer"
           defaultSize={isHomeSelected ? "25%" : "52%"}
@@ -294,20 +271,26 @@ export function MemoryExplorer() {
           collapsedSize="3%"
           panelRef={viewerPanelRef}
           onResize={(size) => setViewerCollapsed(size.asPercentage <= 4)}
+          className="min-w-0 h-full overflow-hidden"
         >
-          <div className="h-full">
+          <div
+            className="h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm"
+            data-testid="memory-viewer-shell"
+          >
             {viewerCollapsed ? (
               <MemoryCollapsedTabStrip
                 tabs={tabs}
                 activeKey={activeKey}
+                onExpand={() => {
+                  setViewerCollapsed(false);
+                  viewerPanelRef.current?.expand();
+                }}
                 onActivate={(id, kind) => {
                   setActive(id, kind);
                   setViewerCollapsed(false);
                   viewerPanelRef.current?.expand();
                 }}
               />
-            ) : isHomeSelected ? (
-              <div className="h-full" />
             ) : (
               <MemoryViewer
                 companyId={selectedCompanyId}
@@ -315,6 +298,10 @@ export function MemoryExplorer() {
                 activeKey={activeKey}
                 onActivate={setActive}
                 onClose={close}
+                onToggleCollapse={() => {
+                  setViewerCollapsed(true);
+                  viewerPanelRef.current?.collapse();
+                }}
                 folderPath={folderPath}
               />
             )}

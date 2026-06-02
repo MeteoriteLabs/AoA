@@ -515,6 +515,31 @@ describe("WorkspaceView — three-panel layout", () => {
     expect(screen.getByTestId("workspace-right-panel")).toHaveAttribute("data-collapsed", "true");
   });
 
+  it("uses a consistent 42px chrome height across workspace panel headers", async () => {
+    renderWorkspaceView();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-preview-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("workspace-preview-toggle"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-preview-tabs")).toBeInTheDocument();
+    });
+
+    const headerIds = [
+      "workspace-task-nav-header",
+      "workspace-center-header",
+      "workspace-preview-tabs",
+      "workspace-cockpit-header",
+    ];
+
+    for (const id of headerIds) {
+      expect(screen.getByTestId(id).className).toContain("h-[42px]");
+    }
+  });
+
   it("opens an artifact preview tab from the artifacts section", async () => {
     artifactsApiMock.getByIssueId.mockResolvedValue(mockArtifact);
 

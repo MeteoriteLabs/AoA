@@ -363,24 +363,26 @@ export function WorkspaceRightPanel({
   if (collapsed) {
     return (
       <div
-        className="flex h-full flex-col items-center gap-1 py-2"
+        className="flex h-full flex-col items-center gap-1"
         data-testid="workspace-right-panel-collapsed"
       >
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          title="Expand context"
-          className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-          data-testid="workspace-right-panel-expand"
-          aria-label="Expand context panel"
-        >
-          <PanelRight className="h-4 w-4" />
-        </button>
+        <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border" data-testid="workspace-cockpit-header">
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title="Expand context"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            data-testid="workspace-right-panel-expand"
+            aria-label="Expand context panel"
+          >
+            <PanelRight className="h-4 w-4" />
+          </button>
+        </div>
         <WorkspaceCockpitMenu
           workspace={workspace}
           onOpenSettings={onOpenSettings}
           onOpenArchive={onOpenArchive}
-          triggerClassName="h-9 w-9"
+          triggerClassName="h-7 w-7"
         />
         <div className="my-1 h-px w-6 bg-border" />
         {sections.map((section) => {
@@ -406,7 +408,7 @@ export function WorkspaceRightPanel({
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="workspace-right-panel-expanded">
       <div
-        className="flex shrink-0 items-center gap-1 overflow-hidden border-b border-border px-2 py-2"
+        className="flex h-[42px] shrink-0 items-center gap-1 overflow-hidden border-b border-border px-2"
         data-testid="workspace-cockpit-header"
       >
         {onToggleCollapse && (
@@ -414,7 +416,7 @@ export function WorkspaceRightPanel({
             type="button"
             onClick={onToggleCollapse}
             title="Collapse context"
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
             data-testid="workspace-right-panel-collapse"
             aria-label="Collapse context panel"
           >
@@ -432,7 +434,7 @@ export function WorkspaceRightPanel({
           workspace={workspace}
           onOpenSettings={onOpenSettings}
           onOpenArchive={onOpenArchive}
-          triggerClassName="h-9 w-9"
+          triggerClassName="h-7 w-7"
         />
       </div>
       <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="workspace-right-panel-scroll">

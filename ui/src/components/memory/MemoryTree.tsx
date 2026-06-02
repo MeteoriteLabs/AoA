@@ -12,6 +12,7 @@ import {
   Clock,
   Inbox,
   Archive,
+  PanelLeftClose,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -40,6 +41,7 @@ interface MemoryTreeProps {
   selectedDepartmentId: string | null;
   selectedLayer: string | null;
   selectedGoalId: string | null;
+  onToggleCollapse?: () => void;
 }
 
 interface TreeNode {
@@ -83,6 +85,7 @@ export function MemoryTree({
   selectedDepartmentId,
   selectedLayer,
   selectedGoalId,
+  onToggleCollapse,
 }: MemoryTreeProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
@@ -389,8 +392,22 @@ export function MemoryTree({
 
   return (
     <div className="h-full flex flex-col bg-card/50">
-      <div className="flex items-center px-2 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
+      <div
+        className="flex h-[42px] shrink-0 items-center gap-2 border-b border-border px-3 text-[10px] uppercase tracking-wider text-muted-foreground"
+        data-testid="memory-tree-header"
+      >
         <span>Folders</span>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            title="Collapse folders"
+            aria-label="Collapse folders"
+            onClick={onToggleCollapse}
+            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          >
+            <PanelLeftClose className="size-3.5" aria-hidden />
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-auto py-1">
         {isLoading ? (

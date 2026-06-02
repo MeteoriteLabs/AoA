@@ -183,7 +183,7 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
   });
 
-  it("right pane is empty (no graph placeholder) when on Home", async () => {
+  it("renders the viewer empty state on Home instead of a blank right pane", async () => {
     // Phase 1 UI audit removed the "📊 Memory graph view — Coming soon"
     // placeholder. The right pane on Home is now intentionally empty until
     // Phase 2/3 lands the tabbed viewer + graph. Ensure the placeholder copy
@@ -193,8 +193,55 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     await waitFor(() =>
       expect(screen.getByText(/Identity/i)).toBeInTheDocument(),
     );
+    expect(screen.getByText(/Pick a memory item or upload a file to start/i)).toBeInTheDocument();
     expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Memory graph view/i)).not.toBeInTheDocument();
+  });
+
+  it("uses rounded panel shells for the folder, list, and viewer panes", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
+    );
+
+    for (const id of ["memory-tree-shell", "memory-list-shell", "memory-viewer-shell"]) {
+      const shell = screen.getByTestId(id);
+      expect(shell.className).toContain("rounded-xl");
+      expect(shell.className).toContain("border");
+      expect(shell.className).toContain("bg-background");
+    }
+  });
+
+  it("uses 42px panel headers with collapse controls inside memory chrome", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
+    );
+
+    for (const id of ["memory-tree-header", "memory-list-header", "memory-viewer-header"]) {
+      expect(screen.getByTestId(id).className).toContain("h-[42px]");
+    }
+
+    expect(screen.getByTestId("memory-tree-header")).toContainElement(
+      screen.getByLabelText("Collapse folders"),
+    );
+    expect(screen.getByTestId("memory-viewer-header")).toContainElement(
+      screen.getByLabelText("Close viewer"),
+    );
+  });
+
+  it("does not render floating separator collapse buttons for memory panes", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Folders/i)).toBeInTheDocument(),
+    );
+
+    for (const id of ["separator-memory-explorer-sep-1", "separator-memory-explorer-sep-2"]) {
+      expect(screen.getByTestId(id).querySelector("button")).toBeNull();
+    }
   });
 
   it("opens memory item deep links even when the URL omits legacy type=memory_item", async () => {

@@ -14,6 +14,7 @@ const baseProps = {
   tabs,
   activeKey,
   onActivate: () => {},
+  onExpand: () => {},
 };
 
 describe("MemoryCollapsedTabStrip", () => {
@@ -64,5 +65,15 @@ describe("MemoryCollapsedTabStrip", () => {
       <MemoryCollapsedTabStrip {...baseProps} tabs={[]} activeKey={null} />,
     );
     expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(0);
+  });
+
+  it("renders an internal expand button in a 42px header", () => {
+    const onExpand = vi.fn();
+    const { getByTestId, getByLabelText } = render(
+      <MemoryCollapsedTabStrip {...baseProps} onExpand={onExpand} />,
+    );
+    expect(getByTestId("memory-viewer-collapsed-header").className).toContain("h-[42px]");
+    fireEvent.click(getByLabelText("Open viewer"));
+    expect(onExpand).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,7 @@
 import {
   FileText,
   Image as ImageIcon,
+  PanelRightClose,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -12,6 +13,7 @@ interface Props {
   activeKey: TabKey | null;
   onActivate: (id: string, kind: MemoryTabKind) => void;
   onClose: (id: string, kind: MemoryTabKind) => void;
+  onToggleCollapse?: () => void;
 }
 
 const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
@@ -28,13 +30,17 @@ export function MemoryViewerTabs({
   activeKey,
   onActivate,
   onClose,
+  onToggleCollapse,
 }: Props) {
   return (
-    <div className="flex h-9 shrink-0 items-center border-b border-border bg-card">
+    <div
+      className="flex h-[42px] shrink-0 items-center border-b border-border bg-card px-2"
+      data-testid="memory-viewer-header"
+    >
       <div
         role="tablist"
         aria-label="Open memory items"
-        className="flex flex-1 overflow-x-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+        className="flex min-w-0 flex-1 overflow-x-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
       >
         {tabs.map((t) => {
           const active = isActive(t, activeKey);
@@ -92,6 +98,17 @@ export function MemoryViewerTabs({
           );
         })}
       </div>
+      {onToggleCollapse && (
+        <button
+          type="button"
+          title="Close viewer"
+          aria-label="Close viewer"
+          onClick={onToggleCollapse}
+          className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+        >
+          <PanelRightClose className="size-3.5" aria-hidden />
+        </button>
+      )}
     </div>
   );
 }
