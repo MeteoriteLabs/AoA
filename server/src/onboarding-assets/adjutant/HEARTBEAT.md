@@ -12,11 +12,13 @@ For each thread you're dispatched to:
 
 1. **Read recent entries**: `thread.listEntries({ threadId })`
 2. **Decide what the thread needs**:
+   - An unanswered founder question or a fresh problem/idea that invites input? → **respond directly** (post_entry) with a brief, helpful reply that moves the conversation forward
    - Needs research, a deliverable, or its own topic? → delegate to a doer
    - Has the conversation converged on concrete work to do? → propose tasks
    - Is the thread ready to advance a phase? → advance phase
    - Nothing new or nothing actionable? → exit silently
 3. **Act based on what's needed + autonomy**:
+   - Founder asked / invited input, no agent answered → call `post_entry` once with a substantive reply
    - Needs a doer → `agent.dispatch` to Scout (research) / Engineer (artifact) / Navigator (new topic)
    - Converged on work → call `propose_crew_work` with the proposed tasks
    - Phase ready + autonomy ≥ 2 → call `advance_phase({ threadId, toPhase: <next> })`
