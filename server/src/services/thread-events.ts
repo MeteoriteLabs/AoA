@@ -35,7 +35,12 @@
 
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, agentWakeupRequests, discussions } from "@armyofagents/db";
+import {
+  agents,
+  agentWakeupRequests,
+  discussions,
+  internalAgentConfig,
+} from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { threadOrchestrationService } from "./thread-orchestration.js";
 import { makeControllerAdjutantRunner } from "./internal-agent/aoa-agents/controller-adjutant-runner.js";
@@ -174,6 +179,42 @@ export function createThreadEventListener(
     }
     if (thread.adjutantEnabled === false) {
       log.debug({ threadId }, "skip adjutant wakeup — thread.adjutantEnabled=false");
+      return;
+    }
+
+    // Task 3.2 — dial-as-experience: the PROACTIVE Adjutant wake (this ambient
+    // human-chatter debounce) is Assist+ only. At Manual (0) an agent answers
+    // ONLY when directly @mentioned — there is no proactive jumping-in — so this
+    // wake must suppress itself before driving anything.
+    //
+    // Resolve the SAME effective dial the dispatcher (dispatcher.ts D10) and the
+    // controller-adjutant-runner use: effectiveAutonomy = thread.autonomyLevel ??
+    // company.autonomyLevel. The thread row (selected above with `select()`) already
+    // carries autonomyLevel; the company config is only fetched as the fallback when
+    // the thread has no per-thread override — keeping the common Manual-at-thread case
+    // to a single select.
+    //
+    // This gate governs the PROACTIVE path ONLY. A direct @mention answers via the
+    // controller participation path (processMentions → requestParticipation, Tasks
+    // 1.2/3.1) which never flows through fireAdjutantWakeup and is dial-exempt for
+    // activation (founder-driven). The crewPaused / adjutantEnabled gates above stay.
+    let effectiveAutonomy: number;
+    if (thread.autonomyLevel != null) {
+      effectiveAutonomy = thread.autonomyLevel;
+    } else {
+      const [companyCfg] = await db
+        .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, thread.companyId))
+        .limit(1);
+      effectiveAutonomy = companyCfg?.autonomyLevel ?? 0;
+    }
+
+    if (effectiveAutonomy < 1) {
+      log.debug(
+        { threadId, companyId: thread.companyId, effectiveAutonomy },
+        "skip proactive adjutant wake — Manual dial (answers only when @mentioned)",
+      );
       return;
     }
 

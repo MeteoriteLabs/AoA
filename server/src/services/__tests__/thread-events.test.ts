@@ -154,6 +154,12 @@ function activeThreadRow(overrides: Partial<MockRow> = {}): MockRow {
     companyId: COMPANY_ID,
     crewPaused: false,
     adjutantEnabled: true,
+    // Task 3.2 — proactive wake is Assist+ only. These debounce/dedup mechanics
+    // tests assert the proactive wake PROCEEDS, so the thread dial is Assist (1):
+    // thread.autonomyLevel != null ⇒ fireAdjutantWakeup uses it directly and never
+    // fetches internal_agent_config, so the 2-select sequence (thread → agents)
+    // is unchanged. Manual-suppression is covered by proactive-wake-dial.test.ts.
+    autonomyLevel: 1,
     ...overrides,
   };
 }

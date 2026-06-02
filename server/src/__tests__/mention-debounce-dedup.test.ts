@@ -346,9 +346,11 @@ describe("Task 1.3 — onEntryCreated skips the proactive debounce on a crew @me
   function makeFireDb() {
     const insertCalls: unknown[] = [];
     let selectCallCount = 0;
-    // happy-path: thread row (legacy, so the peer-wake insert path is taken when armed) + adjutant row
+    // happy-path: thread row (legacy, so the peer-wake insert path is taken when armed) + adjutant row.
+    // Task 3.2: dial is Assist (1) so the proactive wake PROCEEDS once armed —
+    // autonomyLevel != null ⇒ no internal_agent_config select (sequence stays thread → agents).
     const selectResults: Array<Array<Record<string, unknown>>> = [
-      [{ id: "thread-1", companyId: "co-1", crewPaused: false, adjutantEnabled: true, useControllerPath: false }],
+      [{ id: "thread-1", companyId: "co-1", crewPaused: false, adjutantEnabled: true, useControllerPath: false, autonomyLevel: 1 }],
       [{ id: "adj-1" }],
     ];
     const db: any = {
