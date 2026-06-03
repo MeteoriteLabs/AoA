@@ -167,6 +167,19 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).toContain("synthesis");
     });
 
+    it("reviewer → critique then post_entry, advise-only (no mutation)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention", mention: "@Reviewer" },
+        agentName: "Reviewer",
+        agentRoleKey: "reviewer",
+      });
+      expect(out).toMatch(/critique/i);
+      expect(out).toContain("post_entry");
+      // advise-only: must tell the reviewer NOT to approve / create tasks / mutate
+      expect(out).toMatch(/do NOT\s+approve/i);
+    });
+
     it("unknown role → generic directive (no crash)", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,
