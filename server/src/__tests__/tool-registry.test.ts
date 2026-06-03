@@ -23,7 +23,7 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 68 tools", () => {
+    it("returns all 71 tools", () => {
       // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
       // thread.listEntries, thread.setIntent, thread.postScopeProposal,
       // thread.updateSummary, thread.createLink, get_thread_summary,
@@ -46,8 +46,10 @@ describe("Tool Registry", () => {
       // attach_task_artifact (crew result-write; coordination confers no capability).
       // Spec B Task 4 added 1 coordination tool: set_task_status (crew own-task
       // transition, dial-gated via the A4 guard; coordination confers no capability).
+      // Commander working memory added 3 temporary context tools:
+      // remember_working_context, update_working_context, forget_working_context.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(68);
+      expect(tools).toHaveLength(71);
     });
 
     it("every tool has required fields", () => {

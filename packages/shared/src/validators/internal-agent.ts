@@ -33,9 +33,37 @@ export const updateInternalAgentConfigSchema = z.object({
 
 export type UpdateInternalAgentConfig = z.infer<typeof updateInternalAgentConfigSchema>;
 
+export const commanderContextSurfaceSchema = z.enum([
+  "home",
+  "commander",
+  "department",
+  "project",
+  "goal",
+  "task",
+  "memory",
+  "discussion",
+  "budget",
+  "team",
+  "settings",
+]);
+
+export const commanderContextScopeSchema = z.object({
+  surface: commanderContextSurfaceSchema.default("commander"),
+  route: z.string().max(500).optional().nullable(),
+  departmentId: z.string().uuid().optional().nullable(),
+  projectId: z.string().uuid().optional().nullable(),
+  goalId: z.string().uuid().optional().nullable(),
+  taskId: z.string().uuid().optional().nullable(),
+  memoryFolderPath: z.string().max(500).optional().nullable(),
+});
+
+export type CommanderContextScope = z.infer<typeof commanderContextScopeSchema>;
+
 export const chatMessageSchema = z.object({
-  content: z.string().min(1).max(10000),
-  pageContext: z.string().optional().nullable(),
+  message: z.string().min(1).max(10000),
+  pageContext: z.string().max(5000).optional().nullable(),
+  conversationId: z.string().uuid().optional().nullable(),
+  contextScope: commanderContextScopeSchema.optional().nullable(),
   departmentContext: z.string().uuid().optional().nullable(),
 });
 

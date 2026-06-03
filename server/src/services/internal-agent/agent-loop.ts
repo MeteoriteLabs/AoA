@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
+import type { CommanderContextScope } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
@@ -9,9 +10,16 @@ import { contextAssemblyService } from "./context-assembly.js";
 import { assembleAgentPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 import { summarizeViaCli } from "./cli-summarizer.js";
-import { memoryService } from "../memory.js";
 import { buildCompactSkillList } from "./commander-skills.js";
 import { companySkillService } from "../company-skills.js";
+import {
+  commanderMemoryRecallService,
+  normalizeCommanderMemoryRecallPolicy,
+} from "./memory-recall.js";
+import {
+  normalizeCommanderContextScope,
+  type NormalizedCommanderContextScope,
+} from "./context-scope.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +67,7 @@ export interface ChatInput {
   pageContext?: string;
   departmentContext?: string;
   conversationId?: string;
+  contextScope?: CommanderContextScope | NormalizedCommanderContextScope | null;
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -171,6 +180,7 @@ export function agentLoopService(db: Db) {
         // keeps the spawn shape byte-identical (content-only change).
         let assembledContent = params.content;
         let systemContext: string | undefined;
+        let cliContextScope: NormalizedCommanderContextScope | null = null;
         try {
           const commanderAgentId = await ensureCommanderAgent(db, params.companyId);
           const agentRow = await db
@@ -195,20 +205,42 @@ export function agentLoopService(db: Db) {
             .map((m: { role: string; content?: string | null }) => (m.content ? `${m.role}: ${m.content}` : null))
             .filter(Boolean)
             .join("\n");
+          const metadata =
+            config.metadata && typeof config.metadata === "object" && !Array.isArray(config.metadata)
+              ? (config.metadata as Record<string, unknown>)
+              : {};
+          const memoryRecallPolicy = normalizeCommanderMemoryRecallPolicy(metadata.memoryRecall);
+          const contextScope = normalizeCommanderContextScope({
+            contextScope: params.contextScope ?? null,
+            departmentContext: params.departmentContext ?? null,
+            conversationId: conversation.id,
+          });
+          cliContextScope = contextScope;
+          const effectiveDepartmentContext = contextScope.departmentId;
+          const recalledMemory = await commanderMemoryRecallService(db).recall({
+            companyId: params.companyId,
+            userId: params.userId,
+            userRole: params.userRole,
+            conversationId: conversation.id,
+            agentId: commanderAgentId,
+            latestUserMessage: params.content,
+            policy: memoryRecallPolicy,
+            scope: contextScope,
+          });
           const assembled = await contextAssemblyService(db).assembleContext(params.companyId, {
             ...(persona ? { systemInstructions: persona } : {}),
             ...((conversation as { summarizedContext?: string | null }).summarizedContext
               ? { conversationSummary: (conversation as { summarizedContext?: string | null }).summarizedContext }
               : {}),
             ...(params.pageContext ? { pageContext: params.pageContext } : {}),
-            ...(params.departmentContext ? { departmentContext: params.departmentContext } : {}),
+            ...(effectiveDepartmentContext ? { departmentContext: effectiveDepartmentContext } : {}),
             contextTokenBudget: (config as { contextTokenBudget?: number }).contextTokenBudget,
             relevanceQuery: params.content,
-            memorySearch: async (q: string) => {
-              const rows = await memoryService(db).searchSemantic(params.companyId, q, { limit: 8 });
-              // Map null → undefined to satisfy the memorySearch option type (string | null → string | undefined)
-              return rows.map((r) => ({ ...r, layer: r.layer ?? undefined }));
-            },
+            memoryItems: recalledMemory.items.map((item) => ({
+              title: item.title,
+              content: item.content,
+              layer: item.layer,
+            })),
           });
 
           // Split assembled context from the user message (C-systemsplit).
@@ -244,6 +276,7 @@ export function agentLoopService(db: Db) {
         const cliParams = {
           ...params,
           content: assembledContent,
+          contextScope: cliContextScope,
           ...(systemContext !== undefined
             ? { systemContext, rawContent: params.content }
             : {}),

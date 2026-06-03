@@ -28,15 +28,9 @@ import { createServiceContainer } from "../services/internal-agent/service-conta
 import { permissionService } from "../services/permissions.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
-import { COMMANDER_TOOL_PERMISSION_DEFAULT } from "@armyofagents/shared";
+import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
-
-const chatMessageSchema = z.object({
-  message: z.string().min(1).max(10000),
-  pageContext: z.string().optional(),
-  conversationId: z.string().uuid().optional(),
-});
 
 const confirmActionSchema = z
   .object({
@@ -234,7 +228,9 @@ export function internalAgentRoutes(db: Db) {
           enabledCapabilities,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
+          departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined,
           conversationId: req.body.conversationId ?? undefined,
+          contextScope: req.body.contextScope ?? undefined,
         });
 
         for await (const chunk of stream) {

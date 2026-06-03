@@ -77,6 +77,11 @@ export interface MultiPathSearchFilters {
   enableTemporal?: boolean;
 }
 
+export interface SearchAuditCandidatesFilters {
+  layer?: string;
+  limit?: number;
+}
+
 export interface MultiPathSearchResult {
   id: string;
   companyId: string;
@@ -88,7 +93,13 @@ export interface MultiPathSearchResult {
   tags: string[] | null;
   departmentId: string | null;
   projectId: string | null;
+  goalId: string | null;
+  taskId: string | null;
+  conversationId: string | null;
+  createdBy: string;
   layer: string | null;
+  visibility: string;
+  expiresAt: Date | null;
   priority: number;
   validationCount: number;
   agentId: string | null;
@@ -149,6 +160,29 @@ export function memoryService(db: Db) {
       }
 
       return db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
+    },
+
+    searchAuditCandidates: (companyId: string, query: string, filters: SearchAuditCandidatesFilters = {}) => {
+      const trimmed = query.trim();
+      if (!trimmed) return Promise.resolve([]);
+
+      const conditions = [
+        eq(memoryItems.companyId, companyId),
+        or(
+          ilike(memoryItems.title, `%${trimmed}%`),
+          ilike(memoryItems.content, `%${trimmed}%`),
+        )!,
+      ];
+      if (filters.layer) {
+        conditions.push(eq(memoryItems.layer, filters.layer));
+      }
+
+      return db
+        .select(memoryItemsSelection())
+        .from(memoryItems)
+        .where(and(...conditions))
+        .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
+        .limit(Math.min(filters.limit ?? 50, 100));
     },
 
     getById: (companyId: string, id: string) =>
@@ -405,7 +439,13 @@ export function memoryService(db: Db) {
         tags: memoryItems.tags,
         departmentId: memoryItems.departmentId,
         projectId: memoryItems.projectId,
+        goalId: memoryItems.goalId,
+        taskId: memoryItems.taskId,
+        conversationId: memoryItems.conversationId,
+        createdBy: memoryItems.createdBy,
         layer: memoryItems.layer,
+        visibility: memoryItems.visibility,
+        expiresAt: memoryItems.expiresAt,
         priority: memoryItems.priority,
         validationCount: memoryItems.validationCount,
         agentId: memoryItems.agentId,
@@ -584,7 +624,13 @@ export function memoryService(db: Db) {
           tags: (item.tags as string[] | null) ?? null,
           departmentId: (item.departmentId as string | null) ?? null,
           projectId: (item.projectId as string | null) ?? null,
+          goalId: (item.goalId as string | null) ?? null,
+          taskId: (item.taskId as string | null) ?? null,
+          conversationId: (item.conversationId as string | null) ?? null,
+          createdBy: String(item.createdBy),
           layer: (item.layer as string | null) ?? null,
+          visibility: String(item.visibility),
+          expiresAt: (item.expiresAt as Date | null) ?? null,
           priority: typeof item.priority === "number" ? item.priority : 0,
           validationCount,
           agentId: (item.agentId as string | null) ?? null,

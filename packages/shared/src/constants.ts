@@ -499,6 +499,7 @@ export const MEMORY_RETRIEVAL_TRIGGERS = [
   "agent_get",             // worker agent called memory.get
   "skill_materialize",     // pinned-item skill synthesis
   "commander_query",       // commander tool query
+  "commander_context",     // automatic Commander prompt recall
 ] as const;
 export type MemoryRetrievalTrigger = (typeof MEMORY_RETRIEVAL_TRIGGERS)[number];
 
@@ -563,6 +564,7 @@ export const MEMORY_ITEM_SOURCES = [
   "brief",
   "founder",
   "agent",
+  "commander",
   "mcp",
   "document",
 ] as const;

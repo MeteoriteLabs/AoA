@@ -17,8 +17,10 @@ import {
 } from "lucide-react";
 import { useAgentPanel } from "../context/AgentPanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCommanderContextScope } from "../context/CommanderContextScopeContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useLocation } from "../lib/router";
 import {
   internalAgentApi,
   streamAgentChat,
@@ -42,6 +44,7 @@ import {
 import { ChatPaneCaption } from "./commander/ChatPaneCaption";
 import { CommanderEmptyState } from "./commander/CommanderEmptyState";
 import { InputAddMenu } from "./commander/InputAddMenu";
+import { MemoryContextStrip } from "./commander/MemoryContextStrip";
 import { SkillPicker } from "./commander/SkillPicker";
 import {
   CommanderInput,
@@ -49,6 +52,7 @@ import {
   type SlashState,
 } from "./commander/CommanderInput";
 import type { CompanySkillListItem } from "@armyofagents/shared";
+import type { CommanderContextScope } from "@armyofagents/shared";
 import {
   Tooltip,
   TooltipContent,
@@ -107,6 +111,49 @@ const TOOL_LABELS: Record<string, string> = {
   create_discussion: "Starting a discussion...",
   list_discussions: "Checking discussions...",
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function uuidOrNull(value: string | undefined): string | null {
+  return value && UUID_RE.test(value) ? value : null;
+}
+
+function surfaceFromPath(parts: string[]): NonNullable<CommanderContextScope["surface"]> {
+  if (parts.includes("issues") || parts.includes("tasks")) return "task";
+  if (parts.includes("goals") || parts.includes("objectives")) return "goal";
+  const section = parts[1] ?? parts[0] ?? "commander";
+  if (section === "projects") return "project";
+  if (section === "goals" || section === "objectives") return "goal";
+  if (section === "issues" || section === "tasks") return "task";
+  if (section === "memory") return "memory";
+  if (section === "discussions" || section === "threads") return "discussion";
+  if (section === "budget" || section === "costs") return "budget";
+  if (section === "team" || section === "agents") return "team";
+  if (section === "settings") return "settings";
+  if (section === "home") return "home";
+  if (section === "commander") return "commander";
+  return "commander";
+}
+
+export function buildCommanderContextScopeFromPath(pathname: string): CommanderContextScope {
+  const parts = pathname.split("/").filter(Boolean);
+  const projectIndex = parts.indexOf("projects");
+  const goalIndex = parts.indexOf("goals");
+  const issueIndex = parts.indexOf("issues");
+  const memoryIndex = parts.indexOf("memory");
+  const projectId = projectIndex >= 0 ? uuidOrNull(parts[projectIndex + 1]) : null;
+  const goalId = goalIndex >= 0 ? uuidOrNull(parts[goalIndex + 1]) : null;
+  const taskId = issueIndex >= 0 ? uuidOrNull(parts[issueIndex + 1]) : null;
+
+  return {
+    surface: surfaceFromPath(parts),
+    route: pathname.slice(0, 500),
+    ...(projectId ? { projectId } : {}),
+    ...(goalId ? { goalId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(memoryIndex >= 0 ? { memoryFolderPath: "Company" } : {}),
+  };
+}
 
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? `Running ${name.replaceAll("_", " ")}...`;
@@ -264,6 +311,8 @@ interface AgentPanelContentProps {
 export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
+  const providedContextScope = useCommanderContextScope();
+  const location = useLocation();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
   const queryClient = useQueryClient();
 
@@ -443,6 +492,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   }, [closePanel]);
 
   const pageContext = breadcrumbs.length > 0 ? breadcrumbs.map((b) => b.label).join(" > ") : null;
+  const contextScope = useMemo(
+    () => providedContextScope ?? buildCommanderContextScopeFromPath(location.pathname),
+    [providedContextScope, location.pathname],
+  );
 
   const sendText = useCallback(
     async (text: string) => {
@@ -477,7 +530,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       abortRef.current = controller;
 
       try {
-        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId);
+        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope);
 
         for await (const event of stream) {
           handleSSEEvent(event, assistantId);
@@ -507,7 +560,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
       }
     },
-    [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId],
+    [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId, contextScope],
   );
 
   const handleSend = useCallback(async () => {
@@ -847,6 +900,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           <span className="text-xs text-muted-foreground select-none">Chats</span>
         </div>
       )}
+
+      <MemoryContextStrip
+        strictness="balanced"
+        layers={["identity", "domain", "active_context", "working"]}
+        surface={contextScope.surface ?? "commander"}
+        hasWorkingContext={Boolean(contextScope.taskId || contextScope.goalId || contextScope.projectId || conversationId)}
+      />
 
       {/* Mobile close button (absolute overlay, not in flow) */}
       <Button

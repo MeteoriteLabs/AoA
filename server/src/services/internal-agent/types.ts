@@ -1,6 +1,7 @@
 // server/src/services/internal-agent/types.ts
 import type { Db } from "@armyofagents/db";
 import type { CommanderToolPermissions } from "@armyofagents/shared";
+import type { NormalizedCommanderContextScope } from "./context-scope.js";
 import type { issueService } from "../issues.js";
 import type { goalService } from "../goals.js";
 import type { agentService } from "../agents.js";
@@ -62,6 +63,8 @@ export interface ToolContext {
   conversationId?: string | null;
   /** Current internal agent run id, when available. */
   runId?: string | null;
+  /** Current structured Commander UI/runtime scope, when available. */
+  contextScope?: NormalizedCommanderContextScope | null;
   /** Commander per-tool policy overrides from internal_agent_config. */
   commanderToolPermissions?: CommanderToolPermissions | null;
   /** Company-level switch for AoA runtime approval prompts. */

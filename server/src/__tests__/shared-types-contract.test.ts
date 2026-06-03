@@ -314,37 +314,71 @@ describe("createAnnotationSchema", () => {
 describe("chatMessageSchema", () => {
   it("accepts valid message", () => {
     const result = chatMessageSchema.safeParse({
-      content: "Hello agent",
+      message: "Hello agent",
     });
     expect(result.success).toBe(true);
   });
 
   it("accepts message with context", () => {
     const result = chatMessageSchema.safeParse({
-      content: "Help with tasks",
+      message: "Help with tasks",
       pageContext: "/tasks",
       departmentContext: "550e8400-e29b-41d4-a716-446655440000",
     });
     expect(result.success).toBe(true);
   });
 
+  it("accepts Commander chat with structured context scope", () => {
+    const result = chatMessageSchema.safeParse({
+      message: "What should I remember here?",
+      pageContext: "Task > Close onboarding gap",
+      conversationId: "550e8400-e29b-41d4-a716-446655440001",
+      contextScope: {
+        surface: "task",
+        route: "/tasks/550e8400-e29b-41d4-a716-446655440002",
+        departmentId: "550e8400-e29b-41d4-a716-446655440003",
+        projectId: "550e8400-e29b-41d4-a716-446655440004",
+        goalId: "550e8400-e29b-41d4-a716-446655440005",
+        taskId: "550e8400-e29b-41d4-a716-446655440006",
+        memoryFolderPath: "Company/Product",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown Commander context surfaces", () => {
+    const result = chatMessageSchema.safeParse({
+      message: "hello",
+      contextScope: { surface: "unknown" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects malformed Commander context UUIDs", () => {
+    const result = chatMessageSchema.safeParse({
+      message: "hello",
+      contextScope: { surface: "task", taskId: "not-a-uuid" },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("enforces 10k char limit", () => {
     const result = chatMessageSchema.safeParse({
-      content: "x".repeat(10001),
+      message: "x".repeat(10001),
     });
     expect(result.success).toBe(false);
   });
 
   it("accepts exactly 10k chars", () => {
     const result = chatMessageSchema.safeParse({
-      content: "x".repeat(10000),
+      message: "x".repeat(10000),
     });
     expect(result.success).toBe(true);
   });
 
   it("rejects empty content", () => {
     const result = chatMessageSchema.safeParse({
-      content: "",
+      message: "",
     });
     expect(result.success).toBe(false);
   });

@@ -9,8 +9,18 @@ import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
 import type { CLISession } from "./cli-session-store.js";
+import {
+  normalizeCommanderContextScope,
+  type NormalizedCommanderContextScope,
+} from "./context-scope.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
 import { logger } from "../../middleware/logger.js";
+
+function normalizeCliContextScope(
+  scope: ChatInput["contextScope"] | undefined,
+): NormalizedCommanderContextScope | null {
+  return scope ? normalizeCommanderContextScope({ contextScope: scope }) : null;
+}
 
 // ── Session ID Validation ─────────────────────────────────────────────────────
 
@@ -79,6 +89,8 @@ interface McpConfigParams {
   agentId?: string;
   /** Resolved effective autonomy (D10: threadLevel ?? companyLevel). Absent → bridge uses null. */
   effectiveAutonomy?: number | null;
+  /** Normalized structured Commander scope for memory/tool policy. */
+  contextScope?: NormalizedCommanderContextScope | null;
 }
 
 interface McpConfig {
@@ -141,6 +153,9 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
       ...(params.agentId ? { AOA_AGENT_ID: params.agentId } : {}),
       ...(params.effectiveAutonomy != null
         ? { AOA_EFFECTIVE_AUTONOMY: String(params.effectiveAutonomy) }
+        : {}),
+      ...(params.contextScope
+        ? { AOA_COMMANDER_CONTEXT_SCOPE: JSON.stringify(params.contextScope) }
         : {}),
       ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
     },
@@ -504,6 +519,7 @@ export function cliModeService(db: Db) {
             enabledCapabilities: params.enabledCapabilities,
             bridgeEntrypoint: bridgePath,
             actorType: "commander",
+            contextScope: normalizeCliContextScope(params.contextScope),
           };
 
           if (session) session.lastMessageAt = new Date();
@@ -608,6 +624,7 @@ export function cliModeService(db: Db) {
               enabledCapabilities: params.enabledCapabilities,
               bridgeEntrypoint: bridgePath,
               actorType: "commander",
+              contextScope: normalizeCliContextScope(params.contextScope),
             },
             safeContent,
             undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)

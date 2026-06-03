@@ -1,12 +1,17 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 import type { CommanderToolPermissions } from "@armyofagents/shared";
 import { resolveCommanderToolPolicy } from "./authorize-tool.js";
+import { parseCommanderContextScopeJson } from "./context-scope.js";
 import { filterAuthorizedToolsForContext } from "./tool-registry.js";
 
 // Re-export so consumers (and existing tests) can import this from mcp-bridge
 // where the function used to live before it moved to tool-registry.
 export { filterAuthorizedToolsForContext };
 import { runtimeApprovalService } from "./runtime-approvals.js";
+
+export function parseCommanderContextScopeEnv() {
+  return parseCommanderContextScopeJson(process.env.AOA_COMMANDER_CONTEXT_SCOPE);
+}
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
@@ -168,6 +173,7 @@ export async function startBridge(): Promise<void> {
   const agentId = process.env.AOA_AGENT_ID || undefined;
   const effectiveAutonomyRaw = process.env.AOA_EFFECTIVE_AUTONOMY;
   const effectiveAutonomy = effectiveAutonomyRaw ? parseInt(effectiveAutonomyRaw, 10) : null;
+  const contextScope = parseCommanderContextScopeEnv();
 
   const { createDb, internalAgentConfig } = await import("@armyofagents/db");
   const { eq } = await import("drizzle-orm");
@@ -202,6 +208,7 @@ export async function startBridge(): Promise<void> {
     commanderToolPermissions:
       (config?.commanderToolPermissions as CommanderToolPermissions | null | undefined) ?? null,
     runtimeApprovalsEnabled: config?.runtimeApprovalsEnabled ?? true,
+    contextScope,
     db,
     services,
   };

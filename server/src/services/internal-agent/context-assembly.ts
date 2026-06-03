@@ -33,6 +33,54 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
   return text.slice(0, sliceLen) + "...";
 }
 
+function formatMemoryItemsForPrompt(
+  items: Array<{
+    title?: string;
+    content?: string;
+    layer?: string | null;
+    visibility?: string | null;
+    status?: string | null;
+    expiresAt?: Date | string | null;
+    departmentId?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    taskId?: string | null;
+    conversationId?: string | null;
+  }>,
+): string {
+  const now = new Date();
+  return items
+    .filter((m) => (m.status ?? "approved") === "approved")
+    .filter((m) => {
+      if (!m.expiresAt) return true;
+      const expiresAt = m.expiresAt instanceof Date ? m.expiresAt : new Date(m.expiresAt);
+      return !Number.isFinite(expiresAt.getTime()) || expiresAt > now;
+    })
+    .map((m) => {
+      const title = (m.title ?? "Memory").slice(0, 160);
+      const content = (m.content ?? "").slice(0, 1200);
+      const layer = m.layer ?? "memory";
+      const visibility = m.visibility ?? "scoped";
+      const status = m.status ?? "approved";
+      const scope =
+        m.taskId ? "task" :
+        m.goalId ? "goal" :
+        m.projectId ? "project" :
+        m.conversationId ? "conversation" :
+        m.departmentId ? "department" :
+        "company";
+      const expiry = m.expiresAt
+        ? `/expires ${(m.expiresAt instanceof Date ? m.expiresAt : new Date(m.expiresAt)).toISOString().slice(0, 10)}`
+        : "";
+      return `- [${layer}/${visibility}/${status}${expiry}/${scope}] ${title}: ${content}`;
+    })
+    .join("\n");
+}
+
+function isCommanderPromptMemoryLayer(layer: string | null | undefined): boolean {
+  return layer === "identity" || layer === "domain" || layer === "active_context" || layer === "working";
+}
+
 export function contextAssemblyService(db: Db) {
   return {
     async assembleContext(
@@ -45,6 +93,19 @@ export function contextAssemblyService(db: Db) {
         systemInstructions?: string;
         relevanceQuery?: string;
         memorySearch?: (query: string) => Promise<Array<{ title?: string; content?: string; layer?: string }>>;
+        memoryItems?: Array<{
+          title?: string;
+          content?: string;
+          layer?: string | null;
+          visibility?: string | null;
+          status?: string | null;
+          expiresAt?: Date | string | null;
+          departmentId?: string | null;
+          projectId?: string | null;
+          goalId?: string | null;
+          taskId?: string | null;
+          conversationId?: string | null;
+        }>;
       } = {},
     ): Promise<{ systemPrompt: string; estimatedTokens: number }> {
       const budget = options.contextTokenBudget ?? 8000;
@@ -93,14 +154,24 @@ export function contextAssemblyService(db: Db) {
       // Relevance-ranked approved memory (identity + department domain).
       // Falls back to nothing on error — never hard-fail (DI hides the
       // pgvector-or-keyword decision; memory.ts handles the no-API-key case).
-      if (options.memorySearch && options.relevanceQuery) {
+      if (options.memoryItems && options.memoryItems.length > 0) {
+        const promptMemoryItems = options.memoryItems.filter((item) =>
+          isCommanderPromptMemoryLayer(item.layer),
+        );
+        if (promptMemoryItems.length > 0) {
+          addSection(
+            "Relevant Company Memory",
+            formatMemoryItemsForPrompt(promptMemoryItems),
+          );
+        }
+      } else if (options.memorySearch && options.relevanceQuery) {
         try {
           const items = await options.memorySearch(options.relevanceQuery);
-          const scoped = items.filter((m) => m.layer === "identity" || m.layer === "domain");
+          const scoped = items.filter((m) => isCommanderPromptMemoryLayer(m.layer));
           if (scoped.length > 0) {
             addSection(
               "Relevant Company Memory",
-              scoped.map((m) => `${m.title ?? "Memory"}: ${m.content ?? ""}`).join("\n"),
+              formatMemoryItemsForPrompt(scoped),
             );
           }
         } catch {
@@ -163,7 +234,7 @@ export function contextAssemblyService(db: Db) {
       }
 
       // 3. Department context header (when using relevance path, no legacy DB queries)
-      if (options.memorySearch && options.relevanceQuery && options.departmentContext) {
+      if ((options.memorySearch || options.memoryItems) && options.relevanceQuery && options.departmentContext) {
         const dept = await db
           .select()
           .from(projects)

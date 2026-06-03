@@ -43,24 +43,38 @@ vi.mock("../agent-instructions.js", () => ({
   agentInstructionsService: () => ({}),
 }));
 
-const searchSemantic = vi.fn(async () => [
-  { title: "T", content: "C", layer: "domain" },
-]);
-vi.mock("../services/memory.js", () => ({
-  memoryService: () => ({ searchSemantic }),
+const recall = vi.fn(async () => ({
+  status: "ok",
+  query: "refund question",
+  elapsedMs: 2,
+  items: [{ id: "m1", title: "Refund policy", content: "30 day window", layer: "identity" }],
+}));
+
+vi.mock("../services/internal-agent/memory-recall.js", () => ({
+  commanderMemoryRecallService: () => ({ recall }),
+  normalizeCommanderMemoryRecallPolicy: () => ({
+    enabled: true,
+    strictness: "balanced",
+    timeoutMs: 3000,
+    circuitBreakerMaxTimeouts: 3,
+    circuitBreakerCooldownMs: 60000,
+    maxItems: 8,
+    layers: {
+      identity: true,
+      domain: true,
+      active_context: "scoped",
+      working: false,
+    },
+  }),
 }));
 
 vi.mock("../services/internal-agent/context-assembly.js", () => ({
   contextAssemblyService: () => ({
     assembleContext: async (_cid: string, opts: any) => {
       let prompt = "ASSEMBLED";
-      if (opts.memorySearch && opts.relevanceQuery) {
-        const items = await opts.memorySearch(opts.relevanceQuery);
-        const scoped = items.filter((m: any) => m.layer === "identity" || m.layer === "domain");
-        if (scoped.length > 0) {
-          const memory = scoped.map((m: any) => `${m.title ?? "Memory"}: ${m.content ?? ""}`).join("\n");
-          prompt = `ASSEMBLED\n\n## Relevant Company Memory\n${memory}`;
-        }
+      if (opts.memoryItems?.length) {
+        const memory = opts.memoryItems.map((m: any) => `${m.title ?? "Memory"}: ${m.content ?? ""}`).join("\n");
+        prompt = `ASSEMBLED\n\n## Relevant Company Memory\n${memory}`;
       }
       return { systemPrompt: prompt, estimatedTokens: 100 };
     },
@@ -91,7 +105,12 @@ describe("agent-loop memory wiring", () => {
     })) {
     }
 
-    expect(searchSemantic).toHaveBeenCalled();
-    expect(cliCalls[0].content).toContain("T");
+    expect(recall).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "c1",
+      userId: "u1",
+      userRole: "founder",
+      latestUserMessage: "refund question",
+    }));
+    expect(cliCalls[0].content).toContain("Refund policy");
   });
 });

@@ -18,6 +18,7 @@ import { artifacts } from "./artifacts.js";
 import { agents } from "./agents.js";
 import { memoryItemVersions } from "./memory_item_versions.js";
 import { fileImportJobs } from "./file_import_jobs.js";
+import { internalAgentConversations } from "./internal_agent.js";
 
 /**
  * Custom Drizzle type for pgvector's `vector(N)` column.
@@ -55,6 +56,7 @@ export const memoryItems = pgTable(
     priority: integer("priority").notNull().default(0),
     visibility: text("visibility").notNull().default("scoped"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    conversationId: uuid("conversation_id").references(() => internalAgentConversations.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),
     taskId: uuid("task_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     sourceArtifactId: uuid("source_artifact_id").references(() => artifacts.id, { onDelete: "set null" }),
@@ -98,6 +100,12 @@ export const memoryItems = pgTable(
     companyLayerStatusIdx: index("memory_items_company_layer_status_idx").on(table.companyId, table.layer, table.status),
     goalActiveContextIdx: index("memory_items_goal_active_context_idx").on(table.goalId, table.expiresAt),
     taskWorkingIdx: index("memory_items_task_working_idx").on(table.taskId),
+    conversationWorkingIdx: index("memory_items_conversation_working_idx").on(
+      table.companyId,
+      table.conversationId,
+      table.layer,
+      table.status,
+    ),
     // V2.6: scope by agent for agent-personal memory retrieval.
     agentScopeIdx: index("memory_items_agent_scope_idx").on(table.companyId, table.agentId, table.status),
     // V2.6: surface pinned items quickly for skill materialization.

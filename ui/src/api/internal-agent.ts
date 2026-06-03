@@ -1,4 +1,4 @@
-import type { CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
+import type { CommanderContextScope, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */
@@ -184,6 +184,7 @@ export async function* streamAgentChat(
   pageContext?: string | null,
   signal?: AbortSignal,
   conversationId?: string | null,
+  contextScope?: CommanderContextScope | null,
 ): AsyncGenerator<SSEEvent> {
   const response = await fetch(
     `/api/companies/${encodeURIComponent(companyId)}/internal-agent/chat`,
@@ -191,7 +192,12 @@ export async function* streamAgentChat(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, pageContext, ...(conversationId ? { conversationId } : {}) }),
+      body: JSON.stringify({
+        message,
+        pageContext,
+        ...(conversationId ? { conversationId } : {}),
+        ...(contextScope ? { contextScope } : {}),
+      }),
       signal,
     },
   );

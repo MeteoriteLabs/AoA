@@ -30,7 +30,13 @@ describe("conversation messages endpoint — implementation contract", () => {
 
   it("chat route accepts optional conversationId in body", () => {
     expect(routeSrc).toContain("conversationId");
-    expect(routeSrc).toContain("uuid().optional()");
+    expect(routeSrc).toContain("chatMessageSchema");
+  });
+
+  it("chat route uses shared chat schema and forwards structured context scope", () => {
+    expect(routeSrc).toContain('import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared"');
+    expect(routeSrc).toContain("contextScope: req.body.contextScope ?? undefined");
+    expect(routeSrc).toContain("departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined");
   });
 
   it("conversationService has getById returning null when not found", () => {

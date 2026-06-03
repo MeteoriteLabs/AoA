@@ -337,8 +337,11 @@ export {
 
 export {
   updateInternalAgentConfigSchema,
+  commanderContextScopeSchema,
+  commanderContextSurfaceSchema,
   chatMessageSchema,
   type UpdateInternalAgentConfig,
+  type CommanderContextScope,
   type ChatMessage,
 } from "./internal-agent.js";
 

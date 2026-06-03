@@ -4,6 +4,11 @@ import { useCompany } from "./CompanyContext.js";
 export interface Breadcrumb {
   label: string;
   href?: string;
+  departmentId?: string | null;
+  projectId?: string | null;
+  goalId?: string | null;
+  taskId?: string | null;
+  memoryFolderPath?: string | null;
 }
 
 interface BreadcrumbContextValue {

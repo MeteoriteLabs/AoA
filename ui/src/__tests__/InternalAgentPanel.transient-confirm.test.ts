@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCommanderContextScopeFromPath,
   completedToolLabel,
   mergeServerMessagesWithTransientLocal,
   settleRunningToolCalls,
@@ -142,5 +143,25 @@ describe("completedToolLabel", () => {
   it("does not describe completed tools as still running", () => {
     expect(completedToolLabel("mcp__aoa__create_task")).toBe("Used mcp aoa create task");
     expect(completedToolLabel("query_tasks")).not.toMatch(/running/i);
+  });
+});
+
+describe("buildCommanderContextScopeFromPath", () => {
+  it("derives a UUID task scope from the current route", () => {
+    expect(buildCommanderContextScopeFromPath(
+      "/P4/projects/550e8400-e29b-41d4-a716-446655440001/issues/550e8400-e29b-41d4-a716-446655440002",
+    )).toMatchObject({
+      surface: "task",
+      projectId: "550e8400-e29b-41d4-a716-446655440001",
+      taskId: "550e8400-e29b-41d4-a716-446655440002",
+    });
+  });
+
+  it("does not send slug-like route refs as UUID scope IDs", () => {
+    expect(buildCommanderContextScopeFromPath("/P4/projects/product-roadmap")).toMatchObject({
+      surface: "project",
+      route: "/P4/projects/product-roadmap",
+    });
+    expect(buildCommanderContextScopeFromPath("/P4/projects/product-roadmap").projectId).toBeUndefined();
   });
 });
