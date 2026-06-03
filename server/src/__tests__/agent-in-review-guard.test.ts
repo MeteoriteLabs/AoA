@@ -111,9 +111,14 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
-vi.mock("../middleware/logger.js", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
+vi.mock("../middleware/logger.js", () => {
+  // `logger.child()` is called at module load by crew-failure-card.ts (pulled
+  // into the import graph via heartbeat.ts). Provide a self-referential child
+  // so the mock satisfies `logger.child({...}).warn(...)` chains.
+  const logger: any = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  logger.child = () => logger;
+  return { logger };
+});
 vi.mock("../services/index.js", () => ({
   accessService: vi.fn(() => ({})),
   agentService: vi.fn(() => ({})),
