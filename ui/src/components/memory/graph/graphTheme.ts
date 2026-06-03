@@ -58,6 +58,13 @@ export function graphNodeCanvasColor(type: CompanyBrainNode["type"]): string {
 }
 
 export function graphEdgeCanvasColor(sourceClass: string): string {
-  if (sourceClass === "semantic") return graphCssColor("--text", "#eeeeee");
-  return graphCssColor("--border-strong", "#3a3a3a");
+  if (sourceClass === "semantic") return "#3fa8c7";
+  return "#6f7784";
+}
+
+export function graphEdgeColor(sourceClass: string): string {
+  if (sourceClass === "semantic") {
+    return "color-mix(in srgb, var(--data-teal, #3fa8c7) 62%, transparent)";
+  }
+  return "color-mix(in srgb, var(--border, #30343a) 82%, transparent)";
 }

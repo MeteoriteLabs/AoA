@@ -7,6 +7,7 @@ import {
   Network,
   type LucideIcon,
 } from "lucide-react";
+import type { CompanyBrainNode } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
@@ -22,6 +23,7 @@ interface MemoryGraphViewerProps {
   companyId: string;
   itemId?: string | null;
   onOpenMemoryItem?: (item: { id: string; title: string }) => void;
+  onOpenGraphNode?: (node: CompanyBrainNode) => void;
 }
 
 type CompanyGraphMode = "map" | "network" | "cluster";
@@ -41,6 +43,7 @@ export function MemoryGraphViewer({
   companyId,
   itemId,
   onOpenMemoryItem,
+  onOpenGraphNode,
 }: MemoryGraphViewerProps) {
   const isItemGraph = Boolean(itemId);
   const [companyGraphMode, setCompanyGraphMode] = useState<CompanyGraphMode>("map");
@@ -84,14 +87,25 @@ export function MemoryGraphViewer({
       );
     } else {
       if (companyGraphMode === "network") {
-        graphContent = <CompanyGraphNetworkView graph={companyGraphQuery.data} />;
+        graphContent = (
+          <CompanyGraphNetworkView
+            graph={companyGraphQuery.data}
+            onOpenGraphNode={onOpenGraphNode}
+          />
+        );
       } else if (companyGraphMode === "cluster") {
-        graphContent = <CompanyGraphClusterView graph={companyGraphQuery.data} />;
+        graphContent = (
+          <CompanyGraphClusterView
+            graph={companyGraphQuery.data}
+            onOpenGraphNode={onOpenGraphNode}
+          />
+        );
       } else {
         graphContent = (
           <CompanyGraphCanvas
             graph={companyGraphQuery.data}
             onOpenMemoryItem={onOpenMemoryItem}
+            onOpenGraphNode={onOpenGraphNode}
           />
         );
       }

@@ -136,7 +136,9 @@ export function MemoryTree({
     queryFn: () => filesystemApi.home(),
   });
 
-  const localBrowsePath = selectedLocalPath ?? localHome?.homePath ?? "";
+  const companyRootFolder = selectedCompany?.rootFolder?.trim() ?? "";
+  const defaultLocalPath = companyRootFolder || localHome?.homePath || "";
+  const localBrowsePath = selectedLocalPath ?? defaultLocalPath;
   const { data: localBrowse } = useQuery({
     queryKey: ["filesystem", "memory-local-tree", localBrowsePath],
     queryFn: () => filesystemApi.browse(localBrowsePath, {
@@ -216,20 +218,31 @@ export function MemoryTree({
         local: localBrowse
           ? {
               currentPath: localBrowse.currentPath,
-              homePath: localBrowse.homePath,
+              homePath: localHome?.homePath ?? localBrowse.homePath,
+              rootPath: defaultLocalPath,
               entries: localBrowse.entries,
               selectedPath: selectedLocalPath ?? localBrowse.currentPath,
             }
-          : localHome
+          : defaultLocalPath
             ? {
-                currentPath: localHome.homePath,
-                homePath: localHome.homePath,
+                currentPath: defaultLocalPath,
+                homePath: localHome?.homePath ?? "",
+                rootPath: defaultLocalPath,
                 entries: [],
-                selectedPath: selectedLocalPath ?? localHome.homePath,
+                selectedPath: selectedLocalPath ?? defaultLocalPath,
               }
             : null,
       }),
-    [folders, departments, activeGoals, counts, localBrowse, localHome, selectedLocalPath],
+    [
+      folders,
+      departments,
+      activeGoals,
+      counts,
+      localBrowse,
+      localHome,
+      selectedLocalPath,
+      defaultLocalPath,
+    ],
   );
 
   // Auto-expand the ancestor chain of the selected scope.
@@ -523,6 +536,7 @@ interface BuildTreeArgs {
   local: {
     currentPath: string;
     homePath: string;
+    rootPath: string;
     selectedPath: string;
     entries: FsBrowseEntry[];
   } | null;
@@ -719,6 +733,8 @@ function localBaseName(value: string): string {
 function buildLocalTreeNode(local: BuildTreeArgs["local"]): TreeNode {
   const currentPath = local?.currentPath ?? "";
   const homePath = local?.homePath ?? "";
+  const rootPath = local?.rootPath ?? "";
+  const hasCompanyRoot = Boolean(rootPath && rootPath !== homePath);
   const directoryChildren: TreeNode[] = (local?.entries ?? [])
     .filter((entry) => entry.isDirectory)
     .slice(0, 30)
@@ -753,7 +769,7 @@ function buildLocalTreeNode(local: BuildTreeArgs["local"]): TreeNode {
       ]
     : [];
 
-  if (homePath && homePath !== currentPath) {
+  if (!hasCompanyRoot && homePath && homePath !== currentPath) {
     children.unshift({
       key: "__local-home",
       label: "Home",
@@ -773,6 +789,7 @@ function buildLocalTreeNode(local: BuildTreeArgs["local"]): TreeNode {
     hasChildren: children.length > 0,
     target: null,
     children,
+    tooltip: hasCompanyRoot ? rootPath : undefined,
   };
 }
 

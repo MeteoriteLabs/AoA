@@ -19,6 +19,7 @@ import { EmptyState } from "../components/EmptyState";
 import { canUploadInScope } from "../lib/memoryUploadScope";
 import { useMemoryTabs } from "../hooks/useMemoryTabs";
 import { useQuery } from "@tanstack/react-query";
+import type { CompanyBrainNode } from "@armyofagents/shared";
 import { memoryApi } from "../api/memory";
 import { queryKeys } from "../lib/queryKeys";
 import { deriveMemoryCounts, activeRailKindFromUrl, railKindToParams } from "../lib/memoryRail";
@@ -55,6 +56,45 @@ export function MemoryExplorer() {
 
   const navigate = useNavigate();
   const companyPrefix = selectedCompany?.issuePrefix ?? "";
+
+  function openGraphNode(node: CompanyBrainNode) {
+    if (node.type === "memory_item") {
+      openOrActivate({ id: node.id, kind: "memory_item", title: node.label });
+      setViewerCollapsed(false);
+      viewerPanelRef.current?.expand();
+      return;
+    }
+
+    if (node.type === "memory_asset") {
+      openOrActivate({ id: node.id, kind: "asset", title: node.label });
+      setViewerCollapsed(false);
+      viewerPanelRef.current?.expand();
+      return;
+    }
+
+    const href = node.href ?? "";
+    if (!href) return;
+
+    if (href.startsWith("/memory/explore")) {
+      const hrefUrl = new URL(href, window.location.origin);
+      const next = new URLSearchParams(searchParams.toString());
+      for (const key of ["folder", "dept", "layer", "goal", "localPath", "item", "type"]) {
+        next.delete(key);
+      }
+      hrefUrl.searchParams.forEach((value, key) => next.set(key, value));
+      const search = next.toString();
+      navigate(
+        search
+          ? `/${companyPrefix}/memory/explore?${search}`
+          : `/${companyPrefix}/memory/explore`,
+      );
+      return;
+    }
+
+    if (href.startsWith("/")) {
+      navigate(`/${companyPrefix}${href}`);
+    }
+  }
 
   // One-shot legacy migration: if URL has ?item=X&type=Y but no tabs yet, open it.
   useEffect(() => {
@@ -151,7 +191,7 @@ export function MemoryExplorer() {
       >
         <Panel
           id="memory-explorer-tree"
-          defaultSize="20%"
+          defaultSize={isHomeSelected ? "18%" : "20%"}
           minSize="12%"
           maxSize="35%"
           collapsible
@@ -203,7 +243,7 @@ export function MemoryExplorer() {
         />
         <Panel
           id="memory-explorer-list"
-          defaultSize={isHomeSelected ? "55%" : "28%"}
+          defaultSize={isHomeSelected ? "32%" : "28%"}
           minSize="20%"
           className="min-w-0 h-full overflow-hidden"
         >
@@ -291,8 +331,8 @@ export function MemoryExplorer() {
         />
         <Panel
           id="memory-explorer-viewer"
-          defaultSize={isHomeSelected ? "25%" : "52%"}
-          minSize="15%"
+          defaultSize={isHomeSelected ? "50%" : "52%"}
+          minSize={isHomeSelected ? "30%" : "15%"}
           collapsible
           collapsedSize="3%"
           panelRef={viewerPanelRef}
@@ -330,6 +370,7 @@ export function MemoryExplorer() {
                   setViewerCollapsed(false);
                   viewerPanelRef.current?.expand();
                 }}
+                onOpenGraphNode={openGraphNode}
                 onToggleCollapse={() => {
                   setViewerCollapsed(true);
                   viewerPanelRef.current?.collapse();

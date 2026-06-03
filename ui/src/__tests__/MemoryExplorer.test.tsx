@@ -15,6 +15,7 @@ const memoryApiMock = vi.hoisted(() => ({
         companyId: "co-1",
         label: "Company strategy",
         status: "approved",
+        href: "/memory/explore?item=mem-graph-1",
       },
       {
         type: "department",
@@ -22,6 +23,7 @@ const memoryApiMock = vi.hoisted(() => ({
         companyId: "co-1",
         label: "Engineering",
         status: "active",
+        href: "/memory/explore?dept=dept-eng",
       },
     ],
     edges: [
@@ -107,8 +109,28 @@ vi.mock("react-resizable-panels", () => ({
       {children}
     </div>
   ),
-  Panel: ({ children, id, ...props }: any) => (
-    <div data-testid={`panel-${id}`} id={id} {...props}>
+  Panel: ({
+    children,
+    id,
+    defaultSize,
+    minSize,
+    maxSize,
+    collapsedSize,
+    collapsible,
+    panelRef: _panelRef,
+    onResize: _onResize,
+    ...props
+  }: any) => (
+    <div
+      data-testid={`panel-${id}`}
+      data-default-size={defaultSize}
+      data-min-size={minSize}
+      data-max-size={maxSize}
+      data-collapsed-size={collapsedSize}
+      data-collapsible={collapsible ? "true" : "false"}
+      id={id}
+      {...props}
+    >
       {children}
     </div>
   ),
@@ -211,7 +233,12 @@ vi.mock("../api/projects", () => ({
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "co-1",
-    selectedCompany: { id: "co-1", issuePrefix: "co1", name: "Test Co" },
+    selectedCompany: {
+      id: "co-1",
+      issuePrefix: "co1",
+      name: "Test Co",
+      rootFolder: "C:\\Users\\TK\\AoA\\Test Co",
+    },
     companyPrefix: "co1",
   }),
 }));
@@ -318,6 +345,22 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     }
   });
 
+  it("uses the selected company root folder as the default Local root", async () => {
+    const { filesystemApi } = await import("../api/filesystem");
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(filesystemApi.browse).toHaveBeenCalledWith(
+        "C:\\Users\\TK\\AoA\\Test Co",
+        {
+          gitAware: true,
+          includeFiles: false,
+        },
+      ),
+    );
+  });
+
   it("opens memory item deep links even when the URL omits legacy type=memory_item", async () => {
     renderPage("/co1/memory/explore?item=mem-1");
 
@@ -339,6 +382,17 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     expect(screen.getByRole("tab", { name: /Map/i })).toBeInTheDocument();
     expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
     expect(screen.queryByText("Pick a memory item or upload a file to start")).not.toBeInTheDocument();
+  });
+
+  it("gives the Memory Home viewer a wide default pane for the map", async () => {
+    renderPage();
+
+    await screen.findByRole("tab", { name: /Map/i });
+
+    expect(screen.getByTestId("panel-memory-explorer-tree")).toHaveAttribute("data-default-size", "18%");
+    expect(screen.getByTestId("panel-memory-explorer-list")).toHaveAttribute("data-default-size", "32%");
+    expect(screen.getByTestId("panel-memory-explorer-viewer")).toHaveAttribute("data-default-size", "50%");
+    expect(screen.getByTestId("panel-memory-explorer-viewer")).toHaveAttribute("data-min-size", "30%");
   });
 
   it("opens one closeable Open tab from the viewer add button", async () => {
@@ -375,6 +429,7 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
       }),
     );
     expect(await screen.findByTestId("company-graph-sigma-canvas")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show graph details" }));
     expect(screen.getByRole("button", { name: "Select Company strategy" })).toBeInTheDocument();
   });
 

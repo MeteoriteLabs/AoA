@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Graph from "graphology";
-import { ExternalLink, Network } from "lucide-react";
+import { ExternalLink, Info, Network, X } from "lucide-react";
 import type {
   CompanyBrainEdge,
   CompanyBrainNode,
@@ -17,6 +17,7 @@ import {
 interface CompanyGraphCanvasProps {
   graph: CompanyBrainOverviewResponse;
   onOpenMemoryItem?: (item: { id: string; title: string }) => void;
+  onOpenGraphNode?: (node: CompanyBrainNode) => void;
 }
 
 interface ConnectedEdge {
@@ -36,6 +37,49 @@ function nodeTypeLabel(type: string): string {
   return type.replace(/_/g, " ");
 }
 
+function edgeKindLabel(kind: CompanyBrainEdge["kind"]): string {
+  switch (kind) {
+    case "belongs_to":
+      return "Belongs to";
+    case "member_of":
+      return "Member of";
+    case "participates_in":
+      return "Participates in";
+    case "owns":
+      return "Owns";
+    case "owned_by":
+      return "Owned by";
+    case "created_by":
+      return "Created by";
+    case "assigned_to":
+      return "Assigned to";
+    case "blocks":
+      return "Blocks";
+    case "mentioned_in":
+      return "Mentioned in";
+    case "extracted_from":
+      return "Extracted from";
+    case "derived_from":
+      return "Derived from";
+    case "retrieved_by":
+      return "Retrieved by";
+    case "used_by":
+      return "Used by";
+    case "applies_to":
+      return "Applies to";
+    case "related_to":
+      return "Related to";
+    case "supports":
+      return "Supports";
+    case "conflicts_with":
+      return "Conflicts with";
+    case "supersedes":
+      return "Supersedes";
+    case "duplicate_of":
+      return "Duplicate of";
+  }
+}
+
 function buildSigmaGraph(response: CompanyBrainOverviewResponse) {
   const next = new Graph();
   const total = Math.max(response.nodes.length, 1);
@@ -50,6 +94,7 @@ function buildSigmaGraph(response: CompanyBrainOverviewResponse) {
       color: graphNodeCanvasColor(node.type),
       nodeType: node.type,
       memoryId: node.type === "memory_item" ? node.id : null,
+      href: node.href ?? null,
     });
   });
 
@@ -86,8 +131,11 @@ function connectedEdges(
 export function CompanyGraphCanvas({
   graph,
   onOpenMemoryItem,
+  onOpenGraphNode,
 }: CompanyGraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [relationshipsOpen, setRelationshipsOpen] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(
     () => graph.nodes[0] ? nodeKey(graph.nodes[0]) : null,
   );
@@ -112,7 +160,7 @@ export function CompanyGraphCanvas({
     const container = containerRef.current;
     const labelColor = graphCssColor("--text", "#eeeeee");
     const edgeLabelColor = graphCssColor("--dim", "#999999");
-    const defaultEdgeColor = graphCssColor("--border-strong", "#3a3a3a");
+    const defaultEdgeColor = "#6f7784";
 
     void import("sigma").then(({ default: Sigma }) => {
       if (!active || !container) return;
@@ -120,12 +168,15 @@ export function CompanyGraphCanvas({
         labelColor: { color: labelColor },
         edgeLabelColor: { color: edgeLabelColor },
         defaultEdgeColor,
+        defaultDrawNodeHover: () => undefined,
         renderLabels: true,
         labelSize: 11,
         labelWeight: "500",
       });
       renderer.on("clickNode", (event: { node: string }) => {
         setSelectedKey(event.node);
+        const node = nodesByKey.get(event.node);
+        if (node) onOpenGraphNode?.(node);
       });
     });
 
@@ -133,7 +184,7 @@ export function CompanyGraphCanvas({
       active = false;
       renderer?.kill();
     };
-  }, [graph]);
+  }, [graph, nodesByKey, onOpenGraphNode]);
 
   if (graph.nodes.length === 0) {
     return (
@@ -151,18 +202,37 @@ export function CompanyGraphCanvas({
 
   return (
     <section
-      className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-md border border-border bg-card text-text xl:grid-cols-[minmax(0,1fr)_260px]"
+      className="relative h-full min-h-0 overflow-hidden rounded-md border border-border bg-card text-text"
       data-testid="company-graph-map-view"
     >
       <div className="relative h-full min-h-0 bg-background">
-        <div ref={containerRef} className="absolute inset-0" data-testid="company-graph-sigma-canvas" />
+        <div
+          ref={containerRef}
+          className="absolute inset-0 cursor-grab active:cursor-grabbing"
+          data-testid="company-graph-sigma-canvas"
+        />
         <div className="absolute left-3 top-3 rounded-md border border-border bg-card/90 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
           {graph.nodes.length} nodes / {graph.edges.length} edges
           {graph.truncated ? ` / limited to ${graph.limit}` : ""}
         </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="absolute right-3 top-3 h-7 w-7 p-0 shadow-sm"
+          aria-label={detailsOpen ? "Hide graph details" : "Show graph details"}
+          title={detailsOpen ? "Hide graph details" : "Show graph details"}
+          onClick={() => setDetailsOpen((open) => !open)}
+        >
+          {detailsOpen ? <X className="h-3.5 w-3.5" aria-hidden /> : <Info className="h-3.5 w-3.5" aria-hidden />}
+        </Button>
       </div>
 
-      <aside className="hidden min-h-0 flex-col border-l border-border bg-card xl:flex">
+      {detailsOpen && (
+      <aside
+        className="absolute bottom-3 right-3 top-12 z-10 flex w-[min(320px,calc(100%-24px))] min-h-0 flex-col overflow-hidden rounded-md border border-border bg-card/95 shadow-lg backdrop-blur"
+        data-testid="company-graph-details-drawer"
+      >
         <div className="border-b border-border px-3 py-2">
           <div className="text-xs font-semibold">Graph details</div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">
@@ -184,7 +254,7 @@ export function CompanyGraphCanvas({
                 >
                   <button
                     type="button"
-                    className="flex w-full items-center gap-2 px-2 py-2 text-left"
+                    className="flex w-full items-center gap-2 px-2 py-2 text-left transition-colors hover:bg-muted/50"
                     aria-label={`Select ${node.label}`}
                     onClick={() => setSelectedKey(key)}
                   >
@@ -227,23 +297,38 @@ export function CompanyGraphCanvas({
             <div className="mt-0.5 text-[11px] capitalize text-muted-foreground">
               {nodeTypeLabel(selectedNode.type)}
             </div>
-            <div className="mt-3 grid gap-1.5">
-              {selectedRelations.length === 0 ? (
-                <div className="text-[11px] text-muted-foreground">No visible relations</div>
-              ) : (
-                selectedRelations.map(({ edge, other }) => (
-                  <div
-                    key={edge.id}
-                    className="rounded-md border border-border bg-background px-2 py-1.5 text-[11px]"
-                  >
-                    {edge.kind} {other.label}
-                  </div>
-                ))
+            <div className="mt-3 overflow-hidden rounded-md border border-border bg-background">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[11px] font-semibold"
+                aria-expanded={relationshipsOpen}
+                aria-label="Relationships"
+                onClick={() => setRelationshipsOpen((open) => !open)}
+              >
+                Relationships
+                <span className="text-muted-foreground">{selectedRelations.length}</span>
+              </button>
+              {relationshipsOpen && (
+                <div className="grid gap-1 border-t border-border/70 p-2">
+                  {selectedRelations.length === 0 ? (
+                    <div className="text-[11px] text-muted-foreground">No visible relations</div>
+                  ) : (
+                    selectedRelations.map(({ edge, other }) => (
+                      <div
+                        key={edge.id}
+                        className="rounded-md border border-border/70 bg-card px-2 py-1.5 text-[11px]"
+                      >
+                        {edgeKindLabel(edge.kind)} {other.label}
+                      </div>
+                    ))
+                  )}
+                </div>
               )}
             </div>
           </div>
         )}
       </aside>
+      )}
     </section>
   );
 }

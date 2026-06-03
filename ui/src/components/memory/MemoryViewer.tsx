@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
+import type { CompanyBrainNode } from "@armyofagents/shared";
 import { resolveViewer } from "@/components/viewers/viewer-registry";
 import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
 import { MarkdownItemViewer } from "./viewers/MarkdownItemViewer";
@@ -22,6 +23,7 @@ interface MemoryViewerProps {
   onClose: (id: string, kind: MemoryTabKind) => void;
   onAdd?: () => void;
   onOpenTab?: (tab: MemoryTab) => void;
+  onOpenGraphNode?: (node: CompanyBrainNode) => void;
   onToggleCollapse?: () => void;
   /** Optional folder fallback for the empty-pane / folder-summary view. */
   folderPath?: string;
@@ -107,6 +109,7 @@ export function MemoryViewer({
   onClose,
   onAdd,
   onOpenTab,
+  onOpenGraphNode,
   onToggleCollapse,
   folderPath,
 }: MemoryViewerProps) {
@@ -132,6 +135,7 @@ export function MemoryViewer({
           kind: "memory_item",
           title: item.title,
         })}
+        onOpenGraphNode={onOpenGraphNode}
       />
     );
   } else if (activeTab && activeTab.kind === "open") {
