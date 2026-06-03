@@ -1,8 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { issueApprovals as issueApprovalsTable, approvals as approvalsTable } from "@armyofagents/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -31,6 +29,7 @@ import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js"
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
+import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
@@ -38,10 +37,12 @@ import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
 import { listIssueContextBundlesForIssue } from "../services/issue-context-bundles.js";
 import { assertCanOverrideTaskWorkspace } from "../services/workspace-authz.js";
+import { assertAgentInReviewReviewPath } from "../services/issue-agent-status-guard.js";
 
-// Approval statuses that count as an active review path.
-// Extend this set if AoA adds revision_requested or other in-flight states.
-const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending"]);
+// Re-exported from the shared guard module so existing import paths
+// (e.g. agent-in-review-guard.test.ts importing from "../routes/issues.js")
+// keep resolving after the move to server/src/services/.
+export { assertAgentInReviewReviewPath };
 
 function hasWorkspaceOverrideFields(body: Record<string, unknown>): boolean {
   return body.executionWorkspaceId !== undefined
@@ -56,69 +57,6 @@ function workspaceOverrideAuditDetails(body: Record<string, unknown>) {
     preference: body.executionWorkspacePreference ?? null,
     settings: body.executionWorkspaceSettings ?? null,
   };
-}
-
-/**
- * Guard: reject agent-initiated transitions to `in_review` unless a human
- * review path exists.  Ports the severable middleware slice from Paperclip
- * commit 68f69975.  AoA-adapted: dropped executionState/monitor predicates
- * (those columns don't exist in AoA).
- *
- * Allowed paths to in_review (any one is sufficient):
- *   1. assigneeUserId is set in the update (human hand-off)
- *   2. A linked approval with status in ACTIVE_REVIEW_APPROVAL_STATUSES exists
- *
- * The guard is only triggered when ALL of these hold:
- *   - actorType === 'agent'
- *   - existing.status !== 'in_review'  (already there → no re-check)
- *   - next status resolves to 'in_review'
- *
- * Exported so it can be tested in isolation.
- */
-export async function assertAgentInReviewReviewPath(
-  input: {
-    existing: { id: string; status: string };
-    updateFields: { status?: string; assigneeUserId?: string | null; [key: string]: unknown };
-    actorType: "agent" | "board" | "user" | "system";
-  },
-  db: Db,
-): Promise<void> {
-  // Only applies to agent actors
-  if (input.actorType !== "agent") return;
-
-  // Guard doesn't fire if the issue is already in_review
-  if (input.existing.status === "in_review") return;
-
-  // Determine the status this update would result in
-  const nextStatus =
-    typeof input.updateFields.status === "string"
-      ? input.updateFields.status
-      : input.existing.status;
-
-  // Guard only fires on transitions TO in_review
-  if (nextStatus !== "in_review") return;
-
-  // Allow: update sets a non-null human assignee
-  if (input.updateFields.assigneeUserId) return;
-
-  // Allow: there is at least one linked approval in an active review state.
-  // NOTE: issue_approvals has NO status column — join to approvals to read status.
-  const linkedApprovals = await db
-    .select({ status: approvalsTable.status })
-    .from(issueApprovalsTable)
-    .innerJoin(
-      approvalsTable,
-      eq(issueApprovalsTable.approvalId, approvalsTable.id),
-    )
-    .where(eq(issueApprovalsTable.issueId, input.existing.id));
-
-  if (linkedApprovals.some((a) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(a.status)))) return;
-
-  // No review path found — reject with 422
-  throw unprocessable("Agent cannot move task to in_review without a review path", {
-    code: "invalid_issue_disposition",
-    validReviewPaths: ["linked_pending_approval", "human_assignee_user_id"],
-  });
 }
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -550,10 +488,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     await svc.notifyMentionedHumans(issue.companyId, body, currentIssue.id, actor);
 
+    // Kind-aware dispatch (crew arc review #1 — CRITICAL). Crew agents (kind='aoa')
+    // run via the AoA dispatcher, NOT the heartbeat — heartbeat.wakeup refuses
+    // kind='aoa' (Decision #100) and silently drops the request. Without this
+    // branch, a founder commenting on (or @mentioning a crew agent in) a crew
+    // task produced no dispatch and no error. Mirrors the PATCH/update path
+    // chokepoint (resolveAgentKinds → enqueueAoaMentionWakeup vs heartbeat.wakeup).
+    const aoaKinds = await svc
+      .resolveAgentKinds([...wakeups.keys()])
+      .catch(() => new Map<string, string>());
     for (const [agentId, wakeup] of wakeups.entries()) {
-      heartbeat
-        .wakeup(agentId, wakeup)
-        .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+      if (aoaKinds.get(agentId) === "aoa") {
+        svc
+          .enqueueAoaMentionWakeup(issue.companyId, agentId, {
+            source: wakeup?.source,
+            reason: wakeup?.reason,
+            payload: wakeup?.payload,
+          })
+          .catch((err) =>
+            logger.warn(
+              { err, issueId: currentIssue.id, agentId },
+              "failed to enqueue aoa mention wakeup on issue comment",
+            ),
+          );
+      } else {
+        heartbeat
+          .wakeup(agentId, wakeup)
+          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+      }
     }
   }
 
@@ -625,10 +587,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
       parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
     }
 
-    // Task 1.4: crew-board filter — origin_kind='crew_thread'. Accepts the
-    // literal string "true" — all other values (including absent) leave the
-    // filter off so behavior is unchanged for all non-crew-board callers.
+    // Crew/org task scope (2026-06-02 unified separation, T-A). The service
+    // applies its own fail-safe default of 'org' when no scope is passed, so the
+    // route only forwards an explicit scope:
+    //  - `taskScope=org|crew|all` is forwarded verbatim (junk → undefined).
+    //  - legacy `crewBoard=true` maps to taskScope='crew' (literal "true" only).
+    //  - an explicit `taskScope` wins over `crewBoard`.
+    const taskScopeRaw = req.query.taskScope;
+    const taskScopeParam =
+      taskScopeRaw === "org" || taskScopeRaw === "crew" || taskScopeRaw === "all"
+        ? taskScopeRaw
+        : undefined;
     const crewBoard = req.query.crewBoard === "true";
+    const taskScope = taskScopeParam ?? (crewBoard ? "crew" : undefined);
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
@@ -640,7 +611,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
       ...(parentIdFilter !== undefined ? { parentId: parentIdFilter } : {}),
-      ...(crewBoard ? { crewBoard: true } : {}),
+      ...(taskScope ? { taskScope } : {}),
     });
     res.json(result);
   });
@@ -1019,17 +990,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
       issue.assigneeAgentId &&
       shouldWakeAssignedAgent
     ) {
-      void heartbeat
-        .wakeup(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: { issueId: issue.id, mutation: "create" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.create" },
-        })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue create"));
+      void enqueueIssueAssigneeWakeup(db, {
+        companyId: issue.companyId,
+        agentId: issue.assigneeAgentId,
+        issueId: issue.id,
+        source: "assignment",
+        reason: "issue_assigned",
+        mutation: "create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      }).catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on create"));
     } else if (wakeSkippedReason) {
       logger.info({ issueId: issue.id, assigneeAgentId: issue.assigneeAgentId, wakeSkippedReason }, "skipped assignment wakeup");
     }

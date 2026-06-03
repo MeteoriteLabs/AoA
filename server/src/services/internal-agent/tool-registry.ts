@@ -54,6 +54,31 @@ import { agentDispatchTool } from "./tools/agent-dispatch.js";
 // Adjutant-only (ADJUTANT_TOOL_ALLOWLIST in ensure-adjutant.ts). Routes through
 // crewTaskService.proposeWork — the unified D11 gate — using ctx.effectiveAutonomy.
 import { proposeCrewWorkTool } from "./tools/propose-crew-work.js";
+// Routing-card redesign — new Navigator tools
+import { listThreadCardsTool } from "./tools/list-thread-cards.js";
+import { promoteInboxToThreadTool } from "./tools/promote-inbox-to-thread.js";
+import { deferInboxToHumanTool } from "./tools/defer-inbox-to-human.js";
+// Spec B Task 2 — get_task (query category, company-scoped). Lets a crew agent
+// read its assigned task's full context. `query` confers no capability, so it
+// does NOT widen system_actions; getById has no company filter, so the tool
+// enforces row.companyId === ctx.companyId itself (returns not-found on miss).
+import { getTaskTool } from "./tools/get-task-tool.js";
+// Spec B Task 3 — result-write tools. A crew agent writes its task result back:
+// post_task_comment (comment authored by the agent) + attach_task_artifact
+// (agent-sourced artifact linked to the task + recorded in task_outputs). BOTH
+// are `coordination` category — coordination confers no capability (it is absent
+// from authorize-tool.ts's CAPABILITY_TO_CATEGORY), so exposing these write tools
+// never widens the calling agent's capability set. Each company-scopes the task
+// itself (getById/addComment/update have no company filter).
+import { postTaskCommentTool } from "./tools/post-task-comment-tool.js";
+import { attachTaskArtifactTool } from "./tools/attach-task-artifact-tool.js";
+// Spec B Task 4 — set_task_status. A crew agent moves its OWN task forward,
+// dial-gated. Re-implements NO policy: delegates ownership + dial enforcement to
+// the Task-1 A4 guard (assertAgentStatusTransition, invoked by issueService.update)
+// by forwarding effectiveDial = ctx.effectiveAutonomy ?? 0 via the actor arg.
+// `coordination` category — confers no capability, so it never widens the agent's
+// capability set (like the other three Spec B task tools).
+import { setTaskStatusTool } from "./tools/set-task-status-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -92,6 +117,9 @@ export function createToolRegistry(): AgentTool[] {
     // query_artifacts to read the plan before creating tasks.
     attachToThreadTool,
     spinOffThreadTool,
+    listThreadCardsTool,        // NEW — card-fetch tool for Navigator (T6)
+    promoteInboxToThreadTool,   // NEW — Navigator inbox→new-thread action (C1/T7)
+    deferInboxToHumanTool,      // NEW — Navigator "unsure" finalization (Codex P1 #2)
     createArtifactVersionTool,
     queryArtifactsTool,
     requestThreadWorkspaceTool,
@@ -119,6 +147,19 @@ export function createToolRegistry(): AgentTool[] {
     // Allowlisted ONLY in ensure-adjutant.ts — default-deny for all other
     // AoA roles and for Commander (not in commanderToolPermissions).
     proposeCrewWorkTool,
+    // Spec B Task 2 — get_task. Query-category read tool: a crew agent reads
+    // its assigned task's full context. Company-scoped inside the tool.
+    getTaskTool,
+    // Spec B Task 3 — post_task_comment + attach_task_artifact. Coordination-
+    // category result-write tools (coordination confers no capability). Each
+    // company-scopes the task itself.
+    postTaskCommentTool,
+    attachTaskArtifactTool,
+    // Spec B Task 4 — set_task_status. Coordination-category own-task transition
+    // tool (coordination confers no capability). Company-scopes the task itself
+    // and delegates ownership + autonomy-dial enforcement to the A4 guard via
+    // issueService.update's actor.effectiveDial.
+    setTaskStatusTool,
   ];
 }
 

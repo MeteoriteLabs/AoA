@@ -87,6 +87,15 @@ export interface Issue {
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   source: IssueSource | null;
   /**
+   * Provenance of the task — how it was born. Values include `'crew_thread'`
+   * (scoped from a discussion), goal/routine/MCP/direct origins, and `null` for
+   * tasks with no recorded origin. This is a base `issues` column and is
+   * returned on EVERY list shape (any taskScope), not just the crew board — the
+   * shared card uses it to label the source badge (routine vs. direct vs.
+   * thread). Only the joined `sourceThreadTitle` below is crew-scope-gated.
+   */
+  originKind?: string | null;
+  /**
    * Phase 1 Task A3: the discussion thread (if any) that produced this task
    * via Dispatcher's scope_proposal acceptance. `null` for tasks that did not
    * originate from a thread. Joined with `discussions.title` server-side to

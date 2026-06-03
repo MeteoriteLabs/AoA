@@ -79,15 +79,31 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).not.toMatch(/returning without taking the directed action is a bug/i);
     });
 
-    it("router → post_entry with department recommendation", () => {
+    it("adjutant → conversational replies are normal chat (no sourceInfo.systemNotice)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep.adjutant" },
+        agentName: "Adjutant",
+        agentRoleKey: "adjutant",
+      });
+      // Thread-chat bug: an Adjutant reply carrying sourceInfo.systemNotice
+      // renders as a muted "System notice" divider, not a chat bubble. The
+      // respond directive must tell it to post as a normal conversational reply.
+      expect(out).toMatch(/do NOT set `?sourceInfo\.systemNotice`?/i);
+      expect(out).toMatch(/normal conversational reply/i);
+    });
+
+    it("router → attach_to_thread or spin_off_thread (NOT post_entry)", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,
         payload: { companyId: "co", source: "phase-advance" },
         agentName: "Router",
         agentRoleKey: "router",
       });
-      expect(out).toContain("post_entry");
-      expect(out).toContain("department");
+      expect(out).toContain("attach_to_thread");
+      expect(out).toContain("spin_off_thread");
+      // post_entry is NOT in the Navigator allowlist — must not be promised here
+      expect(out).not.toContain("post_entry");
     });
 
     it("planner → post_entry with plan", () => {
@@ -124,6 +140,22 @@ describe("buildTriggerPrompt (T1.2)", () => {
       expect(out).toContain("propose-only");
     });
 
+    it("chronicler → thread.updateSummary directive (NOT the generic directive)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "sweep" },
+        agentName: "Chronicler",
+        agentRoleKey: "chronicler",
+      });
+      // Concrete chronicler directive (Codex P1 #5) — must update the thread summary
+      expect(out).toContain("thread.updateSummary");
+      expect(out).toContain("get_thread_summary");
+      // Must NOT fall back to the weak generic directive
+      expect(out).not.toContain("use the tools in your allowlist");
+      // Chronicler must never post_entry
+      expect(out).toMatch(/Never post_entry/i);
+    });
+
     it("commander → post_entry with synthesis", () => {
       const out = buildTriggerPrompt({
         instruction: BASE_INSTRUCTION,
@@ -133,6 +165,19 @@ describe("buildTriggerPrompt (T1.2)", () => {
       });
       expect(out).toContain("post_entry");
       expect(out).toContain("synthesis");
+    });
+
+    it("reviewer → critique then post_entry, advise-only (no mutation)", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread_mention", mention: "@Reviewer" },
+        agentName: "Reviewer",
+        agentRoleKey: "reviewer",
+      });
+      expect(out).toMatch(/critique/i);
+      expect(out).toContain("post_entry");
+      // advise-only: must tell the reviewer NOT to approve / create tasks / mutate
+      expect(out).toMatch(/do NOT\s+approve/i);
     });
 
     it("unknown role → generic directive (no crash)", () => {
@@ -247,6 +292,249 @@ describe("buildTriggerPrompt (T1.2)", () => {
       // post_entry by name — the Scribe regression test forbids that)
       expect(out).toMatch(/surfaces? feedback to the human/i);
     });
+  });
+});
+
+// Task 1.7 / routing-card redesign — inbox-routing trigger prompt.
+// The Navigator now decides over the raw inbound content (rendered under
+// "Inbound content:") and fetches routing cards at runtime via list_thread_cards;
+// candidateThreadIds / distances / gap are no longer rendered (Codex P1 #1).
+describe("buildTriggerPrompt (T1.7) — inbox.routing_ambiguous", () => {
+  it("renders inboxItemId and the inbound content", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-1",
+        inboundContent: "Customer wants SSO before the pilot.",
+      },
+    });
+    // Inbox item ID must appear
+    expect(out).toContain("inbox-1");
+    // The inbound content must be rendered under its labelled line
+    expect(out).toContain("Inbound content:");
+    expect(out).toContain("Customer wants SSO before the pilot.");
+  });
+
+  it("truncates very long inbound content to keep the prompt bounded", () => {
+    const long = "x".repeat(5000);
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-long",
+        inboundContent: long,
+      },
+    });
+    expect(out).toContain("Inbound content:");
+    // Capped at 4000 chars with a truncation marker — the full 5000-char run must not survive.
+    expect(out).toContain("[truncated]");
+    expect(out).not.toContain(long);
+  });
+
+  it("uses INBOX_ROUTING_DIRECTIVE — names list_thread_cards / promote_inbox_to_thread / defer_inbox_to_human", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-1",
+        inboundContent: "Some inbound material.",
+      },
+    });
+    // Distinctive phrase from INBOX_ROUTING_DIRECTIVE
+    expect(out).toContain("An inbound item needs routing");
+    // The three card/promote/defer tools the Navigator must choose between
+    expect(out).toContain("list_thread_cards");
+    expect(out).toContain("promote_inbox_to_thread");
+    expect(out).toContain("defer_inbox_to_human");
+    // Old candidate-thread framing must not appear
+    expect(out).not.toContain("Candidate threads:");
+    expect(out).not.toContain("Ambiguity gap:");
+    // And it must steer away from spin_off_thread for inbox items
+    expect(out).toContain("Do NOT call spin_off_thread for inbox items");
+  });
+
+  it("guard case: no inboundContent still renders without throwing", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co-1",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-2",
+      },
+    });
+    // Must still contain the inbox item ID
+    expect(out).toContain("inbox-2");
+    // Must not crash or produce "undefined"
+    expect(out).not.toContain("undefined");
+    // The inbound-content line should be absent when no content was supplied
+    expect(out).not.toContain("Inbound content:");
+  });
+
+  it("non-inbox navigator wakeup still uses the role-table directive (regression guard)", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: { companyId: "co", source: "thread_mention", mention: "@Navigator" },
+    });
+    // Role-table directive for 'navigator' must appear
+    expect(out).toContain("attach_to_thread");
+    // But the inbox-routing opener must NOT appear for a non-inbox trigger
+    expect(out).not.toContain("An inbound item needs routing");
+  });
+});
+
+// Spec B Task 5 — task-execution trigger directive.
+// When the dispatcher wakes a crew agent with an `issueId` (a task assignment,
+// not a thread), the prompt must steer the agent to the TASK tool surface
+// (get_task / post_task_comment / attach_task_artifact / set_task_status) and
+// AWAY from thread/post_entry tools. Inbox routing still takes precedence.
+describe("buildTriggerPrompt (Spec B Task 5) — task execution (issueId)", () => {
+  it("issueId present + non-inbox source → TASK directive (get_task), NOT a role directive", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      payload: { companyId: "co", source: "dispatcher.task", issueId: "TASK-7" },
+    });
+    // The task directive's stable anchors.
+    expect(out).toContain("get_task");
+    expect(out).toContain("set_task_status");
+    // Steers away from thread tooling — distinctive phrasing from the directive.
+    expect(out).toMatch(/this is a task, not a thread/i);
+    // The task id is rendered in the context block.
+    expect(out).toContain("Task: TASK-7");
+    // CRITICAL: it must NOT fall through to the scout role-map directive.
+    // (The task directive itself NEGATES post_entry — "Do NOT call post_entry"
+    // — so we cannot assert absence of the bare token; assert absence of the
+    // scout directive's distinctive POSITIVE phrasing instead.)
+    expect(out).not.toContain("investigate the thread context");
+    expect(out).not.toContain("thread.createLink");
+  });
+
+  it("issueId present even with a role that posts entries → still the TASK directive (overrides role map)", () => {
+    // maker's role directive normally says post_entry; issueId must win.
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Maker",
+      agentRoleKey: "maker",
+      payload: { companyId: "co", source: "dispatcher.task", issueId: "TASK-9" },
+    });
+    expect(out).toContain("get_task");
+    // Must NOT carry the maker role directive's distinctive positive phrasing
+    // (it instructs posting an entry with parentEntryId to the inviting entry).
+    // The task directive mentions post_entry only to FORBID it, so we key off
+    // "parentEntryId" — which appears only in the maker role directive.
+    expect(out).not.toContain("parentEntryId");
+    expect(out).not.toContain("attaching your artifact");
+  });
+
+  it("precedence: inbox.routing_ambiguous wins even if issueId is also present", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Navigator",
+      agentRoleKey: "navigator",
+      payload: {
+        companyId: "co",
+        source: "inbox.routing_ambiguous",
+        inboxItemId: "inbox-x",
+        issueId: "TASK-stowaway",
+      },
+    });
+    // Inbox directive must appear; the task directive must NOT.
+    expect(out).toContain("An inbound item needs routing");
+    expect(out).not.toContain("get_task");
+  });
+
+  it("empty-string issueId does not trigger the task directive (falls back to role map)", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Scribe",
+      agentRoleKey: "scribe",
+      payload: { companyId: "co", source: "outbox", issueId: "" },
+    });
+    // Falls through to the scribe role directive, not the task directive.
+    expect(out).toContain("submit_extracted_items");
+    expect(out).not.toContain("get_task");
+    expect(out).not.toContain("Task: ");
+  });
+});
+
+// Phase 4 / Task 4.3 — contextBundle injection.
+// The runner builds a crew context bundle (thread history + summary + memory,
+// and for tasks the task body + upstream artifact) and passes it as
+// `contextBundle`. buildTriggerPrompt renders it as a `## Context` section
+// BETWEEN the persona/instruction and the `## This wakeup` block — only when
+// non-empty.
+describe("buildTriggerPrompt (Task 4.3) — contextBundle injection", () => {
+  it("renders a ## Context section with the bundle text when contextBundle is non-empty", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1", mention: "@Scout" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "Recent conversation:\nfounder: we need SSO precedent",
+    });
+    expect(out).toContain("## Context");
+    expect(out).toContain("founder: we need SSO precedent");
+  });
+
+  it("places ## Context BETWEEN the persona/instruction and the ## This wakeup block", () => {
+    const out = buildTriggerPrompt({
+      instruction: "## INSTRUCTION_MARKER\n",
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "CONTEXT_BUNDLE_MARKER",
+    });
+    const instructionIdx = out.indexOf("INSTRUCTION_MARKER");
+    const contextIdx = out.indexOf("## Context");
+    const bundleIdx = out.indexOf("CONTEXT_BUNDLE_MARKER");
+    const wakeupIdx = out.indexOf("## This wakeup");
+    expect(instructionIdx).toBeGreaterThanOrEqual(0);
+    expect(contextIdx).toBeGreaterThan(instructionIdx);
+    expect(bundleIdx).toBeGreaterThan(contextIdx);
+    expect(wakeupIdx).toBeGreaterThan(bundleIdx);
+  });
+
+  it("omits the ## Context section entirely when contextBundle is empty/whitespace/undefined", () => {
+    const empty = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "",
+    });
+    expect(empty).not.toContain("## Context");
+
+    const ws = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+      contextBundle: "   \n  ",
+    });
+    expect(ws).not.toContain("## Context");
+
+    const undef = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      payload: { companyId: "co", source: "thread.participation", threadId: "thr-1" },
+      agentName: "Scout",
+      agentRoleKey: "scout",
+    });
+    expect(undef).not.toContain("## Context");
   });
 });
 

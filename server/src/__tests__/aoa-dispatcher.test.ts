@@ -58,6 +58,33 @@ vi.mock("@armyofagents/db", () => {
 // crew-cost-caps.
 vi.mock("../services/internal-agent/aoa-agents/autonomy.js", () => ({
   isRoleActiveAtAutonomy: () => true, // all roles active in dispatcher contract tests
+  // A2: the fail-closed gate calls Object.keys(ROLE_MIN_AUTONOMY) to decide
+  // whether a payload.role is a KNOWN crew role. Mirror the real role-key set
+  // so a fixture's payload.role (e.g. "chronicler") is recognized and the gate
+  // takes the payload-role branch instead of falling to resolveCrewRole.
+  ROLE_MIN_AUTONOMY: {
+    scribe: 0, memory_keeper: 0, curator: 0, router: 2, navigator: 2,
+    planner: 2, dispatcher: 2, adjutant: 0, maker: 1, engineer: 1,
+    scout: 1, chronicler: 0,
+  },
+}));
+// A2: the dispatcher's fail-closed autonomy gate now resolves an absent/unknown
+// payload.role via the leaf resolveCrewRole. Module-mock it (→ null) so it adds
+// NO real db.select — the positional _selectOrder sequences below stay byte-
+// stable. With isRoleActiveAtAutonomy mocked → true, any RESOLVED role is active;
+// the only behavioral consequence is that a role-LESS wakeup at autonomy < 2 is
+// now (correctly) skipped_autonomy. Fixtures that exercise dispatch therefore
+// carry a known payload.role (see the M4/FX5 fixture's role).
+vi.mock("../services/internal-agent/aoa-agents/resolve-crew-role.js", () => ({
+  resolveCrewRole: vi.fn().mockResolvedValue(null),
+}));
+// A3: pre-spend budget hard-stop. Module-mock budgetService so getInvocationBlock
+// returns null (budget clear) and adds NO real db.select on budgetPolicies —
+// the positional _selectOrder sequences below stay byte-stable. (A real call
+// would issue agent- and company-scoped budgetPolicies selects and shift the
+// sequence, breaking these fixtures.)
+vi.mock("../services/budgets.js", () => ({
+  budgetService: () => ({ getInvocationBlock: vi.fn().mockResolvedValue(null) }),
 }));
 vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
   isCrewPaused: () => false, // never paused in dispatcher contract tests
@@ -66,6 +93,10 @@ vi.mock("../services/internal-agent/cost-caps.js", () => ({
   runRateExceeded: () => false, // run-rate never exceeded in dispatcher contract tests
   resolveRoleModel: ({ companyDefault }: { roleModel: string | null; companyDefault: string }) => companyDefault,
   DEFAULT_CREW_RATE_LIMIT: { maxRunsPerWindow: 10, windowMinutes: 10 },
+  // A5: run-COUNT brake constant. runRateExceeded is mocked → false above, so the
+  // count brake never fires here; the brake's select still runs (one extra slot
+  // per dispatching wakeup, AFTER the D3 spend-brake count select).
+  DEFAULT_CREW_RUN_COUNT_LIMIT: { windowMinutes: 5, maxRunsPerWindow: 40 },
 }));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
   runAoaAgent: runAoaMock,
@@ -420,7 +451,14 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // wakeup's original source (was hardcoded "wakeup" in runAoaAgent
         // call). Fixture must include source for the codex-F6 assertion
         // below to be meaningful.
-        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { note: "x" } }],
+        // A2 (fail-closed autonomy): payload now carries a KNOWN crew role
+        // (adjutant, min-autonomy 0 → active at L0). Pre-A2 this fixture had no
+        // role and still dispatched at autonomy 0 — but that was the BUG the
+        // fail-closed gate fixes (no-role → Drive-only). This test exercises the
+        // Phase-2/Phase-3 DRAIN-OVERLAP invariant, not autonomy, so the wakeup
+        // must legitimately pass the gate. With a role present resolveCrewRole is
+        // not consulted; the role makes the wakeup a valid dispatch at L0.
+        [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { role: "adjutant", note: "x" } }],
         // slot 3 — Phase-4 reclaim-select: nothing failed-linked
         [],
         // slot 4 — Plan-3 Task 4/8: resolveCompanyConfig select (per wakeup,
@@ -428,11 +466,14 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // (default) and autonomyLevel=0 (default). Autonomy+kill-switch gates
         // are mocked to always pass, so this select is a no-op for the test.
         [],
-        // slot 5 — Plan-3 Task 9: D3 run-rate brake count select.
+        // slot 5 — Plan-3 Task 9: D3 SPEND-brake count select (paid runs only).
         // runRateExceeded is mocked to always return false so 0 runs here is
         // safe; the select still runs to count internal_agent_runs in the window.
         [],
-        // slot 6 — Plan-3 Task 9: agent row select for per-role model resolution.
+        // slot 6 — A5/T1.9: run-COUNT brake select (ALL runs, no cost filter).
+        // runRateExceeded mocked → false so 0 runs is safe; the select still runs.
+        [],
+        // slot 7 — Plan-3 Task 9: agent row select for per-role model resolution.
         // Returns empty so agentRow=null → falls back to company default model.
         // resolveRoleModel is mocked to return companyDefault directly.
         [],
@@ -475,12 +516,216 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     // (slot 1), and both before the wakeup select (slot 2) and Phase-4 (slot
     // 3). Plan-3 Task 4/8 adds a resolveCompanyConfig select (slot 4) per
     // wakeup that is always AFTER the wakeup select. Plan-3 Task 9 adds a
-    // run-rate count select (slot 5) and an agent-row select (slot 6), both
-    // per wakeup, memoized by the gate mocks so gating is bypassed in this test.
-    // The DRAINS overlap, selects are issued in the original positional order.
-    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // D3 spend-brake count select (slot 5); A5/T1.9 adds the run-COUNT brake
+    // select (slot 6); then the agent-row select (slot 7) — all per wakeup,
+    // memoized by the gate mocks so gating is bypassed in this test. The DRAINS
+    // overlap, selects are issued in the original positional order.
+    expect(db._selectOrder).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 
     // Phase-4 still runs last (its select slot was consumed; nothing to do).
     expect(db._sets.some(entryFailReclaim)).toBe(false);
+  });
+
+  // ── Task 1.6 — Inbox-routing dispatcher branch (D4 / #3 / #4) ─────────────
+  //
+  // D4: inbox-routing wakeups (source="inbox.routing_ambiguous") are gated on
+  // the routing dial (inboundRoutingLevel), NOT crew autonomy. The Navigator
+  // must fire even when autonomyLevel=0.
+  //
+  // #3 / #4: the payload has no threadId by design, so thread-level
+  // pause/controller-path gates must NOT apply to this wakeup source. The
+  // isInboxRouting guard in the dispatcher makes this explicit rather than
+  // relying on the gates being silently inert when threadId is absent.
+  //
+  // These tests use makeConcurrencyDb (already in this describe block) because
+  // it supports .returning() on update() — needed for the atomic claim path.
+  // Autonomy, kill-switch, and rate-brake are mocked to always pass (see the
+  // module-level vi.mock calls above), so the only gate exercised here is the
+  // routing dial.
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='off' → skipped_routing_off, runAoaAgent NOT called", async () => {
+    // Select slot order for this case (single inbox-routing wakeup, dial=off):
+    //   0 = Phase-1 orphan-select
+    //   1 = Phase-2 pending-drain
+    //   2 = Phase-3 wakeup-select
+    //   3 = Phase-4 reclaim-select (runs after Promise.all; resolver fires after
+    //       resolveCompanyConfig because Phase-4 is awaited after the drains)
+    //   4 = resolveCompanyConfig (consumed inside drainPhase3's closure;
+    //       Promise.all runs drainPhase3 concurrently with drainPhase2)
+    //
+    // BUT: Promise.all runs drainPhase2 and drainPhase3 concurrently. drainPhase2
+    // returns immediately (no rows). drainPhase3's async closure calls
+    // resolveCompanyConfig which issues the next select. Phase-4 select runs
+    // only AFTER Promise.all resolves. The select order is therefore:
+    //   slot 0 (orphan), slot 1 (pending), slot 2 (wakeup),
+    //   slot 3 (resolveCompanyConfig — inside drainPhase3 closure),
+    //   slot 4 (Phase-4 reclaim — after Promise.all).
+    // Early-return fires before the rate-brake / agent-row selects.
+    const db = makeConcurrencyDb(
+      [
+        [],  // slot 0 — Phase-1 orphan-select
+        [],  // slot 1 — Phase-2 pending-drain
+        // slot 2 — Phase-3 wakeup-select: one inbox-routing wakeup
+        [{ id: "wr-off", agentId: "a-nav", companyId: "co-r", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-1", candidateThreadIds: ["t1"], distances: [0.2], gap: false } }],
+        // slot 3 — resolveCompanyConfig: routing dial is OFF
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [],  // slot 4 — Phase-4 reclaim-select (after Promise.all)
+      ],
+      [
+        // update[0] = skipped_routing_off write (early-return path, .returning() not used)
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // runAoaAgent must NOT have been called.
+    expect(runAoaMock).not.toHaveBeenCalled();
+
+    // The wakeup row must have been updated to skipped_routing_off.
+    const skipSet = (db._sets as any[]).find((s: any) => s.status === "skipped_routing_off");
+    expect(skipSet).toBeDefined();
+    expect(skipSet.finishedAt).toBeInstanceOf(Date);
+  });
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='suggest' with autonomyLevel=0 → runAoaAgent IS called (not blocked by crew-autonomy)", async () => {
+    // Select slots (dispatch path — dial != off):
+    //   0 = Phase-1 orphan, 1 = Phase-2 pending, 2 = Phase-3 wakeup,
+    //   3 = resolveCompanyConfig (inside closure, concurrent with Phase-2),
+    //   4 = D3 SPEND-brake window count,
+    //   5 = A5/T1.9 run-COUNT brake window count,
+    //   6 = agent row select,
+    //   7 = effectiveAutonomy threadId lookup (no-op: payload has no threadId),
+    //   8 = Phase-4 reclaim-select (after Promise.all).
+    // NOTE: effectiveAutonomy lookup only fires if payload.threadId is present.
+    // Inbox-routing payload has no threadId, so that DB call is skipped and
+    // Phase-4 is slot 7, not slot 8.
+    const db = makeConcurrencyDb(
+      [
+        [],  // slot 0 — Phase-1 orphan-select
+        [],  // slot 1 — Phase-2 pending-drain
+        // slot 2 — Phase-3 wakeup-select: inbox-routing wakeup
+        [{ id: "wr-sug", agentId: "a-nav", companyId: "co-r2", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-2", candidateThreadIds: [], distances: [], gap: true } }],
+        // slot 3 — resolveCompanyConfig: dial=suggest, autonomyLevel=0 (crew would block)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "suggest" }],
+        [],  // slot 4 — D3 SPEND-brake window count
+        [],  // slot 5 — A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }], // slot 6 — agent row
+        [],  // slot 7 — Phase-4 reclaim-select
+      ],
+      [
+        [{ id: "wr-sug" }], // update[0] = atomic claim RETURNING
+        [],                  // update[1] = final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // runAoaAgent MUST be called — autonomyLevel=0 does not block inbox-routing.
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db,
+      "a-nav",
+      expect.objectContaining({
+        companyId: "co-r2",
+        source: "inbox.routing_ambiguous",
+        wakeupId: "wr-sug",
+        inboxItemId: "item-2",
+      }),
+    );
+  });
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='auto_attach' with autonomyLevel=0 → runAoaAgent IS called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], [],  // slots 0-1
+        [{ id: "wr-aa", agentId: "a-nav", companyId: "co-r3", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-3", candidateThreadIds: ["t5"], distances: [0.1], gap: false } }],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "auto_attach" }],
+        [],  // D3 SPEND-brake count
+        [],  // A5/T1.9 run-COUNT brake count
+        [{ runtimeConfig: {}, adapterConfig: {} }],
+        [],  // Phase-4
+      ],
+      [
+        [{ id: "wr-aa" }], // claim
+        [],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-nav",
+      expect.objectContaining({ source: "inbox.routing_ambiguous", wakeupId: "wr-aa" }),
+    );
+  });
+
+  it("D4 (Task 1.6): inbox-routing wakeup at inboundRoutingLevel='full_auto' with autonomyLevel=0 → runAoaAgent IS called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], [],
+        [{ id: "wr-fa", agentId: "a-nav", companyId: "co-r4", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-4" } }],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "full_auto" }],
+        [],  // D3 SPEND-brake count
+        [],  // A5/T1.9 run-COUNT brake count
+        [{ runtimeConfig: {}, adapterConfig: {} }],
+        [],  // Phase-4
+      ],
+      [
+        [{ id: "wr-fa" }],
+        [],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-nav",
+      expect.objectContaining({ source: "inbox.routing_ambiguous", wakeupId: "wr-fa" }),
+    );
+  });
+
+  // Chronicler infra sweep: like inbox-routing, it must bypass the thread-level
+  // crewPaused + useControllerPath gates (it's always-on infrastructure). On a
+  // modern thread (useControllerPath=true) the wakeup MUST still reach
+  // runAoaAgent — the pre-fix behavior swallowed it at the controller-path gate.
+  it("infra sweep (sweep.chronicler) on a useControllerPath thread + autonomyLevel=0 → runAoaAgent IS called (not swallowed)", async () => {
+    // C1/C2 reorder: effectiveAutonomy (thread override ?? company) is now
+    // resolved BEFORE the autonomy gate (was post-claim). For infra sweeps the
+    // crewPaused/useControllerPath threadRow fetch is SKIPPED, so the
+    // effectiveAutonomy lookup is the FIRST per-wakeup thread select. New slots:
+    //   0 Phase-1, 1 Phase-2, 2 Phase-3 wakeup, 3 resolveCompanyConfig,
+    //   4 effectiveAutonomy threadId lookup (chronicler payload HAS threadId),
+    //   5 D3 SPEND-brake count, 6 A5/T1.9 run-COUNT brake count, 7 agent row,
+    //   8 Phase-4.
+    const db = makeConcurrencyDb(
+      [
+        [],  // 0 Phase-1 orphan-select
+        [],  // 1 Phase-2 pending-drain
+        // 2 Phase-3 wakeup: chronicler sweep, threadId present, on a controller-path thread
+        [{ id: "wr-chr", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler" } }],
+        // 3 resolveCompanyConfig: company autonomyLevel=0 (blocks agentic crew, but chronicler:0 passes)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 effectiveAutonomy thread lookup — thread sets dial=2 (Drive) to make
+        //   the thread override observable in the forwarded payload below.
+        [{ autonomyLevel: 2 }],
+        [],  // 5 D3 SPEND-brake window count
+        [],  // 6 A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }],  // 7 agent row
+        [],  // 8 Phase-4 reclaim-select
+      ],
+      [
+        [{ id: "wr-chr" }],  // update[0] = atomic claim RETURNING
+        [],                   // update[1] = final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // chronicler:0 passes the gate regardless; the thread's Drive(2) dial flows
+    // through to the runner as effectiveAutonomy — pinning the new pre-gate
+    // resolution order against regression.
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-chr",
+      expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-chr", effectiveAutonomy: 2 }),
+    );
   });
 });

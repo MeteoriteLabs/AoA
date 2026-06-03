@@ -168,6 +168,10 @@ describe("controller inline drain — useControllerPath=true", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: proactive wake is Assist+ only; this drain test asserts the
+      // controller drive fires, so the dial is Assist (1). autonomyLevel != null
+      // ⇒ no internal_agent_config select (sequence stays thread → agents).
+      autonomyLevel: 1,
     };
     const { db } = makeFireDb({ threadRow: thread });
 
@@ -183,6 +187,10 @@ describe("controller inline drain — useControllerPath=true", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: proactive wake is Assist+ only; this drain test asserts the
+      // controller drive fires, so the dial is Assist (1). autonomyLevel != null
+      // ⇒ no internal_agent_config select (sequence stays thread → agents).
+      autonomyLevel: 1,
     };
     const { db } = makeFireDb({ threadRow: thread });
 
@@ -204,6 +212,10 @@ describe("controller inline drain — useControllerPath=true", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: proactive wake is Assist+ only; this drain test asserts the
+      // controller drive fires, so the dial is Assist (1). autonomyLevel != null
+      // ⇒ no internal_agent_config select (sequence stays thread → agents).
+      autonomyLevel: 1,
     };
     const { db, insertMock } = makeFireDb({ threadRow: thread });
 
@@ -225,6 +237,8 @@ describe("controller inline drain — useControllerPath=false", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: false,
+      // Task 3.2: Assist dial so the proactive wake proceeds (legacy peer-wake path).
+      autonomyLevel: 1,
     };
     const { db } = makeFireDb({ threadRow: thread });
 
@@ -240,6 +254,8 @@ describe("controller inline drain — useControllerPath=false", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: false,
+      // Task 3.2: Assist dial so the proactive wake proceeds (legacy peer-wake path).
+      autonomyLevel: 1,
     };
     const { db, insertMock } = makeFireDb({ threadRow: thread });
 
@@ -261,6 +277,8 @@ describe("controller inline drain — error resilience", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: Assist dial so the controller drive fires (and its rejection is swallowed).
+      autonomyLevel: 1,
     };
     const { db } = makeFireDb({ threadRow: thread });
 

@@ -40,7 +40,7 @@ function liveRunToTimelineRun(run: LiveRunForIssue | ActiveRunForIssue): RunForI
     startedAt: normalizeTimelineDate(run.startedAt),
     finishedAt: normalizeTimelineDate(run.finishedAt),
     createdAt: normalizeTimelineDate(run.createdAt) ?? new Date().toISOString(),
-    invocationSource: run.invocationSource,
+    invocationSource: run.invocationSource ?? "",
     logStore: run.logStore,
     logRef: run.logRef,
     processPid: run.processPid,

@@ -12,7 +12,7 @@
  * These are contract-only tests — no real DB or HTTP server is started.
  */
 
-import { describe, it, expect, vi, beforeAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 
 // ── Mocks (mirror threads-routes-contract.test.ts pattern) ───────────────────
 
@@ -110,9 +110,24 @@ vi.mock("../redaction.js", () => ({
   sanitizeRecord: vi.fn((r: any) => r),
 }));
 
+// ── Mock 0.3 write-path (inbox-attach service) ────────────────────────────────
+// These mocks let the delegation tests assert that the route calls the 0.3
+// functions with the correct args without actually executing DB logic.
+//
+// NOTE: vi.mock() is hoisted to the top of the file by Vitest, so the factory
+// must not reference outer `const` variables declared after the vi.mock call.
+// We export the spy references from the factory and import them back via
+// vi.mocked() after the import block.
+
+vi.mock("../services/inbox-attach.js", () => ({
+  attachInboxItemToThread: vi.fn(),
+  promoteInboxItemToNewThread: vi.fn(),
+}));
+
 // ── Import ────────────────────────────────────────────────────────────────────
 
 import { discussionRoutes } from "../routes/discussions.js";
+import * as inboxAttachModule from "../services/inbox-attach.js";
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -205,5 +220,245 @@ describe("triage action validation", () => {
     };
     expect(STATUS_MAP["dismiss"]).toBe("dismissed");
     expect(STATUS_MAP["attach"]).toBe("attached");
+  });
+});
+
+// ── Delegation tests (Codex #6 fix — Task 0.4) ───────────────────────────────
+//
+// The `attach` and `make_thread` handlers must delegate to the 0.3 write-path
+// (inbox-attach.ts) so that inbound rawContent actually lands as a
+// discussion_entries row.  The `dismiss` handler is unchanged.
+//
+// Strategy: build a lightweight fake Express environment (req/res), find the
+// triage handler from the router stack, and invoke it directly.  We assert
+// that the mock 0.3 functions are called with the correct arguments.
+
+describe("triage handler delegation to 0.3 write-path (Codex #6)", () => {
+  // A minimal mock db whose select chain returns pre-configured rows.
+  // The route pre-flight checks need:
+  //   - threadInboxItems select → item row (for all actions)
+  //   - discussions select → thread row (for attach only)
+  // After the route delegates to inbox-attach.ts, those mocks do the work.
+  function makeMockDb(opts: {
+    itemRow?: object | null;
+    threadRow?: object | null;
+  } = {}) {
+    const {
+      itemRow = {
+        id: "item-1",
+        companyId: "co-1",
+        rawContent: "hello world",
+        status: "pending",
+      },
+      threadRow = { id: "00000000-0000-0000-0000-000000000001" },
+    } = opts;
+
+    // select is called in order: first for inbox item, then (for attach) for thread.
+    let callIdx = 0;
+    const rows = [itemRow, threadRow];
+    // Build a chainable object where from() returns the same object (not 'this'
+    // on the mock function — mockReturnThis() returns the vi.fn, not the parent obj).
+    function makeSelectChain() {
+      const chain: any = {
+        from: (_table: any) => chain,
+        where: (_cond: any) => {
+          const result = rows[callIdx] ? [rows[callIdx]] : [];
+          callIdx++;
+          return Promise.resolve(result);
+        },
+      };
+      return chain;
+    }
+    const select = vi.fn(() => makeSelectChain());
+
+    // update is still used by the dismiss branch (no delegation).
+    const update = vi.fn(() => ({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    }));
+
+    return { db: { select, update } as any };
+  }
+
+  /** Find the triage POST handler from the router stack. */
+  function getTriageHandler() {
+    const { db } = makeMockDb();
+    const router = discussionRoutes(db);
+    const layer = (router.stack ?? []).find(
+      (l: any) =>
+        l.route &&
+        l.route.methods?.post &&
+        typeof l.route.path === "string" &&
+        l.route.path.includes("inbox") &&
+        l.route.path.includes("triage"),
+    );
+    if (!layer) throw new Error("triage route not found in router stack");
+    return layer.route.stack[layer.route.stack.length - 1].handle as Function;
+  }
+
+  /** Build a fake req/res pair and invoke the handler, returning the response payload. */
+  async function invokeHandler(
+    handler: Function,
+    db: any,
+    params: { companyId: string; itemId: string },
+    body: object,
+  ): Promise<{ status: number; body: any }> {
+    // Re-create the router with this specific db so the handler closure captures it.
+    const router = discussionRoutes(db);
+    const layer = (router.stack ?? []).find(
+      (l: any) =>
+        l.route &&
+        l.route.methods?.post &&
+        typeof l.route.path === "string" &&
+        l.route.path.includes("inbox") &&
+        l.route.path.includes("triage"),
+    );
+    const realHandler = layer!.route.stack[layer!.route.stack.length - 1].handle as Function;
+
+    let responseStatus = 200;
+    let responseBody: any = null;
+
+    const req: any = {
+      params,
+      body,
+      // Provide the actor shape that assertCompanyAccess + getActorInfo read.
+      actor: {
+        type: "board",
+        userId: "u1",
+        source: "local_implicit", // bypasses company-list check in assertCompanyAccess
+        companyIds: [params.companyId],
+        isInstanceAdmin: false,
+      },
+    };
+    const res: any = {
+      status: (s: number) => { responseStatus = s; return res; },
+      json: (b: any) => { responseBody = b; return res; },
+    };
+
+    await realHandler(req, res, (err: any) => { throw err; });
+
+    return { status: responseStatus, body: responseBody };
+  }
+
+  beforeEach(() => {
+    vi.mocked(inboxAttachModule.attachInboxItemToThread).mockReset();
+    vi.mocked(inboxAttachModule.promoteInboxItemToNewThread).mockReset();
+  });
+
+  it("attach action: delegates to attachInboxItemToThread with correct args", async () => {
+    const { db } = makeMockDb();
+    vi.mocked(inboxAttachModule.attachInboxItemToThread).mockResolvedValue({
+      posted: true,
+      entryId: "entry-new",
+      alreadyHandled: false,
+    });
+
+    const resp = await invokeHandler(
+      getTriageHandler(),
+      db,
+      { companyId: "co-1", itemId: "item-1" },
+      { action: "attach", threadId: "00000000-0000-0000-0000-000000000001" },
+    );
+
+    expect(inboxAttachModule.attachInboxItemToThread).toHaveBeenCalledOnce();
+    const [_calledDb, calledArgs] = vi.mocked(inboxAttachModule.attachInboxItemToThread).mock.calls[0];
+    expect(calledArgs.companyId).toBe("co-1");
+    expect(calledArgs.inboxItemId).toBe("item-1");
+    expect(calledArgs.threadId).toBe("00000000-0000-0000-0000-000000000001");
+    expect(calledArgs.actor).toBeDefined();
+
+    // Response must include the entryId so callers know the entry was posted.
+    expect(resp.body.entryId).toBe("entry-new");
+    expect(resp.body.status).toBe("attached");
+  });
+
+  it("attach action: alreadyHandled is still 200 (idempotent)", async () => {
+    // The item is already 'attached' — but for the route pre-flight we still
+    // get a 409 from the status check.  The alreadyHandled path is hit when
+    // the 0.3 claim UPDATE finds no pending row INSIDE the transaction.
+    // We test idempotency at the service level here by making the service
+    // return alreadyHandled:true and asserting a 200.
+    const { db } = makeMockDb();
+    vi.mocked(inboxAttachModule.attachInboxItemToThread).mockResolvedValue({
+      posted: false,
+      entryId: null,
+      alreadyHandled: true,
+    });
+
+    const resp = await invokeHandler(
+      getTriageHandler(),
+      db,
+      { companyId: "co-1", itemId: "item-1" },
+      { action: "attach", threadId: "00000000-0000-0000-0000-000000000001" },
+    );
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.alreadyHandled).toBe(true);
+  });
+
+  it("make_thread action: delegates to promoteInboxItemToNewThread with correct args", async () => {
+    const { db } = makeMockDb();
+    vi.mocked(inboxAttachModule.promoteInboxItemToNewThread).mockResolvedValue({
+      threadId: "new-thread-99",
+      entryId: "entry-first",
+      alreadyHandled: false,
+    });
+
+    const resp = await invokeHandler(
+      getTriageHandler(),
+      db,
+      { companyId: "co-1", itemId: "item-1" },
+      { action: "make_thread" },
+    );
+
+    expect(inboxAttachModule.promoteInboxItemToNewThread).toHaveBeenCalledOnce();
+    const [_calledDb, calledArgs] = vi.mocked(inboxAttachModule.promoteInboxItemToNewThread).mock.calls[0];
+    expect(calledArgs.companyId).toBe("co-1");
+    expect(calledArgs.inboxItemId).toBe("item-1");
+    expect(calledArgs.actor).toBeDefined();
+
+    // Response includes threadId + entryId.
+    expect(resp.body.threadId).toBe("new-thread-99");
+    expect(resp.body.entryId).toBe("entry-first");
+    expect(resp.status).toBe(201);
+  });
+
+  it("make_thread action: alreadyHandled → 200 with alreadyHandled:true, no logActivity", async () => {
+    const { db } = makeMockDb();
+    vi.mocked(inboxAttachModule.promoteInboxItemToNewThread).mockResolvedValue({
+      threadId: null,
+      entryId: null,
+      alreadyHandled: true,
+    });
+
+    const resp = await invokeHandler(
+      getTriageHandler(),
+      db,
+      { companyId: "co-1", itemId: "item-1" },
+      { action: "make_thread" },
+    );
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.alreadyHandled).toBe(true);
+    expect(resp.body.threadId).toBeNull();
+  });
+
+  it("dismiss action: does NOT call inbox-attach functions", async () => {
+    const { db } = makeMockDb();
+    // dismiss still does a direct DB update — no 0.3 delegation.
+    (db as any).update = vi.fn(() => ({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    }));
+
+    await invokeHandler(
+      getTriageHandler(),
+      db,
+      { companyId: "co-1", itemId: "item-1" },
+      { action: "dismiss" },
+    );
+
+    expect(inboxAttachModule.attachInboxItemToThread).not.toHaveBeenCalled();
+    expect(inboxAttachModule.promoteInboxItemToNewThread).not.toHaveBeenCalled();
   });
 });

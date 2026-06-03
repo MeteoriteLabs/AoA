@@ -26,13 +26,17 @@
  *   `requestParticipation(threadId, params, opts)` — (P1-T6) hop-gated sub-agent
  *   participation. Reads the current hopCount; if already at HOP_CAP returns
  *   `{ spawned: false, atCap: true }` without invoking the runner. Otherwise
- *   calls `incrementHop`, invokes `opts.participantRunner`, posts the runner's
- *   output as an `inputType: "agent"` `discussion_entry` (does NOT create an
- *   issue), and returns `{ spawned: true, hopCount, entryId }`.
+ *   calls `incrementHop`, invokes `opts.participantRunner`, then EITHER posts the
+ *   runner's output as an `inputType: "agent"` `discussion_entry` (when the runner
+ *   returns text) OR skips the insert entirely (when the runner returns "" — the
+ *   crew agent already self-posted via the post_entry MCP tool; B1 no-double-post).
+ *   Never creates an issue. Returns `{ spawned: true, hopCount, entryId }` where
+ *   `entryId` is null on the self-post (skip) path.
  *
- * This module does NOT wire real CLI/crew execution. That happens in a later
- * integration task. Runners (`adjutantRunner`, `participantRunner`) are injected
- * seams — tests pass deterministic fakes; production wires real crew/CLI there.
+ * The `adjutantRunner` seam still defaults to a throwing stub (wired at the
+ * call site in thread-events/sweep). The `participantRunner` seam now defaults
+ * to the real crew runner (`makeThreadParticipationRunner`, Task 2.1) when not
+ * injected — tests pass deterministic fakes; production runs real crew/CLI.
  */
 
 import { eq, gt, and, asc, sql } from "drizzle-orm";
@@ -97,9 +101,16 @@ export interface ParticipantRunnerInput {
 }
 
 /**
- * Injected runner for sub-agent participation. Tests inject a fake that
- * returns deterministic output; production wires real crew/CLI execution.
- * The default stub throws "participant runner not wired (P1-T6 seam)".
+ * Injected runner for sub-agent participation. Tests inject a fake that returns
+ * deterministic output; production wires `makeThreadParticipationRunner(db)`
+ * (Task 2.1), which runs the crew agent via `runAoaAgent`.
+ *
+ * RETURN CONTRACT (B1): the production runner returns "" because the crew agent
+ * SELF-POSTS its reply via the post_entry MCP tool DURING its run. An empty or
+ * whitespace-only return tells `requestParticipation` to SKIP its own entry-
+ * insert (the agent already authored the reply → no double-post). A NON-empty
+ * return is posted verbatim as the agent's `inputType:"agent"` entry (legacy /
+ * direct-text callers).
  */
 export type ParticipantRunner = (
   input: ParticipantRunnerInput,
@@ -108,14 +119,20 @@ export type ParticipantRunner = (
 /** The union of outcomes that requestParticipation can return. */
 export type RequestParticipationResult =
   | { spawned: false; atCap: true; hopCount: number }
-  | { spawned: true; hopCount: number; entryId: string };
+  // `entryId` is the id of the agent-comment entry this call inserted, OR null
+  // when the participant runner self-posted via MCP (returned ""): in that case
+  // the run still happened (spawned:true) and the hop was still counted, but
+  // requestParticipation inserted NO entry — the agent is the sole author of its
+  // reply (B1 no-double-post; mirrors controller-adjutant-runner self-posting).
+  | { spawned: true; hopCount: number; entryId: string | null };
 
 /** Options accepted by `requestParticipation`. */
 export interface RequestParticipationOpts {
   /**
-   * The participant runner seam. Tests inject a deterministic fake;
-   * production wires the real crew/CLI execution here in a later
-   * integration task. The default stub throws so unwired callers fail loudly.
+   * The participant runner seam. Tests inject a deterministic fake; when omitted,
+   * production lazily wires `makeThreadParticipationRunner(db)` (Task 2.1), which
+   * runs the crew agent via `runAoaAgent` (the agent self-posts → runner returns
+   * "" → this method skips its own entry-insert; see ParticipantRunner above).
    */
   participantRunner?: ParticipantRunner;
   /**
@@ -171,13 +188,30 @@ const defaultAdjutantRunner: AdjutantRunner = async () => {
   throw new Error("adjutant runner not wired (P1-T4 seam)");
 };
 
-// ── Default participantRunner stub ────────────────────────────────────────────
+// ── Default participantRunner ─────────────────────────────────────────────────
 /**
- * P1-T6 DI seam placeholder. Throws immediately so any production path that
- * accidentally omits the injection fails loudly. Always replaced in production.
+ * Phase 2 / Task 2.1 — the production default. Lazily wires
+ * `makeThreadParticipationRunner(db)` so a controller-path @mention actually RUNS
+ * the crew agent (the agent self-posts its reply via the post_entry MCP tool, so
+ * the returned string is "" and requestParticipation skips its own entry-insert).
+ *
+ * Lazy (dynamic import) for two reasons:
+ *   1. `thread-participation-runner.ts` → `runner.ts` builds the heavy crew
+ *      tool-registry at module load. discussions.ts imports this module, so a
+ *      static import here would drag that subtree onto the discussions
+ *      module-load path. Deferring to call time keeps it off the hot path
+ *      (identical discipline to controller-adjutant-runner's lazy runAoaAgent).
+ *   2. Tests inject `opts.participantRunner` and never reach this default, so the
+ *      dynamic import is never resolved in unit tests.
+ *
+ * Was (P1-T6): a stub that threw "participant runner not wired" — by design,
+ * because no real wiring existed yet. Task 2.1 supplies it.
  */
-const defaultParticipantRunner: ParticipantRunner = async () => {
-  throw new Error("participant runner not wired (P1-T6 seam)");
+const resolveDefaultParticipantRunner = async (db: Db): Promise<ParticipantRunner> => {
+  const { makeThreadParticipationRunner } = await import(
+    "./internal-agent/aoa-agents/thread-participation-runner.js"
+  );
+  return makeThreadParticipationRunner(db);
 };
 
 export function threadOrchestrationService(db: Db) {
@@ -567,7 +601,10 @@ export function threadOrchestrationService(db: Db) {
       params: { agentId: string; prompt: string },
       opts: RequestParticipationOpts = {},
     ): Promise<RequestParticipationResult> => {
-      const participantRunner = opts.participantRunner ?? defaultParticipantRunner;
+      // Task 2.1: the default now wires the real crew runner (lazily). Tests
+      // inject opts.participantRunner and never resolve the default.
+      const participantRunner =
+        opts.participantRunner ?? (await resolveDefaultParticipantRunner(db));
       const actorId = opts.actorId ?? params.agentId;
 
       // ── Step 1: Cap check — read current hopCount ──────────────────────────
@@ -653,6 +690,26 @@ export function threadOrchestrationService(db: Db) {
         agentId: params.agentId,
         prompt: params.prompt,
       });
+
+      // ── Step 3b: Skip the insert when the runner self-posted (B1) ──────────
+      // The production crew runner (makeThreadParticipationRunner) returns ""
+      // because the agent ALREADY posted its reply via the post_entry MCP tool
+      // DURING its run. If we also inserted an entry here we'd DOUBLE-POST (an
+      // empty stray entry). So: an empty/whitespace return means "the agent
+      // authored its own reply — do not insert one for it." The hop was already
+      // incremented above (this round happened, so it still counts toward the
+      // cap — self-posting agents must not get free, uncapped rounds), and the
+      // thread_orchestration_state row is untouched here (incrementHop already
+      // bumped updatedAt). Legacy/other callers that return real text still get
+      // it inserted by Step 4 below.
+      const replyText = typeof output === "string" ? output : String(output ?? "");
+      if (!replyText.trim()) {
+        log.debug(
+          { threadId, agentId: params.agentId, hopCount },
+          "requestParticipation: runner returned empty — agent self-posted via MCP; skipping entry insert (no double-post)",
+        );
+        return { spawned: true, hopCount, entryId: null };
+      }
 
       // ── Step 4: Post the output as an agent comment ────────────────────────
       // Atomically bump discussions.entrySeq + entryCount and insert the entry.

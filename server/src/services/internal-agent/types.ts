@@ -16,6 +16,7 @@ import type { secretService } from "../secrets.js";
 import type { notificationService } from "../notifications.js";
 import type { discussionService } from "../discussions.js";
 import type { threadService } from "../threads.js";
+import type { taskOutputService } from "../task-outputs.js";
 import type { EmbeddingService } from "../embeddings.js";
 
 // JSON Schema type for tool parameter definitions
@@ -96,6 +97,12 @@ export interface ServiceContainer {
   notifications: ReturnType<typeof notificationService>;
   discussions: ReturnType<typeof discussionService>;
   threads: ReturnType<typeof threadService>;
+  /**
+   * Unified task-level product index (artifacts, detected files, preview URLs,
+   * runtime services, branches, PRs). Crew result-write tools (attach_task_artifact)
+   * record a row here via upsertForIssue. Company-scoped per call.
+   */
+  taskOutputs: ReturnType<typeof taskOutputService>;
   companies: {
     get: (id: string) => Promise<{ name: string | null; vision: string | null; mission: string | null; issuePrefix: string | null; stage: string | null } | null>;
     update: (id: string, data: Partial<{ vision: string; mission: string }>) => Promise<{ id: string; name: string | null; vision: string | null; mission: string | null }>;

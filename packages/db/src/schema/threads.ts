@@ -6,6 +6,7 @@ import {
   integer,
   boolean,
   doublePrecision,
+  jsonb,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -106,9 +107,62 @@ export const threadInboxItems = pgTable(
     suggestedThreadId: uuid("suggested_thread_id").references(() => discussions.id, { onDelete: "set null" }),
     status: text("status").notNull().default("pending"), // ThreadInboxStatus: pending|attached|dismissed
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+
+    // Task 0.2 (Inbound Dirty-Data Routing) ─────────────────────────────────
+    // Durable dedup key — a PURE CONTENT HASH derived in inbox-producer.ts
+    // (`computeDedupKey`): SHA-256 of NUL-delimited
+    // (companyId + originMedium + (originSource ?? "") + rawContent). It is NOT
+    // a transport/message-id — there is no inbound-adapter-provided id involved.
+    // Paired with the unique index below to prevent double-insert on retry
+    // across ALL statuses (Codex #8: status moves pending→attached must not
+    // allow a re-delivered item to sneak in as a second row).
+    //
+    // COLLISION SEMANTICS: because the key is a content hash, byte-identical
+    // content from the SAME (company, medium, source) is treated as a DUPLICATE
+    // and silently deduped to the existing row — even a legitimately distinct
+    // re-send. A producer that must force a distinct row for identical content
+    // has to vary one of the hashed fields (e.g. originSource). This is the
+    // intended trade-off (idempotent re-delivery > guaranteed-distinct re-sends).
+    dedupKey: text("dedup_key"),
+
+    // Router lifecycle (Codex #9): sweep distinguishes not-yet-routed vs
+    // in-progress vs routed vs escalated-pending-founder vs failed.
+    // Values: 'pending_route' | 'routing' | 'routed' | 'escalated' | 'failed'
+    routingStatus: text("routing_status").notNull().default("pending_route"),
+
+    // Populated when routingStatus='failed'; machine-readable error code for
+    // the sweep and for UI display (e.g. 'confidence_too_low', 'timeout').
+    routingErrorCode: text("routing_error_code"),
+
+    // Timestamp when routingStatus last moved to 'routed' or 'escalated'.
+    routedAt: timestamp("routed_at", { withTimezone: true }),
+
+    // UUID of the HeartbeatRun / wakeup that the navigator spawned for this
+    // item. Nullable — only populated when routerDecision='auto_attach' and
+    // the navigator wakeup was actually queued.
+    navigatorWakeupId: uuid("navigator_wakeup_id"),
+
+    // Timestamp when the atomic claim (pending_route → routing) was executed.
+    // Used by sweep-inbox.ts to reclaim items stranded in 'routing'/'escalated'
+    // that have been in-flight longer than RECLAIM_THRESHOLD_MS (C4 / #37).
+    routingClaimedAt: timestamp("routing_claimed_at", { withTimezone: true }),
+
+    // Proposed title when the Navigator suggests creating a new thread (D2 suggest_new).
+    // NULL for attach suggestions.
+    suggestedThreadTitle: text("suggested_thread_title"),
+
+    // Snapshot of the candidate cards the Navigator could see at decision time.
+    // Written by routeInboxItem in the escalate path. Enables reproducible-decision
+    // audit ("what did the Navigator have available?"). NULL for items routed
+    // before this column existed. (A2 / Codex #12 — now core, not deferred.)
+    routingCardSnapshot: jsonb("routing_card_snapshot"),
   },
   (table) => ({
     companyStatusIdx: index("thread_inbox_items_company_status_idx").on(table.companyId, table.status),
+    // Durable cross-status unique guard: prevents re-delivered inbound items
+    // from producing a second row after status moves pending→attached.
+    // Non-partial (no WHERE) by design — Codex #8.
+    companyDedupIdx: uniqueIndex("thread_inbox_items_company_dedup_idx").on(table.companyId, table.dedupKey),
   }),
 );
 

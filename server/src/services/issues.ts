@@ -33,7 +33,7 @@ import type {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService } from "./dependencies.js";
-import { heartbeatService } from "./heartbeat.js";
+import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
 import {
@@ -53,6 +53,15 @@ import {
   createIssueContextBundle,
   type CreateIssueContextBundleItemInput,
 } from "./issue-context-bundles.js";
+import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
+import { publishIssueStatusChanged } from "./live-events.js";
+import {
+  crewAssigneeExists,
+  notCrewAssigned,
+  resolveTaskScope,
+  scopeUsesCrewJoin,
+  type TaskScope,
+} from "./issue-crew-scope.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -115,12 +124,30 @@ export interface IssueFilters {
    */
   parentId?: string | null;
   /**
-   * Task 1.4: when true, restrict to tasks whose origin_kind='crew_thread'
-   * (crew-board provenance, decision D10). Also enables the server-side LEFT
-   * JOIN that populates the `sourceThreadTitle` denormalization on returned
-   * rows so the TeamPage Tasks tab can group results without a follow-up fetch.
-   * Renamed from `sourceDiscussionIdNotNull` — the old name was misleading once
-   * the predicate changed from sourceDiscussionId IS NOT NULL to originKind eq.
+   * Board-surface scope (2026-06-02 unified crew/org separation, T-A). The ONE
+   * dial that decides whether a list query shows crew-agent tasks, org/human
+   * tasks, or both. Resolved by `resolveTaskScope()` with a **fail-safe default
+   * of `'org'`** when undefined.
+   *  - `'org'`  (default): org agents + humans + unassigned. Pushes
+   *    `notCrewAssigned`. Every generic `list(companyId)` caller is org/human-only
+   *    with zero per-call changes; a forgotten filter now HIDES crew (safe).
+   *  - `'crew'` : active-crew-assigned tasks only. The Crew Board. Pushes
+   *    `crewAssigneeExists` AND opts into the `sourceThreadTitle` LEFT JOIN.
+   *  - `'all'`  : no scope predicate. The task GRAPH (deps, goal rollups, search,
+   *    delete-safety, portability) and explicit admin/debug/Commander paths.
+   */
+  taskScope?: TaskScope;
+  /**
+   * @deprecated Back-compat alias for `taskScope: 'crew'`. `crewBoard === true`
+   * resolves to the crew scope (keeps the existing CrewBoard UI param working).
+   * If both are passed, `taskScope` wins. Prefer `taskScope` in new code.
+   *
+   * Unified Crew Board (2026-06-02): the crew scope is the flat tracker for ALL
+   * crew-agent work — tasks from discussions, goals, routines, MCP, and direct
+   * capture. The crew predicate is "assignee is an active `kind='aoa'` agent that
+   * is not terminated", and it enables the LEFT JOIN that populates the
+   * `sourceThreadTitle` denormalization so discussion-sourced cards keep their
+   * source-thread label.
    */
   crewBoard?: boolean;
 }
@@ -442,7 +469,6 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const deps = dependencyService(db);
-  const heartbeat = heartbeatService(db);
 
   async function hasUnmetDependencies(companyId: string, issueId: string): Promise<boolean> {
     const upstream = await db
@@ -645,15 +671,25 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      // Task 1.4: restrict to tasks with origin_kind='crew_thread' (decision D10).
-      // Also opts the query into the LEFT JOIN below so the TeamPage Tasks tab
-      // can group by source thread title without a follow-up fetch.
-      // The assigneeAgentId filter (line ~610) is already pushed unconditionally
-      // above; it works for both the crew-board path and generic list calls.
-      const fromDiscussions = filters?.crewBoard === true;
-      if (fromDiscussions) {
-        conditions.push(eq(issues.originKind, "crew_thread"));
+      // Crew/org task scope (2026-06-02 unified separation, T-A). The ONE place
+      // the crew predicate is applied to the list surface — resolved via the
+      // shared `resolveTaskScope` with a fail-safe default of 'org':
+      //   'org'  → push notCrewAssigned  (org agents + humans + unassigned)
+      //   'crew' → push crewAssigneeExists + opt into the sourceThreadTitle JOIN
+      //   'all'  → push nothing (the task GRAPH + admin/debug escape hatch)
+      // `taskScope` wins over the legacy `crewBoard` boolean. The crew board is
+      // the flat tracker for ALL crew-agent work (tasks from discussions, goals,
+      // routines, MCP, direct capture) — the discriminator is the assignee's
+      // agent kind, not the task's origin. The assigneeAgentId filter (line ~610)
+      // is still pushed unconditionally above and composes with any scope.
+      const taskScope: TaskScope = resolveTaskScope(filters);
+      if (taskScope === "org") {
+        conditions.push(notCrewAssigned(companyId));
+      } else if (taskScope === "crew") {
+        conditions.push(crewAssigneeExists(companyId));
       }
+      // taskScope === "all": no scope predicate.
+      const usesCrewJoin = scopeUsesCrewJoin(taskScope);
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
@@ -681,7 +717,7 @@ export function issueService(db: Db) {
       // rows ({ issues: {...}, discussions: {...} }) which would break every
       // downstream consumer.
       let rows: IssueRow[];
-      if (fromDiscussions) {
+      if (usesCrewJoin) {
         const joinedRows = await db
           .select({
             // Spread issues columns via Drizzle's column reference. We rely on
@@ -763,9 +799,13 @@ export function issueService(db: Db) {
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
+      // Org-workload count (sidebar unread badge). Crew-agent tasks live only on
+      // the Crew Board and must NOT inflate this badge — push notCrewAssigned
+      // (2026-06-02 unified crew/org separation, T-B).
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
+        notCrewAssigned(companyId),
         unreadForUserCondition(companyId, userId),
       ];
       if (status) {
@@ -1014,6 +1054,7 @@ export function issueService(db: Db) {
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & { labelIds?: string[]; monitorPolicy?: unknown },
+      actor?: { actorType?: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number },
     ) => {
       const existing = await db
         .select()
@@ -1148,6 +1189,21 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
+
+      // Service-level agent status-transition guard (A4). Runs an approval-lookup
+      // read, so it lives here alongside the assignable-agent asserts and BEFORE
+      // the transaction opens. Non-agent callers (default actorType "system") are
+      // unaffected — see issue-agent-status-guard.ts. The autonomy dial is
+      // resolved by the caller (e.g. the set_task_status tool) and forwarded as
+      // actor.effectiveDial; this service never reads internalAgentConfig.
+      await assertAgentStatusTransition(
+        {
+          existing: { id: existing.id, status: existing.status, assigneeAgentId: existing.assigneeAgentId },
+          updateFields: issueData,
+          actor: { actorType: actor?.actorType ?? "system", agentId: actor?.agentId ?? null, effectiveDial: actor?.effectiveDial },
+        },
+        db,
+      );
 
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
@@ -1286,14 +1342,29 @@ export function issueService(db: Db) {
         return { result: enriched, tasksToWake: wake };
       });
 
+      // Task 5.6: publish issue.status_changed when the status ACTUALLY changed
+      // (the canonical crew-move chokepoint that goes through update — incl.
+      // set_task_status). Company-broadcast (R3) so the kanban/Crew Board move
+      // the card live. Best-effort — a publish failure must never fail the
+      // write. Gated on a real status delta so a non-status update (or a
+      // same-status no-op) is silent.
+      if (result && issueData.status && issueData.status !== existing.status) {
+        try {
+          publishIssueStatusChanged(existing.companyId, id, issueData.status);
+        } catch (publishErr) {
+          logger.warn({ err: publishErr, issueId: id }, "issue.status_changed publish failed (best-effort, ignored)");
+        }
+      }
+
       // Fire wakeups after transaction commits (side effects)
       for (const wake of tasksToWake) {
         if (!shouldDispatchIssueWakeup({ workMode: wake.workMode ?? null })) continue;
-        await heartbeat.wakeup(wake.agentId, {
+        await enqueueIssueAssigneeWakeup(db, {
+          companyId: existing.companyId,
+          agentId: wake.agentId,
+          issueId: wake.issueId,
           source: "automation",
-          triggerDetail: "system",
           reason: "dependency_unblocked",
-          payload: { issueId: wake.issueId },
         });
       }
 
@@ -1442,6 +1513,15 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        // Task 5.6: checkout is a CREW status-MOVE that bypasses
+        // issueService.update (raw atomic write → in_progress). Publish
+        // issue.status_changed (company-broadcast, R3) so the board reflects
+        // the card going in_progress live. Best-effort — never break checkout.
+        try {
+          publishIssueStatusChanged(updated.companyId, updated.id, "in_progress");
+        } catch (publishErr) {
+          logger.warn({ err: publishErr, issueId: updated.id }, "issue.status_changed publish failed on checkout (best-effort, ignored)");
+        }
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -2270,6 +2350,10 @@ export function issueService(db: Db) {
             eq(issues.status, "in_progress"),
             isNull(issues.hiddenAt),
             sql`${issues.startedAt} < ${cutoff.toISOString()}`,
+            // Org-workload count (review #5): a stale crew (kind='aoa') task
+            // lives on the Crew Board and must NOT inflate the founder's org
+            // sidebar Inbox badge. Mirrors countUnreadTouchedByUser / dashboard.
+            notCrewAssigned(companyId),
           ),
         )
         .then((rows) => rows[0]);

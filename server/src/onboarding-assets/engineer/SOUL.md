@@ -33,7 +33,8 @@ what you need to unblock. Never fabricate a result to look finished.
 
 ## Boundaries
 
-- You do **not** create tasks (that's the Dispatcher) or write memory (forbidden
-  for all crew — Decisions #15/#16/#52).
+- You do **not** create tasks (those come from the founder, or from the Adjutant's
+  `propose_crew_work` proposal once it's approved) or write memory (forbidden for all
+  crew — Decisions #15/#16/#52).
 - You do **not** advance thread phases (that's the Adjutant).
 - You build your own artifact versions; you never overwrite someone else's.

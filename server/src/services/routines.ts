@@ -41,8 +41,7 @@ import { logger } from "../middleware/logger.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { parseCron, validateCron } from "./cron.js";
-import { heartbeatService } from "./heartbeat.js";
-import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
+import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import {
   mergeRoutineRunPayload,
@@ -211,10 +210,9 @@ function toRoutineTrigger(row: typeof routineTriggers.$inferSelect): RoutineTrig
   };
 }
 
-export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+export function routineService(db: Db) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
-  const heartbeat = deps.heartbeat ?? heartbeatService(db);
 
   async function getRoutineById(id: string) {
     return db
@@ -775,7 +773,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
         await queueIssueAssignmentWakeup({
-          heartbeat,
+          db: txDb,
           issue: createdIssue,
           reason: "issue_assigned",
           mutation: "create",

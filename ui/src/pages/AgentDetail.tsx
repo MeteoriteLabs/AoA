@@ -313,8 +313,11 @@ export function AgentDetail() {
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(resolvedCompanyId!),
-    queryFn: () => issuesApi.list(resolvedCompanyId!),
+    // A CREW agent's detail page must show its own crew tasks; the 'org'
+    // default would make assignedIssues empty. Distinct cache key from the
+    // org-default board list to avoid poisoning the main Tasks board.
+    queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "scope-all"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { taskScope: "all" }),
     enabled: !!resolvedCompanyId,
   });
 

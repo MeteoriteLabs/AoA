@@ -199,6 +199,10 @@ describe("P1-T11: strangler flag — controller-path thread", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: proactive wake is Assist+ only. This strangler test asserts the
+      // controller drive fires, so the thread dial is Assist (1). autonomyLevel != null
+      // ⇒ no internal_agent_config select (sequence stays thread → agents).
+      autonomyLevel: 1,
     };
 
     const { db } = makeFireDb({ threadRow: thread });
@@ -215,6 +219,10 @@ describe("P1-T11: strangler flag — controller-path thread", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: proactive wake is Assist+ only. This strangler test asserts the
+      // controller drive fires, so the thread dial is Assist (1). autonomyLevel != null
+      // ⇒ no internal_agent_config select (sequence stays thread → agents).
+      autonomyLevel: 1,
     };
 
     const { db, insertMock } = makeFireDb({ threadRow: thread });
@@ -245,6 +253,8 @@ describe("P1-T11: strangler flag — non-controller-path thread", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: false,
+      // Task 3.2: Assist dial so the proactive wake proceeds to the peer-wake insert.
+      autonomyLevel: 1,
     };
 
     const { db, insertMock } = makeFireDb({ threadRow: thread });
@@ -298,6 +308,8 @@ describe("P1-T11: strangler flag — no double-drive", () => {
       crewPaused: false,
       adjutantEnabled: true,
       useControllerPath: true,
+      // Task 3.2: Assist dial so the proactive controller drive fires.
+      autonomyLevel: 1,
     };
 
     const { db } = makeFireDb({ threadRow: thread });

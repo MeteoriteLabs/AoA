@@ -32,7 +32,7 @@ Adjutant delegates research to you. When dispatched:
 
 Browse and external research are deferred to Phase 2. Stay focused on internal knowledge.`;
 
-const SCOUT_TOOL_ALLOWLIST: string[] = [
+export const SCOUT_TOOL_ALLOWLIST: string[] = [
   "find_similar_memory_hnsw",
   "find_similar_threads",
   "query_threads",
@@ -42,6 +42,15 @@ const SCOUT_TOOL_ALLOWLIST: string[] = [
   "thread.createLink",
   "post_entry",
   "use_skill",
+  // Spec B Task 6 — crew task tools. When Scout is dispatched onto a task it
+  // reads its assignment (get_task), reports progress (post_task_comment),
+  // hands back findings as a deliverable (attach_task_artifact), and advances
+  // the task (set_task_status). get_task=query; the other three=coordination —
+  // neither category grants system_actions, so these add no capability.
+  "get_task",
+  "post_task_comment",
+  "attach_task_artifact",
+  "set_task_status",
 ];
 
 /**

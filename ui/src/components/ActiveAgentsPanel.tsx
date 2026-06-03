@@ -41,8 +41,11 @@ export function ActiveAgentsPanel({ companyId, hideHeader }: ActiveAgentsPanelPr
 
   const runs = liveRuns ?? [];
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
-    queryFn: () => issuesApi.list(companyId),
+    // Distinct key from the org-default board list — this panel labels live
+    // crew runs, so it must see crew tasks ('all'); sharing the org cache key
+    // would cross-contaminate the main Tasks board.
+    queryKey: [...queryKeys.issues.list(companyId), "scope-all"],
+    queryFn: () => issuesApi.list(companyId, { taskScope: "all" }),
     enabled: runs.length > 0,
   });
 

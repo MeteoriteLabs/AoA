@@ -7,6 +7,7 @@ import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-s
 import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
 import { ensureScout } from "./internal-agent/aoa-agents/ensure-scout.js";
 import { ensureEngineer } from "./internal-agent/aoa-agents/ensure-engineer.js";
+import { ensureChronicler } from "./internal-agent/aoa-agents/ensure-chronicler.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -53,6 +54,7 @@ import {
   workspaceOperations,
   workspaceRuntimeServices,
 } from "@armyofagents/db";
+import { notCrewAssigned } from "./issue-crew-scope.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -183,6 +185,11 @@ export function companyService(db: Db) {
           await ensureEngineer(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "Engineer agent seeding failed");
           });
+          // Routing-card redesign: seed the Chronicler (keeps per-thread
+          // routing cards fresh for the Navigator).
+          await ensureChronicler(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Chronicler agent seeding failed");
+          });
         }
         return company;
       } catch (error) {
@@ -303,6 +310,12 @@ export function companyService(db: Db) {
         db
           .select({ companyId: issues.companyId, count: count() })
           .from(issues)
+          // Per-company issue (active-tasks) counts exclude crew-agent tasks, so
+          // the lobby card mirrors the agent count's org-only intent. This is a
+          // CROSS-COMPANY batch (groupBy company_id, no fixed company), so the
+          // crew predicate is the CORRELATED form (no arg → agents.company_id =
+          // issues.company_id). Crew tasks live only on the Crew Board.
+          .where(notCrewAssigned())
           .groupBy(issues.companyId),
         db
           .select({ companyId: approvals.companyId, count: count() })

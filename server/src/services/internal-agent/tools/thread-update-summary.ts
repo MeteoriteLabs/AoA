@@ -1,20 +1,17 @@
 // server/src/services/internal-agent/tools/thread-update-summary.ts
-//
-// Task C2 batch 1 — `thread.updateSummary` (action tool, per D4).
-//
-// Updates `discussions.summary_text` and bumps `summary_updated_at`, then
-// best-effort enqueues a summary embedding regeneration via the embedding
-// service. The embedding step is non-fatal — if the service is not wired in
-// (e.g. in tests, or before the worker starts), we still save the summary.
-
 import { eq } from "drizzle-orm";
 import { discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { logActivity } from "../../activity-log.js";
+
+/** Cap on routing terms count + per-term length to keep the card bounded. */
+const MAX_ROUTING_TERMS = 50;
+const MAX_TERM_LENGTH = 120;
 
 export const threadUpdateSummaryTool: AgentTool = {
   name: "thread.updateSummary",
   description:
-    "Update a thread's summary text + queue embedding regeneration.",
+    "Update a thread's summary text + routing terms, then queue embedding regeneration.",
   parameters: {
     type: "object",
     properties: {
@@ -23,6 +20,13 @@ export const threadUpdateSummaryTool: AgentTool = {
         type: "string",
         description: "1-3 sentence summary of current thread state",
       },
+      routingTerms: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Key entities, aliases, and synonyms for routing retrieval " +
+          "(e.g. [\"Acme Corp\",\"ACME\",\"the renewal\"]). Omit to leave unchanged.",
+      },
     },
     required: ["threadId", "summary"],
   },
@@ -30,37 +34,78 @@ export const threadUpdateSummaryTool: AgentTool = {
   requiredRole: "team_member",
   requiresConfirmation: false,
   async execute(params, ctx) {
-    const { threadId, summary } = (params ?? {}) as {
+    const { threadId, summary, routingTerms } = (params ?? {}) as {
       threadId?: string;
       summary?: string;
+      routingTerms?: unknown;
     };
+
     if (!threadId || typeof threadId !== "string") {
-      return {
-        success: false,
-        data: null,
-        summary: "threadId is required",
-        error: "INVALID_PARAMS",
-      };
+      return { success: false, data: null, summary: "threadId is required", error: "INVALID_PARAMS" };
     }
     if (typeof summary !== "string") {
-      return {
-        success: false,
-        data: null,
-        summary: "summary must be a string",
-        error: "INVALID_PARAMS",
-      };
+      return { success: false, data: null, summary: "summary must be a string", error: "INVALID_PARAMS" };
+    }
+    // Codex P2: validate every element is a string (not just Array.isArray) + cap.
+    let normalizedTerms: string[] | undefined;
+    if (routingTerms !== undefined) {
+      if (!Array.isArray(routingTerms)) {
+        return { success: false, data: null, summary: "routingTerms must be a string array", error: "INVALID_PARAMS" };
+      }
+      if (!routingTerms.every((t) => typeof t === "string")) {
+        return { success: false, data: null, summary: "routingTerms must contain only strings", error: "INVALID_PARAMS" };
+      }
+      normalizedTerms = (routingTerms as string[])
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0 && t.length <= MAX_TERM_LENGTH)
+        .slice(0, MAX_ROUTING_TERMS);
+    }
+
+    // Cross-tenant guard (#7): verify thread belongs to caller's company.
+    const existing = await ctx.db
+      .select({ companyId: discussions.companyId })
+      .from(discussions)
+      .where(eq(discussions.id, threadId))
+      .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+
+    if (!existing) {
+      return { success: false, data: null, summary: `Thread ${threadId} not found`, error: "THREAD_NOT_FOUND" };
+    }
+    if (existing.companyId !== ctx.companyId) {
+      return { success: false, data: null, summary: "Thread belongs to a different company", error: "COMPANY_MISMATCH" };
     }
 
     const summaryUpdatedAt = new Date();
+    const updatePayload: Record<string, unknown> = { summaryText: summary, summaryUpdatedAt };
+
+    let routingTermsWritten = false;
+    if (normalizedTerms !== undefined) {
+      // jsonb string[] column — store the array directly (no serialize).
+      updatePayload.routingTerms = normalizedTerms;
+      routingTermsWritten = true;
+    }
+
     await ctx.db
       .update(discussions)
-      .set({ summaryText: summary, summaryUpdatedAt })
+      .set(updatePayload)
       .where(eq(discussions.id, threadId));
 
-    // Best-effort: queue summary embedding regeneration. The embedding
-    // service may be absent in tests / pre-worker startup — that's fine;
-    // the summary text is still persisted and the embedding can be
-    // backfilled later by a separate scan.
+    // Audit trail (Codex P1 #8 / spec C6): card writes are user-facing state, so
+    // log who changed the summary. Actor resolved from ctx (agentId when present —
+    // e.g. the Chronicler — else 'system'). Non-fatal: never block the write.
+    await logActivity(ctx.db, {
+      companyId: ctx.companyId,
+      actorType: ctx.agentId ? "agent" : "system",
+      actorId: ctx.agentId ?? "system",
+      action: "thread.summary.updated",
+      entityType: "discussion",
+      entityId: threadId,
+      details: { routingTermsWritten },
+    }).catch(() => {
+      /* non-fatal — summary already saved */
+    });
+
+    // Best-effort embedding regeneration.
     let embeddingQueued = false;
     try {
       if (ctx.services?.embeddings?.enqueue) {
@@ -73,13 +118,12 @@ export const threadUpdateSummaryTool: AgentTool = {
         embeddingQueued = true;
       }
     } catch {
-      // Non-fatal — summary already saved above.
       embeddingQueued = false;
     }
 
     return {
       success: true,
-      data: { threadId, summaryUpdatedAt: summaryUpdatedAt.toISOString(), embeddingQueued },
+      data: { threadId, summaryUpdatedAt: summaryUpdatedAt.toISOString(), embeddingQueued, routingTermsWritten },
       summary: embeddingQueued
         ? "Summary updated; embedding queued"
         : "Summary updated (embedding not queued — service unavailable)",

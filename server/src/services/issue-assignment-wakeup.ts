@@ -1,27 +1,11 @@
+import type { Db } from "@armyofagents/db";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
+import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
 import { logger } from "../middleware/logger.js";
 
-type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
-type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
-
-export interface IssueAssignmentWakeupDeps {
-  wakeup: (
-    agentId: string,
-    opts: {
-      source?: WakeupSource;
-      triggerDetail?: WakeupTriggerDetail;
-      reason?: string | null;
-      payload?: Record<string, unknown> | null;
-      requestedByActorType?: "user" | "agent" | "system";
-      requestedByActorId?: string | null;
-      contextSnapshot?: Record<string, unknown>;
-    },
-  ) => Promise<unknown>;
-}
-
 export function queueIssueAssignmentWakeup(input: {
-  heartbeat: IssueAssignmentWakeupDeps;
-  issue: { id: string; assigneeAgentId: string | null; status: string; workMode?: string | null };
+  db: Db;
+  issue: { id: string; companyId: string; assigneeAgentId: string | null; status: string; workMode?: string | null };
   reason: string;
   mutation: string;
   contextSource: string;
@@ -31,19 +15,18 @@ export function queueIssueAssignmentWakeup(input: {
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog" || !shouldDispatchIssueWakeup({ workMode: input.issue.workMode ?? null })) return;
 
-  return input.heartbeat
-    .wakeup(input.issue.assigneeAgentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: input.reason,
-      payload: { issueId: input.issue.id, mutation: input.mutation },
-      requestedByActorType: input.requestedByActorType,
-      requestedByActorId: input.requestedByActorId ?? null,
-      contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
-    })
-    .catch((err) => {
-      logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
-      if (input.rethrowOnError) throw err;
-      return null;
-    });
+  return enqueueIssueAssigneeWakeup(input.db, {
+    companyId: input.issue.companyId,
+    agentId: input.issue.assigneeAgentId,
+    issueId: input.issue.id,
+    source: "assignment",
+    reason: input.reason,
+    mutation: input.mutation,
+    requestedByActorType: input.requestedByActorType,
+    requestedByActorId: input.requestedByActorId ?? null,
+  }).catch((err) => {
+    logger.warn({ err, issueId: input.issue.id }, "failed assignee wake");
+    if (input.rethrowOnError) throw err;
+    return null;
+  });
 }

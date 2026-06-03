@@ -22,10 +22,12 @@ export type CrewRole =
   | "adjutant"
   | "maker"
   | "engineer"
-  | "scout";
+  | "scout"
+  | "reviewer"
+  | "chronicler";
 
 /** Minimum autonomy level at which each role auto-runs. Core roles are always on (0). */
-const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
+export const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   scribe: 0,        // core: extraction always runs
   memory_keeper: 0, // core: proposals always run
   curator: 0,       // core: proactive scan always runs
@@ -37,6 +39,8 @@ const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   maker: 1,         // legacy alias — kept while staging DBs still carry kind='aoa' name='Maker' rows
   engineer: 1,      // Phase D rename of maker: artifact creation on @mention or phase-advance
   scout: 1,         // mention-driven internal-only research (Phase 1 — no browse); aligns with engineer
+  reviewer: 1,      // mention-driven critique; advise-only, posts a review like scout
+  chronicler: 0,    // core infrastructure: card maintenance always runs (like scribe/memory_keeper)
 };
 
 /**

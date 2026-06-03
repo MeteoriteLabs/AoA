@@ -64,6 +64,18 @@ vi.mock("@armyofagents/db", () => ({
     kind: "aat_kind",
     config: "aat_config",
   },
+  // Task 1.2: processMentions now fetches the thread row (useControllerPath +
+  // companyId) and the inviting entry's rawContent up front, to decide between
+  // the controller participation path and the legacy peer-wake insert.
+  discussions: {
+    id: "discussions_id",
+    companyId: "discussions_company_id",
+    useControllerPath: "discussions_use_controller_path",
+  },
+  discussionEntries: {
+    id: "entries_id",
+    rawContent: "entries_raw_content",
+  },
 }));
 
 // Import the pure function (no DB) directly
@@ -131,15 +143,24 @@ describe("processMentions (dispatch)", () => {
     };
 
     // Queue mirrors the actual sequence of selects in processMentions():
-    //   1. agent lookup (always)
-    //   2. if agent found: aoaAgentTriggers lookup (UAT iter 2 fix)
-    //   3. if no agent: user lookup
+    //   0. thread row     (discussions: useControllerPath, companyId)  [per-call, Task 1.2]
+    //   1. entry text      (discussionEntries: rawContent)             [per-call, Task 1.2]
+    //   2. agent lookup    (always)
+    //   3. if agent found: aoaAgentTriggers lookup (UAT iter 2 fix; legacy path only)
+    //   3'. if no agent: user lookup
+    // These tests exercise the LEGACY peer-wake path, so the thread row is
+    // useControllerPath=false (controller-path routing has its own suite,
+    // controller-mention-dispatch.test.ts).
+    const LEGACY_THREAD = [{ useControllerPath: false, companyId: "company-1" }];
+    const ENTRY_TEXT = [{ rawContent: "@mention text" }];
     const selectQueue: any[][] = agentRow
       ? [
+          LEGACY_THREAD,
+          ENTRY_TEXT,
           [agentRow],
           triggerRole != null ? [{ config: { role: triggerRole } }] : [{ config: null }],
         ]
-      : [[], authRow ? [authRow] : []];
+      : [LEGACY_THREAD, ENTRY_TEXT, [], authRow ? [authRow] : []];
     let selectIdx = 0;
 
     const selectChain = {
@@ -279,10 +300,14 @@ describe("processMentions (dispatch)", () => {
       returning: vi.fn(() => Promise.resolve([{ id: "notif-stub" }])),
     };
 
-    // selectQueue mirrors processMentions() select order:
+    // selectQueue mirrors processMentions() select order (Task 1.2 prepends the
+    // per-call thread-row + entry-text selects; legacy thread → peer-wake path):
+    //   thread row (useControllerPath=false) → entry text →
     //   @Bot → agent lookup (found) → aoaAgentTriggers lookup (UAT iter 2)
     //   @alice → agent lookup (not found) → user lookup
     const selectQueue = [
+      [{ useControllerPath: false, companyId: "company-1" }], // 0 thread row
+      [{ rawContent: "@Bot and @alice" }], // 1 entry text
       [{ id: "agent-1", name: "Bot" }], // @Bot → agent lookup (found)
       [{ config: null }], // @Bot → triggers lookup (no role configured)
       [], // @alice → agent lookup (not found)

@@ -130,7 +130,7 @@ function parseStdoutChunk(
   const combined = `${pendingByRun.get(pendingKey) ?? ""}${chunk}`;
   const split = combined.split(/\r?\n/);
   pendingByRun.set(pendingKey, split.pop() ?? "");
-  const adapter = getUIAdapter(run.adapterType);
+  const adapter = getUIAdapter(run.adapterType ?? "process");
 
   const summarized: Array<{ text: string; tone: FeedTone; streamingKind?: "assistant" | "thinking" }> = [];
   const appendSummary = (entry: TranscriptEntry) => {

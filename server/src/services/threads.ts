@@ -175,9 +175,22 @@ export function parseMentions(text: string): Array<{ raw: string; name: string }
 
 /**
  * Resolve each mention to an agent or user and dispatch:
- * - agent match → insert agentWakeupRequests row
- * - user match  → insert notifications row
- * - no match    → silently skip
+ * - agent match on a CONTROLLER-PATH thread → run the agent via the controller
+ *   participation path (`requestParticipation`); the agent self-posts its reply.
+ * - agent match on a LEGACY (non-controller) thread → insert a peer-wake
+ *   `agentWakeupRequests` row (unchanged behavior).
+ * - user match → insert notifications row
+ * - no match   → silently skip
+ *
+ * Task 1.2 (route controller-path mentions through the controller): on modern
+ * threads the dispatcher TERMINALIZES peer-wake `thread_mention` rows as
+ * `skipped_controller_path` (Task 1.1) — so a peer-wake insert there would be
+ * DROPPED and the mentioned agent would never run. To actually answer the
+ * mention we instead call `threadOrchestrationService(db).requestParticipation`
+ * — which runs the crew agent (it self-posts via the post_entry MCP tool, so
+ * Task 2.1's no-double-post applies). The thread row (`useControllerPath`) and
+ * the inviting entry's `rawContent` (used as the participation `prompt`) are not
+ * in scope today, so we fetch both up front (per call, not per mention).
  */
 export async function processMentions(
   db: Db,
@@ -187,6 +200,26 @@ export async function processMentions(
   mentions: Array<{ raw: string; name: string }>,
   opts?: { hopCount?: number },
 ): Promise<void> {
+  // Fetch the thread row to learn whether it's controller-path, and the inviting
+  // entry's text to use as the participation prompt. Both are per-call.
+  const [threadRow] = await db
+    .select({
+      useControllerPath: discussions.useControllerPath,
+      companyId: discussions.companyId,
+    })
+    .from(discussions)
+    .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+    .limit(1);
+
+  const [entryRow] = await db
+    .select({ rawContent: discussionEntries.rawContent })
+    .from(discussionEntries)
+    .where(eq(discussionEntries.id, entryId))
+    .limit(1);
+
+  const useControllerPath = threadRow?.useControllerPath === true;
+  const entryPrompt = entryRow?.rawContent ?? "";
+
   for (const mention of mentions) {
     // 1) Check if name resolves to an AoA agent in this company (kind='aoa' only)
     const agentRows = await db
@@ -200,6 +233,27 @@ export async function processMentions(
       .then((rows) => rows);
 
     if (agentRows.length > 0) {
+      // ── Task 1.2: controller-path threads run the agent via participation ──
+      // On a controller-path thread, route the @mention through the orchestration
+      // controller so the crew agent actually RUNS (it self-posts its reply via
+      // the post_entry MCP tool; requestParticipation skips its own insert when
+      // the runner returns "" — Task 2.1 no-double-post). A peer-wake row here
+      // would be terminalized as `skipped_controller_path` by the dispatcher
+      // (Task 1.1) and the mention would be dropped. Lazy/dynamic import of
+      // threadOrchestrationService mirrors how thread-orchestration lazy-imports
+      // its heavy crew runner — keeping that subtree off the threads.ts (and
+      // therefore routes/discussions.ts) module-load path.
+      if (useControllerPath) {
+        const { threadOrchestrationService } = await import("./thread-orchestration.js");
+        await threadOrchestrationService(db).requestParticipation(
+          threadId,
+          { agentId: agentRows[0].id, prompt: entryPrompt },
+          {},
+        );
+        continue;
+      }
+
+      // ── Legacy (non-controller) thread: peer-wake insert (unchanged) ──
       // UAT iteration 2 fix: look up the agent's mention-trigger role so the
       // dispatcher autonomy gate (which reads payload.role) can correctly
       // gate agentic crew roles (router/planner/dispatcher require L2).

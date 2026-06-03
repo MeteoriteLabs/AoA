@@ -3,13 +3,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentRuns, discussionEntries } from "@armyofagents/db";
+import { agents, internalAgentRuns, discussionEntries, issues } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
 import { resolveAdapterExecutionContext } from "../../heartbeat.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
-import { publishLiveEvent } from "../../live-events.js";
+import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 import { computeCostCents } from "../cost-model.js";
 import { assembleAgentPersona } from "../commander-context.js";
@@ -21,7 +21,30 @@ import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 
-export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
+export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
+
+/**
+ * Phase 5 (Task 5.2): humanized "what is this agent doing" string for the thread
+ * presence pill, derived from the crew role key. v1 is a static map — richer
+ * per-tool activity ("reading the spec", "running tests") is a deferred
+ * follow-up. The chat renders "<Agent> is <activity>…", so each phrase is a bare
+ * present-participle clause. Unknown roles fall back to "typing" (the generic
+ * group-chat affordance).
+ */
+export function humanizedActivityForRole(roleKey: string): string {
+  switch (roleKey) {
+    case "scout":
+      return "researching";
+    case "planner":
+      return "writing the plan";
+    case "engineer":
+      return "creating an artifact";
+    case "adjutant":
+      return "reviewing the thread";
+    default:
+      return "typing";
+  }
+}
 
 type RunnerAgentShape = { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
 
@@ -97,6 +120,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   // (pending→processing). Stays null on the not-claimable early-return so the
   // catch terminalizer never touches an entry this run does not own.
   let claimedEntryId: string | null = null;
+  // Phase 5 (Tasks 5.1/5.2): thread this run is "working" on (a thread/mention
+  // run carries payload.threadId). Set when we add the agent to the thread
+  // working-agents presence store BEFORE adapter.execute; the `finally`
+  // GUARANTEES removal (even on throw) by reading these. Null for a task-only /
+  // entry-only run (no thread to light a chat pill for). Mirrors the heartbeat
+  // presence pattern (heartbeat.ts:2608-2616 add / :4117-4124 remove).
+  let presenceThreadId: string | null = null;
+  let presenceAgentName: string | null = null;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
     if (!agent) {
@@ -111,8 +142,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const inserted = await db.insert(internalAgentRuns).values({
       companyId: payload.companyId, agentId, // Finding R1: per-agent attribution
       triggerType: "sub_agent", triggerSource: payload.source,
-      status: "running", relatedEntityType: payload.entryId ? "discussion" : null,
-      relatedEntityId: payload.entryId ?? null, userId: null,
+      // Spec B Task 5: a task wakeup stamps relatedEntityType="task" (the runs
+      // column vocabulary is 'discussion'|'task'|'agent'|'goal'|'memory' — NOT
+      // "issue"). issueId takes precedence over entryId (a task wakeup never
+      // also carries an entry to claim).
+      status: "running", relatedEntityType: payload.issueId ? "task" : payload.entryId ? "discussion" : null,
+      relatedEntityId: payload.issueId ?? payload.entryId ?? null, userId: null,
     }).returning();
     runId = inserted[0]?.id ?? null;
 
@@ -153,6 +188,29 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       // Claim succeeded — this run now OWNS the entry. Record it so a later
       // failure can terminalize it (FX1/B1).
       claimedEntryId = payload.entryId;
+    }
+
+    // Spec B Task 5 — TASK CHECKOUT CLAIM. A task wakeup must atomically CLAIM
+    // the issue before the adapter runs: issueService.checkout flips
+    // todo/backlog/in_progress → in_progress and sets executionRunId=runId
+    // (single-agent lock; assertAssignableAgent enforces company scope). A
+    // contended checkout THROWS conflict("Issue checkout conflict"). That is a
+    // BENIGN concurrency skip (another run already owns the task), not a true
+    // failure — so we mark the run ROW 'failed' (the runs enum has no
+    // 'succeeded') with a clear errorMessage, then return the AoaRunResult
+    // 'succeeded' so the dispatcher's failure-storm brake does not count it.
+    // Mirrors the entry-claim race precedent above (the not-claimable branch).
+    if (payload.issueId && runId) {
+      const { issueService } = await import("../../issues.js");
+      try {
+        await issueService(db).checkout(payload.issueId, agentId, ["todo", "backlog", "in_progress"], runId);
+      } catch (err) {
+        log.info({ issueId: payload.issueId, err: (err as Error)?.message }, "task checkout conflict — another run owns it; skipping");
+        await db.update(internalAgentRuns)
+          .set({ status: "failed", errorMessage: "task checkout conflict (concurrent)", completedAt: new Date(), durationMs: Date.now() - startedAt })
+          .where(eq(internalAgentRuns.id, runId));
+        return { status: "succeeded" }; // benign concurrency skip — mirror entry-claim race
+      }
     }
 
     const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -249,11 +307,43 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       typeof aoaCfg.role === "string" && aoaCfg.role.length > 0
         ? aoaCfg.role
         : agent.name.toLowerCase().replace(/\s+/g, "_");
+
+    // Phase 4 (Task 4.3): build the crew context bundle so the agent does NOT
+    // start blind. Before this, a thread/mention run's dynamic prompt block was
+    // IDs only (Thread/Inviting entry/Mention) → an @mentioned agent had to
+    // fetch everything via tools and often answered "no precedent found". The
+    // bundle injects the conversation + the Chronicler summary + relevant
+    // memory (and, for tasks, the task body + upstream artifact) directly.
+    //
+    // Gated on threadId|issueId: an entry-only extraction run (Scribe/outbox)
+    // has no thread or task to summarize, so there's nothing to inject and we
+    // skip the work entirely. BEST-EFFORT: wrapped in try/catch exactly like
+    // the redactAndCapPrompt snapshot below — a bundle failure (e.g. memory/
+    // pgvector hiccup) must NEVER break a run. Empty bundle ⇒ no `## Context`
+    // section (the prompt stays byte-identical to the pre-Phase-4 form).
+    let contextBundle = "";
+    const bundleThreadId = typeof payload.threadId === "string" ? payload.threadId : undefined;
+    const bundleIssueId = typeof payload.issueId === "string" ? payload.issueId : undefined;
+    if (bundleThreadId || bundleIssueId) {
+      try {
+        const { buildCrewContextBundle } = await import("./crew-context-bundle.js");
+        contextBundle = await buildCrewContextBundle(db, {
+          companyId: payload.companyId,
+          threadId: bundleThreadId,
+          issueId: bundleIssueId,
+          agentId,
+        });
+      } catch (bundleErr) {
+        log.warn({ err: bundleErr }, "aoa-runner: failed to build crew context bundle (best-effort, ignored)");
+      }
+    }
+
     const triggerPrompt = buildTriggerPrompt({
       instruction,
       payload,
       agentName: agent.name,
       agentRoleKey,
+      contextBundle,
     });
 
     // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
@@ -287,6 +377,35 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       promptSnapshot = redactAndCapPrompt(triggerPrompt);
     } catch (snapErr) {
       log.warn({ err: snapErr }, "aoa-runner: failed to build prompt snapshot (best-effort, ignored)");
+    }
+
+    // Phase 5 (Tasks 5.1/5.2): a thread/mention run lights the thread presence
+    // pill — "<Agent> is <activity>…" — for the duration of the run. Gated on
+    // payload.threadId (only conversational runs have a chat to show presence
+    // in; a task-only/entry-only run skips this entirely). The humanized
+    // activity is derived from the crew role key. Added BEFORE execute and
+    // REMOVED in the `finally` (guaranteed even on throw). Best-effort — a
+    // presence failure must never break the run (mirrors heartbeat.ts:2610-2615).
+    //
+    // Source gate: ONLY light presence for CONVERSATIONAL runs. A background
+    // sweep (`sweep.*` — e.g. `sweep.chronicler`, `sweep.adjutant`) carries a
+    // threadId but does NOT post to the thread (the Chronicler's summary sweep
+    // never posts), so a typing-presence pill for it is phantom ("Chronicler is
+    // typing…" with nothing ever arriving). Skip the add for sweeps; keep it for
+    // `thread.controller` / `thread.participation` / `mention` / `agent.dispatch`.
+    // presenceThreadId is set ONLY when we add, so the `finally` removal below
+    // stays symmetric automatically — it never clears a presence we didn't set.
+    const isBackgroundSweep = String(payload.source).startsWith("sweep.");
+    if (bundleThreadId && !isBackgroundSweep) {
+      presenceThreadId = bundleThreadId;
+      presenceAgentName = agent.name;
+      try {
+        const activity = humanizedActivityForRole(agentRoleKey);
+        threadWorkingAgents.add(bundleThreadId, agentId, agent.name, activity);
+        broadcastThreadPresence(payload.companyId, bundleThreadId, Date.now());
+      } catch (presenceErr) {
+        log.warn({ err: presenceErr, threadId: bundleThreadId }, "aoa-runner: failed to set working presence (best-effort, ignored)");
+      }
     }
 
     // T1.0: capture the adapter result so we can build AoaRunResult.
@@ -323,6 +442,38 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         throw new Error(
           "extraction agent run completed without submitting results",
         );
+      }
+    }
+
+    // Spec B Task 5 — TASK SILENT-STUCK GUARD. Symmetric to the entry guard
+    // above. A non-claude adapter (no MCP bridge) or a hung claude run can exit
+    // "successfully" WITHOUT ever calling set_task_status — leaving the task we
+    // checked out stuck 'in_progress' forever (silent stall). If the task is
+    // still 'in_progress' AND still locked by THIS run (executionRunId===runId),
+    // the agent did not move it: RELEASE it back to 'todo' (clear the execution
+    // lock so the founder/heartbeat can re-dispatch it) and THROW so the run is
+    // marked failed loudly via the catch below. The release is guarded on
+    // executionRunId=runId so a concurrent run that legitimately re-claimed the
+    // task is never clobbered.
+    if (payload.issueId && runId) {
+      const { issueService } = await import("../../issues.js");
+      const task = await issueService(db).getById(payload.issueId);
+      if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === runId) {
+        log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — releasing task to todo");
+        await db.update(issues)
+          .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
+          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId)));
+        // Task 5.6: the silent-stuck release is a CREW status-MOVE
+        // (in_progress → todo) that bypasses issueService.update. Publish
+        // issue.status_changed (company-broadcast, R3) so the board reflects
+        // the card dropping back to todo live. Best-effort — must not mask the
+        // loud throw below (which terminalizes the run).
+        try {
+          publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+        } catch (publishErr) {
+          log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+        }
+        throw new Error("crew task run completed without moving the task (no set_task_status call)");
       }
     }
 
@@ -446,6 +597,18 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // exception — masking every crew failure as a successful wakeup.
     return { status: "failed", errorMessage: errMessage };
   } finally {
+    // Phase 5 (Tasks 5.1/5.2): clear this agent's thread working-presence (run
+    // ended — success OR failure). GUARANTEED removal even on throw: the
+    // presenceThreadId is only set after the add succeeded, so this never
+    // touches a thread we didn't light. Best-effort (mirrors heartbeat.ts:4117).
+    if (presenceThreadId) {
+      try {
+        threadWorkingAgents.remove(presenceThreadId, agentId);
+        broadcastThreadPresence(payload.companyId, presenceThreadId, Date.now());
+      } catch (presenceErr) {
+        log.warn({ err: presenceErr, threadId: presenceThreadId, agentName: presenceAgentName }, "aoa-runner: failed to clear working presence (best-effort, ignored)");
+      }
+    }
     if (cfgPath) {
       try {
         await unlink(cfgPath).catch(() => {

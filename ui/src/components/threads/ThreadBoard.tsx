@@ -49,11 +49,23 @@ export interface InboxCardItem {
   rawContent: string;
   originSource: string | null;
   createdAt: string;
+  // Inbound routing (Phase 1) — present when the router has scored this item.
+  routerDecision?: string | null;     // 'suggest' → show the confirm affordance
+  suggestedThreadId?: string | null;  // the thread the router recommends
+  suggestedThreadTitle?: string | null;  // NEW — for suggest_new decisions
+  routerConfidence?: number | null;   // cosine distance of the top match (lower = closer)
+  routingStatus?: string | null;
 }
 
 export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
   // Group threads by phase using pure boardModel function
   const byPhase = groupThreadsForBoard(threads);
+
+  // Build a lookup map (id → title) from ALL threads (active + archived)
+  // for the suggestion banner in UnlistedLane. Never crash on missing keys.
+  const threadsById = new Map<string, string>();
+  for (const t of threads) threadsById.set(t.id, t.title);
+  for (const t of archivedThreads) threadsById.set(t.id, t.title);
 
   return (
     <div
@@ -63,6 +75,7 @@ export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], on
       {/* Unlisted lane — pinned at left (amber background) */}
       <UnlistedLane
         inboxItems={inboxItems}
+        threadsById={threadsById}
         onTriaged={(_itemId, _action) => {
           onInboxUpdate?.();
         }}

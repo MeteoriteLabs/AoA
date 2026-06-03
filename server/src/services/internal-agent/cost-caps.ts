@@ -48,3 +48,7 @@ export const DEFAULT_CREW_RATE_LIMIT = {
   maxRunsPerWindow: 10,
   windowMinutes: 10,
 } as const;
+
+// A5: run-COUNT brake (the never-built T1.9). Counts ALL crew runs — the cost-only
+// brake is blind to $0 CLI runs, exactly what a runaway crew loop produces.
+export const DEFAULT_CREW_RUN_COUNT_LIMIT = { windowMinutes: 5, maxRunsPerWindow: 40 };

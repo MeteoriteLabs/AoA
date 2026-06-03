@@ -65,6 +65,16 @@ vi.mock("../services/heartbeat.js", () => ({
   })),
 }));
 
+// ── assignee-wakeup chokepoint mock ──────────────────────────────────────────
+// Dispatch now routes through enqueueIssueAssigneeWakeup (kind-aware: crew → AoA
+// dispatcher, org → heartbeat). We assert on this mock instead of heartbeat.wakeup.
+const { mockEnqueueAssignee } = vi.hoisted(() => ({
+  mockEnqueueAssignee: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/issue-assignee-wakeup.js", () => ({
+  enqueueIssueAssigneeWakeup: mockEnqueueAssignee,
+}));
+
 // ── activity-log mock ─────────────────────────────────────────────────────────
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(),
@@ -283,7 +293,7 @@ describe("crewTaskService.proposeWork", () => {
 
     // MUST NOT approve or dispatch
     expect(mockApproveProposal).not.toHaveBeenCalled();
-    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
     expect(mockPreflightCrewDispatch).not.toHaveBeenCalled();
   });
 
@@ -302,11 +312,11 @@ describe("crewTaskService.proposeWork", () => {
     expect(mockWriteScopeProposal).toHaveBeenCalledTimes(1);
     expect(result.autoApproved).toBe(false);
     expect(mockApproveProposal).not.toHaveBeenCalled();
-    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
   });
 
   // ── B3. auto_approve (autonomy=2) happy path ──────────────────────────────────
-  it("autonomy=2 (auto_approve): card written, approval invoked, tasks created, dispatch fired once per distinct assignee", async () => {
+  it("autonomy=2 (auto_approve): card written, approval invoked, tasks created, dispatch fired once per task", async () => {
     const svc = crewTaskService(noProposalDb());
     const result = await svc.proposeWork({
       threadId: THREAD_ID,
@@ -336,15 +346,20 @@ describe("crewTaskService.proposeWork", () => {
     expect(result.existing).toBe(false);
     expect(result.createdIssueIds).toEqual(["task-1", "task-2"]);
 
-    // Dispatch fired once per DISTINCT assignee (2 distinct: agent-a, agent-b)
-    expect(mockWakeup).toHaveBeenCalledTimes(2);
-    const wakeupAgentIds = mockWakeup.mock.calls.map((c) => c[0]);
+    // Dispatch fired once per task through the chokepoint (2 tasks: agent-a, agent-b)
+    expect(mockEnqueueAssignee).toHaveBeenCalledTimes(2);
+    const wakeupAgentIds = mockEnqueueAssignee.mock.calls.map((c) => (c[1] as { agentId: string }).agentId);
     expect(wakeupAgentIds).toContain("agent-a");
     expect(wakeupAgentIds).toContain("agent-b");
+    // Each wakeup carries its own issueId
+    expect(mockEnqueueAssignee).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentId: "agent-a", issueId: "task-1", reason: "crew_task_auto_approved" }),
+    );
   });
 
-  // ── B4. auto_approve: tasks with same assignee — only one wakeup ─────────────
-  it("auto_approve: two tasks with the same assigneeAgentId → wakeup fired once", async () => {
+  // ── B4. auto_approve: tasks with same assignee — one wakeup PER TASK ──────────
+  it("auto_approve: two tasks with the same assigneeAgentId → one wakeup per task (each carries issueId)", async () => {
     mockApproveProposal.mockResolvedValue({
       ok: true,
       alreadyApproved: false,
@@ -365,9 +380,12 @@ describe("crewTaskService.proposeWork", () => {
       createdBy: { agentId: AGENT_ID },
     });
 
-    // Only ONE wakeup for the single distinct assignee
-    expect(mockWakeup).toHaveBeenCalledTimes(1);
-    expect(mockWakeup.mock.calls[0][0]).toBe("agent-x");
+    // One wakeup PER TASK (not deduplicated) — each carries its own issueId so the
+    // chokepoint can route + the run can target the right task.
+    expect(mockEnqueueAssignee).toHaveBeenCalledTimes(2);
+    const calls = mockEnqueueAssignee.mock.calls.map((c) => c[1] as { agentId: string; issueId: string });
+    expect(calls.every((a) => a.agentId === "agent-x")).toBe(true);
+    expect(calls.map((a) => a.issueId)).toEqual(["task-1", "task-2"]);
   });
 
   // ── B5. auto_approve: tasks with no assignees → no wakeup ────────────────────
@@ -391,7 +409,7 @@ describe("crewTaskService.proposeWork", () => {
       createdBy: { agentId: AGENT_ID },
     });
 
-    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
   });
 
   // ── B6. budget blocked at L2 (auto_approve path) ──────────────────────────────
@@ -420,7 +438,7 @@ describe("crewTaskService.proposeWork", () => {
 
     // Approval and dispatch SKIPPED
     expect(mockApproveProposal).not.toHaveBeenCalled();
-    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
 
     // Card stayed pending — return reflects blocked state
     expect(result.proposalId).toBe(PROPOSAL_ID);
@@ -455,7 +473,7 @@ describe("crewTaskService.proposeWork", () => {
 
     // NO approval or dispatch
     expect(mockApproveProposal).not.toHaveBeenCalled();
-    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
     expect(mockPreflightCrewDispatch).not.toHaveBeenCalled();
   });
 
@@ -666,7 +684,7 @@ describe("crewTaskService.proposeWork — post-approval stale-duplicate guard", 
 
     // Approval and dispatch must NOT have been called
     expect(mockApproveProposal).not.toHaveBeenCalled();
-    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockEnqueueAssignee).not.toHaveBeenCalled();
     expect(mockPreflightCrewDispatch).not.toHaveBeenCalled();
   });
 
@@ -705,7 +723,7 @@ describe("crewTaskService.proposeWork — post-approval stale-duplicate guard", 
     expect(result.autoApproved).toBe(true);
     expect(result.existing).toBe(false);
     expect(result.createdIssueIds).toEqual(["task-1", "task-2"]);
-    expect(mockWakeup).toHaveBeenCalledTimes(2);
+    expect(mockEnqueueAssignee).toHaveBeenCalledTimes(2);
   });
 
   // ── C3. First proposal (no prior): proceeds normally ─────────────────────────

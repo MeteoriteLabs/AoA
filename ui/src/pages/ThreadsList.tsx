@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { useDialog } from "../context/DialogContext";
 import { threadsApi, type ThreadListItem } from "../api/threads";
 import type { InboxCardItem } from "../components/threads/ThreadBoard";
@@ -24,6 +25,7 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { ThreadBoard } from "../components/threads/ThreadBoard";
+import { RoutingDialControl } from "../components/threads/RoutingDialControl";
 
 // ── Phase filter config ───────────────────────────────────────────────────────
 
@@ -74,6 +76,8 @@ function relativeTime(dateStr: string | null | undefined): string {
 
 export function ThreadsList() {
   const { selectedCompanyId } = useCompany();
+  const { role } = useTeamAccess(selectedCompanyId);
+  const isFounder = role === "founder";
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const { openNewThread } = useDialog();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -118,7 +122,7 @@ export function ThreadsList() {
   });
   const archivedThreads = (archivedData?.discussions ?? []) as ThreadListItem[];
 
-  const { data: inboxData } = useQuery({
+  const { data: inboxData, refetch: refetchInbox } = useQuery({
     queryKey: ["threads-inbox", selectedCompanyId],
     queryFn: () => api.get<{ items: InboxCardItem[]; total: number }>(`/companies/${selectedCompanyId}/discussions/inbox`),
     enabled: !!selectedCompanyId,
@@ -169,6 +173,8 @@ export function ThreadsList() {
           }}
           onNewThread={openNewThread}
           totalCount={0}
+          companyId={selectedCompanyId}
+          canEditRouting={isFounder}
         />
         <div
           className="space-y-2"
@@ -204,6 +210,8 @@ export function ThreadsList() {
           }}
           onNewThread={openNewThread}
           totalCount={0}
+          companyId={selectedCompanyId}
+          canEditRouting={isFounder}
         />
         <div className="flex flex-col items-center gap-4 py-16" data-testid="threads-list-error">
           <p className="text-sm text-muted-foreground">Couldn&apos;t load threads.</p>
@@ -243,6 +251,8 @@ export function ThreadsList() {
         setView={setView}
         onNewThread={openNewThread}
         totalCount={threads.length}
+        companyId={selectedCompanyId}
+        canEditRouting={isFounder}
       />
 
       {/* Board view */}
@@ -252,7 +262,13 @@ export function ThreadsList() {
           archivedThreads={archivedThreads}
           inboxItems={inboxItems}
           onNewThread={openNewThread}
-          onInboxUpdate={() => refetch()}
+          onInboxUpdate={() => {
+            // Triage (attach / make_thread) mutates BOTH the inbox queue and the
+            // thread list — refetch both so a newly-created or newly-attached
+            // thread shows immediately without a manual reload.
+            void refetchInbox();
+            void refetch();
+          }}
         />
       )}
 
@@ -301,6 +317,8 @@ interface ThreadsListHeaderProps {
   setView: (v: ViewMode) => void;
   onNewThread: () => void;
   totalCount: number;
+  companyId?: string | null;
+  canEditRouting?: boolean;
 }
 
 function ThreadsListHeader({
@@ -312,6 +330,8 @@ function ThreadsListHeader({
   setView,
   onNewThread,
   totalCount,
+  companyId,
+  canEditRouting = false,
 }: ThreadsListHeaderProps) {
   return (
     <div className="flex flex-col gap-2">
@@ -343,6 +363,11 @@ function ThreadsListHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Inbound routing dial — canEdit gated to founder (PATCH is founder-only server-side) */}
+          {companyId && (
+            <RoutingDialControl companyId={companyId} canEdit={canEditRouting} />
+          )}
+
           {/* View mode toggle */}
           <div className="flex items-center rounded-md border border-border overflow-hidden">
             <button

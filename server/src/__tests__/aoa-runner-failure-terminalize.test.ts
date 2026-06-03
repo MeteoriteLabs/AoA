@@ -91,6 +91,11 @@ vi.mock("../services/costs.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: publishLiveEventMock,
+  // Phase 5: runner.ts imports these too. Stubbed so they are never an
+  // undefined-call (the entry-failure path here has no threadId/issueId move).
+  publishIssueStatusChanged: vi.fn(),
+  threadWorkingAgents: { add: vi.fn(), remove: vi.fn(() => []), list: vi.fn(() => []) },
+  broadcastThreadPresence: vi.fn(),
 }));
 
 vi.mock("../middleware/logger.js", () => {

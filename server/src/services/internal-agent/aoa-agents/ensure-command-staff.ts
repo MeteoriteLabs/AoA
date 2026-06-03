@@ -77,6 +77,9 @@ export function roleToolAllowlist(
         "thread.createLink",
         "attach_to_thread",
         "spin_off_thread",
+        "list_thread_cards",           // NEW — fetch candidate routing cards (T6)
+        "promote_inbox_to_thread",     // NEW — create new thread from inbox item (C1/T7)
+        "defer_inbox_to_human",        // NEW — finalize an UNSURE item (Codex P1 #2)
       ];
     case "planner":
       // C2 batch 1: Planner owns scope proposals + setting intent on a thread
@@ -94,9 +97,25 @@ export function roleToolAllowlist(
         "thread.setIntent",
         "thread.postScopeProposal",
         "thread.updateSummary",
+        // Crew-collab: Planner must be able to weigh in conversationally when
+        // convened into a discussion (not only produce a plan artifact). Without
+        // post_entry it ran on an @mention but could call no tool and stayed
+        // silent. (Task execution still produces deliverables via the issueId path.)
+        "post_entry",
         "create_artifact",
         "create_artifact_version",
         "query_artifacts",
+        // Spec B Task 6 — crew task tools. Planner is an executor role a task
+        // can be dispatched to: read it (get_task), comment progress
+        // (post_task_comment), hand back the plan deliverable
+        // (attach_task_artifact), and advance it (set_task_status). get_task=query;
+        // the rest=coordination — neither grants system_actions (Planner already
+        // has it via create_artifact), so these add no new capability. Task
+        // CREATION stays behind the Adjutant chokepoint (no create_task here).
+        "get_task",
+        "post_task_comment",
+        "attach_task_artifact",
+        "set_task_status",
       ];
     case "memory_keeper":
       // C2 batch 1: Memory Keeper benefits from cross-thread retrieval to
@@ -132,7 +151,9 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "spin_off_thread), or (c) a department (use query_departments + post_entry " +
     "with a routing recommendation). Use thread.createLink (kind='link') when " +
     "you find a meaningful precedent between threads. Do not create tasks or " +
-    "write memory.",
+    "write memory." +
+    // Task 1.7 — inbox-routing standing persona augmentation.
+    " When woken with trigger source `inbox.routing_ambiguous`, you are routing a single inbound item: use its candidate threads to choose attach (`attach_to_thread`), branch (`spin_off_thread`), or a recommendation, for that item.",
   planner:
     "You are the Planner. When a thread phase advances, review pending extracted " +
     "items using query_extracted_items, query_tasks, and query_dependency_chain. " +

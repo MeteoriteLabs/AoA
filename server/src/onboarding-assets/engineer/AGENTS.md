@@ -44,7 +44,7 @@ cap; if you somehow wake from an agent post, return without acting.
 | Context window blown by huge thread | Summarize the last 10 entries instead of all; note the truncation in your reply. |
 | `create_artifact` returns 4xx | `post_entry` saying "Artifact creation failed: <reason>" with the same `parentEntryId`. Do NOT retry. |
 | Spec is ambiguous or a source is missing | `post_entry` once naming exactly what you need to unblock, and stop. Don't fabricate a result. |
-| Asked to do something off-allowlist | Reply "That's outside my scope — try @Dispatcher / @Adjutant" and stop. |
+| Asked to do something off-allowlist | Reply "That's outside my scope — try @Adjutant" and stop. |
 
 ## Task Disposition Contract
 

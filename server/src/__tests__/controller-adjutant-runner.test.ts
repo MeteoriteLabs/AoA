@@ -101,7 +101,8 @@ describe("makeControllerAdjutantRunner", () => {
     const fakeRunAgent = vi.fn().mockResolvedValue({ status: "succeeded" });
 
     const db = makeDb({
-      threadRow: { companyId: "company-abc", autonomyLevel: null },
+      // Assist (1) so the proactive run is NOT suppressed by the Finding #6 gate.
+      threadRow: { companyId: "company-abc", autonomyLevel: 1 },
       adjutantRow: { id: "adjutant-agent-1" },
       companyCfgRow: { autonomyLevel: 0 },
     });
@@ -121,7 +122,7 @@ describe("makeControllerAdjutantRunner", () => {
         companyId: "company-abc",
         source: "thread.controller",
         threadId: "thread-42",
-        effectiveAutonomy: 0,
+        effectiveAutonomy: 1,
       },
     );
     expect(result).toEqual({ output: { status: "succeeded" }, error: undefined });
@@ -161,7 +162,9 @@ describe("makeControllerAdjutantRunner", () => {
     });
 
     const db = makeDb({
-      threadRow: { companyId: "company-fail" },
+      // Assist (1) so the run actually executes and we can observe the failure
+      // propagation (the Finding #6 gate only suppresses at < 1).
+      threadRow: { companyId: "company-fail", autonomyLevel: 1 },
       adjutantRow: { id: "adjutant-fail" },
       companyCfgRow: { autonomyLevel: 0 },
     });
@@ -209,5 +212,46 @@ describe("makeControllerAdjutantRunner", () => {
     expect(fakeRunAgent).toHaveBeenCalledOnce();
     const payload = fakeRunAgent.mock.calls[0][2];
     expect(payload.effectiveAutonomy).toBe(1);
+  });
+
+  // ── Finding #6: dial-as-experience belt-and-suspenders ──────────────────────
+  // The runner is the `adjutantRunner` seam runController drives. Even if a
+  // pendingRun were set and runController reached this runner for a Manual thread,
+  // the runner must NOT produce a proactive Adjutant post: it returns a no-op
+  // {status:"no-pending"} and never calls runAgent. This is independent from
+  // fireAdjutantWakeup's primary gate (proactive-wake-dial.test.ts).
+
+  it("6: Manual via thread-level dial (autonomyLevel=0) → no-op, runAgent NOT called", async () => {
+    const fakeRunAgent = vi.fn();
+
+    const db = makeDb({
+      threadRow: { companyId: "company-manual", autonomyLevel: 0 },
+      adjutantRow: { id: "adjutant-manual" },
+      // companyCfg is still resolved (the runner reads it before the gate), but
+      // thread.autonomyLevel=0 wins → effectiveAutonomy=0 → suppress.
+      companyCfgRow: { autonomyLevel: 2 },
+    });
+
+    const runner = makeControllerAdjutantRunner(db as any, { runAgent: fakeRunAgent });
+    const result = await runner({ threadId: "thread-manual", entries: [], startEpoch: 1 });
+
+    expect(fakeRunAgent).not.toHaveBeenCalled();
+    expect(result).toEqual({ output: { status: "no-pending" }, error: undefined });
+  });
+
+  it("6b: Manual via company fallback (thread null, company=0) → no-op, runAgent NOT called", async () => {
+    const fakeRunAgent = vi.fn();
+
+    const db = makeDb({
+      threadRow: { companyId: "company-manual-fb", autonomyLevel: null },
+      adjutantRow: { id: "adjutant-manual-fb" },
+      companyCfgRow: { autonomyLevel: 0 },
+    });
+
+    const runner = makeControllerAdjutantRunner(db as any, { runAgent: fakeRunAgent });
+    const result = await runner({ threadId: "thread-manual-fb", entries: [], startEpoch: 1 });
+
+    expect(fakeRunAgent).not.toHaveBeenCalled();
+    expect(result).toEqual({ output: { status: "no-pending" }, error: undefined });
   });
 });

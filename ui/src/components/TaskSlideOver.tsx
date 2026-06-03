@@ -350,8 +350,13 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   }, [linkedRuns, liveRuns, activeRun]);
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    // Distinct cache key from the org-default board list (which shares
+    // queryKeys.issues.list) so the 'all' result never poisons the main
+    // Tasks board's cache and vice versa.
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "scope-all"],
+    // Dependency picker: a task's dependencies can be crew tasks, which the
+    // 'org' default would hide — pass 'all' so the graph stays complete.
+    queryFn: () => issuesApi.list(selectedCompanyId!, { taskScope: "all" }),
     enabled: !!selectedCompanyId,
   });
 
@@ -411,8 +416,10 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
 
   const { data: childIssuesData } = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "children", issue?.id],
+    // Children of a task can be crew subtasks; the 'org' default would hide
+    // them, so request 'all' to keep the slide-over's child list complete.
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, { parentId: issue!.id }),
+      issuesApi.list(selectedCompanyId!, { parentId: issue!.id, taskScope: "all" }),
     enabled: !!selectedCompanyId && !!issue?.id,
   });
 

@@ -189,6 +189,8 @@ vi.mock("../../../context/LiveUpdatesProvider", () => ({
     unsubscribeThread: vi.fn(),
     sendPresence: vi.fn(),
     onReconnect: () => () => {},
+    presenceByThread: {},
+    workingAgentsByThread: {},
   }),
 }));
 

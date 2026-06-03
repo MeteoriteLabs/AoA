@@ -1089,6 +1089,7 @@ export {
 
 export * from "./teams.js";
 export * from "./autonomy-levels.js";
+export * from "./inbound-routing.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).

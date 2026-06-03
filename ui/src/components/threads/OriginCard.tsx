@@ -50,9 +50,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ThreadPresenceMember } from "../../context/LiveUpdatesProvider";
 import { MentionInput } from "./MentionInput";
 import { ThreadRoster } from "./ThreadRoster";
+import { PresenceStrip } from "./PresenceStrip";
 
 /* ─── Constants ─── */
 
@@ -618,7 +618,7 @@ export function OriginCard({
           <PresenceStrip
             presence={presence}
             typingMembers={typingMembers}
-            workingAgents={workingAgents.map((a) => ({ id: a.agentId, name: a.name }))}
+            workingAgents={workingAgents.map((a) => ({ id: a.agentId, name: a.name, activity: a.activity }))}
           />
         </div>
 
@@ -763,110 +763,5 @@ export function OriginCard({
   );
 }
 
-/* ════════════════════════════════════════════════════════════════════════
-   PresenceStrip (Plan 7)
-   Live human presence (stacked avatars, max 3 + "+N"), an agent "working"
-   indicator that is VISUALLY DISTINCT from human presence (so founders can
-   tell "Scribe is extracting" from "Maria is here"), and a subtle typing line.
-   A11y (D3): updates announce via aria-live="polite" — never assertive, so
-   screen readers aren't spammed on every keystroke.
-   ════════════════════════════════════════════════════════════════════════ */
-
-const MAX_VISIBLE_AVATARS = 3;
-
-function PresenceStrip({
-  presence,
-  typingMembers,
-  workingAgents,
-}: {
-  presence: ThreadPresenceMember[];
-  typingMembers: ThreadPresenceMember[];
-  workingAgents: Array<{ id: string; name: string }>;
-}) {
-  const hasAnything = presence.length > 0 || workingAgents.length > 0;
-  if (!hasAnything) {
-    // Keep a polite live region mounted so "everyone left" is announced once.
-    return <div aria-live="polite" className="sr-only" data-testid="presence-live" />;
-  }
-
-  const visible = presence.slice(0, MAX_VISIBLE_AVATARS);
-  const overflow = presence.length - visible.length;
-
-  const typingLabel =
-    typingMembers.length === 0
-      ? null
-      : typingMembers.length === 1
-        ? "Someone is typing…"
-        : `${typingMembers.length} people are typing…`;
-
-  const announce = [
-    presence.length > 0
-      ? `${presence.length} ${presence.length === 1 ? "person" : "people"} here`
-      : null,
-    workingAgents.length > 0
-      ? `${workingAgents.length} ${workingAgents.length === 1 ? "agent" : "agents"} working`
-      : null,
-    typingLabel,
-  ]
-    .filter(Boolean)
-    .join(". ");
-
-  return (
-    <div className="flex flex-col gap-1" data-testid="presence-strip">
-      <div className="flex items-center gap-2 flex-wrap">
-        {/* Human presence avatars */}
-        {visible.length > 0 && (
-          <div className="flex items-center -space-x-1.5" aria-hidden="true">
-            {visible.map((m) => (
-              // No display-name source is available in this component (presence
-              // carries only userId). getInitials on a raw UUID produces garbage
-              // fragments ("C3"), so render a neutral placeholder instead and
-              // avoid leaking the UUID via the tooltip.
-              <span
-                key={m.userId}
-                title="Member here"
-                className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background bg-muted text-[9px] font-semibold text-muted-foreground"
-              >
-                ?
-              </span>
-            ))}
-            {overflow > 0 && (
-              <span
-                title={`${overflow} more`}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-background bg-muted/70 text-[9px] font-semibold text-muted-foreground"
-              >
-                +{overflow}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Agent "working" indicator — distinct from human presence */}
-        {workingAgents.length > 0 && (
-          <span
-            className="inline-flex items-center gap-1 rounded-full bg-[var(--token-skill,theme(colors.violet.100))] px-2 py-0.5 text-[10px] font-medium text-violet-800 dark:text-violet-300"
-            data-testid="agent-working-indicator"
-            title={workingAgents.map((a) => a.name).join(", ")}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-violet-500 animate-pulse" aria-hidden="true" />
-            {workingAgents.length === 1
-              ? `${workingAgents[0].name} working`
-              : `${workingAgents.length} agents working`}
-          </span>
-        )}
-      </div>
-
-      {/* Typing line — subtle */}
-      {typingLabel && (
-        <span className="text-[11px] italic text-muted-foreground" data-testid="typing-indicator">
-          {typingLabel}
-        </span>
-      )}
-
-      {/* Polite a11y announcement (never assertive). */}
-      <div aria-live="polite" className="sr-only" data-testid="presence-live">
-        {announce}
-      </div>
-    </div>
-  );
-}
+/* PresenceStrip lifted to ./PresenceStrip.tsx (thread-chat-experience Phase 5,
+   Task 5.3) so it can also mount in the thread conversation view. Imported above. */

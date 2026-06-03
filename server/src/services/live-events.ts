@@ -256,19 +256,31 @@ export const threadPresence = new ThreadPresenceStore();
 export interface WorkingAgentEntry {
   agentId: string;
   name: string;
+  /**
+   * Phase 5 (Task 5.2): humanized activity string ("researching", "writing the
+   * plan", "creating an artifact", …) derived from the agent's role so the chat
+   * pill can read "<Agent> is <activity>…". Optional + back-compat: the
+   * heartbeat caller (heartbeat.ts:2611) does not pass it, so the field is
+   * simply absent for task-deliverable runs.
+   */
+  activity?: string;
 }
 
 export class ThreadWorkingAgentsStore {
   private byThread = new Map<string, Map<string, WorkingAgentEntry>>();
 
-  /** Mark an agent as working on a thread. Idempotent per (threadId, agentId). */
-  add(threadId: string, agentId: string, name: string): void {
+  /**
+   * Mark an agent as working on a thread. Idempotent per (threadId, agentId).
+   * `activity` (optional) carries the humanized status for the chat pill; when
+   * omitted the entry has no activity (back-compat with the heartbeat caller).
+   */
+  add(threadId: string, agentId: string, name: string, activity?: string): void {
     let agents = this.byThread.get(threadId);
     if (!agents) {
       agents = new Map();
       this.byThread.set(threadId, agents);
     }
-    agents.set(agentId, { agentId, name });
+    agents.set(agentId, activity === undefined ? { agentId, name } : { agentId, name, activity });
   }
 
   /** Clear an agent from a thread (run finished/failed). Returns survivors. */
@@ -308,5 +320,23 @@ export function broadcastThreadPresence(companyId: string, threadId: string, now
     companyId,
     type: "thread.presence",
     payload: { threadId, members, workingAgents },
+  });
+}
+
+// ── Thread chat experience Phase 5 (Task 5.6): issue.status_changed ───────────
+//
+// A task's status changed. Unlike thread.* events, this is COMPANY-broadcast
+// (NOT the per-thread envelope-RBAC fan-out) — the kanban / Crew Board are
+// company-scoped surfaces, so the event rides the same company-broadcast path
+// as heartbeat/agent events. The single chokepoint helper is called at EVERY
+// crew status-move site (issueService.update's status path, checkout's
+// →in_progress write, and the runner's silent-stuck →todo release) so the board
+// can move the card live regardless of which path moved it. BEST-EFFORT at the
+// call sites: a publish failure must never break the underlying write.
+export function publishIssueStatusChanged(companyId: string, issueId: string, status: string): void {
+  publishLiveEvent({
+    companyId,
+    type: "issue.status_changed",
+    payload: { companyId, issueId, status },
   });
 }

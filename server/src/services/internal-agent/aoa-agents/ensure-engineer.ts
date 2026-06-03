@@ -37,7 +37,7 @@ Adjutant delegates artifact work to you. When dispatched:
 5. If the work needs an interactive workspace (e.g. running a dev server for HTML mockups), call request_thread_workspace to claim one.
 6. Hand back to Adjutant when the artifact is ready for review.`;
 
-const ENGINEER_TOOL_ALLOWLIST: string[] = [
+export const ENGINEER_TOOL_ALLOWLIST: string[] = [
   "create_artifact",
   "create_artifact_version",
   "query_artifacts",
@@ -45,6 +45,16 @@ const ENGINEER_TOOL_ALLOWLIST: string[] = [
   "thread.listEntries",
   "post_entry",
   "use_skill",
+  // Spec B Task 6 — crew task tools. Engineer executes artifact work on a
+  // dispatched task: read it (get_task), comment progress (post_task_comment),
+  // hand back the deliverable (attach_task_artifact), and advance it
+  // (set_task_status). get_task=query; the rest=coordination — neither category
+  // grants system_actions (Engineer already has it via create_artifact), so
+  // these add no new capability.
+  "get_task",
+  "post_task_comment",
+  "attach_task_artifact",
+  "set_task_status",
 ];
 
 /**
@@ -53,18 +63,42 @@ const ENGINEER_TOOL_ALLOWLIST: string[] = [
  * the shared seeder.
  */
 export async function ensureEngineer(db: Db, companyId: string): Promise<void> {
-  // Migrate any existing Maker rows to Engineer before seeding. Idempotent:
+  // Migrate any existing Maker row to Engineer before seeding. Idempotent:
   // the WHERE clause only matches the legacy name.
-  await db
-    .update(agents)
-    .set({ name: "Engineer", updatedAt: new Date() })
+  //
+  // L13 guard: only rename when NO Engineer row already exists for this company.
+  // If a company somehow holds BOTH a Maker and an Engineer row (e.g. a partial
+  // prior migration, or an Engineer seeded alongside a leftover Maker), an
+  // unconditional rename would collide on the agents_aoa_name_per_company_idx
+  // unique index (one name per company). When an Engineer already exists we skip
+  // the rename — seedCrewAgent below is itself idempotent and keeps the existing
+  // Engineer canonical; the stale Maker is simply left as-is rather than crashing
+  // the bootstrap. Still idempotent on the common path (no Engineer yet → rename
+  // the Maker; second call finds the Engineer and skips).
+  const [existingEngineer] = await db
+    .select({ id: agents.id })
+    .from(agents)
     .where(
       and(
         eq(agents.companyId, companyId),
         eq(agents.kind, "aoa"),
-        eq(agents.name, "Maker"),
+        eq(agents.name, "Engineer"),
       ),
-    );
+    )
+    .limit(1);
+
+  if (!existingEngineer) {
+    await db
+      .update(agents)
+      .set({ name: "Engineer", updatedAt: new Date() })
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          eq(agents.kind, "aoa"),
+          eq(agents.name, "Maker"),
+        ),
+      );
+  }
 
   await seedCrewAgent(db, companyId, {
     name: "Engineer",

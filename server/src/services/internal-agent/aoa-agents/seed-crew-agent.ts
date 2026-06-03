@@ -62,7 +62,8 @@ export interface CrewAgentSpec {
     | "adjutant"
     | "maker"
     | "engineer"
-    | "scout";
+    | "scout"
+    | "chronicler";
 }
 
 /**

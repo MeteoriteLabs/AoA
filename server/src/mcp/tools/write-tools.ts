@@ -6,6 +6,7 @@ import {
   mcpDebriefSchema,
 } from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
+import { enqueueInboxItem } from "../../services/inbox-producer.js";
 import {
   type ToolContext,
   type ToolHandler,
@@ -50,6 +51,19 @@ async function handleDebriefPush(
     details: { title: debrief.title, inputType: "mcp" },
   });
   void ctx.services.extractionSvc.extractFromDebrief(ctx.companyId, debrief.id).catch(() => {});
+
+  // Decision #14 — dual-write to thread_inbox_items (best-effort).
+  // A failure here must never break the legacy debrief consumers: the debrief
+  // row is already committed above, so we silently swallow any error.
+  enqueueInboxItem(ctx.db, {
+    companyId: ctx.companyId,
+    originMedium: "mcp",
+    originSource: ctx.actorInfo.actorId,
+    rawContent: parsed.content,
+  }).catch((err: unknown) => {
+    console.error("[debrief-push] inbox enqueue failed (best-effort):", err);
+  });
+
   return ok({ debriefId: debrief.id, status: "processing" });
 }
 

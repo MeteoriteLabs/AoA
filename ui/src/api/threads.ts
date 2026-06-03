@@ -177,4 +177,16 @@ export const threadsApi = {
       `/companies/${companyId}/discussions/${id}`,
       { allowMemoryExtraction },
     ),
+
+  // Task 0.6 (Inbound Dirty-Data Routing, Decision #14): enqueue a manual
+  // human paste into thread_inbox_items (the Unlisted lane).
+  // Returns { inboxItemId, deduped } — same shape as enqueueInboxItem.
+  sendToInbox: (
+    companyId: string,
+    payload: { rawContent: string; originSource?: string },
+  ) =>
+    api.post<{ inboxItemId: string; deduped: boolean }>(
+      `/companies/${companyId}/discussions/inbox`,
+      payload,
+    ),
 };

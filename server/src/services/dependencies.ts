@@ -2,13 +2,14 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { issues, taskDependencies } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
-import { heartbeatService } from "./heartbeat.js";
+import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 interface WakeTask {
+  companyId: string;
   agentId: string;
   issueId: string;
   workMode: string | null;
@@ -18,16 +19,15 @@ const TERMINAL_STATUSES = ["done", "cancelled"];
 const MAX_CHAIN_DEPTH = 50;
 
 export function dependencyService(db: Db) {
-  const heartbeat = heartbeatService(db);
-
   async function fireWakeups(tasks: WakeTask[]) {
     for (const wake of tasks) {
       if (!shouldDispatchIssueWakeup({ workMode: wake.workMode })) continue;
-      await heartbeat.wakeup(wake.agentId, {
+      await enqueueIssueAssigneeWakeup(db, {
+        companyId: wake.companyId,
+        agentId: wake.agentId,
+        issueId: wake.issueId,
         source: "automation",
-        triggerDetail: "system",
         reason: "dependency_unblocked",
-        payload: { issueId: wake.issueId },
       });
     }
   }
@@ -236,7 +236,7 @@ export function dependencyService(db: Db) {
         .where(eq(issues.id, dep.dependentIssueId));
 
       if (task?.assigneeAgentId) {
-        wakeups.push({ agentId: task.assigneeAgentId, issueId: dep.dependentIssueId, workMode: task.workMode ?? null });
+        wakeups.push({ companyId, agentId: task.assigneeAgentId, issueId: dep.dependentIssueId, workMode: task.workMode ?? null });
       }
     }
 
@@ -313,7 +313,7 @@ export function dependencyService(db: Db) {
         .where(eq(issues.id, dependentIssueId));
 
       if (unblocked?.assigneeAgentId) {
-        return [{ agentId: unblocked.assigneeAgentId, issueId: dependentIssueId, workMode: unblocked.workMode ?? null }];
+        return [{ companyId, agentId: unblocked.assigneeAgentId, issueId: dependentIssueId, workMode: unblocked.workMode ?? null }];
       }
     }
 

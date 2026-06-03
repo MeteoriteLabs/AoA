@@ -11,9 +11,15 @@
  *
  * What the tool still does (unchanged): new thread carries forkedFromId,
  * thread_links row of kind='spinoff' is written, seed entries are copied
- * with sourceInfo back-pointers, companyId is inherited from the caller's
- * ctx (not from the source row — RBAC enforces cross-company isolation
- * upstream).
+ * with sourceInfo back-pointers, the spawned thread's companyId is stamped
+ * from the caller's ctx.
+ *
+ * Task 1.5 (#7) hardening: the tool now validates the SOURCE thread's
+ * companyId against ctx.companyId — a cross-tenant spin-off is rejected with
+ * COMPANY_MISMATCH (the same source read drives the live-only guard +
+ * visibility inheritance). All source-row fixtures here therefore carry
+ * companyId = ctx.companyId ("co-spinoff-1") so the guard passes; the
+ * dedicated cross-company test below pins the rejection.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -73,7 +79,7 @@ function makeTxTracker(opts: TxTrackerOpts = {}) {
 
   // Sequence-aware select stub: 1st call → source guard, 2nd → seed copy.
   const sourceDefault = [
-    { id: "thread-src-1", subtype: "live", visibility: "company" },
+    { id: "thread-src-1", companyId: "co-spinoff-1", subtype: "live", visibility: "company" },
   ];
   const selectQueue = [
     opts.sourceSelectReturn ?? sourceDefault,
@@ -145,19 +151,19 @@ describe("integration: live thread → spin-off flow", () => {
     });
   });
 
-  it("spawned thread inherits companyId from the caller's context (not from the source row)", async () => {
-    // The tool doesn't read the source thread row — it copies ctx.companyId
-    // onto the new thread. This is correct for our cross-company guard
-    // (which is enforced upstream by RBAC + ctx assembly), but worth
-    // pinning so a future "inherit from source" refactor doesn't quietly
-    // change the semantic.
+  it("spawned thread carries companyId from the caller's context", async () => {
+    // The spawned thread's companyId is stamped from ctx.companyId. The tool
+    // DOES read the source row now (Task 1.5 #7 guard + visibility inherit),
+    // but the new thread's companyId comes from ctx — and since the guard
+    // requires source.companyId === ctx.companyId, the default same-company
+    // source (co-spinoff-1) passes and the spawned thread is co-spinoff-1.
     const tracker = makeTxTracker();
     const transactionFn = vi.fn(async (cb: any) =>
       cb({ insert: tracker.insert, select: tracker.select }),
     );
 
     await spinOffThreadTool.execute(
-      { fromThreadId: "any-source", title: "scope-inherit-check" },
+      { fromThreadId: "thread-src-1", title: "scope-inherit-check" },
       makeCtx(transactionFn),
     );
 
@@ -165,13 +171,39 @@ describe("integration: live thread → spin-off flow", () => {
     expect(tracker.insertCalls[1].values.companyId).toBe("co-spinoff-1");
   });
 
+  it("spin-off from a DIFFERENT company's source thread is REJECTED with COMPANY_MISMATCH (#7)", async () => {
+    // Cross-tenant guard (Task 1.5 #7): a caller scoped to co-spinoff-1 must
+    // not be able to spin off from another company's thread. The guard fires
+    // after the source read, before any insert — nothing is written.
+    const tracker = makeTxTracker({
+      sourceSelectReturn: [
+        { id: "foreign-thread", companyId: "other-co", subtype: "live", visibility: "company" },
+      ],
+    });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({ insert: tracker.insert, select: tracker.select }),
+    );
+
+    const result = await spinOffThreadTool.execute(
+      { fromThreadId: "foreign-thread", title: "cross-tenant-attempt" },
+      makeCtx(transactionFn),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("COMPANY_MISMATCH");
+    expect(tracker.insertCalls).toHaveLength(0);
+    expect(tracker.select).toHaveBeenCalledTimes(1);
+  });
+
   // ── Seed-entry copy semantics ────────────────────────────────────────────
 
   it("seed entries are copied into the new thread with sourceInfo back-pointers", async () => {
     const tracker = makeTxTracker({
       seedSelectReturn: [
-        { id: "src-e-1", rawContent: "first seed entry content" },
-        { id: "src-e-2", rawContent: "second seed entry content" },
+        // discussionId must match fromThreadId — the Task 1.5 (#7) scope filter
+        // drops any seed entry that doesn't belong to the source thread.
+        { id: "src-e-1", discussionId: "thread-src-1", rawContent: "first seed entry content" },
+        { id: "src-e-2", discussionId: "thread-src-1", rawContent: "second seed entry content" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>
@@ -239,7 +271,7 @@ describe("integration: live thread → spin-off flow", () => {
     // inserting anything.
     const tracker = makeTxTracker({
       sourceSelectReturn: [
-        { id: "normal-thread-id", subtype: "normal", visibility: "company" },
+        { id: "normal-thread-id", companyId: "co-spinoff-1", subtype: "normal", visibility: "company" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>
@@ -264,7 +296,7 @@ describe("integration: live thread → spin-off flow", () => {
     // past the guard and produces the new thread + link rows as expected.
     const tracker = makeTxTracker({
       sourceSelectReturn: [
-        { id: "thread-src-1", subtype: "live", visibility: "company" },
+        { id: "thread-src-1", companyId: "co-spinoff-1", subtype: "live", visibility: "company" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>
@@ -305,7 +337,7 @@ describe("integration: live thread → spin-off flow", () => {
   it("derived thread inherits visibility='private' from a private live source", async () => {
     const tracker = makeTxTracker({
       sourceSelectReturn: [
-        { id: "thread-src-1", subtype: "live", visibility: "private" },
+        { id: "thread-src-1", companyId: "co-spinoff-1", subtype: "live", visibility: "private" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>
@@ -323,7 +355,7 @@ describe("integration: live thread → spin-off flow", () => {
   it("derived thread inherits visibility='department' from a department-scoped live source", async () => {
     const tracker = makeTxTracker({
       sourceSelectReturn: [
-        { id: "thread-src-1", subtype: "live", visibility: "department" },
+        { id: "thread-src-1", companyId: "co-spinoff-1", subtype: "live", visibility: "department" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>
@@ -341,7 +373,7 @@ describe("integration: live thread → spin-off flow", () => {
   it("derived thread inherits visibility='company' from a company-visible live source", async () => {
     const tracker = makeTxTracker({
       sourceSelectReturn: [
-        { id: "thread-src-1", subtype: "live", visibility: "company" },
+        { id: "thread-src-1", companyId: "co-spinoff-1", subtype: "live", visibility: "company" },
       ],
     });
     const transactionFn = vi.fn(async (cb: any) =>

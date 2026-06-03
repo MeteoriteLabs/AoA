@@ -89,6 +89,15 @@ export const spinOffThreadTool: AgentTool = {
           err.__toolErrorCode = "SOURCE_NOT_FOUND";
           throw err;
         }
+        // Cross-tenant guard (#7): reject if the source thread belongs to a
+        // different company than the caller's ctx. This closes the hole where a
+        // Navigator agent scoped to company A could spin off a thread owned by
+        // company B simply by knowing its ID.
+        if (source.companyId !== ctx.companyId) {
+          const err: any = new Error("Source thread belongs to a different company");
+          err.__toolErrorCode = "COMPANY_MISMATCH";
+          throw err;
+        }
         if (source.subtype !== "live") {
           const err: any = new Error(
             "Spin-off requires source thread subtype='live'",
@@ -121,7 +130,12 @@ export const spinOffThreadTool: AgentTool = {
             .select()
             .from(discussionEntries)
             .where(inArray(discussionEntries.id, seedEntryIds));
-          const seedList = Array.isArray(seedRows) ? seedRows : [];
+          // Seed-entry scope guard (#7): only copy entries that actually belong
+          // to the source thread. This prevents cross-thread / cross-company
+          // content leakage if a caller passes entry IDs from another thread.
+          const seedList = (Array.isArray(seedRows) ? seedRows : []).filter(
+            (r: any) => r.discussionId === fromThreadId,
+          );
           for (const r of seedList) {
             await tx.insert(discussionEntries).values({
               discussionId: newThread.id,
@@ -161,7 +175,7 @@ export const spinOffThreadTool: AgentTool = {
       // distinctly from infrastructure failures so callers can branch on
       // the error code. Unknown failures fall through to TRANSACTION_FAILED.
       const code: string | undefined = err?.__toolErrorCode;
-      if (code === "NOT_LIVE" || code === "SOURCE_NOT_FOUND") {
+      if (code === "NOT_LIVE" || code === "SOURCE_NOT_FOUND" || code === "COMPANY_MISMATCH") {
         return {
           success: false,
           data: null,

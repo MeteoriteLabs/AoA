@@ -92,6 +92,19 @@ describe("Command Staff roster", () => {
     expect(allow).toContain("create_artifact");
     expect(allow).not.toContain("create_task");
   });
+
+  it("Planner's allowlist includes the 4 crew task tools (Spec B Task 6)", () => {
+    // Task 6: Planner is one of the executor roles a task can be dispatched to,
+    // so it needs the per-task tools (get_task / post_task_comment /
+    // attach_task_artifact / set_task_status). Adding these must not grant it
+    // create_task — task creation stays behind the Adjutant chokepoint.
+    const allow = roleToolAllowlist("planner");
+    expect(allow).toContain("get_task");
+    expect(allow).toContain("post_task_comment");
+    expect(allow).toContain("attach_task_artifact");
+    expect(allow).toContain("set_task_status");
+    expect(allow).not.toContain("create_task");
+  });
 });
 
 describe("Commander ad-hoc create_task (Task 2.7 sanity: non-thread flow unaffected)", () => {

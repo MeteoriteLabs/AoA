@@ -14,7 +14,6 @@ import { agents } from "./agents.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { companies } from "./companies.js";
-import { heartbeatRuns } from "./heartbeat_runs.js";
 import { authUsers } from "./auth.js";
 import { artifacts } from "./artifacts.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -40,8 +39,10 @@ export const issues = pgTable(
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, { onDelete: "set null" }),
     assigneeUserId: text("assignee_user_id"),
-    checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
-    executionRunId: uuid("execution_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // Polymorphic run lock: holds a heartbeat_runs.id (org agents) OR an internal_agent_runs.id (crew, Decision #100).
+    // No FK — the column is polymorphic across two run tables, so it cannot reference a single one.
+    checkoutRunId: uuid("checkout_run_id"),
+    executionRunId: uuid("execution_run_id"),
     executionAgentNameKey: text("execution_agent_name_key"),
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
     executionWorkspaceId: uuid("execution_workspace_id")

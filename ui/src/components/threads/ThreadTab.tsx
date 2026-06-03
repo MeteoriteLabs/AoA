@@ -4,7 +4,7 @@
  * Composer at the bottom is the new Phase E1 EntryComposer with
  * @-autocomplete, attachments, and reply support.
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { discussionsApi, type DiscussionEntry } from "../../api/discussions";
 import { authApi } from "../../api/auth";
@@ -17,9 +17,18 @@ import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
 import { EntryRow } from "./EntryRow";
 import { EntryComposer, type AgentRef, type AssetRef, type UserRef } from "./EntryComposer";
+import { PresenceStrip } from "./PresenceStrip";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
 import { useNavigate } from "@/lib/router";
+
+/**
+ * How long an optimistic "Summoning {names}…" chip lingers before auto-clearing
+ * if the real `thread.presence` pill never arrives (e.g. the agent declined to
+ * answer, or the run failed before flipping presence). The pill normally
+ * replaces it within a couple of seconds. (Task 5.4)
+ */
+const SUMMONING_TIMEOUT_MS = 20_000;
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadTab
@@ -45,10 +54,28 @@ export function ThreadTab({
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { connectionState } = useLiveUpdates();
+  const { connectionState, workingAgentsByThread, presenceByThread } = useLiveUpdates();
   const isOffline = connectionState === "offline";
   const isReconnecting = connectionState === "reconnecting";
   const isDisconnected = isOffline || isReconnecting;
+
+  // ── Task 5.3: live thread presence (humanized typing/working pill) ──
+  // Defensive ?? {} so a partial useLiveUpdates() (e.g. a test mock, or a
+  // consumer rendering before the provider populates) never throws.
+  const workingAgents = (workingAgentsByThread ?? {})[threadId] ?? [];
+  const presence = (presenceByThread ?? {})[threadId] ?? [];
+  const typingMembers = presence.filter((m) => m.typing);
+
+  // ── Task 5.4: optimistic "Summoning {names}…" chip on @mention send ──
+  // Client-only state: a transient chip per summoned crew agent, shown the
+  // instant the founder sends an @mention. Cleared when the real presence pill
+  // arrives for that agent (it's now "working") or after a timeout.
+  const [summoning, setSummoning] = useState<Array<{ id: string; name: string }>>([]);
+  const summoningTimersRef = useRef<Map<string, number>>(new Map());
+
+  // ── Task 5.4: optimistic own-entry — render the just-sent message instantly,
+  // before the server round-trip lands (today the mutation only invalidates). ──
+  const [optimisticEntries, setOptimisticEntries] = useState<DiscussionEntry[]>([]);
 
   // Current user identity — for right-aligning own messages
   const { data: session } = useQuery({
@@ -96,14 +123,68 @@ export function ThreadTab({
     }));
   }, [teamData]);
 
+  // P1-T7: The most-recent scope_proposal entry in the thread is the "active"
+  // one. Older proposals render read-only. Hoisted above all early returns so
+  // the hook order stays stable (rules-of-hooks) — Task 5.4 made the empty-state
+  // branch optimistic-aware, which would otherwise toggle this hook in/out.
+  const activeProposalEntryId = useMemo(() => {
+    const proposals = entries.filter((e) => e.inputType === "scope_proposal");
+    return proposals.length > 0 ? proposals[proposals.length - 1].id : null;
+  }, [entries]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Scroll to bottom when new messages arrive
+  // Scroll to bottom when new messages arrive (server or optimistic).
   useEffect(() => {
-    if (entries.length > 0) {
+    if (entries.length > 0 || optimisticEntries.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
-  }, [entries.length]);
+  }, [entries.length, optimisticEntries.length]);
+
+  // Task 5.4: clear a summoning chip the moment the real working-agent presence
+  // pill arrives for that agent (it's now "<Name> is researching…"). The
+  // PresenceStrip then carries the live state; the chip was only a stopgap.
+  useEffect(() => {
+    if (summoning.length === 0) return;
+    const workingIds = new Set(workingAgents.map((a) => a.agentId));
+    const stillPending = summoning.filter((s) => !workingIds.has(s.id));
+    if (stillPending.length !== summoning.length) {
+      for (const s of summoning) {
+        if (workingIds.has(s.id)) {
+          const t = summoningTimersRef.current.get(s.id);
+          if (t != null) {
+            window.clearTimeout(t);
+            summoningTimersRef.current.delete(s.id);
+          }
+        }
+      }
+      setSummoning(stillPending);
+    }
+  }, [workingAgents, summoning]);
+
+  // Task 5.4: drop an optimistic own-entry once the server's refetched entries
+  // include it (same author + content). Best-effort dedupe keyed on content.
+  useEffect(() => {
+    if (optimisticEntries.length === 0) return;
+    const serverKeys = new Set(
+      entries
+        .filter((e) => e.createdBy && e.createdBy === currentUserId)
+        .map((e) => e.rawContent),
+    );
+    const remaining = optimisticEntries.filter((o) => !serverKeys.has(o.rawContent));
+    if (remaining.length !== optimisticEntries.length) {
+      setOptimisticEntries(remaining);
+    }
+  }, [entries, optimisticEntries, currentUserId]);
+
+  // Clear any pending summoning timers on unmount.
+  useEffect(() => {
+    const timers = summoningTimersRef.current;
+    return () => {
+      for (const t of timers.values()) window.clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
@@ -187,6 +268,14 @@ export function ThreadTab({
     onError: () => pushToast({ title: "Failed to skip task", tone: "warn" }),
   });
 
+  // Crew-agent lookup for the optimistic summoning chip — the composer's
+  // `mentions` are ids; only ids present in the AoA crew list summon a crew run.
+  const crewAgentById = useMemo(() => {
+    const m = new Map<string, AgentRef>();
+    for (const a of composerAgents) m.set(a.id, a);
+    return m;
+  }, [composerAgents]);
+
   async function handleComposerSubmit(payload: {
     text: string;
     mentions: string[];
@@ -200,11 +289,66 @@ export function ThreadTab({
       });
       return;
     }
-    await addEntryMutation.mutateAsync({
-      rawContent: payload.text,
-      attachments: payload.attachments,
-      parentEntryId: payload.parentEntryId,
-    });
+
+    // Task 5.4: optimistically surface a "Summoning {names}…" chip for any
+    // @mentioned crew agent, immediately — replaced by the real presence pill
+    // (or auto-cleared after a timeout if it never lights).
+    const summonedCrew = payload.mentions
+      .map((id) => crewAgentById.get(id))
+      .filter((a): a is AgentRef => !!a)
+      .map((a) => ({ id: a.id, name: a.name }));
+    if (summonedCrew.length > 0) {
+      setSummoning((prev) => {
+        const seen = new Set(prev.map((s) => s.id));
+        return [...prev, ...summonedCrew.filter((s) => !seen.has(s.id))];
+      });
+      for (const s of summonedCrew) {
+        const existing = summoningTimersRef.current.get(s.id);
+        if (existing != null) window.clearTimeout(existing);
+        const timer = window.setTimeout(() => {
+          summoningTimersRef.current.delete(s.id);
+          setSummoning((prev) => prev.filter((p) => p.id !== s.id));
+        }, SUMMONING_TIMEOUT_MS);
+        summoningTimersRef.current.set(s.id, timer);
+      }
+    }
+
+    // Task 5.4: optimistically insert the user's own entry so the bubble appears
+    // instantly (pruned once the server's refetched entries include it).
+    if (!payload.parentEntryId) {
+      const now = new Date().toISOString();
+      const optimistic: DiscussionEntry = {
+        id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        inputType: "write",
+        rawContent: payload.text,
+        title: null,
+        sourceInfo: null,
+        departmentId: null,
+        projectId: null,
+        goalId: null,
+        parentEntryId: null,
+        authorAgentId: null,
+        authorAgentName: null,
+        authorAgentAvatar: null,
+        extractionStatus: "pending",
+        createdBy: currentUserId ?? "me",
+        createdAt: now,
+        extractedItems: [],
+        annotations: [],
+      };
+      setOptimisticEntries((prev) => [...prev, optimistic]);
+    }
+
+    try {
+      await addEntryMutation.mutateAsync({
+        rawContent: payload.text,
+        attachments: payload.attachments,
+        parentEntryId: payload.parentEntryId,
+      });
+    } catch {
+      // On failure, drop the optimistic echo (mutation's onError already toasts).
+      setOptimisticEntries((prev) => prev.filter((o) => o.rawContent !== payload.text));
+    }
   }
 
   async function handleUpload(file: File): Promise<AssetRef> {
@@ -256,6 +400,28 @@ export function ThreadTab({
       : currentUserId.replace(/[-_]/g, " ").split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "Me"
     : "Me";
 
+  // Task 5.3 + 5.4: live presence/typing pill + transient summoning chips, shown
+  // just above the composer so "<Name> is researching…" appears live while an
+  // agent runs and "Summoning {names}…" bridges the gap right after an @mention.
+  const presenceFooter = (
+    <div className="px-4 pb-1.5 empty:hidden" data-testid="thread-presence-footer">
+      {summoning.length > 0 && (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+          data-testid="thread-summoning-chip"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" aria-hidden="true" />
+          Summoning {summoning.map((s) => s.name).join(", ")}…
+        </span>
+      )}
+      <PresenceStrip
+        presence={presence}
+        typingMembers={typingMembers}
+        workingAgents={workingAgents.map((a) => ({ id: a.agentId, name: a.name, activity: a.activity }))}
+      />
+    </div>
+  );
+
   const composer = (
     <div data-testid="thread-composer">
       <EntryComposer
@@ -279,25 +445,19 @@ export function ThreadTab({
     </div>
   );
 
-  // ── Empty state ──
-  if (entries.length === 0) {
+  // ── Empty state ── (only when there's nothing to show, incl. optimistic echoes)
+  if (entries.length === 0 && optimisticEntries.length === 0) {
     return (
       <div className="flex flex-col h-full">
         <div className="flex-1 flex flex-col items-center justify-center py-12 text-center px-6">
           <p className="text-sm text-muted-foreground mb-1">No messages yet.</p>
           <p className="text-xs text-muted-foreground/60">Start the discussion below.</p>
         </div>
+        {presenceFooter}
         {composer}
       </div>
     );
   }
-
-  // P1-T7: The most-recent scope_proposal entry in the thread is the "active" one.
-  // Older proposals are shown read-only (isActive=false, buttons disabled by card).
-  const activeProposalEntryId = useMemo(() => {
-    const proposals = entries.filter((e) => e.inputType === "scope_proposal");
-    return proposals.length > 0 ? proposals[proposals.length - 1].id : null;
-  }, [entries]);
 
   // Group: top-level first, replies underneath; orphan replies treated as top-level
   const topLevel = entries.filter((e) => !e.parentEntryId);
@@ -311,7 +471,13 @@ export function ThreadTab({
     }
   }
   const orphans = entries.filter((e) => e.parentEntryId && !topLevelIds.has(e.parentEntryId));
-  const roots = [...topLevel, ...orphans];
+  // Task 5.4: append optimistic own-entries (skip any already echoed by the
+  // server to avoid a flash of duplicates between refetch and prune).
+  const serverOwnContent = new Set(
+    entries.filter((e) => e.createdBy && e.createdBy === currentUserId).map((e) => e.rawContent),
+  );
+  const pendingOptimistic = optimisticEntries.filter((o) => !serverOwnContent.has(o.rawContent));
+  const roots = [...topLevel, ...orphans, ...pendingOptimistic];
 
   return (
     <div className="flex flex-col h-full">
@@ -363,6 +529,7 @@ export function ThreadTab({
         <div ref={messagesEndRef} />
       </div>
 
+      {presenceFooter}
       {composer}
     </div>
   );

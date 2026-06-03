@@ -21,9 +21,10 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { threadService, parseMentions, processMentions } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
+import { attachInboxItemToThread, promoteInboxItemToNewThread } from "../services/inbox-attach.js";
 
 // ── Thread lifecycle request-body schemas ────────────────────────────────────
 const phaseSchema = z.object({ phase: z.enum(THREAD_PHASES) });
@@ -92,6 +93,45 @@ export function discussionRoutes(db: Db) {
     },
   );
 
+  // T.I1b POST /companies/:companyId/discussions/inbox — manual paste producer (Task 0.6, Decision #14)
+  // Enqueues a raw paste into thread_inbox_items.  Distinct from the triage POST
+  // (/inbox/:itemId/triage) — this creates a NEW inbox row from a manual human paste.
+  // RBAC: founder + team_lead (mirrors GET inbox auth).
+  router.post(
+    "/companies/:companyId/discussions/inbox",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const { rawContent, originSource } = req.body as {
+        rawContent?: unknown;
+        originSource?: unknown;
+      };
+
+      if (typeof rawContent !== "string" || rawContent.trim() === "") {
+        res.status(400).json({ error: "rawContent is required and must be a non-empty string" });
+        return;
+      }
+
+      const { enqueueInboxItem } = await import("../services/inbox-producer.js");
+      const actor = getActorInfo(req);
+      const resolvedSource =
+        typeof originSource === "string" && originSource.trim() !== ""
+          ? originSource
+          : actor.actorId;
+
+      const result = await enqueueInboxItem(db, {
+        companyId,
+        originMedium: "paste",
+        originSource: resolvedSource,
+        rawContent,
+      });
+
+      res.status(201).json(result);
+    },
+  );
+
   // 1.2 Get discussion detail
   router.get(
     "/companies/:companyId/discussions/:discussionId",
@@ -121,6 +161,27 @@ export function discussionRoutes(db: Db) {
       const actor = getActorInfo(req);
       try {
         const discussion = await svc.create(companyId, req.body, actor.actorId);
+
+        // Live-QA BUG-1: a thread opened WITH a first message must dispatch any
+        // @mentions in that first message — exactly like the add-entry route
+        // does. Without this an @mention in the opening message is dropped.
+        // Fire-and-forget; the entry is already committed, so errors must not
+        // fail the request. Mirrors the /entries route's processMentions wiring.
+        if (discussion.entry) {
+          const mentions = parseMentions(discussion.entry.rawContent ?? "");
+          if (mentions.length > 0) {
+            processMentions(
+              db,
+              companyId,
+              discussion.id,
+              discussion.entry.id,
+              mentions,
+            ).catch((err) =>
+              console.error("[threads] processMentions error:", err),
+            );
+          }
+        }
+
         res.status(201).json(discussion);
       } catch (err) {
         if (err instanceof HttpError) {
@@ -946,7 +1007,12 @@ export function discussionRoutes(db: Db) {
         await db
           .update(threadInboxItems)
           .set({ status: "dismissed" })
-          .where(eq(threadInboxItems.id, itemId));
+          .where(
+            and(
+              eq(threadInboxItems.id, itemId),
+              eq(threadInboxItems.companyId, companyId),
+            ),
+          );
 
         await logActivity(db, {
           companyId,
@@ -964,7 +1030,9 @@ export function discussionRoutes(db: Db) {
       }
 
       if (action === "attach") {
-        // Fix C2: Validate target thread belongs to same company
+        // Fix C2: Validate target thread belongs to same company (pre-flight;
+        // attachInboxItemToThread also validates — keeping this for a fast 404
+        // before entering any transaction).
         const [targetThread] = await db
           .select({ id: discussions.id })
           .from(discussions)
@@ -974,11 +1042,14 @@ export function discussionRoutes(db: Db) {
           return;
         }
 
-        // Attach inbox item to an existing thread (mark as attached)
-        await db
-          .update(threadInboxItems)
-          .set({ status: "attached", suggestedThreadId: threadId })
-          .where(eq(threadInboxItems.id, itemId));
+        // Delegate to the 0.3 write-path — posts rawContent as a discussion_entries
+        // row AND atomically claims the inbox row (Codex #6 fix).
+        const attachResult = await attachInboxItemToThread(db, {
+          companyId,
+          inboxItemId: itemId,
+          threadId: threadId!,
+          actor,
+        });
 
         await logActivity(db, {
           companyId,
@@ -988,34 +1059,47 @@ export function discussionRoutes(db: Db) {
           action: "thread.inbox_item.attached",
           entityType: "thread_inbox_item",
           entityId: itemId,
-          details: { threadId },
+          details: { threadId, entryId: attachResult.entryId },
         });
 
-        res.json({ itemId, status: "attached", threadId });
+        // Idempotent: alreadyHandled means the item was previously claimed in the
+        // same transaction — still 200, no duplicate entry inserted.
+        res.json({
+          itemId,
+          status: "attached",
+          threadId,
+          entryId: attachResult.entryId,
+          alreadyHandled: attachResult.alreadyHandled,
+        });
         return;
       }
 
       if (action === "make_thread") {
-        // Fix C1: Wrap create + status update in a transaction to prevent orphaned
-        // discussions if the process crashes between the two DB calls.
-        const newDiscussion = await db.transaction(async (tx) => {
-          const txSvc = discussionService(tx as unknown as typeof db);
-          const created = await txSvc.create(
-            companyId,
-            {
-              title: item.rawContent.slice(0, 80).replace(/\n/g, " ") || "New thread",
-            },
-            actor.actorId,
-          );
-
-          // Mark inbox item as attached to the new thread within the same transaction
-          await tx
-            .update(threadInboxItems)
-            .set({ status: "attached", suggestedThreadId: created.id })
-            .where(eq(threadInboxItems.id, itemId));
-
-          return created;
+        // Delegate to the 0.3 write-path — creates the thread, posts rawContent as
+        // the first discussion_entries row, and claims the inbox row atomically
+        // (Codex #6 fix). The 0.3 service handles the C1 transaction safety that
+        // the previous code implemented manually.
+        //
+        // PromoteResult.alreadyHandled: a concurrent promote (rare — the router's
+        // atomic claim in routeInboxItem guards most concurrent paths) already
+        // claimed+created this item. Return 200 with the current item state so
+        // the caller can discover the existing thread via the inbox item.
+        const promoteResult = await promoteInboxItemToNewThread(db, {
+          companyId,
+          inboxItemId: itemId,
+          actor,
         });
+
+        if (promoteResult.alreadyHandled) {
+          res.status(200).json({
+            itemId,
+            status: "attached",
+            threadId: null,
+            entryId: null,
+            alreadyHandled: true,
+          });
+          return;
+        }
 
         await logActivity(db, {
           companyId,
@@ -1025,10 +1109,15 @@ export function discussionRoutes(db: Db) {
           action: "thread.inbox_item.promoted",
           entityType: "thread_inbox_item",
           entityId: itemId,
-          details: { newDiscussionId: newDiscussion.id },
+          details: { newDiscussionId: promoteResult.threadId },
         });
 
-        res.status(201).json({ itemId, status: "attached", threadId: newDiscussion.id, thread: newDiscussion });
+        res.status(201).json({
+          itemId,
+          status: "attached",
+          threadId: promoteResult.threadId,
+          entryId: promoteResult.entryId,
+        });
         return;
       }
 
@@ -1344,21 +1433,21 @@ export function discussionRoutes(db: Db) {
           },
         });
 
-        // Dispatch heartbeat for each task that has an agent assignee.
+        // Dispatch each task that has an agent assignee through the kind-aware
+        // chokepoint (crew → AoA dispatcher, org → heartbeat).
         // Mirrors the assignment-wakeup pattern in routes/issues.ts POST /issues.
-        const heartbeat = heartbeatService(db);
         for (const task of result.createdTasks) {
           if (task.assigneeAgentId && shouldDispatchIssueWakeup({ workMode: task.workMode })) {
-            void heartbeat
-              .wakeup(task.assigneeAgentId, {
-                source: "assignment",
-                triggerDetail: "system",
-                reason: "deliverable_created",
-                payload: { issueId: task.id, mutation: "create" },
-              })
-              .catch((err) =>
-                logger.warn({ err, issueId: task.id }, "failed to wake deliverable assignee on approve"),
-              );
+            void enqueueIssueAssigneeWakeup(db, {
+              companyId,
+              agentId: task.assigneeAgentId,
+              issueId: task.id,
+              source: "assignment",
+              reason: "deliverable_created",
+              mutation: "create",
+            }).catch((err) =>
+              logger.warn({ err, issueId: task.id }, "failed to wake deliverable assignee on approve"),
+            );
           }
         }
 

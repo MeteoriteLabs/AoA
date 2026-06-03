@@ -65,7 +65,8 @@ interface SeedRoleArgs {
     | "adjutant"
     | "maker"
     | "engineer"
-    | "scout";
+    | "scout"
+    | "chronicler";
   agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
   // Injected for testability. The real implementation passes agentInstructionsService() with
   // ensureWritableBundle aliased from ensureManagedBundle (see ensure-commander.ts).

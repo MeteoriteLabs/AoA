@@ -33,22 +33,8 @@ import {
 } from "./SpinOffSuggestionCard";
 import { HopCapDecisionCard } from "./HopCapDecisionCard";
 import { CrewFailureCard, type CrewFailurePayload } from "./CrewFailureCard";
+import { AgentAvatar, agentRoleColor } from "./AgentAvatar";
 import type { ScopeProposalPayload } from "@armyofagents/shared";
-
-/* ─── Agent role → color ─── */
-
-const ROLE_COLORS: Array<[RegExp, string]> = [
-  [/scribe/i,     "#6470DC"],  // --data-indigo
-  [/adjutant/i,   "#D9A938"],  // --data-amber
-  [/router/i,     "#3FA8C7"],  // --data-teal
-  [/planner/i,    "#5AA87E"],  // --data-emerald
-  [/dispatcher/i, "#7E8AA8"],  // --data-slate
-];
-
-function agentRoleColor(name: string | null | undefined): string {
-  for (const [re, c] of ROLE_COLORS) if (re.test(name ?? "")) return c;
-  return "#7E8AA8";
-}
 
 /* ─── Helpers ─── */
 
@@ -131,22 +117,6 @@ function tryParseScopeProposal(content: string): ScopeProposalPayload | null {
   } catch {
     return null;
   }
-}
-
-/* ─── Inline robot icon ─── */
-
-function RobotIcon() {
-  return (
-    <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden="true">
-      <rect x="3" y="9" width="14" height="9" rx="2" />
-      <rect x="7" y="5.5" width="6" height="4" rx="1" />
-      <line x1="10" y1="5.5" x2="10" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="10" cy="2.2" r="1" />
-      <circle cx="7.5" cy="13" r="1.3" />
-      <circle cx="12.5" cy="13" r="1.3" />
-      <rect x="8" y="16" width="4" height="1" rx="0.5" />
-    </svg>
-  );
 }
 
 /* ─── Reply count toggle (Phase E2) ─── */
@@ -379,7 +349,7 @@ export function EntryRow({
       >
         <div className="flex-1 h-px bg-border/60" />
         <span
-          className="text-[11px] text-muted-foreground/70 whitespace-nowrap rounded-full px-3 py-0.5 shrink-0"
+          className="text-[11px] text-muted-foreground/70 break-words text-center max-w-[70%] rounded-full px-3 py-0.5 shrink-0"
           style={{ background: "hsl(0 0% 14% / 0.6)" }}
         >
           {entry.rawContent}
@@ -478,7 +448,7 @@ function MeBubble({
           {relativeTime(entry.createdAt)}
         </span>
       </div>
-      <div className="flex items-end gap-2">
+      <div className="flex items-end justify-end gap-2">
         <div className="flex flex-col items-end gap-1.5 max-w-[78%]">
           <div
             className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
@@ -622,23 +592,9 @@ function AgentCard({
       data-testid={`entry-row-${entry.id}`}
       data-entry-type="agent"
     >
-      {/* Robot avatar */}
-      <div
-        className="w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 mt-0.5 overflow-hidden"
-        style={{ background: color }}
-        title={agentName}
-      >
-        {entry.authorAgentAvatar ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={entry.authorAgentAvatar}
-            alt={agentName}
-            className="w-full h-full object-cover"
-            data-testid="entry-agent-avatar"
-          />
-        ) : (
-          <RobotIcon />
-        )}
+      {/* Agent avatar (role-colored robot icon, or custom image) */}
+      <div className="mt-0.5">
+        <AgentAvatar name={agentName} avatarUrl={entry.authorAgentAvatar} />
       </div>
 
       {/* Card */}
