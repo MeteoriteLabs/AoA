@@ -30,6 +30,6 @@ describe("SkillSourceIcon", () => {
 
   it("includes a screen-reader-only label", () => {
     const { getByText } = render(<SkillSourceIcon badge="local" sourceLabel={null} />);
-    expect(getByText("Folder managed").className).toContain("sr-only");
+    expect(getByText("Local skill").className).toContain("sr-only");
   });
 });

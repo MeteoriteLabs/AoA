@@ -4,9 +4,10 @@ import { useCompany } from "../../context/CompanyContext";
 import { api } from "../../api/client";
 import { threadsApi } from "../../api/threads";
 import { cn } from "../../lib/utils";
-import { Sparkles, ChevronDown, X, Loader2 } from "lucide-react";
+import { ClipboardPen, GitBranch, Sparkles, ChevronDown, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { InboxCardItem } from "./ThreadBoard";
+import { AttentionCount, IconChip } from "./ThreadCardIcons";
 
 /* ════════════════════════════════════════════════════════════════════════
    UnlistedLane — amber triage queue for un-routed inbound items
@@ -133,23 +134,30 @@ function InboxTriageCard({ item, onTriaged, threadsById }: InboxTriageCardProps)
   return (
     <div
       className={cn(
-        "rounded-md border border-amber-200 dark:border-amber-800 bg-white dark:bg-amber-950/40 p-2 space-y-2",
+        "relative rounded-md border border-amber-200 bg-card p-2.5 pr-9 dark:border-amber-800",
         isPending && "opacity-60",
       )}
       data-testid={`inbox-item-${item.id}`}
     >
+      <AttentionCount count={1} route />
+
       {/* Content preview */}
-      <p className="text-xs line-clamp-3 text-foreground/80 leading-relaxed">
+      <p className="line-clamp-3 text-xs leading-relaxed text-foreground/80">
         {item.rawContent}
       </p>
 
       {/* Meta */}
-      <div className="flex items-center justify-between">
-        {item.originSource && (
-          <span className="text-[10px] text-amber-700/70 dark:text-amber-400/70 capitalize">
-            {item.originSource}
-          </span>
-        )}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1">
+          <IconChip
+            Icon={ClipboardPen}
+            label={`Source: ${item.originSource ?? "Unknown"}`}
+            tone="source"
+          />
+          {item.routerDecision === "suggest" && (
+            <IconChip Icon={GitBranch} label="Suggested thread route" tone="branch" />
+          )}
+        </div>
         <span className="text-[10px] text-muted-foreground">
           {relativeTime(item.createdAt)}
         </span>

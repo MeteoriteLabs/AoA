@@ -21,6 +21,16 @@ export interface DiscussionListItem {
   lastEntryInputType: string | null;
   createdBy: string;
   createdAt: string;
+  participantPreview?: DiscussionParticipantPreview[];
+  participantCount?: number;
+  linkCount?: number;
+}
+
+export interface DiscussionParticipantPreview {
+  principalType: "user" | "agent";
+  principalId: string;
+  name: string;
+  role: string;
 }
 
 export interface DiscussionListResponse {
@@ -70,6 +80,9 @@ export interface DiscussionEntryAttachment {
   artifactId: string | null;
   artifactType: string | null;
   artifactTitle: string | null;
+  assetContentType?: string | null;
+  assetOriginalFilename?: string | null;
+  assetByteSize?: number | null;
 }
 
 export interface DiscussionEntry {

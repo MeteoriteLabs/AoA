@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -338,6 +339,9 @@ function EnvironmentDialog({
           <DialogTitle>
             {mode === "create" ? "New Environment" : "Edit Environment"}
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            Configure the environment name, runtime target, and environment variables.
+          </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">

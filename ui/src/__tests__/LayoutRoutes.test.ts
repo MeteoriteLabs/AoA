@@ -7,6 +7,8 @@ describe("Layout route padding", () => {
     expect(shouldUseFullBleedMain("/AOA/settings?tab=general", "AOA")).toBe(true);
     expect(shouldUseFullBleedMain("/AOA/memory", "AOA")).toBe(true);
     expect(shouldUseFullBleedMain("/AOA/skills", "AOA")).toBe(true);
+    expect(shouldUseFullBleedMain("/AOA/team", "AOA")).toBe(true);
+    expect(shouldUseFullBleedMain("/AOA/team?tab=aoa&aoaTab=tasks", "AOA")).toBe(true);
     expect(shouldUseFullBleedMain("/AOA/workspaces/abc-123", "AOA")).toBe(true);
     // Threads continuum (browse + detail) is edge-to-edge.
     expect(shouldUseFullBleedMain("/AOA/discussions", "AOA")).toBe(true);
@@ -18,5 +20,8 @@ describe("Layout route padding", () => {
     expect(shouldUseFullBleedMain("/AOA/projects/engineering/settings", "AOA")).toBe(false);
     expect(shouldUseFullBleedMain("/AOA/projects/engineering/workspaces", "AOA")).toBe(false);
     expect(shouldUseFullBleedMain("/AOA/projects/engineering/overview", "AOA")).toBe(false);
+    expect(shouldUseFullBleedMain("/AOA/team/local-board", "AOA")).toBe(false);
+    expect(shouldUseFullBleedMain("/AOA/team/teams/founding", "AOA")).toBe(false);
+    expect(shouldUseFullBleedMain("/AOA/team/aoa/agent-1", "AOA")).toBe(false);
   });
 });

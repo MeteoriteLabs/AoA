@@ -26,6 +26,39 @@ describe("threads API contract", () => {
       expect(parsed.attachments).toEqual([]);
     });
 
+    it("accepts asset metadata on attachments", () => {
+      const parsed = DiscussionEntryV2Schema.parse({
+        id: "00000000-0000-0000-0000-000000000001",
+        discussionId: "00000000-0000-0000-0000-000000000002",
+        inputType: "write",
+        rawContent: "Attached a file",
+        parentEntryId: null,
+        authorAgentId: null,
+        authorAgentName: null,
+        authorAgentAvatar: null,
+        attachments: [
+          {
+            id: "00000000-0000-0000-0000-000000000003",
+            artifactId: null,
+            assetId: "00000000-0000-0000-0000-000000000004",
+            artifactType: null,
+            artifactTitle: null,
+            assetContentType: "text/markdown",
+            assetOriginalFilename: "plan.md",
+            assetByteSize: 128,
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        createdBy: "local-board",
+      });
+
+      expect(parsed.attachments[0]).toMatchObject({
+        assetContentType: "text/markdown",
+        assetOriginalFilename: "plan.md",
+        assetByteSize: 128,
+      });
+    });
+
     it("accepts scope_proposal as a valid inputType", () => {
       const parsed = DiscussionEntryV2Schema.parse({
         id: "00000000-0000-0000-0000-000000000001",

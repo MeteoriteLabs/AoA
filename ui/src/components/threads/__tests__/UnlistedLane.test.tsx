@@ -87,6 +87,31 @@ describe("UnlistedLane", () => {
     expect(screen.getByRole("button", { name: /dismiss/i })).toBeInTheDocument();
   });
 
+  it("renders routing attention and source metadata for inbox cards", () => {
+    const items = [
+      makeItem({
+        id: "item-meta",
+        rawContent: "Needs routing into the right discussion",
+        originSource: "mcp",
+        routerDecision: "suggest",
+        suggestedThreadId: "t-1",
+      }),
+    ];
+
+    renderWithProviders(
+      <UnlistedLane
+        inboxItems={items}
+        onTriaged={vi.fn()}
+        threadsById={makeThreadsById({ "t-1": "Existing thread" })}
+      />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    expect(screen.getByLabelText("1 item needs routing")).toBeInTheDocument();
+    expect(screen.getByLabelText("Source: mcp")).toBeInTheDocument();
+    expect(screen.getByLabelText("Suggested thread route")).toBeInTheDocument();
+  });
+
   it("calls triage endpoint with 'dismiss' when Dismiss button is clicked", async () => {
     const user = userEvent.setup();
     const onTriaged = vi.fn();

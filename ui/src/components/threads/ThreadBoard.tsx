@@ -2,12 +2,18 @@ import { Link } from "@/lib/router";
 import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
 import type { ThreadListItem } from "../../api/threads";
 import { cn } from "../../lib/utils";
-import { MessageSquare, Plus, Archive } from "lucide-react";
+import { Plus, Archive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UnlistedLane } from "./UnlistedLane";
 import { groupThreadsForBoard } from "./boardModel";
-
-/* ── Phase column config ────────────────────────────────────────────────────── */
+import { AttentionCount, IconChip, LiveMarker, ParticipantStack } from "./ThreadCardIcons";
+import {
+  getAttentionCount,
+  getBranchMeta,
+  getInputSourceMeta,
+  getScopeMeta,
+  getVisibilityMeta,
+} from "./threadCardMeta";
 
 const PHASE_COLUMNS: Array<{ phase: ThreadPhase; label: string; headerClass: string }> = [
   { phase: "discuss", label: "Discuss", headerClass: "text-blue-700 dark:text-blue-400" },
@@ -29,18 +35,11 @@ function relativeTime(dateStr: string | null | undefined): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-/* ════════════════════════════════════════════════════════════════════════
-   ThreadBoard — Kanban-style view of threads by phase
-   ════════════════════════════════════════════════════════════════════════ */
-
 interface ThreadBoardProps {
   threads: ThreadListItem[];
-  /** Archived threads to display in the Archived column. */
   archivedThreads?: ThreadListItem[];
-  /** Inbox items for the Unlisted lane (v1: empty — inboxItems API is Task 3/4) */
   inboxItems?: InboxCardItem[];
   onNewThread: () => void;
-  /** Called after an inbox item is triaged so the parent can refresh */
   onInboxUpdate?: () => void;
 }
 
@@ -49,20 +48,15 @@ export interface InboxCardItem {
   rawContent: string;
   originSource: string | null;
   createdAt: string;
-  // Inbound routing (Phase 1) — present when the router has scored this item.
-  routerDecision?: string | null;     // 'suggest' → show the confirm affordance
-  suggestedThreadId?: string | null;  // the thread the router recommends
-  suggestedThreadTitle?: string | null;  // NEW — for suggest_new decisions
-  routerConfidence?: number | null;   // cosine distance of the top match (lower = closer)
+  routerDecision?: string | null;
+  suggestedThreadId?: string | null;
+  suggestedThreadTitle?: string | null;
+  routerConfidence?: number | null;
   routingStatus?: string | null;
 }
 
 export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
-  // Group threads by phase using pure boardModel function
   const byPhase = groupThreadsForBoard(threads);
-
-  // Build a lookup map (id → title) from ALL threads (active + archived)
-  // for the suggestion banner in UnlistedLane. Never crash on missing keys.
   const threadsById = new Map<string, string>();
   for (const t of threads) threadsById.set(t.id, t.title);
   for (const t of archivedThreads) threadsById.set(t.id, t.title);
@@ -72,7 +66,6 @@ export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], on
       className="flex gap-3 overflow-x-auto pb-4 min-h-[400px]"
       data-testid="thread-board"
     >
-      {/* Unlisted lane — pinned at left (amber background) */}
       <UnlistedLane
         inboxItems={inboxItems}
         threadsById={threadsById}
@@ -81,7 +74,6 @@ export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], on
         }}
       />
 
-      {/* Phase columns */}
       {PHASE_COLUMNS.map(({ phase, label, headerClass }) => (
         <PhaseColumn
           key={phase}
@@ -93,13 +85,10 @@ export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], on
         />
       ))}
 
-      {/* Archived column — always rendered so it's visible even when empty */}
       <ArchivedColumn threads={archivedThreads} />
     </div>
   );
 }
-
-/* ── Phase Column ────────────────────────────────────────────────────────────── */
 
 interface PhaseColumnProps {
   phase: ThreadPhase;
@@ -117,7 +106,6 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
       className="flex-none w-[240px] rounded-lg border border-border bg-muted/30 flex flex-col"
       data-testid={`phase-column-${phase}`}
     >
-      {/* Header — not clickable for reorder (v1) */}
       <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <p className={cn("text-xs font-semibold uppercase tracking-wider", headerClass)}>
@@ -138,7 +126,6 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
         </Button>
       </div>
 
-      {/* Cards */}
       <div className="flex-1 p-2 space-y-2 overflow-y-auto">
         {threads.length === 0 ? (
           <p className="text-[11px] text-muted-foreground text-center py-4 opacity-60">
@@ -154,8 +141,6 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
   );
 }
 
-/* ── Archived Column ─────────────────────────────────────────────────────────── */
-
 function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
   return (
     <div
@@ -164,7 +149,6 @@ function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
       className="flex-none w-[240px] rounded-lg border border-border bg-muted/20 flex flex-col opacity-70"
       data-testid="archived-column"
     >
-      {/* Header */}
       <div className="px-3 py-2.5 border-b border-border flex items-center gap-2">
         <Archive className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" aria-hidden />
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
@@ -175,7 +159,6 @@ function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
         </span>
       </div>
 
-      {/* Cards */}
       <div className="flex-1 p-2 space-y-2 overflow-y-auto">
         {threads.length === 0 ? (
           <p className="text-[11px] text-muted-foreground text-center py-4 opacity-60">
@@ -191,58 +174,53 @@ function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
   );
 }
 
-/* ── Board Card ─────────────────────────────────────────────────────────────── */
-
 function BoardCard({ thread, phase: _phase, archived = false }: { thread: ThreadListItem; phase: ThreadPhase; archived?: boolean }) {
-  const hasPending = thread.pendingItemCount > 0;
+  const source = getInputSourceMeta(thread.lastEntryInputType);
+  const scope = getScopeMeta(thread);
+  const visibility = getVisibilityMeta(thread.visibility);
+  const branch = getBranchMeta(thread);
+  const attention = getAttentionCount(thread);
+  const participants = thread.participantPreview ?? [];
+  const participantFallback = participants.length
+    ? participants
+    : [{ name: thread.ownerUserId ?? "Unclaimed" }];
 
   return (
     <Link
       to={`/discussions/${thread.id}`}
       className={cn(
-        "block rounded-md border p-2.5 transition-colors text-left",
+        "relative block rounded-md border p-2.5 pr-9 text-left transition-colors",
         archived
-          ? "border-border bg-muted/30 hover:bg-muted/50 opacity-60"
-          : hasPending
-          ? "border-blue-300 bg-blue-50/80 hover:bg-blue-100/80 dark:border-blue-800 dark:bg-blue-950/30"
-          : "border-border bg-background hover:bg-accent/50",
+          ? "border-border bg-muted/30 opacity-60 hover:bg-muted/50"
+          : "border-border bg-background hover:bg-accent/40",
       )}
     >
-      {/* Origin icon + title */}
-      <div className="flex items-start gap-1.5">
-        <MessageSquare
-          className={cn(
-            "h-3.5 w-3.5 mt-0.5 shrink-0",
-            hasPending ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground",
-          )}
-          aria-hidden
-        />
-        <p className="text-xs font-medium leading-snug line-clamp-2">{thread.title}</p>
+      {attention && <AttentionCount count={attention.count} />}
+      {thread.subtype === "live" && !attention && <LiveMarker />}
+
+      <p className="line-clamp-2 text-xs font-medium leading-snug">{thread.title}</p>
+      {thread.summaryNext && (
+        <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+          {thread.summaryNext}
+        </p>
+      )}
+
+      <div className="mt-2 flex items-center gap-1">
+        <IconChip Icon={source.Icon} label={`Source: ${source.label}`} tone="source" />
+        {scope && <IconChip Icon={scope.Icon} label={scope.title} tone="scope" />}
+        <IconChip Icon={visibility.Icon} label={visibility.label} tone="visibility" />
+        {branch && <IconChip Icon={branch.Icon} label={branch.title} tone="branch" />}
       </div>
 
-      {/* Meta row */}
-      <div className="flex items-center justify-between mt-1.5 gap-1">
-        <div className="flex items-center gap-1.5 min-w-0">
-          {/* Unread dot */}
-          {hasPending && (
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" aria-label="Pending" />
-          )}
-          {/* Last activity */}
-          {thread.lastEntryAt && (
-            <span className="text-[10px] text-muted-foreground truncate">
-              {relativeTime(thread.lastEntryAt)}
-            </span>
-          )}
-        </div>
-
-        {/* Owner: avatar initial or "–" */}
-        <span className="text-[10px] text-muted-foreground shrink-0">
-          {thread.ownerUserId ? thread.ownerUserId.slice(0, 4) : "–"}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <ParticipantStack
+          participants={participantFallback}
+          total={thread.participantCount ?? participants.length}
+        />
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          {relativeTime(thread.lastEntryAt)}
         </span>
       </div>
-
-      {/* Phase chip — only shown in Unlisted lane; hidden in phase columns */}
-      {/* In phase columns the column header already communicates the phase */}
     </Link>
   );
 }

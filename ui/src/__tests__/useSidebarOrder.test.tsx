@@ -189,7 +189,9 @@ describe("useSidebarOrder", () => {
     });
 
     // Give the debounce a chance to fire — it should NOT.
-    await sleep(TEST_DEBOUNCE_MS * 3);
+    await act(async () => {
+      await sleep(TEST_DEBOUNCE_MS * 3);
+    });
 
     await waitFor(() => {
       expect(apiReset).toHaveBeenCalledTimes(1);

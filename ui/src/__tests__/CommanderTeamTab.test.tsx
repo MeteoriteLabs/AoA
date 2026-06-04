@@ -289,6 +289,64 @@ describe("CommanderTeamTab", () => {
     expect(screen.queryByTestId("governance-content")).toBeNull();
   });
 
+  it("switching to Tasks tab shows task content and hides roster/kanban/governance", async () => {
+    const user = userEvent.setup();
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab
+        agents={agents as any}
+        trustScores={[]}
+        liveRuns={[]}
+        permissions={defaultPermissions}
+        tasksContent={<div data-testid="aoa-tasks-content">tasks</div>}
+      />,
+    );
+
+    await user.click(screen.getByTestId("commander-subtab-tasks"));
+
+    expect(screen.getByTestId("aoa-tasks-content")).toBeInTheDocument();
+    expect(screen.queryByTestId("roster-content")).toBeNull();
+    expect(screen.queryByTestId("kanban-content")).toBeNull();
+    expect(screen.queryByTestId("governance-content")).toBeNull();
+  });
+
+  it("can be opened directly on the Tasks subtab", () => {
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab
+        agents={agents as any}
+        trustScores={[]}
+        liveRuns={[]}
+        permissions={defaultPermissions}
+        activeSubTab="tasks"
+        onSubTabChange={vi.fn()}
+        tasksContent={<div data-testid="aoa-tasks-content">tasks</div>}
+      />,
+    );
+
+    expect(screen.getByTestId("aoa-tasks-content")).toBeInTheDocument();
+    expect(screen.getByTestId("commander-subtab-tasks")).toHaveAttribute("data-active", "true");
+  });
+
+  it("can hide its internal subtab bar when the page owns header subtabs", () => {
+    const agents = makeAoaAgents();
+    renderWithProviders(
+      <CommanderTeamTab
+        agents={agents as any}
+        trustScores={[]}
+        liveRuns={[]}
+        permissions={defaultPermissions}
+        activeSubTab="tasks"
+        onSubTabChange={vi.fn()}
+        showSubTabs={false}
+        tasksContent={<div data-testid="aoa-tasks-content">tasks</div>}
+      />,
+    );
+
+    expect(screen.getByTestId("aoa-tasks-content")).toBeInTheDocument();
+    expect(screen.queryByTestId("commander-subtab-tasks")).not.toBeInTheDocument();
+  });
+
   it("switching to Governance tab shows governance-content and hides others", async () => {
     const user = userEvent.setup();
     const agents = makeAoaAgents();

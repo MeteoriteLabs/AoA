@@ -96,7 +96,10 @@ export function threadEventToInvalidations(
   return [
     ["thread", companyId, threadId],
     ["threads", companyId],
-    ["threads", companyId, threadId],
+    queryKeys.threads.list(companyId),
+    queryKeys.threads.detail(companyId, threadId),
+    queryKeys.discussions.list(companyId),
+    queryKeys.discussions.detail(companyId, threadId),
   ];
 }
 
@@ -621,10 +624,15 @@ function handleLiveEvent(
 
   if (event.type === "discussion.entry.created") {
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
     const discussionId = readString(payload.discussionId);
     if (discussionId) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.discussions.detail(expectedCompanyId, discussionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.threads.detail(expectedCompanyId, discussionId),
       });
     }
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
@@ -636,10 +644,15 @@ function handleLiveEvent(
     event.type === "discussion.extraction.failed"
   ) {
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
     const discussionId = readString(payload.discussionId);
     if (discussionId) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.discussions.detail(expectedCompanyId, discussionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.threads.detail(expectedCompanyId, discussionId),
       });
     }
     return;
@@ -655,6 +668,8 @@ function handleLiveEvent(
       }
       // Lifecycle changes (scope/participant) can also alter the threads list & badges.
       queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
     }
     return;
   }

@@ -35,5 +35,8 @@ describe("cursor_cloud environment diagnostics", () => {
         level: "error",
       }),
     );
+    expect(result.checks.map((check) => check.code)).not.toContain(
+      "cursor_cloud_sdk_unavailable",
+    );
   });
 });

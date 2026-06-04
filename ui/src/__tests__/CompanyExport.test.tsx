@@ -201,8 +201,12 @@ describe("CompanyExport page", () => {
     const createObjectURL = vi.fn(() => "blob:mock");
     const revokeObjectURL = vi.fn();
     const originalURL = globalThis.URL.createObjectURL;
+    const originalRevokeObjectURL = globalThis.URL.revokeObjectURL;
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    const anchorClick = vi.fn();
     globalThis.URL.createObjectURL = createObjectURL as typeof URL.createObjectURL;
     globalThis.URL.revokeObjectURL = revokeObjectURL as typeof URL.revokeObjectURL;
+    HTMLAnchorElement.prototype.click = anchorClick;
 
     try {
       renderWithProviders(<CompanyExport />);
@@ -212,8 +216,12 @@ describe("CompanyExport page", () => {
       );
       await user.click(screen.getByRole("button", { name: /download/i }));
       await waitFor(() => expect(exportBundle).toHaveBeenCalledWith("comp-1", expect.any(Object)));
+      expect(anchorClick).toHaveBeenCalled();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock");
     } finally {
       globalThis.URL.createObjectURL = originalURL;
+      globalThis.URL.revokeObjectURL = originalRevokeObjectURL;
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
     }
   });
 

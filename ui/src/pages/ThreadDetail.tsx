@@ -7,10 +7,10 @@ import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType } from "../api/threads";
 import { api } from "../api/client";
+import type { DiscussionEntryAttachment, ExtractedItem } from "../api/discussions";
 import {
-  RefreshCw, Flag, Link2, Brain, X, ArrowRight, PanelRightClose, PanelRightOpen,
-  Pencil, ChevronDown, ChevronRight, Pause, Play, Archive, ArchiveRestore,
-  MoreHorizontal,
+  RefreshCw, Pencil, ChevronDown, ChevronRight, Pause, Play,
+  Archive, ArchiveRestore, MoreHorizontal,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -21,10 +21,20 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ThreadTab } from "../components/threads/ThreadTab";
+import { ThreadCollapsedTabStrip, ThreadViewer } from "../components/threads/ThreadViewer";
 import { ScopeTab } from "../components/threads/ScopeTab";
 import { BranchesTab } from "../components/threads/BranchesTab";
 import type { ScopeItem } from "../components/threads/scopeGrouping";
-import { AUTONOMY_LEVELS, autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
+import { autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
+import {
+  OPEN_TAB_KEY,
+  closeTab,
+  createOpenTab,
+  ensureTab,
+  scopeItemToTab,
+  threadAttachmentToTab,
+  type ThreadViewerTab,
+} from "../components/threads/threadViewerModel";
 
 /* ─── Phase constants ─── */
 
@@ -73,6 +83,10 @@ const MOBILE_TABS = [
 type MobileTab = (typeof MOBILE_TABS)[number]["key"];
 type CenterTab = "thread" | "scope" | "branches";
 
+const VIEWER_MIN_WIDTH = 280;
+const VIEWER_DEFAULT_WIDTH = 340;
+const VIEWER_MAX_WIDTH = 680;
+
 /* ─── Phase dot color for left rail ─── */
 
 const PHASE_DOT: Record<string, string> = {
@@ -106,7 +120,13 @@ function agentColor(name: string | null): string {
    ThreadDetail Page
    ════════════════════════════════════════════════════════════════════════ */
 
-export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) {
+interface ThreadDetailProps {
+  embedded?: boolean;
+  onViewerWideChange?: (wide: boolean) => void;
+}
+
+export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDetailProps = {}) {
+  void onViewerWideChange;
   const { threadId, discussionId } = useParams<{ threadId?: string; discussionId?: string }>();
   const resolvedId = threadId ?? discussionId;
   const { selectedCompanyId } = useCompany();
@@ -117,8 +137,10 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
 
   const [mobileTab, setMobileTab] = useState<MobileTab>("thread");
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
-  const [viewerItem, setViewerItem] = useState<ScopeItem | null>(null);
+  const [viewerTabs, setViewerTabs] = useState<ThreadViewerTab[]>(() => [createOpenTab()]);
+  const [activeViewerKey, setActiveViewerKey] = useState<string | null>(OPEN_TAB_KEY);
   const [viewerCollapsed, setViewerCollapsed] = useState(false);
+  const [viewerWidth, setViewerWidth] = useState(VIEWER_DEFAULT_WIDTH);
 
   // Header state
   const [isRenaming, setIsRenaming] = useState(false);
@@ -128,6 +150,7 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
 
   const renameInputRef = useRef<HTMLInputElement>(null);
   const centerHeadingRef = useRef<HTMLHeadingElement>(null);
+  const viewerDragStart = useRef<{ x: number; width: number } | null>(null);
 
   // Query
   const { data: thread, isLoading, isError, refetch } = useQuery({
@@ -136,6 +159,39 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
     enabled: !!selectedCompanyId && !!resolvedId,
     retry: false,
   });
+
+  useEffect(() => {
+    setViewerTabs([createOpenTab()]);
+    setActiveViewerKey(OPEN_TAB_KEY);
+  }, [resolvedId]);
+
+  const openViewerTab = useCallback((tab: ThreadViewerTab) => {
+    setViewerTabs((current) => ensureTab(current, tab));
+    setActiveViewerKey(tab.key);
+    setViewerCollapsed(false);
+    setMobileTab("viewer");
+  }, []);
+
+  const closeViewerTab = useCallback((key: string) => {
+    setViewerTabs((current) => {
+      const next = closeTab(current, key);
+      if (activeViewerKey === key) {
+        setActiveViewerKey(next[0]?.key ?? null);
+      }
+      return next;
+    });
+  }, [activeViewerKey]);
+
+  const openScopeItemInViewer = useCallback((item: ExtractedItem) => {
+    openViewerTab(scopeItemToTab(item));
+  }, [openViewerTab]);
+
+  const openAttachmentInViewer = useCallback((
+    attachment: DiscussionEntryAttachment,
+    entryId?: string,
+  ) => {
+    openViewerTab(threadAttachmentToTab(attachment, entryId));
+  }, [openViewerTab]);
 
   // Live updates
   const { connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect } =
@@ -183,6 +239,17 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
         createdAt: item.createdAt,
       })),
     );
+  }, [thread]);
+
+  const extractedItemById = useMemo(() => {
+    const map = new Map<string, ExtractedItem>();
+    if (!thread) return map;
+    for (const entry of thread.entries) {
+      for (const item of entry.extractedItems) {
+        map.set(item.id, item);
+      }
+    }
+    return map;
   }, [thread]);
 
   // Derived participant counts from entries
@@ -331,25 +398,71 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
     }
   }, []);
 
+  const startViewerResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (viewerCollapsed) return;
+    viewerDragStart.current = { x: event.clientX, width: viewerWidth };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, [viewerCollapsed, viewerWidth]);
+
+  const resizeViewer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!viewerDragStart.current) return;
+    const delta = viewerDragStart.current.x - event.clientX;
+    const nextWidth = Math.min(
+      VIEWER_MAX_WIDTH,
+      Math.max(VIEWER_MIN_WIDTH, viewerDragStart.current.width + delta),
+    );
+    setViewerWidth(nextWidth);
+  }, []);
+
+  const stopViewerResize = useCallback(() => {
+    viewerDragStart.current = null;
+  }, []);
+
   // Loading / error
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-4 p-6" data-testid="thread-detail-skeleton">
-        <div className="h-6 rounded-md bg-muted animate-pulse w-1/2" />
-        <div className="h-4 rounded-md bg-muted animate-pulse w-3/4" />
-        <div className="h-32 rounded-md bg-muted animate-pulse" />
+      <div
+        className={cn(
+          "flex h-full flex-col",
+          !embedded && "bg-muted/30 p-2",
+        )}
+        data-testid="thread-detail-skeleton"
+      >
+        <div
+          className={cn(
+            "flex flex-1 flex-col gap-4 p-6",
+            !embedded && "rounded-xl border border-border bg-background shadow-sm",
+          )}
+        >
+          <div className="h-6 rounded-md bg-muted animate-pulse w-1/2" />
+          <div className="h-4 rounded-md bg-muted animate-pulse w-3/4" />
+          <div className="h-32 rounded-md bg-muted animate-pulse" />
+        </div>
       </div>
     );
   }
 
   if (isError || !thread) {
     return (
-      <div className="flex flex-col items-center gap-4 py-20" data-testid="thread-error-state">
-        <p className="text-sm text-muted-foreground">Couldn&apos;t load this thread.</p>
-        <Button variant="outline" size="sm" onClick={() => refetch()}>
-          <RefreshCw className="h-4 w-4 mr-1.5" />
-          Retry
-        </Button>
+      <div
+        className={cn(
+          "flex h-full flex-col",
+          !embedded && "bg-muted/30 p-2",
+        )}
+        data-testid="thread-error-state"
+      >
+        <div
+          className={cn(
+            "flex flex-1 flex-col items-center gap-4 py-20",
+            !embedded && "rounded-xl border border-border bg-background shadow-sm",
+          )}
+        >
+          <p className="text-sm text-muted-foreground">Couldn&apos;t load this thread.</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            <RefreshCw className="h-4 w-4 mr-1.5" />
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }
@@ -372,7 +485,13 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
   const hiddenCount = Math.max(0, allParticipants.length - 5);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden" data-testid="thread-detail">
+    <div
+      className={cn(
+        "flex flex-col h-full overflow-hidden",
+        !embedded && "bg-muted/30 p-2",
+      )}
+      data-testid="thread-detail"
+    >
       <ConnectionPill state={connectionState} />
 
       {/* Rename modal */}
@@ -437,7 +556,13 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
       </div>
 
       {/* Desktop 3-pane */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div
+        className={cn(
+          "flex flex-1 min-h-0 overflow-hidden",
+          embedded && "gap-2",
+          !embedded && "rounded-xl border border-border bg-background shadow-sm",
+        )}
+      >
 
         {/* Left rail */}
         {!embedded && (
@@ -456,11 +581,13 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
         <div
           className={cn(
             "flex-1 min-w-0 h-full overflow-hidden flex flex-col",
+            embedded && "rounded-xl border border-border bg-background shadow-sm",
             mobileTab === "thread" || mobileTab === "scope" || mobileTab === "branches"
               ? "flex"
               : "hidden md:flex",
           )}
           data-testid="thread-center-panel"
+          data-pane="center"
         >
           <h1 ref={centerHeadingRef} tabIndex={-1} className="sr-only">{thread.title}</h1>
 
@@ -837,6 +964,7 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}
+                onOpenAttachment={openAttachmentInViewer}
               />
             </div>
 
@@ -857,8 +985,8 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 isError={isError}
                 onRetry={refetch}
                 onItemClick={(item) => {
-                  setViewerItem(item);
-                  setMobileTab("viewer");
+                  const extracted = extractedItemById.get(item.id);
+                  if (extracted) openScopeItemInViewer(extracted);
                 }}
                 companyId={selectedCompanyId ?? undefined}
                 discussionId={resolvedId ?? undefined}
@@ -882,35 +1010,52 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
           </div>
         </div>
 
+        {!viewerCollapsed && (
+          <div
+            role="separator"
+            aria-label="Resize viewer"
+            aria-orientation="vertical"
+            onPointerDown={startViewerResize}
+            onPointerMove={resizeViewer}
+            onPointerUp={stopViewerResize}
+            onPointerCancel={stopViewerResize}
+            className={cn(
+              "relative z-20 h-full w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-border/70",
+              mobileTab !== "viewer" ? "hidden md:block" : "block",
+            )}
+          />
+        )}
+
         {/* Right viewer panel */}
         <div
           className={cn(
-            "shrink-0 h-full overflow-hidden border-l border-border bg-muted/20 transition-[width] duration-200",
-            viewerCollapsed ? "w-[46px]" : "w-[340px]",
+            "relative shrink-0 h-full overflow-hidden bg-muted/20 transition-[width] duration-200",
+            embedded ? "rounded-xl border border-border bg-background shadow-sm" : "border-l border-border",
             mobileTab !== "viewer" ? "hidden md:block" : "block",
           )}
+          style={{ width: viewerCollapsed ? 46 : viewerWidth }}
           data-testid="thread-right-viewer"
+          data-pane="viewer"
           data-collapsed={viewerCollapsed ? "true" : "false"}
+          data-width={viewerCollapsed ? "46" : String(viewerWidth)}
         >
           {viewerCollapsed ? (
-            <div className="flex flex-col items-center pt-2">
-              <button
-                type="button"
-                onClick={() => setViewerCollapsed(false)}
-                aria-label="Expand viewer"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              >
-                <PanelRightOpen className="h-4 w-4" />
-              </button>
-            </div>
+            <ThreadCollapsedTabStrip
+              tabs={viewerTabs}
+              activeKey={activeViewerKey}
+              onActivate={setActiveViewerKey}
+              onExpand={() => setViewerCollapsed(false)}
+            />
           ) : (
-            <ThreadViewerPanel
+            <ThreadViewer
               thread={thread}
-              companyId={selectedCompanyId!}
-              item={viewerItem}
-              onClose={() => setViewerItem(null)}
-              onOpenScope={() => { setCenterTab("scope"); setMobileTab("scope"); }}
-              onCollapse={() => setViewerCollapsed(true)}
+              tabs={viewerTabs}
+              activeKey={activeViewerKey}
+              onActivate={setActiveViewerKey}
+              onClose={closeViewerTab}
+              onOpenTab={openViewerTab}
+              onOpenScopePanel={() => { setCenterTab("scope"); setMobileTab("scope"); }}
+              onToggleCollapse={() => setViewerCollapsed(true)}
             />
           )}
         </div>
@@ -1052,169 +1197,6 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
           })
         )}
       </nav>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   Thread Viewer Panel
-   ════════════════════════════════════════════════════════════════════════ */
-
-// Derived from the canonical AUTONOMY_LEVELS in @armyofagents/shared (0=Manual/1=Assist/2=Drive).
-const AUTONOMY_BANNER: Record<AutonomyValue, { label: string; text: string }> = {
-  0: { label: `L0 · ${AUTONOMY_LEVELS[0].name}`, text: AUTONOMY_LEVELS[0].blurb },
-  1: { label: `L1 · ${AUTONOMY_LEVELS[1].name}`, text: AUTONOMY_LEVELS[1].blurb },
-  2: { label: `L2 · ${AUTONOMY_LEVELS[2].name}`, text: AUTONOMY_LEVELS[2].blurb },
-};
-
-const ITEM_TYPE_COLORS: Record<string, string> = {
-  task:     "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  decision: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
-  insight:  "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  reference:"bg-stone-200 text-stone-800 dark:bg-stone-800/30 dark:text-stone-300",
-  artifact: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
-  context:  "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  preference:"bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
-};
-
-interface ThreadViewerPanelProps {
-  thread: ThreadDetailType;
-  companyId: string;
-  item?: ScopeItem | null;
-  onClose?: () => void;
-  onOpenScope?: () => void;
-  onCollapse?: () => void;
-  previewUrl?: string;
-  previewHtml?: string;
-}
-
-function ThreadViewerPanel({ thread, companyId, item, onClose, onOpenScope, onCollapse, previewUrl, previewHtml }: ThreadViewerPanelProps) {
-  const { pushToast } = useToast();
-
-  const { data: linksData } = useQuery({
-    queryKey: ["thread-links", companyId, thread.id],
-    queryFn: () => threadsApi.listLinks(companyId, thread.id),
-    enabled: !!companyId,
-    retry: false,
-  });
-  const linkedCount = linksData?.links?.length ?? 0;
-
-  function copyLink() {
-    try {
-      void navigator.clipboard?.writeText(window.location.href);
-      pushToast({ title: "Link copied", tone: "success" });
-    } catch {
-      pushToast({ title: "Couldn't copy link", tone: "warn" });
-    }
-  }
-
-  if (previewUrl || previewHtml) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Preview</span>
-          {onClose && (
-            <button type="button" onClick={onClose} aria-label="Close preview" className="text-muted-foreground hover:text-foreground">
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-        <iframe
-          title={`Viewer for thread: ${thread.title}`}
-          srcDoc={previewHtml}
-          src={previewHtml ? undefined : previewUrl}
-          className="w-full flex-1 border-0"
-          sandbox={previewHtml ? "allow-same-origin allow-scripts" : "allow-same-origin allow-scripts allow-popups"}
-        />
-      </div>
-    );
-  }
-
-  if (item) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{item.type}</span>
-          {onClose && (
-            <button type="button" onClick={onClose} aria-label="Close item" className="text-muted-foreground hover:text-foreground">
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-        <div className="p-4 space-y-3 overflow-auto">
-          <h3 className="text-sm font-semibold leading-snug">{item.title}</h3>
-          <div className="flex flex-wrap gap-1.5">
-            <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase", ITEM_TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground")}>
-              {item.type}
-            </span>
-            <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">
-              {item.status}
-            </span>
-          </div>
-          {item.description && <p className="text-xs leading-relaxed text-muted-foreground">{item.description}</p>}
-          {onOpenScope && (
-            <button type="button" onClick={onOpenScope} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors">
-              Open in Scope <ArrowRight className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  const autonomy =
-    thread.autonomyLevel != null && thread.autonomyLevel in AUTONOMY_BANNER
-      ? AUTONOMY_BANNER[thread.autonomyLevel as AutonomyValue]
-      : null;
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Viewer</span>
-        {onCollapse && (
-          <button type="button" onClick={onCollapse} aria-label="Collapse viewer" className="text-muted-foreground hover:text-foreground">
-            <PanelRightClose className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      <div className="p-3 space-y-4 overflow-auto">
-        <section>
-          <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Jump to</p>
-          <div className="space-y-1">
-            {thread.goalId && (
-              <Link to={`/goals/${thread.goalId}`} className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors">
-                <Flag className="h-3 w-3 shrink-0" />
-                <span className="flex-1">Linked goal</span>
-                <ArrowRight className="h-3 w-3 opacity-60" />
-              </Link>
-            )}
-            {linkedCount > 0 && (
-              <Link to={`/discussions/${thread.id}`} className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors">
-                <Link2 className="h-3 w-3 shrink-0" />
-                <span className="flex-1">Linked threads</span>
-                <span className="rounded-full bg-muted px-1.5 text-[9px] font-semibold tabular-nums">{linkedCount}</span>
-              </Link>
-            )}
-            <Link to="/memory" className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors">
-              <Brain className="h-3 w-3 shrink-0" />
-              <span className="flex-1">Memory</span>
-              <ArrowRight className="h-3 w-3 opacity-60" />
-            </Link>
-          </div>
-        </section>
-        <section>
-          <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Quick actions</p>
-          <div className="grid grid-cols-2 gap-1.5">
-            <button type="button" onClick={onOpenScope} className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors">Open Scope</button>
-            <button type="button" onClick={copyLink} className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors">Copy link</button>
-          </div>
-        </section>
-        {autonomy && (
-          <div className="rounded-md border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-[11px] leading-relaxed text-teal-700 dark:text-teal-300">
-            <span className="font-semibold">{autonomy.label}</span> · {autonomy.text}
-          </div>
-        )}
-        <p className="px-1 text-[11px] text-muted-foreground">Select a Scope item to preview it here.</p>
-      </div>
     </div>
   );
 }

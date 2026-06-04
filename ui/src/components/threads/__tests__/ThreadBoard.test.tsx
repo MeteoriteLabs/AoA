@@ -45,6 +45,10 @@ const makeThread = (overrides: Partial<ThreadListItem> = {}): ThreadListItem => 
   autonomyLevel: null,
   summaryText: null,
   summaryNext: null,
+  subtype: "normal",
+  shareToken: null,
+  participants: [],
+  allowMemoryExtraction: true,
   ...overrides,
 });
 
@@ -97,5 +101,40 @@ describe("ThreadBoard", () => {
     );
 
     expect(screen.queryByRole("button", { name: /drag/i })).not.toBeInTheDocument();
+  });
+
+  it("renders compact discussion card metadata without changing the card link", () => {
+    renderWithProviders(
+      <ThreadBoard
+        threads={[
+          makeThread({
+            id: "t1",
+            title: "Clarify pricing page objections",
+            pendingItemCount: 3,
+            lastEntryInputType: "voice",
+            scopeType: "department",
+            scopeName: "Growth",
+            visibility: "company",
+            summaryNext: "Ready for approval before task creation.",
+            participantPreview: [
+              { principalType: "user", principalId: "user-1", name: "TK", role: "owner" },
+            ],
+            participantCount: 1,
+            linkCount: 1,
+          }),
+        ]}
+        onNewThread={vi.fn()}
+      />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    expect(screen.getByLabelText("3 items need review")).toBeInTheDocument();
+    expect(screen.getByLabelText("Source: Voice")).toBeInTheDocument();
+    expect(screen.getByLabelText("Department: Growth")).toBeInTheDocument();
+    expect(screen.getByLabelText("Company visibility")).toBeInTheDocument();
+    expect(screen.getByLabelText("1 linked thread")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /clarify pricing page objections/i }),
+    ).toHaveAttribute("href", "/discussions/t1");
   });
 });

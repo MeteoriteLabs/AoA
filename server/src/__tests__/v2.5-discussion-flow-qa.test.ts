@@ -26,6 +26,7 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({ sql: true, strings, values })),
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
+  or: vi.fn((...args: any[]) => ({ or: args })),
 }));
 
 // ── Mock DB tables ──────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "projects_company_id",
     name: "projects_name",
   },
-  goals: { id: "goals_id" },
+  goals: { id: "goals_id", title: "goals_title" },
   agents: { id: "agents_id", name: "agents_name", icon: "agents_icon" },
   threadPlanSteps: {
     id: "tps_id",
@@ -116,6 +117,12 @@ vi.mock("@armyofagents/db", () => ({
     artifactId: "dea_artifact_id",
   },
   artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
+  assets: {
+    id: "assets_id",
+    contentType: "assets_content_type",
+    originalFilename: "assets_original_filename",
+    byteSize: "assets_byte_size",
+  },
   // Phase E batch 2 (T22): thread_participants + auth users (joined in getById
   // for the OriginCard static roster).
   threadParticipants: {
@@ -126,6 +133,13 @@ vi.mock("@armyofagents/db", () => ({
     role: "tp_role",
     addedAt: "tp_added_at",
     companyId: "tp_company_id",
+  },
+  threadLinks: {
+    id: "thread_links_id",
+    companyId: "thread_links_company_id",
+    fromThreadId: "thread_links_from_thread_id",
+    toThreadId: "thread_links_to_thread_id",
+    kind: "thread_links_kind",
   },
   authUsers: { id: "auth_users_id", name: "auth_users_name", email: "auth_users_email" },
 }));
@@ -1311,6 +1325,62 @@ describe("v2.5 Discussion Flow QA", () => {
       const result = await svc.list(COMPANY, { status: "archived" });
 
       expect(result).toHaveLength(0);
+    });
+
+    it("enriches list rows with scope, participant preview, and linked thread count", async () => {
+      const discRows = [
+        {
+          id: "disc-1",
+          title: "Pricing objections",
+          scopeType: "department",
+          scopeId: "dept-1",
+          pendingItemCount: 2,
+        },
+      ];
+
+      const db = createDiscussionDb([
+        discRows,
+        [{ id: "dept-1", name: "Engineering" }],
+        [
+          {
+            threadId: "disc-1",
+            principalType: "user",
+            principalId: "user-1",
+            role: "owner",
+            addedAt: new Date("2026-01-01T00:00:00Z"),
+            userName: "TK",
+            userEmail: "tk@example.com",
+            agentName: null,
+          },
+          {
+            threadId: "disc-1",
+            principalType: "agent",
+            principalId: "agent-1",
+            role: "worker",
+            addedAt: new Date("2026-01-01T00:01:00Z"),
+            userName: null,
+            userEmail: null,
+            agentName: "Revenue Agent",
+          },
+        ],
+        [{ fromThreadId: "disc-1", toThreadId: "disc-2", kind: "spinoff" }],
+      ]);
+
+      const svc = discussionService(db);
+      const result = await svc.list(COMPANY, { status: "active" });
+
+      expect(result[0]).toMatchObject({
+        id: "disc-1",
+        scopeType: "department",
+        scopeId: "dept-1",
+        scopeName: "Engineering",
+        participantPreview: [
+          { principalType: "user", principalId: "user-1", name: "TK", role: "owner" },
+          { principalType: "agent", principalId: "agent-1", name: "Revenue Agent", role: "worker" },
+        ],
+        participantCount: 2,
+        linkCount: 1,
+      });
     });
   });
 

@@ -58,7 +58,7 @@ describe("Migration — internal_agent_config.inbound_routing_level", () => {
     if (!result) throw new Error("Migration for inbound_routing_level not found.");
     // The ALTER TABLE statement should target internal_agent_config
     expect(result.sql).toMatch(
-      /ALTER TABLE "internal_agent_config" ADD COLUMN "inbound_routing_level"/i,
+      /ALTER TABLE "internal_agent_config" ADD COLUMN(?: IF NOT EXISTS)? "inbound_routing_level"/i,
     );
   });
 
@@ -67,7 +67,7 @@ describe("Migration — internal_agent_config.inbound_routing_level", () => {
     if (!result) throw new Error("Migration for inbound_routing_level not found.");
     // Drizzle emits DEFAULT before NOT NULL: "text DEFAULT 'off' NOT NULL"
     expect(result.sql).toMatch(
-      /ADD COLUMN "inbound_routing_level" text[^;]*DEFAULT 'off'[^;]*NOT NULL/i,
+      /ADD COLUMN(?: IF NOT EXISTS)? "inbound_routing_level" text[^;]*DEFAULT 'off'[^;]*NOT NULL/i,
     );
   });
 });
@@ -79,7 +79,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
     // Search for the exact ALTER TABLE statement — not just the column name
     // (an earlier migration mentions dedup_key on agent_wakeup_requests).
     const result = findMigrationContaining(
-      'ALTER TABLE "thread_inbox_items" ADD COLUMN "dedup_key"',
+      'ALTER TABLE "thread_inbox_items" ADD COLUMN IF NOT EXISTS "dedup_key"',
     );
     expect(
       result,
@@ -88,7 +88,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
     ).not.toBeNull();
     if (result) {
       expect(result.sql).toMatch(
-        /ALTER TABLE "thread_inbox_items" ADD COLUMN "dedup_key" text/i,
+        /ALTER TABLE "thread_inbox_items" ADD COLUMN(?: IF NOT EXISTS)? "dedup_key" text/i,
       );
     }
   });
@@ -96,7 +96,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
   it("a migration adds routing_status (NOT NULL default pending_route) to thread_inbox_items", () => {
     // Search for the exact ALTER TABLE statement for thread_inbox_items.routing_status.
     const result = findMigrationContaining(
-      'ALTER TABLE "thread_inbox_items" ADD COLUMN "routing_status"',
+      'ALTER TABLE "thread_inbox_items" ADD COLUMN IF NOT EXISTS "routing_status"',
     );
     expect(
       result,
@@ -106,7 +106,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
     if (result) {
       // Drizzle emits DEFAULT before NOT NULL: "text DEFAULT 'pending_route' NOT NULL"
       expect(result.sql).toMatch(
-        /ALTER TABLE "thread_inbox_items" ADD COLUMN "routing_status" text[^;]*DEFAULT 'pending_route'[^;]*NOT NULL/i,
+        /ALTER TABLE "thread_inbox_items" ADD COLUMN(?: IF NOT EXISTS)? "routing_status" text[^;]*DEFAULT 'pending_route'[^;]*NOT NULL/i,
       );
     }
   });
@@ -119,7 +119,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
     ).not.toBeNull();
     if (result) {
       expect(result.sql).toMatch(
-        /ALTER TABLE "thread_inbox_items" ADD COLUMN "routing_error_code" text/i,
+        /ALTER TABLE "thread_inbox_items" ADD COLUMN(?: IF NOT EXISTS)? "routing_error_code" text/i,
       );
     }
   });
@@ -132,7 +132,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
     ).not.toBeNull();
     if (result) {
       expect(result.sql).toMatch(
-        /ALTER TABLE "thread_inbox_items" ADD COLUMN "routed_at" timestamp with time zone/i,
+        /ALTER TABLE "thread_inbox_items" ADD COLUMN(?: IF NOT EXISTS)? "routed_at" timestamp with time zone/i,
       );
     }
   });
@@ -145,7 +145,7 @@ describe("Migration — thread_inbox_items routing lifecycle columns", () => {
     ).not.toBeNull();
     if (result) {
       expect(result.sql).toMatch(
-        /ALTER TABLE "thread_inbox_items" ADD COLUMN "navigator_wakeup_id" uuid/i,
+        /ALTER TABLE "thread_inbox_items" ADD COLUMN(?: IF NOT EXISTS)? "navigator_wakeup_id" uuid/i,
       );
     }
   });

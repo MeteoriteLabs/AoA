@@ -1,65 +1,51 @@
 /**
- * ThreadsWorkspace — the §13 "continuum": ONE surface that breathes by width.
+ * ThreadsWorkspace is the route-level discussions shell.
  *
- * Mounted on /discussions, /discussions/:discussionId and /threads/:threadId so
- * the same component (and its panel layout) persists across selection changes —
- * the board IS the switcher: clicking a card navigates, the index snaps from a
- * full-width board to a narrow rail, and the 3-pane detail opens beside it.
- *
- *   No selection  →  [ index fills: Board lens | List lens ]
- *   Selection     →  [ index rail 264px (collapsible → 48px) │ detail 3-pane ]
- *
- * The detail is the existing ThreadDetail rendered `embedded` (its own left rail
- * hidden, since this surface supplies the index). Map lens is deferred (v1.1).
+ * Home renders the shared thread rail, a discussions overview center pane, and
+ * the global viewer. A selected thread keeps the rail and delegates the center
+ * and right viewer to ThreadDetail in embedded mode.
  */
-import { useEffect, useMemo, useState } from "react";
-import { Link, useParams, useSearchParams } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialog } from "../context/DialogContext";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { api } from "../api/client";
 import { threadsApi, type ThreadListItem } from "../api/threads";
 import { cn } from "../lib/utils";
-import { Button } from "@/components/ui/button";
 import {
-  LayoutList,
-  LayoutGrid,
-  Plus,
-  Search,
-  PanelLeftClose,
-  PanelLeftOpen,
-} from "lucide-react";
-import { ThreadBoard, type InboxCardItem } from "../components/threads/ThreadBoard";
+  closeTab,
+  ensureTab,
+  type ThreadViewerTab,
+} from "../components/threads/threadViewerModel";
+import { ThreadCollapsedTabStrip } from "../components/threads/ThreadViewer";
+import { ThreadsHomeOverview } from "../components/threads/ThreadsHomeOverview";
+import {
+  HOME_VIEWER_DEFAULT_TAB,
+  ThreadsGlobalViewer,
+} from "../components/threads/ThreadsGlobalViewer";
+import { ThreadsSidebarRail } from "../components/threads/ThreadsSidebarRail";
+import type { InboxCardItem } from "../components/threads/ThreadBoard";
 import { ThreadDetail } from "./ThreadDetail";
 
-type Lens = "list" | "board";
-
-const PHASE_DOT: Record<string, string> = {
-  discuss: "bg-blue-500",
-  scope: "bg-amber-500",
-  assign: "bg-violet-500",
-  done: "bg-green-500",
-};
-
-function relativeTime(dateStr: string | null | undefined): string {
-  if (!dateStr) return "";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d`;
-  return new Date(dateStr).toLocaleDateString();
-}
+const BROWSER_COLLAPSED_WIDTH = 48;
+const BROWSER_RAIL_WIDTH = 264;
+const BROWSER_FULL_THRESHOLD = 560;
+const BROWSER_COLLAPSE_THRESHOLD = 96;
+const HOME_VIEWER_COLLAPSED_WIDTH = 46;
+const HOME_VIEWER_DEFAULT_WIDTH = 340;
+const HOME_VIEWER_MIN_WIDTH = 280;
+const HOME_VIEWER_MAX_WIDTH = 640;
 
 /** Track desktop vs mobile so the continuum split is desktop-only; on mobile we
  *  render the full ThreadDetail (its own rail + tab bar). */
 function useIsDesktop(): boolean {
   const [isDesktop, setIsDesktop] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia("(min-width: 768px)").matches : true,
+    typeof window !== "undefined"
+      ? window.matchMedia("(min-width: 768px)").matches
+      : true
   );
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -72,28 +58,47 @@ function useIsDesktop(): boolean {
 }
 
 export function ThreadsWorkspace() {
-  const { discussionId, threadId } = useParams<{ discussionId?: string; threadId?: string }>();
+  const { discussionId, threadId } = useParams<{
+    discussionId?: string;
+    threadId?: string;
+  }>();
   const selectedId = discussionId ?? threadId ?? null;
   const hasSelection = !!selectedId;
   const isDesktop = useIsDesktop();
 
   const { selectedCompanyId } = useCompany();
+  const { role } = useTeamAccess(selectedCompanyId);
+  const canEditRouting = role === "founder";
   const { openNewThread } = useDialog();
   const { setBreadcrumbs, setEntityColor, setSubtitle } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  // Lens persisted in the URL (?view=list). Default board.
+  const [homeViewerTabs, setHomeViewerTabs] = useState<ThreadViewerTab[]>(
+    () => [HOME_VIEWER_DEFAULT_TAB]
+  );
+  const [homeViewerActiveKey, setHomeViewerActiveKey] = useState<string | null>(
+    HOME_VIEWER_DEFAULT_TAB.key
+  );
+  const [homeViewerCollapsed, setHomeViewerCollapsed] = useState(false);
+  const [homeViewerWidth, setHomeViewerWidth] = useState(
+    HOME_VIEWER_DEFAULT_WIDTH
+  );
+
+  // Legacy board/list URLs fall back to the Home workspace.
   const viewParam = searchParams.get("view");
-  const lens: Lens = viewParam === "list" ? "list" : "board";
-  const setLens = (l: Lens) => {
+  useEffect(() => {
+    if (viewParam !== "board" && viewParam !== "list") return;
     const next = new URLSearchParams(searchParams);
-    if (l === "board") next.delete("view");
-    else next.set("view", l);
+    next.delete("view");
     setSearchParams(next, { replace: true });
-  };
+  }, [searchParams, setSearchParams, viewParam]);
 
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railWidth, setRailWidth] = useState(BROWSER_RAIL_WIDTH);
   const [search, setSearch] = useState("");
+  const browserDragStart = useRef<{ x: number; width: number } | null>(null);
+  const homeViewerDragStart = useRef<{ x: number; width: number } | null>(null);
 
   // Breadcrumb for browse mode; the detail (ThreadDetail) sets its own.
   useEffect(() => {
@@ -114,13 +119,21 @@ export function ThreadsWorkspace() {
   });
   const threads = (data?.discussions ?? []) as ThreadListItem[];
 
+  const { data: archivedData } = useQuery({
+    queryKey: ["threads", selectedCompanyId, "list", "archived"],
+    queryFn: () => threadsApi.list(selectedCompanyId!, { status: "archived" }),
+    enabled: !!selectedCompanyId,
+    retry: false,
+  });
+  const archivedThreads = (archivedData?.discussions ?? []) as ThreadListItem[];
+
   const { data: inboxData } = useQuery({
     queryKey: ["threads-inbox", selectedCompanyId],
     queryFn: () =>
       api.get<{ items: InboxCardItem[]; total: number }>(
-        `/companies/${selectedCompanyId}/discussions/inbox`,
+        `/companies/${selectedCompanyId}/discussions/inbox`
       ),
-    enabled: !!selectedCompanyId && !hasSelection,
+    enabled: !!selectedCompanyId,
     retry: false,
   });
   const inboxItems = inboxData?.items ?? [];
@@ -131,284 +144,244 @@ export function ThreadsWorkspace() {
     return threads.filter((t) => t.title.toLowerCase().includes(q));
   }, [threads, search]);
 
+  const archiveThread = useMutation({
+    mutationFn: (threadId: string) =>
+      threadsApi.setStatus(selectedCompanyId!, threadId, "archived"),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["threads", selectedCompanyId, "list"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["threads", selectedCompanyId, "list", "archived"],
+      });
+    },
+  });
+
+  const refreshInboxAndThreads = useCallback(() => {
+    void queryClient.invalidateQueries({
+      queryKey: ["threads-inbox", selectedCompanyId],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["threads", selectedCompanyId, "list"],
+    });
+  }, [queryClient, selectedCompanyId]);
+
+  const openHomeViewerTab = useCallback((tab: ThreadViewerTab) => {
+    setHomeViewerTabs((tabs) => ensureTab(tabs, tab));
+    setHomeViewerActiveKey(tab.key);
+  }, []);
+
+  const closeHomeViewerTab = useCallback((key: string) => {
+    setHomeViewerTabs((tabs) => {
+      const nextTabs = closeTab(tabs, key);
+      setHomeViewerActiveKey((activeKey) => {
+        if (activeKey !== key) return activeKey;
+        return nextTabs.at(-1)?.key ?? null;
+      });
+      return nextTabs;
+    });
+  }, []);
+
+  const startHomeViewerResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (homeViewerCollapsed) return;
+      homeViewerDragStart.current = {
+        x: event.clientX,
+        width: homeViewerWidth,
+      };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    [homeViewerCollapsed, homeViewerWidth]
+  );
+
+  const resizeHomeViewer = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!homeViewerDragStart.current) return;
+      const delta = homeViewerDragStart.current.x - event.clientX;
+      const nextWidth = Math.min(
+        HOME_VIEWER_MAX_WIDTH,
+        Math.max(
+          HOME_VIEWER_MIN_WIDTH,
+          homeViewerDragStart.current.width + delta
+        )
+      );
+      setHomeViewerWidth(nextWidth);
+    },
+    []
+  );
+
+  const stopHomeViewerResize = useCallback(() => {
+    homeViewerDragStart.current = null;
+  }, []);
+
   // Index width: browse → fills; detail → narrow rail (collapsible).
-  const indexWidth = !hasSelection
-    ? "flex-1 min-w-0"
-    : railCollapsed
-      ? "w-[48px] shrink-0"
-      : "w-[264px] shrink-0";
+  const browserCollapsed = railWidth <= BROWSER_COLLAPSED_WIDTH;
+
+  const openHomeBrowser = useCallback(() => {
+    navigate("/discussions");
+  }, [navigate]);
+
+  const toggleBrowserCollapse = useCallback(() => {
+    setRailWidth((width) =>
+      width <= BROWSER_COLLAPSED_WIDTH
+        ? BROWSER_RAIL_WIDTH
+        : BROWSER_COLLAPSED_WIDTH
+    );
+  }, []);
+
+  const startBrowserResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!hasSelection) return;
+      browserDragStart.current = { x: event.clientX, width: railWidth };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    [railWidth, hasSelection]
+  );
+
+  const resizeBrowser = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!browserDragStart.current) return;
+      const delta = event.clientX - browserDragStart.current.x;
+      const nextWidth = Math.max(
+        BROWSER_COLLAPSED_WIDTH,
+        browserDragStart.current.width + delta
+      );
+      if (nextWidth >= BROWSER_FULL_THRESHOLD) {
+        browserDragStart.current = null;
+        navigate("/discussions");
+        return;
+      }
+      setRailWidth(
+        nextWidth <= BROWSER_COLLAPSE_THRESHOLD
+          ? BROWSER_COLLAPSED_WIDTH
+          : nextWidth
+      );
+    },
+    [navigate]
+  );
+
+  const stopBrowserResize = useCallback(() => {
+    browserDragStart.current = null;
+  }, []);
 
   // On mobile with a selection, hide the index rail — the full ThreadDetail
   // (rendered non-embedded below) owns navigation via its mobile tab bar.
   const showIndex = !hasSelection || isDesktop;
 
   return (
-    <div className="flex h-full overflow-hidden" data-testid="threads-workspace">
-      {/* ── Index surface (board ↔ list ↔ icon rail) ── */}
-      {showIndex && (
-        <div
-          className={cn(
-            "h-full overflow-hidden bg-background flex flex-col transition-[width] duration-200",
-            hasSelection && "border-r border-border",
-            indexWidth,
-          )}
-          data-testid="threads-index"
-        >
-          {hasSelection ? (
-            <DetailRail
-              collapsed={railCollapsed}
-              onToggle={() => setRailCollapsed((c) => !c)}
-              threads={threads}
+    <div
+      className="flex h-full overflow-hidden bg-muted/30 p-2"
+      data-testid="threads-workspace"
+    >
+      <div className="flex min-h-0 flex-1 gap-2 overflow-hidden">
+        {/* ── Index surface (board ↔ list ↔ icon rail) ── */}
+        {showIndex && (
+          <section
+            className={cn(
+              "relative flex h-full flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm transition-[width] duration-200",
+              "shrink-0"
+            )}
+            style={{ width: railWidth }}
+            data-testid="threads-index"
+            data-mode={hasSelection ? "threads" : "home"}
+            data-browser={browserCollapsed ? "collapsed" : "rail"}
+            data-expanded="false"
+            data-collapsed={browserCollapsed ? "true" : "false"}
+            data-width={String(Math.round(railWidth))}
+          >
+            <ThreadsSidebarRail
+              activeMode={hasSelection ? "threads" : "home"}
+              collapsed={browserCollapsed}
+              threads={filtered}
+              archivedThreads={archivedThreads}
+              unlistedHasItems={inboxItems.length > 0}
               currentId={selectedId}
               onNewThread={openNewThread}
-            />
-          ) : (
-            <BrowseIndex
-              lens={lens}
-              setLens={setLens}
+              onToggle={toggleBrowserCollapse}
+              onOpenHome={openHomeBrowser}
+              onArchiveThread={(threadId) => archiveThread.mutate(threadId)}
               search={search}
               setSearch={setSearch}
+            />
+          </section>
+        )}
+
+        {/* ── Detail (embedded 3-pane on desktop; full ThreadDetail on mobile) ── */}
+        {showIndex && (
+          <div
+            role="separator"
+            aria-label="Resize thread browser"
+            aria-orientation="vertical"
+            onPointerDown={startBrowserResize}
+            onPointerMove={resizeBrowser}
+            onPointerUp={stopBrowserResize}
+            onPointerCancel={stopBrowserResize}
+            className="relative z-20 h-full w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-border/70"
+          />
+        )}
+
+        {!hasSelection && (
+          <main
+            className="min-w-0 flex-1 h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm"
+            data-testid="threads-browse-detail"
+          >
+            <ThreadsHomeOverview
               threads={filtered}
               inboxItems={inboxItems}
-              onNewThread={openNewThread}
+              onInboxUpdate={refreshInboxAndThreads}
+              companyId={selectedCompanyId}
+              canEditRouting={canEditRouting}
             />
-          )}
-        </div>
-      )}
-
-      {/* ── Detail (embedded 3-pane on desktop; full ThreadDetail on mobile) ── */}
-      {hasSelection && (
-        <div className="flex-1 min-w-0 h-full" data-testid="threads-detail">
-          <ThreadDetail embedded={isDesktop} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Browse index: header (lens + search + New) + board/list ── */
-
-interface BrowseIndexProps {
-  lens: Lens;
-  setLens: (l: Lens) => void;
-  search: string;
-  setSearch: (s: string) => void;
-  threads: ThreadListItem[];
-  inboxItems: InboxCardItem[];
-  onNewThread: () => void;
-}
-
-function BrowseIndex({
-  lens,
-  setLens,
-  search,
-  setSearch,
-  threads,
-  inboxItems,
-  onNewThread,
-}: BrowseIndexProps) {
-  return (
-    <div className="flex flex-col h-full">
-      <div className="shrink-0 px-4 pt-4 pb-3 space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <h1 className="text-[1.4rem] font-bold tracking-tight leading-none">
-              Discussions<span className="text-brand">.</span>
-            </h1>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Threads where decisions, tasks, and insights get shaped from raw input.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* Lens switcher (Map = v1.1) */}
-            <div className="flex items-center rounded-md border border-border overflow-hidden" role="group" aria-label="View lens">
-              <button
-                type="button"
-                onClick={() => setLens("list")}
-                aria-label="List view"
-                aria-pressed={lens === "list"}
-                className={cn(
-                  "flex items-center px-2 py-1.5 text-xs transition-colors",
-                  lens === "list" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent",
-                )}
-              >
-                <LayoutList className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setLens("board")}
-                aria-label="Board view"
-                aria-pressed={lens === "board"}
-                className={cn(
-                  "flex items-center px-2 py-1.5 text-xs transition-colors",
-                  lens === "board" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent",
-                )}
-              >
-                <LayoutGrid className="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <Button size="sm" onClick={onNewThread}>
-              <Plus className="h-4 w-4 mr-1.5" />
-              New Thread
-            </Button>
-          </div>
-        </div>
-
-        <div className="relative max-w-md">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-          <input
-            type="search"
-            placeholder="Search threads..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-8 pr-3 py-1.5 text-sm rounded-md border border-input bg-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label="Search threads"
-          />
-        </div>
-      </div>
-
-      {lens === "board" ? (
-        <div className="flex-1 min-h-0 overflow-hidden px-4 pb-4">
-          <ThreadBoard threads={threads} inboxItems={inboxItems} onNewThread={onNewThread} />
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
-          <ThreadListRows threads={threads} currentId={null} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Detail-mode rail: collapse toggle + thread list (or icon dots) ── */
-
-interface DetailRailProps {
-  collapsed: boolean;
-  onToggle: () => void;
-  threads: ThreadListItem[];
-  currentId: string | null;
-  onNewThread: () => void;
-}
-
-function DetailRail({ collapsed, onToggle, threads, currentId, onNewThread }: DetailRailProps) {
-  return (
-    <div className="flex flex-col h-full">
-      <div
-        className={cn(
-          "shrink-0 flex items-center gap-1 border-b border-border h-[42px]",
-          collapsed ? "justify-center px-1" : "px-2",
+          </main>
         )}
-      >
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={collapsed ? "Expand index" : "Collapse index"}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-        >
-          {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-        </button>
-        {!collapsed && (
+
+        {!hasSelection && !homeViewerCollapsed && (
           <>
-            <span className="flex-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Discussions
-            </span>
-            <button
-              type="button"
-              onClick={onNewThread}
-              aria-label="New thread"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-            </button>
+            <div
+              role="separator"
+              aria-label="Resize global viewer"
+              aria-orientation="vertical"
+              onPointerDown={startHomeViewerResize}
+              onPointerMove={resizeHomeViewer}
+              onPointerUp={stopHomeViewerResize}
+              onPointerCancel={stopHomeViewerResize}
+              className="relative z-20 h-full w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-border/70"
+            />
+            <ThreadsGlobalViewer
+              tabs={homeViewerTabs}
+              activeKey={homeViewerActiveKey}
+              onActivate={setHomeViewerActiveKey}
+              onClose={closeHomeViewerTab}
+              onOpenTab={openHomeViewerTab}
+              onToggleCollapse={() => setHomeViewerCollapsed(true)}
+              width={homeViewerWidth}
+            />
           </>
         )}
-      </div>
 
-      <div className="flex-1 min-h-0 overflow-auto p-2">
-        {collapsed ? (
-          <div className="flex flex-col items-center gap-1.5 pt-1">
-            {threads.map((t) => (
-              <Link
-                key={t.id}
-                to={`/discussions/${t.id}`}
-                title={t.title}
-                aria-current={t.id === currentId ? "page" : undefined}
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                  t.id === currentId
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
-              >
-                <span className={cn("h-2 w-2 rounded-full", PHASE_DOT[t.phase] ?? "bg-muted-foreground")} />
-              </Link>
-            ))}
+        {!hasSelection && homeViewerCollapsed && (
+          <div
+            className="relative h-full shrink-0 overflow-hidden rounded-xl border border-border bg-background shadow-sm transition-[width] duration-200"
+            style={{ width: HOME_VIEWER_COLLAPSED_WIDTH }}
+            data-testid="threads-global-viewer-collapsed"
+            data-collapsed="true"
+            data-width={String(HOME_VIEWER_COLLAPSED_WIDTH)}
+          >
+            <ThreadCollapsedTabStrip
+              tabs={homeViewerTabs}
+              activeKey={homeViewerActiveKey}
+              onActivate={setHomeViewerActiveKey}
+              onExpand={() => setHomeViewerCollapsed(false)}
+            />
           </div>
-        ) : (
-          <ThreadListRows threads={threads} currentId={currentId} />
+        )}
+
+        {hasSelection && (
+          <div className="min-w-0 flex-1 h-full" data-testid="threads-detail">
+            <ThreadDetail embedded={isDesktop} />
+          </div>
         )}
       </div>
     </div>
-  );
-}
-
-/* ── Shared thread-list renderer (browse list lens + detail rail) ── */
-
-function ThreadListRows({
-  threads,
-  currentId,
-}: {
-  threads: ThreadListItem[];
-  currentId: string | null;
-}) {
-  if (threads.length === 0) {
-    return <p className="px-2 py-6 text-center text-xs text-muted-foreground">No threads yet</p>;
-  }
-  return (
-    <nav className="space-y-0.5" aria-label="Thread index">
-      {threads.map((t) => {
-        const isActive = t.id === currentId;
-        return (
-          <Link
-            key={t.id}
-            to={`/discussions/${t.id}`}
-            aria-current={isActive ? "page" : undefined}
-            className={cn(
-              "flex items-start gap-2 rounded-md px-2 py-2 transition-colors",
-              isActive
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-            )}
-          >
-            <span
-              className={cn(
-                "mt-1.5 h-1.5 w-1.5 rounded-full shrink-0",
-                PHASE_DOT[t.phase] ?? "bg-muted-foreground",
-              )}
-              aria-hidden
-            />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5">
-                <span className="text-sm font-medium truncate text-foreground">{t.title}</span>
-                {t.pendingItemCount > 0 && (
-                  <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 text-[9px] font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
-                    {t.pendingItemCount}
-                  </span>
-                )}
-              </span>
-              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span className="capitalize">{t.phase}</span>
-                {t.lastEntryAt && (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span>{relativeTime(t.lastEntryAt)}</span>
-                  </>
-                )}
-              </span>
-            </span>
-          </Link>
-        );
-      })}
-    </nav>
   );
 }

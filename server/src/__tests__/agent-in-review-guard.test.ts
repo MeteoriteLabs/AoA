@@ -12,7 +12,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-// ── DB / drizzle mocks (required to import from routes/issues.ts) ──────────
+// ── DB / drizzle mocks ─────────────────────────────────────────────────────
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -109,62 +109,9 @@ vi.mock("drizzle-orm", () => ({
   ),
 }));
 
-vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
-vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
-vi.mock("../middleware/logger.js", () => {
-  // `logger.child()` is called at module load by crew-failure-card.ts (pulled
-  // into the import graph via heartbeat.ts). Provide a self-referential child
-  // so the mock satisfies `logger.child({...}).warn(...)` chains.
-  const logger: any = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  logger.child = () => logger;
-  return { logger };
-});
-vi.mock("../services/index.js", () => ({
-  accessService: vi.fn(() => ({})),
-  agentService: vi.fn(() => ({})),
-  goalService: vi.fn(() => ({})),
-  heartbeatService: vi.fn(() => ({})),
-  issueApprovalService: vi.fn(() => ({})),
-  issueService: vi.fn(() => ({})),
-  logActivity: vi.fn(),
-  memoryLifecycleService: vi.fn(() => ({})),
-  projectService: vi.fn(() => ({})),
-  routineService: vi.fn(() => ({})),
-}));
-vi.mock("../services/documents.js", () => ({ documentService: vi.fn(() => ({})) }));
-vi.mock("../services/asset-serving-safety.js", () => ({ getSafeServingHeaders: vi.fn(() => ({})) }));
-vi.mock("../services/eager-workspace.js", () => ({ createEagerWorkspaceForIssue: vi.fn() }));
-vi.mock("../middleware/validate.js", () => ({ validate: () => (_req: unknown, _res: unknown, next: () => void) => next() }));
-vi.mock("../routes/authz.js", () => ({
-  assertCompanyAccess: vi.fn(),
-  getActorInfo: vi.fn(() => ({ actorType: "agent", actorId: "agent-1", agentId: "agent-1", runId: null })),
-}));
-vi.mock("../routes/issues-checkout-wakeup.js", () => ({
-  shouldWakeAssigneeOnCheckout: vi.fn(() => false),
-}));
-vi.mock("@armyofagents/shared", () => ({
-  addIssueCommentSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  createIssueAttachmentMetadataSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  createIssueLabelSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  checkoutIssueSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  createIssueSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  linkIssueApprovalSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  updateIssueSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-  issueDocumentKeySchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: "spec" })) },
-  upsertIssueDocumentSchema: { parse: vi.fn(), safeParse: vi.fn(() => ({ success: true, data: {} })) },
-}));
-vi.mock("multer", () => {
-  const multer = vi.fn(() => ({
-    single: vi.fn(() => (_req: unknown, _res: unknown, cb: (err: null) => void) => cb(null)),
-  }));
-  (multer as unknown as { memoryStorage: () => object }).memoryStorage = vi.fn(() => ({}));
-  (multer as unknown as { MulterError: typeof Error }).MulterError = class MulterError extends Error {};
-  return { default: multer };
-});
-
 // ── Import the module under test (after mocks are set up) ─────────────────
 
-import { assertAgentInReviewReviewPath } from "../routes/issues.js";
+import { assertAgentInReviewReviewPath } from "../services/issue-agent-status-guard.js";
 import { HttpError } from "../errors.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────

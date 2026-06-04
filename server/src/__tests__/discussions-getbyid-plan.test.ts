@@ -20,6 +20,12 @@ vi.mock("@armyofagents/db", () => ({
     artifactId: "dea_artifact",
   },
   artifacts: { id: "art_id", type: "art_type", title: "art_title" },
+  assets: {
+    id: "assets_id",
+    contentType: "assets_content_type",
+    originalFilename: "assets_original_filename",
+    byteSize: "assets_byte_size",
+  },
   agents: { id: "ag_id", name: "ag_name", icon: "ag_icon" },
   projects: {}, goals: {},
   threadPlanSteps: { id: "tps_id", threadId: "tps_thread", stepOrder: "tps_order" },

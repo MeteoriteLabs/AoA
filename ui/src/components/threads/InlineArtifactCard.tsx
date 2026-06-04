@@ -13,7 +13,7 @@ import type { DiscussionEntryAttachment } from "../../api/discussions";
 
 interface InlineArtifactCardProps {
   attachments: DiscussionEntryAttachment[];
-  onOpen?: (artifactId: string) => void;
+  onOpen?: (attachment: DiscussionEntryAttachment) => void;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -51,8 +51,8 @@ export function InlineArtifactCard({ attachments, onOpen }: InlineArtifactCardPr
       {attachments.map((a) => {
         const Icon = iconFor(a.artifactType);
         const label = a.artifactType ? TYPE_LABEL[a.artifactType] ?? a.artifactType : "File";
-        const title = a.artifactTitle ?? (a.assetId ? "Attached file" : "Artifact");
-        const clickable = !!a.artifactId && !!onOpen;
+        const title = a.artifactTitle ?? a.assetOriginalFilename ?? (a.assetId ? "Attached file" : "Artifact");
+        const clickable = (!!a.artifactId || !!a.assetId) && !!onOpen;
         const className = cn(
           "flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-left",
           clickable && "hover:bg-muted/50 transition-colors cursor-pointer",
@@ -71,7 +71,7 @@ export function InlineArtifactCard({ attachments, onOpen }: InlineArtifactCardPr
             <button
               key={a.id}
               type="button"
-              onClick={() => onOpen!(a.artifactId!)}
+              onClick={() => onOpen!(a)}
               className={className}
               data-testid={`inline-artifact-card-${a.id}`}
             >

@@ -1,4 +1,3 @@
-import { Cursor } from "@cursor/sdk";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -10,6 +9,23 @@ import {
   readAdapterExecutionTarget,
 } from "@armyofagents/adapter-utils/execution-target";
 import { asString, parseObject } from "@armyofagents/adapter-utils/server-utils";
+
+type CursorSdkForDiagnostics = {
+  Cursor: {
+    me(input: { apiKey: string }): Promise<{ userEmail?: string | null; apiKeyName?: string | null }>;
+    models: {
+      list(input: { apiKey: string }): Promise<Array<{ id: string }>>;
+    };
+  };
+};
+
+async function loadCursorSdkForDiagnostics(): Promise<CursorSdkForDiagnostics | null> {
+  try {
+    return await import("@cursor/sdk") as CursorSdkForDiagnostics;
+  } catch {
+    return null;
+  }
+}
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -88,9 +104,19 @@ export async function testEnvironment(
     });
   }
 
-  if (apiKey) {
+  const cursorSdk = apiKey ? await loadCursorSdkForDiagnostics() : null;
+  if (apiKey && !cursorSdk) {
+    checks.push({
+      code: "cursor_cloud_sdk_unavailable",
+      level: "error",
+      message: "Cursor SDK is unavailable in this environment.",
+      hint: "Install the Cursor SDK native dependencies or use a Cursor Cloud integration path that does not require sqlite3.",
+    });
+  }
+
+  if (apiKey && cursorSdk) {
     try {
-      const me = await Cursor.me({ apiKey });
+      const me = await cursorSdk.Cursor.me({ apiKey });
       checks.push({
         code: "cursor_cloud_auth_ok",
         level: "info",
@@ -106,9 +132,9 @@ export async function testEnvironment(
     }
   }
 
-  if (apiKey && model) {
+  if (apiKey && model && cursorSdk) {
     try {
-      const models = await Cursor.models.list({ apiKey });
+      const models = await cursorSdk.Cursor.models.list({ apiKey });
       const match = models.find((entry) => entry.id === model);
       checks.push({
         code: match ? "cursor_cloud_model_ok" : "cursor_cloud_model_unknown",

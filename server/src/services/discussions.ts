@@ -1,4 +1,4 @@
-import { and, eq, desc, sql, inArray, asc } from "drizzle-orm";
+import { and, eq, desc, sql, inArray, asc, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   discussions,
@@ -7,9 +7,11 @@ import {
   discussionAnnotations,
   discussionEntryAttachments,
   artifacts,
+  assets,
   agents,
   projects,
   goals,
+  threadLinks,
   threadPlanSteps,
   threadParticipants,
   authUsers,
@@ -45,6 +47,7 @@ export interface DiscussionFilters {
  */
 async function validateScope(
   db: Db,
+  companyId: string,
   scopeType: string | null | undefined,
   scopeId: string | null | undefined,
 ) {
@@ -58,9 +61,9 @@ async function validateScope(
 
   if (scopeType === "department" || scopeType === "project") {
     const row = await db
-      .select({ id: projects.id, type: projects.type })
-      .from(projects)
-      .where(eq(projects.id, scopeId!))
+        .select({ id: projects.id, type: projects.type })
+        .from(projects)
+      .where(and(eq(projects.id, scopeId!), eq(projects.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!row) {
       throw badRequest(`${scopeType} with id '${scopeId}' not found`);
@@ -73,15 +76,47 @@ async function validateScope(
     }
   } else if (scopeType === "goal") {
     const row = await db
-      .select({ id: goals.id })
-      .from(goals)
-      .where(eq(goals.id, scopeId!))
+        .select({ id: goals.id })
+        .from(goals)
+      .where(and(eq(goals.id, scopeId!), eq(goals.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!row) {
       throw badRequest(`Goal with id '${scopeId}' not found`);
     }
   } else {
     throw badRequest(`Invalid scopeType '${scopeType}'`);
+  }
+}
+
+async function validateEntryAttachments(
+  db: Db,
+  companyId: string,
+  attachments: Array<{ assetId?: string | null; artifactId?: string | null }> | undefined,
+) {
+  const normalized = (attachments ?? []).filter((attachment) => attachment.assetId || attachment.artifactId);
+  if (normalized.length === 0) return;
+
+  const assetIds = [...new Set(normalized.map((attachment) => attachment.assetId).filter(Boolean) as string[])];
+  const artifactIds = [...new Set(normalized.map((attachment) => attachment.artifactId).filter(Boolean) as string[])];
+
+  if (assetIds.length > 0) {
+    const ownedAssets = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(and(inArray(assets.id, assetIds), eq(assets.companyId, companyId)));
+    if (ownedAssets.length !== assetIds.length) {
+      throw badRequest("Attachment asset not found");
+    }
+  }
+
+  if (artifactIds.length > 0) {
+    const ownedArtifacts = await db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(and(inArray(artifacts.id, artifactIds), eq(artifacts.companyId, companyId)));
+    if (ownedArtifacts.length !== artifactIds.length) {
+      throw badRequest("Attachment artifact not found");
+    }
   }
 }
 
@@ -106,6 +141,132 @@ interface EmittableEntry {
   createdBy: string;
   seq: number;
   rawContent: string;
+}
+
+type DiscussionRow = typeof discussions.$inferSelect;
+
+async function enrichDiscussionListRows(
+  db: Db,
+  companyId: string,
+  rows: DiscussionRow[],
+) {
+  const ids = rows.map((row) => row.id);
+  if (ids.length === 0) return [];
+
+  const projectScopeIds = [
+    ...new Set(
+      rows
+        .filter(
+          (row) =>
+            row.scopeId &&
+            (row.scopeType === "department" || row.scopeType === "project"),
+        )
+        .map((row) => row.scopeId!),
+    ),
+  ];
+  const goalScopeIds = [
+    ...new Set(
+      rows
+        .filter((row) => row.scopeId && row.scopeType === "goal")
+        .map((row) => row.scopeId!),
+    ),
+  ];
+
+  const projectScopes = projectScopeIds.length
+    ? await db
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(and(inArray(projects.id, projectScopeIds), eq(projects.companyId, companyId)))
+    : [];
+  const goalScopes = goalScopeIds.length
+    ? await db
+        .select({ id: goals.id, title: goals.title })
+        .from(goals)
+        .where(and(inArray(goals.id, goalScopeIds), eq(goals.companyId, companyId)))
+    : [];
+
+  const scopeNames = new Map<string, string>();
+  for (const scope of projectScopes) scopeNames.set(scope.id, scope.name);
+  for (const scope of goalScopes) scopeNames.set(scope.id, scope.title);
+
+  const participantRows = await db
+    .select({
+      threadId: threadParticipants.threadId,
+      principalType: threadParticipants.principalType,
+      principalId: threadParticipants.principalId,
+      role: threadParticipants.role,
+      addedAt: threadParticipants.addedAt,
+      userName: authUsers.name,
+      userEmail: authUsers.email,
+      agentName: agents.name,
+    })
+    .from(threadParticipants)
+    .leftJoin(authUsers, eq(threadParticipants.principalId, authUsers.id))
+    .leftJoin(
+      agents,
+      and(
+        eq(threadParticipants.principalId, sql`${agents.id}::text`),
+        eq(agents.companyId, companyId),
+      ),
+    )
+    .where(and(inArray(threadParticipants.threadId, ids), eq(threadParticipants.companyId, companyId)))
+    .orderBy(asc(threadParticipants.addedAt));
+
+  const participantsByThread = new Map<
+    string,
+    Array<{ principalType: "user" | "agent"; principalId: string; name: string; role: string }>
+  >();
+  for (const participant of participantRows) {
+    const name =
+      participant.principalType === "agent"
+        ? participant.agentName ?? "Agent"
+        : participant.userName ??
+          (participant.userEmail ? participant.userEmail.split("@")[0] : participant.principalId);
+    const list = participantsByThread.get(participant.threadId) ?? [];
+    list.push({
+      principalType: participant.principalType as "user" | "agent",
+      principalId: participant.principalId,
+      name,
+      role: participant.role,
+    });
+    participantsByThread.set(participant.threadId, list);
+  }
+
+  const linkRows = await db
+    .select({
+      fromThreadId: threadLinks.fromThreadId,
+      toThreadId: threadLinks.toThreadId,
+    })
+    .from(threadLinks)
+    .where(
+      and(
+        eq(threadLinks.companyId, companyId),
+        or(inArray(threadLinks.fromThreadId, ids), inArray(threadLinks.toThreadId, ids)),
+      ),
+    );
+
+  const linkCountByThread = new Map<string, number>();
+  for (const link of linkRows) {
+    linkCountByThread.set(
+      link.fromThreadId,
+      (linkCountByThread.get(link.fromThreadId) ?? 0) + 1,
+    );
+    linkCountByThread.set(
+      link.toThreadId,
+      (linkCountByThread.get(link.toThreadId) ?? 0) + 1,
+    );
+  }
+
+  return rows.map((row) => {
+    const participants = participantsByThread.get(row.id) ?? [];
+    return {
+      ...row,
+      scopeName: row.scopeId ? scopeNames.get(row.scopeId) ?? null : null,
+      participantPreview: participants.slice(0, 3),
+      participantCount: participants.length,
+      linkCount: linkCountByThread.get(row.id) ?? 0,
+    };
+  });
 }
 
 /**
@@ -242,9 +403,11 @@ export function discussionService(db: Db) {
         conditions.push(sql`${discussions.pendingItemCount} = 0`);
       }
 
+      let rows: DiscussionRow[];
+
       // If inputType filter is set, join with entries to filter
       if (filters.inputType) {
-        const rows = await db
+        const joinedRows = await db
           .selectDistinctOn([discussions.id])
           .from(discussions)
           .innerJoin(
@@ -259,14 +422,16 @@ export function discussionService(db: Db) {
           )
           .orderBy(discussions.id, desc(discussions.lastEntryAt));
 
-        return rows.map((r) => r.discussions);
+        rows = joinedRows.map((r) => r.discussions);
+      } else {
+        rows = await db
+          .select()
+          .from(discussions)
+          .where(and(...conditions))
+          .orderBy(desc(discussions.lastEntryAt));
       }
 
-      return db
-        .select()
-        .from(discussions)
-        .where(and(...conditions))
-        .orderBy(desc(discussions.lastEntryAt));
+      return enrichDiscussionListRows(db, companyId, rows);
     },
 
     /**
@@ -311,6 +476,9 @@ export function discussionService(db: Db) {
         artifactId: string | null;
         artifactType: string | null;
         artifactTitle: string | null;
+        assetContentType: string | null;
+        assetOriginalFilename: string | null;
+        assetByteSize: number | null;
       }> = [];
 
       if (entryIds.length > 0) {
@@ -332,9 +500,25 @@ export function discussionService(db: Db) {
             artifactId: discussionEntryAttachments.artifactId,
             artifactType: artifacts.type,
             artifactTitle: artifacts.title,
+            assetContentType: assets.contentType,
+            assetOriginalFilename: assets.originalFilename,
+            assetByteSize: assets.byteSize,
           })
           .from(discussionEntryAttachments)
-          .leftJoin(artifacts, eq(discussionEntryAttachments.artifactId, artifacts.id))
+          .leftJoin(
+            artifacts,
+            and(
+              eq(discussionEntryAttachments.artifactId, artifacts.id),
+              eq(artifacts.companyId, companyId),
+            ),
+          )
+          .leftJoin(
+            assets,
+            and(
+              eq(discussionEntryAttachments.assetId, assets.id),
+              eq(assets.companyId, companyId),
+            ),
+          )
           .where(inArray(discussionEntryAttachments.discussionEntryId, entryIds));
       }
 
@@ -370,6 +554,9 @@ export function discussionService(db: Db) {
           artifactId: a.artifactId,
           artifactType: a.artifactType,
           artifactTitle: a.artifactTitle,
+          assetContentType: a.assetContentType,
+          assetOriginalFilename: a.assetOriginalFilename,
+          assetByteSize: a.assetByteSize,
         })),
       }));
 
@@ -396,8 +583,14 @@ export function discussionService(db: Db) {
         })
         .from(threadParticipants)
         .leftJoin(authUsers, eq(threadParticipants.principalId, authUsers.id))
-        .leftJoin(agents, eq(threadParticipants.principalId, sql`${agents.id}::text`))
-        .where(eq(threadParticipants.threadId, id))
+        .leftJoin(
+          agents,
+          and(
+            eq(threadParticipants.principalId, sql`${agents.id}::text`),
+            eq(agents.companyId, companyId),
+          ),
+        )
+        .where(and(eq(threadParticipants.threadId, id), eq(threadParticipants.companyId, companyId)))
         .orderBy(asc(threadParticipants.addedAt));
 
       const participants = participantRows.map((p) => {
@@ -444,7 +637,7 @@ export function discussionService(db: Db) {
       },
       actorId: string,
     ) => {
-      await validateScope(db, data.scopeType, data.scopeId);
+      await validateScope(db, companyId, data.scopeType, data.scopeId);
 
       const now = new Date();
       const hasEntry = !!data.entry;
@@ -599,7 +792,7 @@ export function discussionService(db: Db) {
 
         const newScopeType = data.scopeType !== undefined ? data.scopeType : existing.scopeType;
         const newScopeId = data.scopeId !== undefined ? data.scopeId : existing.scopeId;
-        await validateScope(db, newScopeType, newScopeId);
+        await validateScope(db, companyId, newScopeType, newScopeId);
       }
 
       const [updated] = await db
@@ -681,6 +874,7 @@ export function discussionService(db: Db) {
           "inputType must be 'agent' when authorAgentId is set",
         );
       }
+      await validateEntryAttachments(db, companyId, data.attachments);
 
       // Verify discussion exists and belongs to company
       const discussion = await db

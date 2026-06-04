@@ -71,8 +71,8 @@ export function skillSourceMeta(
       return {
         Icon: Folder,
         tone: "teal",
-        label: sourceLabel ?? "Folder",
-        managedLabel: "Folder managed",
+        label: sourceLabel ?? "Local",
+        managedLabel: "Local skill",
       };
     case "paperclip":
       return {
