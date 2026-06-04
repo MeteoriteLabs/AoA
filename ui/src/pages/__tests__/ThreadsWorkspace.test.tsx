@@ -610,6 +610,43 @@ describe("ThreadsWorkspace", () => {
     expect(screen.getByTestId("location")).toHaveTextContent("/TC/discussions/archived-1");
   });
 
+  it("keeps archived threads out of active rail sections when the list response includes them", async () => {
+    mockParams = { companyPrefix: "TC" };
+    vi.mocked(threadsApi.list).mockImplementation(async (_companyId, options?: { status?: string }) => {
+      if (options?.status === "archived") {
+        return {
+          discussions: [makeThread({ id: "archived-1", title: "Archived thread", phase: "scope", status: "archived" })],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        };
+      }
+      if (options?.status === "active") {
+        return {
+          discussions: [makeThread({ id: "thread-1", title: "Thread one", phase: "discuss" })],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        };
+      }
+      return {
+        discussions: [
+          makeThread({ id: "thread-1", title: "Thread one", phase: "discuss" }),
+          makeThread({ id: "archived-1", title: "Archived thread", phase: "scope", status: "archived" }),
+        ],
+        total: 2,
+        limit: 50,
+        offset: 0,
+      };
+    });
+
+    renderWithProviders(<ThreadsWorkspace />, { initialEntries: ["/TC/discussions"] });
+    const index = await screen.findByTestId("threads-index");
+
+    expect(await within(index).findByRole("link", { name: /thread one/i })).toBeInTheDocument();
+    expect(within(index).getAllByRole("link", { name: /archived thread/i })).toHaveLength(1);
+  });
+
   it("keeps phase categories as sidebar accordions instead of center card panels", async () => {
     mockParams = { companyPrefix: "TC" };
     vi.mocked(threadsApi.list).mockImplementation(async (_companyId, options?: { status?: string }) => {
