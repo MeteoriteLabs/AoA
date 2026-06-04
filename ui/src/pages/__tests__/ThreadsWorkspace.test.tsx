@@ -1,8 +1,9 @@
 import React from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithProviders } from "../../__tests__/test-utils";
 import { ThreadsWorkspace } from "../ThreadsWorkspace";
 import { threadsApi, type ThreadListItem } from "../../api/threads";
@@ -644,6 +645,60 @@ describe("ThreadsWorkspace", () => {
     const index = await screen.findByTestId("threads-index");
 
     expect(await within(index).findByRole("link", { name: /thread one/i })).toBeInTheDocument();
+    expect(within(index).getAllByRole("link", { name: /archived thread/i })).toHaveLength(1);
+  });
+
+  it("does not reuse a cached unfiltered list for the active workspace query", async () => {
+    mockParams = { companyPrefix: "TC" };
+    const cachedActive = makeThread({ id: "thread-1", title: "Thread one", phase: "discuss" });
+    const cachedArchived = makeThread({
+      id: "archived-1",
+      title: "Archived thread",
+      phase: "scope",
+      status: "archived",
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    queryClient.setQueryData(["threads", "comp-1", "list"], {
+      discussions: [cachedActive, cachedArchived],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    });
+    vi.mocked(threadsApi.list).mockImplementation(async (_companyId, options?: { status?: string }) => {
+      if (options?.status === "archived") {
+        return {
+          discussions: [cachedArchived],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        };
+      }
+      if (options?.status === "active") {
+        return new Promise(() => {});
+      }
+      return {
+        discussions: [cachedActive, cachedArchived],
+        total: 2,
+        limit: 50,
+        offset: 0,
+      };
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/TC/discussions"]}>
+          <ThreadsWorkspace />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const index = await screen.findByTestId("threads-index");
+
+    expect(await within(index).findByRole("link", { name: /archived thread/i })).toBeInTheDocument();
     expect(within(index).getAllByRole("link", { name: /archived thread/i })).toHaveLength(1);
   });
 

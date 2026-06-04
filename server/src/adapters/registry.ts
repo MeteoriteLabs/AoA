@@ -180,12 +180,33 @@ function normalizeCursorCloudSession(raw: unknown): Record<string, unknown> | nu
   const runtime = asString(record.runtime, "cloud").trim() || "cloud";
   const envType = asString(record.envType, "").trim();
   const envName = asString(record.envName, "").trim();
+  const repos = Array.isArray(record.repos)
+    ? record.repos
+        .map((entry) =>
+          typeof entry === "object" && entry !== null && !Array.isArray(entry)
+            ? entry as Record<string, unknown>
+            : null
+        )
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+        .map((entry) => {
+          const url = asString(entry.url, "").trim();
+          const startingRef = asString(entry.startingRef, "").trim();
+          const prUrl = asString(entry.prUrl, "").trim();
+          return {
+            url,
+            ...(startingRef ? { startingRef } : {}),
+            ...(prUrl ? { prUrl } : {}),
+          };
+        })
+        .filter((entry) => entry.url.length > 0)
+    : [];
   return {
     cursorAgentId,
     ...(latestRunId ? { latestRunId } : {}),
     runtime,
     ...(envType ? { envType } : {}),
     ...(envName ? { envName } : {}),
+    ...(repos.length > 0 ? { repos } : {}),
   };
 }
 

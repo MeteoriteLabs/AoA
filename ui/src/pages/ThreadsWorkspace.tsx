@@ -112,7 +112,7 @@ export function ThreadsWorkspace() {
   }, [hasSelection, setBreadcrumbs, setEntityColor, setSubtitle]);
 
   const { data } = useQuery({
-    queryKey: ["threads", selectedCompanyId, "list"],
+    queryKey: ["threads", selectedCompanyId, "list", "active"],
     queryFn: () => threadsApi.list(selectedCompanyId!, { status: "active" }),
     enabled: !!selectedCompanyId,
     retry: false,
