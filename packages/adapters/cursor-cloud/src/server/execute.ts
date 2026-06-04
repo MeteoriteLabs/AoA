@@ -1,14 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  Agent,
-  type AgentOptions,
-  type ModelSelection,
-  type Run,
-  type RunResult,
-  type SDKAgent,
-  type SDKMessage,
-} from "@cursor/sdk";
 import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@armyofagents/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -27,6 +18,49 @@ import {
   renderTemplate,
   stringifyPaperclipWakePayload,
 } from "@armyofagents/adapter-utils/server-utils";
+
+type ModelSelection = { id: string };
+type SDKMessage = unknown;
+type RunResult = {
+  id: string;
+  status: string;
+  result?: string | null;
+  model?: { id?: string | null } | null;
+  durationMs?: number | null;
+  git?: unknown;
+};
+type Run = {
+  id: string;
+  agentId: string;
+  status: string;
+  result?: string | null;
+  model?: { id?: string | null } | null;
+  durationMs?: number | null;
+  git?: unknown;
+  supports(capability: "stream" | "wait"): boolean;
+  stream(): AsyncIterable<SDKMessage>;
+  wait(): Promise<RunResult>;
+};
+type SDKAgent = {
+  agentId: string;
+  send(prompt: string, options?: { model?: ModelSelection }): Promise<Run>;
+  [Symbol.asyncDispose](): Promise<void>;
+};
+type AgentOptions = Record<string, unknown>;
+type CursorAgentApi = {
+  create(options: AgentOptions): Promise<SDKAgent>;
+  resume(agentId: string, options: AgentOptions): Promise<SDKAgent>;
+  getRun(runId: string, options: { runtime: "cloud"; agentId: string; apiKey: string }): Promise<Run>;
+};
+
+async function loadCursorAgentApi(): Promise<CursorAgentApi | null> {
+  try {
+    const mod = await import("@cursor/sdk") as { Agent: CursorAgentApi };
+    return mod.Agent;
+  } catch {
+    return null;
+  }
+}
 
 type CursorCloudSession = {
   cursorAgentId: string;
@@ -307,12 +341,13 @@ async function streamRun(run: Run, onLog: AdapterExecutionContext["onLog"]) {
 async function getAttachedRun(input: {
   apiKey: string;
   session: CursorCloudSession | null;
+  agentApi: CursorAgentApi;
 }): Promise<Run | null> {
   const latestRunId = input.session?.latestRunId;
   const cursorAgentId = input.session?.cursorAgentId;
   if (!latestRunId || !cursorAgentId) return null;
   try {
-    const run = await Agent.getRun(latestRunId, {
+    const run = await input.agentApi.getRun(latestRunId, {
       runtime: "cloud",
       agentId: cursorAgentId,
       apiKey: input.apiKey,
@@ -372,6 +407,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorMessage: "cursor_cloud requires repoUrl in adapterConfig or workspace context.",
       provider: "cursor",      billingType: "api",
+      clearSession: false,
+    };
+  }
+
+  const agentApi = await loadCursorAgentApi();
+  if (!agentApi) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Cursor SDK is unavailable in this environment.",
+      errorCode: "cursor_cloud_sdk_unavailable",
+      provider: "cursor",
+      billingType: "api",
       clearSession: false,
     };
   }
@@ -487,7 +536,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let streamError: string | null = null;
   try {
     const attachedRun = canReuseSession
-      ? await getAttachedRun({ apiKey, session })
+      ? await getAttachedRun({ apiKey, session, agentApi })
       : null;
 
     if (attachedRun) {
@@ -513,8 +562,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     sdkAgent = canReuseSession && session
-      ? await Agent.resume(session.cursorAgentId, agentOptions)
-      : await Agent.create(agentOptions);
+      ? await agentApi.resume(session.cursorAgentId, agentOptions)
+      : await agentApi.create(agentOptions);
     run = await sdkAgent.send(finalPrompt, {
       ...(model ? { model } : {}),
     });

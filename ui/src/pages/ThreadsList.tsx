@@ -20,12 +20,26 @@ import {
   RefreshCw,
   LayoutList,
   LayoutGrid,
+  Network,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { ThreadBoard } from "../components/threads/ThreadBoard";
 import { RoutingDialControl } from "../components/threads/RoutingDialControl";
+import {
+  AttentionCount,
+  IconChip,
+  LiveMarker,
+  ParticipantStack,
+} from "../components/threads/ThreadCardIcons";
+import {
+  getAttentionCount,
+  getBranchMeta,
+  getInputSourceMeta,
+  getScopeMeta,
+  getVisibilityMeta,
+} from "../components/threads/threadCardMeta";
 
 // ── Phase filter config ───────────────────────────────────────────────────────
 
@@ -35,7 +49,14 @@ const PHASE_FILTERS = [
 ];
 
 type PhaseFilterValue = "all" | ThreadPhase;
-type ViewMode = "list" | "board";
+type ViewMode = "threads" | "board" | "list" | "map";
+
+const VIEW_TABS: Array<{ value: ViewMode; label: string; icon: typeof LayoutGrid; disabled?: boolean }> = [
+  { value: "threads", label: "Threads", icon: MessageSquare },
+  { value: "board", label: "Board", icon: LayoutGrid },
+  { value: "list", label: "List", icon: LayoutList },
+  { value: "map", label: "Map", icon: Network, disabled: true },
+];
 
 // ── Origin icon/badge map ─────────────────────────────────────────────────────
 
@@ -84,7 +105,10 @@ export function ThreadsList() {
 
   // View mode persisted in URL param
   const viewParam = searchParams.get("view");
-  const view: ViewMode = viewParam === "board" ? "board" : "list";
+  const view: ViewMode =
+    viewParam === "threads" || viewParam === "list" || viewParam === "map"
+      ? viewParam
+      : "board";
 
   const [phaseFilter, setPhaseFilter] = useState<PhaseFilterValue>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -166,8 +190,9 @@ export function ThreadsList() {
           setSearchQuery={setSearchQuery}
           view={view}
           setView={(v) => {
+            if (v === "map") return;
             const next = new URLSearchParams(searchParams);
-            if (v === "list") next.delete("view");
+            if (v === "board") next.delete("view");
             else next.set("view", v);
             setSearchParams(next);
           }}
@@ -203,8 +228,9 @@ export function ThreadsList() {
           setSearchQuery={setSearchQuery}
           view={view}
           setView={(v) => {
+            if (v === "map") return;
             const next = new URLSearchParams(searchParams);
-            if (v === "list") next.delete("view");
+            if (v === "board") next.delete("view");
             else next.set("view", v);
             setSearchParams(next);
           }}
@@ -225,23 +251,16 @@ export function ThreadsList() {
   }
 
   const setView = (v: ViewMode) => {
+    if (v === "map") return;
     const next = new URLSearchParams(searchParams);
-    if (v === "list") next.delete("view");
+    if (v === "board") next.delete("view");
     else next.set("view", v);
     setSearchParams(next);
   };
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-[1.6rem] font-bold tracking-tight">
-          Discussions<span className="text-brand">.</span>
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Threads where decisions, tasks, and insights get shaped from raw input.
-        </p>
-      </div>
-
+    <div className="flex h-full flex-col bg-muted/30 p-2">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm">
       <ThreadsListHeader
         phaseFilter={phaseFilter}
         setPhaseFilter={setPhaseFilter}
@@ -254,6 +273,29 @@ export function ThreadsList() {
         companyId={selectedCompanyId}
         canEditRouting={isFounder}
       />
+
+      <div className="min-h-0 flex-1 overflow-hidden p-3">
+      {/* Threads view */}
+      {view === "threads" && (
+        <div className="h-full overflow-auto">
+          {filtered.length === 0 ? (
+            <EmptyState
+              icon={MessageSquare}
+              message={threads.length > 0 ? "No threads match the current filters" : "No threads yet. Start a new one."}
+              description={threads.length > 0 ? "Try adjusting search or start a new thread." : "Start a thread to capture and shape decisions, tasks, and insights from raw input."}
+              entityColor="var(--entity-brief)"
+              action={threads.length > 0 ? undefined : "New Thread"}
+              onAction={threads.length > 0 ? undefined : () => openNewThread()}
+            />
+          ) : (
+            <div className="mx-auto grid max-w-4xl gap-2">
+              {filtered.map((thread) => (
+                <ThreadRow key={thread.id} thread={thread} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Board view */}
       {view === "board" && (
@@ -294,7 +336,7 @@ export function ThreadsList() {
               />
             )
           ) : (
-            <div className="space-y-2">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {filtered.map((thread) => (
                 <ThreadRow key={thread.id} thread={thread} />
               ))}
@@ -302,6 +344,8 @@ export function ThreadsList() {
           )}
         </>
       )}
+      </div>
+      </section>
     </div>
   );
 }
@@ -334,6 +378,106 @@ function ThreadsListHeader({
   canEditRouting = false,
 }: ThreadsListHeaderProps) {
   return (
+    <div className="shrink-0 border-b border-border">
+      <div className="flex min-h-[42px] items-center gap-3 px-4">
+        <span className="shrink-0 text-sm font-semibold text-foreground">Discussions</span>
+
+        <div className="flex h-[42px] min-w-0 items-center overflow-x-auto" aria-label="Discussion views">
+          {VIEW_TABS.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = view === tab.value;
+            return (
+              <button
+                key={tab.value}
+                type="button"
+                onClick={() => setView(tab.value)}
+                disabled={tab.disabled}
+                aria-label={`${tab.label} view`}
+                aria-pressed={isActive}
+                title={tab.disabled ? "Map view is planned next" : `${tab.label} view`}
+                className={cn(
+                  "flex h-full items-center gap-1.5 border-b-2 px-3 text-xs font-medium transition-colors",
+                  isActive
+                    ? "border-brand text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                  tab.disabled && "cursor-not-allowed opacity-45 hover:text-muted-foreground",
+                )}
+              >
+                <Icon className="size-3.5" aria-hidden />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="ml-auto flex min-w-0 items-center gap-2">
+          {typeof companyId === "string" && (
+            <RoutingDialControl companyId={companyId ?? ""} canEdit={canEditRouting} />
+          )}
+
+          <div className="relative hidden min-w-[220px] sm:block">
+            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <input
+              type="search"
+              placeholder="Search threads..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label="Search threads"
+            />
+          </div>
+
+          <Button size="sm" onClick={onNewThread} className="h-8 gap-1.5">
+            <Plus className="size-4" />
+            New Thread
+          </Button>
+        </div>
+      </div>
+
+      {view === "list" && (
+        <div className="flex min-h-[42px] items-center gap-1 overflow-x-auto border-t border-border px-4">
+          {PHASE_FILTERS.map((pf) => {
+            const isActive = phaseFilter === pf.value;
+            return (
+              <button
+                key={pf.value}
+                type="button"
+                onClick={() => setPhaseFilter(pf.value)}
+                aria-pressed={isActive}
+                className={cn(
+                  "inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors",
+                  isActive
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
+              >
+                {pf.label}
+                {pf.value === "all" && (
+                  <span className="ml-1.5 text-[10px] opacity-70">{totalCount}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="border-t border-border p-3 sm:hidden">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            type="search"
+            placeholder="Search threads..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label="Search threads"
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
     <div className="flex flex-col gap-2">
       {/* Phase filters + view toggle + new button */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -364,8 +508,8 @@ function ThreadsListHeader({
 
         <div className="flex items-center gap-2">
           {/* Inbound routing dial — canEdit gated to founder (PATCH is founder-only server-side) */}
-          {companyId && (
-            <RoutingDialControl companyId={companyId} canEdit={canEditRouting} />
+          {typeof companyId === "string" && (
+            <RoutingDialControl companyId={companyId ?? ""} canEdit={canEditRouting} />
           )}
 
           {/* View mode toggle */}
@@ -424,10 +568,66 @@ function ThreadsListHeader({
 function ThreadRow({ thread }: { thread: ThreadListItem }) {
   const hasPending = thread.pendingItemCount > 0;
   const origin = thread.lastEntryInputType
-    ? ORIGIN_BADGES[thread.lastEntryInputType]
-    : null;
+    ? ORIGIN_BADGES[thread.lastEntryInputType] ?? ORIGIN_BADGES.paste
+    : ORIGIN_BADGES.paste;
   const OriginIcon = origin?.icon ?? MessageSquare;
   const phaseColor = PHASE_COLORS[thread.phase] ?? "bg-muted text-muted-foreground";
+  const source = getInputSourceMeta(thread.lastEntryInputType);
+  const scope = getScopeMeta(thread);
+  const visibility = getVisibilityMeta(thread.visibility);
+  const branch = getBranchMeta(thread);
+  const attention = getAttentionCount(thread);
+  const participants = thread.participantPreview ?? [];
+  const participantFallback = participants.length
+    ? participants
+    : [{ name: thread.ownerUserId ?? "Unclaimed" }];
+
+  return (
+    <Link
+      to={`/discussions/${thread.id}`}
+      className="relative flex min-h-[168px] flex-col justify-between rounded-lg border border-border bg-card p-3 pr-10 transition-colors hover:bg-accent/40"
+    >
+      {attention && <AttentionCount count={attention.count} />}
+      {thread.subtype === "live" && !attention && <LiveMarker />}
+
+      <div className="space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <p className="line-clamp-2 text-sm font-medium leading-snug">{thread.title}</p>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] capitalize text-muted-foreground">
+            {thread.phase}
+          </span>
+        </div>
+        {thread.summaryText && (
+          <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+            {thread.summaryText}
+          </p>
+        )}
+        {thread.summaryNext && (
+          <p className="border-l-2 border-emerald-500/60 pl-2 text-[11px] leading-relaxed text-foreground/80">
+            {thread.summaryNext}
+          </p>
+        )}
+        <div className="flex items-center gap-1">
+          <IconChip Icon={source.Icon} label={`Source: ${source.label}`} tone="source" />
+          {scope && <IconChip Icon={scope.Icon} label={scope.title} tone="scope" />}
+          <IconChip Icon={visibility.Icon} label={visibility.label} tone="visibility" />
+          {branch && <IconChip Icon={branch.Icon} label={branch.title} tone="branch" />}
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <ParticipantStack
+          participants={participantFallback}
+          total={thread.participantCount ?? participants.length}
+        />
+        <span className="shrink-0 text-[11px] text-muted-foreground">
+          {relativeTime(thread.lastEntryAt)}
+        </span>
+      </div>
+    </Link>
+  );
+
+  thread.ownerUserId ??= "";
 
   return (
     <Link
@@ -494,7 +694,7 @@ function ThreadRow({ thread }: { thread: ThreadListItem }) {
       <div className="flex items-center gap-2 ml-4 shrink-0">
         {thread.ownerUserId ? (
           <span className="text-xs text-muted-foreground hidden sm:block">
-            {thread.ownerUserId.slice(0, 8)}
+            {String(thread.ownerUserId).slice(0, 8)}
           </span>
         ) : (
           <span className="text-xs text-muted-foreground hidden sm:block">Unclaimed</span>

@@ -54,6 +54,7 @@ const baseProps = {
   filter: "",
   selectedSkillId: null,
   selectedPackageId: null,
+  homeActive: false,
   expandedPackageIds: new Set<string>(),
   packagesWithUpdate: new Set<string>(),
   onTogglePackage: vi.fn(),
@@ -68,10 +69,40 @@ function renderLib(over: Partial<typeof baseProps> = {}) {
 }
 
 describe("SkillLibrary", () => {
+  it("renders a Home row before library sections", () => {
+    const { getByRole, getByText } = renderLib();
+    const home = getByRole("link", { name: /home/i });
+    expect(home).toHaveAttribute("href", "/ACME/skills");
+    expect(home.compareDocumentPosition(getByText(/Standalone/))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("marks Home as current when the skills home route is active", () => {
+    const { getByRole } = renderLib({ homeActive: true });
+    expect(getByRole("link", { name: /home/i })).toHaveAttribute("aria-current", "page");
+  });
+
   it("renders the Packages section with the gstack package", () => {
     const { getByText } = renderLib();
     expect(getByText("gstack")).toBeInTheDocument();
     expect(getByText(/Packages · 1/)).toBeInTheDocument();
+  });
+
+  it("keeps the Packages section header text-only", () => {
+    const { getByText } = renderLib();
+    const packagesHeader = getByText(/Packages/).closest("div");
+    expect(packagesHeader?.querySelector("svg")).toBeNull();
+  });
+
+  it("separates Home from the package section with a divider", () => {
+    const { getByRole, getByText } = renderLib();
+    const home = getByRole("link", { name: /home/i });
+    const packagesHeader = getByText(/Packages/).closest("div");
+    expect(home.nextElementSibling?.className ?? "").toMatch(/border-t/);
+    expect(home.nextElementSibling?.compareDocumentPosition(packagesHeader as Element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it("renders the Standalone section with my-deploy-helper", () => {
@@ -119,8 +150,8 @@ describe("SkillLibrary", () => {
   });
 
   it("highlights the active package row", () => {
-    const { container } = renderLib({ selectedPackageId: "garrytan/gstack" });
-    const pkgRow = container.querySelector("[class*='border-l']");
-    expect(pkgRow?.className ?? "").toMatch(/border-l-brand|brand/);
+    const { getByText } = renderLib({ selectedPackageId: "garrytan/gstack" });
+    const pkgRow = getByText("gstack").closest("div");
+    expect(pkgRow?.className ?? "").toMatch(/bg-accent/);
   });
 });

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { relativeTime } from "@/lib/utils";
 import { Link } from "@/lib/router";
-import type { DiscussionEntry } from "../../api/discussions";
+import type { DiscussionEntry, DiscussionEntryAttachment } from "../../api/discussions";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { ScopeProposalCard } from "./ScopeProposalCard";
 import { SystemEntryCard } from "./SystemEntryCard";
@@ -251,7 +251,7 @@ export interface EntryRowProps {
   onSpinOffAccept?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   /** Phase E2: clicked when the user opens an inline artifact. */
-  onOpenArtifact?: (artifactId: string) => void;
+  onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
   /** P2-T2: crew-failure card actions (issueId passed through). */
   onCrewFailureRetry?: (issueId: string) => void;
   onCrewFailureReassign?: (issueId: string) => void;
@@ -432,7 +432,7 @@ function MeBubble({
   taskCount: number;
   memCount: number;
   pendingCount: number;
-  onOpenArtifact?: (artifactId: string) => void;
+  onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   return (
     <div
@@ -508,7 +508,7 @@ function HumanBubble({
   pendingCount: number;
   extractionError: string | null;
   errorMentionsProvider: boolean;
-  onOpenArtifact?: (artifactId: string) => void;
+  onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   return (
     <div
@@ -580,7 +580,7 @@ function AgentCard({
   pendingCount: number;
   extractionError: string | null;
   errorMentionsProvider: boolean;
-  onOpenArtifact?: (artifactId: string) => void;
+  onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   const color = agentRoleColor(entry.authorAgentName);
   const agentName = entry.authorAgentName ?? "Agent";

@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
+  or: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  asc: vi.fn((col: any) => ({ asc: col })),
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({
     sql: true,
@@ -89,6 +91,28 @@ vi.mock("@armyofagents/db", () => ({
   },
   goals: {
     id: "goals_id",
+    title: "goals_title",
+  },
+  agents: {
+    id: "agents_id",
+    name: "agents_name",
+  },
+  authUsers: {
+    id: "auth_users_id",
+    name: "auth_users_name",
+    email: "auth_users_email",
+  },
+  threadParticipants: {
+    threadId: "thread_participants_thread_id",
+    principalType: "thread_participants_principal_type",
+    principalId: "thread_participants_principal_id",
+    role: "thread_participants_role",
+    addedAt: "thread_participants_added_at",
+  },
+  threadLinks: {
+    companyId: "thread_links_company_id",
+    fromThreadId: "thread_links_from_thread_id",
+    toThreadId: "thread_links_to_thread_id",
   },
 }));
 
@@ -140,6 +164,7 @@ function createSequenceDb(selectQueue: any[][]) {
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
       innerJoin: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
@@ -216,13 +241,21 @@ describe("discussionService", () => {
       const discussions = [
         { id: "d1", companyId: "co-1", status: "active", title: "Test" },
       ];
-      const db = createSequenceDb([discussions]);
+      const db = createSequenceDb([discussions, [], []]);
 
       const result = await discussionService(db).list("co-1", {
         status: "active",
       });
 
-      expect(result).toEqual(discussions);
+      expect(result).toEqual([
+        {
+          ...discussions[0],
+          scopeName: null,
+          participantPreview: [],
+          participantCount: 0,
+          linkCount: 0,
+        },
+      ]);
       expect(db.select).toHaveBeenCalled();
     });
 
@@ -230,13 +263,22 @@ describe("discussionService", () => {
       const joinedRows = [
         { discussions: { id: "d1", title: "Voice discussion" } },
       ];
-      const db = createSequenceDb([joinedRows]);
+      const db = createSequenceDb([joinedRows, [], []]);
 
       const result = await discussionService(db).list("co-1", {
         inputType: "voice",
       });
 
-      expect(result).toEqual([{ id: "d1", title: "Voice discussion" }]);
+      expect(result).toEqual([
+        {
+          id: "d1",
+          title: "Voice discussion",
+          scopeName: null,
+          participantPreview: [],
+          participantCount: 0,
+          linkCount: 0,
+        },
+      ]);
       expect(db.selectDistinctOn).toHaveBeenCalled();
     });
 
@@ -244,13 +286,21 @@ describe("discussionService", () => {
       const discussions = [
         { id: "d1", pendingItemCount: 3 },
       ];
-      const db = createSequenceDb([discussions]);
+      const db = createSequenceDb([discussions, [], []]);
 
       const result = await discussionService(db).list("co-1", {
         hasPendingItems: true,
       });
 
-      expect(result).toEqual(discussions);
+      expect(result).toEqual([
+        {
+          ...discussions[0],
+          scopeName: null,
+          participantPreview: [],
+          participantCount: 0,
+          linkCount: 0,
+        },
+      ]);
     });
   });
 

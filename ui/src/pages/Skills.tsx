@@ -1,6 +1,6 @@
 // ui/src/pages/Skills.tsx
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "@/lib/router";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CompanySkill,
@@ -8,10 +8,10 @@ import type {
   CompanySkillDetail,
   CompanySkillFileDetail,
   CompanySkillProjectScanResult,
+  CompanySkillListItem,
 } from "@armyofagents/shared";
-import { Boxes, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search } from "lucide-react";
+import { Boxes, FolderOpen, Home, PanelLeftClose, PanelLeftOpen, Search, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { companySkillsApi } from "../api/companySkills";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -73,6 +73,14 @@ function skillRoute(skillId: string, filePath?: string | null): string {
   return filePath
     ? `/skills/${skillId}/files/${encodeSkillFilePath(filePath)}`
     : `/skills/${skillId}`;
+}
+
+function packageRoute(packageId: string): string {
+  return `/skills/package/${packageId}`;
+}
+
+function skillSourceTitle(skill: CompanySkillListItem): string {
+  return skill.sourceLabel ? `${skill.name} · ${skill.sourceLabel}` : skill.name;
 }
 
 function splitFrontmatter(markdown: string): { frontmatter: string | null; body: string } {
@@ -446,14 +454,14 @@ export function Skills() {
       />
 
       <div className="flex h-full flex-col">
-        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 gap-2 overflow-hidden bg-muted/30 p-2">
           <aside
             className={cn(
-              "flex shrink-0 flex-col border-r border-border transition-[width] duration-200",
-              sidebarCollapsed ? "w-10 overflow-hidden" : "w-[300px] overflow-y-auto",
+              "flex shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm transition-[width] duration-200",
+              sidebarCollapsed ? "w-[48px]" : "w-[300px]",
             )}
           >
-            <div className="flex h-12 shrink-0 items-center border-b border-border px-1">
+            <div className="flex h-[42px] shrink-0 items-center border-b border-border px-1">
               {!sidebarCollapsed && (
                 <span className="flex-1 px-2 text-xs font-medium text-muted-foreground">
                   Library
@@ -472,34 +480,91 @@ export function Skills() {
                 )}
               </button>
             </div>
-            {!sidebarCollapsed && (
-              <SkillLibrary
-                skills={skills}
-                filter={skillFilter}
-                selectedSkillId={route.kind === "skill" ? route.skillId : null}
-                selectedPackageId={route.kind === "package" ? route.packageId : null}
-                expandedPackageIds={expandedPackageIds}
-                packagesWithUpdate={new Set()}
-                onTogglePackage={(packageId) => {
-                  setExpandedPackageIds((cur) => {
-                    const next = new Set(cur);
-                    if (next.has(packageId)) next.delete(packageId);
-                    else next.add(packageId);
-                    return next;
-                  });
-                }}
-              />
+            {!sidebarCollapsed ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <SkillLibrary
+                  skills={skills}
+                  filter={skillFilter}
+                  selectedSkillId={route.kind === "skill" ? route.skillId : null}
+                  selectedPackageId={route.kind === "package" ? route.packageId : null}
+                  homeActive={route.kind === "home"}
+                  expandedPackageIds={expandedPackageIds}
+                  packagesWithUpdate={new Set()}
+                  onTogglePackage={(packageId) => {
+                    setExpandedPackageIds((cur) => {
+                      const next = new Set(cur);
+                      if (next.has(packageId)) next.delete(packageId);
+                      else next.add(packageId);
+                      return next;
+                    });
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-2">
+                <Link
+                  to="/skills"
+                  title="Home"
+                  aria-label="Home"
+                  aria-current={route.kind === "home" ? "page" : undefined}
+                  className={cn(
+                    "flex size-8 items-center justify-center rounded-md text-muted-foreground no-underline hover:bg-accent hover:text-accent-foreground",
+                    route.kind === "home" && "bg-accent text-accent-foreground",
+                  )}
+                >
+                  <Home className="size-4" />
+                </Link>
+                {packages.length > 0 && <div className="my-1 h-px w-5 bg-border" aria-hidden />}
+                {packages.map((pkg) => (
+                  <Link
+                    key={pkg.id}
+                    to={packageRoute(pkg.id)}
+                    title={`${pkg.name} package`}
+                    aria-label={`${pkg.name} package`}
+                    aria-current={
+                      route.kind === "package" && route.packageId === pkg.id ? "page" : undefined
+                    }
+                    className={cn(
+                      "flex size-8 items-center justify-center rounded-md text-muted-foreground no-underline hover:bg-accent hover:text-accent-foreground",
+                      route.kind === "package" &&
+                        route.packageId === pkg.id &&
+                        "bg-accent text-accent-foreground",
+                    )}
+                  >
+                    <Sparkles className="size-4" />
+                  </Link>
+                ))}
+                {standalones.length > 0 && <div className="my-1 h-px w-5 bg-border" aria-hidden />}
+                {standalones.map((skill) => (
+                  <Link
+                    key={skill.id}
+                    to={skillRoute(skill.id)}
+                    title={skillSourceTitle(skill)}
+                    aria-label={skillSourceTitle(skill)}
+                    aria-current={
+                      route.kind === "skill" && route.skillId === skill.id ? "page" : undefined
+                    }
+                    className={cn(
+                      "flex size-8 items-center justify-center rounded-md text-muted-foreground no-underline hover:bg-accent hover:text-accent-foreground",
+                      route.kind === "skill" &&
+                        route.skillId === skill.id &&
+                        "bg-accent text-accent-foreground",
+                    )}
+                  >
+                    <FolderOpen className="size-4" />
+                  </Link>
+                ))}
+              </div>
             )}
           </aside>
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm">
             {/* Toolbar — lives in the right pane so the sidebar runs full-height */}
-            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
-              <span className="flex-1 text-xs text-muted-foreground">
-                {skills.length} {skills.length === 1 ? "skill" : "skills"} &nbsp;·&nbsp;{" "}
-                {packages.length} {packages.length === 1 ? "package" : "packages"} &nbsp;·&nbsp;{" "}
-                {standalones.length} standalone
+            <header className="flex h-[42px] shrink-0 items-center gap-3 border-b border-border px-4">
+              <span className="shrink-0 text-sm font-semibold text-foreground">
+                Skills Library
               </span>
+              <div className="flex-1" />
               <div className="relative w-56">
                 <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
                 <input
@@ -509,29 +574,6 @@ export function Skills() {
                   className="h-7 w-full rounded-md border border-border bg-transparent pl-8 pr-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
                 />
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => scanProjects.mutate()}
-                disabled={scanProjects.isPending}
-                className="h-7 gap-1.5 text-xs"
-                title="Scan project workspaces for skills"
-                aria-label="Scan"
-              >
-                <RefreshCw className={cn("size-3.5", scanProjects.isPending && "animate-spin")} />
-                Scan
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => setAddSkillOpen(true)}
-                className="h-7 gap-1.5 text-xs"
-                aria-label="Add skill"
-              >
-                <Plus className="size-3.5" />
-                Add skill
-              </Button>
             </header>
 
             <div className="flex-1 overflow-y-auto">
@@ -574,6 +616,8 @@ export function Skills() {
                 skills={skills}
                 recent={recent}
                 onAddSkill={() => setAddSkillOpen(true)}
+                onScanSkills={() => scanProjects.mutate()}
+                scanPending={scanProjects.isPending}
               />
             )}
             </div>

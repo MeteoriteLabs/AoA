@@ -126,6 +126,8 @@ export function NewThreadDialog({ open, onClose, defaults = {} }: NewThreadDialo
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(selectedCompanyId ?? "") });
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedCompanyId ?? "") });
+      queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId ?? ""] });
       pushToast({ title: "Thread created", tone: "success" });
       onClose();
     },

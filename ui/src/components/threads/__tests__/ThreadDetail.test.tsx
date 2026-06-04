@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ThreadDetail } from "../../../pages/ThreadDetail";
@@ -9,6 +9,7 @@ vi.mock("../../../api/threads", () => ({
   threadsApi: {
     detail: vi.fn(),
     advancePhase: vi.fn(),
+    listLinks: vi.fn().mockResolvedValue({ links: [] }),
   },
 }));
 
@@ -135,7 +136,7 @@ describe("ThreadDetail", () => {
       initialEntries: ["/TC/threads/thread-1"],
     });
     await waitFor(() => {
-      expect(screen.getByRole("tablist")).toBeInTheDocument();
+      expect(screen.getByRole("tablist", { name: "Thread sections" })).toBeInTheDocument();
     });
   });
 
@@ -151,5 +152,139 @@ describe("ThreadDetail", () => {
     const scopeTab = screen.getByRole("tab", { name: /scope/i });
     await user.click(scopeTab);
     expect(scopeTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("renders embedded detail with rounded center and viewer panes", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue(mockThread);
+
+    renderWithProviders(<ThreadDetail embedded />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-center-panel")).toHaveAttribute("data-pane", "center");
+      expect(screen.getByTestId("thread-right-viewer")).toHaveAttribute("data-pane", "viewer");
+    });
+  });
+
+  it("does not report viewer-wide auto-collapse while resizing the viewer", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue(mockThread);
+    const onViewerWideChange = vi.fn();
+
+    renderWithProviders(<ThreadDetail embedded onViewerWideChange={onViewerWideChange} />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    const viewer = await screen.findByTestId("thread-right-viewer");
+    const resizeHandle = screen.getByRole("separator", { name: /resize viewer/i });
+
+    fireEvent.pointerDown(resizeHandle, { clientX: 100, pointerId: 1 });
+    fireEvent.pointerMove(resizeHandle, { clientX: -140, pointerId: 1 });
+    fireEvent.pointerUp(resizeHandle, { pointerId: 1 });
+
+    await waitFor(() => {
+      expect(viewer).toHaveAttribute("data-width", "580");
+    });
+    expect(onViewerWideChange).not.toHaveBeenCalled();
+  });
+
+  it("allows closing the Open tab and reopening it from the add button", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue(mockThread);
+    const user = userEvent.setup();
+
+    renderWithProviders(<ThreadDetail embedded />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    await screen.findByTestId("thread-open-viewer");
+    await user.click(screen.getByRole("button", { name: /close open/i }));
+
+    expect(screen.getByTestId("thread-viewer-empty")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /open viewer tab/i }));
+
+    expect(screen.getByTestId("thread-open-viewer")).toBeInTheDocument();
+  });
+
+  it("shows open viewer tabs as icons while the right viewer is collapsed", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue(mockThread);
+    const user = userEvent.setup();
+
+    renderWithProviders(<ThreadDetail embedded />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    await screen.findByTestId("thread-open-viewer");
+    await user.click(screen.getByRole("button", { name: /close viewer/i }));
+
+    const strip = screen.getByTestId("thread-viewer-collapsed-strip");
+    expect(strip).toBeInTheDocument();
+    expect(within(strip).getByRole("button", { name: /^open$/i })).toBeInTheDocument();
+  });
+
+  it("opens localhost browser previews with the same http default as Workspace", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue(mockThread);
+    const user = userEvent.setup();
+
+    renderWithProviders(<ThreadDetail embedded />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    await screen.findByTestId("thread-open-viewer");
+    await user.click(screen.getByText("New browser"));
+
+    const input = screen.getByTestId("thread-browser-url-input");
+    await user.clear(input);
+    await user.type(input, "localhost:3100/api/health");
+    await user.click(screen.getByRole("button", { name: /^open$/i }));
+
+    expect(screen.getByTestId("thread-browser-iframe")).toHaveAttribute(
+      "src",
+      "http://localhost:3100/api/health",
+    );
+  });
+
+  it("keeps browser viewer URL state isolated when switching link tabs", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue({
+      ...mockThread,
+      entries: [
+        {
+          id: "entry-1",
+          discussionId: "thread-1",
+          inputType: "paste",
+          rawContent: "Compare https://example.com and https://openai.com for this thread.",
+          title: null,
+          departmentId: null,
+          projectId: null,
+          goalId: null,
+          sourceInfo: null,
+          parentEntryId: null,
+          authorAgentId: null,
+          extractionStatus: "skipped",
+          seq: 1,
+          createdBy: "user-1",
+          createdAt: "2026-01-01T00:00:00Z",
+          extractedItems: [],
+          annotations: [],
+          attachments: [],
+        } as any,
+      ],
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<ThreadDetail embedded />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    await screen.findByTestId("thread-open-viewer");
+    await user.click(screen.getByRole("button", { name: "https://example.com/" }));
+    expect(screen.getByTestId("thread-browser-iframe")).toHaveAttribute("src", "https://example.com/");
+
+    await user.click(screen.getByRole("tab", { name: /^open$/i }));
+    await user.click(screen.getByRole("button", { name: "https://openai.com/" }));
+    expect(screen.getByTestId("thread-browser-iframe")).toHaveAttribute("src", "https://openai.com/");
+
+    await user.click(screen.getByRole("tab", { name: /example\.com/i }));
+    expect(screen.getByTestId("thread-browser-iframe")).toHaveAttribute("src", "https://example.com/");
   });
 });

@@ -16,4 +16,24 @@ describe("adapter registry session management", () => {
     const claude = listServerAdapters().find((adapter) => adapter.type === "claude_local");
     expect(claude?.sessionManagement?.nativeContextManagement).toBe("confirmed");
   });
+
+  it("preserves Cursor Cloud repository session context in the registry codec", () => {
+    const cursorCloud = findServerAdapter("cursor_cloud");
+    expect(
+      cursorCloud?.sessionCodec?.serialize({
+        cursorAgentId: "agent-123",
+        latestRunId: "run-456",
+        envType: "pool",
+        envName: "trusted",
+        repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+      }),
+    ).toEqual({
+      cursorAgentId: "agent-123",
+      latestRunId: "run-456",
+      runtime: "cloud",
+      envType: "pool",
+      envName: "trusted",
+      repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+    });
+  });
 });

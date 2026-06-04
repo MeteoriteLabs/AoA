@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient } from "@tanstack/react-query";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { NewThreadDialog } from "../../NewThreadDialog";
+import { queryKeys } from "../../../lib/queryKeys";
 
 vi.mock("../../../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -18,6 +20,7 @@ vi.mock("../../../context/ToastContext", () => ({
 vi.mock("../../../api/discussions", () => ({
   discussionsApi: {
     create: vi.fn().mockResolvedValue({ id: "disc-new", title: "New" }),
+    addEntry: vi.fn().mockResolvedValue({ id: "entry-new" }),
   },
 }));
 
@@ -125,5 +128,26 @@ describe("NewThreadDialog", () => {
     );
     await user.type(screen.getByPlaceholderText(/what's on your mind/i), "Some content");
     expect(screen.getByRole("button", { name: /create thread/i })).toBeEnabled();
+  });
+
+  it("invalidates the visible threads list after creating a thread", async () => {
+    const user = userEvent.setup();
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+    renderWithProviders(
+      <NewThreadDialog open={true} onClose={vi.fn()} />,
+    );
+
+    await user.type(screen.getByLabelText(/title/i), "Live cache check");
+    await user.click(screen.getByRole("button", { name: /create thread/i }));
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: queryKeys.threads.list("comp-1"),
+      });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["threads", "comp-1"],
+    });
   });
 });

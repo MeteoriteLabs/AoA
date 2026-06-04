@@ -80,4 +80,15 @@ describe("SkillPackageRow", () => {
     );
     expect(container.querySelector("[data-icon='chevron-down']")).not.toBeNull();
   });
+
+  it("places the chevron control after the package count", () => {
+    const { container, getByText } = renderRow();
+    const count = getByText("28");
+    const chevron = container.querySelector("[data-icon='chevron-right']");
+    expect(chevron).not.toBeNull();
+
+    expect(count.compareDocumentPosition(chevron as Element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
 });

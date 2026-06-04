@@ -281,26 +281,51 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => mockBreadcrumbContext,
 }));
 
+function stripPanelProps(props: Record<string, unknown>) {
+  const {
+    defaultLayout,
+    onLayoutChanged,
+    onLayoutChange,
+    defaultSize,
+    minSize,
+    maxSize,
+    collapsible,
+    collapsedSize,
+    panelRef,
+    ...domProps
+  } = props;
+  return domProps;
+}
+
 // Mock react-resizable-panels with simple divs
 vi.mock("react-resizable-panels", () => ({
-  Group: ({ children, ...props }: any) => (
-    <div data-testid={props["data-testid"] ?? "panel-group"} {...props}>
-      {children}
-    </div>
-  ),
-  Panel: ({ children, id, ...props }: any) => (
-    <div data-testid={props["data-testid"] ?? `panel-${id}`} id={id} {...props}>
-      {children}
-    </div>
-  ),
-  Separator: ({ id, ...props }: any) => (
-    <div
-      data-testid={props["data-testid"] ?? `separator-${id}`}
-      id={id}
-      role="separator"
-      {...props}
-    />
-  ),
+  Group: ({ children, ...props }: any) => {
+    const domProps = stripPanelProps(props);
+    return (
+      <div data-testid={domProps["data-testid"] ?? "panel-group"} {...domProps}>
+        {children}
+      </div>
+    );
+  },
+  Panel: ({ children, id, ...props }: any) => {
+    const domProps = stripPanelProps(props);
+    return (
+      <div data-testid={domProps["data-testid"] ?? `panel-${id}`} id={id} {...domProps}>
+        {children}
+      </div>
+    );
+  },
+  Separator: ({ id, ...props }: any) => {
+    const domProps = stripPanelProps(props);
+    return (
+      <div
+        data-testid={domProps["data-testid"] ?? `separator-${id}`}
+        id={id}
+        role="separator"
+        {...domProps}
+      />
+    );
+  },
   useDefaultLayout: () => ({
     defaultLayout: undefined,
     onLayoutChanged: vi.fn(),

@@ -27,7 +27,7 @@ describe("skillSourceMeta", () => {
     const meta = skillSourceMeta("local", null);
     expect(meta.Icon).toBe(Folder);
     expect(meta.tone).toBe("teal");
-    expect(meta.label).toBe("Folder");
+    expect(meta.label).toBe("Local");
   });
 
   it("returns Boxes + indigo for paperclip (AoA-managed)", () => {
@@ -46,7 +46,7 @@ describe("skillSourceMeta", () => {
   it("returns the managedLabel with 'managed' suffix", () => {
     expect(skillSourceMeta("github", "owner/repo").managedLabel).toBe("GitHub managed");
     expect(skillSourceMeta("skills_sh", "skills.sh").managedLabel).toBe("skills.sh managed");
-    expect(skillSourceMeta("local", null).managedLabel).toBe("Folder managed");
+    expect(skillSourceMeta("local", null).managedLabel).toBe("Local skill");
     expect(skillSourceMeta("paperclip", null).managedLabel).toBe("AoA managed");
   });
 });

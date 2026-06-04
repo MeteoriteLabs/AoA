@@ -9,6 +9,9 @@ export const DiscussionEntryAttachmentSchema = z.object({
   assetId: z.string().uuid().nullable(),
   artifactType: z.string().nullable(),
   artifactTitle: z.string().nullable(),
+  assetContentType: z.string().nullable().optional(),
+  assetOriginalFilename: z.string().nullable().optional(),
+  assetByteSize: z.number().int().nonnegative().nullable().optional(),
 });
 export type DiscussionEntryAttachment = z.infer<typeof DiscussionEntryAttachmentSchema>;
 

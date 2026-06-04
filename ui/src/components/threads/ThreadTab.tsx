@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { discussionsApi, type DiscussionEntry } from "../../api/discussions";
+import { discussionsApi, type DiscussionEntry, type DiscussionEntryAttachment } from "../../api/discussions";
 import { authApi } from "../../api/auth";
 import { agentsApi } from "../../api/agents";
 import { assetsApi } from "../../api/assets";
@@ -41,6 +41,7 @@ export interface ThreadTabProps {
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
+  onOpenAttachment?: (attachment: DiscussionEntryAttachment, entryId: string) => void;
 }
 
 export function ThreadTab({
@@ -50,6 +51,7 @@ export function ThreadTab({
   isLoading,
   isError,
   onRetry,
+  onOpenAttachment,
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -137,7 +139,7 @@ export function ThreadTab({
   // Scroll to bottom when new messages arrive (server or optimistic).
   useEffect(() => {
     if (entries.length > 0 || optimisticEntries.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
     }
   }, [entries.length, optimisticEntries.length]);
 
@@ -507,6 +509,7 @@ export function ThreadTab({
                 onCrewFailureRetry={(issueId) => retryTaskMutation.mutate(issueId)}
                 onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                 onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
+                onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, entry.id)}
               />
               {replies.map((reply) => (
                 <div key={reply.id} className="pl-10">
@@ -520,6 +523,7 @@ export function ThreadTab({
                     onCrewFailureRetry={(issueId) => retryTaskMutation.mutate(issueId)}
                     onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                     onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
+                    onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, reply.id)}
                   />
                 </div>
               ))}

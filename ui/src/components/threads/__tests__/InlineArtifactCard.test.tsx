@@ -26,17 +26,18 @@ describe("InlineArtifactCard", () => {
     expect(screen.getByText("Document")).toBeInTheDocument();
   });
 
-  it("fires onOpen with the artifactId when clicked", async () => {
+  it("fires onOpen with the attachment when clicked", async () => {
     const onOpen = vi.fn();
     const user = userEvent.setup();
+    const attachment = makeAttachment({ id: "att-1", artifactId: "art-1" });
     renderWithProviders(
       <InlineArtifactCard
-        attachments={[makeAttachment({ id: "att-1", artifactId: "art-1" })]}
+        attachments={[attachment]}
         onOpen={onOpen}
       />,
     );
     await user.click(screen.getByTestId("inline-artifact-card-att-1"));
-    expect(onOpen).toHaveBeenCalledWith("art-1");
+    expect(onOpen).toHaveBeenCalledWith(attachment);
   });
 
   it("renders multiple attachments", () => {
@@ -73,5 +74,21 @@ describe("InlineArtifactCard", () => {
     );
     expect(screen.getByText("Attached file")).toBeInTheDocument();
     expect(screen.getByText("File")).toBeInTheDocument();
+  });
+
+  it("opens an asset-only attachment when clicked", async () => {
+    const onOpen = vi.fn();
+    const user = userEvent.setup();
+    const attachment = makeAttachment({
+      id: "asset-att",
+      artifactId: null,
+      artifactType: null,
+      artifactTitle: null,
+      assetId: "asset-1",
+      assetOriginalFilename: "screenshot.png",
+    });
+    renderWithProviders(<InlineArtifactCard attachments={[attachment]} onOpen={onOpen} />);
+    await user.click(screen.getByTestId("inline-artifact-card-asset-att"));
+    expect(onOpen).toHaveBeenCalledWith(attachment);
   });
 });

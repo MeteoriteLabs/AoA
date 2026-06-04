@@ -4,6 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../__tests__/test-utils";
 import { ThreadsList } from "../ThreadsList";
 
+const searchParamsMock = vi.hoisted(() => ({
+  params: new URLSearchParams("view=list"),
+  set: vi.fn(),
+}));
+
 // Mock API modules
 vi.mock("../../api/threads", () => ({
   threadsApi: {
@@ -68,7 +73,7 @@ vi.mock("@/lib/router", async () => {
     Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
       <a href={to}>{children}</a>
     ),
-    useSearchParams: () => [new URLSearchParams(), vi.fn()],
+    useSearchParams: () => [searchParamsMock.params, searchParamsMock.set],
   };
 });
 
@@ -99,12 +104,17 @@ const makeThread = (overrides: Partial<ThreadListItem> = {}): ThreadListItem => 
   autonomyLevel: null,
   summaryText: null,
   summaryNext: null,
+  subtype: "normal",
+  shareToken: null,
+  participants: [],
+  allowMemoryExtraction: true,
   ...overrides,
 });
 
 describe("ThreadsList", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    searchParamsMock.params = new URLSearchParams("view=list");
   });
 
   it("renders two thread titles when list returns 2 threads", async () => {
@@ -204,6 +214,96 @@ describe("ThreadsList", () => {
 
     expect(screen.queryByText("Discuss thread")).not.toBeInTheDocument();
     expect(screen.getByText("Scope thread")).toBeInTheDocument();
+  });
+
+  it("defaults to board view when no view param is present", async () => {
+    searchParamsMock.params = new URLSearchParams();
+    vi.mocked(threadsApi.list).mockResolvedValue({
+      discussions: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    });
+
+    renderWithProviders(<ThreadsList />, { initialEntries: ["/TC/discussions"] });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-board")).toBeInTheDocument();
+      expect(screen.getByTestId("unlisted-lane")).toBeInTheDocument();
+    });
+  });
+
+  it("shows Threads, Board, List, and Map view tabs", async () => {
+    searchParamsMock.params = new URLSearchParams();
+    vi.mocked(threadsApi.list).mockResolvedValue({
+      discussions: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    });
+
+    renderWithProviders(<ThreadsList />, { initialEntries: ["/TC/discussions"] });
+
+    expect(await screen.findByRole("button", { name: /board view/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /threads view/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /list view/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /map view/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /graph view/i })).not.toBeInTheDocument();
+  });
+
+  it("defaults to Board while allowing Threads view", async () => {
+    const user = userEvent.setup();
+    searchParamsMock.params = new URLSearchParams();
+    vi.mocked(threadsApi.list).mockResolvedValue({
+      discussions: [makeThread({ id: "thread-1", title: "Thread one" })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    renderWithProviders(<ThreadsList />, { initialEntries: ["/TC/discussions"] });
+
+    expect(await screen.findByTestId("thread-board")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /threads view/i }));
+    expect(searchParamsMock.set).toHaveBeenCalled();
+  });
+
+  it("renders rectangular list cards with discussion metadata", async () => {
+    vi.mocked(threadsApi.list).mockResolvedValue({
+      discussions: [
+        makeThread({
+          id: "thread-card",
+          title: "Clarify pricing page objections",
+          lastEntryInputType: "transcript",
+          scopeType: "department",
+          scopeName: "Growth",
+          visibility: "company",
+          pendingItemCount: 2,
+          summaryText: "Customer call surfaced confusion around pricing proof.",
+          summaryNext: "Approve extracted objections before creating pricing tasks.",
+          participantPreview: [
+            { principalType: "user", principalId: "user-1", name: "TK", role: "owner" },
+            { principalType: "agent", principalId: "agent-1", name: "Revenue Agent", role: "worker" },
+          ],
+          participantCount: 2,
+        }),
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    renderWithProviders(<ThreadsList />, { initialEntries: ["/TC/discussions"] });
+
+    await waitFor(() => {
+      expect(screen.getByText("Clarify pricing page objections")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Customer call surfaced confusion around pricing proof.")).toBeInTheDocument();
+    expect(screen.getByText("Approve extracted objections before creating pricing tasks.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Source: Transcript")).toBeInTheDocument();
+    expect(screen.getByLabelText("Department: Growth")).toBeInTheDocument();
+    expect(screen.getByLabelText("Company visibility")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 items need review")).toBeInTheDocument();
   });
 
   // Fix 5 — RoutingDialControl canEdit gated to founder role

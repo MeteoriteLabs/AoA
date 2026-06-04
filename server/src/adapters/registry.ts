@@ -48,12 +48,6 @@ import {
   SANDBOX_INSTALL_COMMAND as cursorSandboxInstallCommand,
 } from "@armyofagents/adapter-cursor-local";
 import {
-  execute as cursorCloudExecute,
-  testEnvironment as cursorCloudTestEnvironment,
-  sessionCodec as cursorCloudSessionCodec,
-  getConfigSchema as getCursorCloudConfigSchema,
-} from "@armyofagents/adapter-cursor-cloud/server";
-import {
   agentConfigurationDoc as cursorCloudAgentConfigurationDoc,
 } from "@armyofagents/adapter-cursor-cloud";
 import {
@@ -174,6 +168,48 @@ function normalizeServerAdapter(adapter: ServerAdapterModule): ServerAdapterModu
   return sessionManagement ? { ...adapter, sessionManagement } : adapter;
 }
 
+function normalizeCursorCloudSession(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const cursorAgentId =
+    asString(record.cursorAgentId, "").trim() ||
+    asString(record.agentId, "").trim() ||
+    asString(record.sessionId, "").trim();
+  if (!cursorAgentId) return null;
+  const latestRunId = asString(record.latestRunId ?? record.runId, "").trim();
+  const runtime = asString(record.runtime, "cloud").trim() || "cloud";
+  const envType = asString(record.envType, "").trim();
+  const envName = asString(record.envName, "").trim();
+  const repos = Array.isArray(record.repos)
+    ? record.repos
+        .map((entry) =>
+          typeof entry === "object" && entry !== null && !Array.isArray(entry)
+            ? entry as Record<string, unknown>
+            : null
+        )
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+        .map((entry) => {
+          const url = asString(entry.url, "").trim();
+          const startingRef = asString(entry.startingRef, "").trim();
+          const prUrl = asString(entry.prUrl, "").trim();
+          return {
+            url,
+            ...(startingRef ? { startingRef } : {}),
+            ...(prUrl ? { prUrl } : {}),
+          };
+        })
+        .filter((entry) => entry.url.length > 0)
+    : [];
+  return {
+    cursorAgentId,
+    ...(latestRunId ? { latestRunId } : {}),
+    runtime,
+    ...(envType ? { envType } : {}),
+    ...(envName ? { envName } : {}),
+    ...(repos.length > 0 ? { repos } : {}),
+  };
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -247,16 +283,29 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const cursorCloudAdapter: ServerAdapterModule = {
   type: "cursor_cloud",
-  execute: cursorCloudExecute,
-  testEnvironment: cursorCloudTestEnvironment,
-  sessionCodec: cursorCloudSessionCodec,
+  execute: async (ctx) => {
+    const { execute } = await import("@armyofagents/adapter-cursor-cloud/server");
+    return execute(ctx);
+  },
+  testEnvironment: async (ctx) => {
+    const { testEnvironment } = await import("@armyofagents/adapter-cursor-cloud/server");
+    return testEnvironment(ctx);
+  },
+  sessionCodec: {
+    deserialize: normalizeCursorCloudSession,
+    serialize: normalizeCursorCloudSession,
+    getDisplayId: (serialized) => normalizeCursorCloudSession(serialized)?.cursorAgentId as string | null,
+  },
   models: [],
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: cursorCloudAgentConfigurationDoc,
-  getConfigSchema: async () => getCursorCloudConfigSchema(),
+  getConfigSchema: async () => {
+    const { getConfigSchema } = await import("@armyofagents/adapter-cursor-cloud/server");
+    return getConfigSchema();
+  },
 };
 
 const openclawAdapter: ServerAdapterModule = {

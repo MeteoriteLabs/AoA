@@ -855,13 +855,13 @@ function MemoryCard({
   return (
     <div
       className={cn(
-        "rounded-lg border border-border bg-card",
+        "flex w-full items-start gap-3 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:bg-accent/30",
         selected && "ring-2 ring-primary/30 border-primary/50",
       )}
     >
       <button
         type="button"
-        className="flex w-full items-start gap-3 p-3 text-left hover:bg-accent/30 transition-colors"
+        className="min-w-0 flex-1 text-left"
         onClick={onSelect}
       >
         <div className="flex-1 min-w-0">
@@ -965,33 +965,30 @@ function MemoryCard({
             </div>
           )}
         </div>
-
-        {item.status === "pending" && !identityLocked && (
-          <div
-            className="flex items-center gap-1 shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 w-7 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
-              onClick={onApprove}
-              title="Approve"
-            >
-              <Check className="h-4 w-4" />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30"
-              onClick={onReject}
-              title="Reject"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        )}
       </button>
+
+      {item.status === "pending" && !identityLocked && (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+            onClick={onApprove}
+            title="Approve"
+          >
+            <Check className="h-4 w-4" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30"
+            onClick={onReject}
+            title="Reject"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

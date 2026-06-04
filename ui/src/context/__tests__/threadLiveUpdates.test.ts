@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { threadEventToInvalidations } from "../LiveUpdatesProvider";
+import { queryKeys } from "../../lib/queryKeys";
 
 // Plan 7 Task 4: a thread.* live event maps to the React Query keys to
 // invalidate (refetch-on-poke). RBAC stays in REST — invalidation just refetches.
@@ -11,8 +12,11 @@ describe("threadEventToInvalidations", () => {
     );
     expect(keys).toContainEqual(["thread", "co1", "t1"]);
     expect(keys).toContainEqual(["threads", "co1"]);
+    expect(keys).toContainEqual(queryKeys.threads.list("co1"));
     // also invalidates the concrete detail key the ThreadDetail page uses
-    expect(keys).toContainEqual(["threads", "co1", "t1"]);
+    expect(keys).toContainEqual(queryKeys.threads.detail("co1", "t1"));
+    expect(keys).toContainEqual(queryKeys.discussions.list("co1"));
+    expect(keys).toContainEqual(queryKeys.discussions.detail("co1", "t1"));
   });
 
   it("maps thread.entry.created the same way", () => {
@@ -22,6 +26,7 @@ describe("threadEventToInvalidations", () => {
     );
     expect(keys).toContainEqual(["thread", "coX", "t9"]);
     expect(keys).toContainEqual(["threads", "coX"]);
+    expect(keys).toContainEqual(queryKeys.threads.list("coX"));
   });
 
   it("returns no keys when the event has no threadId", () => {
