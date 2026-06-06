@@ -26,6 +26,9 @@ describe("buildMcpBridgeSpec", () => {
     // Mirror cli-mode.ts's exact conditional-omission for DATABASE_URL so the
     // assertion is robust to its presence/absence in the test environment.
     const expectedEnv: Record<string, string> = {
+      // Routes the bridge's pino logger to stderr so a stray log can't corrupt
+      // the JSON-RPC stdout stream (see middleware/logger.ts + the pino-leak fix).
+      AOA_LOG_STDOUT: "0",
       AOA_SESSION_COMPANY_ID: "c",
       AOA_SESSION_USER_ID: "u",
       AOA_SESSION_USER_ROLE: "founder",
