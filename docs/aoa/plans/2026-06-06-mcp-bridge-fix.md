@@ -10,6 +10,18 @@
 
 ---
 
+## Refinements applied (plan-eng-review, 2026-06-06) — READ FIRST, they amend the tasks below
+
+- **F1 — Split Task 3 into 3a then 3b (fix-first, refactor-second; Beck's "make the change easy, then make the easy change").**
+  - **Task 3a:** implement the lifecycle fix on the **existing hand-rolled readline loop** — create `bridge-lifecycle.ts` (`createInFlightCounter` + `startParentWatchdog`), stop calling `process.exit(0)` on `rl.on("close")`, increment/decrement `inFlight` around the `tools/call` await, start the watchdog. **The Task 2 repro test goes GREEN here, with no SDK yet.** Commit.
+  - **Task 3b:** swap the transport to the SDK `Server` + `StdioServerTransport` (the code shown in old Task 3 Step 2), keeping the exact lifecycle behavior. **Repro + all unit tests stay GREEN — this is a structural-only, green-to-green refactor.** Commit. (If 3b regresses anything, the bug fix from 3a is already isolated and shippable.)
+- **F2 — Loud-failure uses the EXISTING error channel, structured-events-first.** Do NOT add a `transportFailure` field to the parse result. Instead set **`errorCode: "MCP_TRANSPORT_FAILED"`** (+ `errorMessage`, `errorMeta`) on the adapter's `AdapterExecutionResult` (the channel already exists — `packages/adapter-utils/src/types.ts:112-114`). `runner.ts` checks `adapterResult.errorCode === "MCP_TRANSPORT_FAILED"` → mark run `failed`. Feed `detectTransportFailure` the CLI's **structured error events first**; use raw stdout/stderr only as a **tight** fallback so a thread whose *content* mentions "transport closed" cannot false-positive the run to failed. (Replaces Task 9's `transportFailure`-field approach.)
+- **F3 — stdout discipline: redirect `console.*` only; do NOT guard `process.stdout.write`.** The SDK writes protocol frames directly to `process.stdout` — guarding/throwing on it would break the SDK. Task 5 implements `installStdoutGuard` as a `console.*`→stderr redirect ONLY. **Delete Task 5's "bare `process.stdout.write` of non-protocol throws" assertion** — keep just the "console.log goes to stderr, frames intact" assertion.
+- **F4 — Task 0 also answers "is the watchdog even needed?"** In the probe, additionally determine whether the OS **already reaps the bridge** when the spawning CLI dies (process-group / Windows Job Object). If yes, the PPID watchdog is a thin backstop. If no, add **`stdin-EOF + grace + inFlight===0`** as a second termination signal, because PPID alone may point at an intermediate `tsx`/`.cmd` process, not the logical MCP client. Record the verdict.
+- **F5 — Integration test (Task 2) asserts the response ARRIVES, not its content.** The assertion is `ids.toContain(3)` (a result OR `isError` both count) so it passes without a seeded thread. Document the `AOA_TEST_DATABASE_URL` requirement and **skip-loudly** (logged reason) if no DB is reachable, rather than failing opaquely.
+
+---
+
 ## File Structure
 
 | File | Responsibility | Change |
@@ -172,7 +184,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 3: SDK transport + lifecycle (make the repro pass)
+## Task 3: lifecycle fix + SDK transport (make the repro pass)
+
+> **⚠️ F1 (plan-eng-review): do this in TWO commits.** **3a:** lifecycle fix on the EXISTING readline loop (`createInFlightCounter` + watchdog + stop exiting on `rl.on("close")`) → Task 2 repro GREEN, no SDK. Commit. **3b:** swap the transport to SDK `Server`+`StdioServerTransport` (the code in Step 2 below), keeping the lifecycle behavior → repro + units stay GREEN (structural-only refactor). Commit. Never do the structural swap and the behavioral fix in one commit.
 
 **Files:** Create `server/src/services/internal-agent/bridge-lifecycle.ts`; Modify `server/src/services/internal-agent/mcp-bridge.ts` (replace `startBridge`'s readline loop; keep everything above it).
 
@@ -645,3 +659,35 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Type consistency:** `createInFlightCounter`/`startParentWatchdog` (Task 3) used identically in Task 7. `detectTransportFailure` signature (Task 9 Step 3) matches its test (Step 1) and the adapter call sites (Step 5). `installStdoutGuard` (Task 5) returns a restore fn, used so in its test. `handleToolCall`/`createToolCallHandler`/`buildToolListResponse` names match `mcp-bridge.ts`.
 
 **Open dependency:** Task 0's verdict (A/B) feeds Task 3's lifecycle comment — default (B) is safe and is what Task 3 implements; (A) only adds an optional drain-then-exit, noted inline.
+
+---
+
+## NOT in scope (deferred, with rationale)
+
+- Migrating the **inbound** HTTP MCP server (`server/src/mcp/server.ts`) onto the SDK — separate, larger project; this plan only fixes the outbound stdio bridge.
+- Auto-retry of a run on transport failure / new UI surface beyond the run record — YAGNI for the fix; the run record + `failed` status is enough to make it loud.
+- The other discussions findings (F1 onboarding crew-provider ignored, F2 Reviewer not seeded, F4 codex default model, hop-cap UX) — separate triage, unrelated to the bridge.
+
+## What already exists (reused, not rebuilt)
+
+- The whole **tool layer** (`createToolCallHandler`, `executeAndFormat`, `buildToolListResponse`, `filterAuthorizedToolsForContext`, `tool-registry`, `authorize-tool`) — unchanged; only the transport swaps.
+- `AdapterExecutionResult.errorCode/errorMessage/errorMeta` (`packages/adapter-utils/src/types.ts:112-114`) — the loud-failure signal rides this existing channel (F2), not a new field.
+- Per-adapter parse (`parseCodexJsonl`, `parseOpenCodeJsonl`, `parseGeminiJsonl`) — extended to feed the shared detector, not duplicated.
+- `buildMcpBridgeSpec` (tsx-for-.ts / node-for-.js) — contract unchanged.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | n/a (bug fix, not a product change) |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES → RESOLVED | spec cross-model reviewed; "SDK doesn't drain on EOF" correction + hardening folded in |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 5 findings (F1–F5), 0 critical, all applied to the plan |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | n/a (backend protocol work) |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | n/a |
+
+- **CODEX:** independently reviewed the spec against the v1 SDK source; surfaced the key correction (SDK does not implement graceful EOF-drain) — folded into the design before the plan was written.
+- **CROSS-MODEL:** codex (spec) + claude (spec + plan) converged. No unresolved tension — both agree the lifecycle drain is the real fix and the SDK is the transport foundation.
+- **UNRESOLVED:** 0.
+- **FAILURE MODES:** the one silent-failure mode (transport-closed → `succeeded`) is now covered by loud-failure detection (Task 9) + its regression test; no untested-AND-unhandled-AND-silent path remains.
+- **PARALLELIZATION:** sequential — every task touches the bridge or its directly-coupled adapters/runner; no independent lanes.
+- **VERDICT: ENG CLEARED** (+ codex outside-voice on the spec) — ready to implement. The EOF-mid-call repro (Task 2) is the gate: it must fail on current code and pass after Task 3a.
