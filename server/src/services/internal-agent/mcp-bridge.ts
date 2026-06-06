@@ -161,6 +161,20 @@ export function installStdoutGuard(): () => void {
 
 export async function startBridge(): Promise<void> {
   installStdoutGuard();
+
+  // ── Global fatal handlers (loud, not silent) ──────────────────────────────
+  // Per-tool errors are already isolated in executeAndFormat — a process-level
+  // unhandledRejection or uncaughtException is genuinely unexpected. Log loudly
+  // to stderr so it appears in the parent CLI's process log; do NOT swallow it.
+  process.on("unhandledRejection", (reason) => {
+    process.stderr.write(`MCP Bridge fatal unhandledRejection: ${String((reason as any)?.stack ?? reason)}\n`);
+  });
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`MCP Bridge fatal uncaughtException: ${(err as any)?.stack ?? err}\n`);
+    // Per-tool errors are already isolated in executeAndFormat; a process-level
+    // one is genuinely unexpected — log it loudly rather than swallow it.
+  });
+
   const companyId = process.env.AOA_SESSION_COMPANY_ID;
   const userId = process.env.AOA_SESSION_USER_ID;
   const userRole = process.env.AOA_SESSION_USER_ROLE;
@@ -266,6 +280,13 @@ export async function startBridge(): Promise<void> {
   });
 
   const transport = new StdioServerTransport();
+  // Wire transport-level errors to stderr for observability. These are malformed/
+  // partial frames, EPIPE, etc. — not tool errors, which are isolated separately.
+  // Do NOT call process.exit here: a parse error carries id:null so a JSON-RPC
+  // reply is useless to the client; logging is the right response level.
+  transport.onerror = (err) => {
+    process.stderr.write(`MCP Bridge transport error: ${(err as any)?.stack ?? String(err)}\n`);
+  };
   await server.connect(transport);
 
   // LIFECYCLE (branch B): do NOT exit on stdin EOF. The parent-liveness watchdog
