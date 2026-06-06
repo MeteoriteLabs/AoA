@@ -523,6 +523,17 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Task 9: Loud-failure detection (shared helper + 3 adapters + runner)
 
+> **IMPLEMENTATION NOTE (landed server-side — see commit `24773eeb9`):** the
+> three adapter `parse.ts` files were NOT modified. `packages/adapters/*` cannot
+> import from `server/src`, so detection was centralized in the pure
+> `buildAoaRunResultFromAdapter` (`aoa-run-result.ts`), fed by the adapter
+> result's `errorMessage` + raw `resultJson.stdout/stderr` that already flow to
+> the runner. This is lower-blast-radius (zero adapter changes) and more robust
+> (scans the raw output where the marker actually lands even when an adapter's
+> parse misses it). The runner passes `{ mcpAttempted: !isClaudeFamily,
+> markerSupported: adapterType !== "gemini_local" }`. Steps below describe the
+> original per-adapter plan; the helper + tests are as written.
+
 **Files:** Create `transport-failure.ts`; Modify `parse.ts` ×3; Modify `runner.ts`; Tests.
 
 - [ ] **Step 1: Write the helper unit test** `server/src/services/internal-agent/__tests__/transport-failure.test.ts`:
