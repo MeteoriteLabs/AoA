@@ -41,34 +41,37 @@ One file, three providers. The fix must keep all three working (test the shared 
 
 ## Design
 
-### A. Transport: official MCP SDK
+### A. Transport: official MCP SDK (foundation) — but NOT the correctness mechanism
 
 Replace the readline/`process.stdout.write`/`process.exit` loop in `mcp-bridge.ts` with `@modelcontextprotocol/sdk`:
 - `Server` (`@modelcontextprotocol/sdk/server/index.js`) + `StdioServerTransport` (`…/server/stdio.js`).
 - Register `ListToolsRequestSchema` → `buildToolListResponse(filterAuthorizedToolsForContext(...))` and `CallToolRequestSchema` → existing `handleToolCall`.
 - **Keep the entire tool layer unchanged:** `createToolRegistry`, `executeTool`, `authorize-tool`, env-derived `ToolContext`, `createToolCallHandler`. Only the transport/protocol switch is replaced. `createToolCallHandler` and `buildToolListResponse` stay exported (existing unit tests keep passing).
-- The SDK owns framing, version negotiation, and request→response lifecycle: stdin EOF no longer drops an in-flight response (stdout stays open; the handler completes and writes). New dependency: `@modelcontextprotocol/sdk` (vet version/license/size in the plan; pin it).
+- **Pin v1 `@modelcontextprotocol/sdk`** (NOT the newer split `@modelcontextprotocol/server`). Verify ESM export-maps resolve under BOTH `tsx mcp-bridge.ts` (codex) and `node mcp-bridge.js` (opencode). Verify our `McpToolResult` shape passes the SDK's (stricter) result-schema validation.
 
-### B. Lifecycle + parent-liveness watchdog
+> **Correction from cross-model review (codex checked the v1 SDK source):** the SDK avoids the explicit `process.exit(0)`, but it does **NOT** implement graceful "drain in-flight then close" on stdin EOF. The SDK is the maintained protocol/framing foundation; it is **not, by itself, a fix for the EOF-mid-call drop.** The actual fix is the explicit lifecycle in §B, proven by the repro test (§Tests). Do not assume `transport.onclose` fires on EOF or that the SDK drains for us.
 
-The SDK does not `process.exit` on stdin end. We add an explicit watchdog so the bridge exits when its spawning CLI dies (no orphans — the piled-up codex.exe), but **never mid-call**:
-- Poll/observe the parent process (PPID liveness) on an interval; on parent death, close the transport + exit cleanly.
-- On `transport.onclose` (genuine session end), exit 0 **after** in-flight handlers settle.
-- Never call `process.exit` from a stdin event.
+### B. Lifecycle: explicit in-flight drain + parent-liveness watchdog (the real fix)
+
+The correctness mechanism, independent of the transport:
+- **Track in-flight `tools/call` count** (`inFlight`), incremented on dispatch, decremented on response write.
+- **On stdin EOF:** do NOT `process.exit`. **Drain** — wait for `inFlight === 0` (the in-flight handlers complete and write to stdout, which stays open) — then close the transport and exit 0. Never exit from a stdin event while `inFlight > 0`.
+- **Plan task #0 (linchpin):** empirically determine the client's stdin lifecycle — does codex/opencode/gemini **half-close stdin per request-batch** (so EOF is NOT session-end and the bridge must keep serving) or **hold stdin open for the whole session** (EOF == session end → drain-then-exit is correct)? Instrument a real run (count `tools/call` per bridge spawn vs. when stdin EOFs). This decision sets whether EOF triggers drain-then-exit or just drain-and-keep-serving.
+- **Watchdog (parent liveness), with codex's Windows hazards baked in:** PPID polling is fragile on Windows — `tsx`/`.cmd`/shell wrappers and reparenting mean the *logical* MCP client may not be the direct parent, and PID reuse exists. Rules: **never terminate while `inFlight > 0`**; use a grace window; treat a failed liveness probe as **"unknown," not "dead"** (require N consecutive failures). Goal: no orphaned bridges (the piled-up codex.exe) without ever killing mid-call. Verify behavior for remote/sandbox execution targets too.
 
 ### C. stdout discipline + crash isolation
 
-- All bridge logging → **stderr** only (stdout reserved for protocol). Add a one-line guard/assert in dev that nothing else writes stdout.
-- Install `process.on('unhandledRejection')` + `process.on('uncaughtException')` → log to stderr, do **not** exit.
-- Wrap every tool handler (incl. the approval path) so a throw becomes an `isError` tool result, never a process crash.
+- **Actively redirect** `console.*` → **stderr** and guard `process.stdout.write` so a tool's stray `console.log` cannot corrupt the protocol frame. (Per codex: "SDK owns stdout" is necessary but NOT sufficient — stray writes still hit `process.stdout` unless intercepted.) stdout is reserved for protocol only.
+- **Crash isolation lives around the request handlers:** every tool handler (incl. the approval path at `mcp-bridge.ts:~98,109`) wrapped so a throw becomes an `isError` tool result, never a process crash.
+- **Global handlers:** `process.on('unhandledRejection'|'uncaughtException')` → **log fatally to stderr**. Do NOT blanket-swallow-and-continue (a truly-uncaught process-level exception can mean corrupted state; per-tool failures are already isolated above, so a global one is genuinely unexpected and should be loud — log + let the process end cleanly rather than limp on corrupted).
 
 ### D. Loud failure (detect → fail the run → surface)
 
-Today a run whose every MCP call failed still reports `succeeded`. Detection signal = the **CLI's structured output stream**, not agent prose:
-- Each CLI adapter already parses its run output (`codex` JSONL via `parse.ts`; opencode/gemini equivalents). Extend the parse to detect **MCP tool-call transport/connection failures** (e.g. `Transport closed`, MCP server disconnect, tool-call error events) and count them.
-- If a run had MCP tool-call attempts and ≥1 (configurable threshold) failed with a transport/connection-class error, set the adapter result to **failed** with a clear `errorMessage` ("AoA MCP bridge transport failed: <detail>") instead of success.
-- `runner.ts` propagates that to the `heartbeat_runs` row (status `failed` + error), so it shows in the run record/UI. **No auto-retry, no new UI surface** beyond the existing run record (per decision).
-- Shared helper for the detection (one implementation, used by the three adapters' parse paths) to avoid drift.
+Today a run whose every MCP call failed still reports `succeeded`. Detection feeds a **shared helper both the parsed events AND the raw stdout/stderr** (per codex — the marker can appear in any of them depending on CLI/version):
+- Detect **MCP transport/connection-class failures only** (`Transport closed`, MCP server disconnect, tool-call transport errors) — explicitly **distinguish from a tool legitimately returning `isError`** (a real tool error must NOT mark the run failed, or we cry wolf). Count transport-class failures.
+- Per-provider fidelity (verified by codex): codex JSONL has structured `error`/`turn.failed`; opencode inspects `tool_use` errors in `parseOpenCodeJsonl` — both plausible. **gemini's stream is broader / less MCP-specific → higher false-negative risk.** Where a provider exposes **no clean transport marker**, record an explicit **"unknown transport status"** and document the gap — do NOT fake coverage.
+- If a run had MCP tool-call attempts and ≥1 failed with a transport-class error, set the adapter result to **failed** with `errorMessage` ("AoA MCP bridge transport failed: <detail>"). `runner.ts` propagates → `heartbeat_runs.status = failed` + error, surfaced in the run record/UI. **No auto-retry, no new UI surface** beyond the run record (per decision).
+- One shared detection helper, fed by all three adapters' parse paths (raw + parsed), to avoid drift.
 
 ### E. Cross-provider safety
 
@@ -89,13 +92,21 @@ The bridge change is shared by codex/opencode/gemini and must be verified for al
 ## Test matrix (all types — explicit)
 
 1. **Unit (bridge handler):** `createToolCallHandler` responds for known tools; unknown tool → `isError`; approval-path throw → `isError` result (process does NOT exit). Pure, no subprocess.
-2. **Unit (stdout discipline):** a tool whose handler writes to stdout does not corrupt the protocol stream (SDK owns stdout; assert frames intact).
-3. **Unit (watchdog):** simulated parent death → bridge closes transport + exits; parent alive → stays up.
-4. **Integration (THE regression for this bug):** spawn the real bridge subprocess (both `tsx …ts` and `node …js` invocations); send `initialize`→`tools/list`→`tools/call` then close stdin immediately; **assert the `tools/call` response lands** (the exact failing repro, automated).
-5. **Unit (loud-failure detection):** given a parsed CLI run with MCP transport-failure events → detection returns failed+message; given a clean run → success. Per-adapter parse hooked to the shared helper.
-6. **Cross-provider E2E (gated live):** a real crew agent posts a thread entry end-to-end through the bridge for **codex_local, opencode_local, gemini_local**. Marked gated/live (each CLI must be installed/authed); when a CLI is unavailable the test **skips loudly with a logged reason** (no silent skip). codex is confirmed available; opencode/gemini gated.
-7. **Regression (loud failure):** a run whose bridge calls all fail with transport errors → `heartbeat_runs.status = failed` (not `succeeded`), with the error surfaced.
-8. **Gate:** `pnpm -r typecheck`, server vitest suite green, no regression in existing `mcp-bridge` / adapter tests (`codex-config-toml.test.ts`, `opencode-config-json.test.ts`, etc.).
+2. **Unit (stdout discipline):** a tool handler that calls `console.log` / writes to stdout does NOT corrupt the protocol stream (assert the redirect/guard works and frames stay intact).
+3. **Unit (watchdog):** parent alive → stays up; N consecutive failed liveness probes → terminates; **never terminates while `inFlight > 0`**; failed probe once → treated as "unknown," not "dead."
+4. **Integration (THE regression for this bug):** spawn the real bridge subprocess (BOTH `tsx …ts` and `node …js`); `initialize`→`tools/list`→`tools/call` then close stdin immediately; **assert the `tools/call` response lands.** Fails on old code, passes on new. This is the gate for the whole fix.
+5. **Integration (lifecycle edge cases — codex's gaps):**
+   - **Two in-flight calls at EOF**, one slow + one failing → both responses land (or fail) before exit; neither dropped.
+   - **Concurrent / out-of-order** `tools/call` (overlapping) → each response matches its `id`; ordering safe.
+   - **Large tool payload** (backpressure over the SDK's stdout buffer) → full frame delivered, not truncated.
+   - **Malformed JSON / partial frame before EOF** → parse error response (or clean ignore), no crash.
+   - **`notifications/initialized`** handled (no response); **protocol-version negotiation** with the client succeeds.
+   - **EPIPE on send** (client closed stdout) → bridge logs + exits cleanly, no unhandled crash.
+6. **Unit (loud-failure detection):** transport-class failure (in parsed events OR raw stdout/stderr) → failed+message; a legitimate tool `isError` → **NOT** marked failed (no false positive); provider with no clean marker → "unknown transport status." Per-adapter (codex/opencode/gemini) fixtures.
+7. **Cross-provider E2E (gated live):** a real crew agent posts a thread entry end-to-end through the bridge for **codex_local, opencode_local, gemini_local**. Gated/live (each CLI must be installed/authed); unavailable CLI → **skip loudly with a logged reason** (no silent skip). codex confirmed available; opencode/gemini gated.
+8. **Regression (loud failure):** a run whose bridge calls all fail with transport errors → `heartbeat_runs.status = failed` (not `succeeded`), error surfaced.
+9. **Compat:** existing `mcp-bridge` / adapter tests still green (`codex-config-toml.test.ts`, `opencode-config-json.test.ts`, the existing `createToolCallHandler`/`buildToolListResponse` unit tests). SDK result-shape compatibility asserted.
+10. **Gate:** `pnpm -r typecheck` + full server vitest suite green.
 
 ## Rollout
 
@@ -109,12 +120,16 @@ The bridge change is shared by codex/opencode/gemini and must be verified for al
 - Auto-retry of a run on transport failure; new UI banners beyond the run record.
 - The unrelated discussions findings (F1 onboarding crew-provider ignored, F2 Reviewer not seeded, F4 codex default model, hop-cap UX, etc.) — separate triage.
 
-## Open risks / verification points (for plan-eng-review)
+## Open risks / verification points (cross-model review: codex + claude)
 
-- **SDK launch under `tsx …ts` (codex) and `node …js` (opencode):** confirm `StdioServerTransport` works for both invocations; the SDK must not assume a build step.
-- **Windows specifics:** stdin half-close → SDK `onclose` timing; watchdog PPID liveness on Windows.
-- **Loud-failure signal fidelity:** each CLI reports MCP errors differently (codex JSONL vs opencode/gemini) — confirm a reliable transport-failure marker exists in each stream; if a provider doesn't expose one, document the gap rather than fake coverage.
-- **New dependency:** `@modelcontextprotocol/sdk` version pin, transitive size, license, and whether it bundles cleanly in the server build / npm distribution.
+- **[Task #0 — linchpin] Client stdin lifecycle:** does the CLI half-close stdin per request-batch (EOF ≠ session end → keep serving) or hold it open for the session (EOF == end → drain-then-exit)? Resolve empirically before locking §B. Everything downstream depends on this.
+- **SDK does NOT drain on EOF by itself** (codex verified against v1 source) — the drain lifecycle in §B is mandatory and explicit; the repro test (§Tests #4) is the proof, not the SDK.
+- **SDK package identity:** pin **v1 `@modelcontextprotocol/sdk`**, NOT the newer split `@modelcontextprotocol/server`. Verify ESM export-maps resolve under `tsx .ts` AND `node .js`. Verify `McpToolResult` passes the SDK's stricter result-schema validation (could reject slightly-noncompliant shapes).
+- **Watchdog on Windows:** PPID may not be the logical MCP client (`tsx`/`.cmd`/shell wrappers reparent; PID reuse). Never kill while `inFlight>0`; grace + N-consecutive-failures before "dead"; verify remote/sandbox targets.
+- **stdout discipline is active, not passive:** must redirect/guard `process.stdout.write` (a tool's `console.log` still corrupts frames otherwise).
+- **Loud-failure fidelity:** feed parsed events + raw stdout/stderr; gemini's stream is broad (false-negative risk) → "unknown transport status" when no clean marker; never flag a legit tool `isError` as a transport failure.
+- **Verify-in-branch:** confirm `claude_local` truly does not use this bridge on `fix/codex-mcp-bridge` (runner still references `buildMcpConfig` + `--mcp-config`) — guard the "claude unaffected" claim.
+- **New dependency hygiene:** `@modelcontextprotocol/sdk` license, transitive size, and clean bundling in the server build / npm distribution.
 
 ## Success criteria
 
