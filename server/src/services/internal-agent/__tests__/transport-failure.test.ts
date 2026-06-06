@@ -8,6 +8,10 @@ describe("detectTransportFailure", () => {
   it("flags from a parsed event message", () => {
     expect(detectTransportFailure({ parsedErrorMessages: ["every AoA MCP call failed with Transport closed"], rawStdout: "", rawStderr: "" }).failed).toBe(true);
   });
+  it("flags codex's rmcp transport read/parse error (broken-bridge signature)", () => {
+    const stderr = "rmcp::transport::async_rw: Error reading from stream: serde error expected ',' or ']' at line 1 column 4";
+    expect(detectTransportFailure({ parsedErrorMessages: [], rawStdout: "", rawStderr: stderr, mcpAttempted: true, markerSupported: true }).failed).toBe(true);
+  });
   it("does NOT flag a legitimate tool isError", () => {
     expect(detectTransportFailure({ parsedErrorMessages: ["Tool execution error: validation failed"], rawStdout: "", rawStderr: "" }).failed).toBe(false);
   });
