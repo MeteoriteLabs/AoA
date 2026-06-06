@@ -29,4 +29,34 @@ describe("buildAoaRunResultFromAdapter — loud transport-failure", () => {
     expect(r.status).toBe("failed");
     expect(r.errorMessage).toBe("boom");
   });
+
+  it("detects a transport marker in stderr-only (not just stdout)", () => {
+    const r = buildAoaRunResultFromAdapter(
+      { exitCode: 0, errorMessage: null, resultJson: { stdout: "", stderr: "MCP error: Transport closed" } },
+      { mcpAttempted: true, markerSupported: true },
+    );
+    expect(r.status).toBe("failed");
+    expect(r.errorMessage).toMatch(/transport failed/i);
+  });
+
+  it("does NOT detect a gemini failure when resultJson is a parsed event object (no string stdout/stderr) — accepted gap", () => {
+    // gemini sets resultJson = parsed.resultEvent (an object), so there are no string
+    // stdout/stderr to scan; markerSupported:false → unknown → not failed. Documents the gap.
+    const r = buildAoaRunResultFromAdapter(
+      { exitCode: 0, errorMessage: null, resultJson: { type: "result", isError: false, summary: "done" } },
+      { mcpAttempted: true, markerSupported: false },
+    );
+    expect(r.status).toBe("succeeded");
+  });
+
+  it("errs toward loud-fail: a marker anywhere in raw output fails the run (accepted v1 tradeoff)", () => {
+    // DELIBERATE: favors catching real transport regressions over avoiding the rare
+    // false-positive where an agent merely discusses "transport closed". Documented in
+    // transport-failure.ts. A future telemetry-based anchor can tighten this.
+    const r = buildAoaRunResultFromAdapter(
+      { exitCode: 0, errorMessage: null, resultJson: { stdout: "agent note: the transport closed mid-call, retried", stderr: "" } },
+      { mcpAttempted: true, markerSupported: true },
+    );
+    expect(r.status).toBe("failed");
+  });
 });
