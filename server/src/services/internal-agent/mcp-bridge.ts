@@ -1,5 +1,8 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 import type { CommanderToolPermissions } from "@armyofagents/shared";
+// Type-only import (erased at compile time → no runtime side effect, preserves
+// the side-effect-free module load for consumers of the tool-layer exports).
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { resolveCommanderToolPolicy } from "./authorize-tool.js";
 import { parseCommanderContextScopeJson } from "./context-scope.js";
 import { filterAuthorizedToolsForContext } from "./tool-registry.js";
@@ -142,8 +145,6 @@ export function buildToolListResponse(tools: AgentTool[]) {
 // ── Main (runs when executed as script) ─────────────────────────────────────
 
 export async function startBridge(): Promise<void> {
-  const readline = await import("node:readline");
-
   const companyId = process.env.AOA_SESSION_COMPANY_ID;
   const userId = process.env.AOA_SESSION_USER_ID;
   const userRole = process.env.AOA_SESSION_USER_ROLE;
@@ -216,69 +217,48 @@ export async function startBridge(): Promise<void> {
   const handleToolCall = createToolCallHandler({ tools, executeTool, toolContext });
 
   const inFlight = createInFlightCounter();
-  const rl = readline.createInterface({ input: process.stdin });
 
-  rl.on("line", async (line: string) => {
-    let request: any;
+  const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+  const { CallToolRequestSchema, ListToolsRequestSchema } = await import(
+    "@modelcontextprotocol/sdk/types.js"
+  );
+
+  const server = new Server(
+    { name: "aoa-mcp-bridge", version: "1.0.0" },
+    { capabilities: { tools: {} } },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const visibleTools = filterAuthorizedToolsForContext(tools, toolContext);
+    return { tools: buildToolListResponse(visibleTools) };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    inFlight.enter();
     try {
-      request = JSON.parse(line);
-    } catch {
-      writeResponse({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null });
-      return;
-    }
-
-    const { method, params, id } = request;
-
-    if (method === "initialize") {
-      writeResponse({
-        jsonrpc: "2.0",
-        result: {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: { listChanged: false }, resources: { subscribe: false } },
-          serverInfo: { name: "aoa-mcp-bridge", version: "1.0.0" },
-        },
-        id,
-      });
-    } else if (method === "tools/list") {
-      const visibleTools = filterAuthorizedToolsForContext(tools, toolContext);
-      writeResponse({
-        jsonrpc: "2.0",
-        result: { tools: buildToolListResponse(visibleTools) },
-        id,
-      });
-    } else if (method === "tools/call") {
-      inFlight.enter();
-      try {
-        const result = await handleToolCall(params.name, params.arguments ?? {});
-        writeResponse({ jsonrpc: "2.0", result, id });
-      } finally {
-        inFlight.leave();
-      }
-    } else if (method === "notifications/initialized") {
-      // No response needed for notifications.
-    } else {
-      writeResponse({
-        jsonrpc: "2.0",
-        error: { code: -32601, message: `Method not found: ${method}` },
-        id,
-      });
+      // handleToolCall already returns { content, isError } and never throws.
+      // That shape IS a valid CallToolResult at runtime (the SDK validates it
+      // against CallToolResultSchema). The cast pins it to that union member
+      // (vs. the task-creation branch) and bridges the named-interface →
+      // index-signature gap; it is sound, not a widening lie.
+      const result = await handleToolCall(req.params.name, req.params.arguments ?? {});
+      return result as CallToolResult;
+    } finally {
+      inFlight.leave();
     }
   });
 
-  rl.on("close", () => {
-    // Do NOT exit on stdin EOF: a client half-close must not terminate the
-    // bridge (that re-opens the EOF-mid-call bug). The parent-liveness watchdog
-    // is the sole terminator; it never fires while a call is in flight.
-  });
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
 
-  // The parent-liveness watchdog is the SOLE terminator: it fires only when the
-  // parent (the spawning provider CLI) is gone, and never while a call is in
-  // flight. This survives a client half-closing stdin per request-batch.
+  // LIFECYCLE (branch B): do NOT exit on stdin EOF. The parent-liveness watchdog
+  // is the SOLE terminator — it fires only when the spawning provider CLI is gone,
+  // and never while a tool call is in flight. This survives a client half-closing
+  // stdin per request-batch and avoids any SDK "response flushed after handler
+  // returns" race: the process stays alive long enough to send the response.
+  // Intentionally NO transport.onclose -> process.exit.
   startParentWatchdog({ getInFlight: () => inFlight.count, onDead: () => process.exit(0) });
-
-  function writeResponse(response: unknown): void {
-    process.stdout.write(JSON.stringify(response) + "\n");
-  }
 }
 
 const isMainModule = process.argv[1]?.endsWith("mcp-bridge.js") ||
