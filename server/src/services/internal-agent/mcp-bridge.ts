@@ -8,6 +8,7 @@ import { filterAuthorizedToolsForContext } from "./tool-registry.js";
 // where the function used to live before it moved to tool-registry.
 export { filterAuthorizedToolsForContext };
 import { runtimeApprovalService } from "./runtime-approvals.js";
+import { createInFlightCounter, startParentWatchdog, drainThenExit } from "./bridge-lifecycle.js";
 
 export function parseCommanderContextScopeEnv() {
   return parseCommanderContextScopeJson(process.env.AOA_COMMANDER_CONTEXT_SCOPE);
@@ -214,6 +215,7 @@ export async function startBridge(): Promise<void> {
   };
   const handleToolCall = createToolCallHandler({ tools, executeTool, toolContext });
 
+  const inFlight = createInFlightCounter();
   const rl = readline.createInterface({ input: process.stdin });
 
   rl.on("line", async (line: string) => {
@@ -245,8 +247,13 @@ export async function startBridge(): Promise<void> {
         id,
       });
     } else if (method === "tools/call") {
-      const result = await handleToolCall(params.name, params.arguments ?? {});
-      writeResponse({ jsonrpc: "2.0", result, id });
+      inFlight.enter();
+      try {
+        const result = await handleToolCall(params.name, params.arguments ?? {});
+        writeResponse({ jsonrpc: "2.0", result, id });
+      } finally {
+        inFlight.leave();
+      }
     } else if (method === "notifications/initialized") {
       // No response needed for notifications.
     } else {
@@ -258,9 +265,18 @@ export async function startBridge(): Promise<void> {
     }
   });
 
+  // Drain-safe stdin EOF: the old code did `process.exit(0)` here immediately,
+  // which dropped the response of a tools/call still awaiting (the EOF-mid-call
+  // bug → "Transport closed"). Instead, DRAIN — exit only once no call is in
+  // flight, so every in-flight response is written first.
   rl.on("close", () => {
-    process.exit(0);
+    drainThenExit({ getInFlight: () => inFlight.count, onDrained: () => process.exit(0) });
   });
+
+  // Backstop for the case where the parent (spawning CLI) dies but stdin never
+  // EOFs: terminate on parent death — and, like the drain, never while a call is
+  // in flight.
+  startParentWatchdog({ getInFlight: () => inFlight.count, onDead: () => process.exit(0) });
 
   function writeResponse(response: unknown): void {
     process.stdout.write(JSON.stringify(response) + "\n");
