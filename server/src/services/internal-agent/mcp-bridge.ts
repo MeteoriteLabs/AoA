@@ -8,7 +8,7 @@ import { filterAuthorizedToolsForContext } from "./tool-registry.js";
 // where the function used to live before it moved to tool-registry.
 export { filterAuthorizedToolsForContext };
 import { runtimeApprovalService } from "./runtime-approvals.js";
-import { createInFlightCounter, startParentWatchdog, drainThenExit } from "./bridge-lifecycle.js";
+import { createInFlightCounter, startParentWatchdog } from "./bridge-lifecycle.js";
 
 export function parseCommanderContextScopeEnv() {
   return parseCommanderContextScopeJson(process.env.AOA_COMMANDER_CONTEXT_SCOPE);
@@ -265,17 +265,15 @@ export async function startBridge(): Promise<void> {
     }
   });
 
-  // Drain-safe stdin EOF: the old code did `process.exit(0)` here immediately,
-  // which dropped the response of a tools/call still awaiting (the EOF-mid-call
-  // bug → "Transport closed"). Instead, DRAIN — exit only once no call is in
-  // flight, so every in-flight response is written first.
   rl.on("close", () => {
-    drainThenExit({ getInFlight: () => inFlight.count, onDrained: () => process.exit(0) });
+    // Do NOT exit on stdin EOF: a client half-close must not terminate the
+    // bridge (that re-opens the EOF-mid-call bug). The parent-liveness watchdog
+    // is the sole terminator; it never fires while a call is in flight.
   });
 
-  // Backstop for the case where the parent (spawning CLI) dies but stdin never
-  // EOFs: terminate on parent death — and, like the drain, never while a call is
-  // in flight.
+  // The parent-liveness watchdog is the SOLE terminator: it fires only when the
+  // parent (the spawning provider CLI) is gone, and never while a call is in
+  // flight. This survives a client half-closing stdin per request-batch.
   startParentWatchdog({ getInFlight: () => inFlight.count, onDead: () => process.exit(0) });
 
   function writeResponse(response: unknown): void {

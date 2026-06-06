@@ -9,30 +9,6 @@ export function createInFlightCounter() {
 }
 
 /**
- * stdin EOF means "no more requests are coming". The bug was exiting *immediately*
- * on EOF, which dropped a response for a tools/call that was still awaiting. The
- * fix is to DRAIN first: poll the in-flight counter and exit only once it reaches
- * 0 (every in-flight response has been written). This is drain-safe — it never
- * terminates while a call is in flight — and, unlike PPID liveness, it does not
- * depend on the spawning process tree (robust across the Windows .cmd-wrapper
- * launch the integration harness uses). Returns a canceller.
- */
-export function drainThenExit(opts: {
-  getInFlight: () => number;
-  onDrained: () => void;
-  intervalMs?: number;
-}) {
-  if (opts.getInFlight() <= 0) { opts.onDrained(); return () => {}; }
-  const timer = setInterval(() => {
-    if (opts.getInFlight() > 0) return; // still draining; keep the response path open
-    clearInterval(timer);
-    opts.onDrained();
-  }, opts.intervalMs ?? 50);
-  if (typeof timer.unref === "function") timer.unref();
-  return () => clearInterval(timer);
-}
-
-/**
  * Terminate the bridge only when its parent (the spawning CLI) is gone — and
  * NEVER while a tool call is in flight. PPID liveness is fragile (Windows
  * reparenting / .cmd wrappers), so a single failed probe is "unknown", not

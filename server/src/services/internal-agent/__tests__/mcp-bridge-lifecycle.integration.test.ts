@@ -61,13 +61,39 @@ function runBridge(input: string, opts: { closeStdinAfterMs: number }): Promise<
       },
       shell: true,
     });
-    let stdout = "", stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    let stdout = "", stderr = "", done = false;
+
+    // The bridge no longer self-exits on stdin EOF (watchdog-only lifecycle), so
+    // we cannot wait for proc.on("close"). Resolve as soon as the id-3 response
+    // lands, then reap the whole process tree. On Windows proc.pid is the shell's
+    // (cmd.exe) pid; proc.kill() only kills cmd.exe and leaves tsx + the bridge
+    // orphaned — taskkill /T kills the tree. On POSIX SIGKILL the shell's group.
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (process.platform === "win32") {
+        if (proc.pid !== undefined) {
+          try { spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"]); } catch { /* best-effort */ }
+        }
+      } else {
+        try { proc.kill("SIGKILL"); } catch { /* best-effort */ }
+      }
+      resolve({ stdout, stderr, code: proc.exitCode ?? null });
+    };
+
+    const sawId3 = () =>
+      stdout.split("\n").some((l) => { try { return JSON.parse(l).id === 3; } catch { return false; } });
+
+    proc.stdout.on("data", (d) => {
+      stdout += d.toString();
+      if (sawId3()) finish();
+    });
     proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("close", (code) => resolve({ stdout, stderr, code }));
+    proc.on("close", finish);
     proc.stdin.write(input);
     setTimeout(() => proc.stdin.end(), opts.closeStdinAfterMs);
-    setTimeout(() => proc.kill(), 30_000);
+    // Safety: resolve + tree-kill even if id 3 never arrives (e.g. bridge wedged).
+    setTimeout(finish, 15_000);
   });
 }
 
