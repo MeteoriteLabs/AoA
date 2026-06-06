@@ -142,9 +142,25 @@ export function buildToolListResponse(tools: AgentTool[]) {
   }));
 }
 
+// ── Stdout Guard ─────────────────────────────────────────────────────────────
+
+/**
+ * Reroute console.* (which writes to stdout) to stderr. The SDK StdioServerTransport
+ * owns process.stdout for protocol frames; a stray console.log would inject a
+ * non-JSON line and corrupt framing. Returns a restore fn (used only in tests;
+ * the bridge process keeps the guard for its whole lifetime).
+ */
+export function installStdoutGuard(): () => void {
+  const orig = { log: console.log, info: console.info, debug: console.debug, warn: console.warn };
+  const toErr = (...a: unknown[]) => { process.stderr.write(a.map(String).join(" ") + "\n"); };
+  console.log = toErr; console.info = toErr; console.debug = toErr; console.warn = toErr;
+  return () => { Object.assign(console, orig); };
+}
+
 // ── Main (runs when executed as script) ─────────────────────────────────────
 
 export async function startBridge(): Promise<void> {
+  installStdoutGuard();
   const companyId = process.env.AOA_SESSION_COMPANY_ID;
   const userId = process.env.AOA_SESSION_USER_ID;
   const userRole = process.env.AOA_SESSION_USER_ROLE;
