@@ -482,7 +482,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // — exhaustively unit-tested in aoa-run-result.test.ts so we don't
     // duplicate the success/failure decision here AND in the catch path.
     const runResult = buildAoaRunResultFromAdapter(adapterResult, {
-      mcpAttempted: !isClaudeFamily,                          // codex/opencode/gemini use the bridge; claude does not
+      mcpAttempted: !isClaudeFamily,                          // claude_local uses native --mcp-config, not the bridge → mcpAttempted:false EXEMPTS it from the transport-failure scan (no false-positives on claude output)
       markerSupported: agent.adapterType !== "gemini_local",  // gemini's error stream lacks a clean MCP marker
     });
     const adapterUsage = runResult.usage;

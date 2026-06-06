@@ -295,7 +295,21 @@ export async function startBridge(): Promise<void> {
   // stdin per request-batch and avoids any SDK "response flushed after handler
   // returns" race: the process stays alive long enough to send the response.
   // Intentionally NO transport.onclose -> process.exit.
-  startParentWatchdog({ getInFlight: () => inFlight.count, onDead: () => process.exit(0) });
+  startParentWatchdog({
+    getInFlight: () => inFlight.count,
+    onDead: () => {
+      // inFlight covers handler execution, but the SDK sends the JSON-RPC
+      // response AFTER the handler returns (its protocol layer). Flush any
+      // pending stdout — a response frame still mid-write — before exiting, so a
+      // watchdog fire (esp. a false-dead PPID probe) can't drop an in-flight
+      // response. Fallback timeout so we never hang if the reader is truly gone
+      // (a dead parent's pipe never drains).
+      let exited = false;
+      const exit = () => { if (!exited) { exited = true; process.exit(0); } };
+      process.stdout.write("", exit);
+      setTimeout(exit, 1000).unref();
+    },
+  });
 }
 
 const isMainModule = process.argv[1]?.endsWith("mcp-bridge.js") ||

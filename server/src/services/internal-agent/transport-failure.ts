@@ -25,6 +25,12 @@ export type TransportFailureResult =
   | { failed: false; status?: "unknown" };
 
 export function detectTransportFailure(input: TransportFailureInput): TransportFailureResult {
+  // A caller that explicitly says no bridge was used (mcpAttempted === false —
+  // claude_local uses native --mcp-config, NOT this stdio bridge) can never have
+  // suffered a bridge transport failure, so a "transport closed" string in its
+  // output is irrelevant. Do not force-fail it.
+  if (input.mcpAttempted === false) return { failed: false };
+
   const hay = [...input.parsedErrorMessages, input.rawStdout, input.rawStderr].join("\n");
   const m = hay.match(TRANSPORT_RE);
   if (m) return { failed: true, detail: m[0].slice(0, 200) };

@@ -15,4 +15,9 @@ describe("detectTransportFailure", () => {
     const r = detectTransportFailure({ parsedErrorMessages: [], rawStdout: "", rawStderr: "", mcpAttempted: true, markerSupported: false });
     expect(r).toEqual({ failed: false, status: "unknown" });
   });
+  it("does NOT flag when mcpAttempted is false (claude path is exempt — never uses the bridge)", () => {
+    expect(
+      detectTransportFailure({ parsedErrorMessages: ["the transport closed"], rawStdout: "", rawStderr: "Transport closed", mcpAttempted: false }).failed,
+    ).toBe(false);
+  });
 });

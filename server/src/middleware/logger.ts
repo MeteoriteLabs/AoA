@@ -30,14 +30,16 @@ const sharedOpts = {
 // The MCP stdio bridge (cli-mode buildMcpBridgeSpec) sets AOA_LOG_STDOUT=0: the
 // bridge owns stdout for JSON-RPC frames, so ANY log written to stdout corrupts
 // the protocol and the MCP client sees "Transport closed". In that mode every
-// pino record must go to stderr (fd 2) via a plain synchronous destination — no
+// pino record must go to a synchronous stderr destination (sync:true so
+// diagnostics flush before a hard exit — pino.destination defaults to async
+// buffered SonicBoom, whose buffer is lost on a watchdog process.exit) — no
 // pino-pretty transport worker (a transport worker's destination fd is ambiguous
 // under the bridge, and stdout must stay byte-pristine). The DEFAULT (non-bridge)
 // branch is unchanged: the normal server keeps the pretty→stdout + pretty→file
 // transport. The base pino options (level) are identical in both branches.
 export const logger =
   process.env.AOA_LOG_STDOUT === "0"
-    ? pino({ level: "debug" }, pino.destination(2))
+    ? pino({ level: "debug" }, pino.destination({ dest: 2, sync: true }))
     : pino({
         level: "debug",
       }, pino.transport({
