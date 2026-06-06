@@ -39,32 +39,34 @@
  *   succeeds and the real response is delivered (the inverse of the bug).
  *
  *   The PRIMARY (post-entry) proof — drive a full `runAoaAgent` participation so
- *   the agent self-posts a `discussion_entries` row — is intentionally NOT used:
- *   see the "STDOUT-DISCIPLINE BUG" note below. The full `runAoaAgent` pipeline
- *   constructs the bridge env via `buildMcpBridgeSpec`, which does NOT forward
- *   `OPENAI_API_KEY`; under codex that triggers a pino WARN written to stdout
- *   that corrupts the JSON-RPC stream (an unrelated, pre-existing bug). Driving
- *   the adapter directly lets us suppress that one log line so the BRIDGE
- *   TRANSPORT FIX — the thing Task 11 exists to prove — is tested in isolation,
- *   not held hostage by an orthogonal bug.
+ *   the agent self-posts a `discussion_entries` row — is intentionally NOT used
+ *   here for scope reasons (it needs a writable QA thread + a longer model turn);
+ *   the deterministic read-tool proof is the stable, load-bearing assertion. It
+ *   still exercises the full `buildMcpBridgeSpec` env, which is exactly where the
+ *   second stdout-corruption cause lived (see the "STDOUT-DISCIPLINE BUG" note).
  *
- * ── STDOUT-DISCIPLINE BUG discovered while writing this test (REPORT-WORTHY) ──
+ * ── STDOUT-DISCIPLINE BUG (discovered while writing this test) — NOW FIXED ──────
  *   The bridge's `installStdoutGuard()` reroutes `console.*` to stderr, but the
- *   project's pino `logger` (server/src/middleware/logger.ts) writes info+ logs
- *   to `destination: 1` (STDOUT). `createServiceContainer(db)` in the bridge
- *   (mcp-bridge.ts) lazily constructs the embeddings service, which logs a WARN
+ *   project's pino `logger` (server/src/middleware/logger.ts) USED TO write info+
+ *   logs to `destination: 1` (STDOUT). `createServiceContainer(db)` in the bridge
+ *   (mcp-bridge.ts) eagerly constructs the embeddings service, which logs a WARN
  *   "OPENAI_API_KEY is not set — services.embeddings unavailable…" via that
- *   logger when `OPENAI_API_KEY` is absent. That WARN lands on the bridge's
+ *   logger when `OPENAI_API_KEY` is absent. That WARN landed on the bridge's
  *   STDOUT as the very first bytes, ahead of the JSON-RPC `initialize` response.
- *   codex's rmcp client parses it as the response, chokes (`expected ',' or ']'
+ *   codex's rmcp client parsed it as the response, choked (`expected ',' or ']'
  *   at line 1 column 4` — the `[HH:MM:ss]` prefix looks like a JSON array), and
- *   the transport dies → every tool call returns "Transport closed". This is a
- *   SEPARATE bug from the EOF-exit bug; the console-reroute fix
- *   (commit d427ff7bc) did not cover the pino logger. Setting any non-empty
- *   `OPENAI_API_KEY` in the bridge env suppresses the WARN and the tool call
- *   succeeds cleanly. This test injects a DUMMY key into the bridge spec env as a
- *   documented workaround so it can prove the transport fix; the underlying log
- *   leak should be fixed in source (see the spawned follow-up task).
+ *   the transport died → every tool call returned "Transport closed". This was a
+ *   SEPARATE bug from the EOF-exit bug; the console-reroute fix did not cover the
+ *   pino logger.
+ *
+ *   FIX (now in source): `buildMcpBridgeSpec` sets `AOA_LOG_STDOUT=0`, and
+ *   `middleware/logger.ts` routes ALL pino output to stderr in that mode — so the
+ *   bridge's stdout stays JSON-RPC-only. This test therefore NO LONGER injects a
+ *   dummy `OPENAI_API_KEY`: the key is left UNSET so the run proves the real fix
+ *   (clean JSON-RPC stream + real tool response with the embeddings WARN absent).
+ *   The strict invariant is pinned separately by
+ *   `bridge-stdout-purity.test.ts` (asserts stdout is pure JSON-RPC with the key
+ *   unset, and that the WARN is rerouted to stderr).
  *
  * GATING DISCIPLINE: every skip is LOUD (console.warn with a precise reason).
  * Skips, never failures, when the live run can't be driven (no DB, no CLI) —
@@ -273,16 +275,14 @@ describe("cross-provider E2E — real crew agent drives the MCP bridge", () => {
           effectiveAutonomy: 2,
         });
 
-        // STDOUT-DISCIPLINE WORKAROUND (see the file header "STDOUT-DISCIPLINE
-        // BUG" note): the bridge's pino logger writes a "OPENAI_API_KEY is not
-        // set" WARN to STDOUT when the key is absent, corrupting codex's rmcp
-        // JSON-RPC stream → "Transport closed". Injecting a dummy key suppresses
-        // that one log line so we test the BRIDGE TRANSPORT FIX in isolation,
-        // not the orthogonal log-leak bug. This does NOT enable any network call
-        // (thread.listEntries needs no embeddings); it only silences the WARN.
-        if (!bridgeSpec.env.OPENAI_API_KEY) {
-          bridgeSpec.env.OPENAI_API_KEY = "sk-e2e-stdout-discipline-workaround";
-        }
+        // NOTE (pino stdout leak — now FIXED in source, no workaround here):
+        // buildMcpBridgeSpec now sets AOA_LOG_STDOUT=0, and middleware/logger.ts
+        // routes ALL pino output to stderr in that mode. So the embeddings
+        // "OPENAI_API_KEY is not set" WARN fired by createServiceContainer at
+        // bridge boot can no longer land on stdout ahead of the JSON-RPC
+        // initialize response. We deliberately do NOT inject a dummy
+        // OPENAI_API_KEY anymore — leaving the key UNSET exercises the real fix:
+        // codex must still get a clean JSON-RPC stream and a real tool response.
 
         // Instruct the CLI to call the read tool exactly once. The prompt is
         // deliberately minimal + tool-forcing so the run is short and the

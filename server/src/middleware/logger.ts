@@ -27,22 +27,33 @@ const sharedOpts = {
   ignore: "pid,hostname",
 };
 
-export const logger = pino({
-  level: "debug",
-}, pino.transport({
-  targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
-    },
-  ],
-}));
+// The MCP stdio bridge (cli-mode buildMcpBridgeSpec) sets AOA_LOG_STDOUT=0: the
+// bridge owns stdout for JSON-RPC frames, so ANY log written to stdout corrupts
+// the protocol and the MCP client sees "Transport closed". In that mode every
+// pino record must go to stderr (fd 2) via a plain synchronous destination — no
+// pino-pretty transport worker (a transport worker's destination fd is ambiguous
+// under the bridge, and stdout must stay byte-pristine). The DEFAULT (non-bridge)
+// branch is unchanged: the normal server keeps the pretty→stdout + pretty→file
+// transport. The base pino options (level) are identical in both branches.
+export const logger =
+  process.env.AOA_LOG_STDOUT === "0"
+    ? pino({ level: "debug" }, pino.destination(2))
+    : pino({
+        level: "debug",
+      }, pino.transport({
+        targets: [
+          {
+            target: "pino-pretty",
+            options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+            level: "info",
+          },
+          {
+            target: "pino-pretty",
+            options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+            level: "debug",
+          },
+        ],
+      }));
 
 export const httpLogger = pinoHttp({
   logger,

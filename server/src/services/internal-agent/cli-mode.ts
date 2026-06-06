@@ -137,6 +137,13 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
     command: isTsBridge ? "tsx" : "node",
     args: [params.bridgeEntrypoint],
     env: {
+      // The bridge owns stdout for JSON-RPC frames. Force its pino logger to
+      // stderr (see middleware/logger.ts) so a stray log (e.g. the embeddings
+      // "OPENAI_API_KEY is not set" WARN fired by createServiceContainer at
+      // bridge boot when the key is absent) can never land on stdout ahead of
+      // the JSON-RPC initialize response and break the MCP client with
+      // "Transport closed". Covers every codex/opencode/gemini bridge spawn.
+      AOA_LOG_STDOUT: "0",
       AOA_SESSION_COMPANY_ID: params.companyId,
       AOA_SESSION_USER_ID: params.userId,
       AOA_SESSION_USER_ROLE: params.userRole,
