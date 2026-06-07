@@ -28,11 +28,11 @@ function makeSuiteResult(
 }
 
 describe("runAllEvalSuites", () => {
-  it("throws when OPENAI_API_KEY is unset", async () => {
+  it("skips and returns [] (does NOT throw) when OPENAI_API_KEY is absent", async () => {
     const originalKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     try {
-      await expect(runAllEvalSuites()).rejects.toThrow(/OPENAI_API_KEY is required/);
+      await expect(runAllEvalSuites()).resolves.toEqual([]);
     } finally {
       if (originalKey !== undefined) {
         process.env.OPENAI_API_KEY = originalKey;

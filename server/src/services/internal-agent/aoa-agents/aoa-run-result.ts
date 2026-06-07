@@ -31,32 +31,72 @@
  */
 
 import type { UsageSummary } from "../../../adapters/types.js";
+import { detectTransportFailure } from "../transport-failure.js";
 
 export type AoaRunStatus = "succeeded" | "failed";
 
 /**
  * Translate an AdapterExecutionResult into an AoaRunResult. Pure function;
  * exhaustively unit-tested. Centralizes the success/failure decision so
- * the runner doesn't need to repeat the logic in two places (success path
- * + catch path).
+ * the runner doesn't need to repeat the logic everywhere: the runner's catch
+ * path builds its own failed result inline; this function owns the success-path
+ * decision (a transport-closed-on-exit-0 is by definition the non-throwing case,
+ * so detecting it here is correct).
+ *
+ * Task 9 (loud-failure detection): in addition to the exitCode/errorMessage
+ * checks, this scans the adapter's reported errorMessage AND the raw
+ * resultJson stdout/stderr for a transport-class marker (e.g. "Transport
+ * closed"). When found it FORCES status='failed' with a transport-specific
+ * message — even when the CLI exited 0 with a clean (null) errorMessage,
+ * which is exactly the silent-failure that shipped the codex MCP-bridge bug
+ * (codex exits 0, errorMessage is null, and the "Transport closed" text only
+ * lives in raw output). gemini's error stream lacks a clean MCP marker, so
+ * its caller passes markerSupported:false → 'unknown', never a false-positive.
+ *
+ * KNOWN GAP (gemini): gemini-local sets resultJson = parsed.resultEvent ?? {stdout,stderr};
+ * when a parsed event object exists, resultJson has no string stdout/stderr, so a gemini
+ * transport failure whose marker lives only in the raw streams is NOT detected → 'succeeded'.
+ * Accepted: gemini's error stream lacks a clean MCP marker (markerSupported:false), so we
+ * prefer no-false-positive over best-effort detection for it.
+ *
+ * The detector's `status:"unknown"` (returned for markerSupported:false with no marker) is
+ * intentionally treated as NOT failed here — we never force-fail on an unprovable signal.
  */
-export function buildAoaRunResultFromAdapter(adapterResult: {
-  exitCode: number | null;
-  errorMessage?: string | null;
-  usage?: UsageSummary;
-  costUsd?: number | null;
-}): AoaRunResult {
+export function buildAoaRunResultFromAdapter(
+  adapterResult: {
+    exitCode: number | null;
+    errorMessage?: string | null;
+    usage?: UsageSummary;
+    costUsd?: number | null;
+    resultJson?: Record<string, unknown> | null;
+  },
+  opts?: { mcpAttempted?: boolean; markerSupported?: boolean },
+): AoaRunResult {
+  const rawStdout = typeof adapterResult.resultJson?.stdout === "string" ? adapterResult.resultJson.stdout : "";
+  const rawStderr = typeof adapterResult.resultJson?.stderr === "string" ? adapterResult.resultJson.stderr : "";
+  const transport = detectTransportFailure({
+    parsedErrorMessages: adapterResult.errorMessage ? [adapterResult.errorMessage] : [],
+    rawStdout,
+    rawStderr,
+    mcpAttempted: opts?.mcpAttempted,
+    markerSupported: opts?.markerSupported,
+  });
+
   const failed =
-    (adapterResult.exitCode !== null && adapterResult.exitCode !== 0)
+    transport.failed
+    || (adapterResult.exitCode !== null && adapterResult.exitCode !== 0)
     || Boolean(adapterResult.errorMessage);
+
   const costCents = typeof adapterResult.costUsd === "number"
     ? Math.round(adapterResult.costUsd * 100)
     : null;
   return {
     status: failed ? "failed" : "succeeded",
-    errorMessage: failed
-      ? (adapterResult.errorMessage ?? `exit ${adapterResult.exitCode}`)
-      : undefined,
+    errorMessage: transport.failed
+      ? `AoA MCP bridge transport failed: ${transport.detail}`
+      : failed
+        ? (adapterResult.errorMessage ?? `exit ${adapterResult.exitCode}`)
+        : undefined,
     costCents,
     usage: adapterResult.usage,
   };

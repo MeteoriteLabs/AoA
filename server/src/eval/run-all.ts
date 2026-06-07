@@ -67,10 +67,11 @@ function printSummary(summaries: SuiteSummary[]): void {
 
 export async function runAllEvalSuites(): Promise<SuiteSummary[]> {
   if (!process.env.OPENAI_API_KEY) {
-    throw new Error(
-      "OPENAI_API_KEY is required to run LLM eval suites. " +
-        "Set it in CI secrets or your local environment.",
+    console.warn(
+      "[skipped] OPENAI_API_KEY not set — skipping LLM eval suites. " +
+        "Set it locally to run; CI does not provide this paid-API secret.",
     );
+    return [];
   }
 
   // Each builder returns a strongly-typed EvalSuite with its own TInput /
