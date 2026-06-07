@@ -99,3 +99,32 @@ run `failed`; B3 the entry is visibly posted by codex in the real UI (screenshot
 - The deferred `node mcp-bridge.js` production-entrypoint test (monorepo
   exports-map; tracked separately).
 - The unrelated discussions findings (F1/F2/F4) — separate triage.
+
+## Known gaps & follow-ups (post-verification)
+
+Recorded so they are not lost. None block the fix; all of codex (the installed,
+bug-exhibiting provider) is fully covered + tested.
+
+1. **opencode/gemini loud-failure marker coverage — UNTESTED.** The pino→stderr
+   stdout-discipline fix is provider-agnostic (`buildMcpBridgeSpec` sets
+   `AOA_LOG_STDOUT=0` for all three consumers), so the "second Transport-closed
+   cause" is closed for opencode/gemini too. But the loud-failure *detector*
+   (`transport-failure.ts` `TRANSPORT_RE`) is marker-based: codex's
+   `rmcp::transport … serde error` is now matched + unit-tested, and the generic
+   `transport closed` / `connection closed` alternatives *probably* cover the
+   JS-SDK-based clients — but opencode's and gemini's **actual** broken-bridge
+   marker strings were never captured (those CLIs are not installed here).
+   **Follow-up:** when opencode/gemini are exercised, run the B2 induced-break
+   (`AOA_LOG_STDOUT=1`) against each, capture the real marker from their output,
+   add it to `TRANSPORT_RE`, and pin it with a unit test. Until then, a genuinely
+   dead bridge for those two providers could be classified `succeeded` if their
+   client emits a string the regex does not recognize.
+2. **gemini `resultJson` shape gap (already documented in `aoa-run-result.ts`).**
+   gemini-local stores `resultJson = parsed.resultEvent ?? {stdout,stderr}`, so
+   when a parsed event exists the raw streams are not in the detector's view →
+   `markerSupported:false` → `unknown` (never a false-positive, but a real
+   coverage hole for gemini specifically).
+3. **Structural fallback (optional, larger — likely YAGNI).** A provider-agnostic
+   alternative to marker-matching: flag a run where the agent was expected to use
+   MCP and made **zero** successful tool calls. Immune to marker drift / new CLI
+   versions; deferred unless marker drift becomes a recurring problem.
