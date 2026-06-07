@@ -168,11 +168,15 @@ export async function startBridge(): Promise<void> {
   // to stderr so it appears in the parent CLI's process log; do NOT swallow it.
   process.on("unhandledRejection", (reason) => {
     process.stderr.write(`MCP Bridge fatal unhandledRejection: ${String((reason as any)?.stack ?? reason)}\n`);
+    // A process-level rejection is genuinely unexpected (per-tool errors are
+    // isolated in executeAndFormat). Fail LOUD: exit so the parent CLI sees the
+    // bridge die and the loud-failure detector marks the run failed, rather than
+    // limping on in an undefined state. Distinct from the watchdog (exit 0).
+    process.exit(1);
   });
   process.on("uncaughtException", (err) => {
     process.stderr.write(`MCP Bridge fatal uncaughtException: ${(err as any)?.stack ?? err}\n`);
-    // Per-tool errors are already isolated in executeAndFormat; a process-level
-    // one is genuinely unexpected — log it loudly rather than swallow it.
+    process.exit(1);
   });
 
   const companyId = process.env.AOA_SESSION_COMPANY_ID;
