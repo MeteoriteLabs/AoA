@@ -46,9 +46,9 @@
     "@changesets/cli": "^2.30.0",
     "@playwright/test": "^1.58.2",
     "cross-env": "^7.0.3",
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.27.4",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^3.2.6"
   },
   "engines": {
     "node": ">=20"
