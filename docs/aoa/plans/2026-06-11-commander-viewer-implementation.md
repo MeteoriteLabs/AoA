@@ -773,9 +773,28 @@ Expected: new tests FAIL (no tool_result chunks emitted); existing tests still P
 
 - [ ] **Step 3: Implement in `parse.ts`.**
 
-(a) Extend the union (line 6-11) and add a structural lifter:
+(a) Extend the union (line 6-11) and add a structural lifter.
+
+**Typing constraint (verified):** this adapter package does NOT depend on `@armyofagents/shared`, and `cli-mode.ts:973-975` yields these chunks into the `AgentStreamChunk` stream — so the refs must be typed as a **local structural mirror** of `CommanderOutputRef` (literal `v`/`kind`/`action` types), which TypeScript accepts structurally at the yield site. `unknown[]` would NOT compile there. The screen rebuilds objects field-by-field (also strips unknown keys):
 
 ```ts
+/**
+ * Structural mirror of @armyofagents/shared CommanderOutputRef (P1: artifact kind).
+ * This package deliberately has no dependency on shared; the screen below
+ * enforces the shape and the server zod-validates again at persist time.
+ */
+type LiftedOutputRef = {
+  v: 1;
+  kind: "artifact";
+  id: string;
+  versionId?: string | null;
+  versionNumber?: number | null;
+  title?: string | null;
+  action: "created" | "referenced";
+  toolCallId?: string | null;
+  mimeType?: string | null;
+};
+
 type CodexParsedChunk =
   | {
       type: "action_confirmation";
@@ -787,18 +806,37 @@ type CodexParsedChunk =
       type: "tool_result";
       name: string;
       result: { success: boolean; data: unknown; summary: string };
-      refs: unknown[]; // structurally screened; server zod-validates at persist
+      refs: LiftedOutputRef[];
     };
 
-/** Minimal structural screen — full validation happens server-side. */
-function liftOutputRefs(text: string): unknown[] | null {
+/** Minimal structural screen — authoritative validation happens server-side. */
+function liftOutputRefs(text: string): LiftedOutputRef[] | null {
   try {
     const parsed = JSON.parse(text) as { outputRefs?: unknown };
     if (!Array.isArray(parsed?.outputRefs) || parsed.outputRefs.length === 0) return null;
-    const screened = parsed.outputRefs.filter((r) => {
+    const screened: LiftedOutputRef[] = [];
+    for (const r of parsed.outputRefs) {
       const rec = parseObject(r);
-      return rec.v === 1 && typeof rec.kind === "string" && typeof rec.id === "string" && rec.id.length > 0;
-    });
+      if (
+        rec.v === 1 &&
+        rec.kind === "artifact" &&
+        typeof rec.id === "string" &&
+        rec.id.length > 0 &&
+        (rec.action === "created" || rec.action === "referenced")
+      ) {
+        screened.push({
+          v: 1,
+          kind: "artifact",
+          id: rec.id,
+          versionId: typeof rec.versionId === "string" ? rec.versionId : null,
+          versionNumber: typeof rec.versionNumber === "number" ? rec.versionNumber : null,
+          title: typeof rec.title === "string" ? rec.title : null,
+          action: rec.action,
+          toolCallId: typeof rec.toolCallId === "string" ? rec.toolCallId : null,
+          mimeType: typeof rec.mimeType === "string" ? rec.mimeType : null,
+        });
+      }
+    }
     return screened.length > 0 ? screened : null;
   } catch {
     return null;
