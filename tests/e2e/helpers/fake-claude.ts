@@ -64,6 +64,13 @@ export interface FakeClaudeTurn {
   toolCalls?: FakeToolCall[];
   /** Final assistant reply (markdown), streamed as text_delta events. */
   text: string;
+  /**
+   * Optional: hold the stream open this many ms after the tool_result(s) and
+   * before the reply text. Lets a test observe the transient, un-persisted tool
+   * indicator (the spinner fix settles it on tool_result, before the turn's
+   * `done`). Omit for an instant turn (the default).
+   */
+  holdMs?: number;
 }
 
 /** Write the scripted turn the NEXT fake-claude spawn will emit. */

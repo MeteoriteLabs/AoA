@@ -205,27 +205,39 @@ test.describe("Commander viewer", () => {
       timeout: 15_000,
     });
 
-    writeFakeClaudeControl(createArtifactTurn(artifact, REPLY_CREATED));
+    // Hold the stream open after the tool_result so the (transient,
+    // un-persisted) tool indicator stays observable. Tool-call indicators live
+    // only in local streaming state — the assistant message persists content +
+    // outputRefs, never toolCalls — so they vanish on the post-turn server sync.
+    // The spinner fix is a DURING-STREAM guarantee; we assert it while open.
+    writeFakeClaudeControl({
+      ...createArtifactTurn(artifact, REPLY_CREATED),
+      holdMs: 2500,
+    });
     await sendMessage(page, "Create the launch plan artifact");
 
-    // The chip only renders after the refs-bearing tool_result event was
-    // processed — the strongest signal the spinner's tool_result handling ran.
+    // The chip renders once the refs-bearing tool_result is processed.
     await expect(
       page
         .getByTestId("output-ref-chips")
         .getByRole("button", { name: new RegExp(ARTIFACT_TITLE) }),
     ).toBeVisible({ timeout: 30_000 });
 
-    // Done-state indicator text: completedToolLabel("mcp__aoa__create_artifact")
-    // → "Used mcp aoa create artifact" (InternalAgentPanel.completedToolLabel).
+    // While the stream is still held open, the tool indicator has SETTLED to the
+    // completed label — completedToolLabel("mcp__aoa__create_artifact") =
+    // "Used mcp aoa create artifact" (InternalAgentPanel). This is the spinner
+    // fix: tool_result.name now resolves to the real tool name, so it matches
+    // and settles the running entry. With the pre-fix bug (name = tool_use_id)
+    // the indicator would still read "Running mcp aoa create artifact..." here.
     await expect(page.getByText("Used mcp aoa create artifact")).toBeVisible({
       timeout: 15_000,
     });
+    await expect(
+      page.getByText(/^Running mcp aoa create artifact/),
+    ).toHaveCount(0);
 
+    // The held stream then completes normally.
     await waitForTurnEnd(page);
-
-    // No tool indicator is left in the running state after the turn ends.
-    await expect(page.getByText(/^Running mcp/)).toHaveCount(0);
   });
 
   test("mobile: pill badges on created ref without auto-opening the sheet; tap opens viewer tabs", async ({

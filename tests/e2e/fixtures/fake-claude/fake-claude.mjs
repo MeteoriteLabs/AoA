@@ -128,6 +128,16 @@ async function main() {
     await sleep(15);
   }
 
+  // Optional: hold the stream open after the tool_result(s) and before the
+  // reply text. Tool-call indicators live only in local streaming state (the
+  // assistant message persists content + outputRefs, never toolCalls), so they
+  // vanish on the post-turn server sync. The spinner fix (tool_result settles
+  // running→done BEFORE the turn's `done`) is therefore a during-stream
+  // behavior; holdMs gives a test a window to observe the settled indicator.
+  if (typeof control.holdMs === "number" && control.holdMs > 0) {
+    await sleep(control.holdMs);
+  }
+
   // Stream the reply word-by-word via content_block_delta/text_delta — the
   // exact shape handleStreamEvent() consumes.
   const words = text.match(/\S+\s*/g) ?? [text];
