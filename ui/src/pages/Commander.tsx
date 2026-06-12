@@ -79,6 +79,7 @@ export function Commander() {
             conversationId={activeConversationId}
             onSelectConversation={handleSelectConversation}
             onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
+            enableViewerPanel
           />
         </div>
 

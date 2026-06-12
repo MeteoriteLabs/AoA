@@ -5,6 +5,7 @@ import {
   Bot,
   Check,
   Copy,
+  ExternalLink,
   Loader2,
   MessageSquarePlus,
   Mic,
@@ -21,6 +22,7 @@ import { useCommanderContextScope } from "../context/CommanderContextScopeContex
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useLocation } from "../lib/router";
+import { useBreakpoint } from "../lib/useBreakpoint";
 import {
   internalAgentApi,
   streamAgentChat,
@@ -47,12 +49,19 @@ import { InputAddMenu } from "./commander/InputAddMenu";
 import { MemoryContextStrip } from "./commander/MemoryContextStrip";
 import { SkillPicker } from "./commander/SkillPicker";
 import {
+  CommanderViewerPanel,
+  OutputRefChips,
+  collectConversationRefs,
+  useCommanderViewer,
+} from "./commander/viewer";
+import {
   CommanderInput,
   type CommanderInputHandle,
   type SlashState,
 } from "./commander/CommanderInput";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import type { CommanderContextScope } from "@armyofagents/shared";
+import type { CommanderOutputRef } from "@armyofagents/shared";
 import {
   Tooltip,
   TooltipContent,
@@ -233,6 +242,7 @@ export interface LocalMessage {
     options: string[];
     dismissed: boolean;
   };
+  outputRefs?: CommanderOutputRef[];
   createdAt: string;
 }
 
@@ -242,6 +252,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
     role: m.role === "tool" ? "system" : m.role,
     content: m.content ?? "",
     streamingDone: true,
+    outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
     createdAt: m.createdAt,
   };
 }
@@ -306,9 +317,15 @@ interface AgentPanelContentProps {
    * desktop/wide (the inline sidebar is shown instead).
    */
   onOpenSessions?: () => void;
+  /**
+   * Commander Viewer P1: when true, the right-hand viewer panel (artifact
+   * tabs + home) is mounted next to the chat column. Only the full-page
+   * Commander route passes this — the docked w-80 panel stays viewer-free.
+   */
+  enableViewerPanel?: boolean;
 }
 
-export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions }: AgentPanelContentProps = {}) {
+export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
@@ -381,6 +398,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     enabled: !!companyId && !!conversationId,
   });
 
+  // Commander Viewer P1: per-conversation tab state + mobile flag. The viewer
+  // hook is always called (hooks rules) but the panel only mounts when
+  // `enableViewerPanel` is set (full-page Commander route).
+  const { useDrawerSessions } = useBreakpoint();
+  const viewer = useCommanderViewer(conversationId ?? null);
+
   // Conversations list — same cache key as SessionsSidebar (no extra fetch)
   const { data: conversationsData } = useQuery({
     queryKey: ["commander-conversations", companyId],
@@ -427,6 +450,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         role: m.role as "user" | "assistant",
         content: m.content ?? "",
         streamingDone: true,
+        outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
         createdAt: m.createdAt,
       }));
     setMessages(loaded);
@@ -640,6 +664,23 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             return { ...m, toolCalls: updated };
           }),
         );
+        // Commander Viewer P1: accumulate output refs on the streaming assistant
+        // message + auto-open created refs (desktop) / badge the pill (mobile).
+        // NOTE: this closure can be stale (sendText is memoized and captures the
+        // handleSSEEvent from the render it was created in) — that is safe ONLY
+        // because useCommanderViewer's API reads its live state from a ref at
+        // call time, and setMessages uses a functional updater.
+        const liveRefs = (event.data as { refs?: CommanderOutputRef[] }).refs;
+        if (liveRefs && liveRefs.length > 0) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, outputRefs: [...(m.outputRefs ?? []), ...liveRefs] }
+                : m,
+            ),
+          );
+          for (const r of liveRefs) viewer.onLiveRef(r, useDrawerSessions);
+        }
         break;
       }
 
@@ -870,8 +911,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     }
   };
 
-  return (
-    <div className="flex flex-col h-full">
+  // Commander Viewer P1: deduped refs across the loaded conversation (feeds the
+  // viewer's home tab). Cheap O(messages) — no memo needed.
+  const conversationRefs = collectConversationRefs(messages);
+
+  // The chat column is extracted into a const (instead of re-indenting the
+  // ~400-line tree inside a new row wrapper) so the viewer-panel row below
+  // stays a small, reviewable diff. Classes: original `flex flex-col h-full`
+  // + `min-w-0 flex-1` so the column shrinks correctly next to the viewer.
+  const chatColumn = (
+    <div className="flex h-full min-w-0 flex-1 flex-col">
       {/* Chat pane caption strip — shown only when there is an active conversation */}
       {conversationId && (
         <ChatPaneCaption
@@ -976,6 +1025,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 </button>
               )}
 
+              {/* Hover "open reply in viewer" pop-out — assistant bubbles only,
+                  sits just left of the Copy button with identical hover reveal */}
+              {msg.role === "assistant" && msg.content && (
+                <button
+                  type="button"
+                  data-commander-touch
+                  aria-label="Open reply in viewer"
+                  title="Open reply in viewer"
+                  onClick={() => viewer.openReply(msg.id, msg.content)}
+                  className={cn(
+                    "absolute top-1 right-6 flex items-center justify-center rounded p-0.5",
+                    "opacity-0 group-hover:opacity-100 transition-opacity",
+                    "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </button>
+              )}
+
               {/* Tool call indicators */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="space-y-1 mb-2">
@@ -1009,6 +1077,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                   Thinking...
                 </span>
               ) : null}
+
+              {/* Commander Viewer P1: artifact handles under the reply text */}
+              {msg.role === "assistant" && msg.outputRefs && msg.outputRefs.length > 0 && (
+                <OutputRefChips refs={msg.outputRefs} onOpen={viewer.openRef} />
+              )}
 
               {/* Action confirmation */}
               {msg.actionConfirm && (
@@ -1259,6 +1332,20 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           </div>
         </div>
       </div>
+    </div>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-row overflow-hidden">
+      {chatColumn}
+      {enableViewerPanel && companyId && (
+        <CommanderViewerPanel
+          companyId={companyId}
+          viewer={viewer}
+          conversationRefs={conversationRefs}
+          isMobile={useDrawerSessions}
+        />
+      )}
     </div>
   );
 }
