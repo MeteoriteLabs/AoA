@@ -1,4 +1,4 @@
-import type { CommanderContextScope, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
+import type { CommanderContextScope, CommanderOutputRef, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */
@@ -25,6 +25,7 @@ export interface AgentMessage {
   role: "assistant" | "user" | "system" | "tool";
   content: string | null;
   toolCalls: unknown | null;
+  outputRefs: CommanderOutputRef[] | null;
   pageContext: string | null;
   createdAt: string;
 }
