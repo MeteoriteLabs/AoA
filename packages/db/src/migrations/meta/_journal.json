@@ -967,6 +967,13 @@
       "when": 1780480105434,
       "tag": "0137_worthless_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1781244773796,
+      "tag": "0138_ancient_randall",
+      "breakpoints": true
     }
   ]
 }
