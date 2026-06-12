@@ -246,8 +246,13 @@ export function internalAgentRoutes(db: Db) {
               );
               break;
             case "tool_result":
+              // refs are validated/screened + MCP-gated at the parser layer; the
+              // persistence boundary re-validates independently. Forward as-is.
               res.write(
-                `event: tool_result\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
+                `event: tool_result\ndata: ${JSON.stringify({
+                  name: chunk.name,
+                  ...(chunk.refs && chunk.refs.length > 0 ? { refs: chunk.refs } : {}),
+                })}\n\n`,
               );
               break;
             case "action_confirmation": {
