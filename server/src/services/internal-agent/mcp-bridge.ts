@@ -51,8 +51,11 @@ async function executeAndFormat(
     let outputRefs: CommanderOutputRef[] = [];
     try {
       outputRefs = buildOutputRefs(tool.name, args, result);
-    } catch {
+    } catch (err) {
       outputRefs = []; // ref extraction must never fail the tool call
+      process.stderr.write(
+        `MCP Bridge: buildOutputRefs('${tool.name}') failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     }
     return {
       content: [
