@@ -2,6 +2,8 @@
 // A ref is a presentation pointer (ID + label) — never content, never a
 // capability grant. Computed in the MCP bridge, transported in the tool
 // result envelope, persisted on internal_agent_messages.output_refs.
+// NOTE: a structural mirror (LiftedOutputRef) exists in
+// packages/adapters/codex-local/src/server/parse.ts — update both together.
 import { z } from "zod";
 
 export const COMMANDER_OUTPUT_REF_KINDS = ["artifact"] as const;

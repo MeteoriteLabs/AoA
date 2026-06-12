@@ -124,6 +124,7 @@ function liftOutputRefs(text: string): LiftedOutputRef[] | null {
         rec.kind === "artifact" &&
         typeof rec.id === "string" &&
         rec.id.length > 0 &&
+        rec.id.length <= 256 &&
         (rec.action === "created" || rec.action === "referenced")
       ) {
         screened.push({
@@ -131,7 +132,10 @@ function liftOutputRefs(text: string): LiftedOutputRef[] | null {
           kind: "artifact",
           id: rec.id,
           versionId: typeof rec.versionId === "string" ? rec.versionId : null,
-          versionNumber: typeof rec.versionNumber === "number" ? rec.versionNumber : null,
+          versionNumber:
+            typeof rec.versionNumber === "number" && Number.isInteger(rec.versionNumber) && rec.versionNumber > 0
+              ? rec.versionNumber
+              : null,
           title: typeof rec.title === "string" ? rec.title : null,
           action: rec.action,
           toolCallId: typeof rec.toolCallId === "string" ? rec.toolCallId : null,
@@ -139,7 +143,7 @@ function liftOutputRefs(text: string): LiftedOutputRef[] | null {
         });
       }
     }
-    return screened.length > 0 ? screened : null;
+    return screened.length > 0 ? screened.slice(0, 20) : null;
   } catch {
     return null;
   }
@@ -213,6 +217,7 @@ export function parseCodexJsonl(stdout: string) {
           const refs = liftOutputRefs(text);
           if (refs) {
             const name = asString(item.name, "") || asString(item.tool, "");
+            // refs imply success: buildOutputRefs only emits for result.success === true (output-refs.ts).
             chunks.push({
               type: "tool_result",
               name,
