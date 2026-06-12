@@ -14,6 +14,7 @@
 - Server/packages tests (run from repo root): `pnpm vitest run <path>` (root `test` script is plain vitest)
 - UI tests: `cd ui && pnpm vitest run <path-relative-to-ui>`
 - Full suite: `pnpm test:run` (root) — run at the end, not per task
+- E2E (Task 17): `pnpm test:e2e -- commander-viewer.spec.ts` — Linux/CI, or Windows with external `DATABASE_URL` (embedded-postgres e2e is config-skipped on Windows)
 
 ---
 
@@ -2266,14 +2267,326 @@ Expected: clean build, no TS errors.
 8. Narrow the window below 1024px → floating Viewer pill; creating another artifact pulses a badge instead of opening the sheet.
 9. Tool spinners: during step 2, the `create_artifact` status line should flip to done when the tool completes (not only at reply end) — that's the spinner bugfix.
 
-- [ ] **Step 5: Final commit (if smoke produced fixes) + report**
+- [ ] **Step 5: Automated E2E** (after Task 17 is implemented)
+
+Run (repo root): `pnpm test:e2e -- commander-viewer.spec.ts`
+Expected: all commander-viewer e2e tests PASS. (On Windows without `DATABASE_URL`, the whole e2e suite is config-skipped — run it on Linux/CI or set `DATABASE_URL` to an external Postgres.)
+
+- [ ] **Step 6: Final commit (if smoke produced fixes) + report**
 
 Report completion status per repo conventions: tests run, suites green, smoke checklist outcomes, any deviations from the design doc.
 
 ---
 
+## Task 17: Automated E2E — real UI chat with Commander, deterministic fake CLI
+
+**Files:**
+- Create: `tests/e2e/fixtures/fake-claude/fake-claude.mjs` (the scripted CLI)
+- Create: `tests/e2e/fixtures/fake-claude/claude` (POSIX shim) and `tests/e2e/fixtures/fake-claude/claude.cmd` (Windows shim)
+- Modify: `tests/e2e/playwright.config.ts` (PATH prepend + control-file env)
+- Create: `tests/e2e/commander-viewer.spec.ts`
+
+**How it works:** the e2e server resolves the `claude` binary from PATH (`cli-mode.ts:40` maps `claude_cli → "claude"`; `:60` resolves via `which`/`where`). The Playwright config prepends the fixture directory to PATH, so Commander's CLI mode spawns our script. The script replays a scripted turn from a **control file** that the spec writes before each message — so each chat turn is fully deterministic, no LLM. The fixture's `tool_result` content is byte-compatible with the real bridge envelope (`mcp-bridge.ts:50-63` shape), and the refs point at a **real artifact** the spec seeds over REST — so chips, persistence, AND the viewer's artifact fetch all exercise production paths. The only thing not executing is the MCP bridge itself (covered by Task 3's tests).
+
+**UI surface covered (the design's full interaction set):** empty rail → type to Commander in the real composer → tool status settles mid-stream (spinner fix) → created chip renders → panel auto-expands with rendered markdown → collapse to rail → reload → chips persist from history → chip click reopens content → referenced chips (no auto-open) → home tab's two groups → reply pop-out → mobile pill at narrow viewport.
+
+- [ ] **Step 1: The fake CLI fixture.** Before writing it, read `parse-stream-json.ts`'s `parseLine` switch to confirm the event type that produces `{type:"text"}` chunks (expected: `stream_event` with `content_block_delta`/`text_delta`, per the comment at `parse-stream-json.ts:189` that text streams via stream_event deltas — confirm the exact field names and mirror them in `TEXT_EVENT` below). The tool_use / tool_result shapes below are already verified against `handleAssistantEvent`/`handleUserEvent`.
+
+```js
+// tests/e2e/fixtures/fake-claude/fake-claude.mjs
+//
+// Deterministic stand-in for the `claude` CLI in e2e runs. Replays one
+// scripted Commander turn from the control file (written by the spec),
+// in Claude CLI `--output-format stream-json` shape. No LLM, no network.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const controlPath =
+  process.env.AOA_E2E_FAKE_CLAUDE_CONTROL ??
+  path.join(os.tmpdir(), "aoa-e2e-fake-claude", "turn.json");
+
+function emit(obj) {
+  process.stdout.write(JSON.stringify(obj) + "\n");
+}
+
+let turn = { text: "I'm a fake Commander reply.", toolUses: [] };
+try {
+  turn = JSON.parse(fs.readFileSync(controlPath, "utf8"));
+} catch {
+  // No control file — emit the default text-only turn.
+}
+
+emit({ type: "system", subtype: "init", session_id: `fake-${Date.now()}` });
+
+let counter = 0;
+for (const tu of turn.toolUses ?? []) {
+  const toolUseId = `toolu_fake_${++counter}`;
+  // assistant event with a tool_use block → parser emits tool_call + records id→name
+  emit({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id: toolUseId, name: tu.name, input: tu.input ?? {} }] },
+  });
+  // user event with the tool_result → parser resolves name + lifts outputRefs.
+  // `content` mirrors the REAL bridge envelope (mcp-bridge.ts executeAndFormat).
+  emit({
+    type: "user",
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: JSON.stringify(tu.envelope),
+        },
+      ],
+    },
+  });
+}
+
+// Final assistant text — CONFIRM exact shape against parse-stream-json's
+// stream_event handler before finalizing (see Step 1 instruction):
+const TEXT_EVENT = (text) => ({
+  type: "stream_event",
+  event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+});
+emit(TEXT_EVENT(turn.text ?? "Done."));
+
+emit({ type: "result", subtype: "success" });
+process.exit(0);
+```
+
+POSIX shim `tests/e2e/fixtures/fake-claude/claude`:
+
+```sh
+#!/bin/sh
+exec node "$(dirname "$0")/fake-claude.mjs" "$@"
+```
+
+Windows shim `tests/e2e/fixtures/fake-claude/claude.cmd`:
+
+```bat
+@echo off
+node "%~dp0fake-claude.mjs" %*
+```
+
+Mark the POSIX shim executable so Linux CI can spawn it:
+
+```bash
+git update-index --add --chmod=+x tests/e2e/fixtures/fake-claude/claude
+```
+
+- [ ] **Step 2: Wire the config.** In `tests/e2e/playwright.config.ts`, above `defineConfig`:
+
+```ts
+const FAKE_CLAUDE_DIR = path.resolve(__dirname, "fixtures", "fake-claude");
+const FAKE_CLAUDE_CONTROL = path.join(os.tmpdir(), "aoa-e2e-fake-claude", "turn.json");
+```
+
+And inside `webServer.env` (after the existing entries):
+
+```ts
+          // Commander viewer e2e: resolve `claude` to the deterministic fixture.
+          PATH: `${FAKE_CLAUDE_DIR}${path.delimiter}${process.env.PATH ?? ""}`,
+          AOA_E2E_FAKE_CLAUDE_CONTROL: FAKE_CLAUDE_CONTROL,
+```
+
+(The fake shadows any real `claude` for the e2e server only — fine: no other current spec invokes Commander chat.)
+
+- [ ] **Step 3: The spec.** Selector notes for the executor: the composer is a **contenteditable** (`CommanderInput.tsx`) — before finalizing, read it for the send affordance (Enter-to-send vs a send button testid) and adjust the two `sendMessage` lines; every other selector below is defined by THIS plan's components (`data-testid`s from Tasks 13-14) or standard text.
+
+```ts
+// tests/e2e/commander-viewer.spec.ts
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+
+const CONTROL = path.join(os.tmpdir(), "aoa-e2e-fake-claude", "turn.json");
+
+function writeTurn(turn: unknown) {
+  fs.mkdirSync(path.dirname(CONTROL), { recursive: true });
+  fs.writeFileSync(CONTROL, JSON.stringify(turn), "utf8");
+}
+
+async function seedArtifact(request: APIRequestContext, companyId: string, title: string) {
+  const res = await request.post(`/api/companies/${companyId}/artifacts`, {
+    data: {
+      title,
+      type: "document",
+      content: `# ${title}\n\nPhase 1 — positioning.\n\nPhase 2 — beta.`,
+    },
+  });
+  if (!res.ok()) throw new Error(`seedArtifact failed: ${res.status()} ${await res.text()}`);
+  return res.json(); // { id, versions: [{ id, versionNumber }], ... }
+}
+
+/** Envelope mirror of mcp-bridge executeAndFormat output. */
+function createArtifactEnvelope(artifact: any, title: string) {
+  return {
+    success: true,
+    data: { artifactId: artifact.id, versionId: artifact.versions?.[0]?.id ?? null },
+    summary: `Created artifact: ${title}`,
+    outputRefs: [
+      {
+        v: 1,
+        kind: "artifact",
+        id: artifact.id,
+        versionId: artifact.versions?.[0]?.id ?? null,
+        versionNumber: 1,
+        title,
+        action: "created",
+        toolCallId: null,
+        mimeType: null,
+      },
+    ],
+  };
+}
+
+async function sendMessage(page: Page, text: string) {
+  const composer = page.locator('[contenteditable="true"]').last();
+  await composer.click();
+  await composer.fill(text);
+  await page.keyboard.press("Enter"); // adjust if CommanderInput uses a send button
+}
+
+test.describe("Commander viewer e2e", () => {
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request, /^E2E-Viewer-/);
+  });
+
+  test("full viewer interaction loop through the real UI", async ({ page, request }) => {
+    const company = await seedCompany(request, `E2E-Viewer-${Date.now()}`);
+    const artifact = await seedArtifact(request, company.id, "E2E Launch Plan");
+
+    // 1. Empty chat shows the always-visible rail
+    await page.goto(`/${company.issuePrefix}/commander`);
+    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible({ timeout: 15_000 });
+
+    // 2. Scripted turn: Commander "creates" the artifact (envelope refs → real artifact)
+    writeTurn({
+      text: "Done — I created the launch plan.",
+      toolUses: [
+        {
+          name: "create_artifact",
+          input: { title: "E2E Launch Plan", type: "document" },
+          envelope: createArtifactEnvelope(artifact, "E2E Launch Plan"),
+        },
+      ],
+    });
+    await sendMessage(page, "Draft a launch plan");
+
+    // 3. Created chip renders under the reply
+    const chip = page.getByTestId("output-ref-chips").getByText("E2E Launch Plan");
+    await expect(chip).toBeVisible({ timeout: 20_000 });
+
+    // 4. Panel auto-expanded with rendered markdown from the REAL artifact fetch
+    await expect(page.getByTestId("commander-viewer-panel")).toBeVisible();
+    await expect(page.getByTestId("commander-viewer-panel").getByText("Phase 1 — positioning.")).toBeVisible({ timeout: 10_000 });
+
+    // 5. Collapse → rail keeps the tab icon
+    await page.getByTitle("Collapse viewer").click();
+    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible();
+
+    // 6. Reload → chips persist from history (outputRefs column round-trip)
+    await page.reload();
+    await expect(page.getByTestId("output-ref-chips").getByText("E2E Launch Plan")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible(); // tabs reset by design
+
+    // 7. Chip click reopens the artifact tab
+    await page.getByTestId("output-ref-chips").getByText("E2E Launch Plan").click();
+    await expect(page.getByTestId("commander-viewer-panel").getByText("Phase 2 — beta.")).toBeVisible({ timeout: 10_000 });
+
+    // 8. Referenced chips (query) do NOT auto-open
+    await page.getByTitle("Collapse viewer").click();
+    writeTurn({
+      text: "We have one artifact for the launch.",
+      toolUses: [
+        {
+          name: "query_company_artifacts",
+          input: {},
+          envelope: {
+            success: true,
+            data: [{ artifactId: artifact.id, title: "E2E Launch Plan", type: "document", currentVersionId: artifact.versions?.[0]?.id ?? null, status: "draft", updatedAt: new Date().toISOString() }],
+            summary: "Found 1 artifact in the company",
+            outputRefs: [{ v: 1, kind: "artifact", id: artifact.id, versionId: artifact.versions?.[0]?.id ?? null, versionNumber: null, title: "E2E Launch Plan", action: "referenced", toolCallId: null, mimeType: null }],
+          },
+        },
+      ],
+    });
+    await sendMessage(page, "What artifacts do we have?");
+    await expect(page.getByTestId("output-ref-chips").getByText("E2E Launch Plan").nth(1)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible(); // still collapsed
+
+    // 9. Home tab shows both groups
+    await page.getByTitle("Home").click();
+    await expect(page.getByTestId("commander-viewer-home")).toBeVisible();
+    await expect(page.getByText("Recent from this conversation")).toBeVisible();
+    await expect(page.getByText("Recent in company")).toBeVisible();
+
+    // 10. Reply pop-out
+    const lastAssistantBubble = page.getByText("We have one artifact for the launch.").last();
+    await lastAssistantBubble.hover();
+    await page.getByTitle("Open reply in viewer").last().click();
+    await expect(page.getByTestId("commander-viewer-panel").getByText("We have one artifact for the launch.")).toBeVisible();
+  });
+
+  test("tool status settles when the tool completes (spinner fix)", async ({ page, request }) => {
+    const company = await seedCompany(request, `E2E-Viewer-Spin-${Date.now()}`);
+    const artifact = await seedArtifact(request, company.id, "E2E Spin Plan");
+    writeTurn({
+      text: "Created.",
+      toolUses: [{ name: "create_artifact", input: { title: "E2E Spin Plan", type: "document" }, envelope: createArtifactEnvelope(artifact, "E2E Spin Plan") }],
+    });
+    await page.goto(`/${company.issuePrefix}/commander`);
+    await sendMessage(page, "Draft the spin plan");
+    // The completed-tool label must appear (name-correlation makes the match work).
+    // Read toolLabel()/completedToolLabel() in InternalAgentPanel for the exact
+    // completed text of create_artifact and assert it here:
+    await expect(page.getByTestId("output-ref-chips").first()).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("mobile: floating pill instead of auto-open", async ({ page, request }) => {
+    const company = await seedCompany(request, `E2E-Viewer-Mob-${Date.now()}`);
+    const artifact = await seedArtifact(request, company.id, "E2E Mobile Plan");
+    await page.setViewportSize({ width: 480, height: 900 });
+    await page.goto(`/${company.issuePrefix}/commander`);
+    await expect(page.getByTestId("commander-viewer-pill")).toBeVisible({ timeout: 15_000 });
+
+    writeTurn({
+      text: "Created.",
+      toolUses: [{ name: "create_artifact", input: { title: "E2E Mobile Plan", type: "document" }, envelope: createArtifactEnvelope(artifact, "E2E Mobile Plan") }],
+    });
+    await sendMessage(page, "Draft the mobile plan");
+    await expect(page.getByTestId("output-ref-chips").getByText("E2E Mobile Plan")).toBeVisible({ timeout: 20_000 });
+    // Sheet did NOT auto-open; pill shows the badge
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+    await expect(page.getByTestId("commander-viewer-pill")).toContainText("1");
+    // Tap pill → full-screen sheet with the artifact tab available
+    await page.getByTestId("commander-viewer-pill").click();
+    await expect(page.getByTestId("commander-viewer-tabs")).toBeVisible();
+  });
+});
+```
+
+- [ ] **Step 4: Pre-flight check — Commander config.** The throwaway e2e instance must have an internal-agent config row for the seeded company (chat 400s with "not configured" otherwise). Check `GET /api/companies/:id/internal-agent/config` for a fresh seeded company; if absent, add a `seedCommanderConfig(request, companyId)` helper that PATCHes/POSTs the config with `{ cliTool: "claude_cli" }` (find the exact route in `server/src/routes/internal-agent.ts` — search `internal-agent/config`) and call it in each test before `page.goto`.
+
+- [ ] **Step 5: Run the e2e suite**
+
+Run (repo root, Linux/CI or Windows with external `DATABASE_URL`): `pnpm test:e2e -- commander-viewer.spec.ts`
+Expected: 3 tests PASS. On Windows without DATABASE_URL the suite is config-skipped (expected).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tests/e2e/fixtures/fake-claude/ tests/e2e/commander-viewer.spec.ts tests/e2e/playwright.config.ts
+git commit -m "test(e2e): commander viewer — full UI chat loop with deterministic fake CLI"
+```
+
+---
+
 ## Self-review notes (already applied)
 
-- Spec coverage: §2 decisions 1-11 → Tasks 1-15 (auto-open #2 → T12/T15; rail #3 → T14; tab memory #4 → T14 hook; home tab #5 → T14; mobile #6 → T14; persistence #7 → T6/T7; host gating #8 → T15; new tool #9 → T10; provider coverage #10 → T4/T5; bugfix #11 → T4). §3 transport → T3-T9. §4 components → T12-T15. §5 RBAC → no new authz surface anywhere (T10 scopes via ctx.companyId). §6 failure rules → builder try/catch (T2), parser lenient lift (T4/T5), persist-validate-drop (T7). §7 tests → per-task TDD steps.
+- Spec coverage: §2 decisions 1-11 → Tasks 1-15 (auto-open #2 → T12/T15; rail #3 → T14; tab memory #4 → T14 hook; home tab #5 → T14; mobile #6 → T14; persistence #7 → T6/T7; host gating #8 → T15; new tool #9 → T10; provider coverage #10 → T4/T5; bugfix #11 → T4). §3 transport → T3-T9. §4 components → T12-T15. §5 RBAC → no new authz surface anywhere (T10 scopes via ctx.companyId). §6 failure rules → builder try/catch (T2), parser lenient lift (T4/T5), persist-validate-drop (T7). §7 tests → per-task TDD steps + Task 17 automated E2E (full UI chat loop, deterministic fake CLI; covers chips, auto-open, reload persistence, referenced-no-auto-open, home tab, reply pop-out, mobile pill, spinner settle).
 - Out-of-scope guards: no editing in viewer, no thumbnails, no read_file/task_outputs/Documents/canvas anywhere in this plan.
 - Type consistency: `CommanderOutputRef` (shared) is the single ref type; `ViewerTab`/`ConversationViewerState` defined in T12 and consumed in T14; `AgentStreamChunk.refs` defined in T4 consumed in T5/T8/T9.

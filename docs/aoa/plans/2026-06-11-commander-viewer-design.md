@@ -159,7 +159,7 @@ Prime directive: **chips must never break chat.**
 - **Server contract:** SSE `tool_result` `{name, refs?}`; `appendMessage` validates + persists `outputRefs`; `query_company_artifacts` company-scoping + filters.
 - **UI pure:** `commanderViewerModel.test.ts` — tab reducer, auto-open predicate (created × desktop vs mobile-badge), streaming ref accumulation.
 - **UI component:** `OutputRefChips` render/click (incl. title-fallback); collapsed-rail render; history mappings carry `outputRefs`.
-- E2E smoke: optional follow-up; not P1 scope.
+- **Automated E2E (added post-review, user decision):** Playwright spec driving the real UI — chatting with Commander via the composer, asserting the full interaction loop (chips, auto-open, collapse/rail, reload persistence, referenced-no-auto-open, home tab groups, reply pop-out, mobile pill, spinner settle). Deterministic: the `claude` binary resolves (via PATH) to a scripted fake replaying canned stream-json whose tool_result content mirrors the real bridge envelope and refs point at a REST-seeded artifact — production paths everywhere except the LLM and the MCP bridge process (bridge covered by unit tests). Runs on Linux CI; Windows e2e remains config-skipped per repo status.
 
 ## 8. Change inventory
 
@@ -180,7 +180,7 @@ No feature flag — additive everywhere; ship direct.
 - `read_file` refs, task/memory/thread attachment refs, `task_outputs` index refs.
 - Capital-D Documents system anywhere (chips or home tab).
 - True canvas-style streaming of replies.
-- E2E coverage.
+- Live-LLM E2E (a key-gated real `claude_cli` round trip) — the deterministic fake-CLI E2E IS in scope (§7); only the live variant stays a follow-up.
 
 ## 10. Phase 2 roadmap (recorded, not designed)
 
