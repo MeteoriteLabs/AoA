@@ -257,6 +257,8 @@ function DesktopPanel({
         activeKey={activeKey}
         onActivate={(tab) => viewer.activate(tab.id)}
         onClose={(tab) => viewer.close(tab.id)}
+        onAdd={() => viewer.activate("home")}
+        addLabel="Open viewer home"
         onToggleCollapse={viewer.collapse}
         headerTestId="commander-viewer-tabs"
       />
@@ -487,6 +489,8 @@ export function CommanderViewerPanel({
               activeKey={activeKey}
               onActivate={(tab) => viewer.activate(tab.id)}
               onClose={(tab) => viewer.close(tab.id)}
+              onAdd={() => viewer.activate("home")}
+              addLabel="Open viewer home"
               onToggleCollapse={viewer.collapse}
               headerTestId="commander-viewer-tabs"
             />
