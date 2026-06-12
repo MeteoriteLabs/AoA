@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronsLeft, ChevronsRight, FileText, Home } from "lucide-react";
-import type { ArtifactType, ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
+import { ChevronsLeft, FileText, Home } from "lucide-react";
+import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -72,21 +72,6 @@ function contentTypeForArtifactVersion(
     return "text/plain";
   }
   return "application/octet-stream";
-}
-
-// Fallback for when we only know the artifact type (no version yet), used
-// in the resolveViewer call when fileUrl is absent.
-function contentTypeForArtifactType(type: ArtifactType): string {
-  switch (type) {
-    case "code":
-      return "text/plain";
-    case "document":
-    case "report":
-    case "presentation":
-      return "text/markdown";
-    default:
-      return "text/markdown";
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +167,9 @@ interface DesktopPanelProps {
   conversationRefs: CommanderOutputRef[];
   activeTab: ViewerTab | undefined;
   tabModels: ViewerTabModel[];
+  /** Lifted from parent so width survives collapse/expand cycles (Fix 3). */
+  width: number | null;
+  onWidthChange: (w: number) => void;
 }
 
 function DesktopPanel({
@@ -190,36 +178,46 @@ function DesktopPanel({
   conversationRefs,
   activeTab,
   tabModels,
+  width,
+  onWidthChange,
 }: DesktopPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState<number | null>(null);
 
-  // Pointer-drag divider
+  // Pointer-drag divider — uses pointer capture so out-of-window drags work (Fix 2).
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
+      const el = e.currentTarget;
+      el.setPointerCapture(e.pointerId);
+
       const startX = e.clientX;
       const startWidth = containerRef.current?.offsetWidth ?? width ?? 400;
       const parentWidth = containerRef.current?.parentElement?.offsetWidth ?? window.innerWidth;
 
-      const onMove = (me: PointerEvent) => {
-        const delta = startX - me.clientX;
+      const cleanup = () => {
+        el.removeEventListener("pointermove", onMove);
+        el.removeEventListener("pointerup", onUp);
+        el.removeEventListener("pointercancel", onUp);
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        // Belt-and-braces: treat a missed pointerup as cleanup.
+        if (ev.buttons === 0) { cleanup(); return; }
+        const delta = startX - ev.clientX;
         const next = Math.min(
           Math.max(startWidth + delta, MIN_WIDTH),
           parentWidth * MAX_WIDTH_FRACTION,
         );
-        setWidth(next);
+        onWidthChange(next);
       };
 
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-      };
+      const onUp = () => { cleanup(); };
 
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
+      el.addEventListener("pointermove", onMove);
+      el.addEventListener("pointerup", onUp);
+      el.addEventListener("pointercancel", onUp);
     },
-    [width],
+    [width, onWidthChange],
   );
 
   const state = viewer.state;
@@ -244,11 +242,13 @@ function DesktopPanel({
       className="relative flex h-full shrink-0 flex-col border-l border-border bg-card"
       style={{ width: resolvedWidth }}
     >
-      {/* Drag handle */}
+      {/* Drag handle — 8px hit area straddles the border; pointer capture handles out-of-window drags */}
       <div
         onPointerDown={onPointerDown}
-        className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-brand/30 active:bg-brand/50"
-        aria-hidden
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize viewer panel"
+        className="absolute inset-y-0 -left-1 w-2 cursor-col-resize touch-none hover:bg-brand/30 active:bg-brand/50"
       />
 
       <ViewerTabs
@@ -401,7 +401,7 @@ function MobilePill({ viewer }: MobilePillProps) {
         viewer.expand();
         viewer.clearBadge();
       }}
-      className="fixed bottom-20 right-4 z-50 flex h-11 items-center gap-2 rounded-full border border-border bg-card px-3 shadow-lg sm:hidden"
+      className="fixed bottom-20 right-4 z-50 flex h-11 items-center gap-2 rounded-full border border-border bg-card px-3 shadow-lg lg:hidden"
     >
       <FileText className="size-4 text-muted-foreground" />
       {viewer.pendingBadge > 0 && (
@@ -431,6 +431,10 @@ export function CommanderViewerPanel({
   conversationRefs,
   isMobile,
 }: CommanderViewerPanelProps) {
+  // Fix 3: width lives here (not in DesktopPanel) so it survives collapse ↔ expand cycles.
+  // DesktopPanel unmounts when collapsed to the rail; this component stays mounted.
+  const [panelWidth, setPanelWidth] = useState<number | null>(null);
+
   const state = viewer.state;
   const activeTab = state.tabs.find((t) => t.id === state.activeId);
 
@@ -507,6 +511,8 @@ export function CommanderViewerPanel({
       conversationRefs={conversationRefs}
       activeTab={activeTab}
       tabModels={tabModels}
+      width={panelWidth}
+      onWidthChange={setPanelWidth}
     />
   );
 }

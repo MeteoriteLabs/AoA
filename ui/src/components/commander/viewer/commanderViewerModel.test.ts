@@ -7,6 +7,7 @@ import {
   shouldAutoOpen,
   chipLabel,
   collectConversationRefs,
+  mergeRefs,
   type ConversationViewerState,
 } from "./commanderViewerModel";
 import type { CommanderOutputRef } from "@armyofagents/shared";
@@ -62,5 +63,37 @@ describe("commanderViewerModel", () => {
     ]);
     expect(refs).toHaveLength(2);
     expect(refs.find((r) => r.id === "a1")!.action).toBe("created");
+  });
+
+  describe("mergeRefs", () => {
+    it("created wins over referenced for same kind|id|versionId key", () => {
+      const existing = [ref("a1", "referenced")];
+      const incoming = [ref("a1", "created")];
+      const result = mergeRefs(existing, incoming);
+      expect(result).toHaveLength(1);
+      expect(result[0]!.action).toBe("created");
+    });
+
+    it("existing wins when incoming is also referenced (no promotion)", () => {
+      const existing = [ref("a1", "referenced")];
+      const incoming = [ref("a1", "referenced")];
+      const result = mergeRefs(existing, incoming);
+      expect(result).toHaveLength(1);
+    });
+
+    it("distinct versionIds are kept as separate entries", () => {
+      const r1: CommanderOutputRef = { v: 1, kind: "artifact", id: "a1", versionId: "v1", action: "created", title: "Plan" } as unknown as CommanderOutputRef;
+      const r2: CommanderOutputRef = { v: 1, kind: "artifact", id: "a1", versionId: "v2", action: "created", title: "Plan v2" } as unknown as CommanderOutputRef;
+      const result = mergeRefs([r1], [r2]);
+      expect(result).toHaveLength(2);
+    });
+
+    it("existing entry wins in a tie (no incoming promotion for non-created)", () => {
+      const existing = [ref("a1", "created")];
+      const incoming = [ref("a1", "referenced")];
+      const result = mergeRefs(existing, incoming);
+      expect(result).toHaveLength(1);
+      expect(result[0]!.action).toBe("created");
+    });
   });
 });

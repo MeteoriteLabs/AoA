@@ -41,6 +41,7 @@ export function CommanderViewerHome({
     queryKey: ["commander-viewer-recent-artifacts", companyId],
     queryFn: () => artifactsApi.listByCompany(companyId),
     staleTime: 30_000,
+    enabled: !!companyId,
   });
 
   const recentRefs: CommanderOutputRef[] = (recent ?? []).slice(0, 15).map((a) => ({

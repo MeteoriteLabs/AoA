@@ -52,6 +52,7 @@ import {
   CommanderViewerPanel,
   OutputRefChips,
   collectConversationRefs,
+  mergeRefs,
   useCommanderViewer,
 } from "./commander/viewer";
 import {
@@ -675,7 +676,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
-                ? { ...m, outputRefs: [...(m.outputRefs ?? []), ...liveRefs] }
+                ? { ...m, outputRefs: mergeRefs(m.outputRefs ?? [], liveRefs) }
                 : m,
             ),
           );

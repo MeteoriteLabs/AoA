@@ -88,17 +88,31 @@ export function shouldAutoOpen(ref: CommanderOutputRef, isMobile: boolean): bool
 
 const refKey = (r: CommanderOutputRef) => `${r.kind}|${r.id}|${r.versionId ?? ""}`;
 
+/**
+ * Merge two lists of refs, deduplicating by `kind|id|versionId`.
+ * "created" wins over "referenced" for the same key; the existing entry wins
+ * on all other ties (preserving ordering stability).
+ */
+export function mergeRefs(
+  existing: CommanderOutputRef[],
+  incoming: CommanderOutputRef[],
+): CommanderOutputRef[] {
+  const map = new Map<string, CommanderOutputRef>();
+  for (const r of existing) map.set(refKey(r), r);
+  for (const r of incoming) {
+    const k = refKey(r);
+    const prev = map.get(k);
+    if (!prev || (prev.action === "referenced" && r.action === "created")) map.set(k, r);
+  }
+  return [...map.values()];
+}
+
 /** Home-tab "Recent from this conversation": dedupe across loaded messages, created wins. */
 export function collectConversationRefs(
   messages: ReadonlyArray<{ outputRefs?: CommanderOutputRef[] | null }>,
 ): CommanderOutputRef[] {
-  const map = new Map<string, CommanderOutputRef>();
-  for (const m of messages) {
-    for (const r of m.outputRefs ?? []) {
-      const k = refKey(r);
-      const prev = map.get(k);
-      if (!prev || (prev.action === "referenced" && r.action === "created")) map.set(k, r);
-    }
-  }
-  return [...map.values()];
+  return mergeRefs(
+    [],
+    messages.flatMap((m) => m.outputRefs ?? []),
+  );
 }
