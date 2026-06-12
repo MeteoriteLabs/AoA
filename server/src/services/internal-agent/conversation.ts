@@ -4,6 +4,11 @@ import {
   internalAgentConversations,
   internalAgentMessages,
 } from "@armyofagents/db";
+import {
+  commanderOutputRefSchema,
+  MAX_OUTPUT_REFS_PER_MESSAGE,
+  type CommanderOutputRef,
+} from "@armyofagents/shared";
 
 export interface MessageInput {
   role: string;
@@ -14,6 +19,7 @@ export interface MessageInput {
   departmentContext?: string | null;
   tokenCount?: number | null;
   runId?: string | null;
+  outputRefs?: unknown;
 }
 
 const MESSAGE_THRESHOLD = 20;
@@ -44,6 +50,19 @@ export function conversationService(db: Db) {
     },
 
     async appendMessage(conversationId: string, message: MessageInput) {
+      // Viewer refs: validate PER REF at the persistence boundary — one malformed
+      // lifted ref must not erase the message's valid refs (T2 review). Message
+      // itself always saves (design v2 §6).
+      let outputRefs: unknown = null;
+      if (Array.isArray(message.outputRefs) && message.outputRefs.length > 0) {
+        const valid = message.outputRefs
+          .map((r) => commanderOutputRefSchema.safeParse(r))
+          .filter((p) => p.success)
+          .map((p) => (p as { success: true; data: CommanderOutputRef }).data)
+          .slice(0, MAX_OUTPUT_REFS_PER_MESSAGE);
+        outputRefs = valid.length > 0 ? valid : null;
+      }
+
       const inserted = await db
         .insert(internalAgentMessages)
         .values({
@@ -56,6 +75,7 @@ export function conversationService(db: Db) {
           departmentContext: message.departmentContext ?? null,
           tokenCount: message.tokenCount ?? null,
           runId: message.runId ?? null,
+          outputRefs,
         })
         .returning()
         .then((rows: any[]) => rows[0]);
