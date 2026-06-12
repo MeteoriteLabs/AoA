@@ -1,11 +1,12 @@
 import { useCallback, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronsLeft, FileText, Home } from "lucide-react";
+import { ChevronsLeft, FileText, Globe, Home } from "lucide-react";
 import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { artifactsApi } from "../../../api/artifacts";
+import { BrowserViewer } from "../../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../../viewers/ViewerTabs";
 import { SharedContentViewer } from "../../viewers/SharedContentViewer";
 import { resolveViewer } from "../../viewers/viewer-registry";
@@ -374,6 +375,12 @@ function TabBodySwitch({
     return <ReplyTabBody replyContent={activeTab.replyContent} />;
   }
 
+  if (activeTab.kind === "browser") {
+    // Keyed per tab so switching between two browser tabs remounts with the
+    // right initialUrl (BrowserViewer seeds its url state on mount).
+    return <BrowserViewer key={activeTab.id} initialUrl={activeTab.url ?? "about:blank"} />;
+  }
+
   return (
     <UnavailableBody message="This item is no longer available (it may have been deleted, or you may not have access)." />
   );
@@ -445,7 +452,7 @@ export function CommanderViewerPanel({
         id: t.id,
         kind: t.kind,
         title: t.title,
-        icon: FileText,
+        icon: t.kind === "browser" ? Globe : FileText,
       }),
     ),
   ];

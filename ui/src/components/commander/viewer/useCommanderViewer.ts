@@ -3,6 +3,7 @@ import type { CommanderOutputRef } from "@armyofagents/shared";
 import {
   closeTab,
   emptyViewerState,
+  openBrowserTab,
   openRefTab,
   openReplyTab,
   setActive,
@@ -15,6 +16,8 @@ export interface CommanderViewerApi {
   state: ConversationViewerState;
   openRef: (ref: CommanderOutputRef) => void;
   openReply: (messageId: string, content: string) => void;
+  /** Open a url in a sandboxed Browser tab (link clicks in replies). */
+  openBrowser: (url: string) => void;
   onLiveRef: (ref: CommanderOutputRef, isMobile: boolean) => void;
   activate: (tabId: string) => void;
   close: (tabId: string) => void;
@@ -61,6 +64,7 @@ export function useCommanderViewer(conversationId: string | null): CommanderView
     state,
     openRef: (ref) => update(openRefTab(readState(), ref)),
     openReply: (messageId, content) => update(openReplyTab(readState(), messageId, content)),
+    openBrowser: (url) => update(openBrowserTab(readState(), url)),
     onLiveRef: (ref, isMobile) => {
       const current = readState();
       if (shouldAutoOpen(ref, isMobile)) {

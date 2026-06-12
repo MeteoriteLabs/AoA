@@ -3,15 +3,17 @@
 import type { CommanderOutputRef } from "@armyofagents/shared";
 
 export interface ViewerTab {
-  /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` */
+  /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` | `browser:<url>` */
   id: string;
-  kind: "artifact" | "reply";
+  kind: "artifact" | "reply" | "browser";
   title: string;
-  /** artifact id, or message id for replies */
+  /** artifact id, message id for replies, or url for browser tabs */
   refId: string;
   versionId?: string | null;
   /** reply tabs only — markdown body */
   replyContent?: string;
+  /** browser tabs only — the url loaded in the sandboxed iframe */
+  url?: string;
 }
 
 export interface ConversationViewerState {
@@ -58,6 +60,22 @@ export function openReplyTab(
   const id = `reply:${messageId}`;
   if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
   const tab: ViewerTab = { id, kind: "reply", title: "Commander reply", refId: messageId, replyContent: content };
+  return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
+}
+
+export function openBrowserTab(
+  state: ConversationViewerState,
+  url: string,
+): ConversationViewerState {
+  const id = `browser:${url}`;
+  if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
+  let title = url;
+  try {
+    title = new URL(url).hostname || url;
+  } catch {
+    // Unparseable url — keep the raw string as the title.
+  }
+  const tab: ViewerTab = { id, kind: "browser", title, refId: url, url };
   return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
 }
 

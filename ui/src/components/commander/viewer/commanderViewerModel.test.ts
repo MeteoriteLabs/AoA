@@ -3,6 +3,7 @@ import {
   emptyViewerState,
   openRefTab,
   openReplyTab,
+  openBrowserTab,
   closeTab,
   shouldAutoOpen,
   chipLabel,
@@ -42,6 +43,22 @@ describe("commanderViewerModel", () => {
     expect(s.tabs[0]).toMatchObject({ kind: "reply", refId: "msg-1" });
     s = openReplyTab(s, "msg-1", "# Hello");
     expect(s.tabs).toHaveLength(1); // focus, not duplicate
+  });
+
+  it("openBrowserTab opens a browser tab titled by hostname, expands, dedupes", () => {
+    let s = emptyViewerState();
+    s = openBrowserTab(s, "https://example.com/path");
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0]).toMatchObject({ kind: "browser", url: "https://example.com/path", title: "example.com" });
+    expect(s.expanded).toBe(true);
+    expect(s.activeId).toBe(s.tabs[0]!.id);
+    const again = openBrowserTab(s, "https://example.com/path");
+    expect(again.tabs).toHaveLength(1); // dedup, focus
+  });
+
+  it("openBrowserTab falls back to the raw url as title when the url cannot be parsed", () => {
+    const s = openBrowserTab(emptyViewerState(), "not a url");
+    expect(s.tabs[0]).toMatchObject({ kind: "browser", title: "not a url", url: "not a url" });
   });
 
   it("shouldAutoOpen: created+desktop only", () => {

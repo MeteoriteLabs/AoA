@@ -1066,7 +1066,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 msg.role === "user" ? (
                   <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                 ) : msg.streamingDone ? (
-                  <MarkdownBody className="prose-xs [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_pre]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs">
+                  <MarkdownBody
+                    className="prose-xs [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_pre]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs"
+                    onLinkOpen={enableViewerPanel ? viewer.openBrowser : undefined}
+                  >
                     {msg.content}
                   </MarkdownBody>
                 ) : (
