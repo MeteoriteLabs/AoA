@@ -1,0 +1,8 @@
+# Scoped line-ending pins only — no repo-wide normalization.
+
+# The fake-claude POSIX shim is exec'd by the kernel on Linux CI; a CRLF
+# checkout would corrupt the `#!/bin/sh` shebang (exec format error), making
+# Commander's `which claude` lookup fail silently. Pin LF regardless of the
+# checkout machine's core.autocrlf.
+tests/e2e/fixtures/fake-claude/claude text eol=lf
+tests/e2e/fixtures/fake-claude/fake-claude.mjs text eol=lf

@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
+import { FAKE_CLAUDE_CONTROL_PATH } from "./helpers/fake-claude";
 
 // Windows runner can't start embedded-postgres because GitHub's Windows
 // runner is `runneradmin` (administrative) and PostgreSQL refuses to
@@ -20,6 +22,16 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 const AOA_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
   ? ""
   : fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-home-"));
+
+// Commander viewer e2e (commander-viewer.spec.ts): resolve `claude` to the
+// deterministic fake CLI. cli-mode.ts looks the binary up via `which`/`where`
+// and spawns the literal name "claude", both using the server's PATH —
+// prepending the fixture dir wins the lookup without touching real installs.
+const FAKE_CLAUDE_BIN_DIR = path.join(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "fixtures",
+  "fake-claude",
+);
 
 export default defineConfig({
   testDir: ".",
@@ -76,6 +88,11 @@ export default defineConfig({
           // Pin e2e marketplace data to the copied bundled fixture. The
           // service falls back to bundled data when the CDN cannot be reached.
           AOA_MARKETPLACE_CDN_URL: "http://127.0.0.1:1/catalog.json",
+          // Commander viewer e2e: `claude` resolves to the deterministic
+          // fake CLI (tests/e2e/fixtures/fake-claude). The control file is
+          // rewritten by the spec before each send to script the next turn.
+          PATH: `${FAKE_CLAUDE_BIN_DIR}${path.delimiter}${process.env.PATH ?? ""}`,
+          AOA_E2E_FAKE_CLAUDE_CONTROL: FAKE_CLAUDE_CONTROL_PATH,
         },
       },
   outputDir: "./test-results",
