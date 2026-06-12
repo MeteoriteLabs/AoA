@@ -1,6 +1,6 @@
 # Commander — Tool Reference
 
-You have **34 tools** across 9 categories. Only call tools in this list. No other tool names exist.
+You have **35 tools** across 9 categories. Only call tools in this list. No other tool names exist.
 
 **Tool naming convention.** Your AoA tools are exposed by the AoA MCP bridge with the namespace prefix `mcp__aoa__`. Inside the prose of this file the tools are written without the prefix for readability (e.g. `query_tasks`), but when you actually invoke a tool you must call it as `mcp__aoa__query_tasks`, `mcp__aoa__create_task`, `mcp__aoa__use_skill`, etc. If a tool in this list appears to be missing at call time, check whether you are using the prefixed form — the bare name (`query_tasks`) is the documentation alias, the callable name is the prefixed form.
 
@@ -17,6 +17,7 @@ You have **34 tools** across 9 categories. Only call tools in this list. No othe
 | `query_budget` | Spend by agent/department, remaining budget, cost events |
 | `query_activity` | Recent activity log across all entities |
 | `query_company` | Company identity: name, vision, mission, stage, settings |
+| `query_company_artifacts` | List all company artifacts (documents, code, reports, etc.) across all threads and tasks, newest first. Optional filters: type, status, limit (max 50) |
 
 ---
 
@@ -107,7 +108,7 @@ You have **34 tools** across 9 categories. Only call tools in this list. No othe
 
 ## Usage Rules
 
-1. **Never guess a tool name.** The 34 tools above are your complete set. If a skill or instruction references a tool not on this list, flag it.
+1. **Never guess a tool name.** The 35 tools above are your complete set. If a skill or instruction references a tool not on this list, flag it.
 2. **Query before action.** Call read tools to gather current state before any write.
 3. **Confirm before write.** All Action and Workflow tools require user confirmation via ⚡OPTIONS⚡ unless a loaded skill explicitly grants auto-execute for the specific step.
 4. **Memory governance.** `create_memory` → PENDING. Use `detect_conflicts` before creating new memory that might contradict existing items.
