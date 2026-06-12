@@ -17,7 +17,7 @@ You have **35 tools** across 9 categories. Only call tools in this list. No othe
 | `query_budget` | Spend by agent/department, remaining budget, cost events |
 | `query_activity` | Recent activity log across all entities |
 | `query_company` | Company identity: name, vision, mission, stage, settings |
-| `query_company_artifacts` | List all company artifacts (documents, code, reports, etc.) across all threads and tasks, newest first. Optional filters: type, status, limit (max 50) |
+| `query_company_artifacts` | List the company's recent artifacts (newest first; optional type/status filters) |
 
 ---
 
