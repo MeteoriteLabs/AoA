@@ -262,13 +262,19 @@ function handleUserEvent(event: Record<string, unknown>, toolNames: Map<string, 
     const isError = b.is_error === true;
 
     // Lift outputRefs from the bridge's JSON envelope (lenient — any failure ⇒ no refs).
+    // Gated to MCP tools (claude names them mcp__<server>__<tool>): built-in tools
+    // (Bash/Read/...) stream raw text that must never be interpreted as an envelope
+    // (T4 review — phantom/spoofed ref defense). Also skips JSON.parse on large
+    // built-in outputs for free.
     let refs: CommanderOutputRef[] | undefined;
-    try {
-      const parsedEnvelope = JSON.parse(fullText) as { outputRefs?: unknown };
-      const validated = commanderOutputRefsSchema.safeParse(parsedEnvelope?.outputRefs);
-      if (validated.success && validated.data.length > 0) refs = validated.data;
-    } catch {
-      /* not JSON — fine */
+    if (resolvedName.startsWith("mcp__")) {
+      try {
+        const parsedEnvelope = JSON.parse(fullText) as { outputRefs?: unknown };
+        const validated = commanderOutputRefsSchema.safeParse(parsedEnvelope?.outputRefs);
+        if (validated.success && validated.data.length > 0) refs = validated.data;
+      } catch {
+        /* not JSON — fine */
+      }
     }
 
     chunks.push({

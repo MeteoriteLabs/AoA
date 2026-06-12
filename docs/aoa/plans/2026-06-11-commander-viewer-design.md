@@ -189,6 +189,7 @@ No feature flag — additive everywhere; ship direct.
 - `get_task`/task tools surface `task_outputs` (files, preview URLs, PRs).
 - Memory assets; Documents in home tab; canvas streaming.
 - Refs-table promotion (backfill from JSON) only if backlink-style queries materialize as a product surface.
+- Forward the tool_use `id` in `tool_call`/`tool_result` SSE events so the UI can correlate exactly (eliminates the parallel same-name settle quirk; T4 review recommendation).
 
 ## 11. Review log (v1 → v2)
 
