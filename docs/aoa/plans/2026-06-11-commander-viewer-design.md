@@ -148,7 +148,7 @@ Prime directive: **chips must never break chat.**
 
 - Builder: malformed params/data → skip ref, log, never throw. Envelope assembly wraps ref-building in try/catch — a ref bug cannot fail a tool call.
 - Parsers lift refs leniently: absent/unparseable → no refs, chunk otherwise unchanged.
-- `appendMessage` zod-validates; invalid refs dropped, message always saves.
+- `appendMessage` zod-validates **per ref**; invalid refs are dropped individually, the message always saves.
 - Client ignores unknown `kind`/`v` values (P2 forward-compat). Version-skew (old server/new client or reverse): chips simply don't appear.
 
 ## 7. Testing

@@ -108,7 +108,9 @@ export function buildOutputRefs(
       }
       case "query_artifacts":
       case "query_company_artifacts":
-        return refsFromRows(result.data).slice(0, MAX_OUTPUT_REFS_PER_MESSAGE);
+        // Dedupe BEFORE capping: query_artifacts inner-joins attachments, so one
+        // artifact attached to N entries yields N duplicate rows (review T2 #1).
+        return mergeOutputRefs([], refsFromRows(result.data));
       case "get_task": {
         const ref = artifactRef({
           id: asId(d.artifactId),

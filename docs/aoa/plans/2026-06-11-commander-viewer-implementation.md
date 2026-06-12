@@ -951,7 +951,18 @@ describe("appendMessage outputRefs", () => {
     expect(captured.values.outputRefs).toEqual([expect.objectContaining({ id: "a1" })]);
   });
 
-  it("drops invalid refs but still saves the message", async () => {
+  it("drops invalid refs individually but still saves the message", async () => {
+    const { db, captured } = mockDb();
+    await conversationService(db).appendMessage("conv-1", {
+      role: "assistant",
+      content: "done",
+      outputRefs: [{ v: 99, nope: true }, validRef],
+    });
+    expect(captured.values.outputRefs).toEqual([expect.objectContaining({ id: "a1" })]);
+    expect(captured.values.content).toBe("done");
+  });
+
+  it("all-invalid refs → null", async () => {
     const { db, captured } = mockDb();
     await conversationService(db).appendMessage("conv-1", {
       role: "assistant",
@@ -959,7 +970,6 @@ describe("appendMessage outputRefs", () => {
       outputRefs: [{ v: 99, nope: true }],
     });
     expect(captured.values.outputRefs).toBeNull();
-    expect(captured.values.content).toBe("done");
   });
 
   it("null when absent", async () => {
@@ -978,7 +988,7 @@ Expected: FAIL — `captured.values.outputRefs` is `undefined`
 - [ ] **Step 3: Implement.** In `conversation.ts`:
 
 ```ts
-import { commanderOutputRefsSchema } from "@armyofagents/shared";
+import { commanderOutputRefSchema, MAX_OUTPUT_REFS_PER_MESSAGE, type CommanderOutputRef } from "@armyofagents/shared";
 ```
 
 `MessageInput` gains:
@@ -991,12 +1001,17 @@ In `appendMessage`, before the insert, validate; and add the field to `.values({
 
 ```ts
     async appendMessage(conversationId: string, message: MessageInput) {
-      // Viewer refs: validate at the persistence boundary; invalid refs are
-      // dropped — the message itself must always save (design v2 §6).
+      // Viewer refs: validate PER REF at the persistence boundary — one malformed
+      // lifted ref must not erase the message's valid refs (T2 review). Message
+      // itself always saves (design v2 §6).
       let outputRefs: unknown = null;
-      if (message.outputRefs != null) {
-        const parsed = commanderOutputRefsSchema.safeParse(message.outputRefs);
-        outputRefs = parsed.success && parsed.data.length > 0 ? parsed.data : null;
+      if (Array.isArray(message.outputRefs) && message.outputRefs.length > 0) {
+        const valid = message.outputRefs
+          .map((r) => commanderOutputRefSchema.safeParse(r))
+          .filter((p): p is { success: true; data: CommanderOutputRef } => p.success)
+          .map((p) => p.data)
+          .slice(0, MAX_OUTPUT_REFS_PER_MESSAGE);
+        outputRefs = valid.length > 0 ? valid : null;
       }
 
       const inserted = await db
@@ -1019,7 +1034,7 @@ In `appendMessage`, before the insert, validate; and add the field to `.values({
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run server/src/services/internal-agent/__tests__/conversation-output-refs.test.ts`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 

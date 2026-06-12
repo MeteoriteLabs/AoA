@@ -1,6 +1,7 @@
 // server/src/services/internal-agent/__tests__/output-refs.test.ts
 import { describe, it, expect } from "vitest";
 import { buildOutputRefs, mergeOutputRefs } from "../output-refs.js";
+import { commanderOutputRefsSchema } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 
 const ok = (data: unknown) => ({ success: true, data, summary: "ok" });
@@ -113,5 +114,44 @@ describe("mergeOutputRefs", () => {
     const merged = mergeOutputRefs(referenced, created);
     expect(merged).toHaveLength(20);
     expect(merged.filter((r) => r.action === "created")).toHaveLength(2);
+  });
+});
+
+describe("review-promoted edge cases", () => {
+  const ok = (data: unknown) => ({ success: true, data, summary: "ok" });
+
+  it("query path dedupes duplicate rows BEFORE capping (no distinct ref lost)", () => {
+    const dup = { artifactId: "dup", title: "Dup", type: "document", currentVersionId: "v1", status: "active" };
+    const rows = [...Array.from({ length: 21 }, () => dup), { artifactId: "distinct", title: "Distinct", type: "report", currentVersionId: null, status: "draft" }];
+    const refs = buildOutputRefs("query_artifacts", {}, ok(rows));
+    expect(refs).toHaveLength(2);
+    expect(refs.map((r) => r.id)).toContain("distinct");
+  });
+
+  it("mergeOutputRefs backfills title in both directions", () => {
+    const created = (title: string | null) => ({ v: 1, kind: "artifact", id: "a1", versionId: null, action: "created", title } as any);
+    const referenced = (title: string | null) => ({ v: 1, kind: "artifact", id: "a1", versionId: null, action: "referenced", title } as any);
+    // created (no title) first, referenced (title) second → stays created, adopts title
+    const m1 = mergeOutputRefs([created(null)], [referenced("From Ref")]);
+    expect(m1[0]).toMatchObject({ action: "created", title: "From Ref" });
+    // referenced (title) first, created (no title) second → becomes created, keeps title
+    const m2 = mergeOutputRefs([referenced("Kept")], [created(null)]);
+    expect(m2[0]).toMatchObject({ action: "created", title: "Kept" });
+  });
+
+  it("builder output always validates against the shared schema", () => {
+    const cases = [
+      buildOutputRefs("create_artifact", { title: "T", type: "document" }, ok({ artifactId: "a1", versionId: "v1" })),
+      buildOutputRefs("get_task", { taskId: "t" }, ok({ artifactId: "a1", title: "Task title" })),
+      buildOutputRefs("query_artifacts", {}, ok([{ artifactId: "a1", title: "Q", type: "code", currentVersionId: null, status: "active" }])),
+    ];
+    for (const refs of cases) {
+      expect(commanderOutputRefsSchema.safeParse(refs).success).toBe(true);
+    }
+  });
+
+  it("create_artifact infers versionNumber 1 only when versionId present", () => {
+    expect(buildOutputRefs("create_artifact", { title: "T" }, ok({ artifactId: "a1", versionId: "v1" }))[0]!.versionNumber).toBe(1);
+    expect(buildOutputRefs("create_artifact", { title: "T" }, ok({ artifactId: "a1", versionId: null }))[0]!.versionNumber).toBeNull();
   });
 });
