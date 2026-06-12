@@ -20,6 +20,7 @@ import {
   normalizeCommanderContextScope,
   type NormalizedCommanderContextScope,
 } from "./context-scope.js";
+import { collectChunkRefs, mergeOutputRefs } from "./output-refs.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -288,8 +289,10 @@ export function agentLoopService(db: Db) {
         };
 
         let accumulatedAssistant = "";
+        const turnRefs: CommanderOutputRef[] = [];
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
+          collectChunkRefs(turnRefs, chunk);
           yield chunk;
         }
 
@@ -299,9 +302,11 @@ export function agentLoopService(db: Db) {
           // appendMessage defaults the optional fields to null, matching the
           // internal_agent_messages schema. role:"assistant" is a valid role
           // per the schema's role enum.
+          const outputRefs = turnRefs.length > 0 ? mergeOutputRefs([], turnRefs) : undefined;
           await convService.appendMessage(conversation.id, {
             role: "assistant",
             content: accumulatedAssistant,
+            ...(outputRefs ? { outputRefs } : {}),
           });
         }
 

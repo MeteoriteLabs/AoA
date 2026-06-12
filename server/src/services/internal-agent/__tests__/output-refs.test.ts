@@ -1,6 +1,6 @@
 // server/src/services/internal-agent/__tests__/output-refs.test.ts
 import { describe, it, expect } from "vitest";
-import { buildOutputRefs, mergeOutputRefs } from "../output-refs.js";
+import { buildOutputRefs, mergeOutputRefs, collectChunkRefs } from "../output-refs.js";
 import { commanderOutputRefsSchema } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 
@@ -153,5 +153,16 @@ describe("review-promoted edge cases", () => {
   it("create_artifact infers versionNumber 1 only when versionId present", () => {
     expect(buildOutputRefs("create_artifact", { title: "T" }, ok({ artifactId: "a1", versionId: "v1" }))[0]!.versionNumber).toBe(1);
     expect(buildOutputRefs("create_artifact", { title: "T" }, ok({ artifactId: "a1", versionId: null }))[0]!.versionNumber).toBeNull();
+  });
+});
+
+describe("collectChunkRefs", () => {
+  const created = { v: 1, kind: "artifact", id: "a1", action: "created" } as any;
+  it("collects refs from tool_result chunks and ignores everything else", () => {
+    const sink: any[] = [];
+    collectChunkRefs(sink, { type: "tool_result", name: "mcp__aoa__create_artifact", result: { success: true, data: null, summary: "" }, refs: [created] } as any);
+    collectChunkRefs(sink, { type: "text", delta: "hi" } as any);
+    collectChunkRefs(sink, { type: "tool_result", name: "post_entry", result: { success: true, data: null, summary: "" } } as any);
+    expect(sink).toHaveLength(1);
   });
 });

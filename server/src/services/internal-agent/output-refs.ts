@@ -9,6 +9,7 @@ import {
   type CommanderOutputRef,
 } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
+import type { AgentStreamChunk } from "./agent-loop.js";
 
 function asRecord(v: unknown): Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
@@ -124,6 +125,13 @@ export function buildOutputRefs(
     }
   } catch {
     return [];
+  }
+}
+
+/** Collect refs from a forwarded chunk into a turn-level sink (mutates sink). */
+export function collectChunkRefs(sink: CommanderOutputRef[], chunk: AgentStreamChunk): void {
+  if (chunk.type === "tool_result" && Array.isArray(chunk.refs) && chunk.refs.length > 0) {
+    sink.push(...chunk.refs);
   }
 }
 
