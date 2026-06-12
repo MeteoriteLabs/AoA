@@ -1,0 +1,66 @@
+import { describe, it, expect } from "vitest";
+import {
+  emptyViewerState,
+  openRefTab,
+  openReplyTab,
+  closeTab,
+  shouldAutoOpen,
+  chipLabel,
+  collectConversationRefs,
+  type ConversationViewerState,
+} from "./commanderViewerModel";
+import type { CommanderOutputRef } from "@armyofagents/shared";
+
+const ref = (id: string, action: "created" | "referenced" = "created", title: string | null = "Plan"): CommanderOutputRef =>
+  ({ v: 1, kind: "artifact", id, action, title } as CommanderOutputRef);
+
+describe("commanderViewerModel", () => {
+  it("openRefTab adds a tab and focuses it; reopening focuses without duplicating", () => {
+    let s: ConversationViewerState = emptyViewerState();
+    s = openRefTab(s, ref("a1"));
+    expect(s.tabs).toHaveLength(1);
+    expect(s.activeId).toBe(s.tabs[0]!.id);
+    expect(s.expanded).toBe(true);
+    const again = openRefTab(s, ref("a1"));
+    expect(again.tabs).toHaveLength(1);
+  });
+
+  it("closeTab removes and re-focuses neighbor (home when empty)", () => {
+    let s = openRefTab(openRefTab(emptyViewerState(), ref("a1")), ref("a2"));
+    const closing = s.tabs.find((t) => t.refId === "a2")!;
+    s = closeTab(s, closing.id);
+    expect(s.tabs).toHaveLength(1);
+    expect(s.activeId).toBe(s.tabs[0]!.id);
+    s = closeTab(s, s.tabs[0]!.id);
+    expect(s.tabs).toHaveLength(0);
+    expect(s.activeId).toBe("home");
+  });
+
+  it("openReplyTab opens a markdown tab keyed by message id", () => {
+    let s = openReplyTab(emptyViewerState(), "msg-1", "# Hello");
+    expect(s.tabs[0]).toMatchObject({ kind: "reply", refId: "msg-1" });
+    s = openReplyTab(s, "msg-1", "# Hello");
+    expect(s.tabs).toHaveLength(1); // focus, not duplicate
+  });
+
+  it("shouldAutoOpen: created+desktop only", () => {
+    expect(shouldAutoOpen(ref("a", "created"), false)).toBe(true);
+    expect(shouldAutoOpen(ref("a", "created"), true)).toBe(false);
+    expect(shouldAutoOpen(ref("a", "referenced"), false)).toBe(false);
+  });
+
+  it("chipLabel falls back to kind + short id", () => {
+    expect(chipLabel(ref("a1", "created", "GTM Plan"))).toBe("GTM Plan");
+    expect(chipLabel(ref("abcdef123456", "created", null))).toBe("artifact abcdef12");
+  });
+
+  it("collectConversationRefs dedupes across messages, created wins", () => {
+    const refs = collectConversationRefs([
+      { outputRefs: [ref("a1", "referenced")] },
+      { outputRefs: [ref("a1", "created"), ref("a2", "referenced")] },
+      { outputRefs: null },
+    ]);
+    expect(refs).toHaveLength(2);
+    expect(refs.find((r) => r.id === "a1")!.action).toBe("created");
+  });
+});
