@@ -2,6 +2,10 @@
 import { describe, it, expect } from "vitest";
 import { conversationService } from "../conversation.js";
 
+// NOTE: legacy conversationService tests (sequence-mock style) live in
+// server/src/__tests__/conversation-service.test.ts — extend THAT file for
+// general appendMessage behavior; this file owns the outputRefs boundary.
+
 function mockDb() {
   const captured: { values?: any } = {};
   const db = {
@@ -70,5 +74,32 @@ describe("appendMessage outputRefs", () => {
       content: "hi",
     });
     expect(captured.values.outputRefs).toBeNull();
+  });
+
+  it("caps at 20 with created-first precedence and dedupes", async () => {
+    const { db, captured } = mockDb();
+    const referenced = Array.from({ length: 25 }, (_, i) => ({ v: 1, kind: "artifact", id: `r${i}`, action: "referenced" }));
+    const created = [{ v: 1, kind: "artifact", id: "c1", action: "created" }];
+    const dup = [{ v: 1, kind: "artifact", id: "r0", action: "referenced" }]; // duplicate of r0
+    await conversationService(db).appendMessage("conv-1", {
+      role: "assistant",
+      content: "done",
+      outputRefs: [...referenced, ...dup, ...created],
+    });
+    const persisted = captured.values.outputRefs as any[];
+    expect(persisted).toHaveLength(20);
+    expect(persisted.filter((r) => r.action === "created")).toHaveLength(1);
+    expect(persisted.filter((r) => r.id === "r0")).toHaveLength(1); // deduped
+  });
+
+  it("non-array outputRefs (string) → null, message saves", async () => {
+    const { db, captured } = mockDb();
+    await conversationService(db).appendMessage("conv-1", {
+      role: "assistant",
+      content: "done",
+      outputRefs: '[{"v":1,"kind":"artifact","id":"a1","action":"created"}]',
+    });
+    expect(captured.values.outputRefs).toBeNull();
+    expect(captured.values.content).toBe("done");
   });
 });
