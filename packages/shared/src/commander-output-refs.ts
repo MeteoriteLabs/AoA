@@ -25,15 +25,18 @@ export interface CommanderOutputRef {
 export const commanderOutputRefSchema = z.object({
   v: z.literal(1),
   kind: z.enum(COMMANDER_OUTPUT_REF_KINDS),
-  id: z.string().min(1),
-  versionId: z.string().nullish(),
+  id: z.string().min(1).max(256),
+  versionId: z.string().min(1).max(256).nullish(),
   versionNumber: z.number().int().positive().nullish(),
   title: z.string().max(MAX_OUTPUT_REF_TITLE_LENGTH).nullish(),
   action: z.enum(["created", "referenced"]),
-  toolCallId: z.string().nullish(),
-  mimeType: z.string().nullish(),
+  toolCallId: z.string().min(1).max(256).nullish(),
+  mimeType: z.string().min(1).max(256).nullish(),
 });
 
 export const commanderOutputRefsSchema = z
   .array(commanderOutputRefSchema)
   .max(MAX_OUTPUT_REFS_PER_MESSAGE);
+
+// Compile-time guard: schema output must stay assignable to the interface.
+commanderOutputRefSchema satisfies z.ZodType<CommanderOutputRef>;

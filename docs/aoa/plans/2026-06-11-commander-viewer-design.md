@@ -57,9 +57,9 @@ interface CommanderOutputRef {
 }
 ```
 
-Rules: **max 20 refs/message** (`created` survives trimming first); dedupe by `(kind, id, versionId)` with `created` winning. `title`/`versionNumber` are best-effort — chips fall back to kind + short id; the viewer resolves real display names at open time (it fetches the artifact anyway, as `ThreadViewer` does). Refs carry IDs + labels only — never content. Title strings capped at 200 chars.
+Rules: **max 20 refs/message** (`created` survives trimming first); dedupe by `(kind, id, versionId)` with `created` winning. `title`/`versionNumber` are best-effort — chips fall back to kind + short id; the viewer resolves real display names at open time (it fetches the artifact anyway, as `ThreadViewer` does). Refs carry IDs + labels only — never content. Title strings capped at 200 chars; id/versionId/toolCallId/mimeType capped at 256.
 
-The zod schema (`CommanderOutputRefSchema`) lives beside the type in `packages/shared` and is the single validator used at the persistence boundary.
+The zod schema (`commanderOutputRefSchema`) lives beside the type in `packages/shared` and is the single validator used at the persistence boundary.
 
 ### 3b. Ref-builder (new file `server/src/services/internal-agent/output-refs.ts`)
 
@@ -91,7 +91,7 @@ One data path, all providers, no IPC, no shared memory, no new event types.
 ### 3d. Persistence path
 
 - Schema: add `outputRefs: jsonb("output_refs")` to `internalAgentMessages` (`packages/db/src/schema/internal_agent.ts:191-204`), beside `toolCalls`/`toolResults`. `pnpm db:generate` (Drizzle only). Additive + nullable = safe.
-- Service: `MessageInput` (`conversation.ts:8-17`) gains `outputRefs?: unknown`; `appendMessage` (`conversation.ts:46-59`) validates via `CommanderOutputRefSchema` (invalid refs dropped, message always saves) and inserts the column.
+- Service: `MessageInput` (`conversation.ts:8-17`) gains `outputRefs?: unknown`; `appendMessage` (`conversation.ts:46-59`) validates via `commanderOutputRefSchema` (invalid refs dropped, message always saves) and inserts the column.
 - Write site: the assistant persist in `agent-loop.ts:302-305` passes the turn's accumulated refs.
 - Read: the conversation messages endpoint (`routes/internal-agent.ts:622-671`, default 50 / max 200) includes `outputRefs` in its projection; client `AgentMessage` (`ui/src/api/internal-agent.ts:23`) gains `outputRefs`.
 
@@ -165,7 +165,7 @@ Prime directive: **chips must never break chat.**
 
 | Layer | Changes |
 |-------|---------|
-| `packages/shared` | + `CommanderOutputRef` type + `CommanderOutputRefSchema` (zod) |
+| `packages/shared` | + `CommanderOutputRef` type + `commanderOutputRefSchema` (zod) |
 | `packages/db` | + `outputRefs` jsonb on `internalAgentMessages`; `pnpm db:generate` migration |
 | `packages/adapters/codex-local` | `src/server/parse.ts` — lift refs from tool result items, emit `tool_result` chunks |
 | `server` | + `services/internal-agent/output-refs.ts` (builder); + `tools/artifact-query-company.ts` (new tool, §3f) + registry registration; `mcp-bridge.ts` (envelope gains `outputRefs`); `parse-stream-json.ts` (correlation map + refs lift); `agent-loop.ts` (accumulate refs → persist); `conversation.ts` (`MessageInput.outputRefs` + validated insert); `routes/internal-agent.ts` (SSE `{name, refs?}` + messages projection) |

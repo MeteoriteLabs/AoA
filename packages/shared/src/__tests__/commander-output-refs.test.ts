@@ -40,9 +40,28 @@ describe("commanderOutputRefSchema", () => {
     expect(commanderOutputRefSchema.safeParse(long).success).toBe(false);
   });
 
+  it("accepts title of EXACTLY MAX_OUTPUT_REF_TITLE_LENGTH chars", () => {
+    const exact = { ...validRef, title: "x".repeat(MAX_OUTPUT_REF_TITLE_LENGTH) };
+    expect(commanderOutputRefSchema.safeParse(exact).success).toBe(true);
+  });
+
   it("array schema rejects > MAX refs", () => {
     const tooMany = Array.from({ length: MAX_OUTPUT_REFS_PER_MESSAGE + 1 }, () => validRef);
     expect(commanderOutputRefsSchema.safeParse(tooMany).success).toBe(false);
     expect(commanderOutputRefsSchema.safeParse([validRef]).success).toBe(true);
+  });
+
+  it("array schema accepts EXACTLY MAX_OUTPUT_REFS_PER_MESSAGE refs", () => {
+    const exact = Array.from({ length: MAX_OUTPUT_REFS_PER_MESSAGE }, () => validRef);
+    expect(commanderOutputRefsSchema.safeParse(exact).success).toBe(true);
+  });
+
+  it("bounds on new string fields: id/versionId/toolCallId/mimeType capped at 256", () => {
+    // id of 257 chars fails
+    expect(commanderOutputRefSchema.safeParse({ ...validRef, id: "x".repeat(257) }).success).toBe(false);
+    // versionId of "" fails (min(1) when not null)
+    expect(commanderOutputRefSchema.safeParse({ ...validRef, versionId: "" }).success).toBe(false);
+    // versionId of null passes (nullish allows null)
+    expect(commanderOutputRefSchema.safeParse({ ...validRef, versionId: null }).success).toBe(true);
   });
 });
