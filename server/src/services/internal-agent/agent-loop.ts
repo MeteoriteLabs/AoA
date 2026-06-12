@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
-import type { CommanderContextScope } from "@armyofagents/shared";
+import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
@@ -34,7 +34,7 @@ interface RunSummary {
 export type AgentStreamChunk =
   | { type: "text"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; name: string; result: ToolResult }
+  | { type: "tool_result"; name: string; result: ToolResult; refs?: CommanderOutputRef[] }
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }
   | { type: "options_prompt"; question: string; options: string[]; promptId: string }
   | { type: "error"; message: string }

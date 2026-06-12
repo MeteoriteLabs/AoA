@@ -15,6 +15,7 @@
  *   for (const chunk of parser.flush()) { … }  // call on process exit
  */
 
+import { commanderOutputRefsSchema, type CommanderOutputRef } from "@armyofagents/shared";
 import type { AgentStreamChunk } from "./agent-loop.js";
 
 // ── Marker regex ───────────────────────────────────────────────────────────────
@@ -68,6 +69,8 @@ function extractConfirmPayload(text: string): string | null {
 
 export class StreamJsonParser {
   private buffer: string = "";
+  /** tool_use id → tool name, for tool_result name correlation (spinner fix + refs). */
+  private toolNames = new Map<string, string>();
 
   /**
    * Push raw bytes / text from the CLI's stdout.
@@ -80,7 +83,7 @@ export class StreamJsonParser {
     this.buffer = lines.pop() ?? "";
     const chunks: AgentStreamChunk[] = [];
     for (const line of lines) {
-      for (const chunk of parseLine(line)) {
+      for (const chunk of parseLine(line, this.toolNames)) {
         chunks.push(chunk);
       }
     }
@@ -95,13 +98,13 @@ export class StreamJsonParser {
     if (this.buffer.length === 0) return [];
     const remaining = this.buffer;
     this.buffer = "";
-    return parseLine(remaining);
+    return parseLine(remaining, this.toolNames);
   }
 }
 
 // ── Line-level parser ──────────────────────────────────────────────────────────
 
-function parseLine(line: string): AgentStreamChunk[] {
+function parseLine(line: string, toolNames: Map<string, string>): AgentStreamChunk[] {
   const trimmed = line.trim();
 
   // Try to parse as a stream-json event first.
@@ -112,9 +115,9 @@ function parseLine(line: string): AgentStreamChunk[] {
         case "stream_event":
           return handleStreamEvent(event);
         case "assistant":
-          return handleAssistantEvent(event);
+          return handleAssistantEvent(event, toolNames);
         case "user":
-          return handleUserEvent(event);
+          return handleUserEvent(event, toolNames);
         case "result":
           return handleResultEvent(event);
         // Informational only — no chunks emitted.
@@ -164,7 +167,7 @@ function handleStreamEvent(event: Record<string, unknown>): AgentStreamChunk[] {
 
 // ── assistant event ────────────────────────────────────────────────────────────
 
-function handleAssistantEvent(event: Record<string, unknown>): AgentStreamChunk[] {
+function handleAssistantEvent(event: Record<string, unknown>, toolNames: Map<string, string>): AgentStreamChunk[] {
   const message = event.message as Record<string, unknown> | undefined;
   if (!message) return [];
 
@@ -184,6 +187,7 @@ function handleAssistantEvent(event: Record<string, unknown>): AgentStreamChunk[
       const name = typeof b.name === "string" ? b.name : String(b.name ?? "");
       const input: unknown = b.input ?? {};
 
+      if (id && name) toolNames.set(id, name);
       chunks.push({ type: "tool_call", id, name, input });
     }
     // text and thinking blocks: skip — text already streamed via stream_event deltas
@@ -194,7 +198,7 @@ function handleAssistantEvent(event: Record<string, unknown>): AgentStreamChunk[
 
 // ── user event ─────────────────────────────────────────────────────────────────
 
-function handleUserEvent(event: Record<string, unknown>): AgentStreamChunk[] {
+function handleUserEvent(event: Record<string, unknown>, toolNames: Map<string, string>): AgentStreamChunk[] {
   const message = event.message as Record<string, unknown> | undefined;
   if (!message) return [];
 
@@ -250,20 +254,33 @@ function handleUserEvent(event: Record<string, unknown>): AgentStreamChunk[] {
     // Plain tool_result: map to AgentStreamChunk's tool_result shape.
     // AgentStreamChunk.tool_result uses { name, result: ToolResult }.
     // We derive:
-    //   name   ← block.tool_use_id (the only identifier available; Task 3 can
-    //            cross-reference with the tool_call chunk that preceded it)
+    //   name   ← resolved from the tool_use id map (spinner fix); falls back to the id
     //   result ← ToolResult { success, data, summary }
+    //   refs   ← lifted from the bridge's JSON envelope (Task 4)
     const toolUseId = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
+    const resolvedName = toolNames.get(toolUseId) ?? toolUseId;
     const isError = b.is_error === true;
+
+    // Lift outputRefs from the bridge's JSON envelope (lenient — any failure ⇒ no refs).
+    let refs: CommanderOutputRef[] | undefined;
+    try {
+      const parsedEnvelope = JSON.parse(fullText) as { outputRefs?: unknown };
+      const validated = commanderOutputRefsSchema.safeParse(parsedEnvelope?.outputRefs);
+      if (validated.success && validated.data.length > 0) refs = validated.data;
+    } catch {
+      /* not JSON — fine */
+    }
+
     chunks.push({
       type: "tool_result",
-      name: toolUseId,
+      name: resolvedName,
       result: {
         success: !isError,
         data: fullText,
         summary: fullText,
         ...(isError ? { error: fullText } : {}),
       },
+      ...(refs ? { refs } : {}),
     });
   }
 
