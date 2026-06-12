@@ -39,7 +39,7 @@ describe("query_company_artifacts", () => {
     const res = await queryCompanyArtifactsTool.execute({ limit: 999 }, ctxWith(many));
     expect(res.data).toHaveLength(50);
     const one = await queryCompanyArtifactsTool.execute({ limit: 0 }, ctxWith(many));
-    expect((one.data as any[]).length).toBeGreaterThan(0); // floor, not zero
+    expect(one.data).toHaveLength(20); // limit 0 → default 20 (|| catches falsy), not floor
   });
 
   it("ignores invalid filter values", async () => {
