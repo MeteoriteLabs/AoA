@@ -157,3 +157,42 @@ Cross-cutting (cockpit + viewer + discussions) — which is exactly why the auth
 - Suggestions optional + engine is a separate feature. (§8)
 - Google = separate epic, after cockpit, cross-cutting. (§9)
 - No "recent/browse" lists in the cockpit — those stay in the viewer home. (§1)
+
+## 13. Round-2 resolutions (closes all of §11)
+
+- **Default-on set (final):** ✅ Review · ⚑ Approvals · ▶ Running · 🗂 My tasks · 📅 Today · 💬 Discussions. With **show-only-active**, defaulting is cheap (empty cards hide), so the set is generous; everything else (Goals, Budget, Suggestions, Proactive, Pinned, Done today, Teammates, Quick capture) is opt-in.
+- **No role-based defaults** — one universal default set; personalization emerges from RBAC visibility + show-only-active + per-user config. (Best practice: configuration over presumption.)
+- **RBAC = zero new surface** — every cockpit query is scoped by the requester's existing permissions server-side; a card with no permitted data doesn't render. The `LiveEvents` WS layer already RBAC-filters per connection, so live updates inherit scoping.
+- **Mobile = Workspace-style tab bar** — `[Chat] [Detail] [Cockpit]` (sessions a drawer or 4th tab), full-screen panels, all rendered + CSS-`hidden` to preserve state (mirrors `WorkspaceLayout` `workspace-mobile-tabs`). Implies retrofitting the P1 viewer's mobile pill into the same tab model for consistency.
+- **Page scope:** Commander chat page (`/commander`) only.
+- **"In this conversation" zone:** populated from this session's outputRefs + Commander-touched entities; persists per conversation.
+- **Review vs Running (two lifecycle stages):** Running = in-flight agent runs; Review = agent-finished work awaiting the human's verdict; autonomous (ungated) work skips Review → Done. Human always has the overview.
+- **My Tasks definition:** `issues.assigneeUserId` = me, non-terminal, grouped by status **including a Blocked group → the separate "Blocked tasks" card is folded in (dropped).** Excludes tasks I delegated to agents (those appear in Running/Review/Done). Watching/approver-not-assignee items live in Pinned / Approvals, not here.
+- **Responsibility for agent work:** even fully-autonomous agent work is a human's responsibility — scoped via departments: agents (`agent_projects`) ↔ departments ↔ humans-with-lead/owner-role (`user_roles`). A lead sees their department's agent work (Running/Review/Done); founder sees all. Same RBAC as everywhere.
+- **Three "don't-screw-it-up" rules:** (1) cockpit ≠ a third dashboard — stays personal + glanceable-while-chatting + act-into-chat, distinct from Home (company) and Inbox (notifications); (2) one batched `/cockpit` endpoint + LiveEvents for fast cards, not N requests; (3) the "clear" is the dopamine — handled items optimistically vanish.
+- **Discussions card promoted to default** ("needs-me" discussions: scope proposals pending, extraction failed, participant unread).
+- **Suggestions stays optional**; the suggestion *engine* is its own feature (note §8) — though verification shows it's substantially built (see §14).
+
+## 14. Data-source verification (investigated against the real codebase, 2026-06-13)
+
+Almost the entire cockpit is backed by existing tables/services; the **only genuinely new persistence is a Pinned store + a small cockpit-prefs store.** Live updates + RBAC filtering already exist.
+
+| Card | Verified source | Status |
+|------|-----------------|--------|
+| ✅ Review | `issues.status='in_review'` (`constants.ts:116`) + `approvals`/`issue_approvals` status='pending' | EXISTS |
+| ⚑ Approvals | agents `'pending_approval'` (`agents.ts:26`); `memory_items 'pending'` (`memory_items.ts:49`); `discussion_extracted_items 'pending'` (`discussions.ts:289`); `internal_agent_runtime_approvals` (`:27`); `approvals`/`issue_approvals`; `join_requests`/`invites` | EXISTS (all 6) |
+| ▶ Running | `heartbeat_runs.status='running'` (`heartbeat_runs.ts:15`) + `internal_agent_runs.status` (`internal_agent.ts:248`) | EXISTS |
+| 🗂 My tasks | `issues.assigneeUserId` (`issues.ts:41`) + status enum + `dueDate` (`issues.ts:65`) | EXISTS |
+| 📅 Today | `internal_agent_reminders` (`internal_agent.ts:316`) + `issues.dueDate` | EXISTS |
+| 💬 Discussions | `discussion_entries.proposalStatus`/`extractionStatus` (`discussions.ts:176,196`) + notification types + `threadParticipants` (`threads.ts:23`) | EXISTS (compose) |
+| 🎯 Goals at risk | `goals.status='at_risk'` (`goals.ts:20`, `constants.ts:135`) | EXISTS |
+| 💰 Budget | `companies.budget/spentMonthlyCents` (`companies.ts:12-13`) + `cost_events` + `budget_incidents` + `budget_policies` | EXISTS |
+| 🔍 Proactive | `internal_agent_runs.triggerType='proactive'` (`internal_agent.ts:244`) + notifications + `proactive.ts` | EXISTS |
+| 💡 Suggestions | `suggestions` schema + 8 detectors + `executeAction()` (`suggestions.ts:954`) — `merge_memory` stubbed (`:1056`) | EXISTS (mostly) |
+| 🎉 Done today | `issues.completedAt` (`issues.ts:67`) + `artifact_versions.createdAt` + `activity_log` | EXISTS |
+| 👥 Teammates | `activity_log` (actorId/action/createdAt, indexed) | EXISTS |
+| 📌 Pinned | — | **NEW: `user_entity_pins` (userId, companyId, entityType, entityId, pinnedAt)** |
+| ⚙ Cockpit config | `sidebar_preferences` pattern | **NEW: small per-user cockpit-prefs store** |
+| Live updates | `LiveEvent` (`shared/src/types/live.ts`) + `live-events-ws.ts` WS server, per-connection RBAC filter; event types incl. `heartbeat.run.*`, `issue.status_changed`, `internal_agent.*`, `budget.*` (`constants.ts:269-326`) | EXISTS — ready, no polling needed |
+
+**New build required (the whole list):** `user_entity_pins` table (Pinned card) · small cockpit-prefs store (config) · finish `merge_memory` (only if Suggestions card ships) · the responsibility-scoping query is project-mediated (no direct user→agent FK — compute via `user_roles → projects → agent_projects` + `agents.reportsTo`). Everything else = querying/composing existing tables + subscribing to existing LiveEvents.
