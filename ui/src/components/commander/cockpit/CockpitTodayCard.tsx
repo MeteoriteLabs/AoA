@@ -1,0 +1,101 @@
+import { Calendar, MessageSquare } from "lucide-react";
+import type { CockpitReminderItem, CockpitTaskItem } from "@armyofagents/shared";
+
+export function CockpitTodayCard({
+  reminders,
+  dueTasks,
+  onOpenTask,
+  onAsk,
+}: {
+  reminders: CockpitReminderItem[];
+  dueTasks: CockpitTaskItem[];
+  onOpenTask?: (issueId: string, title: string) => void;
+  onAsk?: (text: string) => void;
+}) {
+  const totalCount = reminders.length + dueTasks.length;
+  if (totalCount === 0) return null;
+
+  return (
+    <section
+      className="rounded-lg border border-border bg-background p-2"
+      data-testid="cockpit-card-today"
+    >
+      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
+        <Calendar className="size-3.5" aria-hidden />
+        Today
+        <span className="ml-auto tabular-nums">{totalCount}</span>
+      </header>
+
+      {reminders.length > 0 && (
+        <>
+          <p className="mt-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Reminders
+          </p>
+          <ul className="space-y-0.5">
+            {reminders.map((r) => (
+              <li
+                key={r.id}
+                className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
+              >
+                <span className="min-w-0 flex-1 truncate font-medium">{r.content}</span>
+                {onAsk && (
+                  <button
+                    type="button"
+                    aria-label="Ask Commander about this"
+                    className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                    onClick={() => onAsk(`Tell me more about this reminder: ${r.content}`)}
+                  >
+                    <MessageSquare className="size-3" aria-hidden />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {dueTasks.length > 0 && (
+        <>
+          <p className="mt-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Due today
+          </p>
+          <ul className="space-y-0.5">
+            {dueTasks.map((item) => (
+              <li
+                key={item.id}
+                className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  onClick={() => onOpenTask?.(item.id, item.title)}
+                >
+                  {item.identifier && (
+                    <span className="mr-1 shrink-0 text-[10px] text-muted-foreground">
+                      {item.identifier}
+                    </span>
+                  )}
+                  <span className="truncate font-medium">{item.title}</span>
+                </button>
+                {onAsk && (
+                  <button
+                    type="button"
+                    aria-label="Ask Commander about this"
+                    className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                    onClick={() =>
+                      onAsk(
+                        `${item.identifier ?? item.title} is due today — what's the current status and is there anything blocking it?`,
+                      )
+                    }
+                  >
+                    <MessageSquare className="size-3" aria-hidden />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}

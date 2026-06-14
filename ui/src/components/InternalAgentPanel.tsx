@@ -21,7 +21,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCommanderContextScope } from "../context/CommanderContextScopeContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useLocation } from "../lib/router";
+import { useLocation, useNavigate } from "../lib/router";
 import { useBreakpoint } from "../lib/useBreakpoint";
 import {
   internalAgentApi,
@@ -345,6 +345,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
   const location = useLocation();
+  const navigate = useNavigate();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
   const queryClient = useQueryClient();
 
@@ -1483,7 +1484,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               maxSize="40%"
               className="flex h-full min-w-0 overflow-hidden"
             >
-              <CommanderCockpitPanel companyId={companyId} onCollapse={collapseCockpit} />
+              <CommanderCockpitPanel
+                companyId={companyId}
+                onCollapse={collapseCockpit}
+                onOpenTask={(issueId, title) => viewer.openTask(issueId, title)}
+                onAsk={(text) => void sendText(text)}
+                onOpenFullPage={(href) => navigate(href)}
+              />
             </Panel>
           </>
         )}

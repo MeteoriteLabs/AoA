@@ -1,26 +1,106 @@
-import { useCallback, useState, type ReactElement } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronsRight, LayoutDashboard, Settings2 } from "lucide-react";
+import type { CockpitData } from "@armyofagents/shared";
+import { cockpitApi } from "../../../api/cockpit";
+import { queryKeys } from "../../../lib/queryKeys";
 import { cn } from "../../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { useCommanderCockpitPrefs } from "../useCommanderCockpitPrefs";
-import { mountableCards, selectVisibleCards, type CockpitCardDef } from "./cockpitCardModel";
+import {
+  mountableCards,
+  selectVisibleCards,
+  deriveActiveFromData,
+  type CockpitCardDef,
+} from "./cockpitCardModel";
 import { CockpitRunningCard } from "./CockpitRunningCard";
+import { CockpitReviewCard } from "./CockpitReviewCard";
+import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
+import { CockpitTodayCard } from "./CockpitTodayCard";
+import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 
 // ---------------------------------------------------------------------------
-// Card registry (3a: one card; 3b/3c push more)
+// Interaction callbacks type
 // ---------------------------------------------------------------------------
 
-type CockpitCardRenderDef = CockpitCardDef & {
-  render: (p: { companyId: string; onActiveChange: (a: boolean) => void }) => ReactElement;
+export interface CockpitInteractions {
+  onOpenTask?: (issueId: string, title: string) => void;
+  onAsk?: (text: string) => void;
+  onOpenFullPage?: (href: string) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Empty cockpit data (used while loading / on error)
+// ---------------------------------------------------------------------------
+
+const EMPTY_DATA: CockpitData = {
+  running: [],
+  review: [],
+  myTasks: [],
+  today: { reminders: [], dueTasks: [] },
+  discussions: [],
 };
+
+// ---------------------------------------------------------------------------
+// Card registry — 3b: 5 cards. Cards are PRESENTATIONAL; data comes from
+// the shared batched /cockpit query, not per-card fetches.
+// ---------------------------------------------------------------------------
+
+export interface CockpitCardRenderDef extends CockpitCardDef {
+  isActive: (data: CockpitData) => boolean;
+  render: (props: { data: CockpitData } & CockpitInteractions) => React.ReactElement | null;
+}
 
 export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
   {
     id: "running",
     title: "Running now",
     defaultOn: true,
-    render: (p) => <CockpitRunningCard {...p} />,
+    isActive: (d) => d.running.length > 0,
+    render: ({ data, onOpenTask, onAsk }) => (
+      <CockpitRunningCard runs={data.running} onOpenTask={onOpenTask} onAsk={onAsk} />
+    ),
+  },
+  {
+    id: "review",
+    title: "Review",
+    defaultOn: true,
+    isActive: (d) => d.review.length > 0,
+    render: ({ data, onOpenTask, onAsk }) => (
+      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} />
+    ),
+  },
+  {
+    id: "myTasks",
+    title: "My tasks",
+    defaultOn: true,
+    isActive: (d) => d.myTasks.length > 0,
+    render: ({ data, onOpenTask, onAsk }) => (
+      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} />
+    ),
+  },
+  {
+    id: "today",
+    title: "Today",
+    defaultOn: true,
+    isActive: (d) => d.today.reminders.length > 0 || d.today.dueTasks.length > 0,
+    render: ({ data, onOpenTask, onAsk }) => (
+      <CockpitTodayCard
+        reminders={data.today.reminders}
+        dueTasks={data.today.dueTasks}
+        onOpenTask={onOpenTask}
+        onAsk={onAsk}
+      />
+    ),
+  },
+  {
+    id: "discussions",
+    title: "Discussions",
+    defaultOn: true,
+    isActive: (d) => d.discussions.length > 0,
+    render: ({ data, onOpenFullPage, onAsk }) => (
+      <CockpitDiscussionsCard items={data.discussions} onOpenFullPage={onOpenFullPage} onAsk={onAsk} />
+    ),
   },
 ];
 
@@ -85,18 +165,29 @@ function CockpitConfigPopover({
 export function CommanderCockpitPanel({
   companyId,
   onCollapse,
+  onOpenTask,
+  onAsk,
+  onOpenFullPage,
 }: {
   companyId: string;
   onCollapse: () => void;
-}) {
+} & CockpitInteractions) {
   const [prefs, setPrefs] = useCommanderCockpitPrefs();
-  const [active, setActive] = useState<Record<string, boolean>>({});
 
-  const onActiveChange = useCallback(
-    (id: string, a: boolean) =>
-      setActive((m) => (m[id] === a ? m : { ...m, [id]: a })),
-    [],
-  );
+  // ONE batched query — refetchInterval: 8000 is REQUIRED (crew-run liveness
+  // fallback; Codex #4: internal_agent.run.status isn't a LiveEvents type so
+  // the Running card would otherwise not refresh without polling).
+  const { data } = useQuery({
+    queryKey: queryKeys.cockpit(companyId),
+    queryFn: () => cockpitApi.get(companyId),
+    enabled: !!companyId,
+    refetchInterval: 8000,
+  });
+
+  const cockpitData = data ?? EMPTY_DATA;
+
+  // Derive active map from the shared payload (replaces per-card onActiveChange).
+  const active = deriveActiveFromData(cockpitData);
 
   const visible = selectVisibleCards({
     registry: COCKPIT_REGISTRY,
@@ -127,15 +218,12 @@ export function CommanderCockpitPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {/* Mountable cards (ordered by prefs.order, not hidden, defaultOn) mount so each
-            can self-report active; cards return null when empty (show-only-active). Order
-            drives the DOM — same source `selectVisibleCards` uses for the empty-state. */}
+        {/* Mountable cards (ordered by prefs.order, not hidden, defaultOn). Cards
+            are now PRESENTATIONAL — active is derived from the shared batched data,
+            not from per-card self-reporting. */}
         {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order).map((c) => (
           <div key={c.id} className="mb-2 last:mb-0">
-            {c.render({
-              companyId,
-              onActiveChange: (a) => onActiveChange(c.id, a),
-            })}
+            {c.render({ data: cockpitData, onOpenTask, onAsk, onOpenFullPage })}
           </div>
         ))}
 
