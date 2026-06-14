@@ -1,5 +1,5 @@
-import { ClipboardList, MessageSquare } from "lucide-react";
-import type { CockpitTaskItem } from "@armyofagents/shared";
+import { ClipboardList, MessageSquare, Pin } from "lucide-react";
+import type { CockpitPinnedEntityType, CockpitTaskItem } from "@armyofagents/shared";
 
 /** Non-terminal statuses to show and their display labels */
 const STATUS_LABEL: Record<string, string> = {
@@ -13,10 +13,12 @@ export function CockpitMyTasksCard({
   items,
   onOpenTask,
   onAsk,
+  onPin,
 }: {
   items: CockpitTaskItem[];
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
+  onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -73,6 +75,16 @@ export function CockpitMyTasksCard({
                     }
                   >
                     <MessageSquare className="size-3" aria-hidden />
+                  </button>
+                )}
+                {onPin && (
+                  <button
+                    type="button"
+                    aria-label="Pin"
+                    className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                    onClick={() => onPin("task", item.id)}
+                  >
+                    <Pin className="size-3" aria-hidden />
                   </button>
                 )}
               </li>

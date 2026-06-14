@@ -1,16 +1,18 @@
-import { Calendar, MessageSquare } from "lucide-react";
-import type { CockpitReminderItem, CockpitTaskItem } from "@armyofagents/shared";
+import { Calendar, MessageSquare, Pin } from "lucide-react";
+import type { CockpitPinnedEntityType, CockpitReminderItem, CockpitTaskItem } from "@armyofagents/shared";
 
 export function CockpitTodayCard({
   reminders,
   dueTasks,
   onOpenTask,
   onAsk,
+  onPin,
 }: {
   reminders: CockpitReminderItem[];
   dueTasks: CockpitTaskItem[];
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
+  onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
 }) {
   const totalCount = reminders.length + dueTasks.length;
   if (totalCount === 0) return null;
@@ -89,6 +91,16 @@ export function CockpitTodayCard({
                     }
                   >
                     <MessageSquare className="size-3" aria-hidden />
+                  </button>
+                )}
+                {onPin && (
+                  <button
+                    type="button"
+                    aria-label="Pin"
+                    className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                    onClick={() => onPin("task", item.id)}
+                  >
+                    <Pin className="size-3" aria-hidden />
                   </button>
                 )}
               </li>
