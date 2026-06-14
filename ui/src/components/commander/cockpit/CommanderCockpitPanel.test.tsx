@@ -1,38 +1,53 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { LiveRunForIssue } from "../../../api/heartbeats";
+import type { CockpitData } from "@armyofagents/shared";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-// Mock heartbeats API so no real fetch occurs
-vi.mock("../../../api/heartbeats", () => ({
-  heartbeatsApi: {
-    liveRunsForCompany: vi.fn().mockResolvedValue([]),
+// Phase 3b: mock the cockpit API (replaced the 3a per-card /live-runs query)
+vi.mock("../../../api/cockpit", () => ({
+  cockpitApi: {
+    get: vi.fn().mockResolvedValue({
+      running: [],
+      review: [],
+      myTasks: [],
+      today: { reminders: [], dueTasks: [] },
+      discussions: [],
+    } satisfies CockpitData),
   },
 }));
 
-// Mock queryKeys so the import chain doesn't need the full app context
+// Mock queryKeys — only the cockpit key is needed in this test
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: {
-    liveRuns: (companyId: string) => ["live-runs", companyId],
+    cockpit: (companyId: string) => ["cockpit", companyId],
   },
 }));
 
-import { heartbeatsApi } from "../../../api/heartbeats";
+import { cockpitApi } from "../../../api/cockpit";
 import { CommanderCockpitPanel } from "./CommanderCockpitPanel";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeRun(overrides?: Partial<LiveRunForIssue>): LiveRunForIssue {
+function makeData(overrides?: Partial<CockpitData>): CockpitData {
+  return {
+    running: [],
+    review: [],
+    myTasks: [],
+    today: { reminders: [], dueTasks: [] },
+    discussions: [],
+    ...overrides,
+  };
+}
+
+function makeRunItem(overrides?: Partial<CockpitData["running"][0]>): CockpitData["running"][0] {
   return {
     id: "run-1",
+    agentName: "Atlas",
     status: "running",
     startedAt: null,
-    finishedAt: null,
-    createdAt: new Date().toISOString(),
-    agentId: "agent-1",
-    agentName: "Atlas",
+    issueId: "issue-1",
     ...overrides,
   };
 }
@@ -54,7 +69,7 @@ function renderPanel(onCollapse = vi.fn()) {
 describe("CommanderCockpitPanel", () => {
   beforeEach(() => {
     localStorage.clear();
-    vi.mocked(heartbeatsApi.liveRunsForCompany).mockResolvedValue([]);
+    vi.mocked(cockpitApi.get).mockResolvedValue(makeData());
   });
 
   it("renders with data-testid='commander-cockpit-panel'", async () => {
@@ -62,22 +77,21 @@ describe("CommanderCockpitPanel", () => {
     expect(screen.getByTestId("commander-cockpit-panel")).toBeInTheDocument();
   });
 
-  it("with no runs → shows 'All clear' empty state (no cockpit-card-running)", async () => {
-    vi.mocked(heartbeatsApi.liveRunsForCompany).mockResolvedValue([]);
+  it("with empty data → shows 'All clear' empty state (no cards rendered)", async () => {
+    vi.mocked(cockpitApi.get).mockResolvedValue(makeData());
     renderPanel();
-    // The Running card returns null when empty — should not be present
+    // No cards visible when all slices are empty
     expect(screen.queryByTestId("cockpit-card-running")).not.toBeInTheDocument();
-    // The "All clear" empty state renders once the card self-reports inactive (effect settles).
+    // "All clear" renders immediately since active is derived from the shared data
+    // (no async onActiveChange self-report — derived synchronously from query data).
     expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
   });
 
   it("with running runs → the Running card renders with cockpit-card-running testid", async () => {
-    const run = makeRun({ status: "running", agentName: "Atlas" });
-    vi.mocked(heartbeatsApi.liveRunsForCompany).mockResolvedValue([run]);
-
+    const run = makeRunItem();
     const { queryClient } = renderPanel();
     // Pre-seed the cache so the component renders immediately without fetch
-    queryClient.setQueryData(["live-runs", "comp-1"], [run]);
+    queryClient.setQueryData(["cockpit", "comp-1"], makeData({ running: [run] }));
     // Re-render with seeded data
     const { unmount } = render(
       <QueryClientProvider client={queryClient}>
@@ -90,11 +104,11 @@ describe("CommanderCockpitPanel", () => {
   });
 
   it("⚙ config popover can hide the running card", async () => {
-    const run = makeRun({ status: "running", agentName: "Atlas" });
+    const run = makeRunItem();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData(["live-runs", "comp-1"], [run]);
+    queryClient.setQueryData(["cockpit", "comp-1"], makeData({ running: [run] }));
 
     render(
       <QueryClientProvider client={queryClient}>
