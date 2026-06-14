@@ -22,6 +22,7 @@ import { useCompany } from "../../context/CompanyContext";
 import { commanderConversationsApi, type ConversationRow } from "../../api/internal-agent";
 import { Plus, ChevronLeft, Search, X, Pin, RotateCcw } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { COMMANDER_PANEL_CARD } from "./commanderChrome";
 import { SessionRow } from "./SessionRow";
 import { CollapsedSessionStrip } from "./CollapsedSessionStrip";
 
@@ -42,6 +43,8 @@ interface Props {
   activeConversationId: string | null;
   onSelect: (conversationId: string) => void;
   onNewConversation: () => void;
+  /** Commander desktop: render root as a rounded card (drops its own right border + sidebar bg). Off for the mobile drawer. */
+  chrome?: boolean;
 }
 
 function groupByDate(conversations: ConversationRow[]) {
@@ -220,6 +223,7 @@ export function SessionsSidebar({
   activeConversationId,
   onSelect,
   onNewConversation,
+  chrome = false,
 }: Props) {
   const { selectedCompanyId } = useCompany();
   const qc = useQueryClient();
@@ -467,7 +471,14 @@ export function SessionsSidebar({
   }
 
   return (
-    <div className="flex flex-col h-full w-56 shrink-0 border-r border-border bg-secondary-sidebar">
+    <div
+      className={cn(
+        "flex flex-col h-full w-56 shrink-0",
+        chrome
+          ? `${COMMANDER_PANEL_CARD} overflow-hidden`
+          : "border-r border-border bg-secondary-sidebar",
+      )}
+    >
       {/* Header */}
       <div className="px-2.5 pt-2.5 pb-0 border-b border-border-soft">
         {/* New chat button — full-width brand primary */}
