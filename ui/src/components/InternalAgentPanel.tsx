@@ -49,8 +49,13 @@ import { CommanderEmptyState } from "./commander/CommanderEmptyState";
 import { InputAddMenu } from "./commander/InputAddMenu";
 import { MemoryContextStrip } from "./commander/MemoryContextStrip";
 import { SkillPicker } from "./commander/SkillPicker";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
 import {
   CommanderViewerPanel,
+  CommanderViewerRail,
+  CommanderViewerDetail,
+  buildViewerTabModels,
   OutputRefChips,
   collectConversationRefs,
   mergeRefs,
@@ -411,6 +416,24 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // `enableViewerPanel` is set (full-page Commander route).
   const { useDrawerSessions } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
+
+  // Phase 1: resizable panel geometry + collapse persistence.
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "aoa:commander:panel-sizes",
+    storage: localStorage,
+    panelIds: ["commander-chat", "commander-detail"],
+  });
+  const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
+
+  const expandViewer = useCallback(() => { setViewerCollapsed(false); viewer.expand(); }, [setViewerCollapsed, viewer]);
+  const collapseViewer = useCallback(() => { setViewerCollapsed(true); viewer.collapse(); }, [setViewerCollapsed, viewer]);
+
+  // Bridge: auto-open / chip-click / tab-activate set state.expanded=true → expand the
+  // persisted panel. Loop-free: once collapsed flips false the guard `&& viewerCollapsed`
+  // stops it. collapseViewer() sets state.expanded=false so the NEXT created ref re-fires.
+  useEffect(() => {
+    if (viewer.state.expanded && viewerCollapsed) setViewerCollapsed(false);
+  }, [viewer.state.expanded, viewerCollapsed, setViewerCollapsed]);
 
   // Conversations list — same cache key as SessionsSidebar (no extra fetch)
   const { data: conversationsData } = useQuery({
@@ -1351,16 +1374,64 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     </div>
   );
 
+  // No viewer panel (docked usage) — unchanged single column.
+  if (!enableViewerPanel || !companyId) {
+    return <div className="flex h-full min-h-0 flex-row overflow-hidden">{chatColumn}</div>;
+  }
+
+  // Mobile — unchanged: chat + floating pill/Sheet (no Group).
+  if (useDrawerSessions) {
+    return (
+      <div className="flex h-full min-h-0 flex-row overflow-hidden">
+        {chatColumn}
+        <CommanderViewerPanel companyId={companyId} viewer={viewer} conversationRefs={conversationRefs} isMobile />
+      </div>
+    );
+  }
+
+  // Desktop — resizable Group (chat | detail), or chat + rail when collapsed.
+  const tabModels = buildViewerTabModels(viewer.state);
+  const activeTab = viewer.state.tabs.find((t) => t.id === viewer.state.activeId);
   return (
-    <div className={cn("flex h-full min-h-0 flex-row overflow-hidden", cardChrome && "gap-2")}>
-      {chatColumn}
-      {enableViewerPanel && companyId && (
-        <CommanderViewerPanel
-          companyId={companyId}
-          viewer={viewer}
-          conversationRefs={conversationRefs}
-          isMobile={useDrawerSessions}
-        />
+    <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden gap-2">
+      <Group
+        orientation="horizontal"
+        className="flex h-full min-w-0 flex-1 overflow-hidden"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
+        data-testid="commander-center-group"
+      >
+        <Panel id="commander-chat" minSize="40%" className="flex h-full min-w-0 flex-col overflow-hidden">
+          {chatColumn}
+        </Panel>
+        {!viewerCollapsed && (
+          <>
+            <Separator
+              id="commander-sep"
+              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/30 active:bg-brand/50"
+              data-testid="commander-resizable-handle"
+            />
+            <Panel
+              id="commander-detail"
+              defaultSize="40%"
+              minSize="24%"
+              maxSize="60%"
+              className="flex h-full min-w-0 overflow-hidden"
+            >
+              <CommanderViewerDetail
+                viewer={viewer}
+                companyId={companyId}
+                conversationRefs={conversationRefs}
+                activeTab={activeTab}
+                tabModels={tabModels}
+                onCollapse={collapseViewer}
+              />
+            </Panel>
+          </>
+        )}
+      </Group>
+      {viewerCollapsed && (
+        <CommanderViewerRail viewer={viewer} tabModels={tabModels} onExpand={expandViewer} />
       )}
     </div>
   );
