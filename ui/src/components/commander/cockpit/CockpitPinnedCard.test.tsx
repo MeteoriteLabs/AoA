@@ -76,9 +76,9 @@ describe("CockpitPinnedCard — render", () => {
     expect(screen.getByText("Goal")).toBeInTheDocument();
   });
 
-  it("renders the status alongside the item", () => {
+  it("renders the humanized status alongside the item", () => {
     render(<CockpitPinnedCard items={[makeItem({ status: "in_review" })]} />);
-    expect(screen.getByText("in_review")).toBeInTheDocument();
+    expect(screen.getByText("In review")).toBeInTheDocument();
   });
 
   it("renders the identifier when present", () => {

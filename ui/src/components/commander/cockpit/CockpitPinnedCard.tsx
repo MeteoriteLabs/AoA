@@ -15,6 +15,13 @@ const TYPE_LABELS: Record<CockpitPinnedEntityType, string> = {
   goal: "Goal",
 };
 
+// Type-agnostic status humanizer ("in_review" → "In review", "at_risk" → "At risk").
+// The card mixes task/artifact/goal statuses, so no single label map covers all three.
+function humanizeStatus(status: string): string {
+  const s = status.replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 export function CockpitPinnedCard({
   items,
   onOpenTask,
@@ -71,7 +78,7 @@ export function CockpitPinnedCard({
             <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
               {TYPE_LABELS[item.entityType]}
             </span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">{item.status}</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">{humanizeStatus(item.status)}</span>
             {onUnpin && (
               <button
                 type="button"

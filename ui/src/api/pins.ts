@@ -1,3 +1,8 @@
+/**
+ * Pins API client — Phase 3d.
+ *
+ * Per-user entity pins (board-only routes). pin → POST, unpin → DELETE.
+ */
 import type { CockpitPinnedEntityType } from "@armyofagents/shared";
 import { api } from "./client";
 

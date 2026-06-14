@@ -4,6 +4,11 @@
  * Returns { pin, unpin } mutation pairs. Each on success shows a toast and
  * invalidates queryKeys.cockpit so the Pinned card refreshes immediately.
  * Mirrors the approach used by useCockpitApprovalAction.
+ *
+ * Deliberately NO busy/disabled gate (unlike useCockpitApprovalAction): the
+ * server ops are idempotent (pin = onConflictDoUpdate, unpin = no-op DELETE) and
+ * these are low-stakes hover affordances, so rapid clicks are harmless and
+ * invalidate-only is sufficient. Don't "fix" by copying the approvals busy logic.
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
