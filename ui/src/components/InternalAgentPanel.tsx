@@ -1490,6 +1490,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 onOpenTask={(issueId, title) => viewer.openTask(issueId, title)}
                 onAsk={(text) => void sendText(text)}
                 onOpenFullPage={(href) => navigate(href)}
+                onOpenArtifact={(id, title) =>
+                  viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" })
+                }
               />
             </Panel>
           </>

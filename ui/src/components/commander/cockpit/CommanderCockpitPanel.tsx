@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronsRight, LayoutDashboard, Settings2 } from "lucide-react";
-import type { CockpitData } from "@armyofagents/shared";
+import type { CockpitData, CockpitPinnedEntityType } from "@armyofagents/shared";
 import { cockpitApi } from "../../../api/cockpit";
 import { queryKeys } from "../../../lib/queryKeys";
 import { cn } from "../../../lib/utils";
@@ -18,6 +18,8 @@ import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 import { CockpitApprovalsCard } from "./CockpitApprovalsCard";
+import { CockpitPinnedCard } from "./CockpitPinnedCard";
+import { useCockpitPin } from "./useCockpitPin";
 
 // ---------------------------------------------------------------------------
 // Interaction callbacks type
@@ -27,6 +29,9 @@ export interface CockpitInteractions {
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
   onOpenFullPage?: (href: string) => void;
+  onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
+  onUnpin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
+  onOpenArtifact?: (artifactId: string, title: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,12 +57,28 @@ const EMPTY_DATA: CockpitData = {
 
 export interface CockpitCardRenderDef extends CockpitCardDef {
   isActive: (data: CockpitData) => boolean;
-  /** Phase 3c: companyId threaded through so cards that need per-source API calls
-   * (e.g. CockpitApprovalsCard) can dispatch correctly without a separate context. */
+  /** Phase 3c/3d: companyId threaded through so cards that need per-source API calls
+   * (e.g. CockpitApprovalsCard, CockpitPinnedCard) can dispatch correctly without a separate context. */
   render: (props: { data: CockpitData; companyId: string } & CockpitInteractions) => React.ReactElement | null;
 }
 
 export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
+  // Phase 3d: pinned items — shown near the top so pinned work is always visible
+  {
+    id: "pinned",
+    title: "Pinned",
+    defaultOn: true,
+    isActive: (d) => d.pinned.length > 0,
+    render: ({ data, onOpenTask, onOpenArtifact, onOpenFullPage, onUnpin }) => (
+      <CockpitPinnedCard
+        items={data.pinned}
+        onOpenTask={onOpenTask}
+        onOpenArtifact={onOpenArtifact}
+        onOpenFullPage={onOpenFullPage}
+        onUnpin={onUnpin}
+      />
+    ),
+  },
   {
     id: "running",
     title: "Running now",
@@ -72,8 +93,8 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     title: "Review",
     defaultOn: true,
     isActive: (d) => d.review.length > 0,
-    render: ({ data, onOpenTask, onAsk }) => (
-      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} />
+    render: ({ data, onOpenTask, onAsk, onPin }) => (
+      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} />
     ),
   },
   {
@@ -81,8 +102,8 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     title: "My tasks",
     defaultOn: true,
     isActive: (d) => d.myTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk }) => (
-      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} />
+    render: ({ data, onOpenTask, onAsk, onPin }) => (
+      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} />
     ),
   },
   {
@@ -90,12 +111,13 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     title: "Today",
     defaultOn: true,
     isActive: (d) => d.today.reminders.length > 0 || d.today.dueTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk }) => (
+    render: ({ data, onOpenTask, onAsk, onPin }) => (
       <CockpitTodayCard
         reminders={data.today.reminders}
         dueTasks={data.today.dueTasks}
         onOpenTask={onOpenTask}
         onAsk={onAsk}
+        onPin={onPin}
       />
     ),
   },
@@ -189,11 +211,15 @@ export function CommanderCockpitPanel({
   onOpenTask,
   onAsk,
   onOpenFullPage,
+  onOpenArtifact,
 }: {
   companyId: string;
   onCollapse: () => void;
 } & CockpitInteractions) {
   const [prefs, setPrefs] = useCommanderCockpitPrefs();
+
+  // Phase 3d: panel owns the pin/unpin hook so cards remain presentational.
+  const { pin, unpin } = useCockpitPin(companyId);
 
   // ONE batched query. LiveEvents (LiveUpdatesProvider) invalidate this key for
   // instant updates; the modest refetchInterval is a belt-and-suspenders fallback
@@ -247,8 +273,17 @@ export function CommanderCockpitPanel({
             not from per-card self-reporting. */}
         {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order).map((c) => (
           <div key={c.id} className="mb-2 last:mb-0">
-            {/* Phase 3c: companyId threaded so cards like CockpitApprovalsCard can call per-source APIs. */}
-            {c.render({ data: cockpitData, companyId, onOpenTask, onAsk, onOpenFullPage })}
+            {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through. */}
+            {c.render({
+              data: cockpitData,
+              companyId,
+              onOpenTask,
+              onAsk,
+              onOpenFullPage,
+              onOpenArtifact,
+              onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),
+              onUnpin: (entityType, entityId) => unpin.mutate({ entityType, entityId }),
+            })}
           </div>
         ))}
 
