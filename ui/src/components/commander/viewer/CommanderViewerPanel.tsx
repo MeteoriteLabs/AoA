@@ -1,4 +1,3 @@
-import { useCallback, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronsLeft, FileText, Globe, Home } from "lucide-react";
 import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
@@ -14,11 +13,7 @@ import { SharedContentViewer } from "../../viewers/SharedContentViewer";
 import { resolveViewer } from "../../viewers/viewer-registry";
 import { CommanderViewerHome } from "./CommanderViewerHome";
 import type { CommanderViewerApi } from "./useCommanderViewer";
-import type { ViewerTab } from "./commanderViewerModel";
-
-const MIN_WIDTH = 320;
-const MAX_WIDTH_FRACTION = 0.6;
-const DEFAULT_WIDTH_FRACTION = 0.4;
+import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
 
 // ---------------------------------------------------------------------------
 // Helpers for artifact content-type resolution (mirrors ThreadViewer logic)
@@ -161,188 +156,6 @@ function ReplyTabBody({ replyContent }: ReplyTabBodyProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Desktop resizable panel
-// ---------------------------------------------------------------------------
-
-interface DesktopPanelProps {
-  viewer: CommanderViewerApi;
-  companyId: string;
-  conversationRefs: CommanderOutputRef[];
-  activeTab: ViewerTab | undefined;
-  tabModels: ViewerTabModel[];
-  /** Lifted from parent so width survives collapse/expand cycles (Fix 3). */
-  width: number | null;
-  onWidthChange: (w: number) => void;
-}
-
-function DesktopPanel({
-  viewer,
-  companyId,
-  conversationRefs,
-  activeTab,
-  tabModels,
-  width,
-  onWidthChange,
-}: DesktopPanelProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Pointer-drag divider — uses pointer capture so out-of-window drags work (Fix 2).
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      const el = e.currentTarget;
-      el.setPointerCapture(e.pointerId);
-
-      const startX = e.clientX;
-      const startWidth = containerRef.current?.offsetWidth ?? width ?? 400;
-      const parentWidth = containerRef.current?.parentElement?.offsetWidth ?? window.innerWidth;
-
-      const cleanup = () => {
-        el.removeEventListener("pointermove", onMove);
-        el.removeEventListener("pointerup", onUp);
-        el.removeEventListener("pointercancel", onUp);
-      };
-
-      const onMove = (ev: PointerEvent) => {
-        // Belt-and-braces: treat a missed pointerup as cleanup.
-        if (ev.buttons === 0) { cleanup(); return; }
-        const delta = startX - ev.clientX;
-        const next = Math.min(
-          Math.max(startWidth + delta, MIN_WIDTH),
-          parentWidth * MAX_WIDTH_FRACTION,
-        );
-        onWidthChange(next);
-      };
-
-      const onUp = () => { cleanup(); };
-
-      el.addEventListener("pointermove", onMove);
-      el.addEventListener("pointerup", onUp);
-      el.addEventListener("pointercancel", onUp);
-    },
-    [width, onWidthChange],
-  );
-
-  const state = viewer.state;
-  const parentWidth =
-    typeof window !== "undefined"
-      ? (containerRef.current?.parentElement?.offsetWidth ?? window.innerWidth)
-      : 800;
-  const resolvedWidth = width ?? Math.round(parentWidth * DEFAULT_WIDTH_FRACTION);
-
-  const activeKey = {
-    id: state.activeId,
-    kind:
-      state.activeId === "home"
-        ? "home"
-        : (activeTab?.kind ?? "home"),
-  };
-
-  return (
-    <div
-      ref={containerRef}
-      data-testid="commander-viewer-panel"
-      className={cn("relative flex h-full shrink-0 flex-col", COMMANDER_PANEL_CARD)}
-      style={{ width: resolvedWidth }}
-    >
-      {/* Drag handle — 8px hit area straddles the border; pointer capture handles out-of-window drags */}
-      <div
-        onPointerDown={onPointerDown}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize viewer panel"
-        className="absolute inset-y-0 -left-1 w-2 cursor-col-resize touch-none hover:bg-brand/30 active:bg-brand/50"
-      />
-
-      <ViewerTabs
-        tabs={tabModels}
-        activeKey={activeKey}
-        onActivate={(tab) => viewer.activate(tab.id)}
-        onClose={(tab) => viewer.close(tab.id)}
-        onAdd={() => viewer.activate("home")}
-        addLabel="Open viewer home"
-        onToggleCollapse={viewer.collapse}
-        headerTestId="commander-viewer-tabs"
-      />
-
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <TabBodySwitch
-          activeId={state.activeId}
-          activeTab={activeTab}
-          companyId={companyId}
-          conversationRefs={conversationRefs}
-          onOpen={viewer.openRef}
-        />
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Desktop collapsed rail
-// ---------------------------------------------------------------------------
-
-interface DesktopRailProps {
-  viewer: CommanderViewerApi;
-  tabModels: ViewerTabModel[];
-}
-
-function DesktopRail({ viewer, tabModels }: DesktopRailProps) {
-  return (
-    <div
-      data-testid="commander-viewer-rail"
-      className={cn("flex h-full w-9 shrink-0 flex-col items-center gap-1 py-2", COMMANDER_PANEL_CARD)}
-    >
-      <button
-        type="button"
-        title="Expand viewer"
-        aria-label="Expand viewer"
-        onClick={viewer.expand}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-      >
-        <ChevronsLeft className="size-3.5" aria-hidden />
-      </button>
-
-      {/* Home icon */}
-      <button
-        type="button"
-        title="Viewer home"
-        aria-label="Viewer home"
-        onClick={() => {
-          viewer.expand();
-          viewer.activate("home");
-        }}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-      >
-        <Home className="size-3.5" aria-hidden />
-      </button>
-
-      {/* One icon per open tab */}
-      {tabModels
-        .filter((t) => t.id !== "home")
-        .map((t) => {
-          const Icon = t.icon ?? FileText;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              title={t.title}
-              aria-label={t.title}
-              onClick={() => {
-                viewer.expand();
-                viewer.activate(t.id);
-              }}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            >
-              <Icon className="size-3.5" aria-hidden />
-            </button>
-          );
-        })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Tab body switcher (shared between desktop panel + mobile sheet)
 // ---------------------------------------------------------------------------
 
@@ -391,6 +204,145 @@ function TabBodySwitch({
 }
 
 // ---------------------------------------------------------------------------
+// Tab model builder (shared between Panel and AgentPanelContent)
+// ---------------------------------------------------------------------------
+
+export function buildViewerTabModels(state: ConversationViewerState): ViewerTabModel[] {
+  return [
+    { id: "home", kind: "home", title: "Home", icon: Home, closeable: false },
+    ...state.tabs.map(
+      (t): ViewerTabModel => ({
+        id: t.id,
+        kind: t.kind,
+        title: t.title,
+        icon: t.kind === "browser" ? Globe : FileText,
+      }),
+    ),
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Desktop detail card (owned width/height comes from the Panel parent)
+// ---------------------------------------------------------------------------
+
+export interface CommanderViewerDetailProps {
+  viewer: CommanderViewerApi;
+  companyId: string;
+  conversationRefs: CommanderOutputRef[];
+  activeTab: ViewerTab | undefined;
+  tabModels: ViewerTabModel[];
+  /** Global bridge: collapse the panel (persists) — wired by AgentPanelContent. */
+  onCollapse: () => void;
+}
+
+export function CommanderViewerDetail({
+  viewer,
+  companyId,
+  conversationRefs,
+  activeTab,
+  tabModels,
+  onCollapse,
+}: CommanderViewerDetailProps) {
+  const state = viewer.state;
+  const activeKey = {
+    id: state.activeId,
+    kind: state.activeId === "home" ? "home" : (activeTab?.kind ?? "home"),
+  };
+  return (
+    <div
+      data-testid="commander-viewer-panel"
+      className={cn("relative flex h-full min-w-0 flex-1 flex-col", COMMANDER_PANEL_CARD)}
+    >
+      <ViewerTabs
+        tabs={tabModels}
+        activeKey={activeKey}
+        onActivate={(tab) => viewer.activate(tab.id)}
+        onClose={(tab) => viewer.close(tab.id)}
+        onAdd={() => viewer.activate("home")}
+        addLabel="Open viewer home"
+        onToggleCollapse={onCollapse}
+        headerTestId="commander-viewer-tabs"
+      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <TabBodySwitch
+          activeId={state.activeId}
+          activeTab={activeTab}
+          companyId={companyId}
+          conversationRefs={conversationRefs}
+          onOpen={viewer.openRef}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Desktop collapsed rail
+// ---------------------------------------------------------------------------
+
+export interface CommanderViewerRailProps {
+  viewer: CommanderViewerApi;
+  tabModels: ViewerTabModel[];
+  /** Global bridge: expand the panel (persists) — wired by AgentPanelContent. */
+  onExpand: () => void;
+}
+
+export function CommanderViewerRail({ viewer, tabModels, onExpand }: CommanderViewerRailProps) {
+  return (
+    <div
+      data-testid="commander-viewer-rail"
+      className={cn("flex h-full w-9 shrink-0 flex-col items-center gap-1 py-2", COMMANDER_PANEL_CARD)}
+    >
+      <button
+        type="button"
+        title="Expand viewer"
+        aria-label="Expand viewer"
+        onClick={onExpand}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+      >
+        <ChevronsLeft className="size-3.5" aria-hidden />
+      </button>
+
+      {/* Home icon */}
+      <button
+        type="button"
+        title="Viewer home"
+        aria-label="Viewer home"
+        onClick={() => {
+          onExpand();
+          viewer.activate("home");
+        }}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+      >
+        <Home className="size-3.5" aria-hidden />
+      </button>
+
+      {/* One icon per open tab */}
+      {tabModels
+        .filter((t) => t.id !== "home")
+        .map((t) => {
+          const Icon = t.icon ?? FileText;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              title={t.title}
+              aria-label={t.title}
+              onClick={() => {
+                onExpand();
+                viewer.activate(t.id);
+              }}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+            >
+              <Icon className="size-3.5" aria-hidden />
+            </button>
+          );
+        })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Mobile floating pill
 // ---------------------------------------------------------------------------
 
@@ -425,7 +377,7 @@ function MobilePill({ viewer }: MobilePillProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Main export
+// Main export — mobile only (desktop is composed by AgentPanelContent's Group)
 // ---------------------------------------------------------------------------
 
 export interface CommanderViewerPanelProps {
@@ -442,90 +394,57 @@ export function CommanderViewerPanel({
   conversationRefs,
   isMobile,
 }: CommanderViewerPanelProps) {
-  // Fix 3: width lives here (not in DesktopPanel) so it survives collapse ↔ expand cycles.
-  // DesktopPanel unmounts when collapsed to the rail; this component stays mounted.
-  const [panelWidth, setPanelWidth] = useState<number | null>(null);
-
   const state = viewer.state;
   const activeTab = state.tabs.find((t) => t.id === state.activeId);
+  const tabModels = buildViewerTabModels(state);
 
-  const tabModels: ViewerTabModel[] = [
-    { id: "home", kind: "home", title: "Home", icon: Home, closeable: false },
-    ...state.tabs.map(
-      (t): ViewerTabModel => ({
-        id: t.id,
-        kind: t.kind,
-        title: t.title,
-        icon: t.kind === "browser" ? Globe : FileText,
-      }),
-    ),
-  ];
+  if (!isMobile) return null; // desktop is composed by AgentPanelContent's Group
 
-  // ---------- Mobile ----------
-  if (isMobile) {
-    const activeKey = {
-      id: state.activeId,
-      kind:
-        state.activeId === "home" ? "home" : (activeTab?.kind ?? "home"),
-    };
-
-    return (
-      <>
-        <MobilePill viewer={viewer} />
-
-        <Sheet
-          open={state.expanded}
-          onOpenChange={(open) => {
-            if (!open) viewer.collapse();
-          }}
-        >
-          <SheetContent
-            side="right"
-            showCloseButton={false}
-            className="flex flex-col p-0"
-          >
-            <SheetTitle className="sr-only">Commander Viewer</SheetTitle>
-
-            <ViewerTabs
-              tabs={tabModels}
-              activeKey={activeKey}
-              onActivate={(tab) => viewer.activate(tab.id)}
-              onClose={(tab) => viewer.close(tab.id)}
-              onAdd={() => viewer.activate("home")}
-              addLabel="Open viewer home"
-              onToggleCollapse={viewer.collapse}
-              headerTestId="commander-viewer-tabs"
-            />
-
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <TabBodySwitch
-                activeId={state.activeId}
-                activeTab={activeTab}
-                companyId={companyId}
-                conversationRefs={conversationRefs}
-                onOpen={viewer.openRef}
-              />
-            </div>
-          </SheetContent>
-        </Sheet>
-      </>
-    );
-  }
-
-  // ---------- Desktop ----------
-  if (!state.expanded) {
-    return <DesktopRail viewer={viewer} tabModels={tabModels} />;
-  }
+  // ---------- Mobile (UNCHANGED pill + Sheet) ----------
+  const activeKey = {
+    id: state.activeId,
+    kind: state.activeId === "home" ? "home" : (activeTab?.kind ?? "home"),
+  };
 
   return (
-    <DesktopPanel
-      viewer={viewer}
-      companyId={companyId}
-      conversationRefs={conversationRefs}
-      activeTab={activeTab}
-      tabModels={tabModels}
-      width={panelWidth}
-      onWidthChange={setPanelWidth}
-    />
+    <>
+      <MobilePill viewer={viewer} />
+
+      <Sheet
+        open={state.expanded}
+        onOpenChange={(open) => {
+          if (!open) viewer.collapse();
+        }}
+      >
+        <SheetContent
+          side="right"
+          showCloseButton={false}
+          className="flex flex-col p-0"
+        >
+          <SheetTitle className="sr-only">Commander Viewer</SheetTitle>
+
+          <ViewerTabs
+            tabs={tabModels}
+            activeKey={activeKey}
+            onActivate={(tab) => viewer.activate(tab.id)}
+            onClose={(tab) => viewer.close(tab.id)}
+            onAdd={() => viewer.activate("home")}
+            addLabel="Open viewer home"
+            onToggleCollapse={viewer.collapse}
+            headerTestId="commander-viewer-tabs"
+          />
+
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <TabBodySwitch
+              activeId={state.activeId}
+              activeTab={activeTab}
+              companyId={companyId}
+              conversationRefs={conversationRefs}
+              onOpen={viewer.openRef}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
   );
 }
