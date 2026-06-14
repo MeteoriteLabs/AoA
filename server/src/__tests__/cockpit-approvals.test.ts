@@ -58,9 +58,15 @@ vi.mock("../services/memory.js", () => ({
 function buildSelectStub(rows: unknown[] = []) {
   const stub: Record<string, unknown> = {};
   stub.from = () => stub;
-  stub.where = () => Promise.resolve(rows);
+  // where() may be followed by orderBy() (cockpitPinned) — return stub so it chains.
+  stub.where = () => stub;
   stub.innerJoin = () => stub;
   stub.select = () => stub;
+  // orderBy() is terminal — return a Promise resolving to rows.
+  stub.orderBy = () => Promise.resolve(rows);
+  // Make the stub itself awaitable for where()-terminal paths.
+  (stub as any).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+    Promise.resolve(rows).then(resolve, reject);
   return stub;
 }
 

@@ -24,17 +24,20 @@
  *     extracted items. Non-founder short-circuits immediately — no sub-queries.
  */
 
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   approvals,
+  artifacts,
   discussionEntries,
   discussionExtractedItems,
   discussions,
+  goals,
   internalAgentReminders,
   issues,
+  userEntityPins,
 } from "@armyofagents/db";
-import type { CockpitApprovalItem, CockpitData, CockpitTaskItem } from "@armyofagents/shared";
+import type { CockpitApprovalItem, CockpitData, CockpitPinnedItem, CockpitTaskItem } from "@armyofagents/shared";
 import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
 import { memoryService } from "./memory.js";
@@ -150,6 +153,97 @@ function approvalSubtitle(row: { type: string }): string {
 }
 
 /**
+ * Resolve the user's pinned entities (Phase 3d).
+ *
+ * Fetches the user's pins ordered by pinnedAt desc, then batches company-scoped
+ * id-set queries against issues/artifacts/goals. Keys the result map as
+ * `${entityType}:${id}` to prevent cross-table uuid collision mis-resolution.
+ * Pins whose entity no longer resolves (deleted / out-of-company) are dropped.
+ */
+async function cockpitPinned(
+  db: Db,
+  companyId: string,
+  scope: CockpitScope,
+): Promise<CockpitPinnedItem[]> {
+  const pins = await db
+    .select({
+      entityType: userEntityPins.entityType,
+      entityId: userEntityPins.entityId,
+      pinnedAt: userEntityPins.pinnedAt,
+    })
+    .from(userEntityPins)
+    .where(
+      and(
+        eq(userEntityPins.userId, scope.userId),
+        eq(userEntityPins.companyId, companyId),
+      ),
+    )
+    .orderBy(desc(userEntityPins.pinnedAt));
+
+  if (pins.length === 0) return [];
+
+  const taskIds = pins.filter((p) => p.entityType === "task").map((p) => p.entityId);
+  const artifactIds = pins.filter((p) => p.entityType === "artifact").map((p) => p.entityId);
+  const goalIds = pins.filter((p) => p.entityType === "goal").map((p) => p.entityId);
+
+  // Company-scoped id-set lookups (getById's don't scope; we MUST add eq(companyId)).
+  const [tasks, arts, gls] = await Promise.all([
+    taskIds.length
+      ? db
+          .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
+          .from(issues)
+          .where(and(inArray(issues.id, taskIds), eq(issues.companyId, companyId)))
+      : ([] as { id: string; identifier: string | null; title: string; status: string }[]),
+    artifactIds.length
+      ? db
+          .select({ id: artifacts.id, title: artifacts.title, status: artifacts.status })
+          .from(artifacts)
+          .where(and(inArray(artifacts.id, artifactIds), eq(artifacts.companyId, companyId)))
+      : ([] as { id: string; title: string; status: string }[]),
+    goalIds.length
+      ? db
+          .select({ id: goals.id, title: goals.title, status: goals.status })
+          .from(goals)
+          .where(and(inArray(goals.id, goalIds), eq(goals.companyId, companyId)))
+      : ([] as { id: string; title: string; status: string }[]),
+  ]);
+
+  // Key by `${entityType}:${id}` — pins are polymorphic; a bare-id map could
+  // mis-resolve a cross-table uuid collision (Codex #2).
+  const byKey = new Map<string, CockpitPinnedItem>();
+  for (const t of tasks) {
+    byKey.set(`task:${t.id}`, {
+      entityType: "task",
+      entityId: t.id,
+      title: t.title,
+      status: t.status,
+      identifier: t.identifier,
+    });
+  }
+  for (const a of arts) {
+    byKey.set(`artifact:${a.id}`, {
+      entityType: "artifact",
+      entityId: a.id,
+      title: a.title,
+      status: a.status,
+    });
+  }
+  for (const g of gls) {
+    byKey.set(`goal:${g.id}`, {
+      entityType: "goal",
+      entityId: g.id,
+      title: g.title,
+      status: g.status,
+    });
+  }
+
+  // Preserve pin order (pinnedAt desc); drop pins whose entity no longer resolves.
+  return pins
+    .map((p) => byKey.get(`${p.entityType}:${p.entityId}`))
+    .filter((x): x is CockpitPinnedItem => !!x);
+}
+
+/**
  * Aggregate the unified approvals queue (Phase 3c).
  *
  * HC1: non-founder → [] immediately, no sub-queries.
@@ -219,7 +313,7 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems] =
+      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems, pinnedItems] =
         await Promise.all([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
@@ -319,6 +413,9 @@ export function cockpitService(db: Db) {
           // ── 6. Approvals (Phase 3c): founder-only unified queue ───────────
           // Non-founders: returns [] immediately without sub-queries (HC1).
           cockpitApprovals(db, companyId, scope),
+
+          // ── 7. Pinned (Phase 3d): user's pinned entities (company-scoped) ──
+          cockpitPinned(db, companyId, scope),
         ]);
 
       // ── Map running ───────────────────────────────────────────────────────
@@ -410,6 +507,7 @@ export function cockpitService(db: Db) {
         today: { reminders, dueTasks },
         discussions: discussionItems,
         approvals: approvalsItems,
+        pinned: pinnedItems,
       };
     },
   };

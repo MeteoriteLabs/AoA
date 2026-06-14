@@ -47,14 +47,20 @@ vi.mock("../services/memory.js", () => ({
 }));
 
 // Mock drizzle DB queries (select chains for reminders + dueTasks + entryRows
-// + approvals + extracted items). We use a simple stub that returns [] for all
-// .from() / .where() / .innerJoin() chains.
+// + approvals + extracted items + userEntityPins). We use a simple stub that
+// returns [] for all .from() / .where() / .orderBy() / .innerJoin() chains.
 function buildSelectStub(rows: unknown[] = []) {
   const stub: Record<string, unknown> = {};
   stub.from = () => stub;
-  stub.where = () => Promise.resolve(rows);
+  // where() may chain to orderBy() (cockpitPinned) — return stub so it chains.
+  stub.where = () => stub;
   stub.innerJoin = () => stub;
   stub.select = () => stub;
+  // orderBy() is terminal — resolves to rows.
+  stub.orderBy = () => Promise.resolve(rows);
+  // Make stub awaitable for where()-terminal paths (entity batches).
+  (stub as any).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+    Promise.resolve(rows).then(resolve, reject);
   return stub;
 }
 
