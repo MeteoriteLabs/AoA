@@ -2,16 +2,8 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { userEntityPins, issues, artifacts, goals } from "@armyofagents/db";
 
-export type UserEntityPinRow = {
-  id: string;
-  userId: string;
-  companyId: string;
-  entityType: string;
-  entityId: string;
-  pinnedAt: Date;
-  createdAt: Date;
-  updatedAt: Date;
-};
+// Derive the row type from the schema so it can't silently drift from the table.
+export type UserEntityPinRow = typeof userEntityPins.$inferSelect;
 
 export function userEntityPinService(db: Db) {
   return {
@@ -26,7 +18,7 @@ export function userEntityPinService(db: Db) {
           ),
         )
         .orderBy(desc(userEntityPins.pinnedAt));
-      return rows as UserEntityPinRow[];
+      return rows;
     },
 
     async pin(
@@ -35,27 +27,23 @@ export function userEntityPinService(db: Db) {
       entityType: string,
       entityId: string,
     ): Promise<UserEntityPinRow> {
+      // onConflictDoUpdate (not DoNothing + refetch) always returns exactly one
+      // row, avoiding a TOCTOU where a concurrent unpin makes a refetch return
+      // undefined. Re-pinning an existing pin just bumps updatedAt.
       const [row] = await db
         .insert(userEntityPins)
         .values({ userId, companyId, entityType, entityId })
-        .onConflictDoNothing()
+        .onConflictDoUpdate({
+          target: [
+            userEntityPins.userId,
+            userEntityPins.companyId,
+            userEntityPins.entityType,
+            userEntityPins.entityId,
+          ],
+          set: { updatedAt: new Date() },
+        })
         .returning();
-      if (!row) {
-        // Row already exists — fetch and return it.
-        const [existing] = await db
-          .select()
-          .from(userEntityPins)
-          .where(
-            and(
-              eq(userEntityPins.userId, userId),
-              eq(userEntityPins.companyId, companyId),
-              eq(userEntityPins.entityType, entityType),
-              eq(userEntityPins.entityId, entityId),
-            ),
-          );
-        return existing as UserEntityPinRow;
-      }
-      return row as UserEntityPinRow;
+      return row;
     },
 
     async unpin(

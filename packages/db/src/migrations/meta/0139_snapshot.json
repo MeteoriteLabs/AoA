@@ -1,5 +1,5 @@
 {
-  "id": "48e4c7bf-0d07-4ba3-967e-31872e289324",
+  "id": "e7bf27df-64a3-4baa-a119-d8da27e07669",
   "prevId": "94143202-9492-438c-ada8-90a26a7b6b2d",
   "version": "7",
   "dialect": "postgresql",
@@ -24512,27 +24512,6 @@
         }
       },
       "indexes": {
-        "user_entity_pins_user_company_idx": {
-          "name": "user_entity_pins_user_company_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "user_entity_pins_user_company_entity_uq": {
           "name": "user_entity_pins_user_company_entity_uq",
           "columns": [

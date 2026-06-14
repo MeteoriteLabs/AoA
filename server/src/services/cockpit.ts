@@ -187,6 +187,10 @@ async function cockpitPinned(
   const goalIds = pins.filter((p) => p.entityType === "goal").map((p) => p.entityId);
 
   // Company-scoped id-set lookups (getById's don't scope; we MUST add eq(companyId)).
+  // Deliberate: pinned tasks are NOT filtered by hiddenAt (unlike dueTasks/My Tasks).
+  // A pin is explicit user intent — it overrides a soft-hide, so a pinned-then-hidden
+  // task stays visible (with its status) until the user unpins it. entityExistsInCompany
+  // is symmetric (hidden tasks remain pinnable). Only deleted/out-of-company pins drop.
   const [tasks, arts, gls] = await Promise.all([
     taskIds.length
       ? db

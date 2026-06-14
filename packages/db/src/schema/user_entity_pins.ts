@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { authUsers } from "./auth.js";
 
@@ -15,7 +15,9 @@ export const userEntityPins = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    userCompanyIdx: index("user_entity_pins_user_company_idx").on(table.userId, table.companyId),
+    // The unique index leads with (userId, companyId, …), so it already serves
+    // every read (list + cockpit resolution filter on userId+companyId). A separate
+    // (userId, companyId) index would be pure write-amplification — omitted.
     uniq: uniqueIndex("user_entity_pins_user_company_entity_uq").on(
       table.userId, table.companyId, table.entityType, table.entityId,
     ),
