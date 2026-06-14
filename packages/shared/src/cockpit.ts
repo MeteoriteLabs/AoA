@@ -1,9 +1,22 @@
 /**
- * Cockpit data contract — Phase 3b.
+ * Cockpit data contract — Phase 3b/3c.
  *
  * ONE batched payload returned by GET /companies/:cid/cockpit.
  * The frontend's useCockpit() hook imports these types from @armyofagents/shared.
  */
+
+// Phase 3c: Approvals card types
+export type CockpitApprovalSource = "approval" | "memory" | "discussion_item";
+
+export interface CockpitApprovalItem {
+  source: CockpitApprovalSource;
+  /** approval id | memory item id | discussion extracted-item id */
+  id: string;
+  /** discussion_item only — needed for the batched approveItems endpoint */
+  discussionId?: string;
+  title: string;
+  subtitle: string;
+}
 
 export interface CockpitTaskItem {
   id: string;
@@ -45,4 +58,6 @@ export interface CockpitData {
     dueTasks: CockpitTaskItem[];
   };
   discussions: CockpitDiscussionItem[];
+  /** Phase 3c: unified approvals queue (founder-only; [] for non-founders). */
+  approvals: CockpitApprovalItem[];
 }
