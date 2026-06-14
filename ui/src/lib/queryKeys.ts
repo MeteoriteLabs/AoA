@@ -250,6 +250,7 @@ export const queryKeys = {
     list: (companyId: string) => ["environments", companyId] as const,
     detail: (companyId: string, id: string) => ["environments", companyId, id] as const,
   },
+  cockpit: (companyId: string) => ["cockpit", companyId] as const,
   plugins: {
     all: ["plugins"] as const,
     list: ["plugins", "list"] as const,
