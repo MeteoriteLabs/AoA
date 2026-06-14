@@ -5,6 +5,8 @@ import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "../../../lib/utils";
+import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { artifactsApi } from "../../../api/artifacts";
 import { BrowserViewer } from "../../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../../viewers/ViewerTabs";
@@ -240,7 +242,7 @@ function DesktopPanel({
     <div
       ref={containerRef}
       data-testid="commander-viewer-panel"
-      className="relative flex h-full shrink-0 flex-col border-l border-border bg-card"
+      className={cn("relative flex h-full shrink-0 flex-col", COMMANDER_PANEL_CARD)}
       style={{ width: resolvedWidth }}
     >
       {/* Drag handle — 8px hit area straddles the border; pointer capture handles out-of-window drags */}
@@ -289,7 +291,7 @@ function DesktopRail({ viewer, tabModels }: DesktopRailProps) {
   return (
     <div
       data-testid="commander-viewer-rail"
-      className="flex h-full w-9 shrink-0 flex-col items-center gap-1 border-l border-border bg-card py-2"
+      className={cn("flex h-full w-9 shrink-0 flex-col items-center gap-1 py-2", COMMANDER_PANEL_CARD)}
     >
       <button
         type="button"
