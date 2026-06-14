@@ -1,8 +1,8 @@
 /**
- * cockpitService — Phase 3b batched, RBAC-scoped cockpit data engine.
+ * cockpitService — Phase 3b/3c batched, RBAC-scoped cockpit data engine.
  *
- * GET /companies/:cid/cockpit returns ONE payload: Promise.all of 5 queries
- * (Running / Review / MyTasks / Today / Discussions). Mirrors the
+ * GET /companies/:cid/cockpit returns ONE payload: Promise.all of 6 queries
+ * (Running / Review / MyTasks / Today / Discussions / Approvals). Mirrors the
  * sidebar-badges + home batching pattern.
  *
  * Security model:
@@ -19,21 +19,28 @@
  *   - Discussions: canonical threadService.list visibility (Codex #3).
  *     Then filter to needs-me: pendingItemCount > 0 OR a failed/pending
  *     extraction entry over the visible ids. Map to CockpitDiscussionItem.
+ *   - Approvals (Phase 3c): founder-only; [] for all other roles (HC1).
+ *     Aggregates 3 sources: approvals table + memory pending items + discussion
+ *     extracted items. Non-founder short-circuits immediately — no sub-queries.
  */
 
 import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
+  approvals,
   discussionEntries,
+  discussionExtractedItems,
+  discussions,
   internalAgentReminders,
   issues,
 } from "@armyofagents/db";
-import type { CockpitData, CockpitTaskItem } from "@armyofagents/shared";
+import type { CockpitApprovalItem, CockpitData, CockpitTaskItem } from "@armyofagents/shared";
 import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
+import { memoryService } from "./memory.js";
 import { liveRunsForCompany } from "../routes/agents-live-runs.js";
 import { resolveCockpitScope, reviewFilterFor } from "./cockpit-scope.js";
-import type { ActorLike } from "./cockpit-scope.js";
+import type { ActorLike, CockpitScope } from "./cockpit-scope.js";
 
 // Terminal statuses excluded from active task lists.
 const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
@@ -66,6 +73,136 @@ function toTaskItem(row: {
   };
 }
 
+// ── Phase 3c: Approvals aggregation (founder-only) ───────────────────────────
+
+const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
+
+/**
+ * List pending approvals rows for the company (status pending or revision_requested).
+ * Returns minimal fields needed for the cockpit card.
+ */
+async function listPendingApprovals(
+  db: Db,
+  companyId: string,
+): Promise<Array<{ id: string; type: string; status: string; payload: Record<string, unknown> }>> {
+  return db
+    .select({
+      id: approvals.id,
+      type: approvals.type,
+      status: approvals.status,
+      payload: approvals.payload,
+    })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.companyId, companyId),
+        inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+      ),
+    );
+}
+
+/**
+ * List pending discussion extracted items for the company.
+ *
+ * HC3: discussionExtractedItems has discussionEntryId (NOT discussionId directly).
+ * Join: discussion_extracted_items → discussion_entries (via discussionEntryId)
+ *       → discussions (via discussionId) to scope by companyId.
+ * Returns discussionId from discussion_entries so the UI can route to the right page.
+ */
+async function listPendingExtractedItems(
+  db: Db,
+  companyId: string,
+): Promise<Array<{ id: string; discussionId: string; title: string; type: string }>> {
+  return db
+    .select({
+      id: discussionExtractedItems.id,
+      discussionId: discussionEntries.discussionId,
+      title: discussionExtractedItems.title,
+      type: discussionExtractedItems.type,
+    })
+    .from(discussionExtractedItems)
+    .innerJoin(
+      discussionEntries,
+      eq(discussionEntries.id, discussionExtractedItems.discussionEntryId),
+    )
+    .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+    .where(
+      and(
+        eq(discussions.companyId, companyId),
+        eq(discussionExtractedItems.status, "pending"),
+      ),
+    );
+}
+
+/** Build a human-readable title for an approval row from its type + payload. */
+function approvalTitle(row: { type: string; payload: Record<string, unknown> }): string {
+  const name =
+    (row.payload?.agentName as string | undefined) ??
+    (row.payload?.name as string | undefined) ??
+    null;
+  if (row.type === "agent_hire") return name ? `Hire ${name}` : "Agent hire request";
+  return name ?? row.type.replace(/_/g, " ");
+}
+
+/** Subtitle for an approval: the type in a readable form. */
+function approvalSubtitle(row: { type: string }): string {
+  return row.type.replace(/_/g, " ");
+}
+
+/**
+ * Aggregate the unified approvals queue (Phase 3c).
+ *
+ * HC1: non-founder → [] immediately, no sub-queries.
+ * HC2: memory.listPending returns { items, versions, archives, totalCount } — use .items.
+ * HC3: discussion join goes through discussionEntryId → discussion_entries → discussions.
+ */
+async function cockpitApprovals(
+  db: Db,
+  companyId: string,
+  scope: CockpitScope,
+): Promise<CockpitApprovalItem[]> {
+  // HC1: founder-only display. Non-founders get []; no sub-queries run.
+  if (!scope.isFounder) return [];
+
+  const [approvalRows, memPending, discItems] = await Promise.all([
+    listPendingApprovals(db, companyId),
+    // HC2: listPending returns an OBJECT { items, versions, archives, totalCount }, not an array.
+    // 3c uses only .items (new agent-suggested pending memory_items); versions/archives are follow-ups.
+    memoryService(db).listPending(companyId),
+    // HC3: join via discussionEntryId.
+    listPendingExtractedItems(db, companyId),
+  ]);
+
+  return [
+    ...approvalRows.map(
+      (a): CockpitApprovalItem => ({
+        source: "approval",
+        id: a.id,
+        title: approvalTitle(a),
+        subtitle: approvalSubtitle(a),
+      }),
+    ),
+    // HC2: use .items (not the whole object).
+    ...memPending.items.map(
+      (m): CockpitApprovalItem => ({
+        source: "memory",
+        id: m.id,
+        title: m.title,
+        subtitle: `${m.layer}${m.category ? ` · ${m.category}` : ""}`,
+      }),
+    ),
+    ...discItems.map(
+      (d): CockpitApprovalItem => ({
+        source: "discussion_item",
+        id: d.id,
+        discussionId: d.discussionId,
+        title: d.title,
+        subtitle: d.type,
+      }),
+    ),
+  ];
+}
+
 export function cockpitService(db: Db) {
   return {
     async get(companyId: string, actor: ActorLike): Promise<CockpitData> {
@@ -82,7 +219,7 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads] =
+      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems] =
         await Promise.all([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
@@ -178,6 +315,10 @@ export function cockpitService(db: Db) {
           // threadService.list handles participant + dept-role access internally.
           // Do NOT hand-roll owner/dept scoping (Codex #3).
           threadSvc.list(companyId, threadActor),
+
+          // ── 6. Approvals (Phase 3c): founder-only unified queue ───────────
+          // Non-founders: returns [] immediately without sub-queries (HC1).
+          cockpitApprovals(db, companyId, scope),
         ]);
 
       // ── Map running ───────────────────────────────────────────────────────
@@ -268,6 +409,7 @@ export function cockpitService(db: Db) {
         myTasks,
         today: { reminders, dueTasks },
         discussions: discussionItems,
+        approvals: approvalsItems,
       };
     },
   };

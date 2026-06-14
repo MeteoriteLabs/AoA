@@ -22,6 +22,7 @@ const mockReviewFilterFor = vi.hoisted(() => vi.fn());
 const mockIssueServiceList = vi.hoisted(() => vi.fn());
 const mockThreadServiceList = vi.hoisted(() => vi.fn());
 const mockLiveRunsForCompany = vi.hoisted(() => vi.fn());
+const mockMemoryServiceListPending = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/cockpit-scope.js", () => ({
   resolveCockpitScope: mockResolveCockpitScope,
@@ -40,12 +41,19 @@ vi.mock("../routes/agents-live-runs.js", () => ({
   liveRunsForCompany: mockLiveRunsForCompany,
 }));
 
-// Mock drizzle DB queries (select chains for reminders + dueTasks + entryRows).
-// We use a simple stub that returns [] for all .from() / .where() chains.
+// Phase 3c: mock memory service for approvals aggregation
+vi.mock("../services/memory.js", () => ({
+  memoryService: () => ({ listPending: mockMemoryServiceListPending }),
+}));
+
+// Mock drizzle DB queries (select chains for reminders + dueTasks + entryRows
+// + approvals + extracted items). We use a simple stub that returns [] for all
+// .from() / .where() / .innerJoin() chains.
 function buildSelectStub(rows: unknown[] = []) {
   const stub: Record<string, unknown> = {};
   stub.from = () => stub;
   stub.where = () => Promise.resolve(rows);
+  stub.innerJoin = () => stub;
   stub.select = () => stub;
   return stub;
 }
@@ -92,6 +100,13 @@ beforeEach(() => {
   mockLiveRunsForCompany.mockResolvedValue([]);
   mockIssueServiceList.mockResolvedValue([]);
   mockThreadServiceList.mockResolvedValue([]);
+  // Phase 3c: memory listPending returns { items, versions, archives, totalCount } (HC2: object, not array)
+  mockMemoryServiceListPending.mockResolvedValue({
+    items: [],
+    versions: [],
+    archives: [],
+    totalCount: 0,
+  });
   // db.select returns a stub that resolves to []
   (mockDb as Record<string, unknown>).select = vi.fn(() => buildSelectStub());
 });
@@ -143,7 +158,7 @@ describe("cockpitService.get — founder", () => {
     );
   });
 
-  it("returns the CockpitData shape", async () => {
+  it("returns the CockpitData shape including Phase 3c approvals field", async () => {
     const result = await cockpitService(mockDb).get(COMPANY, FOUNDER_ACTOR);
     expect(result).toHaveProperty("running");
     expect(result).toHaveProperty("review");
@@ -152,6 +167,9 @@ describe("cockpitService.get — founder", () => {
     expect(result.today).toHaveProperty("reminders");
     expect(result.today).toHaveProperty("dueTasks");
     expect(result).toHaveProperty("discussions");
+    // Phase 3c: approvals field must exist (may be [])
+    expect(result).toHaveProperty("approvals");
+    expect(Array.isArray(result.approvals)).toBe(true);
   });
 });
 
