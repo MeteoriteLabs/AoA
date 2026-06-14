@@ -28,27 +28,22 @@
 
 This is a **mechanical extraction** — move the body, rename two things, keep the Sheet shell. Read the whole `TaskSlideOver.tsx` first.
 
-- [ ] **Step 1: Create `TaskDetail.tsx` by moving the component internals.**
-  - **Props:**
-    ```ts
-    interface TaskDetailProps {
-      issueId: string | null;   // mirror current null-handling exactly
-      active: boolean;          // replaces `open` — gates queries
-      onDismiss?: () => void;   // replaces the in-content onClose() calls
-    }
-    export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) { ... }
-    ```
-  - **Move into `TaskDetail`:** every import the body uses; ALL hooks/state/effects/handlers (`:213-779`, including `sidebarMode` `:235-236` and the reset effect `:754-764`); and the **inner JSX** = the workspace-mode block (`:807-851`) + the task-mode block (`:854-1856`).
-  - **Root element of `TaskDetail`'s return:** wrap the two mode-blocks in
-    `<div className="flex h-full min-h-0 flex-col overflow-hidden">…</div>`
-    (this reproduces the `flex flex-col overflow-hidden` layout context the content got from `SheetContent`; `h-full` fills either the Sheet or the viewer Panel).
-  - **Two mechanical renames inside the moved code:**
-    1. The prop `open` → `active` everywhere it appears (all `enabled: !!issueId && open` → `enabled: !!issueId && active`; any other `open` reference in the moved body).
-    2. Each `onClose()` call (`:831`, `:838`, the mutation `onSuccess` `:950`, the header button `:962`) → `onDismiss?.()`.
-  - **Do NOT move into `TaskDetail`** (Sheet-only — stays in the wrapper): `Sheet`, `SheetContent`, `SheetTitle`, `SheetDescription`, the `onOpenChange` handler, `onPointerDownOutside` `:788-793`. Remove those imports from `TaskDetail`.
-  - `TaskDetail` must import nothing from `@/components/ui/sheet`.
+- [ ] **Step 1: Create `TaskDetail.tsx` via COPY-THEN-CARVE.** (Codex #1: `TaskSlideOver.tsx` defines module-level helpers/types/sub-components ABOVE the component that the body uses — `CommentReassignment` :78, `asRecord` :113, `usageNumber` :118, `truncate` :127, `formatAction` :132, `ActorIdentity` :168, `SourceBadge` :189 (+ possibly others). A "move lines :213-1856" approach would leave these behind and `TaskDetail` won't compile. Copy-then-carve guarantees they come along.)
+  1. **Copy the ENTIRE `TaskSlideOver.tsx` → `TaskDetail.tsx`** (all imports + all module-level helpers/types/sub-components + the component).
+  2. In `TaskDetail.tsx`, change the export name + props:
+     ```ts
+     interface TaskDetailProps {
+       issueId: string | null;   // mirror current null-handling exactly
+       active: boolean;          // replaces `open` — gates queries
+       onDismiss?: () => void;   // replaces the in-content onClose() calls
+     }
+     export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) { ... }
+     ```
+  3. **Renames in the body:** prop `open` → `active` everywhere (every `enabled: !!issueId && open` → `… && active`; Codex confirmed `open` is query-gate-only, so no effect/JSX behavior changes); each `onClose()` call (`:831`, `:838`, mutation `onSuccess` `:950`, header button `:962`) → `onDismiss?.()`.
+  4. **Remove the Sheet shell** from `TaskDetail`'s return: drop `<Sheet>`/`<SheetContent>`/`<SheetTitle>`/`<SheetDescription>`, `onOpenChange`, and `onPointerDownOutside`; replace with a root `<div className="flex h-full min-h-0 flex-col overflow-hidden">` wrapping the workspace-mode block (`:807-851`) + task-mode block (`:854-1856`) — reproduces `SheetContent`'s `flex flex-col overflow-hidden`; `h-full` fills the Sheet or the viewer Panel. Remove the now-unused `@/components/ui/sheet` imports (`Sheet`,`SheetContent`,`SheetTitle`,`SheetDescription`). **Keep** the content-level `Dialog` at `:1223` — it is NOT a Sheet (it's an in-content dialog) and stays in `TaskDetail`.
+  5. `cd ui ; pnpm tsc -b` → `TaskDetail.tsx` must compile with ZERO missing references (proves every helper came along).
 
-- [ ] **Step 2: Reduce `TaskSlideOver.tsx` to the wrapper.** Keep `TaskSlideOverProps` `:204-208` and the Sheet shell; render `<TaskDetail>` as the body. Preserve the sr-only `SheetTitle` identifier via a **dedup-shared** issue query (same `queryKey` as `TaskDetail`'s `issues.detail` → react-query serves both from one fetch, zero extra network):
+- [ ] **Step 2: Reduce `TaskSlideOver.tsx` to the wrapper.** Delete everything now living in `TaskDetail` — ALL module-level helpers/types/sub-components and every import used only by the content (they moved in Step 1). Keep only `TaskSlideOverProps` `:204-208`, the Sheet shell, and what the wrapper needs (`Sheet`/`SheetContent`/`SheetTitle`/`SheetDescription`, `useQuery`, `queryKeys`, `issuesApi`, `TaskDetail`). Render `<TaskDetail>` as the body. `pnpm tsc -b` must show ZERO unused imports/symbols in `TaskSlideOver.tsx`. Preserve the sr-only `SheetTitle` identifier via a **dedup-shared** issue query (same `queryKey` as `TaskDetail`'s `issues.detail` → react-query serves both from one fetch, zero extra network):
 
 ```tsx
 import { useQuery } from "@tanstack/react-query";
@@ -215,7 +210,7 @@ function TaskDetailTabBody({ tab, onDismiss }: TaskDetailTabBodyProps) {
 }
 ```
 
-- [ ] **Step 2: `TabBodySwitch`** — add the `task` case + thread a close handler. Add `onCloseTab: (id: string) => void` to `TabBodySwitchProps`; in `CommanderViewerDetail` pass `onCloseTab={viewer.close}` to it. New branch (before the `UnavailableBody` fallback):
+- [ ] **Step 2: `TabBodySwitch`** — add the `task` case + thread a close handler. Add `onCloseTab: (id: string) => void` to `TabBodySwitchProps`. **Pass `onCloseTab={viewer.close}` at BOTH `TabBodySwitch` call sites** — the desktop one in `CommanderViewerDetail` (~:267) AND the mobile one inside the Sheet (~:438). (Codex #2: both render `TabBodySwitch`; missing either fails TypeScript.) New branch (before the `UnavailableBody` fallback):
 ```tsx
   if (activeTab.kind === "task") {
     return <TaskDetailTabBody tab={activeTab} onDismiss={() => onCloseTab(activeTab.id)} />;
