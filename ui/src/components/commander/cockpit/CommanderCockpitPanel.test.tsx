@@ -67,11 +67,8 @@ describe("CommanderCockpitPanel", () => {
     renderPanel();
     // The Running card returns null when empty — should not be present
     expect(screen.queryByTestId("cockpit-card-running")).not.toBeInTheDocument();
-    // Allow the query to settle (card self-reports inactive → all-clear shown)
-    // The empty state text appears when visible.length === 0
-    // Since the running card reports active=false → visible is empty
-    // but the "All clear" display depends on the effect settling — check the panel exists
-    expect(screen.getByTestId("commander-cockpit-panel")).toBeInTheDocument();
+    // The "All clear" empty state renders once the card self-reports inactive (effect settles).
+    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
   });
 
   it("with running runs → the Running card renders with cockpit-card-running testid", async () => {

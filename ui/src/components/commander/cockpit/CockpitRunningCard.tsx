@@ -18,7 +18,9 @@ export function CockpitRunningCard({
     refetchInterval: 5000, // crew runs aren't covered by LiveUpdates invalidation (Codex #1)
   });
 
-  // /live-runs backfills terminal runs to a min count; keep only in-flight ones for "Running now".
+  // Defensive: the company /live-runs endpoint (called with no minCount) returns only
+  // live rows (queued/running) today; this guard keeps "Running now" correct if future
+  // statuses are ever added to that response.
   const runs = ((data ?? []) as LiveRunForIssue[]).filter(
     (r) => r.status === "running" || r.status === "queued",
   );

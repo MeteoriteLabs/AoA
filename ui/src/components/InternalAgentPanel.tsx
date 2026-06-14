@@ -416,7 +416,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // Commander Viewer P1: per-conversation tab state + mobile flag. The viewer
   // hook is always called (hooks rules) but the panel only mounts when
   // `enableViewerPanel` is set (full-page Commander route).
-  const { useDrawerSessions } = useBreakpoint();
+  const { useDrawerSessions, isWide } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
 
   // Phase 1: resizable panel geometry + collapse persistence.
@@ -427,7 +427,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   });
   const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
   const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
-  const { isWide } = useBreakpoint();
 
   // Phase 3a: cap-aware expand handlers. Below ultrawide (isWide=false) only ONE
   // of {detail, cockpit} may be expanded — expanding either collapses the other

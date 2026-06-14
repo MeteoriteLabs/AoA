@@ -4,7 +4,7 @@ import { cn } from "../../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { useCommanderCockpitPrefs } from "../useCommanderCockpitPrefs";
-import { selectVisibleCards, type CockpitCardDef } from "./cockpitCardModel";
+import { mountableCards, selectVisibleCards, type CockpitCardDef } from "./cockpitCardModel";
 import { CockpitRunningCard } from "./CockpitRunningCard";
 
 // ---------------------------------------------------------------------------
@@ -127,9 +127,10 @@ export function CommanderCockpitPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {/* All non-hidden defaultOn registry cards mount so each can self-report
-            active. Cards return null when they have no data (show-only-active). */}
-        {COCKPIT_REGISTRY.filter((c) => !prefs.hidden.includes(c.id) && c.defaultOn).map((c) => (
+        {/* Mountable cards (ordered by prefs.order, not hidden, defaultOn) mount so each
+            can self-report active; cards return null when empty (show-only-active). Order
+            drives the DOM — same source `selectVisibleCards` uses for the empty-state. */}
+        {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order).map((c) => (
           <div key={c.id} className="mb-2 last:mb-0">
             {c.render({
               companyId,
