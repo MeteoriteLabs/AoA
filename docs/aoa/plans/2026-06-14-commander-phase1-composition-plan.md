@@ -270,10 +270,21 @@ export function CommanderViewerPanel({ viewer, companyId, conversationRefs, isMo
 ```
 (`tabModels` is also needed by the desktop pieces — export a small helper `buildTabModels(state)` and reuse it in AgentPanelContent, OR have AgentPanelContent build it. Add: `export function buildViewerTabModels(state: ConversationViewerState): ViewerTabModel[]` and call it here + in Task 3.)
 
-- [ ] **Step 5: typecheck + commit**
+- [ ] **Step 5: Re-export the new pieces from the barrel** (Codex note: `InternalAgentPanel.tsx:52-58` imports the viewer from `./commander/viewer`, NOT the file). Update `ui/src/components/commander/viewer/index.ts` line 1 to:
+```ts
+export {
+  CommanderViewerPanel,
+  CommanderViewerRail,
+  CommanderViewerDetail,
+  buildViewerTabModels,
+} from "./CommanderViewerPanel";
+```
+(leave the `OutputRefChips`/`useCommanderViewer`/`commanderViewerModel` export lines unchanged.)
+
+- [ ] **Step 6: typecheck + commit**
 ```bash
 cd ui ; pnpm tsc -b
-git add ui/src/components/commander/viewer/CommanderViewerPanel.tsx
+git add ui/src/components/commander/viewer/CommanderViewerPanel.tsx ui/src/components/commander/viewer/index.ts
 git commit -m "refactor(commander): split viewer into Rail/Detail pieces; drop hand-rolled resize (Phase 1)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -286,13 +297,23 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `ui/src/components/InternalAgentPanel.tsx`
 
-- [ ] **Step 1: Imports**
+- [ ] **Step 1: Imports** — two new lines + EXTEND the existing viewer barrel import (`:52-58`):
 ```ts
+// New:
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
+
+// EXTEND the existing import block at InternalAgentPanel.tsx:52-58 — add the 3 new pieces:
 import {
-  CommanderViewerPanel, CommanderViewerRail, CommanderViewerDetail, buildViewerTabModels,
-} from "./commander/viewer/CommanderViewerPanel"; // adjust to the actual export site
+  CommanderViewerPanel,        // existing (now mobile-only)
+  CommanderViewerRail,         // new
+  CommanderViewerDetail,       // new
+  buildViewerTabModels,        // new
+  OutputRefChips,              // existing
+  collectConversationRefs,     // existing
+  mergeRefs,                   // existing
+  useCommanderViewer,          // existing
+} from "./commander/viewer";
 ```
 
 - [ ] **Step 2: Hooks + bridge** — inside `AgentPanelContent`, after `const viewer = useCommanderViewer(...)` (`:413`):
