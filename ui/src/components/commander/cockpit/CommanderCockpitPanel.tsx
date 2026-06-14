@@ -17,6 +17,7 @@ import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
+import { CockpitApprovalsCard } from "./CockpitApprovalsCard";
 
 // ---------------------------------------------------------------------------
 // Interaction callbacks type
@@ -38,6 +39,8 @@ const EMPTY_DATA: CockpitData = {
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
   discussions: [],
+  // Phase 3c: approvals required by CockpitData type
+  approvals: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -47,7 +50,9 @@ const EMPTY_DATA: CockpitData = {
 
 export interface CockpitCardRenderDef extends CockpitCardDef {
   isActive: (data: CockpitData) => boolean;
-  render: (props: { data: CockpitData } & CockpitInteractions) => React.ReactElement | null;
+  /** Phase 3c: companyId threaded through so cards that need per-source API calls
+   * (e.g. CockpitApprovalsCard) can dispatch correctly without a separate context. */
+  render: (props: { data: CockpitData; companyId: string } & CockpitInteractions) => React.ReactElement | null;
 }
 
 export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
@@ -99,6 +104,21 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     isActive: (d) => d.discussions.length > 0,
     render: ({ data, onOpenFullPage, onAsk }) => (
       <CockpitDiscussionsCard items={data.discussions} onOpenFullPage={onOpenFullPage} onAsk={onAsk} />
+    ),
+  },
+  // Phase 3c: unified approvals queue (founder-only; server returns [] for non-founders)
+  {
+    id: "approvals",
+    title: "Approvals",
+    defaultOn: true,
+    isActive: (d) => d.approvals.length > 0,
+    render: ({ data, companyId, onOpenFullPage, onAsk }) => (
+      <CockpitApprovalsCard
+        items={data.approvals}
+        companyId={companyId}
+        onOpenFullPage={onOpenFullPage}
+        onAsk={onAsk}
+      />
     ),
   },
 ];
@@ -225,7 +245,8 @@ export function CommanderCockpitPanel({
             not from per-card self-reporting. */}
         {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order).map((c) => (
           <div key={c.id} className="mb-2 last:mb-0">
-            {c.render({ data: cockpitData, onOpenTask, onAsk, onOpenFullPage })}
+            {/* Phase 3c: companyId threaded so cards like CockpitApprovalsCard can call per-source APIs. */}
+            {c.render({ data: cockpitData, companyId, onOpenTask, onAsk, onOpenFullPage })}
           </div>
         ))}
 

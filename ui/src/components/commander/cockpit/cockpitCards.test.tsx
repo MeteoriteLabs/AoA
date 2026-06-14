@@ -66,6 +66,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       discussions: [],
+      approvals: [],
     } satisfies CockpitData);
 
     render(
@@ -84,6 +85,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       discussions: [],
+      approvals: [],
     } satisfies CockpitData);
 
     render(
@@ -102,6 +104,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       discussions: [],
+      approvals: [],
     } satisfies CockpitData);
 
     render(

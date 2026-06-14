@@ -5,7 +5,7 @@ import type { CockpitData } from "@armyofagents/shared";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-// Phase 3b: mock the cockpit API (replaced the 3a per-card /live-runs query)
+// Phase 3b/3c: mock the cockpit API (replaced the 3a per-card /live-runs query)
 vi.mock("../../../api/cockpit", () => ({
   cockpitApi: {
     get: vi.fn().mockResolvedValue({
@@ -14,6 +14,7 @@ vi.mock("../../../api/cockpit", () => ({
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       discussions: [],
+      approvals: [],
     } satisfies CockpitData),
   },
 }));
@@ -37,6 +38,8 @@ function makeData(overrides?: Partial<CockpitData>): CockpitData {
     myTasks: [],
     today: { reminders: [], dueTasks: [] },
     discussions: [],
+    // Phase 3c: required by CockpitData
+    approvals: [],
     ...overrides,
   };
 }
