@@ -998,6 +998,15 @@ export {
 
 export { API_PREFIX, API } from "./api.js";
 
+// Phase 3b: Commander cockpit data contract
+export type {
+  CockpitTaskItem,
+  CockpitRunItem,
+  CockpitReminderItem,
+  CockpitDiscussionItem,
+  CockpitData,
+} from "./cockpit.js";
+
 // Marketplace catalog types
 export {
   CATALOG_SCHEMA_VERSION_MIN,
