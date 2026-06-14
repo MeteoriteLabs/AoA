@@ -7,7 +7,7 @@ export interface ViewerTab {
   id: string;
   kind: "artifact" | "reply" | "browser" | "task";
   title: string;
-  /** artifact id, message id for replies, or url for browser tabs */
+  /** artifact id, message id for replies, url for browser tabs, or issue id for task tabs */
   refId: string;
   versionId?: string | null;
   /** reply tabs only — markdown body */

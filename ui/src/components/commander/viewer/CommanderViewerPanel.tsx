@@ -213,7 +213,15 @@ export function TabBodySwitch({
   }
 
   if (activeTab.kind === "task") {
-    return <TaskDetailTabBody tab={activeTab} onDismiss={() => onCloseTab(activeTab.id)} />;
+    // Keyed per tab so switching between two task tabs remounts — TaskDetail holds
+    // internal UI state (sidebarMode, detailTab, …) that must not bleed across issues.
+    return (
+      <TaskDetailTabBody
+        key={activeTab.id}
+        tab={activeTab}
+        onDismiss={() => onCloseTab(activeTab.id)}
+      />
+    );
   }
 
   return (
