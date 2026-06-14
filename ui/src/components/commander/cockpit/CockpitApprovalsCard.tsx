@@ -45,7 +45,9 @@ function ApprovalRow({
   onAsk?: (text: string) => void;
 }) {
   const { approve, deny } = useCockpitApprovalAction(companyId);
-  const busy = approve.isPending || deny.isPending;
+  // Stay disabled after success too — the row only unmounts once the cockpit refetch
+  // returns, so this closes the sub-second window where a decided row is re-clickable.
+  const busy = approve.isPending || deny.isPending || approve.isSuccess || deny.isSuccess;
 
   return (
     <li className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50">

@@ -136,11 +136,11 @@ async function listPendingExtractedItems(
 
 /** Build a human-readable title for an approval row from its type + payload. */
 function approvalTitle(row: { type: string; payload: Record<string, unknown> }): string {
-  const name =
-    (row.payload?.agentName as string | undefined) ??
-    (row.payload?.name as string | undefined) ??
-    null;
-  if (row.type === "agent_hire") return name ? `Hire ${name}` : "Agent hire request";
+  // Hire approvals carry payload.name (set at agents.ts when creating the agent); guard
+  // the free-form payload value so a non-string can never reach React as a title.
+  const raw = row.payload?.name ?? row.payload?.agentName;
+  const name = typeof raw === "string" ? raw : null;
+  if (row.type === "hire_agent") return name ? `Hire ${name}` : "Agent hire request";
   return name ?? row.type.replace(/_/g, " ");
 }
 
@@ -188,7 +188,7 @@ async function cockpitApprovals(
         source: "memory",
         id: m.id,
         title: m.title,
-        subtitle: `${m.layer}${m.category ? ` · ${m.category}` : ""}`,
+        subtitle: [m.layer, m.category].filter(Boolean).join(" · ") || "memory",
       }),
     ),
     ...discItems.map(

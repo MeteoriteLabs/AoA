@@ -134,10 +134,10 @@ describe("cockpitApprovals — founder scope", () => {
     //   (entryRows for discussions only fires if visibleIds.length > 0; threadService returns [] so skipped)
     const approvalRow = {
       id: "appr-1",
-      type: "agent_hire",
+      type: "hire_agent",
       requestedByAgentId: null,
       status: "pending",
-      payload: { agentName: "Scout" },
+      payload: { name: "Scout" },
     };
     // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[]
     const db = buildSequenceDb([[], [], [approvalRow], []]);
@@ -157,6 +157,7 @@ describe("cockpitApprovals — founder scope", () => {
     expect(result.approvals[0]).toMatchObject({
       source: "approval",
       id: "appr-1",
+      title: "Hire Scout",
     });
   });
 
@@ -211,7 +212,7 @@ describe("cockpitApprovals — founder scope", () => {
   });
 
   it("all 3 sources combined in order", async () => {
-    const approvalRow = { id: "appr-1", type: "agent_hire", status: "pending", payload: {} };
+    const approvalRow = { id: "appr-1", type: "hire_agent", status: "pending", payload: {} };
     const memItem = { id: "mem-1", title: "Domain rule", layer: "domain", category: null, status: "pending" };
     const discItem = { id: "item-1", discussionId: "disc-1", title: "Insight", type: "insight" };
 
