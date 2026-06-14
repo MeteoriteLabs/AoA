@@ -5,9 +5,11 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { AgentPanelContent } from "../components/InternalAgentPanel";
 import { SessionsSidebar } from "../components/commander";
+import { COMMANDER_PANEL_ROW } from "../components/commander/commanderChrome";
 import { commanderConversationsApi, internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { useBreakpoint } from "../lib/useBreakpoint";
+import { cn } from "../lib/utils";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 export function Commander() {
@@ -64,22 +66,24 @@ export function Commander() {
       )}
 
       {/* Chat workspace — sessions + chat panel, fills remaining height */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className={cn("flex flex-1 min-h-0 overflow-hidden", COMMANDER_PANEL_ROW)}>
         {/* Desktop/wide (>= 1024px): inline sessions sidebar — UNCHANGED */}
         {!useDrawerSessions && (
           <SessionsSidebar
+            chrome
             activeConversationId={activeConversationId}
             onSelect={setActiveConversationId}
             onNewConversation={handleNewConversation}
           />
         )}
 
-        <div className="flex-1 min-w-0 overflow-hidden bg-bg">
+        <div className="flex-1 min-w-0 overflow-hidden">
           <AgentPanelContent
             conversationId={activeConversationId}
             onSelectConversation={handleSelectConversation}
             onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
             enableViewerPanel
+            cardChrome
           />
         </div>
 
