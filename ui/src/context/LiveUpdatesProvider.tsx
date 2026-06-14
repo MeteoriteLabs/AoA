@@ -568,11 +568,11 @@ function handleLiveEvent(
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
+    // Cockpit Running card tracks queued + running runs → invalidate on both.
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast) gatedPushToast(gate, pushToast, "run-status", toast);
-      // Cockpit live invalidation: running card tracks heartbeat run status
-      queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     }
     return;
   }

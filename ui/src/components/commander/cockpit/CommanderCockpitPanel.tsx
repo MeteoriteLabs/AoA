@@ -10,7 +10,6 @@ import { useCommanderCockpitPrefs } from "../useCommanderCockpitPrefs";
 import {
   mountableCards,
   selectVisibleCards,
-  deriveActiveFromData,
   type CockpitCardDef,
 } from "./cockpitCardModel";
 import { CockpitRunningCard } from "./CockpitRunningCard";
@@ -174,9 +173,9 @@ export function CommanderCockpitPanel({
 } & CockpitInteractions) {
   const [prefs, setPrefs] = useCommanderCockpitPrefs();
 
-  // ONE batched query — refetchInterval: 8000 is REQUIRED (crew-run liveness
-  // fallback; Codex #4: internal_agent.run.status isn't a LiveEvents type so
-  // the Running card would otherwise not refresh without polling).
+  // ONE batched query. LiveEvents (LiveUpdatesProvider) invalidate this key for
+  // instant updates; the modest refetchInterval is a belt-and-suspenders fallback
+  // for heartbeat/crew runs between events.
   const { data } = useQuery({
     queryKey: queryKeys.cockpit(companyId),
     queryFn: () => cockpitApi.get(companyId),
@@ -186,8 +185,11 @@ export function CommanderCockpitPanel({
 
   const cockpitData = data ?? EMPTY_DATA;
 
-  // Derive active map from the shared payload (replaces per-card onActiveChange).
-  const active = deriveActiveFromData(cockpitData);
+  // Active map derived from the registry's own isActive predicates — single source of
+  // truth (also feeds the card-render gate), so no separate hardcoded map to drift.
+  const active = Object.fromEntries(
+    COCKPIT_REGISTRY.map((c) => [c.id, c.isActive(cockpitData)]),
+  );
 
   const visible = selectVisibleCards({
     registry: COCKPIT_REGISTRY,

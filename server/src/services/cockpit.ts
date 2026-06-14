@@ -24,7 +24,6 @@
 import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
-  discussions,
   discussionEntries,
   internalAgentReminders,
   issues,
@@ -190,7 +189,9 @@ export function cockpitService(db: Db) {
           startedAt?: Date | string | null;
           issueId?: string | null;
         }>
-      ).map((r) => ({
+      )
+        .filter((r) => r.status === "running" || r.status === "queued")
+        .map((r) => ({
         id: r.id,
         agentName: r.agentName ?? null,
         status: r.status,

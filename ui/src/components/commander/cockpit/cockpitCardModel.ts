@@ -1,8 +1,6 @@
 // ui/src/components/commander/cockpit/cockpitCardModel.ts
 // Pure model — no React, no side effects, safe to unit-test in isolation.
 
-import type { CockpitData } from "@armyofagents/shared";
-
 export interface CockpitCardDef {
   id: string;
   title: string;
@@ -42,18 +40,4 @@ export function mountableCards<T extends CockpitCardDef>(
 export function selectVisibleCards(input: CockpitVisibilityInput): CockpitCardDef[] {
   const { registry, hidden, order, active } = input;
   return mountableCards(registry, hidden, order).filter((c) => active[c.id] === true);
-}
-
-/**
- * Phase 3b: Derive active map from the shared CockpitData payload.
- * Replaces per-card onActiveChange self-reporting.
- */
-export function deriveActiveFromData(data: CockpitData): Record<string, boolean> {
-  return {
-    running: data.running.length > 0,
-    review: data.review.length > 0,
-    myTasks: data.myTasks.length > 0,
-    today: data.today.reminders.length > 0 || data.today.dueTasks.length > 0,
-    discussions: data.discussions.length > 0,
-  };
 }
