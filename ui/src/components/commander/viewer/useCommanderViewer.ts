@@ -6,6 +6,7 @@ import {
   openBrowserTab,
   openRefTab,
   openReplyTab,
+  openTaskTab,
   setActive,
   setExpanded,
   shouldAutoOpen,
@@ -18,6 +19,8 @@ export interface CommanderViewerApi {
   openReply: (messageId: string, content: string) => void;
   /** Open a url in a sandboxed Browser tab (link clicks in replies). */
   openBrowser: (url: string) => void;
+  /** Open a task as a viewer tab (Phase 3 cockpit / future task chips call this). */
+  openTask: (issueId: string, title: string) => void;
   onLiveRef: (ref: CommanderOutputRef, isMobile: boolean) => void;
   activate: (tabId: string) => void;
   close: (tabId: string) => void;
@@ -65,6 +68,7 @@ export function useCommanderViewer(conversationId: string | null): CommanderView
     openRef: (ref) => update(openRefTab(readState(), ref)),
     openReply: (messageId, content) => update(openReplyTab(readState(), messageId, content)),
     openBrowser: (url) => update(openBrowserTab(readState(), url)),
+    openTask: (issueId, title) => update(openTaskTab(readState(), issueId, title)),
     onLiveRef: (ref, isMobile) => {
       const current = readState();
       if (shouldAutoOpen(ref, isMobile)) {
