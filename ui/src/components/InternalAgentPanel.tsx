@@ -1408,7 +1408,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           <>
             <Separator
               id="commander-sep"
-              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/30 active:bg-brand/50"
+              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
               data-testid="commander-resizable-handle"
             />
             <Panel

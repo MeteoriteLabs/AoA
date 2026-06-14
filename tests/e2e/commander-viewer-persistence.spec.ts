@@ -18,7 +18,9 @@ test.describe("Commander viewer geometry persistence", () => {
     await expect(page.getByTestId("commander-viewer-panel")).toBeVisible();
     await expect(page.getByTestId("commander-resizable-handle")).toBeVisible();
 
-    // Drag the handle to widen the detail panel.
+    // Capture the DEFAULT width first, then drag the handle LEFT to widen the detail panel.
+    const panel = page.getByTestId("commander-viewer-panel");
+    const widthAtDefault = await panel.evaluate((el) => el.clientWidth);
     const handle = page.getByTestId("commander-resizable-handle");
     const box = await handle.boundingBox();
     expect(box).not.toBeNull();
@@ -28,12 +30,16 @@ test.describe("Commander viewer geometry persistence", () => {
       await page.mouse.move(box.x - 160, box.y + box.height / 2, { steps: 12 });
       await page.mouse.up();
     }
-    const widthBefore = await page.getByTestId("commander-viewer-panel").evaluate((el) => el.clientWidth);
+    const widthBefore = await panel.evaluate((el) => el.clientWidth);
+    // The drag MUST have materially widened the panel — otherwise the persistence
+    // assertion below could pass trivially against an unchanged default width
+    // (silent no-op if the handle wasn't hit or the move clamped to ~0).
+    expect(widthBefore).toBeGreaterThan(widthAtDefault + 40);
 
     // Reload: expanded state + width restored from localStorage.
     await page.reload();
-    await expect(page.getByTestId("commander-viewer-panel")).toBeVisible({ timeout: 20_000 });
-    const widthAfter = await page.getByTestId("commander-viewer-panel").evaluate((el) => el.clientWidth);
+    await expect(panel).toBeVisible({ timeout: 20_000 });
+    const widthAfter = await panel.evaluate((el) => el.clientWidth);
     expect(Math.abs(widthAfter - widthBefore)).toBeLessThanOrEqual(8); // within a px or two
 
     // Collapse persists too.
