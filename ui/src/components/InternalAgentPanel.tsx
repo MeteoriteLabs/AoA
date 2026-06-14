@@ -420,13 +420,26 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const viewer = useCommanderViewer(conversationId ?? null);
 
   // Phase 1: resizable panel geometry + collapse persistence.
+  const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
+  const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
+  // panelIds MUST match the panels actually rendered at mount — the lib leaves the
+  // layout unrestored otherwise (react-resizable-panels.d.ts:424). With two
+  // independently-collapsible right panels, derive panelIds from collapse state so each
+  // configuration ({chat}, {chat,detail}, {chat,cockpit}, {chat,detail,cockpit}) persists
+  // and restores under its own key. A static 3-id list broke {chat,detail} width restore.
+  const panelIds = useMemo(
+    () => [
+      "commander-chat",
+      ...(viewerCollapsed ? [] : ["commander-detail"]),
+      ...(cockpitCollapsed ? [] : ["commander-cockpit"]),
+    ],
+    [viewerCollapsed, cockpitCollapsed],
+  );
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "aoa:commander:panel-sizes",
     storage: localStorage,
-    panelIds: ["commander-chat", "commander-detail", "commander-cockpit"],
+    panelIds,
   });
-  const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
-  const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
 
   // Phase 3a: cap-aware expand handlers. Below ultrawide (isWide=false) only ONE
   // of {detail, cockpit} may be expanded — expanding either collapses the other
