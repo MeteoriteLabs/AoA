@@ -17,6 +17,7 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferencesService } from "./sidebar-preferences.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
+export { userEntityPinService } from "./user-entity-pins.js";
 export { accessService } from "./access.js";
 export { teamService } from "./team.js";
 export { teamsService } from "./teams.js";
