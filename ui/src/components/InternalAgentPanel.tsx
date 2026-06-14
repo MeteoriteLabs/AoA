@@ -36,6 +36,7 @@ import {
 } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
+import { COMMANDER_PANEL_CARD } from "./commander/commanderChrome";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
 import {
@@ -324,9 +325,15 @@ interface AgentPanelContentProps {
    * Commander route passes this — the docked w-80 panel stays viewer-free.
    */
   enableViewerPanel?: boolean;
+  /**
+   * When true, wraps the chat column in the Commander rounded-card chrome.
+   * Only the full-page Commander route passes this — the docked InternalAgentPanel
+   * and mobile sheet stay card-free.
+   */
+  cardChrome?: boolean;
 }
 
-export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel }: AgentPanelContentProps = {}) {
+export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
@@ -921,7 +928,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // stays a small, reviewable diff. Classes: original `flex flex-col h-full`
   // + `min-w-0 flex-1` so the column shrinks correctly next to the viewer.
   const chatColumn = (
-    <div className="flex h-full min-w-0 flex-1 flex-col">
+    <div
+      className={cn(
+        "flex h-full min-w-0 flex-1 flex-col",
+        cardChrome && `${COMMANDER_PANEL_CARD} overflow-hidden`,
+      )}
+    >
       {/* Chat pane caption strip — shown only when there is an active conversation */}
       {conversationId && (
         <ChatPaneCaption
@@ -1340,7 +1352,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-row overflow-hidden">
+    <div className={cn("flex h-full min-h-0 flex-row overflow-hidden", cardChrome && "gap-2")}>
       {chatColumn}
       {enableViewerPanel && companyId && (
         <CommanderViewerPanel
