@@ -16,12 +16,12 @@ test.describe("Commander viewer geometry persistence", () => {
     // Expand via the rail; the detail card appears and the resize handle is present.
     await page.getByRole("button", { name: "Viewer home" }).click();
     await expect(page.getByTestId("commander-viewer-panel")).toBeVisible();
-    await expect(page.getByTestId("commander-resizable-handle")).toBeVisible();
+    await expect(page.locator("[data-separator]")).toBeVisible();
 
     // Capture the DEFAULT width first, then drag the handle LEFT to widen the detail panel.
     const panel = page.getByTestId("commander-viewer-panel");
     const widthAtDefault = await panel.evaluate((el) => el.clientWidth);
-    const handle = page.getByTestId("commander-resizable-handle");
+    const handle = page.locator("[data-separator]");
     const box = await handle.boundingBox();
     expect(box).not.toBeNull();
     if (box) {

@@ -1406,10 +1406,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         </Panel>
         {!viewerCollapsed && (
           <>
+            {/* Separator renders its own `data-separator` + role="separator"
+                attributes (a passed data-testid is ignored); tests target
+                `[data-separator]`. */}
             <Separator
               id="commander-sep"
               className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
-              data-testid="commander-resizable-handle"
             />
             <Panel
               id="commander-detail"
