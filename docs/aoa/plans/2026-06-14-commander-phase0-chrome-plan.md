@@ -1,73 +1,80 @@
-# Commander Phase 0 — Rounded-Panel Chrome Implementation Plan
+# Commander Phase 0 — Rounded-Panel Chrome Implementation Plan (v2)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Make the Commander page's panels (sessions, chat, viewer) render as rounded "cards" with consistent gaps + a muted backdrop, matching Memory / Discussions / Workspace.
+**Goal:** Render the Commander page's panels (sessions, chat, viewer) as rounded "cards" with uniform gaps + a muted backdrop, matching Memory / Discussions / Workspace.
 
-**Architecture:** Commander is already full-bleed at the `Layout` level (`shouldUseFullBleedMain` returns true for `commander` — do NOT change that; Workspace is full-bleed too). The card chrome is added *inside the page*, mirroring `WorkspaceLayout`: a `gap-2 p-2 bg-muted/30` wrapper around the panel row, and `rounded-xl border border-border bg-background shadow-sm` on each panel. Because the panels span two files (sessions in `Commander.tsx`; chat + viewer in `AgentPanelContent`), the gap is applied at two nested flex levels with matching `gap-2` so spacing reads uniformly.
+**Architecture:** Commander is already full-bleed at `Layout` level (`shouldUseFullBleedMain` true for `commander` — leave unchanged; Workspace is full-bleed too). Add chrome *inside the page*, mirroring `WorkspaceLayout`: a `gap-2 p-2 bg-muted/30` wrapper on the panel row + a card class on each panel.
 
-**Tech Stack:** React + Tailwind v4. Verification is **visual-first** (chrome is presentational; a full-render unit test of `AgentPanelContent` would need ~6 context providers and be brittle — the skilled call here is a visual checklist + the existing e2e harness, not a brittle render test). One lightweight structural assertion is included where it's cheap.
+**v2 — revised after a Codex review of v1, which caught four real issues:**
+1. `chatColumn` is shared by Commander, the (currently unrendered) docked `InternalAgentPanel`, and the mobile sheet → the card must be **scoped to Commander via a prop**, not applied unconditionally.
+2. `SessionsSidebar` root already owns `border-r border-border bg-secondary-sidebar` → **modify its root** (swap those for the card class), don't wrap it (a wrapper double-borders + keeps the wrong bg).
+3. `overflow-hidden` in the card class **clips the viewer's `-left-1` resize divider** → the card constant must **NOT** include `overflow-hidden`; add it per-panel only where content should clip (sessions, chat), and **omit it on the viewer** so the divider stays grabbable.
+4. The collapsed rail must keep `w-9 … py-2` so the card class doesn't bloat it.
+Codex confirmed as non-issues: nested gaps read uniform, the rightmost viewer gets a right gutter (outer `p-2`), chat-input scrolling survives, full-bleed matches Workspace.
 
-**Relationship to Phase 1:** Phase 1 (composition) restructures this same layout into a `react-resizable-panels` group. The card *classes* added here carry forward unchanged (Phase 1 changes how panels are *sized*, not their card styling), so this is not throwaway work.
+**Tech Stack:** React + Tailwind v4. Verification is **visual-first** (chrome is presentational; a full-render unit test of `AgentPanelContent` needs ~6 context providers and is brittle — the skilled call is a visual checklist + a cheap token test, not a brittle render test).
+
+**Phase 1 relationship:** Phase 1 (composition) restructures this into a `react-resizable-panels` group and replaces the hand-rolled divider with the lib's `Separator`. The card *classes* + the `chrome`/`cardChrome` props added here carry forward; the divider concern (#3) is fully retired by Phase 1's `Separator`.
 
 **Verified anchors (read before editing):**
-- `ui/src/components/Layout.tsx:29-47` — `shouldUseFullBleedMain` (commander at :42). **Leave unchanged.**
-- `ui/src/pages/Commander.tsx:56` root `flex flex-col h-full min-h-0`; `:67` panel row `flex flex-1 min-h-0 overflow-hidden`; `:69-75` `<SessionsSidebar>` (desktop); `:77` chat container `flex-1 min-w-0 overflow-hidden bg-bg`.
-- `ui/src/components/InternalAgentPanel.tsx` `AgentPanelContent` return (~:1343) `<div className="flex h-full min-h-0 flex-row overflow-hidden">` wrapping `{chatColumn}` + `<CommanderViewerPanel/>`; `chatColumn` (~:922) `<div className="flex h-full min-w-0 flex-1 flex-col">`.
-- `ui/src/components/commander/viewer/CommanderViewerPanel.tsx` — expanded panel container (`relative flex h-full shrink-0 flex-col border-l border-border bg-card`) and collapsed rail (`flex h-full w-9 shrink-0 flex-col ... border-l border-border bg-card`).
-- Reference for the exact recipe: `ui/src/components/workspace/WorkspaceLayout.tsx:426` (`flex flex-1 min-h-0 gap-2 overflow-hidden bg-muted/30 p-2`) + its panels (`:430` `rounded-xl border border-border bg-background shadow-sm`).
-
-**Chrome constant (single source of truth):** define once and reuse so every panel matches and Phase 1 inherits it.
+- `ui/src/components/Layout.tsx:29-47` `shouldUseFullBleedMain` (commander :42). **Leave unchanged.**
+- `ui/src/pages/Commander.tsx:56` root; `:67` panel row; `:69-75` desktop `<SessionsSidebar>`; `:77` chat container `flex-1 min-w-0 overflow-hidden bg-bg`; `:87-98` mobile drawer `<SessionsSidebar>` (must NOT get chrome).
+- `ui/src/components/commander/SessionsSidebar.tsx:469-470` root `<div className="flex flex-col h-full w-56 shrink-0 border-r border-border bg-secondary-sidebar">`.
+- `ui/src/components/InternalAgentPanel.tsx` `AgentPanelContentProps` (~:300-325); `chatColumn` const (~:922-924); `AgentPanelContent` return flex-row (~:1343); the docked `InternalAgentPanel()` wrapper (~:1357, renders `<AgentPanelContent />` with no props — must stay card-free).
+- `ui/src/components/commander/viewer/CommanderViewerPanel.tsx` expanded container (`relative flex h-full shrink-0 flex-col border-l border-border bg-card`); collapsed rail (`flex h-full w-9 shrink-0 flex-col items-center … border-l border-border bg-card … py-2`); divider at `:252` (`absolute inset-y-0 -left-1 w-2 …`).
+- Reference recipe: `ui/src/components/workspace/WorkspaceLayout.tsx:426` row + `:430` panels.
 
 ---
 
-## Task 1: Define the shared card-chrome class + apply the row wrapper and sessions card
+## Task 1: Chrome constants + Commander.tsx wiring
 
 **Files:**
 - Create: `ui/src/components/commander/commanderChrome.ts`
-- Modify: `ui/src/pages/Commander.tsx` (row `:67`, sessions `:69-75`, chat container `:77`)
+- Modify: `ui/src/pages/Commander.tsx`
 
-- [ ] **Step 1: Create the chrome constant**
+- [ ] **Step 1: Create the constants (no `overflow-hidden` in the card — see fix #3)**
 
 ```ts
 // ui/src/components/commander/commanderChrome.ts
 // Single source of truth for Commander panel chrome (Phase 0). Mirrors the
 // Workspace/Memory/Discussions recipe (design-system §5.1 radius, §6 shadow).
-// Phase 1 (resizable composition) reuses this unchanged.
+// NOTE: overflow-hidden is intentionally NOT here — it clips the viewer's
+// resize divider. Add "overflow-hidden" per-panel only where content must clip
+// (sessions, chat); omit it on the viewer. Phase 1 reuses these unchanged.
 export const COMMANDER_PANEL_CARD =
-  "rounded-xl border border-border bg-background shadow-sm overflow-hidden";
+  "rounded-xl border border-border bg-background shadow-sm";
 
 /** The row that holds the panels: gap + padding + muted backdrop. */
 export const COMMANDER_PANEL_ROW = "gap-2 p-2 bg-muted/30";
 ```
 
-- [ ] **Step 2: Apply the wrapper + sessions card in `Commander.tsx`**
+- [ ] **Step 2: Commander.tsx — row wrapper, chat passthrough, pass the scoping props**
 
-Import the constants at the top:
+Imports:
 ```ts
-import { COMMANDER_PANEL_CARD, COMMANDER_PANEL_ROW } from "../components/commander/commanderChrome";
+import { cn } from "../lib/utils"; // if not already imported
+import { COMMANDER_PANEL_ROW } from "../components/commander/commanderChrome";
 ```
 
-Row `:67` — add the wrapper classes:
+Row `:67`:
 ```tsx
 <div className={cn("flex flex-1 min-h-0 overflow-hidden", COMMANDER_PANEL_ROW)}>
 ```
-(If `cn` isn't already imported in this file, add `import { cn } from "../lib/utils";`.)
 
-Desktop sessions `:69-75` — wrap `<SessionsSidebar>` in a card (do NOT edit SessionsSidebar internals):
+Desktop sessions `:69-75` — pass `chrome` (do NOT wrap; SessionsSidebar applies it to its root in Task 2). The **mobile drawer** copy `:87-98` gets **no** `chrome`:
 ```tsx
 {!useDrawerSessions && (
-  <div className={cn(COMMANDER_PANEL_CARD, "shrink-0")}>
-    <SessionsSidebar
-      activeConversationId={activeConversationId}
-      onSelect={setActiveConversationId}
-      onNewConversation={handleNewConversation}
-    />
-  </div>
+  <SessionsSidebar
+    chrome
+    activeConversationId={activeConversationId}
+    onSelect={setActiveConversationId}
+    onNewConversation={handleNewConversation}
+  />
 )}
 ```
 
-Chat container `:77` — make it a transparent passthrough (drop its `bg-bg`; the chat panel itself becomes the card in Task 2):
+Chat container `:77` — drop `bg-bg` (the chat panel becomes the card in Task 3) and pass `cardChrome`:
 ```tsx
 <div className="flex-1 min-w-0 overflow-hidden">
   <AgentPanelContent
@@ -75,49 +82,99 @@ Chat container `:77` — make it a transparent passthrough (drop its `bg-bg`; th
     onSelectConversation={handleSelectConversation}
     onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
     enableViewerPanel
+    cardChrome
   />
 </div>
 ```
 
-- [ ] **Step 3: Visual check (dev server)**
-
-Run the app (or the isolated instance pattern from the e2e). Open `/<prefix>/commander`. Expected: an 8px muted-backdrop gutter around the panel row; the sessions sidebar is a rounded card with a hairline border + soft shadow. (Chat/viewer become cards in Task 2.)
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add ui/src/components/commander/commanderChrome.ts ui/src/pages/Commander.tsx
-git commit -m "feat(commander): panel-row chrome wrapper + sessions card (Phase 0)
+git commit -m "feat(commander): chrome constants + row wrapper + scoping props (Phase 0)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 2: Card the chat column and the viewer panel/rail
+## Task 2: SessionsSidebar — `chrome` prop on its root (fix #2)
 
 **Files:**
-- Modify: `ui/src/components/InternalAgentPanel.tsx` (`AgentPanelContent` flex-row ~:1343 + `chatColumn` ~:922)
-- Modify: `ui/src/components/commander/viewer/CommanderViewerPanel.tsx` (expanded panel + rail containers)
+- Modify: `ui/src/components/commander/SessionsSidebar.tsx` (props + root `:470`)
 
-- [ ] **Step 1: Chat column + inner gap in `AgentPanelContent`**
+- [ ] **Step 1: Add the prop**
 
-Import the constant:
+Find the props interface/signature for `SessionsSidebar` and add:
+```ts
+  /** Commander desktop: render the sidebar root as a rounded card (drops its
+   *  own right border + sidebar bg). Off for the mobile drawer. */
+  chrome?: boolean;
+```
+Destructure `chrome = false` in the component signature.
+
+- [ ] **Step 2: Swap the root classes when `chrome` is on**
+
+Root `:470` — replace `border-r border-border bg-secondary-sidebar` with the card class (keep `flex flex-col h-full w-56 shrink-0`; add `overflow-hidden` since the session list scrolls):
+```tsx
+import { cn } from "@/lib/utils"; // if not present
+import { COMMANDER_PANEL_CARD } from "./commanderChrome";
+// ...
+<div
+  className={cn(
+    "flex flex-col h-full w-56 shrink-0",
+    chrome
+      ? `${COMMANDER_PANEL_CARD} overflow-hidden`
+      : "border-r border-border bg-secondary-sidebar",
+  )}
+>
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add ui/src/components/commander/SessionsSidebar.tsx
+git commit -m "feat(commander): SessionsSidebar card chrome variant (Phase 0)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 3: AgentPanelContent — `cardChrome` prop scopes the chat card (fix #1)
+
+**Files:**
+- Modify: `ui/src/components/InternalAgentPanel.tsx` (props ~:300-325; `chatColumn` ~:922; return flex-row ~:1343)
+
+- [ ] **Step 1: Add the prop**
+
+In `AgentPanelContentProps` add `cardChrome?: boolean;`; destructure `cardChrome = false` in the `AgentPanelContent` signature. (The docked `InternalAgentPanel()` wrapper renders `<AgentPanelContent />` with no props → `cardChrome` stays false there. Leave it.)
+
+Import:
 ```ts
 import { COMMANDER_PANEL_CARD } from "./commander/commanderChrome";
 ```
 
-`chatColumn` (~:922) — add the card class to its outer div:
+- [ ] **Step 2: Card the chat column, gated**
+
+`chatColumn` (~:922) — the card + `overflow-hidden` (chat content clips/scrolls) only when `cardChrome`:
 ```tsx
 const chatColumn = (
-  <div className={cn("flex h-full min-w-0 flex-1 flex-col", COMMANDER_PANEL_CARD)}>
+  <div
+    className={cn(
+      "flex h-full min-w-0 flex-1 flex-col",
+      cardChrome && `${COMMANDER_PANEL_CARD} overflow-hidden`,
+    )}
+  >
 ```
-(`cn` is already imported in this file — confirm.)
+(`cn` already imported in this file — confirm.)
 
-The `AgentPanelContent` return flex-row (~:1343) — add `gap-2` so chat and viewer cards are spaced like the sessions↔chat gap (the `p-2 bg-muted/30` is already on the parent row from Task 1, so only `gap-2` is needed here):
+- [ ] **Step 3: Inner gap between chat and viewer, gated**
+
+The `AgentPanelContent` return flex-row (~:1343) — add `gap-2` only when `cardChrome` (the `p-2 bg-muted/30` is on the parent row from Task 1; the docked variant has no viewer so it needs no gap):
 ```tsx
 return (
-  <div className="flex h-full min-h-0 flex-row gap-2 overflow-hidden">
+  <div className={cn("flex h-full min-h-0 flex-row overflow-hidden", cardChrome && "gap-2")}>
     {chatColumn}
     {enableViewerPanel && companyId && (
       <CommanderViewerPanel /* ...unchanged props... */ />
@@ -126,74 +183,105 @@ return (
 );
 ```
 
-- [ ] **Step 2: Card the viewer panel + rail in `CommanderViewerPanel.tsx`**
-
-Import the constant:
-```ts
-import { COMMANDER_PANEL_CARD } from "../commanderChrome";
-```
-
-Expanded panel container — replace its `border-l border-border bg-card` with the card class (it's now a free-floating card, not a left-bordered attachment):
-```tsx
-<div ref={containerRef} className={cn("relative flex h-full shrink-0 flex-col", COMMANDER_PANEL_CARD)} ...>
-```
-
-Collapsed rail container — same treatment (drop `border-l`, add the card class) so the rail is a slim rounded card:
-```tsx
-<div className={cn("flex h-full w-9 shrink-0 flex-col items-center ...", COMMANDER_PANEL_CARD)} data-testid="commander-viewer-rail">
-```
-
-(Keep all other classes/behaviour. The drag-divider sits at the card's left edge — verify it still grabs; if the rounded corner clips the 8px hit area, nudge the divider inwith `left-0` instead of `-left-1`.)
-
-- [ ] **Step 3: Lightweight structural assertion (cheap, non-brittle)**
-
-Add to `ui/src/components/commander/viewer/` a tiny test that the rail/panel carry the shared card class, so the chrome can't silently regress:
-```tsx
-// ui/src/components/commander/commanderChrome.test.ts
-import { describe, it, expect } from "vitest";
-import { COMMANDER_PANEL_CARD, COMMANDER_PANEL_ROW } from "./commanderChrome";
-
-describe("commander chrome tokens", () => {
-  it("card class carries rounded + border + shadow", () => {
-    expect(COMMANDER_PANEL_CARD).toContain("rounded-xl");
-    expect(COMMANDER_PANEL_CARD).toContain("border");
-    expect(COMMANDER_PANEL_CARD).toContain("shadow-sm");
-  });
-  it("row class carries gap + padding + backdrop", () => {
-    expect(COMMANDER_PANEL_ROW).toContain("gap-2");
-    expect(COMMANDER_PANEL_ROW).toContain("p-2");
-    expect(COMMANDER_PANEL_ROW).toContain("bg-muted/30");
-  });
-});
-```
-
-Run: `cd ui && pnpm vitest run src/components/commander/commanderChrome.test.ts` → PASS. (This pins the tokens; the actual rendering is verified visually in Step 4.)
-
-- [ ] **Step 4: Visual verification checklist (the real gate)**
-
-Run the app, open `/<prefix>/commander`, and confirm:
-1. Three rounded cards — sessions, chat, viewer rail — with uniform 8px gaps + muted backdrop gutter.
-2. Expand the viewer (⌂) → it's a rounded card sibling to the chat, not flush.
-3. Chat input still rounds/scrolls correctly inside the chat card (no clipped/overflowing input).
-4. Drag the viewer divider → still resizes (hit area not clipped by the rounded corner).
-5. Existing UI tests still green: `cd ui && pnpm vitest run src/components/commander/ src/components/InternalAgentPanel.outputRefs.test.tsx src/__tests__/OutputViewerRegistry.test.ts`.
-6. Mobile (narrow the window): the page doesn't break (Phase 1 reworks mobile fully; here we only confirm no regression — the drawer + viewer pill still function).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add ui/src/components/InternalAgentPanel.tsx ui/src/components/commander/viewer/CommanderViewerPanel.tsx ui/src/components/commander/commanderChrome.test.ts
-git commit -m "feat(commander): card the chat + viewer panels to match app chrome (Phase 0)
+git add ui/src/components/InternalAgentPanel.tsx
+git commit -m "feat(commander): cardChrome prop scopes chat-panel card to Commander (Phase 0)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-## Self-review notes (applied)
+## Task 4: Viewer panel + rail as cards (fixes #3, #4)
 
-- **Spec coverage:** spec §2 (chrome recipe, keep full-bleed, apply internally, applies to shipped viewer) → Tasks 1-2 cover sessions/chat/viewer. The shared `commanderChrome.ts` constant satisfies "single recipe" and Phase-1 reuse.
-- **No placeholders:** every step has concrete classes/commands. The one judgement call (divider hit-area at the rounded corner) has an explicit fix.
-- **Type/name consistency:** `COMMANDER_PANEL_CARD` / `COMMANDER_PANEL_ROW` used identically across Commander.tsx, InternalAgentPanel.tsx, CommanderViewerPanel.tsx, and the test.
-- **Testing honesty:** chrome is presentational → visual checklist is the gate; the token test prevents silent regression without a brittle full-render test. Stated deliberately, not skipped lazily.
-- **Scope:** UI-only, ~3 files + 1 constant + 1 token test. No backend, no schema, no behavior change. Independent of Phases 1-3; classes carry into Phase 1.
+**Files:**
+- Modify: `ui/src/components/commander/viewer/CommanderViewerPanel.tsx`
+
+- [ ] **Step 1: Expanded panel — card WITHOUT overflow-hidden (divider stays grabbable)**
+
+Import: `import { COMMANDER_PANEL_CARD } from "../commanderChrome";`
+
+Expanded container — replace `border-l border-border bg-card` with the card class; **do not add `overflow-hidden`** (the inner ViewerTabs header + body already manage their own overflow; leaving the container un-clipped keeps the `-left-1` divider usable):
+```tsx
+<div ref={containerRef} className={cn("relative flex h-full shrink-0 flex-col", COMMANDER_PANEL_CARD)} style={...}>
+```
+Leave the divider at `:252` exactly as-is (`absolute inset-y-0 -left-1 w-2 …`) — with no `overflow-hidden` on the container it is no longer clipped.
+
+- [ ] **Step 2: Collapsed rail — card, keep `w-9 … py-2` (fix #4)**
+
+Rail container — replace `border-l border-border bg-card` with the card class; **keep `w-9`, `items-center`, `py-2`** and all icon children unchanged:
+```tsx
+<div
+  className={cn("flex h-full w-9 shrink-0 flex-col items-center gap-2 py-2", COMMANDER_PANEL_CARD)}
+  data-testid="commander-viewer-rail"
+>
+```
+(Confirm the exact existing class string and swap only `border-l border-border bg-card` for `COMMANDER_PANEL_CARD`, preserving width/padding/gap/items-center.)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add ui/src/components/commander/viewer/CommanderViewerPanel.tsx
+git commit -m "feat(commander): card the viewer panel + rail; keep divider unclipped (Phase 0)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 5: Token test + visual verification
+
+**Files:**
+- Create: `ui/src/components/commander/commanderChrome.test.ts`
+
+- [ ] **Step 1: Token test (cheap regression guard)**
+
+```ts
+// ui/src/components/commander/commanderChrome.test.ts
+import { describe, it, expect } from "vitest";
+import { COMMANDER_PANEL_CARD, COMMANDER_PANEL_ROW } from "./commanderChrome";
+
+describe("commander chrome tokens", () => {
+  it("card = rounded + border + shadow, and NOT overflow-hidden (divider safety)", () => {
+    expect(COMMANDER_PANEL_CARD).toContain("rounded-xl");
+    expect(COMMANDER_PANEL_CARD).toContain("border");
+    expect(COMMANDER_PANEL_CARD).toContain("shadow-sm");
+    expect(COMMANDER_PANEL_CARD).not.toContain("overflow-hidden");
+  });
+  it("row = gap + padding + backdrop", () => {
+    expect(COMMANDER_PANEL_ROW).toContain("gap-2");
+    expect(COMMANDER_PANEL_ROW).toContain("p-2");
+    expect(COMMANDER_PANEL_ROW).toContain("bg-muted/30");
+  });
+});
+```
+Run: `cd ui && pnpm vitest run src/components/commander/commanderChrome.test.ts` → PASS.
+
+- [ ] **Step 2: Visual verification (the real gate)** — run the app, open `/<prefix>/commander`:
+1. Three rounded cards (sessions, chat, viewer rail), uniform 8px gaps, muted backdrop gutter on all sides incl. the right of the viewer.
+2. Sessions card has a single hairline border (no double border) + the card bg (not the old sidebar bg).
+3. Expand the viewer (⌂) → rounded card sibling to the chat; **drag its left divider → still resizes** (not clipped).
+4. Collapse → rail is still the slim `w-9` card (not bloated).
+5. Chat input + message scroll behave (no clipped input).
+6. Docked-panel check: the chat card chrome appears ONLY on `/commander` (the `cardChrome`/`chrome` props are off elsewhere) — no rounded chrome leaks into other Agent-panel usages.
+7. Existing UI green: `cd ui && pnpm vitest run src/components/commander/ src/components/InternalAgentPanel.outputRefs.test.tsx src/__tests__/OutputViewerRegistry.test.ts`.
+8. Mobile (narrow window): drawer sessions (no card) + viewer pill still work; page not broken. (Phase 1 reworks mobile fully.)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add ui/src/components/commander/commanderChrome.test.ts
+git commit -m "test(commander): chrome token guard (Phase 0)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Self-review (applied) + Codex resolution
+
+- **All 4 Codex findings addressed:** #1 chat card gated by `cardChrome` (docked/mobile untouched); #2 SessionsSidebar root modified via `chrome` prop (no wrapper, swaps its border-r/bg); #3 `overflow-hidden` removed from the card constant + omitted on the viewer (divider unclipped), token test asserts its absence; #4 rail keeps `w-9 … py-2`.
+- **No placeholders;** exact classes/commands throughout. **Names consistent:** `COMMANDER_PANEL_CARD`/`COMMANDER_PANEL_ROW`, props `chrome` (SessionsSidebar) + `cardChrome` (AgentPanelContent), used identically across 5 files.
+- **Scope:** UI-only, 1 new constant + 1 token test + 4 edited files; no backend/schema/behavior change; classes + props carry into Phase 1.
