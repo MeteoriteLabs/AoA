@@ -4,7 +4,7 @@
 
 **Goal:** Add the **cockpit** as a 4th resizable region on the Commander page — a collapsible mission-control panel — proven end-to-end with **one live card (▶ Running)** reusing the existing `/live-runs` endpoint. Establishes the panel + collapse + responsive cap + per-user prefs + card-registry + show-only-active framework that Phase 3b/3c extend.
 
-**Architecture:** Mirror the Phase 1 viewer exactly. The cockpit is a `react-resizable-panels` `Panel` (`commander-cockpit`) added to the existing Commander `<Group>` after the detail panel; collapsed → a `w-9` semi-rail with a badge (the viewer-rail pattern). A localStorage collapse hook + a localStorage prefs store (which cards / order) mirror `useCommanderViewerCollapsed`. The **responsive "protect the chat" cap**: below ultrawide (`useBreakpoint().isWide === false`) only ONE of {detail, cockpit} may be expanded — expanding either collapses the other (chat always readable). Cards come from a small registry; **show-only-active** hides empty cards. The one card, ▶ Running, uses the existing `/live-runs` query (so it inherits `LiveUpdatesProvider`'s heartbeat-event invalidation — live for free).
+**Architecture:** Mirror the Phase 1 viewer exactly. The cockpit is a `react-resizable-panels` `Panel` (`commander-cockpit`) added to the existing Commander `<Group>` after the detail panel; collapsed → a `w-9` semi-rail with a badge (the viewer-rail pattern). A localStorage collapse hook + a localStorage prefs store (which cards / order) mirror `useCommanderViewerCollapsed`. The **responsive "protect the chat" cap**: below ultrawide (`useBreakpoint().isWide === false`) only ONE of {detail, cockpit} may be expanded — expanding either collapses the other (chat always readable). Cards come from a small registry; **show-only-active** hides empty cards. The one card, ▶ Running, reuses the existing `/live-runs` query (`queryKeys.liveRuns`) — live via `LiveUpdatesProvider`'s heartbeat-event invalidation **plus a 5s `refetchInterval`** that covers crew/internal runs (which `internal_agent.run.status` does not invalidate).
 
 **Tech Stack:** React + Tailwind v4; `react-resizable-panels@^4.9.0`; localStorage prefs (no backend/schema change this slice).
 
@@ -163,19 +163,26 @@ Test: empty `active` → no cards; `active.running=true` → running shown; `hid
 
 - [ ] **Step 2: Implement + run → PASS.**
 
-- [ ] **Step 3: The Running card.** Reuse the EXISTING live-runs query (grep `live-runs` for the api client + query key — do NOT invent a key; reuse so `LiveUpdatesProvider` invalidation applies). Render compact rows (agent name → task · elapsed). The card reports its own emptiness UP via an `onActiveChange(active: boolean)` callback so the parent's show-only-active can hide it (the parent can't know emptiness without the query). Keep it small:
+- [ ] **Step 3: The Running card.** Reuse the EXISTING live-runs query (verified by Codex): key `queryKeys.liveRuns(companyId)` (= `["live-runs", companyId]`, `ui/src/lib/queryKeys.ts:125`) + fn `heartbeatsApi.liveRunsForCompany(companyId)` (`ui/src/api/heartbeats.ts`). The response is `LiveRunForIssue[]` with `{ id, status, startedAt, createdAt, agentId, agentName, issueId?, source }` — **there is NO `issueTitle`** (Codex #3), so render from `agentName` + `status` (do NOT reference a title). **`refetchInterval: 5000`** is required (Codex #1): `LiveUpdatesProvider` invalidates this key on `heartbeat.run.*` + `issue.status_changed` but NOT on `internal_agent.run.status`, so crew/internal runs need the poll — this is the same fallback the existing live-runs consumers use. The card self-reports emptiness via `onActiveChange` (parent's show-only-active).
 ```tsx
-// CockpitRunningCard.tsx (sketch — match the real live-runs response shape)
+// CockpitRunningCard.tsx
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-// import { <existingLiveRunsApi>, queryKeys } from "...";  // REUSE the existing key
+import { heartbeatsApi, type LiveRunForIssue } from "../../../api/heartbeats"; // confirm relative path
+import { queryKeys } from "../../../lib/queryKeys";
 import { Play } from "lucide-react";
 
 export function CockpitRunningCard({ companyId, onActiveChange }: { companyId: string; onActiveChange: (active: boolean) => void }) {
-  const { data } = useQuery({ /* REUSE existing live-runs queryKey + fn, enabled: !!companyId */ });
-  const runs = (data ?? []) as Array<{ id: string; agentName?: string; issueTitle?: string; startedAt?: string }>;
+  const { data } = useQuery({
+    queryKey: queryKeys.liveRuns(companyId),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: !!companyId,
+    refetchInterval: 5000, // crew runs aren't covered by LiveUpdates invalidation (Codex #1)
+  });
+  // /live-runs backfills terminal runs to a min count; keep only in-flight ones for "Running now".
+  const runs = ((data ?? []) as LiveRunForIssue[]).filter((r) => r.status === "running" || r.status === "queued");
   useEffect(() => { onActiveChange(runs.length > 0); }, [runs.length, onActiveChange]);
-  if (runs.length === 0) return null; // parent also gates, but be defensive
+  if (runs.length === 0) return null;
   return (
     <section className="rounded-lg border border-border bg-background p-2" data-testid="cockpit-card-running">
       <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
@@ -184,9 +191,9 @@ export function CockpitRunningCard({ companyId, onActiveChange }: { companyId: s
       </header>
       <ul className="space-y-0.5">
         {runs.map((r) => (
-          <li key={r.id} className="truncate rounded px-1 py-1 text-xs hover:bg-muted/50">
-            <span className="font-medium">{r.agentName ?? "Agent"}</span>
-            {r.issueTitle ? <span className="text-muted-foreground"> → {r.issueTitle}</span> : null}
+          <li key={r.id} className="flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50">
+            <span className="truncate font-medium">{r.agentName ?? "Agent"}</span>
+            <span className="ml-auto shrink-0 text-[10px] uppercase text-muted-foreground">{r.status}</span>
           </li>
         ))}
       </ul>
@@ -194,7 +201,7 @@ export function CockpitRunningCard({ companyId, onActiveChange }: { companyId: s
   );
 }
 ```
-(Confirm the real live-runs response fields when wiring; adapt the row.) No commit yet — committed with Task 3.
+(Confirm the exact `heartbeats` import path + the `running`/`queued` status strings against `ui/src/api/heartbeats.ts` when wiring.) No commit yet — committed with Task 3.
 
 ---
 
@@ -320,6 +327,16 @@ useEffect(() => {
 }, [viewer.state.expanded, viewerCollapsed, isWide, setViewerCollapsed, setCockpitCollapsed]);
 ```
 
+- [ ] **Step 2b: Resize-cap effect** (Codex #2 — the handlers alone don't catch a wide→narrow viewport resize, so both could stay open and starve the chat). Add ONE effect; viewer wins (design arbitration → collapse the cockpit):
+```ts
+// Enforce the one-right-panel cap when the viewport crosses below ultrawide with
+// both expanded. Loop-free: once cockpit collapses the guard fails. React batches
+// the expand handlers' paired setStates, so this fires only on a genuine resize.
+useEffect(() => {
+  if (!isWide && !viewerCollapsed && !cockpitCollapsed) setCockpitCollapsed(true);
+}, [isWide, viewerCollapsed, cockpitCollapsed, setCockpitCollapsed]);
+```
+
 - [ ] **Step 3: Extend the layout panelIds** (`:421-425`):
 ```ts
 panelIds: ["commander-chat", "commander-detail", "commander-cockpit"],
@@ -380,8 +397,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - **Scope:** thin slice honored — shell + 1 card + localStorage prefs; NO `/cockpit` endpoint, NO schema, NO `cockpitScope`, NO other cards/interactions (3b), NO pins/opt-in/session-zone (3c). "Hidden" state, drag-reorder, mobile tab-bar, pulse, "Brief me" explicitly deferred.
 - **Mirrors proven patterns:** collapse + prefs hooks copy `useCommanderViewerCollapsed`; panel/rail copy `CommanderViewerDetail`/`Rail` + `COMMANDER_PANEL_CARD`; the 4th Panel mirrors Phase 1's conditional detail Panel exactly (same `panelIds`-conditional pattern Codex already cleared for Phase 1).
-- **Responsive cap correctness:** below `isWide`, expanding viewer collapses cockpit and vice-versa; auto-open routes through the cap; above wide both may open. Chat `minSize 40%` protects it regardless. Verify in the live gate (Step 3.3).
-- **Live for free:** the Running card reuses the existing `/live-runs` query key, so `LiveUpdatesProvider`'s heartbeat invalidation refreshes it — no new subscription code.
+- **Responsive cap correctness:** below `isWide`, expanding viewer collapses cockpit and vice-versa; auto-open routes through the cap; a **resize-cap effect** (Task 4 Step 2b) catches a wide→narrow viewport change (Codex #2); above wide both may open. Chat `minSize 40%` protects it regardless. Verify in the live gate (Step 3.3).
+- **Live:** the Running card reuses the existing `/live-runs` key (heartbeat-event invalidation) **+ a 5s `refetchInterval`** covering crew runs that `internal_agent.run.status` doesn't invalidate (Codex #1). No new subscription/provider code. The row renders `agentName` + `status` only — `/live-runs` has no `issueTitle` (Codex #3).
 - **show-only-active:** cards self-report `active` via `onActiveChange`; empty cards render `null`; `selectVisibleCards` drives "All clear". prefs.hidden overrides.
 - **Type consistency:** `CockpitPrefs {hidden, order}` used by the prefs hook (T1), `selectVisibleCards` (T2), the panel + config popover (T3); `COCKPIT_REGISTRY` shape (T3) matches `CockpitCardDef` (T2); collapse hook signature matches the viewer's.
 - **No regression surface:** only InternalAgentPanel's desktop return + hooks change (Phase 1 viewer logic preserved; mobile branch untouched — cockpit is desktop-only this slice). The existing viewer e2e is the regression gate.
