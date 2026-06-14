@@ -15,6 +15,17 @@ vi.mock("../../../api/cockpit", () => ({
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: { cockpit: (id: string) => ["cockpit", id] },
 }));
+// Phase 3d: useCockpitPin calls useToast — mock it so panel tests don't need ToastProvider.
+vi.mock("../../../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+}));
+// Phase 3d: pinsApi — mock so useCockpitPin mutations don't make real network calls.
+vi.mock("../../../api/pins", () => ({
+  pinsApi: {
+    pin: vi.fn().mockResolvedValue(undefined),
+    unpin: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 import { CommanderCockpitPanel } from "./CommanderCockpitPanel";
 import { CockpitRunningCard } from "./CockpitRunningCard";
@@ -233,6 +244,28 @@ describe("CockpitTodayCard", () => {
     );
     fireEvent.click(screen.getByText("Ship v1"));
     expect(onOpenTask).toHaveBeenCalledWith("due-1", "Ship v1");
+  });
+});
+
+// ── CockpitReviewCard — Pin button (Phase 3d) ──────────────────────────────
+
+describe("CockpitReviewCard — Pin button", () => {
+  it("Pin button calls onPin('task', id)", () => {
+    const onPin = vi.fn();
+    render(
+      <CockpitReviewCard
+        items={[makeTask({ id: "t-pin-1", title: "Pinnable task" })]}
+        onPin={onPin}
+      />,
+    );
+    const pinBtn = screen.getByRole("button", { name: /^pin$/i });
+    fireEvent.click(pinBtn);
+    expect(onPin).toHaveBeenCalledWith("task", "t-pin-1");
+  });
+
+  it("Pin button is absent when onPin is not provided", () => {
+    render(<CockpitReviewCard items={[makeTask({ title: "No pin card" })]} />);
+    expect(screen.queryByRole("button", { name: /^pin$/i })).not.toBeInTheDocument();
   });
 });
 

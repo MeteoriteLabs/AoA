@@ -5,6 +5,19 @@ import type { CockpitData } from "@armyofagents/shared";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
+// Phase 3d: useCockpitPin calls useToast — mock it so tests don't need ToastProvider.
+vi.mock("../../../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+}));
+
+// Phase 3d: pinsApi — mock so useCockpitPin mutations don't make real network calls.
+vi.mock("../../../api/pins", () => ({
+  pinsApi: {
+    pin: vi.fn().mockResolvedValue(undefined),
+    unpin: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
 // Phase 3b/3c: mock the cockpit API (replaced the 3a per-card /live-runs query)
 vi.mock("../../../api/cockpit", () => ({
   cockpitApi: {
