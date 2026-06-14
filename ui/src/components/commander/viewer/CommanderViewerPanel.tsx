@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronsLeft, FileText, Globe, Home } from "lucide-react";
+import { ChevronsLeft, FileText, Globe, Home, ListTodo } from "lucide-react";
 import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -12,6 +12,7 @@ import { ViewerTabs, type ViewerTabModel } from "../../viewers/ViewerTabs";
 import { SharedContentViewer } from "../../viewers/SharedContentViewer";
 import { resolveViewer } from "../../viewers/viewer-registry";
 import { CommanderViewerHome } from "./CommanderViewerHome";
+import { TaskDetail } from "../../TaskDetail";
 import type { CommanderViewerApi } from "./useCommanderViewer";
 import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
 
@@ -155,6 +156,17 @@ function ReplyTabBody({ replyContent }: ReplyTabBodyProps) {
   );
 }
 
+interface TaskDetailTabBodyProps {
+  tab: ViewerTab;
+  onDismiss: () => void;
+}
+
+function TaskDetailTabBody({ tab, onDismiss }: TaskDetailTabBodyProps) {
+  // tab.refId is the issueId. Only mounted while active → active is true; TaskDetail
+  // gates its own (incl. polling) queries on `active`.
+  return <TaskDetail issueId={tab.refId} active onDismiss={onDismiss} />;
+}
+
 // ---------------------------------------------------------------------------
 // Tab body switcher (shared between desktop panel + mobile sheet)
 // ---------------------------------------------------------------------------
@@ -165,14 +177,16 @@ interface TabBodySwitchProps {
   companyId: string;
   conversationRefs: CommanderOutputRef[];
   onOpen: (ref: CommanderOutputRef) => void;
+  onCloseTab: (id: string) => void;
 }
 
-function TabBodySwitch({
+export function TabBodySwitch({
   activeId,
   activeTab,
   companyId,
   conversationRefs,
   onOpen,
+  onCloseTab,
 }: TabBodySwitchProps) {
   if (activeId === "home" || !activeTab) {
     return (
@@ -198,6 +212,10 @@ function TabBodySwitch({
     return <BrowserViewer key={activeTab.id} initialUrl={activeTab.url ?? "about:blank"} />;
   }
 
+  if (activeTab.kind === "task") {
+    return <TaskDetailTabBody tab={activeTab} onDismiss={() => onCloseTab(activeTab.id)} />;
+  }
+
   return (
     <UnavailableBody message="This item is no longer available (it may have been deleted, or you may not have access)." />
   );
@@ -215,7 +233,7 @@ export function buildViewerTabModels(state: ConversationViewerState): ViewerTabM
         id: t.id,
         kind: t.kind,
         title: t.title,
-        icon: t.kind === "browser" ? Globe : FileText,
+        icon: t.kind === "browser" ? Globe : t.kind === "task" ? ListTodo : FileText,
       }),
     ),
   ];
@@ -270,6 +288,7 @@ export function CommanderViewerDetail({
           companyId={companyId}
           conversationRefs={conversationRefs}
           onOpen={viewer.openRef}
+          onCloseTab={viewer.close}
         />
       </div>
     </div>
@@ -441,6 +460,7 @@ export function CommanderViewerPanel({
               companyId={companyId}
               conversationRefs={conversationRefs}
               onOpen={viewer.openRef}
+              onCloseTab={viewer.close}
             />
           </div>
         </SheetContent>
