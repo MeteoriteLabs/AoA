@@ -51,6 +51,8 @@ import { MemoryContextStrip } from "./commander/MemoryContextStrip";
 import { SkillPicker } from "./commander/SkillPicker";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
+import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCollapsed";
+import { CommanderCockpitPanel, CommanderCockpitRail } from "./commander/cockpit/CommanderCockpitPanel";
 import {
   CommanderViewerPanel,
   CommanderViewerRail,
@@ -421,19 +423,44 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "aoa:commander:panel-sizes",
     storage: localStorage,
-    panelIds: ["commander-chat", "commander-detail"],
+    panelIds: ["commander-chat", "commander-detail", "commander-cockpit"],
   });
   const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
+  const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
+  const { isWide } = useBreakpoint();
 
-  const expandViewer = useCallback(() => { setViewerCollapsed(false); viewer.expand(); }, [setViewerCollapsed, viewer]);
+  // Phase 3a: cap-aware expand handlers. Below ultrawide (isWide=false) only ONE
+  // of {detail, cockpit} may be expanded — expanding either collapses the other
+  // (chat always readable; "last expanded wins").
+  const expandViewer = useCallback(() => {
+    setViewerCollapsed(false);
+    if (!isWide) setCockpitCollapsed(true);
+    viewer.expand();
+  }, [setViewerCollapsed, setCockpitCollapsed, isWide, viewer]);
   const collapseViewer = useCallback(() => { setViewerCollapsed(true); viewer.collapse(); }, [setViewerCollapsed, viewer]);
+  const expandCockpit = useCallback(() => {
+    setCockpitCollapsed(false);
+    if (!isWide) setViewerCollapsed(true);
+  }, [setCockpitCollapsed, setViewerCollapsed, isWide]);
+  const collapseCockpit = useCallback(() => setCockpitCollapsed(true), [setCockpitCollapsed]);
 
   // Bridge: auto-open / chip-click / tab-activate set state.expanded=true → expand the
   // persisted panel. Loop-free: once collapsed flips false the guard `&& viewerCollapsed`
   // stops it. collapseViewer() sets state.expanded=false so the NEXT created ref re-fires.
+  // Routes through the cap: also yields the cockpit below ultrawide.
   useEffect(() => {
-    if (viewer.state.expanded && viewerCollapsed) setViewerCollapsed(false);
-  }, [viewer.state.expanded, viewerCollapsed, setViewerCollapsed]);
+    if (viewer.state.expanded && viewerCollapsed) {
+      setViewerCollapsed(false);
+      if (!isWide) setCockpitCollapsed(true);
+    }
+  }, [viewer.state.expanded, viewerCollapsed, isWide, setViewerCollapsed, setCockpitCollapsed]);
+
+  // Phase 3a: Resize-cap effect. When the viewport crosses below ultrawide with
+  // both panels expanded, collapse the cockpit (viewer wins — design arbitration).
+  // Loop-free: once cockpit collapses the `!cockpitCollapsed` guard fails.
+  useEffect(() => {
+    if (!isWide && !viewerCollapsed && !cockpitCollapsed) setCockpitCollapsed(true);
+  }, [isWide, viewerCollapsed, cockpitCollapsed, setCockpitCollapsed]);
 
   // Conversations list — same cache key as SessionsSidebar (no extra fetch)
   const { data: conversationsData } = useQuery({
@@ -1431,10 +1458,28 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             </Panel>
           </>
         )}
+        {!cockpitCollapsed && (
+          <>
+            <Separator
+              id="commander-cockpit-sep"
+              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
+            />
+            <Panel
+              id="commander-cockpit"
+              defaultSize="28%"
+              minSize="20%"
+              maxSize="40%"
+              className="flex h-full min-w-0 overflow-hidden"
+            >
+              <CommanderCockpitPanel companyId={companyId} onCollapse={collapseCockpit} />
+            </Panel>
+          </>
+        )}
       </Group>
       {viewerCollapsed && (
         <CommanderViewerRail viewer={viewer} tabModels={tabModels} onExpand={expandViewer} />
       )}
+      {cockpitCollapsed && <CommanderCockpitRail badge={0} onExpand={expandCockpit} />}
     </div>
   );
 }
