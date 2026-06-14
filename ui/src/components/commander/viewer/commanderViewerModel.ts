@@ -3,9 +3,9 @@
 import type { CommanderOutputRef } from "@armyofagents/shared";
 
 export interface ViewerTab {
-  /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` | `browser:<url>` */
+  /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` | `browser:<url>` | `task:<issueId>` */
   id: string;
-  kind: "artifact" | "reply" | "browser";
+  kind: "artifact" | "reply" | "browser" | "task";
   title: string;
   /** artifact id, message id for replies, or url for browser tabs */
   refId: string;
@@ -60,6 +60,17 @@ export function openReplyTab(
   const id = `reply:${messageId}`;
   if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
   const tab: ViewerTab = { id, kind: "reply", title: "Commander reply", refId: messageId, replyContent: content };
+  return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
+}
+
+export function openTaskTab(
+  state: ConversationViewerState,
+  issueId: string,
+  title: string,
+): ConversationViewerState {
+  const id = `task:${issueId}`;
+  if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
+  const tab: ViewerTab = { id, kind: "task", title, refId: issueId };
   return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
 }
 

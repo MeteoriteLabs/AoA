@@ -3,6 +3,7 @@ import {
   emptyViewerState,
   openRefTab,
   openReplyTab,
+  openTaskTab,
   openBrowserTab,
   closeTab,
   shouldAutoOpen,
@@ -112,5 +113,22 @@ describe("commanderViewerModel", () => {
       expect(result).toHaveLength(1);
       expect(result[0]!.action).toBe("created");
     });
+  });
+});
+
+describe("openTaskTab", () => {
+  it("opens a task tab (kind=task, refId=issueId), expands, activates", () => {
+    const s = openTaskTab(emptyViewerState(), "issue-1", "Fix login");
+    expect(s.expanded).toBe(true);
+    expect(s.activeId).toBe("task:issue-1");
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0]).toMatchObject({ id: "task:issue-1", kind: "task", refId: "issue-1", title: "Fix login" });
+  });
+  it("re-activates an existing task tab instead of duplicating", () => {
+    const a = openTaskTab(emptyViewerState(), "issue-1", "Fix login");
+    const b = openTaskTab({ ...a, activeId: "home", expanded: false }, "issue-1", "Fix login");
+    expect(b.tabs).toHaveLength(1);
+    expect(b.activeId).toBe("task:issue-1");
+    expect(b.expanded).toBe(true);
   });
 });
