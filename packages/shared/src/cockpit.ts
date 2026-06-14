@@ -1,9 +1,20 @@
 /**
- * Cockpit data contract — Phase 3b/3c.
+ * Cockpit data contract — Phase 3b/3c/3d.
  *
  * ONE batched payload returned by GET /companies/:cid/cockpit.
  * The frontend's useCockpit() hook imports these types from @armyofagents/shared.
  */
+
+// Phase 3d: Pinned card types
+export type CockpitPinnedEntityType = "task" | "artifact" | "goal";
+
+export interface CockpitPinnedItem {
+  entityType: CockpitPinnedEntityType;
+  entityId: string;
+  title: string;
+  status: string;       // task/goal status, or artifact status
+  identifier?: string | null; // task identifier (e.g. TEAM-12)
+}
 
 // Phase 3c: Approvals card types
 export type CockpitApprovalSource = "approval" | "memory" | "discussion_item";
@@ -60,4 +71,6 @@ export interface CockpitData {
   discussions: CockpitDiscussionItem[];
   /** Phase 3c: unified approvals queue (founder-only; [] for non-founders). */
   approvals: CockpitApprovalItem[];
+  /** Phase 3d: user-pinned entities (tasks / artifacts / goals). */
+  pinned: CockpitPinnedItem[];
 }

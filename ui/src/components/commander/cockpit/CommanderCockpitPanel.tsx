@@ -41,6 +41,8 @@ const EMPTY_DATA: CockpitData = {
   discussions: [],
   // Phase 3c: approvals required by CockpitData type
   approvals: [],
+  // Phase 3d: pinned required by CockpitData type
+  pinned: [],
 };
 
 // ---------------------------------------------------------------------------

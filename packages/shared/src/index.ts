@@ -975,6 +975,8 @@ export {
   createInboxDismissalSchema,
   type InboxDismissal,
   type CreateInboxDismissal,
+  createUserEntityPinSchema,
+  type CreateUserEntityPin,
   createEnvironmentSchema,
   e2bEnvironmentConfigSchema,
   environmentDriverSchema,
@@ -998,7 +1000,7 @@ export {
 
 export { API_PREFIX, API } from "./api.js";
 
-// Phase 3b/3c: Commander cockpit data contract
+// Phase 3b/3c/3d: Commander cockpit data contract
 export type {
   CockpitTaskItem,
   CockpitRunItem,
@@ -1007,6 +1009,8 @@ export type {
   CockpitData,
   CockpitApprovalSource,
   CockpitApprovalItem,
+  CockpitPinnedEntityType,
+  CockpitPinnedItem,
 } from "./cockpit.js";
 
 // Marketplace catalog types
