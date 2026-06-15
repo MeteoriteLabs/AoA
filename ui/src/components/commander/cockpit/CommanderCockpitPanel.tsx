@@ -56,6 +56,8 @@ const EMPTY_DATA: CockpitData = {
   goalsAtRisk: [],
   budgetPulse: null,
   doneToday: [],
+  proactiveFindings: [],
+  teammatesActivity: [],
 };
 
 // ---------------------------------------------------------------------------

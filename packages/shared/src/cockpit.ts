@@ -79,6 +79,10 @@ export interface CockpitData {
   budgetPulse: CockpitBudgetPulseItem | null;
   /** Opt-in card: Tasks completed today (founder→company-wide; else→own). */
   doneToday: CockpitDoneTodayItem[];
+  /** Opt-in card: Recent unread proactive findings from Commander (per-user). */
+  proactiveFindings: CockpitProactiveItem[];
+  /** Opt-in card: Human teammates' recent activity (RBAC-scoped; member→[]). */
+  teammatesActivity: CockpitTeammatesActivityItem[];
 }
 
 // ── Opt-in card types (added for the cockpit opt-in cards feature) ────────────
@@ -101,4 +105,24 @@ export interface CockpitDoneTodayItem {
   id: string;
   identifier: string | null;
   title: string;
+}
+
+// ── Opt-in card types (proactive findings + teammates' activity) ──────────────
+
+export interface CockpitProactiveItem {
+  id: string;
+  title: string;
+  relatedEntityType: string | null;
+  relatedEntityId: string | null;
+  createdAt: string;          // ISO
+}
+
+export interface CockpitTeammatesActivityItem {
+  id: string;
+  actorId: string;
+  actorType: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  createdAt: string;          // ISO
 }

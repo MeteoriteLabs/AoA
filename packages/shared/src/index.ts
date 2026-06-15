@@ -1014,6 +1014,8 @@ export type {
   CockpitGoalsAtRiskItem,
   CockpitBudgetPulseItem,
   CockpitDoneTodayItem,
+  CockpitProactiveItem,
+  CockpitTeammatesActivityItem,
 } from "./cockpit.js";
 
 // Marketplace catalog types

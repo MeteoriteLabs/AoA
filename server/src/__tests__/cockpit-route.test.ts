@@ -44,6 +44,8 @@ const COCKPIT_RESPONSE = {
   goalsAtRisk: [],
   budgetPulse: null,
   doneToday: [],
+  proactiveFindings: [],
+  teammatesActivity: [],
 };
 
 function createApp(

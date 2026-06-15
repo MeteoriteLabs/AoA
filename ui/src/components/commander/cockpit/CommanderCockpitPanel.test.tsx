@@ -32,6 +32,8 @@ vi.mock("../../../api/cockpit", () => ({
       goalsAtRisk: [],
       budgetPulse: null,
       doneToday: [],
+      proactiveFindings: [],
+      teammatesActivity: [],
     } satisfies CockpitData),
   },
 }));
@@ -63,6 +65,8 @@ function makeData(overrides?: Partial<CockpitData>): CockpitData {
     goalsAtRisk: [],
     budgetPulse: null,
     doneToday: [],
+    proactiveFindings: [],
+    teammatesActivity: [],
     ...overrides,
   };
 }
