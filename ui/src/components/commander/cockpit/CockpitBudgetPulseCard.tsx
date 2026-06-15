@@ -1,0 +1,68 @@
+/**
+ * CockpitBudgetPulseCard — Opt-in cockpit card.
+ *
+ * Presentational only — receives the budget pulse snapshot from the shared /cockpit query.
+ * Returns null when pulse is null (no budget configured, or non-founder user).
+ */
+
+import { DollarSign } from "lucide-react";
+import type { CockpitBudgetPulseItem } from "@armyofagents/shared";
+import { cn } from "../../../lib/utils";
+
+function formatDollars(cents: number): string {
+  return `$${Math.round(cents / 100).toLocaleString()}`;
+}
+
+export function CockpitBudgetPulseCard({
+  pulse,
+}: {
+  pulse: CockpitBudgetPulseItem | null;
+}) {
+  if (!pulse) return null;
+
+  const pct = Math.min(pulse.percentUsed, 100);
+  const isOver = pulse.percentUsed >= 100;
+  const isWarning = !isOver && pulse.percentUsed >= 80;
+
+  return (
+    <section
+      className="rounded-lg border border-border bg-background p-2"
+      data-testid="cockpit-card-budgetPulse"
+    >
+      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
+        <DollarSign className="size-3.5" aria-hidden />
+        Budget pulse
+      </header>
+      <div className="px-1">
+        {/* Spend line */}
+        <div className="mb-1 flex items-baseline justify-between text-xs">
+          <span className="font-medium">
+            {formatDollars(pulse.spentCents)}
+          </span>
+          <span className="text-muted-foreground">
+            / {formatDollars(pulse.limitCents)}
+          </span>
+        </div>
+        {/* Percent bar */}
+        <div className="mb-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn(
+              "h-full rounded-full transition-all",
+              isOver ? "bg-red-500" : isWarning ? "bg-amber-500" : "bg-brand",
+            )}
+            style={{ width: `${pct}%` }}
+            aria-label={`${Math.round(pulse.percentUsed)}% of budget used`}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+          <span>{Math.round(pulse.percentUsed)}%</span>
+          {pulse.openIncidentCount > 0 && (
+            <span className="font-medium text-red-600 dark:text-red-400">
+              {pulse.openIncidentCount} open incident{pulse.openIncidentCount === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}

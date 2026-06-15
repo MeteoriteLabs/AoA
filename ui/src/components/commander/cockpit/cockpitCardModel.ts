@@ -13,6 +13,7 @@ export interface CockpitVisibilityInput {
   hidden: string[];          // prefs.hidden
   order: string[];           // prefs.order
   active: Record<string, boolean>; // cardId -> has data
+  enabled?: string[];        // prefs.enabled — opt-in card ids (defaultOn:false) the user turned on
 }
 
 /** Cards in render order: prefs.order first, then registry order for the rest.
@@ -25,19 +26,24 @@ export function orderCards<T extends CockpitCardDef>(registry: T[], order: strin
   ];
 }
 
-/** Cards that should MOUNT (ordered, not hidden, defaultOn). They self-report `active`
- *  and render null when empty. Order drives the DOM — single source of truth. */
+/** Cards that should MOUNT (ordered, not hidden, defaultOn OR explicitly enabled).
+ *  They self-report `active` and render null when empty.
+ *  Order drives the DOM — single source of truth.
+ *  `enabled` is optional (defaults to []) so existing call sites without it don't break. */
 export function mountableCards<T extends CockpitCardDef>(
   registry: T[],
   hidden: string[],
   order: string[],
+  enabled: string[] = [],
 ): T[] {
-  return orderCards(registry, order).filter((c) => !hidden.includes(c.id) && c.defaultOn);
+  return orderCards(registry, order).filter(
+    (c) => !hidden.includes(c.id) && (c.defaultOn || enabled.includes(c.id)),
+  );
 }
 
 /** Cards currently VISIBLE (mountable + has data) — drives the "All clear" decision.
  *  show-only-active: empty cards drop out (unless a future pin). */
 export function selectVisibleCards(input: CockpitVisibilityInput): CockpitCardDef[] {
-  const { registry, hidden, order, active } = input;
-  return mountableCards(registry, hidden, order).filter((c) => active[c.id] === true);
+  const { registry, hidden, order, active, enabled } = input;
+  return mountableCards(registry, hidden, order, enabled ?? []).filter((c) => active[c.id] === true);
 }

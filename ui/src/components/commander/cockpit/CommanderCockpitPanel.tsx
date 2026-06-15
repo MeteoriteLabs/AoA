@@ -19,6 +19,9 @@ import { CockpitTodayCard } from "./CockpitTodayCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 import { CockpitApprovalsCard } from "./CockpitApprovalsCard";
 import { CockpitPinnedCard } from "./CockpitPinnedCard";
+import { CockpitGoalsAtRiskCard } from "./CockpitGoalsAtRiskCard";
+import { CockpitBudgetPulseCard } from "./CockpitBudgetPulseCard";
+import { CockpitDoneTodayCard } from "./CockpitDoneTodayCard";
 import { useCockpitPin } from "./useCockpitPin";
 
 // ---------------------------------------------------------------------------
@@ -149,6 +152,32 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
       />
     ),
   },
+  // ── Opt-in cards (defaultOn: false) ─────────────────────────────────────
+  {
+    id: "goalsAtRisk",
+    title: "Goals at risk",
+    defaultOn: false,
+    isActive: (d) => d.goalsAtRisk.length > 0,
+    render: ({ data, onOpenFullPage }) => (
+      <CockpitGoalsAtRiskCard items={data.goalsAtRisk} onOpenFullPage={onOpenFullPage} />
+    ),
+  },
+  {
+    id: "budgetPulse",
+    title: "Budget pulse",
+    defaultOn: false,
+    isActive: (d) => d.budgetPulse !== null,
+    render: ({ data }) => <CockpitBudgetPulseCard pulse={data.budgetPulse} />,
+  },
+  {
+    id: "doneToday",
+    title: "Done today",
+    defaultOn: false,
+    isActive: (d) => d.doneToday.length > 0,
+    render: ({ data, onOpenTask }) => (
+      <CockpitDoneTodayCard items={data.doneToday} onOpenTask={onOpenTask} />
+    ),
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -164,6 +193,9 @@ function CockpitConfigPopover({
   setPrefs: ReturnType<typeof useCommanderCockpitPrefs>[1];
   registry: CockpitCardDef[];
 }) {
+  const defaultOnCards = registry.filter((c) => c.defaultOn);
+  const optInCards = registry.filter((c) => !c.defaultOn);
+
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -177,8 +209,9 @@ function CockpitConfigPopover({
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="p-2">
+        {/* Default-on cards — toggle via hidden list */}
         <p className="mb-1.5 px-1 text-[11px] font-medium text-muted-foreground">Show cards</p>
-        {registry.map((card) => {
+        {defaultOnCards.map((card) => {
           const isHidden = prefs.hidden.includes(card.id);
           return (
             <label
@@ -200,6 +233,34 @@ function CockpitConfigPopover({
             </label>
           );
         })}
+        {/* Opt-in cards — toggle via enabled list (only render section if any exist) */}
+        {optInCards.length > 0 && (
+          <>
+            <p className="mb-1.5 mt-2 px-1 text-[11px] font-medium text-muted-foreground">Optional</p>
+            {optInCards.map((card) => {
+              const isEnabled = prefs.enabled.includes(card.id);
+              return (
+                <label
+                  key={card.id}
+                  className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 text-xs hover:bg-muted/50"
+                >
+                  <input
+                    type="checkbox"
+                    className="accent-brand"
+                    checked={isEnabled}
+                    onChange={() => {
+                      const next = isEnabled
+                        ? prefs.enabled.filter((id) => id !== card.id)
+                        : [...prefs.enabled, card.id];
+                      setPrefs({ ...prefs, enabled: next });
+                    }}
+                  />
+                  {card.title}
+                </label>
+              );
+            })}
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -248,6 +309,7 @@ export function CommanderCockpitPanel({
     hidden: prefs.hidden,
     order: prefs.order,
     active,
+    enabled: prefs.enabled,
   });
 
   return (
@@ -275,7 +337,7 @@ export function CommanderCockpitPanel({
         {/* Mountable cards (ordered by prefs.order, not hidden, defaultOn). Cards
             are now PRESENTATIONAL — active is derived from the shared batched data,
             not from per-card self-reporting. */}
-        {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order).map((c) => (
+        {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order, prefs.enabled).map((c) => (
           <div key={c.id} className="mb-2 last:mb-0">
             {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through. */}
             {c.render({
