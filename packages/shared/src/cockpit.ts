@@ -17,7 +17,14 @@ export interface CockpitPinnedItem {
 }
 
 // Phase 3c: Approvals card types
-export type CockpitApprovalSource = "approval" | "memory" | "discussion_item";
+export type CockpitApprovalSource =
+  | "approval"
+  | "memory"
+  | "discussion_item"
+  | "join_request"
+  | "memory_version"
+  | "memory_archive"
+  | "runtime_tool_trust";
 
 export interface CockpitApprovalItem {
   source: CockpitApprovalSource;
@@ -27,6 +34,10 @@ export interface CockpitApprovalItem {
   discussionId?: string;
   title: string;
   subtitle: string;
+  /** memory_version: versionId · memory_archive: suggestionId */
+  relatedEntityId?: string;
+  /** "ternary" → runtime_tool_trust (Always/Once/Deny); default binary */
+  decisionType?: "binary" | "ternary";
 }
 
 export interface CockpitTaskItem {
