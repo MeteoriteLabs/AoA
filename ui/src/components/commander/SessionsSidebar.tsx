@@ -20,11 +20,17 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../../context/CompanyContext";
 import { commanderConversationsApi, type ConversationRow } from "../../api/internal-agent";
-import { Plus, ChevronLeft, Search, X, Pin, RotateCcw } from "lucide-react";
+import { Plus, Search, X, Pin, RotateCcw, PanelLeft, PanelLeftClose, MessageSquare } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "./commanderChrome";
 import { SessionRow } from "./SessionRow";
-import { CollapsedSessionStrip } from "./CollapsedSessionStrip";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "../ui/tooltip";
+import { useCommanderSessionsCollapsed } from "./useCommanderSessionsCollapsed";
 
 /** Pure exported helper — used by SessionsSidebar and pinned-group filter in Task 6. */
 export function filterConversationsByTitle(
@@ -219,6 +225,134 @@ function SortableSessionRow({
   );
 }
 
+// ─── Rail (collapsed 48px) ───────────────────────────────────────────────────
+
+interface RailProps {
+  conversations: ConversationRow[];
+  activeConversationId: string | null;
+  onSelect: (conversationId: string) => void;
+  onExpand: () => void;
+  onNewConversation: () => void;
+  chrome?: boolean;
+}
+
+function SessionsRail({
+  conversations,
+  activeConversationId,
+  onSelect,
+  onExpand,
+  onNewConversation,
+  chrome,
+}: RailProps) {
+  return (
+    <TooltipProvider>
+      <div
+        className={cn(
+          "flex flex-col items-center w-12 shrink-0 h-full",
+          chrome
+            ? `${COMMANDER_PANEL_CARD} overflow-hidden`
+            : "border-r border-border bg-secondary-sidebar",
+        )}
+        data-testid="commander-sessions-rail"
+      >
+        {/* Rail header — 42px, expand button centered */}
+        <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onExpand}
+                title="Expand chats"
+                aria-label="Expand chats sidebar"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              >
+                <PanelLeft className="h-4 w-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>Expand chats</TooltipContent>
+          </Tooltip>
+        </div>
+
+        {/* Divider */}
+        <div className="w-6 h-px bg-border my-1 shrink-0" />
+
+        {/* Stacked action icons */}
+        <div className="flex flex-col items-center gap-1 shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onNewConversation}
+                aria-label="New chat"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>New chat</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onExpand}
+                aria-label="Search sessions"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              >
+                <Search className="h-4 w-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>Search sessions</TooltipContent>
+          </Tooltip>
+        </div>
+
+        {/* Divider */}
+        <div className="w-6 h-px bg-border my-1 shrink-0" />
+
+        {/* Session icons — scrollable */}
+        <div className="flex-1 flex flex-col items-center gap-1 overflow-y-auto overflow-x-hidden min-h-0 w-full px-1.5">
+          {conversations.map((conv) => {
+            const isActive = conv.id === activeConversationId;
+            return (
+              <Tooltip key={conv.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(conv.id)}
+                    aria-label={conv.title ?? "Session"}
+                    className={cn(
+                      "relative w-7 h-7 flex items-center justify-center rounded-md transition-colors shrink-0",
+                      isActive
+                        ? "bg-brand/10 text-brand"
+                        : "text-very-dim hover:bg-hd hover:text-dim",
+                    )}
+                  >
+                    {isActive && (
+                      <span className="absolute left-[-6px] top-[6px] bottom-[6px] w-0.5 rounded-r bg-brand" />
+                    )}
+                    <MessageSquare className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={6}>
+                  {conv.title ?? "Untitled session"}
+                </TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
+
+        {/* Session count */}
+        <div className="text-[0.65rem] font-mono text-very-dim shrink-0 pb-1">
+          {conversations.length}
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export function SessionsSidebar({
   activeConversationId,
   onSelect,
@@ -227,7 +361,10 @@ export function SessionsSidebar({
 }: Props) {
   const { selectedCompanyId } = useCompany();
   const qc = useQueryClient();
-  const [collapsed, setCollapsed] = useState(false);
+
+  // Global-persisted collapse — single key across all conversations (B5)
+  const [collapsed, setCollapsed] = useCommanderSessionsCollapsed();
+
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -456,51 +593,97 @@ export function SessionsSidebar({
     />
   );
 
+  // ── Collapsed → 48px rail ────────────────────────────────────────────────
   if (collapsed) {
-    // Pass the full conversations list (not filtered) — collapsed view has no
-    // search box, so filtering by the search query would silently hide sessions.
     return (
-      <CollapsedSessionStrip
+      <SessionsRail
         conversations={conversations}
         activeConversationId={activeConversationId}
         onSelect={onSelect}
         onExpand={() => setCollapsed(false)}
         onNewConversation={handleNewChat}
+        chrome={chrome}
       />
     );
   }
 
+  // ── Expanded (224px / w-56) ───────────────────────────────────────────────
   return (
     <div
       className={cn(
-        "flex flex-col h-full w-56 shrink-0",
+        "flex flex-col h-full w-56 shrink-0 transition-[width] duration-200",
         chrome
           ? `${COMMANDER_PANEL_CARD} overflow-hidden`
           : "border-r border-border bg-secondary-sidebar",
       )}
     >
-      {/* Header */}
-      <div className="px-2.5 pt-2.5 pb-0 border-b border-border-soft">
-        {/* New chat button — full-width brand primary */}
+      {/* ── 42px "Chats" header ─────────────────────────────────────────── */}
+      <div
+        className="h-[42px] flex items-center gap-2 px-3 border-b border-border shrink-0"
+        data-testid="commander-sessions-header"
+      >
+        {/* Online status dot */}
+        <span
+          className="inline-block w-2 h-2 rounded-full bg-success shrink-0"
+          title="Commander online"
+          aria-label="Commander online"
+        />
+
+        {/* Title */}
+        <span className="text-sm font-semibold flex-1 min-w-0 truncate">Chats</span>
+
+        {/* New chat icon button */}
         <button
+          type="button"
           onClick={handleNewChat}
-          className="w-full h-8 flex items-center justify-center gap-1.5 rounded-md bg-brand text-white text-[0.78rem] font-medium hover:bg-brand-hover transition-colors mb-1.5"
+          title="New chat"
+          aria-label="New chat"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
         >
           <Plus className="h-3.5 w-3.5" />
-          New chat
         </button>
 
-        {/* Search sessions — full-width ghost that morphs to input */}
-        {searchOpen ? (
-          <div className="w-full h-8 flex items-center gap-1.5 rounded-md border border-border px-2 mb-1.5 bg-field">
-            <Search className="h-3.5 w-3.5 text-dim shrink-0" />
+        {/* Search toggle */}
+        <button
+          type="button"
+          onClick={() => setSearchOpen((v) => !v)}
+          title={searchOpen ? "Close search" : "Search sessions"}
+          aria-label={searchOpen ? "Close search" : "Search sessions"}
+          aria-pressed={searchOpen}
+          className={cn(
+            "flex h-6 w-6 items-center justify-center rounded-md transition-colors shrink-0",
+            searchOpen
+              ? "text-foreground bg-muted/70"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+          )}
+        >
+          <Search className="h-3.5 w-3.5" />
+        </button>
+
+        {/* Collapse button */}
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          title="Collapse chats"
+          aria-label="Collapse chats sidebar"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+          data-testid="commander-sessions-collapse"
+          data-commander-touch
+        >
+          <PanelLeftClose className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* ── Search field — drops open below header when active ──────────── */}
+      {searchOpen && (
+        <div className="px-2.5 py-1.5 border-b border-border shrink-0">
+          <div className="flex items-center gap-1.5 rounded-md border border-border px-2 h-7 bg-field">
+            <Search className="h-3 w-3 text-dim shrink-0" />
             <input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-              }}
+              onChange={(e) => setSearchQuery(e.target.value)}
               onBlur={() => {
                 if (!searchQuery.trim()) setSearchOpen(false);
               }}
@@ -509,6 +692,7 @@ export function SessionsSidebar({
             />
             {searchQuery && (
               <button
+                type="button"
                 onMouseDown={(e) => {
                   // prevent input blur before we clear
                   e.preventDefault();
@@ -517,39 +701,16 @@ export function SessionsSidebar({
                 }}
                 className="shrink-0 p-0.5 rounded hover:bg-hd transition-colors"
                 title="Clear search"
+                aria-label="Clear search"
               >
                 <X className="h-3 w-3 text-dim" />
               </button>
             )}
           </div>
-        ) : (
-          <button
-            onClick={() => setSearchOpen(true)}
-            className="w-full h-8 flex items-center justify-center gap-1.5 rounded-md border border-border text-dim text-[0.78rem] hover:bg-hd hover:text-text transition-colors mb-1.5"
-          >
-            <Search className="h-3.5 w-3.5" />
-            Search sessions
-          </button>
-        )}
-
-        {/* Status row */}
-        <div className="flex items-center justify-between py-1 pb-2">
-          <div className="flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full bg-success shrink-0" />
-            <span className="text-[0.7rem] text-very-dim">online</span>
-          </div>
-          <button
-            data-commander-touch
-            onClick={() => setCollapsed(true)}
-            className="p-0.5 rounded text-dim hover:bg-hd hover:text-text transition-colors"
-            title="Collapse sidebar"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </button>
         </div>
-      </div>
+      )}
 
-      {/* Session list */}
+      {/* ── Session list ─────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto py-1">
         {filtered.length === 0 && (
           <p className="text-xs text-muted-foreground px-3 py-4 text-center">
@@ -593,6 +754,7 @@ export function SessionsSidebar({
                   <div className="px-3 py-1.5 flex items-center justify-between text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">
                     <span>Arranged</span>
                     <button
+                      type="button"
                       onClick={() => resetOrderMutation.mutate()}
                       className="flex items-center gap-1 normal-case tracking-normal text-very-dim hover:text-text transition-colors"
                       title="Reset to most-recent order"
