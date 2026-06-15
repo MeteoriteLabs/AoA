@@ -499,11 +499,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   }, [setCockpitCollapsed, setViewerCollapsed, isWide]);
   const collapseCockpit = useCallback(() => setCockpitCollapsed(true), [setCockpitCollapsed]);
 
-  // collapseViewer is still used by CommanderViewerDetail's "Hide preview" button.
-  // On desktop it closes the viewer without restoring panel state (direct close,
-  // not from the choreography path). For the chat-header toggle we use closePreview().
-  const collapseViewer = useCallback(() => { setViewerCollapsed(true); viewer.collapse(); }, [setViewerCollapsed, viewer]);
-
   // Stable ref to openPreview for use inside stale SSE closures (onLiveRef).
   // The sendText / handleSSEEvent callbacks are memoized and capture viewer + other
   // values from the render they were created in, so we must NOT capture openPreview
@@ -1494,15 +1489,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const activeTab = viewer.state.tabs.find((t) => t.id === viewer.state.activeId);
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden gap-2">
-      {/* Center group: Chat + optional Viewer only (cockpit is now a width-div sibling) */}
+      {/* Center group: Chat + optional Viewer only (cockpit is now a width-div sibling).
+          The Group has no border/overflow-hidden — each inner panel provides its
+          own COMMANDER_PANEL_CARD chrome. The Separator (w-2 transparent) acts as
+          the 8px gap between the chat card and the viewer card. */}
       <Group
         orientation="horizontal"
-        className="flex h-full min-w-0 flex-1 overflow-hidden"
+        className="flex h-full min-w-0 flex-1"
         defaultLayout={defaultLayout}
         onLayoutChanged={onLayoutChanged}
         data-testid="commander-center-group"
       >
-        <Panel id="commander-chat" minSize="40%" className="flex h-full min-w-0 flex-col overflow-hidden">
+        <Panel id="commander-chat" minSize="40%" className="flex h-full min-w-0 flex-col">
           {chatColumn}
         </Panel>
         {!viewerCollapsed && (
@@ -1519,7 +1517,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               defaultSize="40%"
               minSize="24%"
               maxSize="60%"
-              className="flex h-full min-w-0 overflow-hidden"
+              className="flex h-full min-w-0"
             >
               <CommanderViewerDetail
                 viewer={viewer}
@@ -1527,7 +1525,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 conversationRefs={conversationRefs}
                 activeTab={activeTab}
                 tabModels={tabModels}
-                onCollapse={collapseViewer}
+                onCollapse={closePreview}
               />
             </Panel>
           </>
@@ -1536,10 +1534,14 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       {/* Right cockpit — width-toggled div mirroring WorkspaceLayout right panel.
           Expanded: w-[300px] showing the full CommanderCockpitPanel.
           Collapsed: w-[48px] showing the CommanderCockpitRail.
-          Consolidates the old panel-in-Group + sibling-Rail into one width-div. */}
+          COMMANDER_PANEL_CARD here (rounded-xl + border + shadow-sm + overflow-hidden)
+          mirrors WorkspaceLayout's right panel card pattern exactly. The inner
+          CommanderCockpitPanel/Rail provide their own structural chrome (header, etc.)
+          but the card border/radius lives here on the container. */}
       <div
         className={cn(
           "shrink-0 h-full overflow-hidden transition-[width] duration-200",
+          COMMANDER_PANEL_CARD,
           cockpitCollapsed ? "w-[48px]" : "w-[300px]",
         )}
         data-testid="commander-cockpit-container"

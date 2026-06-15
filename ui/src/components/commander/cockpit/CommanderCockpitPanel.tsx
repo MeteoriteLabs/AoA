@@ -25,8 +25,6 @@ import type { LucideIcon } from "lucide-react";
 import type { CockpitData, CockpitPinnedEntityType, CommanderOutputRef } from "@armyofagents/shared";
 import { cockpitApi } from "../../../api/cockpit";
 import { queryKeys } from "../../../lib/queryKeys";
-import { cn } from "../../../lib/utils";
-import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ScrollArea } from "../../ui/scroll-area";
 import { useCommanderCockpitPrefs } from "../useCommanderCockpitPrefs";
@@ -476,7 +474,7 @@ export function CommanderCockpitPanel({
   return (
     <div
       data-testid="commander-cockpit-panel"
-      className={cn("relative flex h-full min-w-0 flex-1 flex-col", COMMANDER_PANEL_CARD)}
+      className="relative flex h-full min-w-0 flex-1 flex-col"
     >
       {/* Phase 5A: 42px header — PanelRightClose (left) + title + Config + MoreVertical (right) */}
       <header
@@ -623,10 +621,7 @@ export function CommanderCockpitRail({
   return (
     <div
       data-testid="commander-cockpit-rail"
-      className={cn(
-        "flex h-full w-12 shrink-0 flex-col items-center gap-1",
-        COMMANDER_PANEL_CARD,
-      )}
+      className="flex h-full w-12 shrink-0 flex-col items-center gap-1"
     >
       {/* 42px header: expand button */}
       <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border">
