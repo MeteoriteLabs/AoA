@@ -80,7 +80,7 @@ export interface CockpitData {
     dueTasks: CockpitTaskItem[];
   };
   discussions: CockpitDiscussionItem[];
-  /** Phase 3c: unified approvals queue (founder-only; [] for non-founders). */
+  /** Unified approvals queue, per-role scoped (founder: all sources; lead: dept memory + own runtime; member: own runtime). */
   approvals: CockpitApprovalItem[];
   /** Phase 3d: user-pinned entities (tasks / artifacts / goals). */
   pinned: CockpitPinnedItem[];

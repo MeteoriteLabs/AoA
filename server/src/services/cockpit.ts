@@ -499,9 +499,11 @@ async function cockpitTeammatesActivity(
 }
 
 /**
- * Aggregate the unified approvals queue (Phase 3c + approval families extension).
+ * Aggregate the unified approvals queue (Phase 3c + approval families + A4 per-role scoping).
  *
- * HC1: non-founder → [] immediately, no sub-queries.
+ * A4: per-role scoping (replaces the old founder-only short-circuit). approval / discussion_item /
+ *      join_request / memory_archive → founder-only; memory / memory_version → founder OR dept-lead
+ *      (non-identity layer, dept ∈ leadDepartmentIds); runtime_tool_trust → any role, owner-scoped (HC4).
  * HC2: memory.listPending returns { items, versions, archives, totalCount } — use .items for
  *      the original "memory" source; .versions and .archives for the new memory_version /
  *      memory_archive sources (reuses same call, no extra query).
@@ -583,13 +585,10 @@ async function cockpitApprovals(
     (isLead && layer !== "identity" && !!departmentId && scope.leadDepartmentIds.includes(departmentId));
 
   const memItems = memPending.items.filter((m) =>
-    canApproveMem(m.layer ?? null, (m as { departmentId?: string | null }).departmentId ?? null),
+    canApproveMem(m.layer ?? null, m.departmentId ?? null),
   );
   const memVersions = memPending.versions.filter((v) =>
-    canApproveMem(
-      v.itemLayer ?? null,
-      (v as { itemDepartmentId?: string | null }).itemDepartmentId ?? null,
-    ),
+    canApproveMem(v.itemLayer ?? null, v.itemDepartmentId ?? null),
   );
   // memory_archive — founder-only (no dept-level archive approval for leads).
   const memArchives = isFounder ? memPending.archives : [];
