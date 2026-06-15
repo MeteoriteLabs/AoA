@@ -63,8 +63,11 @@ const EMPTY_DATA: CockpitData = {
 };
 
 // ---------------------------------------------------------------------------
-// Card registry — 3b: 5 cards. Cards are PRESENTATIONAL; data comes from
-// the shared batched /cockpit query, not per-card fetches.
+// Card registry — 12 cards (7 default-on: running/review/myTasks/today/discussions/
+// approvals/pinned; 5 opt-in defaultOn:false: goalsAtRisk/budgetPulse/doneToday/
+// proactiveFindings/teammatesActivity). The "In this conversation" zone is rendered
+// separately (conversation-fed, not a registry card). Cards are PRESENTATIONAL; data
+// comes from the shared batched /cockpit query, not per-card fetches.
 // ---------------------------------------------------------------------------
 
 export interface CockpitCardRenderDef extends CockpitCardDef {
@@ -371,10 +374,13 @@ export function CommanderCockpitPanel({
         {/* Conversation-scoped zone — always-on when refs exist; NOT a registry card. */}
         <CockpitConversationZone refs={conversationRefs} onOpen={onOpenRef} />
         {conversationRefs.length > 0 && <div className="mb-2" />}
-        {/* Mountable cards (ordered by prefs.order, not hidden, defaultOn). Cards
-            are now PRESENTATIONAL — active is derived from the shared batched data,
-            not from per-card self-reporting. */}
-        {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order, prefs.enabled).map((c) => (
+        {/* Mountable AND active cards (ordered by prefs.order; not hidden; defaultOn or
+            enabled). Filtering by `active` here (not just mountable) avoids rendering
+            empty `mb-2` wrapper divs for mountable-but-empty cards — holistic review. Cards
+            are PRESENTATIONAL — active is derived from the shared batched data. */}
+        {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order, prefs.enabled)
+          .filter((c) => active[c.id])
+          .map((c) => (
           <div key={c.id} className="mb-2 last:mb-0">
             {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through. */}
             {c.render({

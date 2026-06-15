@@ -1,9 +1,12 @@
 /**
  * cockpitService — Phase 3b/3c batched, RBAC-scoped cockpit data engine.
  *
- * GET /companies/:cid/cockpit returns ONE payload: Promise.all of 6 queries
- * (Running / Review / MyTasks / Today / Discussions / Approvals). Mirrors the
- * sidebar-badges + home batching pattern.
+ * GET /companies/:cid/cockpit returns ONE payload: Promise.all of the resolvers
+ * (Running / Review / MyTasks / Today / Discussions / Approvals / Pinned +
+ * opt-in: Goals-at-risk / Budget pulse / Done-today / Proactive findings /
+ * Teammates' activity). The "In this conversation" zone is client-side (fed by
+ * the chat's conversationRefs, not this endpoint). Mirrors the sidebar-badges +
+ * home batching pattern.
  *
  * Security model:
  *   - resolveCockpitScope() drives every per-card scope decision.
@@ -24,7 +27,7 @@
  *     extracted items. Non-founder short-circuits immediately — no sub-queries.
  */
 
-import { and, desc, eq, gte, inArray, isNull, lt, lte, ne, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -373,6 +376,7 @@ async function cockpitDoneToday(
     eq(issues.companyId, companyId),
     gte(issues.completedAt, start),
     lte(issues.completedAt, endOfToday()),
+    isNull(issues.hiddenAt), // exclude soft-hidden tasks (consistent with dueTasks; holistic review)
   ];
   // Founder → company-wide; else → own assigned tasks only.
   if (!scope.isFounder) {
@@ -441,7 +445,11 @@ async function cockpitProactiveFindings(
  * Uses plain db.select + JS Set dedup (NOT db.selectDistinct — the cockpit test mocks
  * only stub `select`, and selectDistinct would throw; Codex #2/#5).
  */
-const NON_HUMAN_ACTORS = ["agent", "system", "commander"];
+// "Teammates" = humans. ALLOWLIST (not denylist): activity is logged with these
+// actorTypes for humans; everything else (agent/system/commander/plugin/…) is
+// excluded. An allowlist is robust against future non-human actor types leaking in
+// (holistic review: `plugin` would have slipped past a denylist of agent/system/commander).
+const HUMAN_ACTORS = ["user", "board"];
 
 async function cockpitTeammatesActivity(
   db: Db,
@@ -453,7 +461,7 @@ async function cockpitTeammatesActivity(
 
   const conds = [
     eq(activityLog.companyId, companyId),
-    notInArray(activityLog.actorType, NON_HUMAN_ACTORS),
+    inArray(activityLog.actorType, HUMAN_ACTORS),
     ne(activityLog.actorId, scope.userId),
   ];
 
