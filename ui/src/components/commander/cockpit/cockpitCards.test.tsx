@@ -10,7 +10,7 @@ import type { CockpitData } from "@armyofagents/shared";
 
 // Mock queryKeys and cockpitApi for the panel test (panel tests come later)
 vi.mock("../../../api/cockpit", () => ({
-  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, discussions: [], approvals: [], pinned: [] } satisfies CockpitData) },
+  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [] } satisfies CockpitData) },
 }));
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: { cockpit: (id: string) => ["cockpit", id] },
@@ -79,6 +79,9 @@ describe("CommanderCockpitPanel with shared data", () => {
       discussions: [],
       approvals: [],
       pinned: [],
+      goalsAtRisk: [],
+      budgetPulse: null,
+      doneToday: [],
     } satisfies CockpitData);
 
     render(
@@ -99,6 +102,9 @@ describe("CommanderCockpitPanel with shared data", () => {
       discussions: [],
       approvals: [],
       pinned: [],
+      goalsAtRisk: [],
+      budgetPulse: null,
+      doneToday: [],
     } satisfies CockpitData);
 
     render(
@@ -119,6 +125,9 @@ describe("CommanderCockpitPanel with shared data", () => {
       discussions: [],
       approvals: [],
       pinned: [],
+      goalsAtRisk: [],
+      budgetPulse: null,
+      doneToday: [],
     } satisfies CockpitData);
 
     render(

@@ -48,6 +48,10 @@ const EMPTY_DATA: CockpitData = {
   approvals: [],
   // Phase 3d: pinned required by CockpitData type
   pinned: [],
+  // Opt-in cards
+  goalsAtRisk: [],
+  budgetPulse: null,
+  doneToday: [],
 };
 
 // ---------------------------------------------------------------------------

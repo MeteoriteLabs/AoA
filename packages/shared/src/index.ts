@@ -1011,6 +1011,9 @@ export type {
   CockpitApprovalItem,
   CockpitPinnedEntityType,
   CockpitPinnedItem,
+  CockpitGoalsAtRiskItem,
+  CockpitBudgetPulseItem,
+  CockpitDoneTodayItem,
 } from "./cockpit.js";
 
 // Marketplace catalog types

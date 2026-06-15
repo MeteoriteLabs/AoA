@@ -39,6 +39,11 @@ const COCKPIT_RESPONSE = {
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
   discussions: [],
+  approvals: [],
+  pinned: [],
+  goalsAtRisk: [],
+  budgetPulse: null,
+  doneToday: [],
 };
 
 function createApp(

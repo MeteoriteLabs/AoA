@@ -73,4 +73,32 @@ export interface CockpitData {
   approvals: CockpitApprovalItem[];
   /** Phase 3d: user-pinned entities (tasks / artifacts / goals). */
   pinned: CockpitPinnedItem[];
+  /** Opt-in card: Goals currently at_risk status (company-scoped). */
+  goalsAtRisk: CockpitGoalsAtRiskItem[];
+  /** Opt-in card: Budget pulse for the current month (founder-only; null for non-founders or no budget). */
+  budgetPulse: CockpitBudgetPulseItem | null;
+  /** Opt-in card: Tasks completed today (founder→company-wide; else→own). */
+  doneToday: CockpitDoneTodayItem[];
+}
+
+// ── Opt-in card types (added for the cockpit opt-in cards feature) ────────────
+
+export interface CockpitGoalsAtRiskItem {
+  id: string;
+  title: string;
+  level: string;
+  ownerAgentId: string | null;
+}
+
+export interface CockpitBudgetPulseItem {
+  limitCents: number;
+  spentCents: number;
+  percentUsed: number;        // 0 when limitCents === 0 (guarded)
+  openIncidentCount: number;
+}
+
+export interface CockpitDoneTodayItem {
+  id: string;
+  identifier: string | null;
+  title: string;
 }

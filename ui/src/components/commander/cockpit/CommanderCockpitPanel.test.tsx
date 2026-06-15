@@ -29,6 +29,9 @@ vi.mock("../../../api/cockpit", () => ({
       discussions: [],
       approvals: [],
       pinned: [],
+      goalsAtRisk: [],
+      budgetPulse: null,
+      doneToday: [],
     } satisfies CockpitData),
   },
 }));
@@ -56,6 +59,10 @@ function makeData(overrides?: Partial<CockpitData>): CockpitData {
     approvals: [],
     // Phase 3d: required by CockpitData
     pinned: [],
+    // Opt-in cards
+    goalsAtRisk: [],
+    budgetPulse: null,
+    doneToday: [],
     ...overrides,
   };
 }
