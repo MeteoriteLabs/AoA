@@ -8,12 +8,12 @@
 
 ## A. Cockpit — remaining approval families (extend the 3c Approvals card)
 
-The 3c card unifies 3 founder-scoped sources via `cockpitApprovals()` in `server/src/services/cockpit.ts` + the `useCockpitApprovalAction` source-dispatcher. These extend that same shape:
+The 3c card unifies 3 founder-scoped sources via `cockpitApprovals()` in `server/src/services/cockpit.ts` + the `useCockpitApprovalAction` source-dispatcher. **✅ A1–A3 DONE (2026-06-15)** — plan `2026-06-15-commander-approval-families-plan.md`; proven live on real PG (incl. the 3-way Deny action resolving end-to-end). A4 still deferred.
 
-1. **Join-requests family** — `join_requests` status `pending_approval`; actions `accessApi.approveJoinRequest/rejectJoinRequest` (`ui/src/api/access.ts:102`); scope = `joins:approve` perm (founder/admin). Add a `source:"join_request"` to the aggregation + dispatcher.
-2. **Tool-trust / runtime family** — `internal_agent_runtime_approvals` status `pending` (+ `expires_at > now`); action = `POST /internal-agent/confirm` with `decision: allow_once|allow_always|deny` (note: a 3-way decision, not approve/reject — the dispatcher needs a variant). Scope = founder/team_lead (`getEffectiveRole`).
-3. **Memory version/archive queues** — `memoryService.listPending` also returns `versions` (pending edits on approved items → `memoryApi.approveVersion/rejectVersion`) and `archives` (`{item, suggestion}` → restore). 3c used only `.items`; add these two queues.
-4. **Lead/member approvals scoping** — the Approvals card is **founder-only** today. Extend per design §6: team_lead sees their departments' actionable items (esp. memory `active_context` in their depts — `assertMemoryApproval` already permits this server-side); member sees routed-to-them. Needs per-source scoping in `cockpitApprovals` (drop the `!scope.isFounder → []` short-circuit and scope each source).
+1. ~~**Join-requests family**~~ **✅ DONE** — `source:"join_request"`, `accessApi.approveJoinRequest/rejectJoinRequest`, full-page → `/inbox/new`.
+2. ~~**Tool-trust / runtime family**~~ **✅ DONE** — `source:"runtime_tool_trust"`, `decisionType:"ternary"` (Always=allow_always / Once=allow_once / Deny=deny via `internalAgentApi.confirmAction`); query filters `status='pending'` + `expires_at > now` + **`userId = scope.userId`** (the confirm route is owner-scoped — verified live: expired + other-user rows excluded). NOTE: scoped to the viewer's own (founder), not founder/team_lead — lead/member is A4.
+3. ~~**Memory version/archive queues**~~ **✅ DONE** — `source:"memory_version"` (`memoryApi.approveVersion/rejectVersion`, relatedEntityId=versionId) + `source:"memory_archive"` (`suggestionsApi.accept/dismiss`, relatedEntityId=suggestionId); both reuse the existing `memoryService.listPending` `.versions`/`.archives` (no new query).
+4. **Lead/member approvals scoping** — STILL DEFERRED. The Approvals card is **founder-only** today (`!scope.isFounder → []`). Extend per design §6: team_lead sees their departments' actionable items; member sees routed-to-them. Needs per-source scoping (drop the short-circuit + scope each source). This is the last approval-families piece.
 
 ## B. Cockpit — remaining cards (extend `/cockpit` + `COCKPIT_REGISTRY`)
 
