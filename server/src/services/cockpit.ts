@@ -24,9 +24,10 @@
  *     extracted items. Non-founder short-circuits immediately — no sub-queries.
  */
 
-import { and, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
+  activityLog,
   approvals,
   artifacts,
   budgetIncidents,
@@ -38,7 +39,9 @@ import {
   goals,
   internalAgentReminders,
   issues,
+  notifications,
   userEntityPins,
+  userRoles,
 } from "@armyofagents/db";
 import type {
   CockpitApprovalItem,
@@ -47,7 +50,9 @@ import type {
   CockpitDoneTodayItem,
   CockpitGoalsAtRiskItem,
   CockpitPinnedItem,
+  CockpitProactiveItem,
   CockpitTaskItem,
+  CockpitTeammatesActivityItem,
 } from "@armyofagents/shared";
 import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
@@ -382,6 +387,106 @@ async function cockpitDoneToday(
   return rows;
 }
 
+// ── Opt-in card resolvers: proactive findings + teammates' activity ────────────
+
+/**
+ * Proactive findings: recent unread + undismissed notifications of Commander
+ * proactive types for the current user.
+ *
+ * Codex #1: the writer inserts "internal_agent_proactive" (proactive.ts:102) but the
+ * constant/schema comment say "internal_agent.proactive" (constants.ts:967).
+ * Query BOTH to be robust to the codebase inconsistency.
+ */
+async function cockpitProactiveFindings(
+  db: Db,
+  companyId: string,
+  scope: CockpitScope,
+): Promise<CockpitProactiveItem[]> {
+  const rows = await db
+    .select({
+      id: notifications.id,
+      title: notifications.title,
+      relatedEntityType: notifications.relatedEntityType,
+      relatedEntityId: notifications.relatedEntityId,
+      createdAt: notifications.createdAt,
+    })
+    .from(notifications)
+    .where(
+      and(
+        eq(notifications.companyId, companyId),
+        eq(notifications.userId, scope.userId),
+        inArray(notifications.type, ["internal_agent.proactive", "internal_agent_proactive"]),
+        isNull(notifications.readAt),
+        isNull(notifications.dismissedAt),
+      ),
+    )
+    .orderBy(desc(notifications.createdAt))
+    .limit(20);
+  return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }));
+}
+
+/**
+ * Teammates' activity: recent human-actor activity excluding the current user.
+ *
+ * "Teammates" = humans only. Verified actorType values:
+ *   - humans: "user" AND "board" (board actor = browser session acting on behalf of a user)
+ *   - non-humans: "agent", "system", "commander"
+ * We EXCLUDE the non-human set (robust to which human label a route uses).
+ *
+ * Scoping:
+ *   - founder → company-wide human activity
+ *   - team_lead → only actors who belong to one of the lead's departments (actor-based scoping)
+ *   - team_member → [] (no card)
+ *
+ * Uses plain db.select + JS Set dedup (NOT db.selectDistinct — the cockpit test mocks
+ * only stub `select`, and selectDistinct would throw; Codex #2/#5).
+ */
+const NON_HUMAN_ACTORS = ["agent", "system", "commander"];
+
+async function cockpitTeammatesActivity(
+  db: Db,
+  companyId: string,
+  scope: CockpitScope,
+): Promise<CockpitTeammatesActivityItem[]> {
+  // member → no card
+  if (!scope.isFounder && scope.leadDepartmentIds.length === 0) return [];
+
+  const conds = [
+    eq(activityLog.companyId, companyId),
+    notInArray(activityLog.actorType, NON_HUMAN_ACTORS),
+    ne(activityLog.actorId, scope.userId),
+  ];
+
+  if (!scope.isFounder) {
+    // team_lead → only actors who belong to one of the lead's departments.
+    // Use plain select + JS Set dedup (NOT db.selectDistinct — the cockpit test mocks
+    // only stub `select`, and selectDistinct would throw; Codex #2/#5).
+    const deptRows = await db
+      .select({ userId: userRoles.userId })
+      .from(userRoles)
+      .where(and(eq(userRoles.companyId, companyId), inArray(userRoles.projectId, scope.leadDepartmentIds)));
+    const ids = [...new Set(deptRows.map((u) => u.userId))].filter((id) => id !== scope.userId);
+    if (ids.length === 0) return [];
+    conds.push(inArray(activityLog.actorId, ids));
+  }
+
+  const rows = await db
+    .select({
+      id: activityLog.id,
+      actorId: activityLog.actorId,
+      actorType: activityLog.actorType,
+      action: activityLog.action,
+      entityType: activityLog.entityType,
+      entityId: activityLog.entityId,
+      createdAt: activityLog.createdAt,
+    })
+    .from(activityLog)
+    .where(and(...conds))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(20);
+  return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }));
+}
+
 /**
  * Aggregate the unified approvals queue (Phase 3c).
  *
@@ -452,7 +557,7 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems] =
+      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems, proactiveFindingsItems, teammatesActivityItems] =
         await Promise.all([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
@@ -564,6 +669,12 @@ export function cockpitService(db: Db) {
 
           // ── 10. Opt-in: Done today ────────────────────────────────────────
           cockpitDoneToday(db, companyId, scope),
+
+          // ── 11. Opt-in: Proactive findings (per-user unread Commander proactive) ─
+          cockpitProactiveFindings(db, companyId, scope),
+
+          // ── 12. Opt-in: Teammates' activity (human actors only, RBAC-scoped) ───
+          cockpitTeammatesActivity(db, companyId, scope),
         ]);
 
       // ── Map running ───────────────────────────────────────────────────────
@@ -659,6 +770,8 @@ export function cockpitService(db: Db) {
         goalsAtRisk: goalsAtRiskItems,
         budgetPulse: budgetPulseItem,
         doneToday: doneTodayItems,
+        proactiveFindings: proactiveFindingsItems,
+        teammatesActivity: teammatesActivityItems,
       };
     },
   };

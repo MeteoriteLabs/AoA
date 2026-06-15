@@ -152,8 +152,9 @@ describe("cockpitGoalsAtRisk — shape", () => {
       ownerAgentId: "agent-1",
     };
     // Sequence for founder: reminders=[], dueTasks=[], approvals=[], discItems=[],
-    //   pinned=[], goalsAtRisk=[goalRow], companies=[{limitCents:0}], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], [], [goalRow], [{ limitCents: 0 }], []]);
+    //   pinned=[], goalsAtRisk=[goalRow], companies=[{limitCents:0}], doneToday=[],
+    //   proactiveFindings=[], teammatesActivity (founder)=[]
+    const db = buildSequenceDb([[], [], [], [], [], [goalRow], [{ limitCents: 0 }], [], [], []]);
 
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
@@ -167,7 +168,7 @@ describe("cockpitGoalsAtRisk — shape", () => {
   });
 
   it("returns empty array when no at-risk goals", async () => {
-    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], []]);
+    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
     expect(result.goalsAtRisk).toEqual([]);
   });
@@ -175,8 +176,9 @@ describe("cockpitGoalsAtRisk — shape", () => {
   it("includes goalsAtRisk field for non-founder too", async () => {
     mockResolveCockpitScope.mockResolvedValue(memberScope);
     mockReviewFilterFor.mockReturnValue({ assigneeUserId: "u-member" });
-    // Non-founder: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // Non-founder: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[],
+    // proactiveFindings=[] (teammates member → [] immediately, no select)
+    const db = buildSequenceDb([[], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
     expect(result).toHaveProperty("goalsAtRisk");
     expect(Array.isArray(result.goalsAtRisk)).toBe(true);
@@ -189,8 +191,9 @@ describe("cockpitBudgetPulse — founder-only SECURITY GATE", () => {
   it("non-founder (team_member) gets budgetPulse=null — no sub-queries", async () => {
     mockResolveCockpitScope.mockResolvedValue(memberScope);
     mockReviewFilterFor.mockReturnValue({ assigneeUserId: "u-member" });
-    // Non-founder: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // Non-founder: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[],
+    // proactiveFindings=[] (teammates member → [] immediately, no select)
+    const db = buildSequenceDb([[], [], [], [], [], []]);
 
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
@@ -202,8 +205,9 @@ describe("cockpitBudgetPulse — founder-only SECURITY GATE", () => {
     mockResolveCockpitScope.mockResolvedValue(leadScope);
     mockReviewFilterFor.mockReturnValue({ projectIds: ["dep-a"] });
     // team_lead: reminders=[], dueTasks=[], (lead review dept call via issueService),
-    // pinned=[], goalsAtRisk=[], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // pinned=[], goalsAtRisk=[], doneToday=[], proactiveFindings=[],
+    // cockpitTeammatesActivity lead: deptRows=[] (no dept members), returns [] early
+    const db = buildSequenceDb([[], [], [], [], [], [], []]);
 
     const result = await cockpitService(db).get(COMPANY, LEAD_ACTOR);
 
@@ -214,8 +218,9 @@ describe("cockpitBudgetPulse — founder-only SECURITY GATE", () => {
     mockResolveCockpitScope.mockResolvedValue(founderScope);
     // companies returns limitCents=0 → resolver exits early, no costEvents/budgetIncidents selects
     // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[],
-    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], []]);
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[],
+    //   proactiveFindings=[], teammatesActivity (founder)=[]
+    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], [], [], []]);
 
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
@@ -234,9 +239,11 @@ describe("cockpitBudgetPulse — founder-only SECURITY GATE", () => {
     //   [5] cockpitGoalsAtRisk (orderBy().limit() — awaits stub.limit)
     //   [6] cockpitBudgetPulse: companies (where-terminal, first await in fn)
     //   [7] cockpitDoneToday (orderBy().limit() — awaits stub.limit)
+    //   [8] cockpitProactiveFindings (orderBy().limit() — awaits stub.limit)
+    //   [9] cockpitTeammatesActivity founder (orderBy().limit() — awaits stub.limit)
     //   After [6] resolves, cockpitBudgetPulse resumes:
-    //   [8] costEvents sum (where-terminal — awaits stub.then)
-    //   [9] budgetIncidents count (where-terminal — awaits stub.then)
+    //   [10] costEvents sum (where-terminal — awaits stub.then)
+    //   [11] budgetIncidents count (where-terminal — awaits stub.then)
     const db = buildSequenceDb([
       [],                      // [0] reminders
       [],                      // [1] dueTasks
@@ -246,8 +253,10 @@ describe("cockpitBudgetPulse — founder-only SECURITY GATE", () => {
       [],                      // [5] goalsAtRisk
       [{ limitCents: 50000 }], // [6] companies
       [],                      // [7] doneToday
-      [{ spent: 25000 }],      // [8] costEvents sum
-      [{ incidents: 2 }],      // [9] budgetIncidents count
+      [],                      // [8] proactiveFindings
+      [],                      // [9] teammatesActivity (founder)
+      [{ spent: 25000 }],      // [10] costEvents sum
+      [{ incidents: 2 }],      // [11] budgetIncidents count
     ]);
 
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
@@ -263,11 +272,13 @@ describe("cockpitBudgetPulse — founder-only SECURITY GATE", () => {
 
   it("founder with 100%+ spend computes percentUsed ≥100", async () => {
     mockResolveCockpitScope.mockResolvedValue(founderScope);
-    // Same ordering as above
+    // Same ordering as above (proactive/teammates slots added)
     const db = buildSequenceDb([
       [], [], [], [], [], [],  // reminders, dueTasks, approvals, discItems, pinned, goalsAtRisk
       [{ limitCents: 10000 }], // companies
       [],                      // doneToday
+      [],                      // proactiveFindings
+      [],                      // teammatesActivity (founder)
       [{ spent: 12000 }],      // costEvents (over limit)
       [{ incidents: 0 }],      // budgetIncidents
     ]);
@@ -285,10 +296,11 @@ describe("cockpitDoneToday — scoping", () => {
   it("founder gets company-wide done-today (no assigneeUserId restriction)", async () => {
     mockResolveCockpitScope.mockResolvedValue(founderScope);
     const taskRow = { id: "task-1", identifier: "ACME-1", title: "Ship it" };
-    // doneToday is slot [9] for founder with budget (but here we use limitCents=0 so slot [7])
+    // doneToday is slot [7] (limitCents=0, no budget continuation)
     // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[],
-    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[taskRow]
-    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], [taskRow]]);
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[taskRow],
+    //   proactiveFindings=[], teammatesActivity (founder)=[]
+    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], [taskRow], [], []]);
 
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
@@ -312,8 +324,9 @@ describe("cockpitDoneToday — scoping", () => {
     mockResolveCockpitScope.mockResolvedValue(memberScope);
     mockReviewFilterFor.mockReturnValue({ assigneeUserId: "u-member" });
     const taskRow = { id: "task-2", identifier: "ACME-2", title: "My task" };
-    // Non-founder: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[taskRow]
-    const db = buildSequenceDb([[], [], [], [], [taskRow]]);
+    // Non-founder: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[taskRow],
+    // proactiveFindings=[] (teammates member → [] immediately, no select)
+    const db = buildSequenceDb([[], [], [], [], [taskRow], []]);
 
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
@@ -328,14 +341,16 @@ describe("cockpitDoneToday — scoping", () => {
   it("returns empty array when no tasks completed today", async () => {
     mockResolveCockpitScope.mockResolvedValue(memberScope);
     mockReviewFilterFor.mockReturnValue({ assigneeUserId: "u-member" });
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[], proactiveFindings=[]
+    const db = buildSequenceDb([[], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
     expect(result.doneToday).toEqual([]);
   });
 
   it("doneToday field is always present on CockpitData", async () => {
     mockResolveCockpitScope.mockResolvedValue(founderScope);
-    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], []]);
+    // founder: limitCents=0, proactiveFindings=[], teammatesActivity=[]
+    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
     expect(result).toHaveProperty("doneToday");
     expect(Array.isArray(result.doneToday)).toBe(true);

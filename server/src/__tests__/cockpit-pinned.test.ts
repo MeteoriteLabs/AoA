@@ -5,21 +5,24 @@
  *
  * DB select call order inside cockpitService.get with a team_member scope
  * (non-founder → cockpitApprovals returns [] with no sub-queries; entryRows skipped
- * because threadService mock returns []; budgetPulse returns null — no select):
+ * because threadService mock returns []; budgetPulse returns null — no select;
+ * teammates member → [] immediately, no select):
  *   call 0: internalAgentReminders (reminders)
  *   call 1: issues (dueTasks)
  *   call 2: userEntityPins (pins list)
  *   call 3: cockpitGoalsAtRisk (goals) — fires in same sync kickoff as pins
  *   call 4: cockpitDoneToday (issues) — fires in same sync kickoff as pins
- *   call 5+: per-entity-type id-set lookups (only if pins non-empty, after pins resolves)
+ *   call 5: cockpitProactiveFindings (notifications) — fires in same sync kickoff
+ *   call 6+: per-entity-type id-set lookups (only if pins non-empty, after pins resolves)
  *            issues batch (if taskIds.length > 0)
  *            artifacts batch (if artifactIds.length > 0)
  *            goals batch (if goalIds.length > 0)
  *
- * NOTE: goalsAtRisk (call 3) and doneToday (call 4) fire BEFORE entity batches (5+)
- * because they start in the outer Promise.all sync kickoff, whereas entity batches
- * are kicked off inside the cockpitPinned continuation (after pins await resolves).
- * All tests here use member scope to keep sequences simple (no approvals sub-queries).
+ * NOTE: goalsAtRisk (call 3), doneToday (call 4), and proactiveFindings (call 5) fire
+ * BEFORE entity batches (6+) because they start in the outer Promise.all sync kickoff,
+ * whereas entity batches are kicked off inside the cockpitPinned continuation (after
+ * pins await resolves). All tests here use member scope to keep sequences simple
+ * (no approvals sub-queries).
  */
 
 import { beforeEach, describe, it, expect, vi } from "vitest";
@@ -124,8 +127,8 @@ beforeEach(() => {
 describe("cockpitPinned — empty pins", () => {
   it("returns pinned:[] when the user has no pins", async () => {
     // call 0: reminders, call 1: dueTasks, call 2: pins=[], call 3: goalsAtRisk, call 4: doneToday
-    // (pins=[] → cockpitPinned exits early, no entity batches)
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // call 5: proactiveFindings (pins=[] → cockpitPinned exits early, no entity batches)
+    const db = buildSequenceDb([[], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
     expect(result).toHaveProperty("pinned");
     expect(result.pinned).toEqual([]);
@@ -148,9 +151,9 @@ describe("cockpitPinned — task pin", () => {
     };
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [pinRow]
-    // call 3: goalsAtRisk [], call 4: doneToday []
-    // call 5: issues batch [taskRow]  (artifactIds and goalIds empty)
-    const db = buildSequenceDb([[], [], [pinRow], [], [], [taskRow]]);
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
+    // call 6: issues batch [taskRow]  (artifactIds and goalIds empty)
+    const db = buildSequenceDb([[], [], [pinRow], [], [], [], [taskRow]]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toHaveLength(1);
@@ -179,10 +182,10 @@ describe("cockpitPinned — artifact pin", () => {
     };
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [pinRow]
-    // call 3: goalsAtRisk [], call 4: doneToday []
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
     // taskIds empty → no issues batch
-    // call 5: artifacts batch [artRow]  (goalIds empty)
-    const db = buildSequenceDb([[], [], [pinRow], [], [], [artRow]]);
+    // call 6: artifacts batch [artRow]  (goalIds empty)
+    const db = buildSequenceDb([[], [], [pinRow], [], [], [], [artRow]]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toHaveLength(1);
@@ -211,10 +214,10 @@ describe("cockpitPinned — goal pin", () => {
     };
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [pinRow]
-    // call 3: goalsAtRisk [], call 4: doneToday []
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
     // taskIds + artifactIds empty → no batches for those
-    // call 5: goals batch [goalRow]
-    const db = buildSequenceDb([[], [], [pinRow], [], [], [goalRow]]);
+    // call 6: goals batch [goalRow]
+    const db = buildSequenceDb([[], [], [pinRow], [], [], [], [goalRow]]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toHaveLength(1);
@@ -237,9 +240,9 @@ describe("cockpitPinned — company filter drops out-of-company entities", () =>
     };
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [pinRow]
-    // call 3: goalsAtRisk [], call 4: doneToday []
-    // call 5: issues batch returns [] (company filter excludes the row)
-    const db = buildSequenceDb([[], [], [pinRow], [], [], []]);
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
+    // call 6: issues batch returns [] (company filter excludes the row)
+    const db = buildSequenceDb([[], [], [pinRow], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toEqual([]);
@@ -256,9 +259,9 @@ describe("cockpitPinned — deleted entity is dropped", () => {
     };
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [pinRow]
-    // call 3: goalsAtRisk [], call 4: doneToday []
-    // call 5: goals batch returns [] (entity deleted)
-    const db = buildSequenceDb([[], [], [pinRow], [], [], []]);
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
+    // call 6: goals batch returns [] (entity deleted)
+    const db = buildSequenceDb([[], [], [pinRow], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toEqual([]);
@@ -283,11 +286,11 @@ describe("cockpitPinned — polymorphic key prevents cross-type mis-resolution",
     const artRow = { id: SHARED_ID, title: "Artifact title", status: "draft" };
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [taskPin, artPin]
-    // call 3: goalsAtRisk [], call 4: doneToday []
-    // call 5: issues batch [taskRow] (taskIds = [SHARED_ID])
-    // call 6: artifacts batch [artRow] (artifactIds = [SHARED_ID])
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
+    // call 6: issues batch [taskRow] (taskIds = [SHARED_ID])
+    // call 7: artifacts batch [artRow] (artifactIds = [SHARED_ID])
     // (goalIds empty)
-    const db = buildSequenceDb([[], [], [taskPin, artPin], [], [], [taskRow], [artRow]]);
+    const db = buildSequenceDb([[], [], [taskPin, artPin], [], [], [], [taskRow], [artRow]]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toHaveLength(2);
@@ -313,9 +316,9 @@ describe("cockpitPinned — order preserved (pinnedAt desc)", () => {
     ];
 
     // call 0: reminders [], call 1: dueTasks [], call 2: pins [pins]
-    // call 3: goalsAtRisk [], call 4: doneToday []
-    // call 5: goals batch [goalRows]
-    const db = buildSequenceDb([[], [], pins, [], [], goalRows]);
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
+    // call 6: goals batch [goalRows]
+    const db = buildSequenceDb([[], [], pins, [], [], [], goalRows]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     expect(result.pinned).toHaveLength(2);
@@ -337,16 +340,17 @@ describe("cockpitPinned — mixed entity types", () => {
     ];
 
     // call 0: reminders, call 1: dueTasks, call 2: pins
-    // call 3: goalsAtRisk [], call 4: doneToday []
-    // call 5: issues batch (TASK_ID)
-    // call 6: artifacts batch (ART_ID)
-    // call 7: goals batch (GOAL_ID)
+    // call 3: goalsAtRisk [], call 4: doneToday [], call 5: proactiveFindings []
+    // call 6: issues batch (TASK_ID)
+    // call 7: artifacts batch (ART_ID)
+    // call 8: goals batch (GOAL_ID)
     const db = buildSequenceDb([
       [],
       [],
       pins,
       [], // goalsAtRisk
       [], // doneToday
+      [], // proactiveFindings
       [{ id: TASK_ID, identifier: "T-1", title: "My task", status: "todo" }],
       [{ id: ART_ID, title: "My artifact", status: "draft" }],
       [{ id: GOAL_ID, title: "My goal", status: "planned" }],

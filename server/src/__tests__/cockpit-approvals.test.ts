@@ -56,12 +56,16 @@ vi.mock("../services/memory.js", () => ({
 //   [5] cockpitGoalsAtRisk (goals)
 //   [6] cockpitBudgetPulse: companies (limitCents=0 → returns null, no further selects)
 //   [7] cockpitDoneToday (issues)
+//   [8] cockpitProactiveFindings (notifications)
+//   [9] cockpitTeammatesActivity (activityLog) — founder=company-wide, 1 select
 //  Non-founder scope:
 //   [0] reminders, [1] dueTasks
 //   [2] cockpitPinned pins list
 //   [3] cockpitGoalsAtRisk
 //   (cockpitBudgetPulse short-circuits for non-founder, no select)
 //   [4] cockpitDoneToday
+//   [5] cockpitProactiveFindings (notifications)
+//   (cockpitTeammatesActivity: member → [] immediately, no select)
 
 function buildSelectStub(rows: unknown[] = []) {
   const stub: Record<string, unknown> = {};
@@ -156,8 +160,9 @@ describe("cockpitApprovals — founder scope", () => {
       payload: { name: "Scout" },
     };
     // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[],
-    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}] (budget exits early), doneToday=[]
-    const db = buildSequenceDb([[], [], [approvalRow], [], [], [], [{ limitCents: 0 }], []]);
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}] (budget exits early), doneToday=[],
+    //   proactiveFindings=[], teammatesActivity (founder=company-wide)=[]
+    const db = buildSequenceDb([[], [], [approvalRow], [], [], [], [{ limitCents: 0 }], [], [], []]);
     mockMemoryServiceListPending.mockResolvedValue({
       items: [],
       versions: [],
@@ -194,8 +199,9 @@ describe("cockpitApprovals — founder scope", () => {
     });
 
     // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[],
-    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], []]);
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[],
+    //   proactiveFindings=[], teammatesActivity (founder)=[]
+    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
     expect(mockMemoryServiceListPending).toHaveBeenCalledWith(COMPANY);
@@ -215,8 +221,9 @@ describe("cockpitApprovals — founder scope", () => {
       type: "task",
     };
     // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[discItem],
-    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [discItem], [], [], [{ limitCents: 0 }], []]);
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[],
+    //   proactiveFindings=[], teammatesActivity (founder)=[]
+    const db = buildSequenceDb([[], [], [], [discItem], [], [], [{ limitCents: 0 }], [], [], []]);
 
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
@@ -243,8 +250,9 @@ describe("cockpitApprovals — founder scope", () => {
     });
 
     // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[discItem],
-    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
-    const db = buildSequenceDb([[], [], [approvalRow], [discItem], [], [], [{ limitCents: 0 }], []]);
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[],
+    //   proactiveFindings=[], teammatesActivity (founder)=[]
+    const db = buildSequenceDb([[], [], [approvalRow], [discItem], [], [], [{ limitCents: 0 }], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
     expect(result.approvals).toHaveLength(3);
@@ -267,8 +275,9 @@ describe("cockpitApprovals — non-founder scope (HC1 SECURITY GATE)", () => {
     // Non-founder still triggers reminders and dueTasks selects, but NOT approvals sub-queries.
     // cockpitApprovals short-circuits with [] before running its 3 sub-queries.
     // cockpitBudgetPulse also short-circuits for non-founder (no select).
-    // Sequence: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[]
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // cockpitTeammatesActivity member → [] immediately, no select.
+    // Sequence: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[], proactiveFindings=[]
+    const db = buildSequenceDb([[], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     // HC1: non-founder MUST get []
@@ -278,7 +287,8 @@ describe("cockpitApprovals — non-founder scope (HC1 SECURITY GATE)", () => {
   });
 
   it("CockpitData shape still includes approvals field for non-founders", async () => {
-    const db = buildSequenceDb([[], [], [], [], []]);
+    // Sequence: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[], proactiveFindings=[]
+    const db = buildSequenceDb([[], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
     expect(result).toHaveProperty("approvals");
     expect(result.approvals).toEqual([]);
