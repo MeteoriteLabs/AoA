@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronsLeft, FileText, Globe, Home, ListTodo } from "lucide-react";
+import { FileText, Globe, Home, ListTodo } from "lucide-react";
 import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -299,72 +299,6 @@ export function CommanderViewerDetail({
           onCloseTab={viewer.close}
         />
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Desktop collapsed rail
-// ---------------------------------------------------------------------------
-
-export interface CommanderViewerRailProps {
-  viewer: CommanderViewerApi;
-  tabModels: ViewerTabModel[];
-  /** Global bridge: expand the panel (persists) — wired by AgentPanelContent. */
-  onExpand: () => void;
-}
-
-export function CommanderViewerRail({ viewer, tabModels, onExpand }: CommanderViewerRailProps) {
-  return (
-    <div
-      data-testid="commander-viewer-rail"
-      className={cn("flex h-full w-9 shrink-0 flex-col items-center gap-1 py-2", COMMANDER_PANEL_CARD)}
-    >
-      <button
-        type="button"
-        title="Expand viewer"
-        aria-label="Expand viewer"
-        onClick={onExpand}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-      >
-        <ChevronsLeft className="size-3.5" aria-hidden />
-      </button>
-
-      {/* Home icon */}
-      <button
-        type="button"
-        title="Viewer home"
-        aria-label="Viewer home"
-        onClick={() => {
-          onExpand();
-          viewer.activate("home");
-        }}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-      >
-        <Home className="size-3.5" aria-hidden />
-      </button>
-
-      {/* One icon per open tab */}
-      {tabModels
-        .filter((t) => t.id !== "home")
-        .map((t) => {
-          const Icon = t.icon ?? FileText;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              title={t.title}
-              aria-label={t.title}
-              onClick={() => {
-                onExpand();
-                viewer.activate(t.id);
-              }}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            >
-              <Icon className="size-3.5" aria-hidden />
-            </button>
-          );
-        })}
     </div>
   );
 }

@@ -76,7 +76,7 @@ describe("ViewerTabs", () => {
     );
 
     fireEvent.click(getByRole("button", { name: "New viewer tab" }));
-    fireEvent.click(getByRole("button", { name: "Close viewer" }));
+    fireEvent.click(getByRole("button", { name: "Hide preview" }));
 
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
@@ -95,7 +95,7 @@ describe("ViewerTabs", () => {
 
     const tablist = getByRole("tablist", { name: "Open viewer tabs" });
     const addButton = getByRole("button", { name: "New viewer tab" });
-    const collapseButton = getByRole("button", { name: "Close viewer" });
+    const collapseButton = getByRole("button", { name: "Hide preview" });
     const tabItems = tablist.querySelectorAll("[role='tab']");
 
     expect(tablist).toContainElement(addButton);

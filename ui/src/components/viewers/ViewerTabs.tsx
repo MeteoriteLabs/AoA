@@ -124,8 +124,8 @@ export function ViewerTabs({
       {onToggleCollapse && (
         <button
           type="button"
-          title="Close viewer"
-          aria-label="Close viewer"
+          title="Hide preview"
+          aria-label="Hide preview"
           onClick={onToggleCollapse}
           className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
         >

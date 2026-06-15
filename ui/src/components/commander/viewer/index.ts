@@ -1,6 +1,5 @@
 export {
   CommanderViewerPanel,
-  CommanderViewerRail,
   CommanderViewerDetail,
   buildViewerTabModels,
 } from "./CommanderViewerPanel";

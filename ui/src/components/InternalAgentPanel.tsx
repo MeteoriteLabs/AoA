@@ -55,7 +55,6 @@ import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCol
 import { CommanderCockpitPanel, CommanderCockpitRail } from "./commander/cockpit/CommanderCockpitPanel";
 import {
   CommanderViewerPanel,
-  CommanderViewerRail,
   CommanderViewerDetail,
   buildViewerTabModels,
   OutputRefChips,
@@ -1477,11 +1476,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           </>
         )}
       </Group>
-      {/* Viewer rail — rendered as a sibling div when viewer is collapsed (unchanged from pre-Phase-1). */}
-      {viewerCollapsed && (
-        <CommanderViewerRail viewer={viewer} tabModels={tabModels} onExpand={expandViewer} />
-      )}
-
       {/* Right cockpit — width-toggled div mirroring WorkspaceLayout right panel.
           Expanded: w-[300px] showing the full CommanderCockpitPanel.
           Collapsed: w-[48px] showing the CommanderCockpitRail.
