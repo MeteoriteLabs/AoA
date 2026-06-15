@@ -68,7 +68,9 @@ The Commander bundle — **chat + content viewer + cockpit** — is **functional
 Run on Windows against a fresh `aoa_e2e` DB (port 3299), real Postgres, fake-claude on PATH.
 
 - ✅ **`commander-viewer.spec.ts` + `commander-viewer-persistence.spec.ts` — 4/4 PASSED** — chat send→stream (fake-claude scripted turns), tool_call/tool_result indicators, output-ref chip + desktop auto-open, artifact tab render, **tab persistence across reload**. This is the authoritative proof of the chat-streaming + viewer integration end-to-end.
-- ⚠️ **`commander-team-tab.spec.ts` — 3 failed (NOT a product regression — stale test premise, feature verified working live).** The specs assert "No AoA agents yet" and a freshly-seeded single agent. But the startup backfill (`ensureCommandStaff`/`ensureCommander`) provisions a full 8-agent Commander crew (Commander/Lead, Adjutant, Engineer, Navigator, Planner, Scout, Memory Keeper, Chronicler) in **every** company — so the empty-state is unreachable and the single-agent assertions are diluted, especially under the shared external-DB backfill timing (the A2 effect flagged in the plan review). **Live verification on `:3201` shows the Team→Commander (AoA Team) tab renders correctly**: Roster/Tasks/Kanban/Governance sub-tabs + the 8-agent roster (status, budget) + "New AoA Agent", 0 console errors (screenshot captured). **Finding → update these 3 specs** (the empty-state spec tests an unreachable state; the seeded-agent specs need to tolerate/await the backfilled crew). The Team→Commander tab itself is ✅.
+- ✅ **`commander-team-tab.spec.ts` — 3 failed → FIXED → 3/3 PASS.** Root cause (3 stale specs, not a product bug): (a) company-create auto-provisions the full Commander crew (`ensureCommanderAgent`, companies.ts:150) → "No AoA agents yet" is unreachable; (b) the specs queried `commander-subtab-*` testids, but TeamPage renders its own header bar with `aoa-header-subtab-*` and mounts CommanderTeamTab with `showSubTabs={false}` (stale after a refactor); (c) `getByText("Idle")` collided with the 9 agents' status text. **Fixes (commit `93877a485`):** retarget `aoa-header-subtab-*`; rewrite the empty-state test to assert the populated roster (empty state stays component-tested); add `data-testid="kanban-column-*"` to the Kanban headers + use them. Re-run: **3/3 pass**. Team→Commander tab also verified working live on `:3201` (8-agent roster, 0 console errors).
+
+**Net Commander E2E: 7/7 passing** (commander-viewer 4/4 + team-tab 3/3).
 
 ## 5. Breadth (component/unit suites — already green)
 
@@ -83,7 +85,7 @@ The whole Commander surface renders and operates: 4-panel layout, chat history +
 ## What's NOT working (broken)
 **No broken product features found.** No console errors, no crashes, no broken flows across chat / viewer / cockpit / Team-Commander tab in the audit.
 
-The only red signal is **3 stale E2E specs** (`commander-team-tab.spec.ts`): they assert a "No AoA agents yet" empty state that the startup backfill makes unreachable (every company gets the 8-agent Commander crew). The feature works live; the **tests** are out of date and should be updated. (Minor test-maintenance item, not a shipping blocker.)
+The one red signal — **3 stale E2E specs** (`commander-team-tab.spec.ts`) — has been **FIXED** this session (commit `93877a485`): retargeted to the current `aoa-header-subtab-*` testids, rewrote the unreachable empty-state assertion to verify the populated roster, and added `kanban-column-*` testids to disambiguate the column headers. **All 3 now pass → full Commander E2E is 7/7 green.**
 
 ## Bonus surface verified: Team → Commander (AoA Team) tab
 | Feature | Status | Evidence |
