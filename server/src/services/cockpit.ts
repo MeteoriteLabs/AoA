@@ -544,7 +544,6 @@ async function cockpitApprovals(
       .select({
         id: internalAgentRuntimeApprovals.id,
         toolName: internalAgentRuntimeApprovals.toolName,
-        params: internalAgentRuntimeApprovals.params,
         expiresAt: internalAgentRuntimeApprovals.expiresAt,
       })
       .from(internalAgentRuntimeApprovals)
