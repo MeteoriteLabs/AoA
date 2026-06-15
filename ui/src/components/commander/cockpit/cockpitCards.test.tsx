@@ -6,7 +6,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { CockpitData } from "@armyofagents/shared";
+import type { CockpitData, CommanderOutputRef } from "@armyofagents/shared";
 
 // Mock queryKeys and cockpitApi for the panel test (panel tests come later)
 vi.mock("../../../api/cockpit", () => ({
@@ -314,5 +314,70 @@ describe("CockpitDiscussionsCard", () => {
     const askBtn = screen.getByRole("button", { name: /ask commander about this/i });
     fireEvent.click(askBtn);
     expect(onAsk).toHaveBeenCalledWith(expect.stringContaining("Sprint planning"));
+  });
+});
+
+// ── CommanderCockpitPanel + CockpitConversationZone integration ───────────────
+
+function makeConversationRef(overrides?: Partial<CommanderOutputRef>): CommanderOutputRef {
+  return {
+    v: 1,
+    kind: "artifact",
+    id: "artifact-zone-1",
+    versionId: "ver-zone-1",
+    title: "Zone Artifact",
+    action: "created",
+    ...overrides,
+  };
+}
+
+function renderPanelWithRefs(conversationRefs: CommanderOutputRef[], data: CockpitData) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(["cockpit", "comp-zone"], data);
+  render(
+    <QueryClientProvider client={qc}>
+      <CommanderCockpitPanel
+        companyId="comp-zone"
+        onCollapse={vi.fn()}
+        conversationRefs={conversationRefs}
+      />
+    </QueryClientProvider>,
+  );
+  return qc;
+}
+
+const EMPTY_COCKPIT: CockpitData = {
+  running: [],
+  review: [],
+  myTasks: [],
+  today: { reminders: [], dueTasks: [] },
+  discussions: [],
+  approvals: [],
+  pinned: [],
+  goalsAtRisk: [],
+  budgetPulse: null,
+  doneToday: [],
+};
+
+describe("CommanderCockpitPanel — CockpitConversationZone integration", () => {
+  it("zone renders when conversationRefs is non-empty, even if all cards are empty", () => {
+    renderPanelWithRefs([makeConversationRef()], EMPTY_COCKPIT);
+    expect(screen.getByTestId("cockpit-zone-conversation")).toBeInTheDocument();
+  });
+
+  it("'All clear' does NOT appear when conversationRefs is non-empty (even if all cards empty)", async () => {
+    renderPanelWithRefs([makeConversationRef()], EMPTY_COCKPIT);
+    // Zone is showing — All clear must be suppressed
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
+  });
+
+  it("'All clear' appears when BOTH conversationRefs is empty AND all cards are empty", async () => {
+    renderPanelWithRefs([], EMPTY_COCKPIT);
+    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
+  });
+
+  it("zone title is shown in the panel", () => {
+    renderPanelWithRefs([makeConversationRef({ title: "Zone Artifact" })], EMPTY_COCKPIT);
+    expect(screen.getByText("Zone Artifact")).toBeInTheDocument();
   });
 });
