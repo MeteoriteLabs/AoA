@@ -141,33 +141,35 @@ function founderSequence(
   ];
 }
 
-// Helper: build a minimal member sequence (slots 0-5).
+// Helper: build a minimal member sequence (slots 0-6).
 function memberSequence(opts: { proactiveSlot?: unknown[] } = {}): unknown[][] {
   return [
     [], // 0: reminders
     [], // 1: dueTasks
-    [], // 2: pinned
-    [], // 3: goalsAtRisk
-    [], // 4: doneToday
-    opts.proactiveSlot ?? [], // 5: proactiveFindings (member → no teammates select)
+    [], // 2: runtime (internalAgentRuntimeApprovals — NEW, always runs for non-founder)
+    [], // 3: pinned
+    [], // 4: goalsAtRisk
+    [], // 5: doneToday
+    opts.proactiveSlot ?? [], // 6: proactiveFindings (member → no teammates select)
   ];
 }
 
-// Helper: lead sequence (slots 0-6: reminders, dueTasks, pinned, goalsAtRisk, doneToday,
+// Helper: lead sequence (slots 0-7: reminders, dueTasks, runtime, pinned, goalsAtRisk, doneToday,
 // proactiveFindings, deptRows; then if deptRows non-empty: activityLog).
 function leadSequence(opts: { deptRows?: unknown[]; activityRows?: unknown[]; proactiveSlot?: unknown[] } = {}): unknown[][] {
   const deptRows = opts.deptRows ?? [];
   const seq: unknown[][] = [
     [], // 0: reminders
     [], // 1: dueTasks
-    [], // 2: pinned
-    [], // 3: goalsAtRisk
-    [], // 4: doneToday
-    opts.proactiveSlot ?? [], // 5: proactiveFindings
-    deptRows, // 6: deptRows (userRoles select for dept members)
+    [], // 2: runtime (internalAgentRuntimeApprovals — NEW, always runs for non-founder)
+    [], // 3: pinned
+    [], // 4: goalsAtRisk
+    [], // 5: doneToday
+    opts.proactiveSlot ?? [], // 6: proactiveFindings
+    deptRows, // 7: deptRows (userRoles select for dept members)
   ];
   if (deptRows.length > 0 && opts.activityRows !== undefined) {
-    seq.push(opts.activityRows); // 7: activityLog select
+    seq.push(opts.activityRows); // 8: activityLog select
   }
   return seq;
 }
