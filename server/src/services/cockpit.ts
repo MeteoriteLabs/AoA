@@ -24,11 +24,14 @@
  *     extracted items. Non-founder short-circuits immediately — no sub-queries.
  */
 
-import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   approvals,
   artifacts,
+  budgetIncidents,
+  companies,
+  costEvents,
   discussionEntries,
   discussionExtractedItems,
   discussions,
@@ -37,7 +40,15 @@ import {
   issues,
   userEntityPins,
 } from "@armyofagents/db";
-import type { CockpitApprovalItem, CockpitData, CockpitPinnedItem, CockpitTaskItem } from "@armyofagents/shared";
+import type {
+  CockpitApprovalItem,
+  CockpitBudgetPulseItem,
+  CockpitData,
+  CockpitDoneTodayItem,
+  CockpitGoalsAtRiskItem,
+  CockpitPinnedItem,
+  CockpitTaskItem,
+} from "@armyofagents/shared";
 import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
 import { memoryService } from "./memory.js";
@@ -53,6 +64,22 @@ function endOfToday(): Date {
   const d = new Date();
   d.setHours(23, 59, 59, 999);
   return d;
+}
+
+/** Start-of-today (00:00:00.000 local time on the server). Mirror of endOfToday(). */
+function startOfToday(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+/** UTC calendar month window [start, end). Mirrors budgets.ts:14-19. */
+function utcMonthWindow(): { start: Date; end: Date } {
+  const n = new Date();
+  return {
+    start: new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), 1)),
+    end: new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, 1)),
+  };
 }
 
 /** Map a raw issues row to a CockpitTaskItem (minimal shape for the card). */
@@ -247,6 +274,114 @@ async function cockpitPinned(
     .filter((x): x is CockpitPinnedItem => !!x);
 }
 
+// ── Opt-in card resolvers ─────────────────────────────────────────────────────
+
+/**
+ * Goals-at-risk: company-scoped goals with status='at_risk', ordered by most-recently-updated.
+ * Goals have no dept RBAC in v1, so this is company-wide for all roles.
+ */
+async function cockpitGoalsAtRisk(
+  db: Db,
+  companyId: string,
+): Promise<CockpitGoalsAtRiskItem[]> {
+  const rows = await db
+    .select({
+      id: goals.id,
+      title: goals.title,
+      level: goals.level,
+      ownerAgentId: goals.ownerAgentId,
+    })
+    .from(goals)
+    .where(and(eq(goals.companyId, companyId), eq(goals.status, "at_risk")))
+    .orderBy(desc(goals.updatedAt))
+    .limit(20);
+  return rows;
+}
+
+/**
+ * Budget pulse: current-month spend vs. company limit (founder-only v1).
+ *
+ * Returns null for non-founders and when no budget is configured (limitCents=0).
+ * Spend window = UTC calendar month (mirrors budgets.ts).
+ * Open incident count from budget_incidents table.
+ */
+async function cockpitBudgetPulse(
+  db: Db,
+  companyId: string,
+  scope: CockpitScope,
+): Promise<CockpitBudgetPulseItem | null> {
+  // Founder-only v1 (plan §Codex #5): company-wide budget is broader than dept scope.
+  // Dept-scoped lead budget view is a documented follow-up.
+  if (!scope.isFounder) return null;
+
+  const [company] = await db
+    .select({ limitCents: companies.budgetMonthlyCents })
+    .from(companies)
+    .where(eq(companies.id, companyId));
+  const limitCents = company?.limitCents ?? 0;
+  // No budget configured → nothing to pulse.
+  if (limitCents === 0) return null;
+
+  const { start, end } = utcMonthWindow();
+  const [{ spent }] = await db
+    .select({ spent: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, start),
+        lt(costEvents.occurredAt, end),
+      ),
+    );
+  const [{ incidents }] = await db
+    .select({ incidents: sql<number>`count(*)::int` })
+    .from(budgetIncidents)
+    .where(
+      and(
+        eq(budgetIncidents.companyId, companyId),
+        eq(budgetIncidents.status, "open"),
+      ),
+    );
+
+  const spentCents = Number(spent);
+  return {
+    limitCents,
+    spentCents,
+    percentUsed: Math.round((spentCents / limitCents) * 100),
+    openIncidentCount: Number(incidents),
+  };
+}
+
+/**
+ * Done-today: tasks completed within today's local-midnight window.
+ *
+ * Bounded on BOTH ends (plan §Codex #2) to defend against future/clock-skewed completedAt.
+ * Founder → company-wide; non-founder → own assigned tasks only.
+ */
+async function cockpitDoneToday(
+  db: Db,
+  companyId: string,
+  scope: CockpitScope,
+): Promise<CockpitDoneTodayItem[]> {
+  const start = startOfToday();
+  const conds = [
+    eq(issues.companyId, companyId),
+    gte(issues.completedAt, start),
+    lte(issues.completedAt, endOfToday()),
+  ];
+  // Founder → company-wide; else → own assigned tasks only.
+  if (!scope.isFounder) {
+    conds.push(eq(issues.assigneeUserId, scope.userId));
+  }
+  const rows = await db
+    .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+    .from(issues)
+    .where(and(...conds))
+    .orderBy(desc(issues.completedAt))
+    .limit(20);
+  return rows;
+}
+
 /**
  * Aggregate the unified approvals queue (Phase 3c).
  *
@@ -317,7 +452,7 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems, pinnedItems] =
+      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems] =
         await Promise.all([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
@@ -420,6 +555,15 @@ export function cockpitService(db: Db) {
 
           // ── 7. Pinned (Phase 3d): user's pinned entities (company-scoped) ──
           cockpitPinned(db, companyId, scope),
+
+          // ── 8. Opt-in: Goals at risk (company-scoped, all roles) ──────────
+          cockpitGoalsAtRisk(db, companyId),
+
+          // ── 9. Opt-in: Budget pulse (founder-only) ────────────────────────
+          cockpitBudgetPulse(db, companyId, scope),
+
+          // ── 10. Opt-in: Done today ────────────────────────────────────────
+          cockpitDoneToday(db, companyId, scope),
         ]);
 
       // ── Map running ───────────────────────────────────────────────────────
@@ -512,6 +656,9 @@ export function cockpitService(db: Db) {
         discussions: discussionItems,
         approvals: approvalsItems,
         pinned: pinnedItems,
+        goalsAtRisk: goalsAtRiskItems,
+        budgetPulse: budgetPulseItem,
+        doneToday: doneTodayItems,
       };
     },
   };

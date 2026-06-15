@@ -46,25 +46,35 @@ vi.mock("../services/memory.js", () => ({
 
 // ── DB stub ───────────────────────────────────────────────────────────────────
 
-// Sequence-based mock db for the 3 select chains:
-//  1. reminders (returns [])
-//  2. dueTasks (returns [])
-//  3. entryRows for discussion needs-me check (returns [])
-//  4. listPendingApprovals (returns approval rows)
-//  5. listPendingExtractedItems (returns discussion item rows)
-// We make select() return a proxy that resolves each where() to the next item
-// in the sequence.
+// Sequence-based mock db. Select call order in cockpitService.get() (Promise.all):
+//  Founder scope:
+//   [0] reminders (internalAgentReminders)
+//   [1] dueTasks (issues)
+//   [2] listPendingApprovals (approvals table)
+//   [3] listPendingExtractedItems (discussionExtractedItems + joins)
+//   [4] cockpitPinned pins list (userEntityPins → [] → exits early, no entity batches)
+//   [5] cockpitGoalsAtRisk (goals)
+//   [6] cockpitBudgetPulse: companies (limitCents=0 → returns null, no further selects)
+//   [7] cockpitDoneToday (issues)
+//  Non-founder scope:
+//   [0] reminders, [1] dueTasks
+//   [2] cockpitPinned pins list
+//   [3] cockpitGoalsAtRisk
+//   (cockpitBudgetPulse short-circuits for non-founder, no select)
+//   [4] cockpitDoneToday
 
 function buildSelectStub(rows: unknown[] = []) {
   const stub: Record<string, unknown> = {};
   stub.from = () => stub;
-  // where() may be followed by orderBy() (cockpitPinned) — return stub so it chains.
+  // where() may chain to orderBy() (cockpitPinned, opt-in resolvers) or be terminal.
   stub.where = () => stub;
   stub.innerJoin = () => stub;
   stub.select = () => stub;
-  // orderBy() is terminal — return a Promise resolving to rows.
-  stub.orderBy = () => Promise.resolve(rows);
-  // Make the stub itself awaitable for where()-terminal paths.
+  // orderBy() now chains — returns the stub so .limit() can follow.
+  stub.orderBy = () => stub;
+  // limit() is terminal — resolves to rows.
+  stub.limit = () => Promise.resolve(rows);
+  // Make the stub itself awaitable for where()-terminal and orderBy()-terminal paths.
   (stub as any).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
     Promise.resolve(rows).then(resolve, reject);
   return stub;
@@ -145,8 +155,9 @@ describe("cockpitApprovals — founder scope", () => {
       status: "pending",
       payload: { name: "Scout" },
     };
-    // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[]
-    const db = buildSequenceDb([[], [], [approvalRow], []]);
+    // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[],
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}] (budget exits early), doneToday=[]
+    const db = buildSequenceDb([[], [], [approvalRow], [], [], [], [{ limitCents: 0 }], []]);
     mockMemoryServiceListPending.mockResolvedValue({
       items: [],
       versions: [],
@@ -182,8 +193,9 @@ describe("cockpitApprovals — founder scope", () => {
       totalCount: 1,
     });
 
-    // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[]
-    const db = buildSequenceDb([[], [], [], []]);
+    // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[],
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
+    const db = buildSequenceDb([[], [], [], [], [], [], [{ limitCents: 0 }], []]);
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
     expect(mockMemoryServiceListPending).toHaveBeenCalledWith(COMPANY);
@@ -202,8 +214,9 @@ describe("cockpitApprovals — founder scope", () => {
       title: "New task: set up CI",
       type: "task",
     };
-    // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[discItem]
-    const db = buildSequenceDb([[], [], [], [discItem]]);
+    // Sequence: reminders=[], dueTasks=[], approvals=[], discItems=[discItem],
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
+    const db = buildSequenceDb([[], [], [], [discItem], [], [], [{ limitCents: 0 }], []]);
 
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
@@ -229,8 +242,9 @@ describe("cockpitApprovals — founder scope", () => {
       totalCount: 1,
     });
 
-    // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[discItem]
-    const db = buildSequenceDb([[], [], [approvalRow], [discItem]]);
+    // Sequence: reminders=[], dueTasks=[], approvals=[approvalRow], discItems=[discItem],
+    //   pinned=[], goalsAtRisk=[], companies=[{limitCents:0}], doneToday=[]
+    const db = buildSequenceDb([[], [], [approvalRow], [discItem], [], [], [{ limitCents: 0 }], []]);
     const result = await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
 
     expect(result.approvals).toHaveLength(3);
@@ -252,8 +266,9 @@ describe("cockpitApprovals — non-founder scope (HC1 SECURITY GATE)", () => {
   it("non-founder gets approvals=[] and approval sub-queries NOT run", async () => {
     // Non-founder still triggers reminders and dueTasks selects, but NOT approvals sub-queries.
     // cockpitApprovals short-circuits with [] before running its 3 sub-queries.
-    // Sequence: reminders=[], dueTasks=[]
-    const db = buildSequenceDb([[], []]);
+    // cockpitBudgetPulse also short-circuits for non-founder (no select).
+    // Sequence: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[]
+    const db = buildSequenceDb([[], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
     // HC1: non-founder MUST get []
@@ -263,7 +278,7 @@ describe("cockpitApprovals — non-founder scope (HC1 SECURITY GATE)", () => {
   });
 
   it("CockpitData shape still includes approvals field for non-founders", async () => {
-    const db = buildSequenceDb([[], []]);
+    const db = buildSequenceDb([[], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
     expect(result).toHaveProperty("approvals");
     expect(result.approvals).toEqual([]);
