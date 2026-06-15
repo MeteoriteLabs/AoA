@@ -5,8 +5,7 @@
  *
  * BOARD-ONLY: this endpoint is a person's mission control. We layer two
  * guards:
- *   1. assertCompanyAccess — same-company check (agent/MCP same-company OK at
- *      this layer, but excluded by guard 2).
+ *   1. assertCompanyAccess — same-company check; gives unauthed actors 401.
  *   2. assertBoard — throws 403 for non-board actors (agents, MCP tokens).
  *
  * This mirrors the requireBoardUserId pattern in sidebar-preferences and
@@ -30,6 +29,7 @@ export function cockpitRoutes(db: Db) {
     const companyId = req.params.companyId as string;
 
     // Guard 1: company-level access check (rejects cross-company and unauthed).
+    // Ordered FIRST so an unauthenticated actor (type=none) gets 401, not 403.
     assertCompanyAccess(req, companyId);
 
     // Guard 2: BOARD-ONLY — reject agent/MCP actors (Codex #1).
