@@ -1,12 +1,13 @@
 /**
- * cockpit-approvals unit tests — Phase 3c + approval families extension.
+ * cockpit-approvals unit tests — Phase 3c + approval families extension + A4 per-role scoping.
  *
  * Security gate:
- *   - founder → all 5 source queries run; items mapped with correct source discriminator.
- *   - non-founder → [] returned immediately; NO sub-queries run.
+ *   - founder → all source queries run; items mapped with correct source discriminator.
+ *   - team_lead → memory/memory_version (dept-scoped, non-identity) + runtime (own). No other sources.
+ *   - team_member → runtime (own) only. memory NOT called.
  *
  * Constraint verification (plan Hard Constraints):
- *   - HC1: non-founder gets [].
+ *   - HC1 (A4): approval/discussion_item/join_request/memory_archive → founder-only.
  *   - HC2: memory uses .items (object, not array); .versions/.archives for new sources.
  *   - HC3: discussion join uses discussionEntryId → discussion_entries → discussions.
  *   - HC4: runtime query filters by userId (owner-scoped; confirm route is per-user).
@@ -26,14 +27,27 @@
  *   [10] cockpitProactiveFindings (notifications)
  *   [11] cockpitTeammatesActivity (activityLog) — founder=company-wide, 1 select
  *
- * DB select call order for NON-FOUNDER (6 selects — unchanged):
- *   [0] reminders, [1] dueTasks
- *   [2] cockpitPinned pins list
- *   [3] cockpitGoalsAtRisk
+ * DB select call order for TEAM_MEMBER (7 selects — A4: runtime added at [2]):
+ *   [0] reminders
+ *   [1] dueTasks
+ *   [2] internalAgentRuntimeApprovals (NEW — was no-op before A4)
+ *   [3] cockpitPinned pins list
+ *   [4] cockpitGoalsAtRisk
  *   (cockpitBudgetPulse short-circuits for non-founder, no select)
- *   [4] cockpitDoneToday
- *   [5] cockpitProactiveFindings (notifications)
+ *   [5] cockpitDoneToday
+ *   [6] cockpitProactiveFindings (notifications)
  *   (cockpitTeammatesActivity: member → [] immediately, no select)
+ *
+ * DB select call order for TEAM_LEAD (8 selects — member + 1 teammates-dept):
+ *   [0] reminders
+ *   [1] dueTasks
+ *   [2] internalAgentRuntimeApprovals (owner-scoped)
+ *   [3] cockpitPinned pins list
+ *   [4] cockpitGoalsAtRisk
+ *   (cockpitBudgetPulse short-circuits for non-founder, no select)
+ *   [5] cockpitDoneToday
+ *   [6] cockpitProactiveFindings (notifications)
+ *   [7] cockpitTeammatesActivity dept-scoped (activityLog) — 1 select for lead
  */
 
 import { beforeEach, describe, it, expect, vi } from "vitest";
@@ -71,7 +85,7 @@ vi.mock("../services/memory.js", () => ({
 // ── DB stub ───────────────────────────────────────────────────────────────────
 
 // Sequence-based mock db. Select call order documented in the file-level comment.
-// FOUNDER = 12 selects; NON-FOUNDER = 6 selects (unchanged).
+// FOUNDER = 12 selects; TEAM_MEMBER = 7 selects (A4: runtime at [2]); TEAM_LEAD = 8 selects.
 
 function buildSelectStub(rows: unknown[] = []) {
   const stub: Record<string, unknown> = {};
@@ -546,34 +560,195 @@ describe("cockpitApprovals — founder scope", () => {
   });
 });
 
-// ── Tests: non-founder scope (HC1 security gate) ─────────────────────────────
+// ── Tests: team_member scope (A4 — runtime-only, memory NOT called) ──────────
 
-describe("cockpitApprovals — non-founder scope (HC1 SECURITY GATE)", () => {
+describe("cockpitApprovals — team_member scope (A4)", () => {
   beforeEach(() => {
     mockResolveCockpitScope.mockResolvedValue(memberScope);
     mockReviewFilterFor.mockReturnValue({ assigneeUserId: "u-member" });
   });
 
-  it("non-founder gets approvals=[] and approval sub-queries NOT run", async () => {
-    // Non-founder still triggers reminders and dueTasks selects, but NOT approvals sub-queries.
-    // cockpitApprovals short-circuits with [] before running its 3 sub-queries.
-    // cockpitBudgetPulse also short-circuits for non-founder (no select).
-    // cockpitTeammatesActivity member → [] immediately, no select.
-    // Sequence: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[], proactiveFindings=[]
-    const db = buildSequenceDb([[], [], [], [], [], []]);
+  it("member sees own runtime_tool_trust approval (runtime at slot [2])", async () => {
+    const runtimeRow = { id: "rt-m", toolName: "bash", expiresAt: new Date(Date.now() + 60_000) };
+    // MEMBER sequence (7 selects): reminders=[], dueTasks=[], runtime=[runtimeRow],
+    //   pinned=[], goalsAtRisk=[], doneToday=[], proactive=[]
+    const db = buildSequenceDb([[], [], [runtimeRow], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
 
-    // HC1: non-founder MUST get []
-    expect(result.approvals).toEqual([]);
-    // HC1: memoryService.listPending must NOT be called for non-founders
+    expect(result.approvals).toHaveLength(1);
+    expect(result.approvals[0]).toMatchObject({
+      source: "runtime_tool_trust",
+      id: "rt-m",
+      title: "bash",
+      subtitle: "Tool execution approval",
+      decisionType: "ternary",
+    });
+    // A4: members never see memory
     expect(mockMemoryServiceListPending).not.toHaveBeenCalled();
+    // A4: no approval/memory/discussion_item/join_request/memory_version/memory_archive
+    const forbidden = ["approval", "memory", "discussion_item", "join_request", "memory_version", "memory_archive"];
+    for (const src of forbidden) {
+      expect(result.approvals.find((a) => a.source === src)).toBeUndefined();
+    }
   });
 
-  it("CockpitData shape still includes approvals field for non-founders", async () => {
-    // Sequence: reminders=[], dueTasks=[], pinned=[], goalsAtRisk=[], doneToday=[], proactiveFindings=[]
-    const db = buildSequenceDb([[], [], [], [], [], []]);
+  it("member with no runtime rows gets empty approvals (runtime at slot [2] = [])", async () => {
+    // MEMBER sequence (7 selects): runtime=[] at [2]
+    const db = buildSequenceDb([[], [], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, MEMBER_ACTOR);
-    expect(result).toHaveProperty("approvals");
+
     expect(result.approvals).toEqual([]);
+    expect(result).toHaveProperty("approvals");
+    expect(mockMemoryServiceListPending).not.toHaveBeenCalled();
+  });
+});
+
+// ── Tests: team_lead scope (A4 — dept-scoped memory + own runtime) ───────────
+
+describe("cockpitApprovals — team_lead scope (A4)", () => {
+  const leadScope = {
+    userId: "u-lead",
+    role: "team_lead" as const,
+    isFounder: false,
+    leadDepartmentIds: ["dep-a"],
+  };
+  const LEAD_ACTOR = { actorId: "u-lead", source: "session" as const };
+  const runtimeRow = { id: "rt-lead", toolName: "read_file", expiresAt: new Date(Date.now() + 60_000) };
+
+  const archiveFixture = {
+    item: {
+      id: "arch-item-lead",
+      companyId: COMPANY,
+      title: "Stale lead rule",
+      content: "old",
+      category: null,
+      source: "agent",
+      status: "approved",
+      tags: [],
+      departmentId: "dep-a",
+      projectId: null,
+      createdBy: "founder",
+      layer: "domain",
+      priority: "medium",
+      visibility: "company",
+      expiresAt: null,
+      goalId: null,
+      taskId: null,
+      sourceArtifactId: null,
+      sourceContext: null,
+      accessedAt: null,
+      currentVersionId: null,
+      createdAt: new Date("2026-01-01"),
+      updatedAt: new Date("2026-01-01"),
+    },
+    suggestion: {
+      id: "sug-lead",
+      companyId: COMPANY,
+      category: "agent_proposal",
+      actionType: "archive_memory",
+      actionPayload: {},
+      title: "Archive stale lead rule",
+      evidence: null,
+      status: "pending",
+      expiresAt: null,
+      relatedMemoryItemId: "arch-item-lead",
+      createdAt: new Date("2026-01-01"),
+      updatedAt: new Date("2026-01-01"),
+    },
+  };
+
+  beforeEach(() => {
+    mockResolveCockpitScope.mockResolvedValue(leadScope);
+    mockReviewFilterFor.mockReturnValue({ projectIds: ["dep-a"] });
+    mockMemoryServiceListPending.mockResolvedValue({
+      items: [
+        // identity layer → excluded even for dep-a lead
+        { id: "m-ident", title: "I", layer: "identity", departmentId: "dep-a", category: null, status: "pending" },
+        // domain, dep-a → INCLUDED
+        { id: "m-ok", title: "OK", layer: "domain", departmentId: "dep-a", category: "coding", status: "pending" },
+        // domain, dep-b → excluded (not lead's dept)
+        { id: "m-other", title: "O", layer: "domain", departmentId: "dep-b", category: null, status: "pending" },
+        // active_context, no dept → excluded (departmentId null)
+        { id: "m-nodept", title: "N", layer: "active_context", departmentId: null, category: null, status: "pending" },
+      ],
+      versions: [
+        // domain, dep-a → INCLUDED
+        {
+          itemId: "v-ok",
+          itemTitle: "V",
+          itemLayer: "domain",
+          itemDepartmentId: "dep-a",
+          itemCategory: "coding",
+          itemSource: "agent",
+          currentContent: "c",
+          currentVersionId: "c0",
+          version: { id: "ver-1", memoryItemId: "v-ok", versionNumber: 2, content: "c2", status: "pending", createdBy: "a", createdAt: new Date() },
+        },
+        // domain, dep-b → excluded
+        {
+          itemId: "v-other",
+          itemTitle: "VO",
+          itemLayer: "domain",
+          itemDepartmentId: "dep-b",
+          itemCategory: null,
+          itemSource: "agent",
+          currentContent: "c",
+          currentVersionId: "c0",
+          version: { id: "ver-2", memoryItemId: "v-other", versionNumber: 2, content: "c2", status: "pending", createdBy: "a", createdAt: new Date() },
+        },
+      ],
+      archives: [archiveFixture],
+      totalCount: 7,
+    });
+  });
+
+  it("lead sees dep-a non-identity memory + own runtime; excludes identity/other-dept/no-dept/archive", async () => {
+    // LEAD sequence (8 selects): reminders=[], dueTasks=[], runtime=[runtimeRow],
+    //   pinned=[], goalsAtRisk=[], doneToday=[], proactive=[], teammates-dept=[]
+    const db = buildSequenceDb([[], [], [runtimeRow], [], [], [], [], []]);
+    const result = await cockpitService(db).get(COMPANY, LEAD_ACTOR);
+
+    // INCLUDED: m-ok (memory), ver-1 (memory_version), rt-lead (runtime_tool_trust)
+    const ids = result.approvals.map((a) => a.id);
+    expect(ids).toContain("m-ok");
+    expect(result.approvals.find((a) => a.source === "memory_version")?.relatedEntityId).toBe("ver-1");
+    expect(ids).toContain("rt-lead");
+
+    // EXCLUDED: identity, other dept, no dept
+    expect(ids).not.toContain("m-ident");
+    expect(ids).not.toContain("m-other");
+    expect(ids).not.toContain("m-nodept");
+    // EXCLUDED: dep-b version
+    expect(result.approvals.find((a) => a.source === "memory_version" && a.relatedEntityId === "ver-2")).toBeUndefined();
+    // EXCLUDED: archive (founder-only)
+    expect(result.approvals.find((a) => a.source === "memory_archive")).toBeUndefined();
+    // EXCLUDED: approval/discussion_item/join_request
+    expect(result.approvals.find((a) => a.source === "approval")).toBeUndefined();
+    expect(result.approvals.find((a) => a.source === "discussion_item")).toBeUndefined();
+    expect(result.approvals.find((a) => a.source === "join_request")).toBeUndefined();
+
+    // memory service WAS called (leads can see memory)
+    expect(mockMemoryServiceListPending).toHaveBeenCalledWith(COMPANY);
+
+    // Exactly 3 items total
+    expect(result.approvals).toHaveLength(3);
+  });
+
+  it("lead with empty leadDepartmentIds sees only own runtime", async () => {
+    mockResolveCockpitScope.mockResolvedValue({
+      userId: "u-lead",
+      role: "team_lead" as const,
+      isFounder: false,
+      leadDepartmentIds: [],
+    });
+    // LEAD sequence (8 selects)
+    const db = buildSequenceDb([[], [], [runtimeRow], [], [], [], [], []]);
+    const result = await cockpitService(db).get(COMPANY, LEAD_ACTOR);
+
+    // All memory excluded (no dept match), only runtime
+    expect(result.approvals).toHaveLength(1);
+    expect(result.approvals[0]).toMatchObject({ source: "runtime_tool_trust", id: "rt-lead" });
+    expect(result.approvals.find((a) => a.source === "memory")).toBeUndefined();
+    expect(result.approvals.find((a) => a.source === "memory_version")).toBeUndefined();
   });
 });
