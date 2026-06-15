@@ -27,7 +27,7 @@
  *     extracted items. Non-founder short-circuits immediately — no sub-queries.
  */
 
-import { and, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -41,7 +41,9 @@ import {
   discussions,
   goals,
   internalAgentReminders,
+  internalAgentRuntimeApprovals,
   issues,
+  joinRequests,
   notifications,
   userEntityPins,
   userRoles,
@@ -496,11 +498,15 @@ async function cockpitTeammatesActivity(
 }
 
 /**
- * Aggregate the unified approvals queue (Phase 3c).
+ * Aggregate the unified approvals queue (Phase 3c + approval families extension).
  *
  * HC1: non-founder → [] immediately, no sub-queries.
- * HC2: memory.listPending returns { items, versions, archives, totalCount } — use .items.
+ * HC2: memory.listPending returns { items, versions, archives, totalCount } — use .items for
+ *      the original "memory" source; .versions and .archives for the new memory_version /
+ *      memory_archive sources (reuses same call, no extra query).
  * HC3: discussion join goes through discussionEntryId → discussion_entries → discussions.
+ * HC4 (Codex #1 BLOCKER): runtime query filters eq(userId, scope.userId) — the confirm
+ *      route is owner-scoped; cross-user rows would 404. Every shown row must be actionable.
  */
 async function cockpitApprovals(
   db: Db,
@@ -510,13 +516,46 @@ async function cockpitApprovals(
   // HC1: founder-only display. Non-founders get []; no sub-queries run.
   if (!scope.isFounder) return [];
 
-  const [approvalRows, memPending, discItems] = await Promise.all([
+  const [approvalRows, memPending, discItems, joinReqRows, runtimeRows] = await Promise.all([
     listPendingApprovals(db, companyId),
     // HC2: listPending returns an OBJECT { items, versions, archives, totalCount }, not an array.
-    // 3c uses only .items (new agent-suggested pending memory_items); versions/archives are follow-ups.
+    // Reused for all 3 memory-related sources (memory / memory_version / memory_archive).
     memoryService(db).listPending(companyId),
     // HC3: join via discussionEntryId.
     listPendingExtractedItems(db, companyId),
+    // New: join requests pending approval for this company.
+    db
+      .select({
+        id: joinRequests.id,
+        requestType: joinRequests.requestType,
+        requestingUserId: joinRequests.requestingUserId,
+        agentName: joinRequests.agentName,
+      })
+      .from(joinRequests)
+      .where(
+        and(
+          eq(joinRequests.companyId, companyId),
+          eq(joinRequests.status, "pending_approval"),
+        ),
+      ),
+    // New: runtime tool-trust approvals (HC4: owner-scoped by userId — confirm route is
+    // per-user; rows for other users would 404 on action, so we filter to scope.userId).
+    db
+      .select({
+        id: internalAgentRuntimeApprovals.id,
+        toolName: internalAgentRuntimeApprovals.toolName,
+        params: internalAgentRuntimeApprovals.params,
+        expiresAt: internalAgentRuntimeApprovals.expiresAt,
+      })
+      .from(internalAgentRuntimeApprovals)
+      .where(
+        and(
+          eq(internalAgentRuntimeApprovals.companyId, companyId),
+          eq(internalAgentRuntimeApprovals.status, "pending"),
+          gt(internalAgentRuntimeApprovals.expiresAt, new Date()),
+          eq(internalAgentRuntimeApprovals.userId, scope.userId),
+        ),
+      ),
   ]);
 
   return [
@@ -544,6 +583,49 @@ async function cockpitApprovals(
         discussionId: d.discussionId,
         title: d.title,
         subtitle: d.type,
+      }),
+    ),
+    // New: join_request source.
+    ...joinReqRows.map(
+      (j): CockpitApprovalItem => ({
+        source: "join_request",
+        id: j.id,
+        title:
+          j.requestType === "agent"
+            ? (j.agentName ?? "Agent join request")
+            : (j.requestingUserId ?? "User join request"),
+        subtitle: j.requestType === "agent" ? "Agent join" : "User join",
+      }),
+    ),
+    // New: memory_version source (reuses memPending.versions — no extra query).
+    ...memPending.versions.map(
+      (v): CockpitApprovalItem => ({
+        source: "memory_version",
+        id: v.itemId,
+        relatedEntityId: v.version.id,
+        title: v.itemTitle,
+        subtitle:
+          [v.itemLayer, v.itemCategory].filter(Boolean).join(" · ") + " (edit)",
+      }),
+    ),
+    // New: memory_archive source (reuses memPending.archives — no extra query).
+    ...memPending.archives.map(
+      (a): CockpitApprovalItem => ({
+        source: "memory_archive",
+        id: a.item.id,
+        relatedEntityId: a.suggestion.id,
+        title: a.item.title,
+        subtitle: "Suggested for archival",
+      }),
+    ),
+    // New: runtime_tool_trust source (ternary — Always/Once/Deny).
+    ...runtimeRows.map(
+      (r): CockpitApprovalItem => ({
+        source: "runtime_tool_trust",
+        id: r.id,
+        title: r.toolName,
+        subtitle: "Tool execution approval",
+        decisionType: "ternary",
       }),
     ),
   ];

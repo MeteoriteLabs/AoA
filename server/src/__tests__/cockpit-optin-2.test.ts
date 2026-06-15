@@ -114,8 +114,9 @@ const leadScope = {
   leadDepartmentIds: ["dep-a", "dep-b"],
 };
 
-// Helper: build a minimal founder sequence (slots 0-9: reminders, dueTasks, approvals,
-// discItems, pinned, goalsAtRisk, companies, doneToday, proactiveFindings, teammatesActivity).
+// Helper: build a minimal founder sequence (slots 0-11: reminders, dueTasks, approvals,
+// discItems, joinReqs, runtime, pinned, goalsAtRisk, companies, doneToday,
+// proactiveFindings, teammatesActivity).
 // Pass overrides for specific slots; pass `extraSlots` for budget continuation selects.
 function founderSequence(
   opts: {
@@ -129,12 +130,14 @@ function founderSequence(
     [], // 1: dueTasks
     opts.approvalSlot ?? [], // 2: approvals (listPendingApprovals)
     [], // 3: discItems
-    [], // 4: pinned
-    [], // 5: goalsAtRisk
-    [{ limitCents: 0 }], // 6: companies (limitCents=0 → no budget continuation)
-    [], // 7: doneToday
-    opts.proactiveSlot ?? [], // 8: proactiveFindings
-    opts.teammatesSlot ?? [], // 9: teammatesActivity (founder=company-wide)
+    [], // 4: joinRequests (NEW — approval families)
+    [], // 5: internalAgentRuntimeApprovals (NEW — approval families)
+    [], // 6: pinned
+    [], // 7: goalsAtRisk
+    [{ limitCents: 0 }], // 8: companies (limitCents=0 → no budget continuation)
+    [], // 9: doneToday
+    opts.proactiveSlot ?? [], // 10: proactiveFindings
+    opts.teammatesSlot ?? [], // 11: teammatesActivity (founder=company-wide)
   ];
 }
 
