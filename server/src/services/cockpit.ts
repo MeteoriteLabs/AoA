@@ -22,9 +22,10 @@
  *   - Discussions: canonical threadService.list visibility (Codex #3).
  *     Then filter to needs-me: pendingItemCount > 0 OR a failed/pending
  *     extraction entry over the visible ids. Map to CockpitDiscussionItem.
- *   - Approvals (Phase 3c): founder-only; [] for all other roles (HC1).
- *     Aggregates 3 sources: approvals table + memory pending items + discussion
- *     extracted items. Non-founder short-circuits immediately — no sub-queries.
+ *   - Approvals (Phase 3c + A4): per-role scoping.
+ *     approval/discussion_item/join_request/memory_archive → founder-only.
+ *     memory/memory_version → founder OR (team_lead AND layer!=="identity" AND dept ∈ leadDepartmentIds).
+ *     runtime_tool_trust → any role, owner-scoped by userId (HC4).
  */
 
 import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
@@ -513,33 +514,51 @@ async function cockpitApprovals(
   companyId: string,
   scope: CockpitScope,
 ): Promise<CockpitApprovalItem[]> {
-  // HC1: founder-only display. Non-founders get []; no sub-queries run.
-  if (!scope.isFounder) return [];
+  // A4: per-role scoping.
+  // - approval (hire), discussion_item, memory_archive, join_request → founder-only.
+  // - memory + memory_version → founder OR (team_lead AND layer!=="identity" AND dept ∈ leadDepartmentIds).
+  // - runtime_tool_trust → any role, owner-scoped by userId (HC4).
+  const isFounder = scope.isFounder;
+  const isLead = scope.role === "team_lead";
+  const canSeeMemory = isFounder || isLead;
 
   const [approvalRows, memPending, discItems, joinReqRows, runtimeRows] = await Promise.all([
-    listPendingApprovals(db, companyId),
+    // element 0: hire/board approvals — founder-only.
+    isFounder
+      ? listPendingApprovals(db, companyId)
+      : Promise.resolve([] as Awaited<ReturnType<typeof listPendingApprovals>>),
     // HC2: listPending returns an OBJECT { items, versions, archives, totalCount }, not an array.
     // Reused for all 3 memory-related sources (memory / memory_version / memory_archive).
-    memoryService(db).listPending(companyId),
-    // HC3: join via discussionEntryId.
-    listPendingExtractedItems(db, companyId),
-    // New: join requests pending approval for this company.
-    db
-      .select({
-        id: joinRequests.id,
-        requestType: joinRequests.requestType,
-        requestingUserId: joinRequests.requestingUserId,
-        agentName: joinRequests.agentName,
-      })
-      .from(joinRequests)
-      .where(
-        and(
-          eq(joinRequests.companyId, companyId),
-          eq(joinRequests.status, "pending_approval"),
+    // element 1: memory — founder OR team_lead (filtered below before return).
+    canSeeMemory
+      ? memoryService(db).listPending(companyId)
+      : Promise.resolve({ items: [], versions: [], archives: [], totalCount: 0 }),
+    // HC3: join via discussionEntryId. element 2: discussion items — founder-only.
+    isFounder
+      ? listPendingExtractedItems(db, companyId)
+      : Promise.resolve([] as Awaited<ReturnType<typeof listPendingExtractedItems>>),
+    // element 3: join requests — founder-only.
+    isFounder
+      ? db
+          .select({
+            id: joinRequests.id,
+            requestType: joinRequests.requestType,
+            requestingUserId: joinRequests.requestingUserId,
+            agentName: joinRequests.agentName,
+          })
+          .from(joinRequests)
+          .where(
+            and(
+              eq(joinRequests.companyId, companyId),
+              eq(joinRequests.status, "pending_approval"),
+            ),
+          )
+      : Promise.resolve(
+          [] as { id: string; requestType: string; requestingUserId: string | null; agentName: string | null }[],
         ),
-      ),
-    // New: runtime tool-trust approvals (HC4: owner-scoped by userId — confirm route is
+    // element 4: runtime tool-trust approvals (HC4: owner-scoped by userId — confirm route is
     // per-user; rows for other users would 404 on action, so we filter to scope.userId).
+    // ALWAYS run for every role (owner-scoped, every role can have pending tool approvals).
     db
       .select({
         id: internalAgentRuntimeApprovals.id,
@@ -557,6 +576,24 @@ async function cockpitApprovals(
       ),
   ]);
 
+  // Replicate canApproveMemory in-memory (mirrors permissions.ts:185-205).
+  // NO per-item DB call — pure filter over the already-fetched memPending results.
+  const canApproveMem = (layer: string | null, departmentId: string | null) =>
+    isFounder ||
+    (isLead && layer !== "identity" && !!departmentId && scope.leadDepartmentIds.includes(departmentId));
+
+  const memItems = memPending.items.filter((m) =>
+    canApproveMem(m.layer ?? null, (m as { departmentId?: string | null }).departmentId ?? null),
+  );
+  const memVersions = memPending.versions.filter((v) =>
+    canApproveMem(
+      v.itemLayer ?? null,
+      (v as { itemDepartmentId?: string | null }).itemDepartmentId ?? null,
+    ),
+  );
+  // memory_archive — founder-only (no dept-level archive approval for leads).
+  const memArchives = isFounder ? memPending.archives : [];
+
   return [
     ...approvalRows.map(
       (a): CockpitApprovalItem => ({
@@ -567,7 +604,7 @@ async function cockpitApprovals(
       }),
     ),
     // HC2: use .items (not the whole object).
-    ...memPending.items.map(
+    ...memItems.map(
       (m): CockpitApprovalItem => ({
         source: "memory",
         id: m.id,
@@ -597,7 +634,7 @@ async function cockpitApprovals(
       }),
     ),
     // New: memory_version source (reuses memPending.versions — no extra query).
-    ...memPending.versions.map(
+    ...memVersions.map(
       (v): CockpitApprovalItem => ({
         source: "memory_version",
         id: v.itemId,
@@ -608,7 +645,7 @@ async function cockpitApprovals(
       }),
     ),
     // New: memory_archive source (reuses memPending.archives — no extra query).
-    ...memPending.archives.map(
+    ...memArchives.map(
       (a): CockpitApprovalItem => ({
         source: "memory_archive",
         id: a.item.id,
