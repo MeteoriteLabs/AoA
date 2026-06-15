@@ -423,21 +423,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // Phase 1: resizable panel geometry + collapse persistence.
   const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
   const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
-  // panelIds MUST match the panels actually rendered at mount — the lib leaves the
-  // layout unrestored otherwise (react-resizable-panels.d.ts:424). With two
-  // independently-collapsible right panels, derive panelIds from collapse state so each
-  // configuration ({chat}, {chat,detail}, {chat,cockpit}, {chat,detail,cockpit}) persists
-  // and restores under its own key. A static 3-id list broke {chat,detail} width restore.
+  // Phase 1 (panel-redesign): cockpit is now a width-div sibling — NOT in the Group.
+  // panelIds only covers the center Group panels: chat + optionally viewer.
+  // Key uses "-v2" suffix to avoid restoring stale 3-panel geometry from old sessions.
   const panelIds = useMemo(
     () => [
       "commander-chat",
       ...(viewerCollapsed ? [] : ["commander-detail"]),
-      ...(cockpitCollapsed ? [] : ["commander-cockpit"]),
     ],
-    [viewerCollapsed, cockpitCollapsed],
+    [viewerCollapsed],
   );
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "aoa:commander:panel-sizes",
+    id: "aoa:commander:panel-sizes-v2",
     storage: localStorage,
     panelIds,
   });
@@ -1429,11 +1426,14 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     );
   }
 
-  // Desktop — resizable Group (chat | detail), or chat + rail when collapsed.
+  // Desktop — Phase 1 (panel-redesign): Group holds Chat+Viewer only.
+  // Cockpit is a width-toggled <div> sibling to the right of the Group,
+  // mirroring WorkspaceLayout.tsx:525-559. Expanded=300px, collapsed=48px rail.
   const tabModels = buildViewerTabModels(viewer.state);
   const activeTab = viewer.state.tabs.find((t) => t.id === viewer.state.activeId);
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden gap-2">
+      {/* Center group: Chat + optional Viewer only (cockpit is now a width-div sibling) */}
       <Group
         orientation="horizontal"
         className="flex h-full min-w-0 flex-1 overflow-hidden"
@@ -1471,39 +1471,41 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             </Panel>
           </>
         )}
-        {!cockpitCollapsed && (
-          <>
-            <Separator
-              id="commander-cockpit-sep"
-              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
-            />
-            <Panel
-              id="commander-cockpit"
-              defaultSize="28%"
-              minSize="20%"
-              maxSize="40%"
-              className="flex h-full min-w-0 overflow-hidden"
-            >
-              <CommanderCockpitPanel
-                companyId={companyId}
-                onCollapse={collapseCockpit}
-                onOpenTask={(issueId, title) => viewer.openTask(issueId, title)}
-                onAsk={(text) => void sendText(text)}
-                onOpenFullPage={(href) => navigate(href)}
-                onOpenArtifact={(id, title) =>
-                  viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" })
-                }
-                conversationRefs={conversationRefs}
-                onOpenRef={(ref) => viewer.openRef(ref)}
-              />
-            </Panel>
-          </>
-        )}
       </Group>
+      {/* Viewer rail — rendered as a sibling div when viewer is collapsed (unchanged from pre-Phase-1). */}
       {viewerCollapsed && (
         <CommanderViewerRail viewer={viewer} tabModels={tabModels} onExpand={expandViewer} />
       )}
-      {cockpitCollapsed && <CommanderCockpitRail badge={0} onExpand={expandCockpit} />}
+
+      {/* Right cockpit — width-toggled div mirroring WorkspaceLayout right panel.
+          Expanded: w-[300px] showing the full CommanderCockpitPanel.
+          Collapsed: w-[48px] showing the CommanderCockpitRail.
+          Consolidates the old panel-in-Group + sibling-Rail into one width-div. */}
+      <div
+        className={cn(
+          "shrink-0 h-full overflow-hidden transition-[width] duration-200",
+          cockpitCollapsed ? "w-[48px]" : "w-[300px]",
+        )}
+        data-testid="commander-cockpit-container"
+        data-collapsed={cockpitCollapsed ? "true" : "false"}
+      >
+        {cockpitCollapsed ? (
+          <CommanderCockpitRail badge={0} onExpand={expandCockpit} />
+        ) : (
+          <CommanderCockpitPanel
+            companyId={companyId}
+            onCollapse={collapseCockpit}
+            onOpenTask={(issueId, title) => viewer.openTask(issueId, title)}
+            onAsk={(text) => void sendText(text)}
+            onOpenFullPage={(href) => navigate(href)}
+            onOpenArtifact={(id, title) =>
+              viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" })
+            }
+            conversationRefs={conversationRefs}
+            onOpenRef={(ref) => viewer.openRef(ref)}
+          />
+        )}
+      </div>
     </div>
   );
 }
