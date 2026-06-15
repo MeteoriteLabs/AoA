@@ -143,6 +143,9 @@ export const queryKeys = {
     // V2.6 Phase 3
     retrievalsForIssue: (companyId: string, issueId: string) =>
       ["memory", companyId, "retrievals", "issue", issueId] as const,
+    // Phase 7: Commander Memory cockpit card
+    retrievalsForConversation: (companyId: string, conversationId: string) =>
+      ["memory", companyId, "retrievals", "conversation", conversationId] as const,
     // V2.6 Phase 4
     starterTemplates: (companyId: string) =>
       ["memory", companyId, "starter-templates"] as const,

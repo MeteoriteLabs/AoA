@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Brain,
   Calendar,
   CheckCircle,
   CheckCircle2,
@@ -47,6 +48,7 @@ import { CockpitBudgetPulseCard } from "./CockpitBudgetPulseCard";
 import { CockpitDoneTodayCard } from "./CockpitDoneTodayCard";
 import { CockpitProactiveFindingsCard } from "./CockpitProactiveFindingsCard";
 import { CockpitTeammatesActivityCard } from "./CockpitTeammatesActivityCard";
+import { CockpitMemoryCard } from "./CockpitMemoryCard";
 import { useCockpitPin } from "./useCockpitPin";
 import { CockpitConversationZone } from "./CockpitConversationZone";
 
@@ -100,8 +102,9 @@ export interface CockpitCardRenderDef extends CockpitCardDef {
   summary: (data: CockpitData) => string | null;
   isActive: (data: CockpitData) => boolean;
   /** Phase 3c/3d: companyId threaded through so cards that need per-source API calls
-   * (e.g. CockpitApprovalsCard, CockpitPinnedCard) can dispatch correctly without a separate context. */
-  render: (props: { data: CockpitData; companyId: string } & CockpitInteractions) => React.ReactElement | null;
+   * (e.g. CockpitApprovalsCard, CockpitPinnedCard) can dispatch correctly without a separate context.
+   * Phase 7: conversationId threaded for the Memory card. */
+  render: (props: { data: CockpitData; companyId: string; conversationId?: string | null } & CockpitInteractions) => React.ReactElement | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +294,25 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
       />
     ),
   },
+  // Phase 7: Memory cockpit card — defaultOn:false (opt-in, audit surface).
+  // Enable via the cockpit config popover (Settings2 icon in the header).
+  // Shows memory_retrievals for the active Commander conversation so founders
+  // can see exactly what the model looked up. isActive is always true when
+  // there is a conversation (the card self-manages empty state).
+  {
+    id: "memory",
+    title: "Memory",
+    defaultOn: false,
+    icon: Brain,
+    summary: (_d) => null, // row count is fetched inside the card, not from cockpit batch
+    isActive: (_d) => true, // always mount; card shows empty state when no conversation
+    render: ({ companyId, conversationId }) => (
+      <CockpitMemoryCard
+        companyId={companyId}
+        conversationId={conversationId}
+      />
+    ),
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -385,6 +407,7 @@ function CockpitConfigPopover({
 
 export function CommanderCockpitPanel({
   companyId,
+  conversationId,
   onCollapse,
   onOpenTask,
   onAsk,
@@ -394,6 +417,8 @@ export function CommanderCockpitPanel({
   onOpenRef,
 }: {
   companyId: string;
+  /** Phase 7: active Commander conversation id for the Memory cockpit card. */
+  conversationId?: string | null;
   onCollapse: () => void;
   conversationRefs?: CommanderOutputRef[];
   onOpenRef?: (ref: CommanderOutputRef) => void;
@@ -512,10 +537,12 @@ export function CommanderCockpitPanel({
                 open={cardExpanded[c.id] ?? true}
                 onOpenChange={(open) => setCardOpen(c.id, open)}
               >
-                {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through. */}
+                {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through.
+                    Phase 7: conversationId for the Memory card. */}
                 {c.render({
                   data: cockpitData,
                   companyId,
+                  conversationId,
                   onOpenTask,
                   onAsk,
                   onOpenFullPage,

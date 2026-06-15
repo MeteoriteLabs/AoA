@@ -9,16 +9,21 @@ import { assertCompanyAccess } from "./authz.js";
  * Powers the workspace right-panel MemorySection so founders can see
  * exactly what memory each agent run actually queried + got back.
  *
- * Surface (small on purpose — UI is the only consumer):
+ * Phase 7 — also powers the Commander cockpit Memory card:
  *
  *   GET /companies/:companyId/issues/:issueId/memory-retrievals?limit=N
  *     Returns retrievals for a single task (across all its heartbeat
  *     runs), newest first, joined with memory_items title/category/
  *     layer. Default limit 100, hard cap 500.
  *
+ *   GET /companies/:companyId/conversations/:conversationId/memory-retrievals?limit=N
+ *     Returns retrievals linked to a Commander conversation
+ *     (triggeredBy:"commander_query", conversationId set via [A3] fix).
+ *     Same shape as the issue route; newest first.
+ *
  * RBAC: assertCompanyAccess (board / agent / mcp matched to companyId).
- * No additional gating — retrievals are scoped to the task, and any
- * caller who can read the task can see what was searched against it.
+ * No additional gating — retrievals are scoped to the resource, and any
+ * caller who can read the resource can see what was searched against it.
  */
 export function memoryRetrievalsRoutes(db: Db) {
   const router = Router();
@@ -33,6 +38,19 @@ export function memoryRetrievalsRoutes(db: Db) {
     const limit = limitRaw ? Math.max(1, parseInt(limitRaw, 10) || 0) : undefined;
 
     const rows = await svc.listRetrievalsForIssue(companyId, issueId, { limit });
+    res.json(rows);
+  });
+
+  // Phase 7: Commander conversation retrieval audit for the Memory cockpit card.
+  router.get("/companies/:companyId/conversations/:conversationId/memory-retrievals", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const conversationId = req.params.conversationId as string;
+    assertCompanyAccess(req, companyId);
+
+    const limitRaw = req.query.limit as string | undefined;
+    const limit = limitRaw ? Math.max(1, parseInt(limitRaw, 10) || 0) : undefined;
+
+    const rows = await svc.listRetrievalsForConversation(companyId, conversationId, { limit });
     res.json(rows);
   });
 

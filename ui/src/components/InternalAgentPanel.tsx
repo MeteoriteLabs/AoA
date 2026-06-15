@@ -1550,6 +1550,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         ) : (
           <CommanderCockpitPanel
             companyId={companyId}
+            conversationId={conversationId}
             onCollapse={collapseCockpit}
             onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
             onAsk={(text) => void sendText(text)}
