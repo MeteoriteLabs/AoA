@@ -994,13 +994,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         cardChrome && `${COMMANDER_PANEL_CARD} overflow-hidden`,
       )}
     >
-      {/* Chat pane caption strip — shown only when there is an active conversation */}
+      {/* Chat pane caption strip — shown only when there is an active conversation.
+          The "Open preview" toggle is co-located here: both it and the viewer are
+          meaningless without an active conversation, so hiding it until conversationId
+          is set is the cleanest option (no orphaned UI with nothing to preview). */}
       {conversationId && (
         <ChatPaneCaption
           title={activeConv?.title ?? "New chat"}
           messageCount={activeConv?.messageCount ?? messages.length}
           updatedAt={activeConv?.updatedAt}
           onOpenSessions={onOpenSessions}
+          viewerOpen={!viewerCollapsed}
+          onToggleViewer={viewerCollapsed ? expandViewer : collapseViewer}
         />
       )}
 

@@ -72,4 +72,67 @@ describe("ChatPaneCaption", () => {
     await user.click(btn);
     expect(onOpenSessions).toHaveBeenCalledOnce();
   });
+
+  // Phase 3 — 42px header + Open preview toggle
+  it("has exactly h-[42px] height class on the root element", () => {
+    const { container } = render(
+      <ChatPaneCaption title="My chat" messageCount={1} />,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("h-[42px]");
+  });
+
+  it("shows 'Open preview' toggle when onToggleViewer is provided and viewer is closed", () => {
+    render(
+      <ChatPaneCaption
+        title="My chat"
+        messageCount={1}
+        viewerOpen={false}
+        onToggleViewer={vi.fn()}
+      />,
+    );
+    const btn = screen.getByTestId("commander-open-preview");
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveAttribute("aria-label", "Open preview");
+    expect(btn).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("shows 'Hide preview' label and aria-pressed=true when viewer is open", () => {
+    render(
+      <ChatPaneCaption
+        title="My chat"
+        messageCount={1}
+        viewerOpen={true}
+        onToggleViewer={vi.fn()}
+      />,
+    );
+    const btn = screen.getByTestId("commander-open-preview");
+    expect(btn).toHaveAttribute("aria-label", "Hide preview");
+    expect(btn).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("calls onToggleViewer when the toggle is clicked", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(
+      <ChatPaneCaption
+        title="My chat"
+        messageCount={1}
+        viewerOpen={false}
+        onToggleViewer={onToggle}
+      />,
+    );
+    await user.click(screen.getByTestId("commander-open-preview"));
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("does not render the Open preview toggle when onToggleViewer is not provided", () => {
+    render(
+      <ChatPaneCaption
+        title="My chat"
+        messageCount={1}
+      />,
+    );
+    expect(screen.queryByTestId("commander-open-preview")).not.toBeInTheDocument();
+  });
 });
