@@ -43,4 +43,17 @@ describe("selectVisibleCards", () => {
     });
     expect(result).toHaveLength(0);
   });
+
+  it("defaultOn=false card IS shown when its id is in enabled", () => {
+    const offCard: CockpitCardDef = { id: "off", title: "Off", defaultOn: false };
+    const result = selectVisibleCards({
+      registry: [offCard],
+      hidden: [],
+      order: [],
+      active: { off: true },
+      enabled: ["off"],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("off");
+  });
 });
