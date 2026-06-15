@@ -993,25 +993,28 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         cardChrome && `${COMMANDER_PANEL_CARD} overflow-hidden`,
       )}
     >
-      {/* Chat pane caption strip — shown only when there is an active conversation.
-          The "Open preview" toggle is co-located here: both it and the viewer are
-          meaningless without an active conversation, so hiding it until conversationId
-          is set is the cleanest option (no orphaned UI with nothing to preview). */}
-      {conversationId && (
+      {/* Chat pane caption strip. In full-page Commander (enableViewerPanel) it always
+          renders so the "Open preview" toggle is reachable even before a session is
+          selected (the default conversation shows messages with conversationId still
+          null). In docked mode it shows only with an active conversation and never the
+          toggle (no viewer there). */}
+      {(conversationId || enableViewerPanel) && (
         <ChatPaneCaption
           title={activeConv?.title ?? "New chat"}
           messageCount={activeConv?.messageCount ?? messages.length}
           updatedAt={activeConv?.updatedAt}
           onOpenSessions={onOpenSessions}
           viewerOpen={!viewerCollapsed}
-          onToggleViewer={viewerCollapsed ? expandViewer : collapseViewer}
+          onToggleViewer={
+            enableViewerPanel ? (viewerCollapsed ? expandViewer : collapseViewer) : undefined
+          }
         />
       )}
 
       {/* Mobile/tablet Sessions trigger — shown only when there is NO active
           conversation (the caption's Sessions button covers the active case).
           `lg:hidden` keeps the desktop layout completely unchanged. */}
-      {!conversationId && onOpenSessions && (
+      {!conversationId && !enableViewerPanel && onOpenSessions && (
         <div className="lg:hidden shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-background">
           <button
             type="button"
