@@ -93,7 +93,7 @@ export interface CockpitGoalsAtRiskItem {
 export interface CockpitBudgetPulseItem {
   limitCents: number;
   spentCents: number;
-  percentUsed: number;        // always > 0; the whole item is null when no budget is configured (limitCents === 0)
+  percentUsed: number;        // >= 0 (0 when no spend); the whole item is null when no budget is configured (limitCents === 0)
   openIncidentCount: number;
 }
 

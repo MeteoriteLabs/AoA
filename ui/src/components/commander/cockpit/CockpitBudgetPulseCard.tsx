@@ -7,11 +7,7 @@
 
 import { DollarSign } from "lucide-react";
 import type { CockpitBudgetPulseItem } from "@armyofagents/shared";
-import { cn } from "../../../lib/utils";
-
-function formatDollars(cents: number): string {
-  return `$${Math.round(cents / 100).toLocaleString()}`;
-}
+import { cn, formatCents } from "../../../lib/utils";
 
 export function CockpitBudgetPulseCard({
   pulse,
@@ -21,6 +17,8 @@ export function CockpitBudgetPulseCard({
   if (!pulse) return null;
 
   const pct = Math.min(pulse.percentUsed, 100);
+  // "Pulse" thresholds (over=100 / warn=80) are intentionally stricter than the
+  // shared budgetProgressColor (90/70) — a budget glance wants a tighter warning band.
   const isOver = pulse.percentUsed >= 100;
   const isWarning = !isOver && pulse.percentUsed >= 80;
 
@@ -37,10 +35,10 @@ export function CockpitBudgetPulseCard({
         {/* Spend line */}
         <div className="mb-1 flex items-baseline justify-between text-xs">
           <span className="font-medium">
-            {formatDollars(pulse.spentCents)}
+            {formatCents(pulse.spentCents)}
           </span>
           <span className="text-muted-foreground">
-            / {formatDollars(pulse.limitCents)}
+            / {formatCents(pulse.limitCents)}
           </span>
         </div>
         {/* Percent bar */}

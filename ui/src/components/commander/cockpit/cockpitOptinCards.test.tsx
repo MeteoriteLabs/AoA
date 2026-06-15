@@ -132,8 +132,13 @@ describe("CockpitBudgetPulseCard", () => {
         pulse={makePulse({ limitCents: 10000, spentCents: 5000 })}
       />,
     );
-    expect(screen.getByText("$50")).toBeInTheDocument();
-    expect(screen.getByText("/ $100")).toBeInTheDocument();
+    expect(screen.getByText("$50.00")).toBeInTheDocument();
+    expect(screen.getByText("/ $100.00")).toBeInTheDocument();
+  });
+
+  it("shows sub-dollar spend without rounding to $0 (formatCents)", () => {
+    render(<CockpitBudgetPulseCard pulse={makePulse({ spentCents: 49, limitCents: 100000 })} />);
+    expect(screen.getByText("$0.49")).toBeInTheDocument();
   });
 
   it("shows percent used", () => {
@@ -177,6 +182,21 @@ describe("CockpitBudgetPulseCard", () => {
     render(<CockpitBudgetPulseCard pulse={makePulse({ percentUsed: 150 })} />);
     // Shows 150% text but bar is capped — the aria-label should show 150
     expect(screen.getByLabelText(/150% of budget used/i)).toBeInTheDocument();
+  });
+
+  it("bar is brand color below the 80% warning threshold", () => {
+    render(<CockpitBudgetPulseCard pulse={makePulse({ percentUsed: 79 })} />);
+    expect(screen.getByLabelText(/79% of budget used/i).className).toContain("bg-brand");
+  });
+
+  it("bar turns amber at exactly 80%", () => {
+    render(<CockpitBudgetPulseCard pulse={makePulse({ percentUsed: 80 })} />);
+    expect(screen.getByLabelText(/80% of budget used/i).className).toContain("bg-amber-500");
+  });
+
+  it("bar turns red at exactly 100%", () => {
+    render(<CockpitBudgetPulseCard pulse={makePulse({ percentUsed: 100 })} />);
+    expect(screen.getByLabelText(/100% of budget used/i).className).toContain("bg-red-500");
   });
 });
 
