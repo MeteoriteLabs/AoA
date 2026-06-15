@@ -22,6 +22,8 @@ import { CockpitPinnedCard } from "./CockpitPinnedCard";
 import { CockpitGoalsAtRiskCard } from "./CockpitGoalsAtRiskCard";
 import { CockpitBudgetPulseCard } from "./CockpitBudgetPulseCard";
 import { CockpitDoneTodayCard } from "./CockpitDoneTodayCard";
+import { CockpitProactiveFindingsCard } from "./CockpitProactiveFindingsCard";
+import { CockpitTeammatesActivityCard } from "./CockpitTeammatesActivityCard";
 import { useCockpitPin } from "./useCockpitPin";
 import { CockpitConversationZone } from "./CockpitConversationZone";
 
@@ -179,6 +181,31 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     isActive: (d) => d.doneToday.length > 0,
     render: ({ data, onOpenTask }) => (
       <CockpitDoneTodayCard items={data.doneToday} onOpenTask={onOpenTask} />
+    ),
+  },
+  {
+    id: "proactiveFindings",
+    title: "Proactive findings",
+    defaultOn: false,
+    isActive: (d) => d.proactiveFindings.length > 0,
+    render: ({ data, onOpenFullPage, onAsk }) => (
+      <CockpitProactiveFindingsCard
+        items={data.proactiveFindings}
+        onOpenFullPage={onOpenFullPage}
+        onAsk={onAsk}
+      />
+    ),
+  },
+  {
+    id: "teammatesActivity",
+    title: "Teammates' activity",
+    defaultOn: false,
+    isActive: (d) => d.teammatesActivity.length > 0,
+    render: ({ data, onOpenFullPage }) => (
+      <CockpitTeammatesActivityCard
+        items={data.teammatesActivity}
+        onOpenFullPage={onOpenFullPage}
+      />
     ),
   },
 ];
