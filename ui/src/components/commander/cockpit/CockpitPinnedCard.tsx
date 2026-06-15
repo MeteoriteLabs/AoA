@@ -5,7 +5,7 @@
  * Mirrors the card chrome and list row patterns from CockpitReviewCard.
  */
 
-import { Pin, PinOff } from "lucide-react";
+import { PinOff } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitPinnedItem } from "@armyofagents/shared";
 
 // Chip label map for entity type
@@ -47,16 +47,10 @@ export function CockpitPinnedCard({
     }
   }
 
+  // Phase 5B: Internal <header> removed — title/icon/count now live in the
+  // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-pinned"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        <Pin className="size-3.5" aria-hidden />
-        Pinned
-        <span className="ml-auto tabular-nums">{items.length}</span>
-      </header>
+    <div data-testid="cockpit-card-pinned">
       <ul className="space-y-0.5">
         {items.map((item) => (
           <li
@@ -92,6 +86,6 @@ export function CockpitPinnedCard({
           </li>
         ))}
       </ul>
-    </section>
+    </div>
   );
 }

@@ -187,6 +187,9 @@ function ApprovalRow({
 
 // ── Card ─────────────────────────────────────────────────────────────────────
 
+// Phase 5B: Internal <header> removed — title/icon/count now live in the
+// CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
+
 export function CockpitApprovalsCard({
   items,
   companyId,
@@ -201,18 +204,7 @@ export function CockpitApprovalsCard({
   if (items.length === 0) return null;
 
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-approvals"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        {/* ⚑ flag glyph */}
-        <span aria-hidden className="text-[13px] leading-none">
-          ⚑
-        </span>
-        Approvals
-        <span className="ml-auto tabular-nums">{items.length}</span>
-      </header>
+    <div data-testid="cockpit-card-approvals">
       <ul className="divide-y divide-border/40">
         {items.map((item) => (
           <ApprovalRow
@@ -224,6 +216,6 @@ export function CockpitApprovalsCard({
           />
         ))}
       </ul>
-    </section>
+    </div>
   );
 }

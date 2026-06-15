@@ -100,7 +100,8 @@ describe("CockpitGoalsAtRiskCard", () => {
     expect(() => fireEvent.click(screen.getByText("No click"))).not.toThrow();
   });
 
-  it("shows item count in header", () => {
+  it("renders all items when multiple present (count lives in CockpitSection trigger, not card header)", () => {
+    // Phase 5B: internal header removed; count now lives in the CockpitSection trigger.
     render(
       <CockpitGoalsAtRiskCard
         items={[
@@ -109,7 +110,8 @@ describe("CockpitGoalsAtRiskCard", () => {
         ]}
       />,
     );
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText("Beta")).toBeInTheDocument();
   });
 });
 
@@ -252,7 +254,8 @@ describe("CockpitDoneTodayCard", () => {
     expect(() => fireEvent.click(screen.getByText("No click"))).not.toThrow();
   });
 
-  it("shows item count in header", () => {
+  it("renders all items when multiple present (count lives in CockpitSection trigger, not card header)", () => {
+    // Phase 5B: internal header removed; count now lives in the CockpitSection trigger.
     render(
       <CockpitDoneTodayCard
         items={[
@@ -261,7 +264,8 @@ describe("CockpitDoneTodayCard", () => {
         ]}
       />,
     );
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("Task A")).toBeInTheDocument();
+    expect(screen.getByText("Task B")).toBeInTheDocument();
   });
 });
 

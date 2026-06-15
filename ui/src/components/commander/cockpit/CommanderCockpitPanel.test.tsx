@@ -169,4 +169,138 @@ describe("CommanderCockpitPanel", () => {
     fireEvent.click(collapseBtn);
     expect(onCollapse).toHaveBeenCalledOnce();
   });
+
+  // Phase 5A: 42px header
+  it("panel header has data-testid='commander-cockpit-header'", () => {
+    renderPanel();
+    expect(screen.getByTestId("commander-cockpit-header")).toBeInTheDocument();
+  });
+
+  it("panel header contains 'Cockpit' title", () => {
+    renderPanel();
+    expect(screen.getByText("Cockpit")).toBeInTheDocument();
+  });
+});
+
+// ── Phase 5B: Collapsible card tests ──────────────────────────────────────────
+
+describe("CommanderCockpitPanel — Phase 5B collapsible cards", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("active card renders inside CockpitSection (cockpit-section-<id> testid)", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const run = makeRunItem();
+    qc.setQueryData(["cockpit", "comp-p5"], makeData({ running: [run] }));
+
+    render(
+      <QueryClientProvider client={qc}>
+        <CommanderCockpitPanel companyId="comp-p5" onCollapse={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    // CockpitSection renders data-testid="cockpit-section-<id>"
+    expect(screen.getByTestId("cockpit-section-running")).toBeInTheDocument();
+  });
+
+  it("card body is visible by default (expanded by default)", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const run = makeRunItem({ agentName: "Atlas" });
+    qc.setQueryData(["cockpit", "comp-p5b"], makeData({ running: [run] }));
+
+    render(
+      <QueryClientProvider client={qc}>
+        <CommanderCockpitPanel companyId="comp-p5b" onCollapse={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    // Body content visible since expanded by default
+    expect(screen.getByText("Atlas")).toBeInTheDocument();
+  });
+
+  it("collapse persistence: collapsed state is saved to localStorage", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const run = makeRunItem({ agentName: "Atlas" });
+    qc.setQueryData(["cockpit", "comp-persist"], makeData({ running: [run] }));
+
+    render(
+      <QueryClientProvider client={qc}>
+        <CommanderCockpitPanel companyId="comp-persist" onCollapse={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    // Click the CockpitSection trigger to collapse the running card
+    const trigger = screen.getByTestId("cockpit-section-trigger-running");
+    fireEvent.click(trigger);
+
+    // Verify the collapsed state was persisted to localStorage
+    expect(localStorage.getItem("aoa:commander:cockpit:section:running")).toBe("false");
+  });
+
+  it("collapse persistence: stored 'false' means collapsed on re-render", async () => {
+    // Pre-set the collapsed state
+    localStorage.setItem("aoa:commander:cockpit:section:running", "false");
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const run = makeRunItem({ agentName: "Atlas" });
+    qc.setQueryData(["cockpit", "comp-preload"], makeData({ running: [run] }));
+
+    render(
+      <QueryClientProvider client={qc}>
+        <CommanderCockpitPanel companyId="comp-preload" onCollapse={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    // Section exists but content should be hidden (collapsed)
+    expect(screen.getByTestId("cockpit-section-running")).toBeInTheDocument();
+    // The card body (Atlas name) should NOT be visible since collapsed
+    expect(screen.queryByText("Atlas")).not.toBeInTheDocument();
+  });
+});
+
+// ── Phase 5D: registry icon/summary ───────────────────────────────────────────
+
+import { COCKPIT_REGISTRY } from "./CommanderCockpitPanel";
+
+describe("COCKPIT_REGISTRY — Phase 5 icon + summary", () => {
+  it("every registry entry has an icon (Lucide component)", () => {
+    for (const entry of COCKPIT_REGISTRY) {
+      expect(entry.icon, `${entry.id} missing icon`).toBeDefined();
+      // Lucide icons may be function or object (forwardRef) depending on version
+      expect(["function", "object"]).toContain(typeof entry.icon);
+    }
+  });
+
+  it("every registry entry has a summary function", () => {
+    for (const entry of COCKPIT_REGISTRY) {
+      expect(entry.summary, `${entry.id} missing summary`).toBeDefined();
+      expect(typeof entry.summary).toBe("function");
+    }
+  });
+
+  it("'running' summary returns count string when data has runs", () => {
+    const runningEntry = COCKPIT_REGISTRY.find((c) => c.id === "running")!;
+    const data = makeData({ running: [makeRunItem(), makeRunItem({ id: "run-2" })] });
+    expect(runningEntry.summary(data)).toBe("2 running");
+  });
+
+  it("'running' summary returns null when no runs", () => {
+    const runningEntry = COCKPIT_REGISTRY.find((c) => c.id === "running")!;
+    expect(runningEntry.summary(makeData())).toBeNull();
+  });
+
+  it("'review' summary returns count string", () => {
+    const reviewEntry = COCKPIT_REGISTRY.find((c) => c.id === "review")!;
+    const data = makeData({
+      review: [{ id: "t1", title: "T", status: "in_review", identifier: null, assigneeUserId: null, assigneeAgentId: null, dueDate: null }],
+    });
+    expect(reviewEntry.summary(data)).toBe("1 in review");
+  });
+
+  it("'budgetPulse' summary shows percent", () => {
+    const budgetEntry = COCKPIT_REGISTRY.find((c) => c.id === "budgetPulse")!;
+    const data = makeData({ budgetPulse: { limitCents: 1000, spentCents: 750, percentUsed: 75, openIncidentCount: 0 } });
+    expect(budgetEntry.summary(data)).toBe("75% used");
+  });
 });

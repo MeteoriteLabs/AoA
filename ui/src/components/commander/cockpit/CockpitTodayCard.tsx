@@ -1,4 +1,4 @@
-import { Calendar, MessageSquare, Pin } from "lucide-react";
+import { MessageSquare, Pin } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitReminderItem, CockpitTaskItem } from "@armyofagents/shared";
 
 export function CockpitTodayCard({
@@ -17,17 +17,10 @@ export function CockpitTodayCard({
   const totalCount = reminders.length + dueTasks.length;
   if (totalCount === 0) return null;
 
+  // Phase 5B: Internal <header> removed — title/icon/count now live in the
+  // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-today"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        <Calendar className="size-3.5" aria-hidden />
-        Today
-        <span className="ml-auto tabular-nums">{totalCount}</span>
-      </header>
-
+    <div data-testid="cockpit-card-today">
       {reminders.length > 0 && (
         <>
           <p className="mt-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -108,6 +101,6 @@ export function CockpitTodayCard({
           </ul>
         </>
       )}
-    </section>
+    </div>
   );
 }

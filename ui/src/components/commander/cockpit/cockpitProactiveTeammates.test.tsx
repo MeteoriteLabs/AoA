@@ -117,7 +117,8 @@ describe("CockpitProactiveFindingsCard", () => {
     expect(screen.getByText("Blocked task detected")).toBeInTheDocument();
   });
 
-  it("shows item count in header", () => {
+  it("renders all items when multiple present (count lives in CockpitSection trigger, not card header)", () => {
+    // Phase 5B: internal header removed; count now lives in the CockpitSection trigger.
     render(
       <CockpitProactiveFindingsCard
         items={[
@@ -126,7 +127,8 @@ describe("CockpitProactiveFindingsCard", () => {
         ]}
       />,
     );
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("Finding A")).toBeInTheDocument();
+    expect(screen.getByText("Finding B")).toBeInTheDocument();
   });
 
   it("click with relatedEntity → calls onOpenFullPage('/inbox')", () => {
@@ -200,8 +202,9 @@ describe("CockpitTeammatesActivityCard", () => {
     expect(screen.getByTestId("cockpit-card-teammatesActivity")).toBeInTheDocument();
   });
 
-  it("shows item count in header", () => {
-    render(
+  it("renders multiple items when present (count lives in CockpitSection trigger, not card header)", () => {
+    // Phase 5B: internal header removed; count now lives in the CockpitSection trigger.
+    const { container } = render(
       <CockpitTeammatesActivityCard
         items={[
           makeTeammatesItem({ id: "a1" }),
@@ -209,7 +212,9 @@ describe("CockpitTeammatesActivityCard", () => {
         ]}
       />,
     );
-    expect(screen.getByText("2")).toBeInTheDocument();
+    // Both items render as li elements
+    const listItems = container.querySelectorAll("li");
+    expect(listItems).toHaveLength(2);
   });
 
   it("shows humanized verb for a known action", () => {

@@ -86,7 +86,7 @@ describe("CockpitPinnedCard — render", () => {
     expect(screen.getByText("ACME-42")).toBeInTheDocument();
   });
 
-  it("renders count in header", () => {
+  it("renders all items when multiple present (count lives in CockpitSection trigger, not card header)", () => {
     render(
       <CockpitPinnedCard
         items={[
@@ -95,7 +95,10 @@ describe("CockpitPinnedCard — render", () => {
         ]}
       />,
     );
-    expect(screen.getByText("2")).toBeInTheDocument();
+    // Phase 5B: internal header removed; count now lives in the CockpitSection trigger.
+    // Verify both items render.
+    expect(screen.getByText("Task A")).toBeInTheDocument();
+    expect(screen.getByText("Task B")).toBeInTheDocument();
   });
 });
 

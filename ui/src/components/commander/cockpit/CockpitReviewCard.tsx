@@ -1,5 +1,8 @@
-import { CheckCircle, MessageSquare, Pin } from "lucide-react";
+import { MessageSquare, Pin } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitTaskItem } from "@armyofagents/shared";
+
+// Phase 5B: Internal <header> removed — title/icon/count now live in the
+// CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
 
 export function CockpitReviewCard({
   items,
@@ -15,15 +18,7 @@ export function CockpitReviewCard({
   if (items.length === 0) return null;
 
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-review"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        <CheckCircle className="size-3.5" aria-hidden />
-        Review
-        <span className="ml-auto tabular-nums">{items.length}</span>
-      </header>
+    <div data-testid="cockpit-card-review">
       <ul className="space-y-0.5">
         {items.map((item) => (
           <li
@@ -69,6 +64,6 @@ export function CockpitReviewCard({
           </li>
         ))}
       </ul>
-    </section>
+    </div>
   );
 }

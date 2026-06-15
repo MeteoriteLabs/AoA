@@ -1,4 +1,4 @@
-import { MessageSquare } from "lucide-react";
+import { MessageSquare as MessageSquareIcon } from "lucide-react";
 import type { CockpitDiscussionItem } from "@armyofagents/shared";
 
 export function CockpitDiscussionsCard({
@@ -12,16 +12,10 @@ export function CockpitDiscussionsCard({
 }) {
   if (items.length === 0) return null;
 
+  // Phase 5B: Internal <header> removed — title/icon/count now live in the
+  // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-discussions"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        <MessageSquare className="size-3.5" aria-hidden />
-        Discussions
-        <span className="ml-auto tabular-nums">{items.length}</span>
-      </header>
+    <div data-testid="cockpit-card-discussions">
       <ul className="space-y-0.5">
         {items.map((item) => (
           <li
@@ -58,12 +52,12 @@ export function CockpitDiscussionsCard({
                   )
                 }
               >
-                <MessageSquare className="size-3" aria-hidden />
+                <MessageSquareIcon className="size-3" aria-hidden />
               </button>
             )}
           </li>
         ))}
       </ul>
-    </section>
+    </div>
   );
 }

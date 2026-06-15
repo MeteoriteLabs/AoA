@@ -5,7 +5,6 @@
  * Returns null when pulse is null (no budget configured, or non-founder user).
  */
 
-import { DollarSign } from "lucide-react";
 import type { CockpitBudgetPulseItem } from "@armyofagents/shared";
 import { cn, formatCents } from "../../../lib/utils";
 
@@ -22,15 +21,10 @@ export function CockpitBudgetPulseCard({
   const isOver = pulse.percentUsed >= 100;
   const isWarning = !isOver && pulse.percentUsed >= 80;
 
+  // Phase 5B: Internal <header> removed — title/icon now live in the
+  // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-budgetPulse"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        <DollarSign className="size-3.5" aria-hidden />
-        Budget pulse
-      </header>
+    <div data-testid="cockpit-card-budgetPulse">
       <div className="px-1">
         {/* Spend line */}
         <div className="mb-1 flex items-baseline justify-between text-xs">
@@ -61,6 +55,6 @@ export function CockpitBudgetPulseCard({
           )}
         </div>
       </div>
-    </section>
+    </div>
   );
 }

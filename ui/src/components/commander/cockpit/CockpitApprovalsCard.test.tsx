@@ -234,9 +234,11 @@ describe("CockpitApprovalsCard — render", () => {
     expect(screen.getByText("Tool trust")).toBeInTheDocument();
   });
 
-  it("renders count in header", () => {
+  it("renders all items when multiple present (count lives in CockpitSection trigger, not card header)", () => {
+    // Phase 5B: internal header removed; count now lives in the CockpitSection trigger.
     renderCard([makeApprovalItem(), makeApprovalItem({ id: "appr-2", title: "Hire Atlas" })]);
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("Hire Scout")).toBeInTheDocument();
+    expect(screen.getByText("Hire Atlas")).toBeInTheDocument();
   });
 });
 

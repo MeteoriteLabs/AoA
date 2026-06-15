@@ -1,5 +1,8 @@
-import { MessageSquare, Play } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import type { CockpitRunItem } from "@armyofagents/shared";
+
+// Phase 5B: Internal <header> removed — title/icon/count now live in the
+// CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
 
 export function CockpitRunningCard({
   runs,
@@ -13,15 +16,7 @@ export function CockpitRunningCard({
   if (runs.length === 0) return null;
 
   return (
-    <section
-      className="rounded-lg border border-border bg-background p-2"
-      data-testid="cockpit-card-running"
-    >
-      <header className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-        <Play className="size-3.5" aria-hidden />
-        Running now
-        <span className="ml-auto tabular-nums">{runs.length}</span>
-      </header>
+    <div data-testid="cockpit-card-running">
       <ul className="space-y-0.5">
         {runs.map((r) => (
           <li
@@ -59,6 +54,6 @@ export function CockpitRunningCard({
           </li>
         ))}
       </ul>
-    </section>
+    </div>
   );
 }
