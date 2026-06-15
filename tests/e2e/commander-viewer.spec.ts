@@ -25,6 +25,20 @@ import {
  * A fresh company auto-seeds internal_agent_config (executionMode 'cli',
  * cliTool null → agent-loop defaults to 'claude_cli'), so no config seeding
  * is needed.
+ *
+ * ── Redesigned layout (Phases 1–8) ───────────────────────────────────────────
+ * The viewer no longer has its own rail. Instead:
+ *   • The viewer opens via the chat-header "Open preview" toggle
+ *     (data-testid="commander-open-preview", aria-label="Open preview").
+ *   • Opening the preview shows commander-viewer-panel (center split) AND
+ *     collapses the Sessions sidebar + Cockpit sidebars to rails:
+ *       - Sessions rail → aria-label="Expand chats sidebar"
+ *       - Cockpit rail  → aria-label="Expand cockpit"
+ *   • Created-ref auto-open still reveals the viewer (via openPreview("right-panel")).
+ *   • The viewer's "Hide preview" button (aria-label="Hide preview") closes it
+ *     and restores the sidebars.
+ *   • The choreography unit test (openPreviewChoreography.test.ts) covers the
+ *     pure collapse-state logic; these e2e tests cover the full-stack wiring.
  */
 
 const ARTIFACT_TITLE = "Launch Plan Q3";
@@ -101,7 +115,7 @@ test.describe("Commander viewer", () => {
     await cleanupTestCompanies(request, /^E2E-CmdViewer-/);
   });
 
-  test("full interaction loop: created chip auto-opens, history chips, referenced chip, home, reply pop-out", async ({
+  test("full interaction loop: created chip auto-opens via openPreview, history chips, referenced chip, home, reply pop-out", async ({
     page,
     request,
   }) => {
@@ -113,11 +127,15 @@ test.describe("Commander viewer", () => {
 
     await page.goto(`/${company.issuePrefix}/commander`);
 
-    // Desktop default state: collapsed rail visible, panel not mounted.
-    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible({
+    // Desktop default state: viewer panel is NOT mounted; no viewer rail.
+    // The viewer opens exclusively via the "Open preview" toggle.
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0, {
       timeout: 15_000,
     });
-    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+    // Confirm the chat header "Open preview" toggle is reachable.
+    await expect(page.getByTestId("commander-open-preview")).toBeVisible({
+      timeout: 15_000,
+    });
 
     // ── Turn 1: create_artifact (action: created) ──────────────────────────
     writeFakeClaudeControl(createArtifactTurn(artifact, REPLY_CREATED));
@@ -129,22 +147,39 @@ test.describe("Commander viewer", () => {
       chipContainers.getByRole("button", { name: new RegExp(ARTIFACT_TITLE) }),
     ).toBeVisible({ timeout: 30_000 });
 
-    // Created ref auto-opens the panel (desktop) and the artifact's real
-    // markdown content renders inside it.
+    // Created ref auto-opens the viewer panel via openPreview("right-panel").
+    // The artifact's real markdown content renders inside it.
     const panel = page.getByTestId("commander-viewer-panel");
     await expect(panel).toBeVisible({ timeout: 15_000 });
     await expect(panel.getByText(ARTIFACT_MARKER)).toBeVisible({ timeout: 15_000 });
 
+    // Opening the preview collapses the Sessions sidebar to its rail.
+    // (On the default desktop viewport ≥ 1024px but < 1536px, isWide=false so
+    // BOTH sessions and cockpit collapse — mirrors the B6 rule in the choreography.)
+    await expect(
+      page.getByRole("button", { name: "Expand chats sidebar" }),
+    ).toBeVisible({ timeout: 10_000 });
+
+    // Cockpit also collapses to its rail on this viewport (isWide=false).
+    await expect(
+      page.getByRole("button", { name: "Expand cockpit" }),
+    ).toBeVisible({ timeout: 10_000 });
+
     await waitForTurnEnd(page);
 
-    // Collapse the panel back to the rail.
-    await page.getByRole("button", { name: "Close viewer" }).click();
-    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible();
+    // Close the viewer via the chat-header toggle (which now shows "Hide preview").
+    // Use data-testid="commander-open-preview" to avoid strict-mode collision with
+    // the ViewerTabs "Hide preview" button inside the viewer panel header.
+    await page.getByTestId("commander-open-preview").click();
     await expect(panel).toHaveCount(0);
+    // Sessions sidebar should be restored (it was expanded before open).
+    await expect(
+      page.getByRole("button", { name: "Expand chats sidebar" }),
+    ).toHaveCount(0, { timeout: 5_000 });
 
     // ── Reload: chips re-render from persisted history (output_refs) ───────
     await page.reload();
-    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible({
+    await expect(page.getByTestId("commander-open-preview")).toBeVisible({
       timeout: 15_000,
     });
     const historyChip = page
@@ -152,13 +187,14 @@ test.describe("Commander viewer", () => {
       .getByRole("button", { name: new RegExp(ARTIFACT_TITLE) });
     await expect(historyChip).toBeVisible({ timeout: 15_000 });
 
-    // Clicking the history chip reopens the artifact content.
+    // Clicking the history chip opens the viewer via openPreview("right-panel").
     await historyChip.click();
     await expect(panel).toBeVisible();
     await expect(panel.getByText(ARTIFACT_MARKER)).toBeVisible({ timeout: 15_000 });
 
     // Collapse again so the no-auto-open assertion below is meaningful.
-    await page.getByRole("button", { name: "Close viewer" }).click();
+    // Use data-testid to avoid strict-mode collision with the ViewerTabs button.
+    await page.getByTestId("commander-open-preview").click();
     await expect(panel).toHaveCount(0);
 
     // ── Turn 2: query_company_artifacts (action: referenced) ───────────────
@@ -171,12 +207,15 @@ test.describe("Commander viewer", () => {
     });
     await waitForTurnEnd(page);
 
-    // ...but referenced refs do NOT auto-open: still on the rail.
-    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible();
+    // ...but referenced refs do NOT auto-open: panel stays closed.
     await expect(panel).toHaveCount(0);
 
     // ── Home tab: both groups ───────────────────────────────────────────────
-    await page.getByRole("button", { name: "Viewer home" }).click();
+    // Open preview manually first so we can navigate to home.
+    await page.getByTestId("commander-open-preview").click();
+    await expect(panel).toBeVisible({ timeout: 10_000 });
+
+    await page.getByRole("button", { name: "Open viewer home" }).click();
     const home = page.getByTestId("commander-viewer-home");
     await expect(home).toBeVisible();
     await expect(home.getByText("Recent from this conversation")).toBeVisible();
@@ -185,6 +224,10 @@ test.describe("Commander viewer", () => {
     });
 
     // ── Reply pop-out: hover the last reply, open it in the viewer ─────────
+    // Close the preview first. Use data-testid to avoid strict-mode collision.
+    await page.getByTestId("commander-open-preview").click();
+    await expect(panel).toHaveCount(0);
+
     await page.getByText("zebra-quokka").last().hover();
     await page.getByRole("button", { name: "Open reply in viewer" }).last().click();
     await expect(panel.getByText(/zebra-quokka/)).toBeVisible({ timeout: 15_000 });
@@ -201,7 +244,8 @@ test.describe("Commander viewer", () => {
     });
 
     await page.goto(`/${company.issuePrefix}/commander`);
-    await expect(page.getByTestId("commander-viewer-rail")).toBeVisible({
+    // Default: viewer panel not mounted.
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0, {
       timeout: 15_000,
     });
 
@@ -254,10 +298,11 @@ test.describe("Commander viewer", () => {
 
     await page.goto(`/${company.issuePrefix}/commander`);
 
-    // Mobile breakpoint (< 1024px): floating pill instead of the rail/panel.
+    // Mobile breakpoint (< 1024px): floating pill instead of inline sidebars.
+    // The desktop viewer panel is not rendered on mobile.
     const pill = page.getByTestId("commander-viewer-pill");
     await expect(pill).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("commander-viewer-rail")).toHaveCount(0);
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
 
     writeFakeClaudeControl(createArtifactTurn(artifact, REPLY_CREATED));
     await sendMessage(page, "Draft a launch plan for Q3");
