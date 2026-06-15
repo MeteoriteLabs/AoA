@@ -6,6 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { AgentPanelContent } from "../components/InternalAgentPanel";
 import { SessionsSidebar } from "../components/commander";
 import { COMMANDER_PANEL_ROW } from "../components/commander/commanderChrome";
+import { useCommanderSessionsCollapsed } from "../components/commander/useCommanderSessionsCollapsed";
 import { commanderConversationsApi, internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { useBreakpoint } from "../lib/useBreakpoint";
@@ -22,6 +23,12 @@ export function Commander() {
   // drawer instead of an inline sidebar.
   const { useDrawerSessions } = useBreakpoint();
   const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
+
+  // Phase 6 [A1]: Lift sessions collapse state so the choreography in
+  // AgentPanelContent can collapse sessions (which lives here as a sibling).
+  // Keep the global localStorage key via the existing hook — both the sidebar
+  // and the panel read/write the same key.
+  const [sessionsCollapsed, setSessionsCollapsed] = useCommanderSessionsCollapsed();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Commander" }]);
@@ -74,6 +81,8 @@ export function Commander() {
             activeConversationId={activeConversationId}
             onSelect={setActiveConversationId}
             onNewConversation={handleNewConversation}
+            collapsed={sessionsCollapsed}
+            onSetCollapsed={setSessionsCollapsed}
           />
         )}
 
@@ -84,6 +93,8 @@ export function Commander() {
             onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
             enableViewerPanel
             cardChrome
+            sessionsCollapsed={sessionsCollapsed}
+            onSetSessionsCollapsed={setSessionsCollapsed}
           />
         </div>
 

@@ -60,6 +60,7 @@ import {
   OutputRefChips,
   collectConversationRefs,
   mergeRefs,
+  shouldAutoOpen,
   useCommanderViewer,
 } from "./commander/viewer";
 import {
@@ -337,9 +338,17 @@ interface AgentPanelContentProps {
    * and mobile sheet stay card-free.
    */
   cardChrome?: boolean;
+  /**
+   * Phase 6 [A1]: Controlled sessions collapse state lifted from Commander.tsx.
+   * Required for the openPreview choreography to collapse the sessions sidebar
+   * (which lives as a sibling component outside this panel). Only provided by
+   * the full-page Commander route; undefined in docked/mobile usage.
+   */
+  sessionsCollapsed?: boolean;
+  onSetSessionsCollapsed?: (value: boolean) => void;
 }
 
-export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false }: AgentPanelContentProps = {}) {
+export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false, sessionsCollapsed, onSetSessionsCollapsed }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
@@ -438,38 +447,69 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     panelIds,
   });
 
-  // Phase 3a: cap-aware expand handlers. Below ultrawide (isWide=false) only ONE
-  // of {detail, cockpit} may be expanded — expanding either collapses the other
-  // (chat always readable; "last expanded wins").
-  const expandViewer = useCallback(() => {
+  // Phase 6: open/close preview choreography (applyPreviewFocus parity).
+  //
+  // Pre-open snapshot: we capture sessions + cockpit collapsed state just before
+  // opening so closePreview() can restore them (not force-expand if the user had
+  // them already closed). Stored in a ref so it doesn't trigger re-renders.
+  const preOpenSnapshotRef = useRef<{ sessions: boolean; cockpit: boolean } | null>(null);
+
+  // openPreview(source):
+  //   "center"       — chat-header toggle: collapse BOTH sessions + cockpit
+  //   "right-panel"  — chip/cockpit/reply/browser/liveRef: collapse sessions only;
+  //                    also collapse cockpit when NOT ultrawide (B6: tablet tier)
+  const openPreview = useCallback((source: "center" | "right-panel") => {
+    // Snapshot current state before collapsing
+    const currentSessionsCollapsed = sessionsCollapsed ?? true;
+    preOpenSnapshotRef.current = {
+      sessions: currentSessionsCollapsed,
+      cockpit: cockpitCollapsed,
+    };
+
+    // Expand the viewer
     setViewerCollapsed(false);
-    if (!isWide) setCockpitCollapsed(true);
     viewer.expand();
-  }, [setViewerCollapsed, setCockpitCollapsed, isWide, viewer]);
-  const collapseViewer = useCallback(() => { setViewerCollapsed(true); viewer.collapse(); }, [setViewerCollapsed, viewer]);
+
+    // Always collapse sessions
+    onSetSessionsCollapsed?.(true);
+
+    // Collapse cockpit: always for "center"; also for "right-panel" when not ultrawide
+    if (source === "center" || !isWide) {
+      setCockpitCollapsed(true);
+    }
+  }, [sessionsCollapsed, cockpitCollapsed, setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed, isWide]);
+
+  // closePreview(): collapse viewer, restore sessions + cockpit to pre-open state.
+  const closePreview = useCallback(() => {
+    setViewerCollapsed(true);
+    viewer.collapse();
+
+    if (preOpenSnapshotRef.current !== null) {
+      const { sessions, cockpit } = preOpenSnapshotRef.current;
+      onSetSessionsCollapsed?.(sessions);
+      setCockpitCollapsed(cockpit);
+      preOpenSnapshotRef.current = null;
+    }
+  }, [setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed]);
+
+  // Lightweight helpers still used for cockpit expand/collapse buttons (unchanged UX).
   const expandCockpit = useCallback(() => {
     setCockpitCollapsed(false);
     if (!isWide) setViewerCollapsed(true);
   }, [setCockpitCollapsed, setViewerCollapsed, isWide]);
   const collapseCockpit = useCallback(() => setCockpitCollapsed(true), [setCockpitCollapsed]);
 
-  // Bridge: auto-open / chip-click / tab-activate set state.expanded=true → expand the
-  // persisted panel. Loop-free: once collapsed flips false the guard `&& viewerCollapsed`
-  // stops it. collapseViewer() sets state.expanded=false so the NEXT created ref re-fires.
-  // Routes through the cap: also yields the cockpit below ultrawide.
-  useEffect(() => {
-    if (viewer.state.expanded && viewerCollapsed) {
-      setViewerCollapsed(false);
-      if (!isWide) setCockpitCollapsed(true);
-    }
-  }, [viewer.state.expanded, viewerCollapsed, isWide, setViewerCollapsed, setCockpitCollapsed]);
+  // collapseViewer is still used by CommanderViewerDetail's "Hide preview" button.
+  // On desktop it closes the viewer without restoring panel state (direct close,
+  // not from the choreography path). For the chat-header toggle we use closePreview().
+  const collapseViewer = useCallback(() => { setViewerCollapsed(true); viewer.collapse(); }, [setViewerCollapsed, viewer]);
 
-  // Phase 3a: Resize-cap effect. When the viewport crosses below ultrawide with
-  // both panels expanded, collapse the cockpit (viewer wins — design arbitration).
-  // Loop-free: once cockpit collapses the `!cockpitCollapsed` guard fails.
-  useEffect(() => {
-    if (!isWide && !viewerCollapsed && !cockpitCollapsed) setCockpitCollapsed(true);
-  }, [isWide, viewerCollapsed, cockpitCollapsed, setCockpitCollapsed]);
+  // Stable ref to openPreview for use inside stale SSE closures (onLiveRef).
+  // The sendText / handleSSEEvent callbacks are memoized and capture viewer + other
+  // values from the render they were created in, so we must NOT capture openPreview
+  // by value in those closures — use this ref instead.
+  const openPreviewRef = useRef(openPreview);
+  openPreviewRef.current = openPreview;
 
   // Conversations list — same cache key as SessionsSidebar (no extra fetch)
   const { data: conversationsData } = useQuery({
@@ -746,7 +786,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 : m,
             ),
           );
-          for (const r of liveRefs) viewer.onLiveRef(r, useDrawerSessions);
+          for (const r of liveRefs) {
+            // Phase 6 [A2]: if this ref would auto-open the viewer, run the
+            // choreography first (right-panel: collapses sessions only, keeps
+            // cockpit on ultrawide — do NOT yank both panels mid-stream).
+            // openPreviewRef is a stable ref so it's safe inside this stale closure.
+            if (enableViewerPanel && shouldAutoOpen(r, useDrawerSessions)) {
+              openPreviewRef.current("right-panel");
+            }
+            viewer.onLiveRef(r, useDrawerSessions);
+          }
         }
         break;
       }
@@ -1006,7 +1055,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onOpenSessions={onOpenSessions}
           viewerOpen={!viewerCollapsed}
           onToggleViewer={
-            enableViewerPanel ? (viewerCollapsed ? expandViewer : collapseViewer) : undefined
+            enableViewerPanel
+              ? (viewerCollapsed ? () => openPreview("center") : closePreview)
+              : undefined
           }
         />
       )}
@@ -1113,7 +1164,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                   data-commander-touch
                   aria-label="Open reply in viewer"
                   title="Open reply in viewer"
-                  onClick={() => viewer.openReply(msg.id, msg.content)}
+                  onClick={() => { openPreview("right-panel"); viewer.openReply(msg.id, msg.content); }}
                   className={cn(
                     "absolute top-1 right-6 flex items-center justify-center rounded p-0.5",
                     "opacity-0 group-hover:opacity-100 transition-opacity",
@@ -1147,7 +1198,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 ) : msg.streamingDone ? (
                   <MarkdownBody
                     className="prose-xs [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_pre]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs"
-                    onLinkOpen={enableViewerPanel ? viewer.openBrowser : undefined}
+                    onLinkOpen={enableViewerPanel ? (url: string) => { openPreview("right-panel"); viewer.openBrowser(url); } : undefined}
                   >
                     {msg.content}
                   </MarkdownBody>
@@ -1163,7 +1214,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
 
               {/* Commander Viewer P1: artifact handles under the reply text */}
               {msg.role === "assistant" && msg.outputRefs && msg.outputRefs.length > 0 && (
-                <OutputRefChips refs={msg.outputRefs} onOpen={viewer.openRef} />
+                <OutputRefChips
+                  refs={msg.outputRefs}
+                  onOpen={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
+                />
               )}
 
               {/* Action confirmation */}
@@ -1497,14 +1551,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           <CommanderCockpitPanel
             companyId={companyId}
             onCollapse={collapseCockpit}
-            onOpenTask={(issueId, title) => viewer.openTask(issueId, title)}
+            onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
             onAsk={(text) => void sendText(text)}
             onOpenFullPage={(href) => navigate(href)}
-            onOpenArtifact={(id, title) =>
-              viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" })
-            }
+            onOpenArtifact={(id, title) => {
+              openPreview("right-panel");
+              viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
+            }}
             conversationRefs={conversationRefs}
-            onOpenRef={(ref) => viewer.openRef(ref)}
+            onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
           />
         )}
       </div>

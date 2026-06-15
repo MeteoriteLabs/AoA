@@ -51,6 +51,14 @@ interface Props {
   onNewConversation: () => void;
   /** Commander desktop: render root as a rounded card (drops its own right border + sidebar bg). Off for the mobile drawer. */
   chrome?: boolean;
+  /**
+   * Phase 6 [A1]: Optional controlled collapse state lifted from Commander.tsx.
+   * When both are provided the component is fully controlled (choreography can
+   * collapse sessions from AgentPanelContent). Falls back to the internal
+   * useCommanderSessionsCollapsed hook when omitted (mobile drawer, legacy usage).
+   */
+  collapsed?: boolean;
+  onSetCollapsed?: (value: boolean) => void;
 }
 
 function groupByDate(conversations: ConversationRow[]) {
@@ -358,12 +366,19 @@ export function SessionsSidebar({
   onSelect,
   onNewConversation,
   chrome = false,
+  collapsed: collapsedProp,
+  onSetCollapsed,
 }: Props) {
   const { selectedCompanyId } = useCompany();
   const qc = useQueryClient();
 
-  // Global-persisted collapse — single key across all conversations (B5)
-  const [collapsed, setCollapsed] = useCommanderSessionsCollapsed();
+  // Global-persisted collapse — single key across all conversations (B5).
+  // Phase 6 [A1]: when controlled props are provided, use them; otherwise fall
+  // back to the internal hook (mobile drawer / legacy usage).
+  const [collapsedInternal, setCollapsedInternal] = useCommanderSessionsCollapsed();
+  const isControlled = collapsedProp !== undefined && onSetCollapsed !== undefined;
+  const collapsed = isControlled ? collapsedProp : collapsedInternal;
+  const setCollapsed = isControlled ? onSetCollapsed : setCollapsedInternal;
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
