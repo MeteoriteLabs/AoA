@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronsRight, LayoutDashboard, Settings2 } from "lucide-react";
-import type { CockpitData, CockpitPinnedEntityType } from "@armyofagents/shared";
+import type { CockpitData, CockpitPinnedEntityType, CommanderOutputRef } from "@armyofagents/shared";
 import { cockpitApi } from "../../../api/cockpit";
 import { queryKeys } from "../../../lib/queryKeys";
 import { cn } from "../../../lib/utils";
@@ -23,6 +23,7 @@ import { CockpitGoalsAtRiskCard } from "./CockpitGoalsAtRiskCard";
 import { CockpitBudgetPulseCard } from "./CockpitBudgetPulseCard";
 import { CockpitDoneTodayCard } from "./CockpitDoneTodayCard";
 import { useCockpitPin } from "./useCockpitPin";
+import { CockpitConversationZone } from "./CockpitConversationZone";
 
 // ---------------------------------------------------------------------------
 // Interaction callbacks type
@@ -277,9 +278,13 @@ export function CommanderCockpitPanel({
   onAsk,
   onOpenFullPage,
   onOpenArtifact,
+  conversationRefs = [],
+  onOpenRef,
 }: {
   companyId: string;
   onCollapse: () => void;
+  conversationRefs?: CommanderOutputRef[];
+  onOpenRef?: (ref: CommanderOutputRef) => void;
 } & CockpitInteractions) {
   const [prefs, setPrefs] = useCommanderCockpitPrefs();
 
@@ -334,6 +339,9 @@ export function CommanderCockpitPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {/* Conversation-scoped zone — always-on when refs exist; NOT a registry card. */}
+        <CockpitConversationZone refs={conversationRefs} onOpen={onOpenRef} />
+        {conversationRefs.length > 0 && <div className="mb-2" />}
         {/* Mountable cards (ordered by prefs.order, not hidden, defaultOn). Cards
             are now PRESENTATIONAL — active is derived from the shared batched data,
             not from per-card self-reporting. */}
@@ -353,7 +361,7 @@ export function CommanderCockpitPanel({
           </div>
         ))}
 
-        {visible.length === 0 && (
+        {visible.length === 0 && conversationRefs.length === 0 && (
           <div className="flex h-full items-center justify-center p-6 text-center text-xs text-muted-foreground">
             All clear — nothing needs you right now.
           </div>

@@ -1493,6 +1493,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 onOpenArtifact={(id, title) =>
                   viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" })
                 }
+                conversationRefs={conversationRefs}
+                onOpenRef={(ref) => viewer.openRef(ref)}
               />
             </Panel>
           </>
