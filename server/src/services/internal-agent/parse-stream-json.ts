@@ -295,20 +295,33 @@ function handleUserEvent(event: Record<string, unknown>, toolNames: Map<string, 
 
 // ── result event ───────────────────────────────────────────────────────────────
 
+function asNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
 function handleResultEvent(event: Record<string, unknown>): AgentStreamChunk[] {
-  // Emit a minimal done chunk. AgentStreamChunk.done requires a RunSummary;
-  // cost/usage data is available in the event but RunSummary's fields are
-  // slightly different (costCents, tokenUsage). Task 3 can extend this if needed.
+  const usageObj =
+    typeof event.usage === "object" && event.usage !== null
+      ? (event.usage as Record<string, unknown>)
+      : {};
+  const inputTokens = asNum(usageObj.input_tokens);
+  const outputTokens = asNum(usageObj.output_tokens);
+  const cachedInputTokens = asNum(usageObj.cache_read_input_tokens);
+
+  // Subscription CLI runs report total_cost_usd:0 — that's correct/intentional.
+  // We forward it verbatim; the route falls back to a token-based estimate when 0.
+  const costUsd = asNum(event.total_cost_usd);
+  const costCents = costUsd > 0 ? Math.round(costUsd * 100) : 0;
+
   return [
     {
       type: "done",
       summary: {
         runId: "",
         toolsCalled: [],
-        durationMs:
-          typeof event.duration_ms === "number" ? event.duration_ms : 0,
-        costCents: 0,
-        tokenUsage: { inputTokens: 0, outputTokens: 0 },
+        durationMs: asNum(event.duration_ms),
+        costCents,
+        tokenUsage: { inputTokens, outputTokens, cachedInputTokens },
       },
     },
   ];
