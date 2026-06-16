@@ -1244,6 +1244,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                         type="button"
                         data-testid={`commander-tool-activity-${tc.id}`}
                         disabled={!tc.summary}
+                        aria-expanded={!!tc.open}
+                        aria-controls={`tool-summary-${msg.id}-${tc.id}`}
                         onClick={() =>
                           setMessages((prev) =>
                             prev.map((m) =>
@@ -1271,6 +1273,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                       </button>
                       {tc.open && tc.summary && (
                         <pre
+                          id={`tool-summary-${msg.id}-${tc.id}`}
                           data-testid="commander-tool-summary"
                           className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px] text-muted-foreground"
                         >

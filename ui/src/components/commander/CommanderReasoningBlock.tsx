@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useId, useEffect, useState } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
 
 export function CommanderReasoningBlock({
@@ -10,6 +10,7 @@ export function CommanderReasoningBlock({
   // across the streaming→settled flip (no remount), so a mount-only initializer
   // never auto-collapses. Expand while streaming; collapse once settled / on reload.
   const [expanded, setExpanded] = useState(streaming && !defaultCollapsed);
+  const contentId = useId();
   useEffect(() => {
     setExpanded(streaming && !defaultCollapsed);
   }, [streaming, defaultCollapsed]);
@@ -18,6 +19,9 @@ export function CommanderReasoningBlock({
     <div className="mb-2 rounded-lg bg-muted/20 p-2" data-testid="commander-reasoning">
       <button
         type="button"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        aria-label="Show reasoning"
         onClick={() => setExpanded((v) => !v)}
         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground/60"
       >
@@ -31,7 +35,10 @@ export function CommanderReasoningBlock({
         )}
       </button>
       {(expanded || streaming) && (
-        <p className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap text-xs italic text-muted-foreground/80">
+        <p
+          id={contentId}
+          className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap text-xs italic text-muted-foreground/80"
+        >
           {text}
         </p>
       )}
