@@ -182,6 +182,9 @@ export function internalAgentRoutes(db: Db) {
             durationMs: number;
             costCents: number;
             tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+            /** F1: adapter-reported model/provider for provenance (separate from cost-label). */
+            model?: string | null;
+            provider?: string | null;
           }
         | null = null;
 
@@ -331,6 +334,12 @@ export function internalAgentRoutes(db: Db) {
             })
           : reportedCostCents;
 
+        // F1: prefer the adapter-reported model/provider (actual runtime provenance)
+        // over the cost-label defaults (which are pricing inputs, not provenance).
+        // Cost PRICING still uses runModel/runProvider via resolveRunCostCents above.
+        const persistedModel = finalSummary?.model ?? runModel;
+        const persistedProvider = finalSummary?.provider ?? runProvider;
+
         await db
           .update(internalAgentRuns)
           .set({
@@ -339,18 +348,22 @@ export function internalAgentRoutes(db: Db) {
             durationMs,
             costCents,
             tokenUsage,
-            model: runModel,
-            provider: runProvider,
+            model: persistedModel,
+            provider: persistedProvider,
           })
-          .where(eq(internalAgentRuns.id, run.id));
+          // F6: also scope by companyId for defense-in-depth (id is server-created
+          // so this is not an active hole, but matches the repo's company-scoping rule).
+          .where(and(eq(internalAgentRuns.id, run.id), eq(internalAgentRuns.companyId, companyId)));
 
+        // F2: send the LOCALLY-COMPUTED costCents (the value persisted to DB)
+        // and a guaranteed-non-null tokenUsage so the wire matches the DB row.
         res.write(
           `event: done\ndata: ${JSON.stringify({
             messageId: run.id,
             runId: run.id,
             durationMs,
-            tokenUsage: finalSummary?.tokenUsage ?? { inputTokens: 0, outputTokens: 0 },
-            costCents: finalSummary?.costCents ?? 0,
+            tokenUsage: tokenUsage ?? { inputTokens: 0, outputTokens: 0 },
+            costCents,
           })}\n\n`,
         );
       } catch (err) {
