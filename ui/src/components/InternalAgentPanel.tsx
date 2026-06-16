@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   AtSign,
   Bot,
   Check,
+  ChevronRight,
   Copy,
   ExternalLink,
   Loader2,
@@ -12,7 +14,6 @@ import {
   PanelLeft,
   Send,
   Square,
-  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -1193,17 +1194,48 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 </button>
               )}
 
-              {/* Tool call indicators */}
+              {/* Tool activity — inline, expandable, with status glyph */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="space-y-1 mb-2">
                   {msg.toolCalls.map((tc) => (
-                    <div key={tc.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      {tc.status === "running" ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Wrench className="h-3 w-3" />
+                    <div key={tc.id} className="text-xs">
+                      <button
+                        type="button"
+                        data-testid={`commander-tool-activity-${tc.id}`}
+                        disabled={!tc.summary}
+                        onClick={() =>
+                          setMessages((prev) =>
+                            prev.map((m) =>
+                              m.id === msg.id
+                                ? { ...m, toolCalls: (m.toolCalls ?? []).map((t) => (t.id === tc.id ? { ...t, open: !t.open } : t)) }
+                                : m,
+                            ),
+                          )
+                        }
+                        className="flex w-full items-center gap-1.5 text-left text-muted-foreground hover:text-foreground disabled:cursor-default disabled:hover:text-muted-foreground"
+                      >
+                        {tc.status === "running" ? (
+                          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                        ) : tc.success === false ? (
+                          <AlertCircle className="h-3 w-3 shrink-0 text-red-500" />
+                        ) : (
+                          <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                        )}
+                        <span className="truncate">
+                          {tc.status === "running" ? toolLabel(tc.name) : completedToolLabel(tc.name)}
+                        </span>
+                        {tc.summary && (
+                          <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", tc.open && "rotate-90")} />
+                        )}
+                      </button>
+                      {tc.open && tc.summary && (
+                        <pre
+                          data-testid="commander-tool-summary"
+                          className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px] text-muted-foreground"
+                        >
+                          {tc.summary}
+                        </pre>
                       )}
-                      <span>{tc.status === "running" ? toolLabel(tc.name) : completedToolLabel(tc.name)}</span>
                     </div>
                   ))}
                 </div>
@@ -1236,6 +1268,14 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                   refs={msg.outputRefs}
                   onOpen={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
                 />
+              )}
+
+              {/* Live-only: durationMs comes from the done SSE event, not persisted
+                  (it's on internal_agent_runs). Absent after reload by design. */}
+              {msg.role === "assistant" && msg.streamingDone && typeof msg.durationMs === "number" && msg.durationMs > 0 && (
+                <p data-testid="commander-worked-for" className="mt-1 text-[10px] text-muted-foreground">
+                  Worked for {(msg.durationMs / 1000).toFixed(1)}s
+                </p>
               )}
 
               {/* Action confirmation */}
