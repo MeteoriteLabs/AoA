@@ -1218,6 +1218,92 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(text).not.toContain('"type"');
   });
 
+  it("codex argv: first-turn argv contains -c model_reasoning_summary=detailed before the trailing -", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "hi");
+
+    const [binary, args] = vi.mocked(cp.spawn).mock.calls[0];
+    expect(binary).toBe("codex");
+    const argArr = args as string[];
+    // -c flag is present with the reasoning summary value
+    const cIdx = argArr.indexOf("-c");
+    expect(cIdx).toBeGreaterThan(-1);
+    expect(argArr[cIdx + 1]).toBe("model_reasoning_summary=detailed");
+    // The -c/value pair appears BEFORE the trailing -
+    const trailingDashIdx = argArr.lastIndexOf("-");
+    expect(cIdx).toBeLessThan(trailingDashIdx);
+    // Trailing - is still the last positional
+    expect(argArr[argArr.length - 1]).toBe("-");
+  });
+
+  it("codex argv: resumed-turn argv contains -c model_reasoning_summary=detailed before resume <id> -", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "turn one");
+    await drainChat(service, "codex", "turn two");
+
+    const [, resumeArgs] = vi.mocked(cp.spawn).mock.calls[1];
+    const argArr = resumeArgs as string[];
+    // -c flag present with value before resume
+    const cIdx = argArr.indexOf("-c");
+    expect(cIdx).toBeGreaterThan(-1);
+    expect(argArr[cIdx + 1]).toBe("model_reasoning_summary=detailed");
+    const resumeIdx = argArr.indexOf("resume");
+    expect(cIdx).toBeLessThan(resumeIdx);
+    // Trailing - is still the last positional
+    expect(argArr[argArr.length - 1]).toBe("-");
+  });
+
+  it("codex argv: fresh-retry after unknown-session also contains -c model_reasoning_summary=detailed before trailing -", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({
+      stdout: "",
+      stderr: "Error: unknown session codex-sess-aaa",
+      exitCode: 1,
+    });
+    const proc3 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any)
+      .mockReturnValueOnce(proc3 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "first message");
+    await drainChat(service, "codex", "second message");
+
+    // spawn call [2] is the fresh retry (no resume)
+    const [, retryArgs] = vi.mocked(cp.spawn).mock.calls[2];
+    const argArr = retryArgs as string[];
+    const cIdx = argArr.indexOf("-c");
+    expect(cIdx).toBeGreaterThan(-1);
+    expect(argArr[cIdx + 1]).toBe("model_reasoning_summary=detailed");
+    expect(argArr).not.toContain("resume");
+    expect(argArr[argArr.length - 1]).toBe("-");
+  });
+
   it("claude_cli uses print-mode argv (prompt NOT on stdin) + stream-json accumulation + done shape; no codex sessionId", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);

@@ -434,9 +434,10 @@ async function resolveCliInvocation(
       // internal process (MCP bridge is AoA-owned, not user code). Without
       // this flag Codex's approval gate cancels every MCP tool call since
       // there is no interactive console to approve them.
+      const reasoningArgs = ["-c", "model_reasoning_summary=detailed"];
       const codexArgs = resumeCodexSessionId
-        ? ["exec", "--json", ...codexBypassArgs, "resume", resumeCodexSessionId, "-"]
-        : ["exec", "--json", ...codexBypassArgs, "-"];
+        ? ["exec", "--json", ...codexBypassArgs, ...reasoningArgs, "resume", resumeCodexSessionId, "-"]
+        : ["exec", "--json", ...codexBypassArgs, ...reasoningArgs, "-"];
       return {
         binary: "codex",
         args: codexArgs,
