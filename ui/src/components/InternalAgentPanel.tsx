@@ -52,7 +52,7 @@ import { SkillPicker } from "./commander/SkillPicker";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
 import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCollapsed";
-import { CommanderCockpitPanel, CommanderCockpitRail } from "./commander/cockpit/CommanderCockpitPanel";
+import { CommanderCockpitPanel } from "./commander/cockpit/CommanderCockpitPanel";
 import {
   CommanderViewerPanel,
   CommanderViewerDetail,
@@ -230,6 +230,9 @@ export interface ToolCallEntry {
   id: number;
   name: string;
   status: "running" | "done";
+  success?: boolean;
+  summary?: string;
+  open?: boolean;
 }
 
 export interface LocalMessage {
@@ -253,15 +256,28 @@ export interface LocalMessage {
   };
   outputRefs?: CommanderOutputRef[];
   createdAt: string;
+  durationMs?: number;
 }
 
 function serverToLocal(m: AgentMessage): LocalMessage {
+  const calls = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+  const toolCalls: ToolCallEntry[] | undefined =
+    calls.length > 0
+      ? calls.map((c, i) => ({
+          id: i,
+          name: c.name,
+          status: "done" as const,
+          ...(c.success !== undefined ? { success: c.success } : {}),
+          ...(c.summary !== undefined ? { summary: c.summary } : {}),
+        }))
+      : undefined;
   return {
     id: m.id,
     role: m.role === "tool" ? "system" : m.role,
     content: m.content ?? "",
     streamingDone: true,
     outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
+    ...(toolCalls ? { toolCalls } : {}),
     createdAt: m.createdAt,
   };
 }
@@ -754,12 +770,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== assistantId) return m;
-            const toolName = (event.data as { name?: string }).name;
+            const data = event.data as { name?: string; success?: boolean; summary?: string };
+            const toolName = data.name;
             let found = false;
             const updated = (m.toolCalls ?? []).map((tc) => {
               if (!found && tc.name === toolName && tc.status === "running") {
                 found = true;
-                return { ...tc, status: "done" as const };
+                return { ...tc, status: "done" as const, success: data.success ?? true, summary: data.summary };
               }
               return tc;
             });
@@ -830,9 +847,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         break;
       }
 
-      case "done":
-        setMessages((prev) => settleRunningToolCalls(prev, assistantId));
+      case "done": {
+        const durationMs = (event.data as { durationMs?: number }).durationMs;
+        setMessages((prev) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
+            m.id === assistantId && typeof durationMs === "number" ? { ...m, durationMs } : m,
+          ),
+        );
         break;
+      }
     }
   }
 
@@ -1547,24 +1570,22 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         data-testid="commander-cockpit-container"
         data-collapsed={cockpitCollapsed ? "true" : "false"}
       >
-        {cockpitCollapsed ? (
-          <CommanderCockpitRail badge={0} onExpand={expandCockpit} />
-        ) : (
-          <CommanderCockpitPanel
-            companyId={companyId}
-            conversationId={conversationId}
-            onCollapse={collapseCockpit}
-            onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
-            onAsk={(text) => void sendText(text)}
-            onOpenFullPage={(href) => navigate(href)}
-            onOpenArtifact={(id, title) => {
-              openPreview("right-panel");
-              viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
-            }}
-            conversationRefs={conversationRefs}
-            onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
-          />
-        )}
+        <CommanderCockpitPanel
+          companyId={companyId}
+          conversationId={conversationId}
+          collapsed={cockpitCollapsed}
+          onExpand={expandCockpit}
+          onCollapse={collapseCockpit}
+          onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
+          onAsk={(text) => void sendText(text)}
+          onOpenFullPage={(href) => navigate(href)}
+          onOpenArtifact={(id, title) => {
+            openPreview("right-panel");
+            viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
+          }}
+          conversationRefs={conversationRefs}
+          onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
+        />
       </div>
     </div>
   );
