@@ -29,7 +29,10 @@ interface RunSummary {
   toolsCalled: string[];
   durationMs: number;
   costCents: number;
-  tokenUsage: { inputTokens: number; outputTokens: number };
+  tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  /** Model/provider actually used, when the adapter reports it (cost estimate input). */
+  model?: string | null;
+  provider?: string | null;
 }
 
 export type AgentStreamChunk =
