@@ -176,7 +176,7 @@ async function main() {
     result: text,
     session_id: "fake-claude-session",
     total_cost_usd: 0,
-    usage: { input_tokens: 1, output_tokens: 1 },
+    usage: { input_tokens: 1200, output_tokens: 340, cache_read_input_tokens: 800 },
   });
 }
 
