@@ -138,6 +138,17 @@ async function main() {
     await sleep(control.holdMs);
   }
 
+  // Emit a thinking block + delta so e2e specs can assert the reasoning block.
+  // Gated behind control.reasoning (optional boolean, defaults true) so callers
+  // can suppress it if needed — no existing spec asserts absence of reasoning,
+  // so the default is to emit unconditionally (control.reasoning !== false).
+  if (control.reasoning !== false) {
+    emit({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
+    emit({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Considering the request… " } } });
+    emit({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    await sleep(10);
+  }
+
   // Stream the reply word-by-word via content_block_delta/text_delta — the
   // exact shape handleStreamEvent() consumes.
   const words = text.match(/\S+\s*/g) ?? [text];
