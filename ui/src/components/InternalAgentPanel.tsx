@@ -1148,9 +1148,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
-                "group relative max-w-[85%] rounded-lg px-3 py-2 text-sm",
+                "group relative max-w-[85%] rounded-2xl px-3 py-2 text-sm",
                 msg.role === "user"
-                  ? "bg-primary text-primary-foreground"
+                  ? "bg-card text-card-foreground shadow-sm"
                   : "bg-muted",
               )}
             >
@@ -1166,7 +1166,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                     "absolute top-1 right-1 flex items-center justify-center rounded p-0.5",
                     "opacity-0 group-hover:opacity-100 transition-opacity",
                     "text-muted-foreground hover:text-foreground",
-                    msg.role === "user" && "text-primary-foreground/60 hover:text-primary-foreground",
                   )}
                 >
                   {copiedMessageId === msg.id
