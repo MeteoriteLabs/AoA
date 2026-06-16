@@ -21,6 +21,7 @@ import {
   type NormalizedCommanderContextScope,
 } from "./context-scope.js";
 import { collectChunkRefs, mergeOutputRefs } from "./output-refs.js";
+import { humanToolSummary } from "./tool-summary.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -293,8 +294,21 @@ export function agentLoopService(db: Db) {
 
         let accumulatedAssistant = "";
         const turnRefs: CommanderOutputRef[] = [];
+        const turnToolCalls: Array<{ name: string; success?: boolean; summary?: string }> = [];
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
+          if (chunk.type === "tool_call") {
+            turnToolCalls.push({ name: chunk.name });
+          }
+          if (chunk.type === "tool_result") {
+            const enriched = {
+              success: chunk.result?.success ?? true,
+              summary: humanToolSummary(chunk.name, chunk.result?.summary ?? chunk.result?.data),
+            };
+            const match = turnToolCalls.find((c) => c.name === chunk.name && c.success === undefined);
+            if (match) Object.assign(match, enriched);
+            else turnToolCalls.push({ name: chunk.name, ...enriched });
+          }
           collectChunkRefs(turnRefs, chunk);
           yield chunk;
         }
@@ -310,6 +324,7 @@ export function agentLoopService(db: Db) {
             role: "assistant",
             content: accumulatedAssistant,
             ...(outputRefs ? { outputRefs } : {}),
+            ...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
           });
         }
 
