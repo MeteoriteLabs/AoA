@@ -301,15 +301,14 @@ export function agentLoopService(db: Db) {
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
           if (chunk.type === "reasoning") {
-            // F5: cap accumulation early — once the cap is reached, stop appending
-            // (and skip forwarding further reasoning deltas) to avoid holding a
-            // huge string in memory for the rest of the turn.
-            if (accumulatedReasoning.length < REASONING_CAP) {
-              accumulatedReasoning += chunk.delta;
-            } else {
-              // Cap reached — skip yielding and accumulating; continue to next chunk.
+            // F5: cap accumulation exactly — once at/over cap, stop appending and
+            // skip forwarding to avoid holding a huge string in memory.
+            if (accumulatedReasoning.length >= REASONING_CAP) {
+              // Already at/over cap — skip yielding and accumulating.
               continue;
             }
+            // Slice to cap so a large delta cannot overshoot by one chunk.
+            accumulatedReasoning = (accumulatedReasoning + chunk.delta).slice(0, REASONING_CAP);
           }
           if (chunk.type === "tool_call") {
             turnToolCalls.push({ name: chunk.name });
