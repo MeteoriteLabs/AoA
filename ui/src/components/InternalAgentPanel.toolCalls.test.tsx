@@ -13,7 +13,7 @@ const serverMsg: AgentMessage = {
 };
 
 describe("tool activity survives server→local mapping", () => {
-  it("maps persisted toolCalls+toolResults into done ToolCallEntry", () => {
+  it("maps persisted enriched toolCalls into done ToolCallEntry", () => {
     const merged = mergeServerMessagesWithTransientLocal([serverMsg], []);
     expect(merged[0]!.toolCalls).toHaveLength(1);
     expect(merged[0]!.toolCalls![0]).toMatchObject({
