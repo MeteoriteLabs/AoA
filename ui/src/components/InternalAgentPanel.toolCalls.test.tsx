@@ -7,6 +7,7 @@ const serverMsg: AgentMessage = {
   role: "assistant",
   content: "done",
   toolCalls: [{ name: "create_task", success: true, summary: "Created task X" }],
+  reasoning: null,
   outputRefs: null,
   pageContext: null,
   createdAt: "2026-06-16T00:00:00Z",

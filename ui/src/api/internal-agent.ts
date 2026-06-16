@@ -27,6 +27,7 @@ export interface AgentMessage {
   role: "assistant" | "user" | "system" | "tool";
   content: string | null;
   toolCalls: AgentMessageToolCall[] | null;
+  reasoning: string | null;
   outputRefs: CommanderOutputRef[] | null;
   pageContext: string | null;
   createdAt: string;
@@ -123,6 +124,7 @@ export interface AgentRemindersResponse {
 
 export type SSEEventType =
   | "thinking"
+  | "reasoning"
   | "tool_call"
   | "tool_result"
   | "content"

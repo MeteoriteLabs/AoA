@@ -7,6 +7,7 @@ const serverMsg: AgentMessage = {
   role: "assistant",
   content: "done",
   toolCalls: null,
+  reasoning: null,
   outputRefs: [{ v: 1, kind: "artifact", id: "a1", action: "created" } as any],
   pageContext: null,
   createdAt: "2026-06-11T00:00:00Z",
