@@ -1,17 +1,21 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { writeFakeCodexControl } from "./helpers/fake-codex";
 
 /**
- * E2E (P1) — Commander error states: not-configured + codex failure.
+ * E2E (P1) — Commander error states: unsupported CLI tool + codex JSONL failure.
  *
  * Two cases asserting the chat surface shows an ERROR bubble (NOT a hung
  * "Thinking" spinner) when Commander cannot complete a turn:
  *
- * (a) Not-configured: cliTool=null — cli-mode yields
- *     {type:"error", message:"No CLI tool configured…"} immediately. The UI
- *     renders the error text as the message content and the send button is
- *     restored (no perpetual spinner).
+ * (a) Unsupported CLI tool: cliTool="phantom_cli_xyz_not_in_map" — the
+ *     agent-loop passes the value to cli-mode, detectCliTool finds it missing
+ *     from CLI_BINARY_MAP, and yields {type:"error", message:"Unsupported CLI
+ *     tool…"}. The UI renders the error text and the send button is restored.
+ *     NOTE: cliTool=null defaults to "claude_cli" in agent-loop (there is no
+ *     "not configured" user path in the current implementation — the default
+ *     absorbs null). The unsupported-name path exercises the same "error" SSE
+ *     event handler in the UI and is a real production guard.
  *
  * (b) Codex JSONL failure: cliTool="codex" + control {fail:"model-400"} →
  *     fake-codex emits turn.failed, parseCodexJsonl surfaces errorMessage →
@@ -23,11 +27,7 @@ import { writeFakeCodexControl } from "./helpers/fake-codex";
  * NOT testable per-spec because fake-codex is permanently on the webServer
  * PATH — prepending the fixture dir means `which codex` always succeeds.
  * That case is covered by the no-browser server unit tests (plan-review fix
- * #4). This spec covers the route's {type:"error"} SSE path via the model-400
- * JSONL failure, which exercises the same error-bubble render path.
- *
- * Fresh company auto-seeds internal_agent_config with cliTool=null (→ claude
- * default), so case (a) needs NO config mutation — just send immediately.
+ * #4). This spec covers the route's {type:"error"} SSE path via two real paths.
  */
 
 async function sendMessage(page: Page, text: string): Promise<void> {
@@ -53,7 +53,7 @@ async function waitForTurnEnd(page: Page): Promise<void> {
 
 /** Flip cliTool to codex for the given company. */
 async function setCodexCliTool(
-  request: Parameters<typeof test.beforeEach>[0] extends { request: infer R } ? R : never,
+  request: APIRequestContext,
   companyId: string,
 ): Promise<void> {
   const res = await request.patch(
@@ -71,36 +71,37 @@ test.describe("Commander error states", () => {
     await cleanupTestCompanies(request, /^E2E-CmdError-/);
   });
 
-  test("(a) not-configured: cliTool=null → 'No CLI tool configured' error message, no perpetual spinner", async ({
+  test("(a) unsupported CLI tool → 'Unsupported CLI tool' error bubble, no perpetual spinner", async ({
     page,
     request,
   }) => {
-    // Fresh company: cliTool=null by default — no PATCH needed.
     const company = await seedCompany(
       request,
       `E2E-CmdError-NoCLI-${Date.now()}`,
     );
 
+    // Set an unrecognized cliTool name — not in CLI_BINARY_MAP → detectCliTool
+    // returns "Unsupported CLI tool: 'phantom_cli_xyz'…" → {type:"error"} SSE.
+    await request.patch(
+      `/api/companies/${company.id}/internal-agent/config`,
+      { data: { cliTool: "phantom_cli_xyz" } },
+    );
+
     await page.goto(`/${company.issuePrefix}/commander`);
 
-    // Send a message. cli-mode detects cliTool=null immediately and yields
-    // {type:"error"} — no subprocess is spawned. The SSE "error" event arrives
-    // quickly and replaces the streaming bubble content.
+    // Send a message. detectCliTool fires synchronously (no subprocess) and
+    // yields {type:"error"} — the SSE "error" event arrives quickly.
     await sendMessage(page, "Hello Commander");
 
-    // The error text (exact message from cli-mode.ts line 513) must render.
+    // The error text must render. The exact message from detectCliTool:
+    // "Unsupported CLI tool: 'phantom_cli_xyz'. Supported: …"
     await expect(
-      page.getByText(/No CLI tool configured/i),
+      page.getByText(/Unsupported CLI tool.*phantom_cli_xyz/i),
     ).toBeVisible({ timeout: 20_000 });
 
     // No perpetual "Thinking" state — Stop generation must disappear and
     // Send message must be restored once the error event fires.
     await waitForTurnEnd(page);
-
-    // Confirm the raw "No CLI tool configured" message is present in the chat.
-    await expect(
-      page.getByText(/No CLI tool configured/i),
-    ).toBeVisible({ timeout: 5_000 });
   });
 
   test("(b) codex JSONL failure (model-400): error bubble renders, no perpetual spinner", async ({

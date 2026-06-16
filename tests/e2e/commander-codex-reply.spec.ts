@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import {
   writeFakeCodexControl,
@@ -51,7 +51,7 @@ async function waitForTurnEnd(page: Page): Promise<void> {
 
 /** Flip internal_agent_config.cliTool to "codex" for the given company. */
 async function setCodexCliTool(
-  request: Parameters<typeof test.beforeEach>[0] extends { request: infer R } ? R : never,
+  request: APIRequestContext,
   companyId: string,
 ): Promise<void> {
   const res = await request.patch(
@@ -100,11 +100,14 @@ test.describe("Commander codex reply + invocation contract", () => {
     const reasoningBlock = page.getByTestId("commander-reasoning");
     await expect(reasoningBlock).toBeVisible({ timeout: 30_000 });
 
-    // The reasoning text accumulated from the codex reasoning item is visible.
-    await expect(page.getByText(REASONING_TEXT)).toBeVisible({ timeout: 10_000 });
-
     // The assistant reply renders the real text, NOT raw JSONL lines.
     await expect(page.getByText(REPLY_TEXT)).toBeVisible({ timeout: 15_000 });
+
+    // The reasoning text is inside the collapsible "Thinking" block. Click to
+    // expand it, then assert the text renders (may be collapsed by default once
+    // the turn settles; the reasoning block collapses after streaming completes).
+    await reasoningBlock.getByRole("button").click();
+    await expect(page.getByText(REASONING_TEXT)).toBeVisible({ timeout: 10_000 });
 
     // Raw JSONL artifacts must NOT appear (pre-MX-chatparse regression guard).
     await expect(page.getByText(/"type":"thread.started"/)).toHaveCount(0);
