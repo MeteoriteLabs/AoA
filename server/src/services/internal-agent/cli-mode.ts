@@ -14,6 +14,7 @@ import {
   type NormalizedCommanderContextScope,
 } from "./context-scope.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
+import { COMMANDER_MAX_THINKING_TOKENS } from "./thinking-config.js";
 import { logger } from "../../middleware/logger.js";
 
 function normalizeCliContextScope(
@@ -386,6 +387,7 @@ async function resolveCliInvocation(
             "--verbose",
             systemSplitArgs.safeRawContent,
           ],
+          spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
           mcpArtifactPath: configPath,
         };
       }
@@ -401,6 +403,7 @@ async function resolveCliInvocation(
           "--verbose",
           safeContent,
         ],
+        spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
         mcpArtifactPath: configPath,
       };
     }
