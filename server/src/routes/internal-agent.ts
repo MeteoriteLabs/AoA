@@ -29,6 +29,7 @@ import { permissionService } from "../services/permissions.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
+import { resolveRunCostCents, rateModelForCliTool } from "../services/internal-agent/run-cost.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -166,6 +167,8 @@ export function internalAgentRoutes(db: Db) {
         })
         .returning();
 
+      const runStartedAt = Date.now();
+
       // Signal "thinking" to the UI while we kick off the dispatch.
       res.write(
         `event: thinking\ndata: ${JSON.stringify({ status: "processing" })}\n\n`,
@@ -177,7 +180,7 @@ export function internalAgentRoutes(db: Db) {
             toolsCalled: string[];
             durationMs: number;
             costCents: number;
-            tokenUsage: { inputTokens: number; outputTokens: number };
+            tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
           }
         | null = null;
 
@@ -214,12 +217,21 @@ export function internalAgentRoutes(db: Db) {
         // config row exists — chat will surface "not configured" further
         // down anyway.
         const cfgRows = await db
-          .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+          .select({
+            enabledCapabilities: internalAgentConfig.enabledCapabilities,
+            model: internalAgentConfig.model,
+            cliTool: internalAgentConfig.cliTool,
+          })
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId));
-        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as
-          | string[]
-          | null) ?? [];
+        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as string[] | null) ?? [];
+        // REVIEW FIX (Lens C): price by the ACTIVE cli tool, not the dormant
+        // config.model column (which defaults to sonnet for every company).
+        const effectiveCliTool = cfgRows[0]?.cliTool ?? "claude_cli";
+        const { provider: runProvider, model: runModel } = rateModelForCliTool(
+          effectiveCliTool,
+          cfgRows[0]?.model ?? null,
+        );
 
         const stream = svc.chat({
           companyId,
@@ -295,24 +307,40 @@ export function internalAgentRoutes(db: Db) {
         }
 
         // Mark run completed
+        const tokenUsage = finalSummary?.tokenUsage ?? null;
+        const reportedCostCents = finalSummary?.costCents ?? 0;
+        const wallClockMs = Date.now() - runStartedAt;
+        const durationMs =
+          finalSummary && finalSummary.durationMs > 0 ? finalSummary.durationMs : wallClockMs;
+        const costCents = tokenUsage
+          ? resolveRunCostCents({
+              reportedCostCents,
+              provider: runProvider,
+              model: runModel,
+              inputTokens: tokenUsage.inputTokens,
+              outputTokens: tokenUsage.outputTokens,
+            })
+          : reportedCostCents;
+
         await db
           .update(internalAgentRuns)
           .set({
             status: "completed",
             completedAt: new Date(),
-            durationMs: finalSummary?.durationMs ?? null,
-            costCents: finalSummary?.costCents ?? null,
-            tokenUsage: finalSummary?.tokenUsage ?? null,
+            durationMs,
+            costCents,
+            tokenUsage,
+            model: runModel,
+            provider: runProvider,
           })
           .where(eq(internalAgentRuns.id, run.id));
 
-        // Send done event. For CLI mode the numeric fields are zeros until
-        // run tracking is re-introduced; the shape matches what the UI expects.
         res.write(
           `event: done\ndata: ${JSON.stringify({
             messageId: run.id,
             runId: run.id,
-            tokenUsage: finalSummary?.tokenUsage ?? { input: 0, output: 0 },
+            durationMs,
+            tokenUsage: finalSummary?.tokenUsage ?? { inputTokens: 0, outputTokens: 0 },
             costCents: finalSummary?.costCents ?? 0,
           })}\n\n`,
         );
