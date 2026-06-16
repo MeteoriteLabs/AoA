@@ -20,11 +20,13 @@ export interface AgentConversation {
   offset: number;
 }
 
+export interface AgentMessageToolCall { name: string; success?: boolean; summary?: string }
+
 export interface AgentMessage {
   id: string;
   role: "assistant" | "user" | "system" | "tool";
   content: string | null;
-  toolCalls: unknown | null;
+  toolCalls: AgentMessageToolCall[] | null;
   outputRefs: CommanderOutputRef[] | null;
   pageContext: string | null;
   createdAt: string;
