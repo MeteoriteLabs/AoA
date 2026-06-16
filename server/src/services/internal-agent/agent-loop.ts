@@ -38,6 +38,7 @@ interface RunSummary {
 
 export type AgentStreamChunk =
   | { type: "text"; delta: string }
+  | { type: "reasoning"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; name: string; result: ToolResult; refs?: CommanderOutputRef[] }
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }

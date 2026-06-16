@@ -153,16 +153,24 @@ function handleStreamEvent(event: Record<string, unknown>): AgentStreamChunk[] {
   const inner = event.event as Record<string, unknown> | undefined;
   if (!inner) return [];
 
-  // Only content_block_delta with text_delta carries text we need to surface.
+  // Only content_block_delta carries deltas we need to surface.
   if (inner.type !== "content_block_delta") return [];
 
   const delta = inner.delta as Record<string, unknown> | undefined;
-  if (!delta || delta.type !== "text_delta") return [];
+  if (!delta) return [];
 
-  const text = delta.text;
-  if (typeof text !== "string") return [];
+  if (delta.type === "text_delta") {
+    const text = delta.text;
+    return typeof text === "string" ? [{ type: "text", delta: text }] : [];
+  }
 
-  return [{ type: "text", delta: text }];
+  if (delta.type === "thinking_delta") {
+    const thinking = delta.thinking;
+    return typeof thinking === "string" ? [{ type: "reasoning", delta: thinking }] : [];
+  }
+
+  // signature_delta / input_json_delta and any other delta type: not surfaced.
+  return [];
 }
 
 // ── assistant event ────────────────────────────────────────────────────────────
@@ -190,7 +198,7 @@ function handleAssistantEvent(event: Record<string, unknown>, toolNames: Map<str
       if (id && name) toolNames.set(id, name);
       chunks.push({ type: "tool_call", id, name, input });
     }
-    // text and thinking blocks: skip — text already streamed via stream_event deltas
+    // text + thinking blocks: skip — both stream incrementally via stream_event deltas (text_delta / thinking_delta)
   }
 
   return chunks;

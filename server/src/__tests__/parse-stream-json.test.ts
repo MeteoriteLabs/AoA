@@ -552,3 +552,24 @@ describe("handleResultEvent extracts real usage + cost", () => {
     expect(dones[0].summary.costCents).toBe(1);
   });
 });
+
+describe("handleStreamEvent surfaces thinking_delta as reasoning", () => {
+  it("emits a reasoning chunk for a thinking_delta", () => {
+    const parser = new StreamJsonParser();
+    const line = JSON.stringify({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me reason..." } },
+    });
+    const chunks = parser.push(line + "\n");
+    expect(chunks).toEqual([{ type: "reasoning", delta: "Let me reason..." }]);
+  });
+
+  it("still drops signature_delta (opaque, not human reasoning)", () => {
+    const parser = new StreamJsonParser();
+    const line = JSON.stringify({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "abc" } },
+    });
+    expect(parser.push(line + "\n")).toEqual([]);
+  });
+});
