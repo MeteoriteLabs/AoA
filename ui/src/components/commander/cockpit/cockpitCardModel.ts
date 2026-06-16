@@ -8,8 +8,8 @@ export interface CockpitCardDef {
   defaultOn: boolean;
 }
 
-export interface CockpitVisibilityInput {
-  registry: CockpitCardDef[];
+export interface CockpitVisibilityInput<T extends CockpitCardDef = CockpitCardDef> {
+  registry: T[];
   hidden: string[];          // prefs.hidden
   order: string[];           // prefs.order
   active: Record<string, boolean>; // cardId -> has data
@@ -43,7 +43,7 @@ export function mountableCards<T extends CockpitCardDef>(
 
 /** Cards currently VISIBLE (mountable + has data) — drives the "All clear" decision.
  *  show-only-active: empty cards drop out (unless a future pin). */
-export function selectVisibleCards(input: CockpitVisibilityInput): CockpitCardDef[] {
+export function selectVisibleCards<T extends CockpitCardDef>(input: CockpitVisibilityInput<T>): T[] {
   const { registry, hidden, order, active, enabled } = input;
   return mountableCards(registry, hidden, order, enabled ?? []).filter((c) => active[c.id] === true);
 }

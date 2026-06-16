@@ -406,6 +406,8 @@ function CockpitConfigPopover({
 export function CommanderCockpitPanel({
   companyId,
   conversationId,
+  collapsed = false,
+  onExpand,
   onCollapse,
   onOpenTask,
   onAsk,
@@ -417,6 +419,10 @@ export function CommanderCockpitPanel({
   companyId: string;
   /** Phase 7: active Commander conversation id for the Memory cockpit card. */
   conversationId?: string | null;
+  /** When true the panel renders its 48px rail (with one icon per active card). */
+  collapsed?: boolean;
+  /** Expand from the rail. */
+  onExpand?: () => void;
   onCollapse: () => void;
   conversationRefs?: CommanderOutputRef[];
   onOpenRef?: (ref: CommanderOutputRef) => void;
@@ -470,6 +476,25 @@ export function CommanderCockpitPanel({
       return { ...prev, [id]: open };
     });
   }, []);
+
+  // Collapsed → render the 48px rail with one icon per ACTIVE card. The rail needs
+  // the active-card list, which only the panel can compute (it owns the cockpit
+  // query). So the panel renders its own rail rather than a data-less sibling —
+  // mirrors WorkspaceRightPanel, which owns both expanded + collapsed states.
+  // (Early return is after all hooks above — Rules of Hooks safe.)
+  if (collapsed) {
+    return (
+      <CommanderCockpitRail
+        badge={visible.length}
+        onExpand={onExpand ?? (() => {})}
+        activeCards={visible}
+        onExpandAndShowCard={(id) => {
+          setCardOpen(id, true);
+          onExpand?.();
+        }}
+      />
+    );
+  }
 
   return (
     <div
