@@ -249,11 +249,10 @@ test.describe("Commander viewer", () => {
       timeout: 15_000,
     });
 
-    // Hold the stream open after the tool_result so the (transient,
-    // un-persisted) tool indicator stays observable. Tool-call indicators live
-    // only in local streaming state — the assistant message persists content +
-    // outputRefs, never toolCalls — so they vanish on the post-turn server sync.
-    // The spinner fix is a DURING-STREAM guarantee; we assert it while open.
+    // Tool activity now PERSISTS (Phase 3): toolCalls/toolResults are written to
+    // internal_agent_messages and re-hydrated by serverToLocal, so the settled
+    // indicator survives the post-turn sync and a reload. holdMs is no longer
+    // required to observe it, but is kept here as a stable observation window.
     writeFakeClaudeControl({
       ...createArtifactTurn(artifact, REPLY_CREATED),
       holdMs: 2500,
