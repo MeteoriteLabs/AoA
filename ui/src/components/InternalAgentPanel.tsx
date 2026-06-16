@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/sheet";
 import { ChatPaneCaption } from "./commander/ChatPaneCaption";
 import { CommanderEmptyState } from "./commander/CommanderEmptyState";
+import { CommanderReasoningBlock } from "./commander/CommanderReasoningBlock";
 import { InputAddMenu } from "./commander/InputAddMenu";
 import { MemoryContextStrip } from "./commander/MemoryContextStrip";
 import { SkillPicker } from "./commander/SkillPicker";
@@ -242,6 +243,7 @@ export interface LocalMessage {
   content: string;
   streamingDone: boolean;
   toolCalls?: ToolCallEntry[];
+  reasoning?: string;
   actionConfirm?: {
     confirmId: string;
     action: string;
@@ -279,6 +281,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
     streamingDone: true,
     outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
     ...(toolCalls ? { toolCalls } : {}),
+    ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     createdAt: m.createdAt,
   };
 }
@@ -582,14 +585,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     if (!historyData?.messages?.length) return;
     const loaded: LocalMessage[] = historyData.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({
-        id: m.id,
-        role: m.role as "user" | "assistant",
-        content: m.content ?? "",
-        streamingDone: true,
-        outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
-        createdAt: m.createdAt,
-      }));
+      .map(serverToLocal);
     setMessages(loaded);
   }, [historyData, conversationId]);
 
@@ -756,6 +752,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       case "thinking":
         // Show thinking indicator — content stays empty until real content arrives
         break;
+
+      case "reasoning": {
+        const text = (event.data as { text?: string }).text ?? "";
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, reasoning: (m.reasoning ?? "") + text } : m,
+          ),
+        );
+        break;
+      }
 
       case "error": {
         const message =
@@ -1220,6 +1226,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 {relativeTime(msg.createdAt)}
               </span>
 
+              {/* Inline reasoning (collapsible Thinking block) */}
+              {msg.role === "assistant" && msg.reasoning && (
+                <CommanderReasoningBlock
+                  text={msg.reasoning}
+                  streaming={streaming && !msg.streamingDone}
+                  defaultCollapsed={msg.streamingDone}
+                />
+              )}
+
               {/* Tool activity — inline, expandable, with status glyph */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="space-y-1 mb-2">
@@ -1281,7 +1296,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 ) : (
                   <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                 )
-              ) : msg.role === "assistant" && streaming ? (
+              ) : msg.role === "assistant" && streaming && !msg.reasoning ? (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Thinking...
