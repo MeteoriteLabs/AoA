@@ -289,11 +289,29 @@ export function mergeServerMessagesWithTransientLocal(
 ): LocalMessage[] {
   const localById = new Map(localMessages.map((m) => [m.id, m]));
   const serverIds = new Set(serverMessages.map((m) => m.id));
-  const merged = serverMessages.map((m) => ({
-    ...serverToLocal(m),
-    actionConfirm: localById.get(m.id)?.actionConfirm,
-    optionsPrompt: localById.get(m.id)?.optionsPrompt,
-  }));
+  // Carry the live-only "Worked for Xs" durationMs from the streamed local
+  // message onto its persisted server counterpart. The streamed message has a
+  // client temp id (≠ the server id), so match by content. This keeps the
+  // caption visible after the post-turn server sync; it is still absent after a
+  // hard reload (no local message to carry from) — duration is not persisted,
+  // by design (it lives on internal_agent_runs, not internal_agent_messages).
+  const localDurationByContent = new Map<string, number>();
+  for (const lm of localMessages) {
+    if (lm.role === "assistant" && typeof lm.durationMs === "number" && lm.content.trim().length > 0) {
+      localDurationByContent.set(lm.content, lm.durationMs);
+    }
+  }
+  const merged = serverMessages.map((m) => {
+    const base = serverToLocal(m);
+    const carriedDuration =
+      base.role === "assistant" ? localDurationByContent.get(base.content) : undefined;
+    return {
+      ...base,
+      ...(carriedDuration !== undefined ? { durationMs: carriedDuration } : {}),
+      actionConfirm: localById.get(m.id)?.actionConfirm,
+      optionsPrompt: localById.get(m.id)?.optionsPrompt,
+    };
+  });
 
   const transientMessages = localMessages.filter(
     (m) =>
