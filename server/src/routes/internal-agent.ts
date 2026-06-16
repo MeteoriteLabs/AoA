@@ -30,6 +30,7 @@ import { runtimeApprovalService } from "../services/internal-agent/runtime-appro
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
 import { resolveRunCostCents, rateModelForCliTool } from "../services/internal-agent/run-cost.js";
+import { humanToolSummary } from "../services/internal-agent/tool-summary.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -260,9 +261,12 @@ export function internalAgentRoutes(db: Db) {
             case "tool_result":
               // refs are validated/screened + MCP-gated at the parser layer; the
               // persistence boundary re-validates independently. Forward as-is.
+              // REVIEW FIX (Lens A/B/C): do NOT forward input — unbounded + unused by render.
               res.write(
                 `event: tool_result\ndata: ${JSON.stringify({
                   name: chunk.name,
+                  success: chunk.result?.success ?? true,
+                  summary: humanToolSummary(chunk.name, chunk.result?.summary ?? chunk.result?.data),
                   ...(chunk.refs && chunk.refs.length > 0 ? { refs: chunk.refs } : {}),
                 })}\n\n`,
               );
