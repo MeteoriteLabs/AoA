@@ -32,7 +32,8 @@ type CodexParsedChunk =
       name: string;
       result: { success: boolean; data: unknown; summary: string };
       refs: LiftedOutputRef[];
-    };
+    }
+  | { type: "reasoning"; delta: string };
 
 function extractConfirmPayload(text: string): string | null {
   const exactMatch = CONFIRM_RE.exec(text);
@@ -204,6 +205,9 @@ export function parseCodexJsonl(stdout: string) {
       if (asString(item.type, "") === "agent_message") {
         const text = asString(item.text, "");
         if (text) messages.push(text);
+      } else if (asString(item.type, "") === "reasoning") {
+        const text = asString(item.text, "");
+        if (text) chunks.push({ type: "reasoning", delta: text });
       } else if (asString(item.type, "") === "tool_result" || asString(item.type, "") === "mcp_tool_call") {
         const chunk = parseActionConfirmation(item);
         if (chunk) {

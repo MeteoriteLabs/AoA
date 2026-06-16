@@ -297,6 +297,28 @@ describe("codex_local stale session detection", () => {
   });
 });
 
+describe("parseCodexJsonl reasoning chunks", () => {
+  it("surfaces an item.completed reasoning item as a reasoning chunk", () => {
+    const stdout = [
+      JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "reasoning", text: "**Breaking it down**\nStep 1…" } }),
+      JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "agent_message", text: "The answer is 391." } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 5 } }),
+    ].join("\n");
+    const parsed = parseCodexJsonl(stdout);
+    // Cast so the test type-checks before the union member exists (will be fixed in the impl).
+    const reasoning = ((parsed.chunks ?? []) as Array<{ type: string; delta?: string }>).filter((c) => c.type === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toEqual({ type: "reasoning", delta: "**Breaking it down**\nStep 1…" });
+    expect(parsed.summary).toContain("The answer is 391.");
+  });
+
+  it("ignores an empty reasoning item", () => {
+    const stdout = JSON.stringify({ type: "item.completed", item: { id: "r0", type: "reasoning", text: "" } });
+    const parsed = parseCodexJsonl(stdout);
+    expect(((parsed.chunks ?? []) as Array<{ type: string }>).filter((c) => c.type === "reasoning")).toHaveLength(0);
+  });
+});
+
 describe("codex_local ui stdout parser", () => {
   it("parses turn and reasoning lifecycle events", () => {
     const ts = "2026-02-20T00:00:00.000Z";
