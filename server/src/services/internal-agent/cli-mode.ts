@@ -15,6 +15,10 @@ import {
 } from "./context-scope.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
 import { COMMANDER_MAX_THINKING_TOKENS } from "./thinking-config.js";
+import {
+  resolveCodexChatModel,
+  COMMANDER_CODEX_REASONING_EFFORT,
+} from "./codex-model.js";
 import { logger } from "../../middleware/logger.js";
 
 function normalizeCliContextScope(
@@ -335,6 +339,7 @@ async function resolveCliInvocation(
   // of the legacy single -p path.  Strings are pre-escaped by the caller.
   systemSplitArgs?: SystemSplitArgs,
   vendorCliBypassEnabled = true,
+  codexModel?: string | null,
 ): Promise<CliInvocation | null> {
   const isWin = platform() === "win32";
   const claudeBypassArgs = vendorCliBypassEnabled
@@ -414,9 +419,8 @@ async function resolveCliInvocation(
       // there via the MX3 writer. Prompt is delivered over stdin: `codex
       // exec --json -` reads instructions from stdin (matches the chat's
       // persistent stdin-piping model for multi-turn).
-      const { writeCodexMcpConfigToml, ensureCodexAuthInHome } = await import(
-        "@armyofagents/adapter-codex-local/server"
-      );
+      const { writeCodexMcpConfigToml, ensureCodexAuthInHome, readSharedCodexModel } =
+        await import("@armyofagents/adapter-codex-local/server");
       const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
       await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
       // MX-chatauth: the per-session CODEX_HOME has config.toml but no
@@ -426,18 +430,24 @@ async function resolveCliInvocation(
       // Session-isolated: this home/config.toml encodes THIS chat
       // session's identity and must not be shared with the agent path.
       await ensureCodexAuthInHome(codexHomeDir);
-      // ONE-SHOT model (MX-chatparse): turn-1 = `codex exec --json -`
-      // (prompt via stdin). Continuation turn appends `resume <sessionId>
-      // -` — same convention as the codex-local adapter (buildArgs:
-      // resumeSessionId ? push("resume", id, "-") : push("-")).
-      // --dangerously-bypass-approvals-and-sandbox: Commander is a trusted
-      // internal process (MCP bridge is AoA-owned, not user code). Without
-      // this flag Codex's approval gate cancels every MCP tool call since
-      // there is no interactive console to approve them.
-      const reasoningArgs = ["-c", "model_reasoning_summary=detailed"];
+      // MX-chatmodel: pin a subscription-supported model + effort. The
+      // per-session CODEX_HOME has no `model` line, so without --model codex
+      // falls back to its default (gpt-5.3-codex), which a ChatGPT-account
+      // codex rejects with a 400 → empty turn. effort=high is REQUIRED for
+      // codex to emit reasoning summaries (medium emits none). The summary
+      // flag stays BARE (quoted emits nothing). See codex-model.ts + the plan.
+      const sharedCodexModel = await readSharedCodexModel(); // shared ~/.codex, NOT the per-session home
+      const resolvedCodexModel = resolveCodexChatModel(codexModel, sharedCodexModel);
+      const modelArgs = ["--model", resolvedCodexModel];
+      const reasoningArgs = [
+        "-c",
+        `model_reasoning_effort=${JSON.stringify(COMMANDER_CODEX_REASONING_EFFORT)}`,
+        "-c",
+        "model_reasoning_summary=detailed",
+      ];
       const codexArgs = resumeCodexSessionId
-        ? ["exec", "--json", ...codexBypassArgs, ...reasoningArgs, "resume", resumeCodexSessionId, "-"]
-        : ["exec", "--json", ...codexBypassArgs, ...reasoningArgs, "-"];
+        ? ["exec", "--json", ...codexBypassArgs, ...modelArgs, ...reasoningArgs, "resume", resumeCodexSessionId, "-"]
+        : ["exec", "--json", ...codexBypassArgs, ...modelArgs, ...reasoningArgs, "-"];
       return {
         binary: "codex",
         args: codexArgs,
@@ -489,6 +499,8 @@ export function cliModeService(db: Db) {
         cliTool: string | null;
         executionMode: string;
         vendorCliBypassEnabled?: boolean;
+        /** internal_agent_config.model — used (validated) for the codex spawn. */
+        model?: string | null;
       },
     ): AsyncGenerator<AgentStreamChunk> {
       // 1. Validate CLI tool config
@@ -542,6 +554,7 @@ export function cliModeService(db: Db) {
             isWin,
             resumeSessionId: session?.codexSessionId ?? null,
             vendorCliBypassEnabled: config.vendorCliBypassEnabled ?? true,
+            codexModel: config.model ?? null,
             onSessionId: (sid) => {
               const existing = sessionStore.get(sessionKey);
               if (existing) {
@@ -877,6 +890,8 @@ interface RunCodexTurnArgs {
   isWin: boolean;
   resumeSessionId: string | null;
   vendorCliBypassEnabled: boolean;
+  /** internal_agent_config.model (validated downstream) — pins the codex model. */
+  codexModel?: string | null;
   /** Called with the parsed codex sessionId so the caller can persist it. */
   onSessionId: (sessionId: string | null) => void;
 }
@@ -909,6 +924,7 @@ async function* runCodexTurn(
       safeResume,
       undefined,
       args.vendorCliBypassEnabled,
+      args.codexModel ?? null,
     );
     if (!invocation) {
       // codex is a wired CLI — resolveCliInvocation never returns null for
