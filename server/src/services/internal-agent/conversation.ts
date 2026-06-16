@@ -17,6 +17,7 @@ export interface MessageInput {
   tokenCount?: number | null;
   runId?: string | null;
   outputRefs?: unknown;
+  reasoning?: string | null;
 }
 
 const MESSAGE_THRESHOLD = 20;
@@ -74,6 +75,7 @@ export function conversationService(db: Db) {
           tokenCount: message.tokenCount ?? null,
           runId: message.runId ?? null,
           outputRefs,
+          reasoning: message.reasoning ?? null,
         })
         .returning()
         .then((rows: any[]) => rows[0]);

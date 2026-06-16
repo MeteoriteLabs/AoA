@@ -294,10 +294,13 @@ export function agentLoopService(db: Db) {
         };
 
         let accumulatedAssistant = "";
+        const REASONING_CAP = 16000;
+        let accumulatedReasoning = "";
         const turnRefs: CommanderOutputRef[] = [];
         const turnToolCalls: Array<{ name: string; success?: boolean; summary?: string }> = [];
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
+          if (chunk.type === "reasoning") accumulatedReasoning += chunk.delta;
           if (chunk.type === "tool_call") {
             turnToolCalls.push({ name: chunk.name });
           }
@@ -314,7 +317,7 @@ export function agentLoopService(db: Db) {
           yield chunk;
         }
 
-        if (accumulatedAssistant.trim()) {
+        if (accumulatedAssistant.trim() || turnToolCalls.length > 0 || accumulatedReasoning.trim()) {
           // Assistant replies have no originating page / department-persona
           // context (those describe where the USER was), so we omit them —
           // appendMessage defaults the optional fields to null, matching the
@@ -326,6 +329,7 @@ export function agentLoopService(db: Db) {
             content: accumulatedAssistant,
             ...(outputRefs ? { outputRefs } : {}),
             ...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
+            ...(accumulatedReasoning.trim() ? { reasoning: accumulatedReasoning.slice(0, REASONING_CAP) } : {}),
           });
         }
 
