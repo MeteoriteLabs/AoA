@@ -278,6 +278,8 @@ interface CliInvocation {
   spawnEnv?: Record<string, string>;
   /** Primary temp artifact to record as session.mcpConfigPath for cleanup. */
   mcpArtifactPath: string;
+  /** Resolved model actually used for this invocation (for provenance, not cost). */
+  resolvedModel?: string;
 }
 
 /**
@@ -441,7 +443,7 @@ async function resolveCliInvocation(
       const modelArgs = ["--model", resolvedCodexModel];
       const reasoningArgs = [
         "-c",
-        `model_reasoning_effort=${JSON.stringify(COMMANDER_CODEX_REASONING_EFFORT)}`,
+        `model_reasoning_effort=${COMMANDER_CODEX_REASONING_EFFORT}`,
         "-c",
         "model_reasoning_summary=detailed",
       ];
@@ -456,6 +458,7 @@ async function resolveCliInvocation(
         // (cli-session-store.killSession) reaps the primary artifact, the
         // same way it reaps claude's tmp .json. Parity, no new machinery.
         mcpArtifactPath: codexConfigTomlPath(params.companyId, params.userId),
+        resolvedModel: resolvedCodexModel,
       };
     }
     default:
@@ -521,7 +524,6 @@ export function cliModeService(db: Db) {
 
       const sessionKey = `${params.companyId}:${params.userId}`;
       let session = sessionStore.get(sessionKey);
-      let accumulatedText = "";
 
       try {
         let sawRealDone = false;
@@ -587,7 +589,6 @@ export function cliModeService(db: Db) {
               }
             },
           })) {
-            if (chunk.type === "text") accumulatedText += chunk.delta;
             if (chunk.type === "done") sawRealDone = true;
             yield chunk;
           }
@@ -714,7 +715,6 @@ export function cliModeService(db: Db) {
           // claude_cli uses stream-json; codex/opencode use the text parser.
           const useStreamJson = config.cliTool === "claude_cli";
           for await (const chunk of streamProcessOutput(cliProcess, useStreamJson)) {
-            if (chunk.type === "text") accumulatedText += chunk.delta;
             if (chunk.type === "done") sawRealDone = true;
             yield chunk;
           }
@@ -739,7 +739,6 @@ export function cliModeService(db: Db) {
             cliProc.stdin.write(turnInput + "\n");
             const useStreamJsonCont = config.cliTool === "claude_cli";
             for await (const chunk of streamProcessOutput(cliProc, useStreamJsonCont)) {
-              if (chunk.type === "text") accumulatedText += chunk.delta;
               if (chunk.type === "done") sawRealDone = true;
               yield chunk;
             }
@@ -894,6 +893,8 @@ interface RunCodexTurnArgs {
   codexModel?: string | null;
   /** Called with the parsed codex sessionId so the caller can persist it. */
   onSessionId: (sessionId: string | null) => void;
+  /** Called with the resolved codex model for provenance tracking. */
+  onResolvedModel?: (model: string) => void;
 }
 
 async function* runCodexTurn(
@@ -904,9 +905,11 @@ async function* runCodexTurn(
   );
 
   // Buffer the full stdout+stderr of one codex process to completion.
+  // Returns the collected output AND the resolved model string from the
+  // invocation (for provenance reporting — F1).
   async function spawnAndCollect(
     resume: string | null,
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; resolvedModel: string | undefined }> {
     // Shell-boundary re-validation: validateSessionId() strips metacharacters
     // that would execute as shell commands on Windows (spawn uses shell:true).
     // The primary validation runs at onSessionId (store time); this is
@@ -965,7 +968,7 @@ async function* runCodexTurn(
       proc.on("error", () => resolveExit(-1));
     });
 
-    return { stdout, stderr, exitCode };
+    return { stdout, stderr, exitCode, resolvedModel: invocation.resolvedModel };
   }
 
   let result = await spawnAndCollect(args.resumeSessionId);
@@ -978,6 +981,12 @@ async function* runCodexTurn(
     isCodexUnknownSessionError(result.stdout, result.stderr)
   ) {
     result = await spawnAndCollect(null);
+  }
+
+  // Notify the caller of the resolved model (F1 provenance). Captured from
+  // spawnAndCollect — always the last-used invocation's model.
+  if (result.resolvedModel) {
+    args.onResolvedModel?.(result.resolvedModel);
   }
 
   const parsed = parseCodexJsonl(result.stdout);
@@ -1013,6 +1022,7 @@ async function* runCodexTurn(
 
   // Real-usage done (cost left 0 — codex subscription has no per-run billing;
   // the route estimates from tokens via computeCostCents).
+  // Carry the resolved model + provider for F1 provenance columns in the DB.
   yield {
     type: "done",
     summary: {
@@ -1025,6 +1035,9 @@ async function* runCodexTurn(
         outputTokens: parsed.usage?.outputTokens ?? 0,
         cachedInputTokens: parsed.usage?.cachedInputTokens ?? 0,
       },
+      ...(result.resolvedModel
+        ? { model: result.resolvedModel, provider: "openai" }
+        : {}),
     },
   };
 }
