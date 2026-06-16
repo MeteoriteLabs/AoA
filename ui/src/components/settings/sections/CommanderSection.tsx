@@ -16,7 +16,7 @@ import type {
   CommanderTrustRule,
 } from "@/api/internal-agent";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatCents, budgetProgressColor, relativeTime } from "@/lib/utils";
+import { formatCents, budgetProgressColor, relativeTime, formatTokens } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -1155,6 +1155,7 @@ interface RunHistoryTabContentProps {
     costCents: number;
     durationMs: number;
     createdAt: string;
+    tokenUsage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
   }>;
   runsAggregates: RunHistoryAggregates | undefined;
   hasNextPage: boolean | undefined;
@@ -1179,7 +1180,7 @@ function RunHistoryTabContent({
             <p className="text-lg font-semibold">{runsAggregates.totalRuns}</p>
           </div>
           <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Total Cost</p>
+            <p className="text-xs text-muted-foreground">Est. Cost</p>
             <p className="text-lg font-semibold">
               {formatCents(runsAggregates.totalCostCents)}
             </p>
@@ -1199,6 +1200,10 @@ function RunHistoryTabContent({
         </div>
       )}
 
+      <p className="text-xs text-muted-foreground">
+        Cost is an estimate at list prices. CLI subscription runs have no per-call charge.
+      </p>
+
       {/* Runs table */}
       {allRuns.length > 0 ? (
         <div className="overflow-x-auto">
@@ -1207,7 +1212,8 @@ function RunHistoryTabContent({
               <tr className="border-b text-left text-xs text-muted-foreground">
                 <th className="pb-2 font-medium">Trigger</th>
                 <th className="pb-2 font-medium">Status</th>
-                <th className="pb-2 font-medium">Cost</th>
+                <th className="pb-2 font-medium">Est. Cost</th>
+                <th className="pb-2 font-medium">Tokens</th>
                 <th className="pb-2 font-medium">Duration</th>
                 <th className="pb-2 font-medium">Date</th>
               </tr>
@@ -1230,6 +1236,11 @@ function RunHistoryTabContent({
                     </span>
                   </td>
                   <td className="py-2">{formatCents(run.costCents)}</td>
+                  <td className="py-2 text-muted-foreground">
+                    {run.tokenUsage
+                      ? `${formatTokens(run.tokenUsage.inputTokens)} / ${formatTokens(run.tokenUsage.outputTokens)}`
+                      : "—"}
+                  </td>
                   <td className="py-2">
                     {(run.durationMs / 1000).toFixed(1)}s
                   </td>
