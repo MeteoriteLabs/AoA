@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 import { FAKE_CLAUDE_CONTROL_PATH } from "./helpers/fake-claude";
+import { FAKE_CODEX_CONTROL_PATH, FAKE_CODEX_INVOCATIONS_PATH } from "./helpers/fake-codex";
 
 // Windows runner can't start embedded-postgres because GitHub's Windows
 // runner is `runneradmin` (administrative) and PostgreSQL refuses to
@@ -31,6 +32,15 @@ const FAKE_CLAUDE_BIN_DIR = path.join(
   fileURLToPath(new URL(".", import.meta.url)),
   "fixtures",
   "fake-claude",
+);
+
+// Commander codex e2e (commander-codex-*.spec.ts): resolve `codex` to the
+// deterministic fake CLI. Same mechanism as fake-claude — prepend dir wins
+// `which codex` without touching any real codex install.
+const FAKE_CODEX_BIN_DIR = path.join(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "fixtures",
+  "fake-codex",
 );
 
 export default defineConfig({
@@ -91,8 +101,13 @@ export default defineConfig({
           // Commander viewer e2e: `claude` resolves to the deterministic
           // fake CLI (tests/e2e/fixtures/fake-claude). The control file is
           // rewritten by the spec before each send to script the next turn.
-          PATH: `${FAKE_CLAUDE_BIN_DIR}${path.delimiter}${process.env.PATH ?? ""}`,
+          // Commander codex e2e: `codex` resolves to the deterministic fake
+          // CLI (tests/e2e/fixtures/fake-codex). workers:1 + reuseExistingServer:
+          // false means the single global control/invocations files are race-free.
+          PATH: `${FAKE_CLAUDE_BIN_DIR}${path.delimiter}${FAKE_CODEX_BIN_DIR}${path.delimiter}${process.env.PATH ?? ""}`,
           AOA_E2E_FAKE_CLAUDE_CONTROL: FAKE_CLAUDE_CONTROL_PATH,
+          AOA_E2E_FAKE_CODEX_CONTROL: FAKE_CODEX_CONTROL_PATH,
+          AOA_E2E_FAKE_CODEX_INVOCATIONS: FAKE_CODEX_INVOCATIONS_PATH,
         },
       },
   outputDir: "./test-results",
