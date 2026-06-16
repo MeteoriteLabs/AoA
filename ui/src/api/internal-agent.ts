@@ -68,7 +68,7 @@ export interface AgentRun {
   triggerSource: string;
   status: "running" | "completed" | "failed";
   toolsCalled: AgentRunToolCall[];
-  tokenUsage: { inputTokens: number; outputTokens: number };
+  tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
   costCents: number;
   durationMs: number;
   summary: string | null;
