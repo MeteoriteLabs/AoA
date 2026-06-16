@@ -508,6 +508,7 @@ export function cliModeService(db: Db) {
       let accumulatedText = "";
 
       try {
+        let sawRealDone = false;
         if (config.cliTool === "codex") {
           // ── codex: ONE-SHOT per turn + resume continuity ──────────────
           // codex `exec` is one-shot (runs the turn, exits). So there is
@@ -570,20 +571,23 @@ export function cliModeService(db: Db) {
             },
           })) {
             if (chunk.type === "text") accumulatedText += chunk.delta;
+            if (chunk.type === "done") sawRealDone = true;
             yield chunk;
           }
 
-          // Done event (shape UNCHANGED).
-          yield {
-            type: "done",
-            summary: {
-              runId: "",
-              toolsCalled: [],
-              durationMs: 0,
-              costCents: 0,
-              tokenUsage: { inputTokens: 0, outputTokens: 0 },
-            },
-          };
+          // Fallback only — runCodexTurn now emits a real-usage done.
+          if (!sawRealDone) {
+            yield {
+              type: "done",
+              summary: {
+                runId: "",
+                toolsCalled: [],
+                durationMs: 0,
+                costCents: 0,
+                tokenUsage: { inputTokens: 0, outputTokens: 0 },
+              },
+            };
+          }
           return;
         }
 
@@ -694,6 +698,7 @@ export function cliModeService(db: Db) {
           const useStreamJson = config.cliTool === "claude_cli";
           for await (const chunk of streamProcessOutput(cliProcess, useStreamJson)) {
             if (chunk.type === "text") accumulatedText += chunk.delta;
+            if (chunk.type === "done") sawRealDone = true;
             yield chunk;
           }
         } else {
@@ -718,6 +723,7 @@ export function cliModeService(db: Db) {
             const useStreamJsonCont = config.cliTool === "claude_cli";
             for await (const chunk of streamProcessOutput(cliProc, useStreamJsonCont)) {
               if (chunk.type === "text") accumulatedText += chunk.delta;
+              if (chunk.type === "done") sawRealDone = true;
               yield chunk;
             }
           } else {
@@ -730,17 +736,21 @@ export function cliModeService(db: Db) {
           }
         }
 
-        // Done event
-        yield {
-          type: "done",
-          summary: {
-            runId: "",
-            toolsCalled: [],
-            durationMs: 0,
-            costCents: 0,
-            tokenUsage: { inputTokens: 0, outputTokens: 0 },
-          },
-        };
+        // Fallback only — handleResultEvent emits the real done from the
+        // stream-json `result` event. This covers the plain-text MCP-tool turn
+        // (no result event) so the route always sees exactly one done.
+        if (!sawRealDone) {
+          yield {
+            type: "done",
+            summary: {
+              runId: "",
+              toolsCalled: [],
+              durationMs: 0,
+              costCents: 0,
+              tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            },
+          };
+        }
       } catch (err: any) {
         sessionStore.cleanup(sessionKey);
         yield {
@@ -980,4 +990,21 @@ async function* runCodexTurn(
   if (parsed.summary) {
     yield { type: "text", delta: parsed.summary };
   }
+
+  // Real-usage done (cost left 0 — codex subscription has no per-run billing;
+  // the route estimates from tokens via computeCostCents).
+  yield {
+    type: "done",
+    summary: {
+      runId: "",
+      toolsCalled: [],
+      durationMs: 0,
+      costCents: 0,
+      tokenUsage: {
+        inputTokens: parsed.usage?.inputTokens ?? 0,
+        outputTokens: parsed.usage?.outputTokens ?? 0,
+        cachedInputTokens: parsed.usage?.cachedInputTokens ?? 0,
+      },
+    },
+  };
 }
