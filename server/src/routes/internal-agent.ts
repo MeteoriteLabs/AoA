@@ -29,7 +29,14 @@ import { permissionService } from "../services/permissions.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
-import { resolveRunCostCents, rateModelForCliTool } from "../services/internal-agent/run-cost.js";
+import {
+  resolveRunCostCents,
+  rateModelForCliTool,
+  resolveRunDurationMs,
+  resolveRunCostCentsFromSummary,
+  resolvePersistedProvenance,
+  resolveDonePayload,
+} from "../services/internal-agent/run-cost.js";
 import { humanToolSummary } from "../services/internal-agent/tool-summary.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -320,25 +327,22 @@ export function internalAgentRoutes(db: Db) {
 
         // Mark run completed
         const tokenUsage = finalSummary?.tokenUsage ?? null;
-        const reportedCostCents = finalSummary?.costCents ?? 0;
         const wallClockMs = Date.now() - runStartedAt;
-        const durationMs =
-          finalSummary && finalSummary.durationMs > 0 ? finalSummary.durationMs : wallClockMs;
-        const costCents = tokenUsage
-          ? resolveRunCostCents({
-              reportedCostCents,
-              provider: runProvider,
-              model: runModel,
-              inputTokens: tokenUsage.inputTokens,
-              outputTokens: tokenUsage.outputTokens,
-            })
-          : reportedCostCents;
+        const durationMs = resolveRunDurationMs(finalSummary ?? null, wallClockMs);
+        const costCents = resolveRunCostCentsFromSummary(
+          finalSummary ?? null,
+          runProvider,
+          runModel,
+        );
 
         // F1: prefer the adapter-reported model/provider (actual runtime provenance)
         // over the cost-label defaults (which are pricing inputs, not provenance).
-        // Cost PRICING still uses runModel/runProvider via resolveRunCostCents above.
-        const persistedModel = finalSummary?.model ?? runModel;
-        const persistedProvider = finalSummary?.provider ?? runProvider;
+        // Cost PRICING still uses runModel/runProvider via resolveRunCostCentsFromSummary above.
+        const { model: persistedModel, provider: persistedProvider } = resolvePersistedProvenance(
+          finalSummary ?? null,
+          runModel,
+          runProvider,
+        );
 
         await db
           .update(internalAgentRuns)
@@ -357,13 +361,14 @@ export function internalAgentRoutes(db: Db) {
 
         // F2: send the LOCALLY-COMPUTED costCents (the value persisted to DB)
         // and a guaranteed-non-null tokenUsage so the wire matches the DB row.
+        const donePayload = resolveDonePayload(finalSummary ?? null, costCents);
         res.write(
           `event: done\ndata: ${JSON.stringify({
             messageId: run.id,
             runId: run.id,
             durationMs,
-            tokenUsage: tokenUsage ?? { inputTokens: 0, outputTokens: 0 },
-            costCents,
+            tokenUsage: donePayload.tokenUsage,
+            costCents: donePayload.costCents,
           })}\n\n`,
         );
       } catch (err) {
