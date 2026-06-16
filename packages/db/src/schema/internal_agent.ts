@@ -203,6 +203,7 @@ export const internalAgentMessages = pgTable(
     toolCalls: jsonb("tool_calls"), // array of { id, name, input }
     toolResults: jsonb("tool_results"), // array of { toolCallId, result }
     outputRefs: jsonb("output_refs"), // CommanderOutputRef[] — distilled viewer refs (design 2026-06-11 §3d)
+    reasoning: text("reasoning"), // assistant's extended-thinking text (accumulated, redacted)
 
     // Context at time of message
     pageContext: text("page_context"), // which page the user was on
