@@ -1401,6 +1401,11 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(captured).not.toContain("--model");
     expect(captured.join(" ")).not.toContain("model_reasoning_effort");
     expect(captured.join(" ")).not.toContain("model_reasoning_summary");
+
+    // T1: claude_cli spawn env must carry MAX_THINKING_TOKENS — sole enabler of
+    // extended thinking. Mirrors the codex CODEX_HOME assertion pattern.
+    const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+    expect((spawnOpts as any)?.env?.MAX_THINKING_TOKENS).toBe("3000");
   });
 
   it("codex argv (first-turn): full argv shape — model + effort + summary — claude default config → DEFAULT_CODEX_CHAT_MODEL", async () => {
@@ -1425,7 +1430,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "--model",
       "gpt-5.5", // claude default rejected → readSharedCodexModel stubbed null → DEFAULT_CODEX_CHAT_MODEL
       "-c",
-      'model_reasoning_effort="high"',
+      "model_reasoning_effort=high", // F7: bare value, no JSON.stringify quoting
       "-c",
       "model_reasoning_summary=detailed",
       "-",
@@ -1463,7 +1468,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "--model",
       "gpt-4.1", // codex-compatible config.model → used as-is (no shared/default lookup)
       "-c",
-      'model_reasoning_effort="high"',
+      "model_reasoning_effort=high", // F7: bare value
       "-c",
       "model_reasoning_summary=detailed",
       "resume",
