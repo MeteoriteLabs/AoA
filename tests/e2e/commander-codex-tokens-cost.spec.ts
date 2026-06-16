@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { writeFakeCodexControl } from "./helpers/fake-codex";
 
@@ -45,7 +45,7 @@ async function waitForTurnEnd(page: Page): Promise<void> {
 
 /** Flip cliTool to codex for the given company. */
 async function setCodexCliTool(
-  request: Parameters<typeof test.beforeEach>[0] extends { request: infer R } ? R : never,
+  request: APIRequestContext,
   companyId: string,
 ): Promise<void> {
   const res = await request.patch(
