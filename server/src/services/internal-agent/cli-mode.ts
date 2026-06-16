@@ -893,8 +893,6 @@ interface RunCodexTurnArgs {
   codexModel?: string | null;
   /** Called with the parsed codex sessionId so the caller can persist it. */
   onSessionId: (sessionId: string | null) => void;
-  /** Called with the resolved codex model for provenance tracking. */
-  onResolvedModel?: (model: string) => void;
 }
 
 async function* runCodexTurn(
@@ -981,12 +979,6 @@ async function* runCodexTurn(
     isCodexUnknownSessionError(result.stdout, result.stderr)
   ) {
     result = await spawnAndCollect(null);
-  }
-
-  // Notify the caller of the resolved model (F1 provenance). Captured from
-  // spawnAndCollect — always the last-used invocation's model.
-  if (result.resolvedModel) {
-    args.onResolvedModel?.(result.resolvedModel);
   }
 
   const parsed = parseCodexJsonl(result.stdout);
