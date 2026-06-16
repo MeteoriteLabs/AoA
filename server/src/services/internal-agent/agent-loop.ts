@@ -300,7 +300,17 @@ export function agentLoopService(db: Db) {
         const turnToolCalls: Array<{ name: string; success?: boolean; summary?: string }> = [];
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
-          if (chunk.type === "reasoning") accumulatedReasoning += chunk.delta;
+          if (chunk.type === "reasoning") {
+            // F5: cap accumulation early — once the cap is reached, stop appending
+            // (and skip forwarding further reasoning deltas) to avoid holding a
+            // huge string in memory for the rest of the turn.
+            if (accumulatedReasoning.length < REASONING_CAP) {
+              accumulatedReasoning += chunk.delta;
+            } else {
+              // Cap reached — skip yielding and accumulating; continue to next chunk.
+              continue;
+            }
+          }
           if (chunk.type === "tool_call") {
             turnToolCalls.push({ name: chunk.name });
           }
@@ -329,7 +339,8 @@ export function agentLoopService(db: Db) {
             content: accumulatedAssistant,
             ...(outputRefs ? { outputRefs } : {}),
             ...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
-            ...(accumulatedReasoning.trim() ? { reasoning: accumulatedReasoning.slice(0, REASONING_CAP) } : {}),
+            // F5: accumulatedReasoning is already capped during accumulation — no slice needed.
+            ...(accumulatedReasoning.trim() ? { reasoning: accumulatedReasoning } : {}),
           });
         }
 
