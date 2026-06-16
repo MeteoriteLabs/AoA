@@ -304,6 +304,11 @@ export function internalAgentRoutes(db: Db) {
                 `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message: chunk.message })}\n\n`,
               );
               break;
+            case "reasoning":
+              res.write(
+                `event: reasoning\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`,
+              );
+              break;
             case "done":
               finalSummary = chunk.summary;
               break;
