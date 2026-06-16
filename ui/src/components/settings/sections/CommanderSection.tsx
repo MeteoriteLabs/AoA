@@ -1163,7 +1163,7 @@ interface RunHistoryTabContentProps {
   fetchNextPage: () => void;
 }
 
-function RunHistoryTabContent({
+export function RunHistoryTabContent({
   allRuns,
   runsAggregates,
   hasNextPage,
