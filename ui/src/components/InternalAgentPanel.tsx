@@ -36,7 +36,7 @@ import {
   type SSEEvent,
 } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
-import { cn } from "../lib/utils";
+import { cn, relativeTime } from "../lib/utils";
 import { COMMANDER_PANEL_CARD } from "./commander/commanderChrome";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
@@ -1192,6 +1192,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                   <ExternalLink className="h-3.5 w-3.5" />
                 </button>
               )}
+
+              <span
+                className={cn(
+                  "pointer-events-none absolute bottom-1 right-2 text-[10px] text-muted-foreground",
+                  "opacity-0 group-hover:opacity-100 transition-opacity",
+                )}
+              >
+                {relativeTime(msg.createdAt)}
+              </span>
 
               {/* Tool activity — inline, expandable, with status glyph */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
