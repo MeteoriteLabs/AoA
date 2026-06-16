@@ -71,6 +71,12 @@ export interface FakeClaudeTurn {
    * `done`). Omit for an instant turn (the default).
    */
   holdMs?: number;
+  /**
+   * Optional: set to false to suppress the thinking_delta block that fake-claude
+   * emits by default (so the spec can assert absence of a reasoning block if needed).
+   * Defaults to true (emit the thinking_delta).
+   */
+  reasoning?: boolean;
 }
 
 /** Write the scripted turn the NEXT fake-claude spawn will emit. */
