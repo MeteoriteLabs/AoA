@@ -132,10 +132,19 @@ export function costRoutes(db: Db) {
     }
 
     if (req.actor.type === "agent") {
+      // An agent may set only its own budget (self-reporting).
       if (req.actor.agentId !== agentId) {
         res.status(403).json({ error: "Agent can only change its own budget" });
         return;
       }
+    } else {
+      // Human / MCP governance write: must be an interactive board session in the
+      // agent's own company. A founder-created MCP key replays the founder userId
+      // (auth.ts) and would otherwise reach this privileged cross-tenant write;
+      // assertBoard rejects non-board bearer tokens, assertCompanyAccess rejects
+      // foreign companies. Mirrors the sibling PATCH /companies/:cid/budgets gate.
+      assertBoard(req);
+      assertCompanyAccess(req, agent.companyId);
     }
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });

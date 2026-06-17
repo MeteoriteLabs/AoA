@@ -141,10 +141,18 @@ function toFiniteScore(value: number | string | null | undefined) {
 }
 
 async function resolveScope(db: Db, companyId: string, actor: Actor): Promise<SearchScope> {
-  if (actor.type === "agent") {
-    return { role: "founder", userId: null, scopedProjectIds: new Set() };
+  // Non-board bearer tokens (mcp / agent) are NEVER founder-equivalent for search.
+  // A founder-created MCP key replays the founder's userId, which would otherwise
+  // resolve to "founder" via the userRoles lookup and bypass ALL per-entity
+  // visibility filtering (read-anyone). Confine them to team_member, owner-scoped
+  // by the (possibly null) replayed userId; agents carry no userId and so see only
+  // unscoped/shared entities (the null-safe checks in isVisibleToScope). Interactive
+  // founder/role reach is via board sessions only. (Same board-gate pattern as the
+  // sibling PR #194 / #195 authz fixes; intentionally stricter for mcp.)
+  if (actor.type !== "board") {
+    return { role: "team_member", userId: actor.userId ?? null, scopedProjectIds: new Set() };
   }
-  if ((actor.type !== "board" && actor.type !== "mcp") || actor.source === "local_implicit" || !actor.userId) {
+  if (actor.source === "local_implicit" || !actor.userId) {
     return { role: "founder", userId: actor.userId ?? null, scopedProjectIds: new Set() };
   }
 
@@ -195,8 +203,8 @@ function isVisibleToScope(
       return scope.role === "team_lead"
         ? isUnscoped(result.projectId as string | null | undefined)
           || scope.scopedProjectIds.has((result.projectId as string | null) ?? "")
-        : (result.assigneeUserId as string | null) === scope.userId
-          || isUnscoped(result.projectId as string | null | undefined);
+        : ((scope.userId != null && (result.assigneeUserId as string | null) === scope.userId)
+          || isUnscoped(result.projectId as string | null | undefined));
     case "goal": {
       const projectIds = ((result.projectIds as string[] | null | undefined) ?? []).filter(Boolean);
       return scope.role === "team_lead"
@@ -221,13 +229,13 @@ function isVisibleToScope(
         return scope.scopedProjectIds.has((result.departmentId as string | null) ?? "")
           || scope.scopedProjectIds.has((result.projectId as string | null) ?? "");
       }
-      return (result.taskAssigneeUserId as string | null) === scope.userId;
+      return scope.userId != null && (result.taskAssigneeUserId as string | null) === scope.userId;
     case "artifact":
       return scope.role === "team_lead"
         ? isUnscoped(result.linkedIssueProjectId as string | null | undefined)
           || scope.scopedProjectIds.has((result.linkedIssueProjectId as string | null) ?? "")
-        : (result.linkedIssueAssigneeUserId as string | null) === scope.userId
-          || isUnscoped(result.linkedIssueProjectId as string | null | undefined);
+        : ((scope.userId != null && (result.linkedIssueAssigneeUserId as string | null) === scope.userId)
+          || isUnscoped(result.linkedIssueProjectId as string | null | undefined));
     case "suggestion":
       if (!result.relatedMemoryItemId) return true;
       if ((result.relatedMemoryVisibility as string | null) === "shared") return true;
@@ -235,7 +243,7 @@ function isVisibleToScope(
         return scope.scopedProjectIds.has((result.relatedMemoryDepartmentId as string | null) ?? "")
           || scope.scopedProjectIds.has((result.relatedMemoryProjectId as string | null) ?? "");
       }
-      return (result.relatedMemoryTaskAssigneeUserId as string | null) === scope.userId;
+      return scope.userId != null && (result.relatedMemoryTaskAssigneeUserId as string | null) === scope.userId;
     default:
       return false;
   }
