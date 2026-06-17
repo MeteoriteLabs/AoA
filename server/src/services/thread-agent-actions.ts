@@ -24,6 +24,7 @@ import { threadScopeVersionService } from "./thread-scope-versions.js";
 import { artifactService } from "./artifacts.js";
 import { threadService, parseMentions, processMentions } from "./threads.js";
 import { logger } from "../middleware/logger.js";
+import { isUniqueViolation } from "./db-errors.js";
 
 const log = logger.child({ service: "thread-agent-actions" });
 
@@ -94,6 +95,7 @@ type DiscussionCommitService = {
       parentEntryId?: string | null;
       authorAgentId?: string | null;
       sourceInfo?: Record<string, unknown> | null;
+      sourceActionId?: string | null;
     },
     actorId: string,
   ) => Promise<{ id: string }>;
@@ -384,21 +386,51 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               continue;
             }
 
-            const entry = await discussionCommitter.addEntry(
-              input.companyId,
-              input.threadId,
-              {
-                inputType: "agent",
-                rawContent,
-                parentEntryId: asString(payload.parentEntryId) ?? null,
-                authorAgentId: action.agentId,
-                // Review fix (f): carry `sourceInfo` from the action payload
-                // through the commit so the committed entry preserves the same
-                // metadata the non-gated path persists (post-entry-tool.ts).
-                sourceInfo: (payload.sourceInfo as Record<string, unknown> | null) ?? null,
-              },
-              `agent:${action.agentId}`,
-            );
+            let entry: { id: string };
+            try {
+              entry = await discussionCommitter.addEntry(
+                input.companyId,
+                input.threadId,
+                {
+                  inputType: "agent",
+                  rawContent,
+                  parentEntryId: asString(payload.parentEntryId) ?? null,
+                  authorAgentId: action.agentId,
+                  // Review fix (f): carry `sourceInfo` from the action payload
+                  // through the commit so the committed entry preserves the same
+                  // metadata the non-gated path persists (post-entry-tool.ts).
+                  sourceInfo: (payload.sourceInfo as Record<string, unknown> | null) ?? null,
+                  // #197: stamp the action id so the partial unique index makes this
+                  // commit idempotent — the SAME action can never produce two entries.
+                  sourceActionId: action.id,
+                },
+                `agent:${action.agentId}`,
+              );
+            } catch (err) {
+              if (!isUniqueViolation(err, "discussion_entries_source_action_uq")) throw err;
+              // #197: the entry for this action already exists (single-invocation
+              // partial crash, or the reaper flipped a stranded `committing` row to
+              // `failed` after the entry write succeeded). Re-select it and converge —
+              // no duplicate, NOT counted as a failure. NOTE: a fresh same-run artifact
+              // is not drained onto this re-selected entry here (rare mid-batch crash);
+              // tracked as a #198 residual.
+              const [existing] = (await actionDb
+                .select({ id: discussionEntries.id })
+                .from(discussionEntries)
+                .where(
+                  and(
+                    eq(discussionEntries.discussionId, input.threadId),
+                    eq(discussionEntries.sourceActionId, action.id),
+                  ),
+                )
+                .limit(1)) as Array<{ id: string }>;
+              await updateActionStatus(actionDb, action.id, {
+                status: "committed",
+                committedEntryId: existing?.id ?? null,
+              });
+              result.committed += 1;
+              continue;
+            }
             sameRunReplyEntryId = entry.id;
             for (const artifactRef of sameRunArtifacts) {
               if (artifactRef.attachedEntryId) continue;

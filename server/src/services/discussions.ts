@@ -889,6 +889,7 @@ export function discussionService(db: Db) {
         sourceInfo?: Record<string, unknown> | null;
         parentEntryId?: string | null;
         authorAgentId?: string | null;
+        sourceActionId?: string | null;
         attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
       },
       actorId: string,
@@ -966,6 +967,8 @@ export function discussionService(db: Db) {
             sourceInfo: data.sourceInfo ?? null,
             parentEntryId: data.parentEntryId ?? null,
             authorAgentId: data.authorAgentId ?? null,
+            // #197: idempotency anchor for action-gated commits; null for normal entries.
+            sourceActionId: data.sourceActionId ?? null,
             // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
             // 'skipped' so the (gated-off) durable drain never picks them up
             // and the UI doesn't show a misleading "pending extraction"

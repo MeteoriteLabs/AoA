@@ -391,6 +391,46 @@ describe("threadAgentActionService", () => {
     expect(addEntry).toHaveBeenCalledTimes(1);
   });
 
+  it("converges (idempotent) when addEntry raises the source_action_id unique violation (#197)", async () => {
+    // A re-commit of the SAME action (single-invocation partial crash / reaper
+    // re-commit) must NOT create a second entry. addEntry raises a WRAPPED 23505
+    // (postgres-js puts the code on err.cause); the branch re-selects the existing
+    // entry and marks the action committed — no duplicate, not counted as failed.
+    const db = createSequenceDb({
+      selects: [
+        [baseAction], // commit selection
+        [{ id: "existing-entry" }], // re-select after the unique violation
+      ],
+      updates: [
+        [{ ...baseAction, status: "committing" }],
+        [{ ...baseAction, status: "committed", committedEntryId: "existing-entry" }],
+      ],
+    });
+    const wrapped = Object.assign(new Error("duplicate key value"), {
+      cause: { code: "23505", constraint: "discussion_entries_source_action_uq" },
+    });
+    const addEntry = vi.fn().mockRejectedValueOnce(wrapped);
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    // Converged, not failed.
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(addEntry).toHaveBeenCalledTimes(1);
+    expect(db.__updateSets).toContainEqual(
+      expect.objectContaining({ status: "committed", committedEntryId: "existing-entry" }),
+    );
+    // No mention processing on the converge path (the prior commit already ran it).
+    expect(mockProcessMentions).not.toHaveBeenCalled();
+  });
+
   it("commits a fresh create_scope_draft through threadScopeVersionService", async () => {
     const action = {
       ...baseAction,
