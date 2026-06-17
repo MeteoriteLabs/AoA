@@ -25,10 +25,19 @@ import {
   executeTool,
 } from "../services/internal-agent/tool-registry.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
-import { permissionService } from "../services/permissions.js";
+import { loadOwnedConversation, resolveActorRole } from "./conversation-authz.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
+import {
+  resolveRunCostCents,
+  rateModelForCliTool,
+  resolveRunDurationMs,
+  resolveRunCostCentsFromSummary,
+  resolvePersistedProvenance,
+  resolveDonePayload,
+} from "../services/internal-agent/run-cost.js";
+import { humanToolSummary } from "../services/internal-agent/tool-summary.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -93,46 +102,6 @@ const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
 export function internalAgentRoutes(db: Db) {
   const router = Router();
 
-  // ── Conversation ownership helper ────────────────────────────────────────
-  // Resolves whether the actor is a founder-equivalent, then fetches the
-  // conversation enforcing ownership in the WHERE clause — not via a separate
-  // 403 check — to avoid leaking conversation existence to non-owners via a
-  // 403 vs 404 distinction. Shared by archive, pin, and rename routes.
-  async function loadOwnedConversation(req: Request, companyId: string, convId: string) {
-    const actor = getActorInfo(req);
-    const isLocalImplicit =
-      req.actor.type === "board" && req.actor.source === "local_implicit";
-    const isInstanceAdmin =
-      req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-    let isFounderRole: boolean;
-    if (isLocalImplicit || isInstanceAdmin) {
-      isFounderRole = true;
-    } else {
-      const role = await permissionService(db).getEffectiveRole(
-        companyId,
-        actor.actorId,
-      );
-      isFounderRole = role === "founder";
-    }
-
-    const convConditions = [
-      eq(internalAgentConversations.id, convId),
-      eq(internalAgentConversations.companyId, companyId),
-    ];
-    if (!isFounderRole) {
-      convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
-    }
-
-    const [existing] = await db
-      .select()
-      .from(internalAgentConversations)
-      .where(and(...convConditions));
-
-    if (!existing) throw notFound("Conversation not found");
-    return existing;
-  }
-
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
   // Sprint 4 S4-F: rate-limit chat (LLM-billed). 60 requests per minute per
   // actor. The route is the chat endpoint and the SSE-streaming variant —
@@ -166,6 +135,8 @@ export function internalAgentRoutes(db: Db) {
         })
         .returning();
 
+      const runStartedAt = Date.now();
+
       // Signal "thinking" to the UI while we kick off the dispatch.
       res.write(
         `event: thinking\ndata: ${JSON.stringify({ status: "processing" })}\n\n`,
@@ -177,49 +148,40 @@ export function internalAgentRoutes(db: Db) {
             toolsCalled: string[];
             durationMs: number;
             costCents: number;
-            tokenUsage: { inputTokens: number; outputTokens: number };
+            tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+            /** F1: adapter-reported model/provider for provenance (separate from cost-label). */
+            model?: string | null;
+            provider?: string | null;
           }
         | null = null;
 
       try {
         const svc = agentLoopService(db);
-        // C13 fix: look up the caller's actual effective role and
-        // capability set instead of hardcoding "founder". Special-case
-        // local_implicit actors (loopback in local_trusted mode) — they
-        // bypass RBAC elsewhere in the codebase and have no userRoles row,
-        // so getEffectiveRole would return "team_member" by default.
-        const isLocalImplicit =
-          req.actor.type === "board" && req.actor.source === "local_implicit";
-        const isInstanceAdmin =
-          req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-        let userRole: UserRole;
-        // Match middleware/rbac.ts:36-39 bypass semantics: local_implicit (local_trusted
-        // mode) and isInstanceAdmin actors get founder-equivalent access. Note: any
-        // future audit log that records userRole per-tool-call should preserve the
-        // actor's actual identity (the userId is unchanged here) — the coercion to
-        // "founder" applies only to the role string used for tool-dispatch authorization.
-        if (isLocalImplicit || isInstanceAdmin) {
-          userRole = "founder";
-        } else {
-          const role = await permissionService(db).getEffectiveRole(
-            companyId,
-            actor.actorId,
-          );
-          // getEffectiveRole defaults to "team_member" when no role is
-          // assigned; we mirror that fallback here for clarity.
-          userRole = role ?? "team_member";
-        }
+        // Board-gated role: founder-equivalence requires a type:"board" actor.
+        // MCP/agent bearer tokens are always "team_member" regardless of the
+        // userId they carry (a founder-created MCP key replays the founder's
+        // userId, which must NOT grant founder tool-dispatch). See resolveActorRole.
+        const userRole = await resolveActorRole(db, req, companyId);
 
         // Look up the company's enabled capabilities. Empty array if no
         // config row exists — chat will surface "not configured" further
         // down anyway.
         const cfgRows = await db
-          .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+          .select({
+            enabledCapabilities: internalAgentConfig.enabledCapabilities,
+            model: internalAgentConfig.model,
+            cliTool: internalAgentConfig.cliTool,
+          })
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId));
-        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as
-          | string[]
-          | null) ?? [];
+        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as string[] | null) ?? [];
+        // REVIEW FIX (Lens C): price by the ACTIVE cli tool, not the dormant
+        // config.model column (which defaults to sonnet for every company).
+        const effectiveCliTool = cfgRows[0]?.cliTool ?? "claude_cli";
+        const { provider: runProvider, model: runModel } = rateModelForCliTool(
+          effectiveCliTool,
+          cfgRows[0]?.model ?? null,
+        );
 
         const stream = svc.chat({
           companyId,
@@ -246,8 +208,16 @@ export function internalAgentRoutes(db: Db) {
               );
               break;
             case "tool_result":
+              // refs are validated/screened + MCP-gated at the parser layer; the
+              // persistence boundary re-validates independently. Forward as-is.
+              // REVIEW FIX (Lens A/B/C): do NOT forward input — unbounded + unused by render.
               res.write(
-                `event: tool_result\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
+                `event: tool_result\ndata: ${JSON.stringify({
+                  name: chunk.name,
+                  success: chunk.result?.success ?? true,
+                  summary: humanToolSummary(chunk.name, chunk.result?.summary ?? chunk.result?.data),
+                  ...(chunk.refs && chunk.refs.length > 0 ? { refs: chunk.refs } : {}),
+                })}\n\n`,
               );
               break;
             case "action_confirmation": {
@@ -283,6 +253,11 @@ export function internalAgentRoutes(db: Db) {
                 `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message: chunk.message })}\n\n`,
               );
               break;
+            case "reasoning":
+              res.write(
+                `event: reasoning\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`,
+              );
+              break;
             case "done":
               finalSummary = chunk.summary;
               break;
@@ -290,25 +265,49 @@ export function internalAgentRoutes(db: Db) {
         }
 
         // Mark run completed
+        const tokenUsage = finalSummary?.tokenUsage ?? null;
+        const wallClockMs = Date.now() - runStartedAt;
+        const durationMs = resolveRunDurationMs(finalSummary ?? null, wallClockMs);
+        const costCents = resolveRunCostCentsFromSummary(
+          finalSummary ?? null,
+          runProvider,
+          runModel,
+        );
+
+        // F1: prefer the adapter-reported model/provider (actual runtime provenance)
+        // over the cost-label defaults (which are pricing inputs, not provenance).
+        // Cost PRICING still uses runModel/runProvider via resolveRunCostCentsFromSummary above.
+        const { model: persistedModel, provider: persistedProvider } = resolvePersistedProvenance(
+          finalSummary ?? null,
+          runModel,
+          runProvider,
+        );
+
         await db
           .update(internalAgentRuns)
           .set({
             status: "completed",
             completedAt: new Date(),
-            durationMs: finalSummary?.durationMs ?? null,
-            costCents: finalSummary?.costCents ?? null,
-            tokenUsage: finalSummary?.tokenUsage ?? null,
+            durationMs,
+            costCents,
+            tokenUsage,
+            model: persistedModel,
+            provider: persistedProvider,
           })
-          .where(eq(internalAgentRuns.id, run.id));
+          // F6: also scope by companyId for defense-in-depth (id is server-created
+          // so this is not an active hole, but matches the repo's company-scoping rule).
+          .where(and(eq(internalAgentRuns.id, run.id), eq(internalAgentRuns.companyId, companyId)));
 
-        // Send done event. For CLI mode the numeric fields are zeros until
-        // run tracking is re-introduced; the shape matches what the UI expects.
+        // F2: send the LOCALLY-COMPUTED costCents (the value persisted to DB)
+        // and a guaranteed-non-null tokenUsage so the wire matches the DB row.
+        const donePayload = resolveDonePayload(finalSummary ?? null, costCents);
         res.write(
           `event: done\ndata: ${JSON.stringify({
             messageId: run.id,
             runId: run.id,
-            tokenUsage: finalSummary?.tokenUsage ?? { input: 0, output: 0 },
-            costCents: finalSummary?.costCents ?? 0,
+            durationMs,
+            tokenUsage: donePayload.tokenUsage,
+            costCents: donePayload.costCents,
           })}\n\n`,
         );
       } catch (err) {
@@ -377,22 +376,9 @@ export function internalAgentRoutes(db: Db) {
       // pending.enabledCapabilities. Those were snapshotted at prompt time and
       // may be stale if the user's role or company capabilities changed within
       // the TTL window. Using stale values would allow execution under
-      // revoked permissions (privilege-retention gap).
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let currentUserRole: UserRole;
-      if (isLocalImplicit || isInstanceAdmin) {
-        currentUserRole = "founder";
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        currentUserRole = role ?? "team_member";
-      }
+      // revoked permissions (privilege-retention gap). Board-gated: MCP/agent
+      // tokens are always "team_member" (see resolveActorRole).
+      const currentUserRole = await resolveActorRole(db, req, companyId);
 
       const [cfgForConfirm] = await db
         .select({
@@ -978,24 +964,10 @@ export function internalAgentRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
 
-      // RBAC: local_implicit and isInstanceAdmin actors get founder-equivalent
-      // access (mirrors the chat route bypass semantics at lines 113-133).
-      // Otherwise, look up the actor's effective role.
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let isFounder: boolean;
-      if (isLocalImplicit || isInstanceAdmin) {
-        isFounder = true;
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        isFounder = role === "founder";
-      }
+      // Board-gated: MCP/agent tokens are always "team_member" and see only
+      // their own conversations (userId scoped). Board founders see all.
+      // See resolveActorRole for the single-sourced rule.
+      const isFounder = (await resolveActorRole(db, req, companyId)) === "founder";
 
       // Build conditions array — Drizzle's and() does not accept undefined.
       const conditions: SQL[] = [
@@ -1125,7 +1097,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -1146,7 +1118,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -1167,7 +1139,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -1189,7 +1161,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       await db
         .delete(internalAgentConversations)
@@ -1211,7 +1183,7 @@ export function internalAgentRoutes(db: Db) {
       // archive/pin/rename/delete: founders can access any company conversation,
       // non-founders are scoped to their own userId. Throws 404 (not 403) on
       // mismatch to avoid leaking conversation existence.
-      const conv = await loadOwnedConversation(req, companyId, convId);
+      const conv = await loadOwnedConversation(db, req, companyId, convId);
 
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const offset = parseInt(req.query.offset as string) || 0;

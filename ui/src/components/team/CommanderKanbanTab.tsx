@@ -64,7 +64,10 @@ export function CommanderKanbanTab({ agents, liveRuns }: CommanderKanbanTabProps
           return (
             <div key={col.id} className="w-[250px] shrink-0 flex flex-col gap-2.5">
               {/* Column header */}
-              <div className="flex items-center gap-1.5 px-0.5 pb-2 border-b border-border/50">
+              <div
+                className="flex items-center gap-1.5 px-0.5 pb-2 border-b border-border/50"
+                data-testid={`kanban-column-${col.id}`}
+              >
                 <div className={cn("w-2 h-2 rounded-full shrink-0", col.dotClass)} />
                 <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
                   {col.label}

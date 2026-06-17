@@ -64,6 +64,10 @@ ui/src/aoa-marketplace-snapshot.json
 .codex/
 .qa-logs/
 
+# Per-slice live-verify screenshot dirs + Playwright HTML report (throwaway agent run artifacts)
+.*-verify/
+playwright-report/
+
 # Arc-layout visual harness build artifact (rebuild with esbuild — see arc-harness.ts header)
 ui/dev-harness/*.bundle.js
 

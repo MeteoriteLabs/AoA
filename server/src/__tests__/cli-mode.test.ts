@@ -41,6 +41,9 @@ vi.mock("@armyofagents/adapter-codex-local/server", async (importOriginal) => {
     ...actual,
     writeCodexMcpConfigToml: vi.fn(async () => {}),
     ensureCodexAuthInHome: vi.fn(async () => true),
+    // REVIEW FIX S3/C7: stub so argv tests never read the host's ~/.codex
+    // and the resolved model is always deterministic (falls through to DEFAULT).
+    readSharedCodexModel: vi.fn(async () => null),
   };
 });
 
@@ -939,12 +942,15 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     vi.mocked(cp.execSync).mockReset();
   });
 
+  // REVIEW FIX S2: accept a configOverride so resume argv tests can inject model.
   async function drainChat(
     service: any,
     cliTool: string,
     content: string,
+    configOverride: Record<string, unknown> = {},
   ): Promise<any[]> {
     const chunks: any[] = [];
+    const config = { cliTool, executionMode: "cli", ...configOverride };
     for await (const chunk of service.chat(
       {
         companyId: "comp1",
@@ -953,7 +959,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
         content,
         enabledCapabilities: [],
       } as any,
-      { cliTool, executionMode: "cli" } as any,
+      config as any,
     )) {
       chunks.push(chunk);
     }
@@ -1218,6 +1224,93 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(text).not.toContain('"type"');
   });
 
+  it("codex argv: first-turn argv contains -c model_reasoning_summary=detailed before the trailing -", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "hi");
+
+    const [binary, args] = vi.mocked(cp.spawn).mock.calls[0];
+    expect(binary).toBe("codex");
+    const argArr = args as string[];
+    // -c flag is present with the reasoning summary value (find by value, not first -c)
+    const summaryIdx = argArr.indexOf("model_reasoning_summary=detailed");
+    expect(summaryIdx).toBeGreaterThan(-1);
+    expect(argArr[summaryIdx - 1]).toBe("-c");
+    // The -c/value pair appears BEFORE the trailing -
+    const trailingDashIdx = argArr.lastIndexOf("-");
+    expect(summaryIdx).toBeLessThan(trailingDashIdx);
+    // Trailing - is still the last positional
+    expect(argArr[argArr.length - 1]).toBe("-");
+  });
+
+  it("codex argv: resumed-turn argv contains -c model_reasoning_summary=detailed before resume <id> -", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "turn one");
+    await drainChat(service, "codex", "turn two");
+
+    const [, resumeArgs] = vi.mocked(cp.spawn).mock.calls[1];
+    const argArr = resumeArgs as string[];
+    // -c flag present with value before resume (find by value, not first -c)
+    const summaryIdx = argArr.indexOf("model_reasoning_summary=detailed");
+    expect(summaryIdx).toBeGreaterThan(-1);
+    expect(argArr[summaryIdx - 1]).toBe("-c");
+    const resumeIdx = argArr.indexOf("resume");
+    expect(summaryIdx).toBeLessThan(resumeIdx);
+    // Trailing - is still the last positional
+    expect(argArr[argArr.length - 1]).toBe("-");
+  });
+
+  it("codex argv: fresh-retry after unknown-session also contains -c model_reasoning_summary=detailed before trailing -", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({
+      stdout: "",
+      stderr: "Error: unknown session codex-sess-aaa",
+      exitCode: 1,
+    });
+    const proc3 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any)
+      .mockReturnValueOnce(proc3 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "first message");
+    await drainChat(service, "codex", "second message");
+
+    // spawn call [2] is the fresh retry (no resume)
+    const [, retryArgs] = vi.mocked(cp.spawn).mock.calls[2];
+    const argArr = retryArgs as string[];
+    // find by value, not first -c (effort flag now precedes summary flag)
+    const summaryIdx = argArr.indexOf("model_reasoning_summary=detailed");
+    expect(summaryIdx).toBeGreaterThan(-1);
+    expect(argArr[summaryIdx - 1]).toBe("-c");
+    expect(argArr).not.toContain("resume");
+    expect(argArr[argArr.length - 1]).toBe("-");
+  });
+
   it("claude_cli uses print-mode argv (prompt NOT on stdin) + stream-json accumulation + done shape; no codex sessionId", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
@@ -1302,5 +1395,85 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(vi.mocked(fsp.writeFile)).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(String(vi.mocked(fsp.writeFile).mock.calls[0][1]));
     expect(parsed.mcpServers.aoa.command).toBe("node");
+
+    // REVIEW FIX S6/C12: claude_cli argv must NOT carry codex model/reasoning flags.
+    const captured = vi.mocked(cp.spawn).mock.calls[0][1] as string[];
+    expect(captured).not.toContain("--model");
+    expect(captured.join(" ")).not.toContain("model_reasoning_effort");
+    expect(captured.join(" ")).not.toContain("model_reasoning_summary");
+
+    // T1: claude_cli spawn env must carry MAX_THINKING_TOKENS — sole enabler of
+    // extended thinking. Mirrors the codex CODEX_HOME assertion pattern.
+    const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+    expect((spawnOpts as any)?.env?.MAX_THINKING_TOKENS).toBe("3000");
+  });
+
+  it("codex argv (first-turn): full argv shape — model + effort + summary — claude default config → DEFAULT_CODEX_CHAT_MODEL", async () => {
+    // readSharedCodexModel is stubbed to null (top-level vi.mock); config.model
+    // is a claude default → resolver returns DEFAULT_CODEX_CHAT_MODEL ("gpt-5.5").
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    await drainChat(service, "codex", "hi codex", { model: "claude-sonnet-4-6" });
+
+    const captured = vi.mocked(cp.spawn).mock.calls[0][1] as string[];
+    expect(captured).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.5", // claude default rejected → readSharedCodexModel stubbed null → DEFAULT_CODEX_CHAT_MODEL
+      "-c",
+      "model_reasoning_effort=high", // F7: bare value, no JSON.stringify quoting
+      "-c",
+      "model_reasoning_summary=detailed",
+      "-",
+    ]);
+  });
+
+  it("codex argv (resumed-turn): codex-compatible config.model used as-is, resume <id> present", async () => {
+    // REVIEW FIX S2: drainChat widened to accept configOverride — allows injecting model.
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+
+    // Turn 1 — store the codex session id.
+    await drainChat(service, "codex", "first message", { model: "gpt-4.1" });
+    const afterT1 = service.getSessionStore().get("comp1:user1");
+    expect(afterT1.codexSessionId).toBe("codex-sess-aaa");
+
+    // Turn 2 — resume with codex-compatible config.model.
+    await drainChat(service, "codex", "second message", { model: "gpt-4.1" });
+
+    const captured = vi.mocked(cp.spawn).mock.calls[1][1] as string[];
+    expect(captured).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-4.1", // codex-compatible config.model → used as-is (no shared/default lookup)
+      "-c",
+      "model_reasoning_effort=high", // F7: bare value
+      "-c",
+      "model_reasoning_summary=detailed",
+      "resume",
+      "codex-sess-aaa",
+      "-",
+    ]);
   });
 });

@@ -39,4 +39,4 @@ One finding per notification. One recommendation per response. If the user is wr
 
 ## 7. No phantom tools
 
-Only call tools that exist in your tool list. If a skill references a tool you don't have, flag it — don't attempt the call. The 34 tools in TOOLS.md are your complete set.
+Only call tools that exist in your tool list. If a skill references a tool you don't have, flag it — don't attempt the call. The 35 tools in TOOLS.md are your complete set.

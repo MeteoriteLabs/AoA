@@ -1,0 +1,64 @@
+/**
+ * Codex chat model + reasoning-effort resolution for the Commander cli-mode
+ * path. See docs/aoa/plans/2026-06-16-commander-codex-model-pin-plan.md.
+ *
+ * Why: the per-session CODEX_HOME/config.toml has no `model` line, so codex
+ * falls back to its compiled-in default (gpt-5.3-codex), which a
+ * ChatGPT/subscription codex account rejects with HTTP 400 → empty turn.
+ * We pin a subscription-supported model + effort=high (effort is required
+ * for codex to emit reasoning summaries at all).
+ */
+
+/** Proven-on-this-account safe default (Test C). */
+export const DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5";
+
+/**
+ * effort=high is REQUIRED for codex reasoning summaries (medium emits none —
+ * A/B proven). INTENTIONAL hardcode (not a config bypass): mirrors the
+ * COMMANDER_MAX_THINKING_TOKENS constant; a Settings field is a future
+ * enhancement. NOTE: reasoning is still best-effort per model — like the
+ * Claude path, some models emit none; the founder accepted "model-dependent".
+ */
+export const COMMANDER_CODEX_REASONING_EFFORT = "high";
+
+// Shell-safe charset (spawn uses shell:true on Windows — REVIEW FIX C10/S5):
+// the resolved model is interpolated into argv, so reject anything that isn't
+// a plain model identifier. Full-string anchor (NOT a prefix test).
+const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+// OpenAI chat families usable on a ChatGPT/subscription codex account.
+const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt)/i;
+// GPT-Codex variants (…-codex / codex-…) require an API key, NOT a ChatGPT
+// login → they 400 on subscription accounts (this is the exact bug). Deny
+// them so a stray config/shared value can never reintroduce the 400.
+// REVIEW FIX C2: `gpt-5.3-codex` previously passed the naive /^gpt-/ prefix.
+const CODEX_INCOMPATIBLE_RE = /codex/i;
+
+export function isCodexCompatibleModel(model: string | null | undefined): boolean {
+  if (!model) return false;
+  const m = model.trim();
+  return (
+    SAFE_MODEL_RE.test(m) &&
+    CODEX_FAMILY_RE.test(m) &&
+    !CODEX_INCOMPATIBLE_RE.test(m)
+  );
+}
+
+/**
+ * Layered, VALIDATED resolution (enterprise-grade — explicit product config
+ * over ambient host state). Every source is run through
+ * {@link isCodexCompatibleModel} so a claude default, a GPT-Codex model, or a
+ * shell-unsafe string can never reach codex (REVIEW FIX C1):
+ *   1. `internal_agent_config.model` when codex-compatible (it defaults to a
+ *      claude string for every company, so validation is mandatory).
+ *   2. the user's shared `~/.codex/config.toml` model, ALSO validated (it may
+ *      hold a claude/OpenRouter alias or a GPT-Codex model).
+ *   3. the safe default `gpt-5.5`, so it can NEVER 400 on an empty/bad config.
+ */
+export function resolveCodexChatModel(
+  configModel: string | null | undefined,
+  sharedModel: string | null | undefined,
+): string {
+  if (isCodexCompatibleModel(configModel)) return configModel!.trim();
+  if (isCodexCompatibleModel(sharedModel)) return sharedModel!.trim();
+  return DEFAULT_CODEX_CHAT_MODEL;
+}

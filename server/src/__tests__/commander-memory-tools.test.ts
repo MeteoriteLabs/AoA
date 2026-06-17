@@ -64,6 +64,7 @@ describe("Commander memory tools", () => {
       agentId: null,
       runId: "run-1",
       taskId: "task-1",
+      conversationId: "conv-1",
       triggeredBy: "commander_query",
       query: "refunds",
       items: [{ id: "m1", rank: 1, similarityScore: 0.9, shownToAgent: true }],

@@ -143,6 +143,9 @@ export const queryKeys = {
     // V2.6 Phase 3
     retrievalsForIssue: (companyId: string, issueId: string) =>
       ["memory", companyId, "retrievals", "issue", issueId] as const,
+    // Phase 7: Commander Memory cockpit card
+    retrievalsForConversation: (companyId: string, conversationId: string) =>
+      ["memory", companyId, "retrievals", "conversation", conversationId] as const,
     // V2.6 Phase 4
     starterTemplates: (companyId: string) =>
       ["memory", companyId, "starter-templates"] as const,
@@ -250,6 +253,7 @@ export const queryKeys = {
     list: (companyId: string) => ["environments", companyId] as const,
     detail: (companyId: string, id: string) => ["environments", companyId, id] as const,
   },
+  cockpit: (companyId: string) => ["cockpit", companyId] as const,
   plugins: {
     all: ["plugins"] as const,
     list: ["plugins", "list"] as const,

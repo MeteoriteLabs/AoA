@@ -1049,6 +1049,27 @@ AoA's existing primitives in [`ui/src/components/ui/`](../../ui/src/components/)
 
 ---
 
+## 17.1 Commander chat bubbles
+
+**Context:** `InternalAgentPanel.tsx` renders a 1:1 chat between the founder and Commander (no multi-party participants, no avatars).
+
+**Token choices (CSS variables — no per-theme branches):**
+
+| Role | Background | Text | Shape |
+|------|-----------|------|-------|
+| User (founder) | `bg-card` | `text-card-foreground` | `rounded-2xl` + `shadow-sm` |
+| Assistant (Commander) | `bg-muted` | inherited | `rounded-2xl` |
+
+**Rationale:** brand red (`bg-primary`) is reserved for primary CTAs. A filled brand-red user bubble reads as an error state and is visually indistinguishable from a destructive-action highlight. Actor distinction is by alignment (user right, assistant left), not hue — matching the workspace timeline (`TimelineUserMessage.tsx`).
+
+**Hover timestamp:** relative time (`relativeTime(msg.createdAt)`) fades in at bottom-right of the bubble on `group-hover` (`opacity-0 group-hover:opacity-100 transition-opacity`). Positioned `absolute bottom-1 right-2`, `pointer-events-none`, `text-[10px] text-muted-foreground`. Does not overlap the top-right Copy/ExternalLink icon cluster.
+
+**No avatars:** 1:1 chat; avatars add no disambiguating value (only two actors, always aligned).
+
+**Copy icon:** uses the neutral `text-muted-foreground hover:text-foreground` — no per-role color override. (Decision #101)
+
+---
+
 ## 18. Change log
 
 | Date | Change | By |
@@ -1058,6 +1079,7 @@ AoA's existing primitives in [`ui/src/components/ui/`](../../ui/src/components/)
 | 2026-05-08 | Phase C — marketplace packages UI: added `PackageCard` (§9.15), `MarketplacePackageDetail` page (2-col items grid), `StackedIcon` (§9.14), "Part of {pkg}" pill (§9.17). | Founder + Sonnet |
 | 2026-05-09 | Phase D — Settings → `LobbyShell` + `SecondarySidebar` slot: secondary sidebar flush with primary, brand-red glow dot active state matched across both sidebars (§8.2.1), mobile section pills with auto-scroll-into-view (§8.6), primary auto-collapse rule formalized (§8.1.1; Decision #98). | Founder + Sonnet |
 | 2026-05-09 | Sectioned hub view (§9.18): Marketplace "All" mode renders type-grouped sections with 6-item cap + "See all →"; Packages strip nests inside the Skills section. derivePackages restricted to skill items only (Decision #97). | Founder + Opus |
+| 2026-06-16 | Commander chat bubbles (§17.1): neutral `bg-card` user bubble, `bg-muted` assistant, `rounded-2xl`, hover relative-timestamp, no avatars. Neutral copy icon. (Decision #101) | Founder + Sonnet |
 
 ---
 

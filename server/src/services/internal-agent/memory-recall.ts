@@ -474,6 +474,7 @@ export function commanderMemoryRecallService(db: Db) {
             agentId: input.agentId ?? null,
             taskId: input.scope?.taskId ?? null,
             runId: null,
+            conversationId: input.conversationId ?? input.scope?.conversationId ?? null,
             triggeredBy: "commander_context",
             query,
             items: itemsForAudit,

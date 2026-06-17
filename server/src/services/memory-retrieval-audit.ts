@@ -27,6 +27,8 @@ export interface RecordMemoryRetrievalsInput {
   agentId?: string | null;
   runId?: string | null;
   taskId?: string | null;
+  /** Commander conversation that triggered this retrieval (null for agent/skill paths). */
+  conversationId?: string | null;
   triggeredBy: MemoryRetrievalTrigger;
   query?: string | null;
   items: MemoryRetrievalItem[];
@@ -53,6 +55,7 @@ export async function recordMemoryRetrievals(
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
         taskId: input.taskId ?? null,
+        conversationId: input.conversationId ?? null,
         triggeredBy: input.triggeredBy,
         query: input.query ?? null,
         itemId: item.id,

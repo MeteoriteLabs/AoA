@@ -1,8 +1,9 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import type { CommanderToolPermissions } from "@armyofagents/shared";
+import type { CommanderToolPermissions, CommanderOutputRef } from "@armyofagents/shared";
 // Type-only import (erased at compile time → no runtime side effect, preserves
 // the side-effect-free module load for consumers of the tool-layer exports).
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { buildOutputRefs } from "./output-refs.js";
 import { resolveCommanderToolPolicy } from "./authorize-tool.js";
 import { parseCommanderContextScopeJson } from "./context-scope.js";
 import { filterAuthorizedToolsForContext } from "./tool-registry.js";
@@ -47,6 +48,15 @@ async function executeAndFormat(
 ): Promise<McpToolResult> {
   try {
     const result = await deps.executeTool(tool, args, deps.toolContext);
+    let outputRefs: CommanderOutputRef[] = [];
+    try {
+      outputRefs = buildOutputRefs(tool.name, args, result);
+    } catch (err) {
+      outputRefs = []; // ref extraction must never fail the tool call
+      process.stderr.write(
+        `MCP Bridge: buildOutputRefs('${tool.name}') failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
     return {
       content: [
         {
@@ -56,6 +66,7 @@ async function executeAndFormat(
             data: result.data,
             summary: result.summary,
             ...(result.error ? { error: result.error } : {}),
+            ...(outputRefs.length > 0 ? { outputRefs } : {}),
           }),
         },
       ],

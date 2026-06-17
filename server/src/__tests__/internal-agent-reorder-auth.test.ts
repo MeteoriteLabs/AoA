@@ -300,3 +300,60 @@ describe("C12 — reorder/reset owner-scoping (runtime HTTP)", () => {
     });
   });
 });
+
+// ── Codex #2: 404 behavior-lock — existence-leak-safe property ───────────────
+// An existing conversation owned by a DIFFERENT non-founder user must return 404
+// (not 403, not rows) through the shared loadOwnedConversation helper. This locks
+// the existence-leak-safe property post-extraction so a future regression (e.g.
+// accidentally returning 403) is caught immediately.
+describe("loadOwnedConversation — 404 behavior-lock (Codex #2)", () => {
+  // Use the messages route as the real call site: GET .../conversations/:convId/messages
+  // The DB will return [] for the conversation select (simulating owner mismatch for
+  // a non-founder actor), which must yield 404 (not 403, not a successful response).
+
+  const NON_OWNER_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+  // DB that returns no rows for the conversation select (ownership mismatch)
+  function makeNoConvDb() {
+    return {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => Promise.resolve([])), // no rows → 404
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+      })),
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })) })) }),
+      ),
+    };
+  }
+
+  // permissionService is already mocked at module level to return "team_member"
+  // (non-founder), so the userId scope condition fires. The DB returns no rows →
+  // loadOwnedConversation throws 404.
+
+  it("GET messages for a conversation not owned by the actor → 404 (not 403, not rows)", async () => {
+    const db = makeNoConvDb();
+    // boardActor is already set as non-founder (team_member via permissionService mock)
+    const app = (() => {
+      const a = express();
+      a.use(express.json());
+      a.use((req, _res, next) => {
+        (req as unknown as { actor: unknown }).actor = boardActor;
+        next();
+      });
+      a.use("/api", internalAgentRoutes(db as never));
+      a.use(errorHandler);
+      return a;
+    })();
+
+    const res = await request(app)
+      .get(`/api/companies/${COMPANY_ID}/internal-agent/conversations/${NON_OWNER_CONV}/messages`);
+
+    // Must be 404 — not 403 (existence leak) and not 200 (unauthorized access)
+    expect(res.status).toBe(404);
+    expect(res.status).not.toBe(403);
+  });
+});

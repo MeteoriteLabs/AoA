@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   AtSign,
   Bot,
   Check,
+  ChevronRight,
   Copy,
+  ExternalLink,
   Loader2,
   MessageSquarePlus,
   Mic,
   PanelLeft,
   Send,
   Square,
-  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -20,7 +22,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCommanderContextScope } from "../context/CommanderContextScopeContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useLocation } from "../lib/router";
+import { useLocation, useNavigate } from "../lib/router";
+import { useBreakpoint } from "../lib/useBreakpoint";
 import {
   internalAgentApi,
   streamAgentChat,
@@ -33,7 +36,8 @@ import {
   type SSEEvent,
 } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
-import { cn } from "../lib/utils";
+import { cn, relativeTime } from "../lib/utils";
+import { COMMANDER_PANEL_CARD } from "./commander/commanderChrome";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
 import {
@@ -43,9 +47,24 @@ import {
 } from "@/components/ui/sheet";
 import { ChatPaneCaption } from "./commander/ChatPaneCaption";
 import { CommanderEmptyState } from "./commander/CommanderEmptyState";
+import { CommanderReasoningBlock } from "./commander/CommanderReasoningBlock";
 import { InputAddMenu } from "./commander/InputAddMenu";
 import { MemoryContextStrip } from "./commander/MemoryContextStrip";
 import { SkillPicker } from "./commander/SkillPicker";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
+import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCollapsed";
+import { CommanderCockpitPanel } from "./commander/cockpit/CommanderCockpitPanel";
+import {
+  CommanderViewerPanel,
+  CommanderViewerDetail,
+  buildViewerTabModels,
+  OutputRefChips,
+  collectConversationRefs,
+  mergeRefs,
+  shouldAutoOpen,
+  useCommanderViewer,
+} from "./commander/viewer";
 import {
   CommanderInput,
   type CommanderInputHandle,
@@ -53,6 +72,7 @@ import {
 } from "./commander/CommanderInput";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import type { CommanderContextScope } from "@armyofagents/shared";
+import type { CommanderOutputRef } from "@armyofagents/shared";
 import {
   Tooltip,
   TooltipContent,
@@ -212,6 +232,9 @@ export interface ToolCallEntry {
   id: number;
   name: string;
   status: "running" | "done";
+  success?: boolean;
+  summary?: string;
+  open?: boolean;
 }
 
 export interface LocalMessage {
@@ -220,6 +243,7 @@ export interface LocalMessage {
   content: string;
   streamingDone: boolean;
   toolCalls?: ToolCallEntry[];
+  reasoning?: string;
   actionConfirm?: {
     confirmId: string;
     action: string;
@@ -233,15 +257,31 @@ export interface LocalMessage {
     options: string[];
     dismissed: boolean;
   };
+  outputRefs?: CommanderOutputRef[];
   createdAt: string;
+  durationMs?: number;
 }
 
 function serverToLocal(m: AgentMessage): LocalMessage {
+  const calls = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+  const toolCalls: ToolCallEntry[] | undefined =
+    calls.length > 0
+      ? calls.map((c, i) => ({
+          id: i,
+          name: c.name,
+          status: "done" as const,
+          ...(c.success !== undefined ? { success: c.success } : {}),
+          ...(c.summary !== undefined ? { summary: c.summary } : {}),
+        }))
+      : undefined;
   return {
     id: m.id,
     role: m.role === "tool" ? "system" : m.role,
     content: m.content ?? "",
     streamingDone: true,
+    outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
+    ...(toolCalls ? { toolCalls } : {}),
+    ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     createdAt: m.createdAt,
   };
 }
@@ -252,11 +292,29 @@ export function mergeServerMessagesWithTransientLocal(
 ): LocalMessage[] {
   const localById = new Map(localMessages.map((m) => [m.id, m]));
   const serverIds = new Set(serverMessages.map((m) => m.id));
-  const merged = serverMessages.map((m) => ({
-    ...serverToLocal(m),
-    actionConfirm: localById.get(m.id)?.actionConfirm,
-    optionsPrompt: localById.get(m.id)?.optionsPrompt,
-  }));
+  // Carry the live-only "Worked for Xs" durationMs from the streamed local
+  // message onto its persisted server counterpart. The streamed message has a
+  // client temp id (≠ the server id), so match by content. This keeps the
+  // caption visible after the post-turn server sync; it is still absent after a
+  // hard reload (no local message to carry from) — duration is not persisted,
+  // by design (it lives on internal_agent_runs, not internal_agent_messages).
+  const localDurationByContent = new Map<string, number>();
+  for (const lm of localMessages) {
+    if (lm.role === "assistant" && typeof lm.durationMs === "number" && lm.content.trim().length > 0) {
+      localDurationByContent.set(lm.content, lm.durationMs);
+    }
+  }
+  const merged = serverMessages.map((m) => {
+    const base = serverToLocal(m);
+    const carriedDuration =
+      base.role === "assistant" ? localDurationByContent.get(base.content) : undefined;
+    return {
+      ...base,
+      ...(carriedDuration !== undefined ? { durationMs: carriedDuration } : {}),
+      actionConfirm: localById.get(m.id)?.actionConfirm,
+      optionsPrompt: localById.get(m.id)?.optionsPrompt,
+    };
+  });
 
   const transientMessages = localMessages.filter(
     (m) =>
@@ -306,13 +364,34 @@ interface AgentPanelContentProps {
    * desktop/wide (the inline sidebar is shown instead).
    */
   onOpenSessions?: () => void;
+  /**
+   * Commander Viewer P1: when true, the right-hand viewer panel (artifact
+   * tabs + home) is mounted next to the chat column. Only the full-page
+   * Commander route passes this — the docked w-80 panel stays viewer-free.
+   */
+  enableViewerPanel?: boolean;
+  /**
+   * When true, wraps the chat column in the Commander rounded-card chrome.
+   * Only the full-page Commander route passes this — the docked InternalAgentPanel
+   * and mobile sheet stay card-free.
+   */
+  cardChrome?: boolean;
+  /**
+   * Phase 6 [A1]: Controlled sessions collapse state lifted from Commander.tsx.
+   * Required for the openPreview choreography to collapse the sessions sidebar
+   * (which lives as a sibling component outside this panel). Only provided by
+   * the full-page Commander route; undefined in docked/mobile usage.
+   */
+  sessionsCollapsed?: boolean;
+  onSetSessionsCollapsed?: (value: boolean) => void;
 }
 
-export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions }: AgentPanelContentProps = {}) {
+export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false, sessionsCollapsed, onSetSessionsCollapsed }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
   const location = useLocation();
+  const navigate = useNavigate();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
   const queryClient = useQueryClient();
 
@@ -381,6 +460,90 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     enabled: !!companyId && !!conversationId,
   });
 
+  // Commander Viewer P1: per-conversation tab state + mobile flag. The viewer
+  // hook is always called (hooks rules) but the panel only mounts when
+  // `enableViewerPanel` is set (full-page Commander route).
+  const { useDrawerSessions, isWide } = useBreakpoint();
+  const viewer = useCommanderViewer(conversationId ?? null);
+
+  // Phase 1: resizable panel geometry + collapse persistence.
+  const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
+  const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
+  // Phase 1 (panel-redesign): cockpit is now a width-div sibling — NOT in the Group.
+  // panelIds only covers the center Group panels: chat + optionally viewer.
+  // Key uses "-v2" suffix to avoid restoring stale 3-panel geometry from old sessions.
+  const panelIds = useMemo(
+    () => [
+      "commander-chat",
+      ...(viewerCollapsed ? [] : ["commander-detail"]),
+    ],
+    [viewerCollapsed],
+  );
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "aoa:commander:panel-sizes-v2",
+    storage: localStorage,
+    panelIds,
+  });
+
+  // Phase 6: open/close preview choreography (applyPreviewFocus parity).
+  //
+  // Pre-open snapshot: we capture sessions + cockpit collapsed state just before
+  // opening so closePreview() can restore them (not force-expand if the user had
+  // them already closed). Stored in a ref so it doesn't trigger re-renders.
+  const preOpenSnapshotRef = useRef<{ sessions: boolean; cockpit: boolean } | null>(null);
+
+  // openPreview(source):
+  //   "center"       — chat-header toggle: collapse BOTH sessions + cockpit
+  //   "right-panel"  — chip/cockpit/reply/browser/liveRef: collapse sessions only;
+  //                    also collapse cockpit when NOT ultrawide (B6: tablet tier)
+  const openPreview = useCallback((source: "center" | "right-panel") => {
+    // Snapshot current state before collapsing
+    const currentSessionsCollapsed = sessionsCollapsed ?? true;
+    preOpenSnapshotRef.current = {
+      sessions: currentSessionsCollapsed,
+      cockpit: cockpitCollapsed,
+    };
+
+    // Expand the viewer
+    setViewerCollapsed(false);
+    viewer.expand();
+
+    // Always collapse sessions
+    onSetSessionsCollapsed?.(true);
+
+    // Collapse cockpit: always for "center"; also for "right-panel" when not ultrawide
+    if (source === "center" || !isWide) {
+      setCockpitCollapsed(true);
+    }
+  }, [sessionsCollapsed, cockpitCollapsed, setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed, isWide]);
+
+  // closePreview(): collapse viewer, restore sessions + cockpit to pre-open state.
+  const closePreview = useCallback(() => {
+    setViewerCollapsed(true);
+    viewer.collapse();
+
+    if (preOpenSnapshotRef.current !== null) {
+      const { sessions, cockpit } = preOpenSnapshotRef.current;
+      onSetSessionsCollapsed?.(sessions);
+      setCockpitCollapsed(cockpit);
+      preOpenSnapshotRef.current = null;
+    }
+  }, [setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed]);
+
+  // Lightweight helpers still used for cockpit expand/collapse buttons (unchanged UX).
+  const expandCockpit = useCallback(() => {
+    setCockpitCollapsed(false);
+    if (!isWide) setViewerCollapsed(true);
+  }, [setCockpitCollapsed, setViewerCollapsed, isWide]);
+  const collapseCockpit = useCallback(() => setCockpitCollapsed(true), [setCockpitCollapsed]);
+
+  // Stable ref to openPreview for use inside stale SSE closures (onLiveRef).
+  // The sendText / handleSSEEvent callbacks are memoized and capture viewer + other
+  // values from the render they were created in, so we must NOT capture openPreview
+  // by value in those closures — use this ref instead.
+  const openPreviewRef = useRef(openPreview);
+  openPreviewRef.current = openPreview;
+
   // Conversations list — same cache key as SessionsSidebar (no extra fetch)
   const { data: conversationsData } = useQuery({
     queryKey: ["commander-conversations", companyId],
@@ -422,13 +585,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     if (!historyData?.messages?.length) return;
     const loaded: LocalMessage[] = historyData.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({
-        id: m.id,
-        role: m.role as "user" | "assistant",
-        content: m.content ?? "",
-        streamingDone: true,
-        createdAt: m.createdAt,
-      }));
+      .map(serverToLocal);
     setMessages(loaded);
   }, [historyData, conversationId]);
 
@@ -596,6 +753,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         // Show thinking indicator — content stays empty until real content arrives
         break;
 
+      case "reasoning": {
+        const text = (event.data as { text?: string }).text ?? "";
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, reasoning: (m.reasoning ?? "") + text } : m,
+          ),
+        );
+        break;
+      }
+
       case "error": {
         const message =
           (event.data as { message?: string }).message ??
@@ -628,18 +795,45 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== assistantId) return m;
-            const toolName = (event.data as { name?: string }).name;
+            const data = event.data as { name?: string; success?: boolean; summary?: string };
+            const toolName = data.name;
             let found = false;
             const updated = (m.toolCalls ?? []).map((tc) => {
               if (!found && tc.name === toolName && tc.status === "running") {
                 found = true;
-                return { ...tc, status: "done" as const };
+                return { ...tc, status: "done" as const, success: data.success ?? true, summary: data.summary };
               }
               return tc;
             });
             return { ...m, toolCalls: updated };
           }),
         );
+        // Commander Viewer P1: accumulate output refs on the streaming assistant
+        // message + auto-open created refs (desktop) / badge the pill (mobile).
+        // NOTE: this closure can be stale (sendText is memoized and captures the
+        // handleSSEEvent from the render it was created in) — that is safe ONLY
+        // because useCommanderViewer's API reads its live state from a ref at
+        // call time, and setMessages uses a functional updater.
+        const liveRefs = (event.data as { refs?: CommanderOutputRef[] }).refs;
+        if (liveRefs && liveRefs.length > 0) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, outputRefs: mergeRefs(m.outputRefs ?? [], liveRefs) }
+                : m,
+            ),
+          );
+          for (const r of liveRefs) {
+            // Phase 6 [A2]: if this ref would auto-open the viewer, run the
+            // choreography first (right-panel: collapses sessions only, keeps
+            // cockpit on ultrawide — do NOT yank both panels mid-stream).
+            // openPreviewRef is a stable ref so it's safe inside this stale closure.
+            if (enableViewerPanel && shouldAutoOpen(r, useDrawerSessions)) {
+              openPreviewRef.current("right-panel");
+            }
+            viewer.onLiveRef(r, useDrawerSessions);
+          }
+        }
         break;
       }
 
@@ -678,9 +872,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         break;
       }
 
-      case "done":
-        setMessages((prev) => settleRunningToolCalls(prev, assistantId));
+      case "done": {
+        const durationMs = (event.data as { durationMs?: number }).durationMs;
+        setMessages((prev) =>
+          settleRunningToolCalls(prev, assistantId).map((m) =>
+            m.id === assistantId && typeof durationMs === "number" ? { ...m, durationMs } : m,
+          ),
+        );
         break;
+      }
     }
   }
 
@@ -870,22 +1070,45 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     }
   };
 
-  return (
-    <div className="flex flex-col h-full">
-      {/* Chat pane caption strip — shown only when there is an active conversation */}
-      {conversationId && (
+  // Commander Viewer P1: deduped refs across the loaded conversation (feeds the
+  // viewer's home tab). Cheap O(messages) — no memo needed.
+  const conversationRefs = collectConversationRefs(messages);
+
+  // The chat column is extracted into a const (instead of re-indenting the
+  // ~400-line tree inside a new row wrapper) so the viewer-panel row below
+  // stays a small, reviewable diff. Classes: original `flex flex-col h-full`
+  // + `min-w-0 flex-1` so the column shrinks correctly next to the viewer.
+  const chatColumn = (
+    <div
+      className={cn(
+        "flex h-full min-w-0 flex-1 flex-col",
+        cardChrome && `${COMMANDER_PANEL_CARD} overflow-hidden`,
+      )}
+    >
+      {/* Chat pane caption strip. In full-page Commander (enableViewerPanel) it always
+          renders so the "Open preview" toggle is reachable even before a session is
+          selected (the default conversation shows messages with conversationId still
+          null). In docked mode it shows only with an active conversation and never the
+          toggle (no viewer there). */}
+      {(conversationId || enableViewerPanel) && (
         <ChatPaneCaption
           title={activeConv?.title ?? "New chat"}
           messageCount={activeConv?.messageCount ?? messages.length}
           updatedAt={activeConv?.updatedAt}
           onOpenSessions={onOpenSessions}
+          viewerOpen={!viewerCollapsed}
+          onToggleViewer={
+            enableViewerPanel
+              ? (viewerCollapsed ? () => openPreview("center") : closePreview)
+              : undefined
+          }
         />
       )}
 
       {/* Mobile/tablet Sessions trigger — shown only when there is NO active
           conversation (the caption's Sessions button covers the active case).
           `lg:hidden` keeps the desktop layout completely unchanged. */}
-      {!conversationId && onOpenSessions && (
+      {!conversationId && !enableViewerPanel && onOpenSessions && (
         <div className="lg:hidden shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-background">
           <button
             type="button"
@@ -949,9 +1172,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
-                "group relative max-w-[85%] rounded-lg px-3 py-2 text-sm",
+                "group relative max-w-[85%] rounded-2xl px-3 py-2 text-sm",
                 msg.role === "user"
-                  ? "bg-primary text-primary-foreground"
+                  ? "bg-card text-card-foreground shadow-sm"
                   : "bg-muted",
               )}
             >
@@ -967,7 +1190,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                     "absolute top-1 right-1 flex items-center justify-center rounded p-0.5",
                     "opacity-0 group-hover:opacity-100 transition-opacity",
                     "text-muted-foreground hover:text-foreground",
-                    msg.role === "user" && "text-primary-foreground/60 hover:text-primary-foreground",
                   )}
                 >
                   {copiedMessageId === msg.id
@@ -976,17 +1198,88 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 </button>
               )}
 
-              {/* Tool call indicators */}
+              {/* Hover "open reply in viewer" pop-out — assistant bubbles only,
+                  sits just left of the Copy button with identical hover reveal */}
+              {msg.role === "assistant" && msg.content && (
+                <button
+                  type="button"
+                  data-commander-touch
+                  aria-label="Open reply in viewer"
+                  title="Open reply in viewer"
+                  onClick={() => { openPreview("right-panel"); viewer.openReply(msg.id, msg.content); }}
+                  className={cn(
+                    "absolute top-1 right-6 flex items-center justify-center rounded p-0.5",
+                    "opacity-0 group-hover:opacity-100 transition-opacity",
+                    "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </button>
+              )}
+
+              <span
+                className={cn(
+                  "pointer-events-none absolute bottom-1 right-2 text-[10px] text-muted-foreground",
+                  "opacity-0 group-hover:opacity-100 transition-opacity",
+                )}
+              >
+                {relativeTime(msg.createdAt)}
+              </span>
+
+              {/* Inline reasoning (collapsible Thinking block) */}
+              {msg.role === "assistant" && msg.reasoning && (
+                <CommanderReasoningBlock
+                  text={msg.reasoning}
+                  streaming={streaming && !msg.streamingDone}
+                  defaultCollapsed={msg.streamingDone}
+                />
+              )}
+
+              {/* Tool activity — inline, expandable, with status glyph */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="space-y-1 mb-2">
                   {msg.toolCalls.map((tc) => (
-                    <div key={tc.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      {tc.status === "running" ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Wrench className="h-3 w-3" />
+                    <div key={tc.id} className="text-xs">
+                      <button
+                        type="button"
+                        data-testid={`commander-tool-activity-${tc.id}`}
+                        disabled={!tc.summary}
+                        aria-expanded={!!tc.open}
+                        aria-controls={`tool-summary-${msg.id}-${tc.id}`}
+                        onClick={() =>
+                          setMessages((prev) =>
+                            prev.map((m) =>
+                              m.id === msg.id
+                                ? { ...m, toolCalls: (m.toolCalls ?? []).map((t) => (t.id === tc.id ? { ...t, open: !t.open } : t)) }
+                                : m,
+                            ),
+                          )
+                        }
+                        className="flex w-full items-center gap-1.5 text-left text-muted-foreground hover:text-foreground disabled:cursor-default disabled:hover:text-muted-foreground"
+                      >
+                        {tc.status === "running" ? (
+                          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                        ) : tc.success === false ? (
+                          <AlertCircle className="h-3 w-3 shrink-0 text-red-500" />
+                        ) : (
+                          <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                        )}
+                        <span className="truncate">
+                          {tc.status === "running" ? toolLabel(tc.name) : completedToolLabel(tc.name)}
+                        </span>
+                        {tc.summary && (
+                          <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", tc.open && "rotate-90")} />
+                        )}
+                      </button>
+                      {tc.open && tc.summary && (
+                        <pre
+                          id={`tool-summary-${msg.id}-${tc.id}`}
+                          data-testid="commander-tool-summary"
+                          className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px] text-muted-foreground"
+                        >
+                          {tc.summary}
+                        </pre>
                       )}
-                      <span>{tc.status === "running" ? toolLabel(tc.name) : completedToolLabel(tc.name)}</span>
                     </div>
                   ))}
                 </div>
@@ -997,18 +1290,37 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 msg.role === "user" ? (
                   <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                 ) : msg.streamingDone ? (
-                  <MarkdownBody className="prose-xs [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_pre]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs">
+                  <MarkdownBody
+                    className="prose-xs [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_pre]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs"
+                    onLinkOpen={enableViewerPanel ? (url: string) => { openPreview("right-panel"); viewer.openBrowser(url); } : undefined}
+                  >
                     {msg.content}
                   </MarkdownBody>
                 ) : (
                   <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                 )
-              ) : msg.role === "assistant" && streaming ? (
+              ) : msg.role === "assistant" && streaming && !msg.reasoning ? (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Thinking...
                 </span>
               ) : null}
+
+              {/* Commander Viewer P1: artifact handles under the reply text */}
+              {msg.role === "assistant" && msg.outputRefs && msg.outputRefs.length > 0 && (
+                <OutputRefChips
+                  refs={msg.outputRefs}
+                  onOpen={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
+                />
+              )}
+
+              {/* Live-only: durationMs comes from the done SSE event, not persisted
+                  (it's on internal_agent_runs). Absent after reload by design. */}
+              {msg.role === "assistant" && msg.streamingDone && typeof msg.durationMs === "number" && msg.durationMs > 0 && (
+                <p data-testid="commander-worked-for" className="mt-1 text-[10px] text-muted-foreground">
+                  Worked for {(msg.durationMs / 1000).toFixed(1)}s
+                </p>
+              )}
 
               {/* Action confirmation */}
               {msg.actionConfirm && (
@@ -1258,6 +1570,106 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+
+  // No viewer panel (docked usage) — unchanged single column.
+  if (!enableViewerPanel || !companyId) {
+    return <div className="flex h-full min-h-0 flex-row overflow-hidden">{chatColumn}</div>;
+  }
+
+  // Mobile — unchanged: chat + floating pill/Sheet (no Group).
+  if (useDrawerSessions) {
+    return (
+      <div className="flex h-full min-h-0 flex-row overflow-hidden">
+        {chatColumn}
+        <CommanderViewerPanel companyId={companyId} viewer={viewer} conversationRefs={conversationRefs} isMobile />
+      </div>
+    );
+  }
+
+  // Desktop — Phase 1 (panel-redesign): Group holds Chat+Viewer only.
+  // Cockpit is a width-toggled <div> sibling to the right of the Group,
+  // mirroring WorkspaceLayout.tsx:525-559. Expanded=300px, collapsed=48px rail.
+  const tabModels = buildViewerTabModels(viewer.state);
+  const activeTab = viewer.state.tabs.find((t) => t.id === viewer.state.activeId);
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden gap-2">
+      {/* Center group: Chat + optional Viewer only (cockpit is now a width-div sibling).
+          The Group has no border/overflow-hidden — each inner panel provides its
+          own COMMANDER_PANEL_CARD chrome. The Separator (w-2 transparent) acts as
+          the 8px gap between the chat card and the viewer card. */}
+      <Group
+        orientation="horizontal"
+        className="flex h-full min-w-0 flex-1"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
+        data-testid="commander-center-group"
+      >
+        <Panel id="commander-chat" minSize="40%" className="flex h-full min-w-0 flex-col">
+          {chatColumn}
+        </Panel>
+        {!viewerCollapsed && (
+          <>
+            {/* Separator renders its own `data-separator` + role="separator"
+                attributes (a passed data-testid is ignored); tests target
+                `[data-separator]`. */}
+            <Separator
+              id="commander-sep"
+              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
+            />
+            <Panel
+              id="commander-detail"
+              defaultSize="40%"
+              minSize="24%"
+              maxSize="60%"
+              className="flex h-full min-w-0"
+            >
+              <CommanderViewerDetail
+                viewer={viewer}
+                companyId={companyId}
+                conversationRefs={conversationRefs}
+                activeTab={activeTab}
+                tabModels={tabModels}
+                onCollapse={closePreview}
+              />
+            </Panel>
+          </>
+        )}
+      </Group>
+      {/* Right cockpit — width-toggled div mirroring WorkspaceLayout right panel.
+          Expanded: w-[300px] showing the full CommanderCockpitPanel.
+          Collapsed: w-[48px] showing the CommanderCockpitRail.
+          COMMANDER_PANEL_CARD here (rounded-xl + border + shadow-sm + overflow-hidden)
+          mirrors WorkspaceLayout's right panel card pattern exactly. The inner
+          CommanderCockpitPanel/Rail provide their own structural chrome (header, etc.)
+          but the card border/radius lives here on the container. */}
+      <div
+        className={cn(
+          "shrink-0 h-full overflow-hidden transition-[width] duration-200",
+          COMMANDER_PANEL_CARD,
+          cockpitCollapsed ? "w-[48px]" : "w-[300px]",
+        )}
+        data-testid="commander-cockpit-container"
+        data-collapsed={cockpitCollapsed ? "true" : "false"}
+      >
+        <CommanderCockpitPanel
+          companyId={companyId}
+          conversationId={conversationId}
+          collapsed={cockpitCollapsed}
+          onExpand={expandCockpit}
+          onCollapse={collapseCockpit}
+          onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
+          onAsk={(text) => void sendText(text)}
+          onOpenFullPage={(href) => navigate(href)}
+          onOpenArtifact={(id, title) => {
+            openPreview("right-panel");
+            viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
+          }}
+          conversationRefs={conversationRefs}
+          onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
+        />
       </div>
     </div>
   );

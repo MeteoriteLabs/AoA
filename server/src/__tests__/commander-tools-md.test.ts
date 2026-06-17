@@ -32,7 +32,7 @@ describe("TOOLS.md contract", () => {
   // Browser routing instructions used to live here, but the v0.1 rewrite
   // (commit 25507693) moved external-tool routing (Bash for HTTP, task for
   // QA workflows) into AGENTS.md / HEARTBEAT.md so TOOLS.md focuses purely
-  // on the 34 internal Commander tools. The contract test is preserved as
+  // on the 35 internal Commander tools. The contract test is preserved as
   // a placeholder — if browser routing returns to TOOLS.md, restore the
   // assertion below.
   it.skip("(deferred) contains browser routing instruction (Bash for HTTP, task for QA)", () => {

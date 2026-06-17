@@ -568,6 +568,8 @@ function handleLiveEvent(
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
+    // Cockpit Running card tracks queued + running runs → invalidate on both.
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast) gatedPushToast(gate, pushToast, "run-status", toast);
@@ -611,6 +613,8 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: ["tasks", "crew-board", expectedCompanyId] });
     // Also nudge the live-runs query so the "Live" pill clears/updates promptly.
     queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(expectedCompanyId) });
+    // Cockpit live invalidation: task status changes affect review/myTasks/today cards
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const issueId = readString(payload.issueId);
     if (issueId) {
       const details = readRecord(payload.details);
@@ -626,6 +630,8 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
+    // Cockpit live invalidation: new entries may change pending discussion counts
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const discussionId = readString(payload.discussionId);
     if (discussionId) {
       queryClient.invalidateQueries({
@@ -646,6 +652,8 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
+    // Cockpit live invalidation: extraction status changes affect discussions card
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const discussionId = readString(payload.discussionId);
     if (discussionId) {
       queryClient.invalidateQueries({
@@ -682,6 +690,8 @@ function handleLiveEvent(
   if (event.type === "internal_agent.reminder") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agentReminders(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
+    // Cockpit live invalidation: reminders affect the Today card
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     return;
   }
 
@@ -698,6 +708,8 @@ function handleLiveEvent(
   if (event.type === "internal_agent.run.status") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns(expectedCompanyId) });
+    // Cockpit live invalidation: internal agent run status affects running card
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const status = readString(payload.status);
     if (status === "failed") {
       gatedPushToast(gate, pushToast, "internal-agent-run", {

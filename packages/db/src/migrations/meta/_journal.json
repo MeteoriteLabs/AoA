@@ -967,6 +967,34 @@
       "when": 1780480105434,
       "tag": "0137_worthless_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1781244773796,
+      "tag": "0138_ancient_randall",
+      "breakpoints": true
+    },
+    {
+      "idx": 139,
+      "version": "7",
+      "when": 1781468031399,
+      "tag": "0139_zippy_ravenous",
+      "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1781551617464,
+      "tag": "0140_furry_bloodscream",
+      "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1781611017893,
+      "tag": "0141_complex_tyger_tiger",
+      "breakpoints": true
     }
   ]
 }

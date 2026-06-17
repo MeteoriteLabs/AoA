@@ -18,6 +18,35 @@ export function resolveSharedCodexHomeDir(env: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * Read the `model` value from the user's SHARED `~/.codex/config.toml`
+ * (resolved via {@link resolveSharedCodexHomeDir} — NOT a per-session
+ * managed home). Used as a fallback model source for the Commander codex
+ * chat spawn when the AoA config has no codex-compatible model.
+ *
+ * - Matches the first `model = "..."` (or bare `model = x`) line.
+ * - Ignores commented (`#`) lines.
+ * - Never throws: returns `null` on a missing file or absent key.
+ *
+ * IMPORTANT: call with the SERVER process env (not the per-session
+ * CODEX_HOME), so it reads the shared home, not the bridge-only managed one.
+ */
+export async function readSharedCodexModel(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
+  const sharedHome = resolveSharedCodexHomeDir(env);
+  const target = path.join(sharedHome, "config.toml");
+  const content = await fs.readFile(target, "utf8").catch(() => null);
+  if (!content) return null;
+  // Scan ONLY the top-level section (everything before the first `[table]`
+  // header) so a `[profiles.x]`/`[model_providers.x]` `model =` can never be
+  // mistaken for the active model (REVIEW FIX C4/S4). Column-0 anchor + single
+  // OR double quote handling (REVIEW FIX C5).
+  const topLevel = content.split(/^\[/m)[0];
+  const m = topLevel.match(/^model\s*=\s*['"]?([^'"\n#]+?)['"]?\s*(?:#.*)?$/m);
+  return m ? m[1].trim() : null;
+}
+
+/**
  * Copy `<sharedHome>/auth.json` → `<targetHomeDir>/auth.json` when the
  * source exists. Used to provision codex credentials into a managed /
  * per-session CODEX_HOME so `codex exec` run with that home is
