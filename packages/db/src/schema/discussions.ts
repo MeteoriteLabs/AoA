@@ -204,6 +204,13 @@ export const discussionEntries = pgTable(
     // discussionService.addEntry). 0 = legacy rows created before Plan 7.
     seq: integer("seq").notNull().default(0),
 
+    // #197: idempotency anchor for action-gated commits (thread-agent-actions).
+    // The thread_agent_actions.id whose commit produced this entry; NULL for all
+    // non-gated entries. The partial unique index below makes the gated commit
+    // idempotent — the same action can never produce two entries. #198 extends
+    // this guarantee to all action types.
+    sourceActionId: uuid("source_action_id"),
+
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -238,6 +245,11 @@ export const discussionEntries = pgTable(
       .where(
         sql`input_type = 'scope_proposal' AND proposal_status = 'pending'`,
       ),
+    // #197: idempotent action-gated commit. At most one entry per
+    // (discussion, source_action_id); partial so non-gated entries (NULL) are exempt.
+    sourceActionUniq: uniqueIndex("discussion_entries_source_action_uq")
+      .on(table.discussionId, table.sourceActionId)
+      .where(sql`source_action_id IS NOT NULL`),
   }),
 );
 
