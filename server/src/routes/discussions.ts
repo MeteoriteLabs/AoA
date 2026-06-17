@@ -598,8 +598,15 @@ export function discussionRoutes(db: Db) {
     const info = getActorInfo(req);
     const isHuman = req.actor.type === "board";
 
-    // local_implicit or instance admin → treat as founder
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    // local_implicit or instance admin (board only) → treat as founder.
+    // Defense-in-depth: the Actor type is flat (source/isInstanceAdmin exist on
+    // all actor kinds), so gate on type:"board" rather than relying on the
+    // runtime invariant that auth.ts only sets these on board actors (matches
+    // the internal-agent.ts / cli-auth.ts idiom).
+    if (
+      req.actor.type === "board" &&
+      (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+    ) {
       return { userId: info.actorId, role: "founder", isHuman };
     }
     if (req.actor.type === "agent") {
