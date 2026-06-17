@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
-import type { CommanderContextScope } from "@armyofagents/shared";
+import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
@@ -20,6 +20,8 @@ import {
   normalizeCommanderContextScope,
   type NormalizedCommanderContextScope,
 } from "./context-scope.js";
+import { collectChunkRefs, mergeOutputRefs } from "./output-refs.js";
+import { humanToolSummary } from "./tool-summary.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,13 +30,17 @@ interface RunSummary {
   toolsCalled: string[];
   durationMs: number;
   costCents: number;
-  tokenUsage: { inputTokens: number; outputTokens: number };
+  tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  /** Model/provider actually used, when the adapter reports it (cost estimate input). */
+  model?: string | null;
+  provider?: string | null;
 }
 
 export type AgentStreamChunk =
   | { type: "text"; delta: string }
+  | { type: "reasoning"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; name: string; result: ToolResult }
+  | { type: "tool_result"; name: string; result: ToolResult; refs?: CommanderOutputRef[] }
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }
   | { type: "options_prompt"; question: string; options: string[]; promptId: string }
   | { type: "error"; message: string }
@@ -288,20 +294,52 @@ export function agentLoopService(db: Db) {
         };
 
         let accumulatedAssistant = "";
+        const REASONING_CAP = 16000;
+        let accumulatedReasoning = "";
+        const turnRefs: CommanderOutputRef[] = [];
+        const turnToolCalls: Array<{ name: string; success?: boolean; summary?: string }> = [];
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
+          if (chunk.type === "reasoning") {
+            // F5: cap accumulation exactly — once at/over cap, stop appending and
+            // skip forwarding to avoid holding a huge string in memory.
+            if (accumulatedReasoning.length >= REASONING_CAP) {
+              // Already at/over cap — skip yielding and accumulating.
+              continue;
+            }
+            // Slice to cap so a large delta cannot overshoot by one chunk.
+            accumulatedReasoning = (accumulatedReasoning + chunk.delta).slice(0, REASONING_CAP);
+          }
+          if (chunk.type === "tool_call") {
+            turnToolCalls.push({ name: chunk.name });
+          }
+          if (chunk.type === "tool_result") {
+            const enriched = {
+              success: chunk.result?.success ?? true,
+              summary: humanToolSummary(chunk.name, chunk.result?.summary ?? chunk.result?.data),
+            };
+            const match = turnToolCalls.find((c) => c.name === chunk.name && c.success === undefined);
+            if (match) Object.assign(match, enriched);
+            else turnToolCalls.push({ name: chunk.name, ...enriched });
+          }
+          collectChunkRefs(turnRefs, chunk);
           yield chunk;
         }
 
-        if (accumulatedAssistant.trim()) {
+        if (accumulatedAssistant.trim() || turnToolCalls.length > 0 || accumulatedReasoning.trim()) {
           // Assistant replies have no originating page / department-persona
           // context (those describe where the USER was), so we omit them —
           // appendMessage defaults the optional fields to null, matching the
           // internal_agent_messages schema. role:"assistant" is a valid role
           // per the schema's role enum.
+          const outputRefs = turnRefs.length > 0 ? mergeOutputRefs([], turnRefs) : undefined;
           await convService.appendMessage(conversation.id, {
             role: "assistant",
             content: accumulatedAssistant,
+            ...(outputRefs ? { outputRefs } : {}),
+            ...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
+            // F5: accumulatedReasoning is already capped during accumulation — no slice needed.
+            ...(accumulatedReasoning.trim() ? { reasoning: accumulatedReasoning } : {}),
           });
         }
 

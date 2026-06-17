@@ -463,3 +463,8 @@ export {
   type ProbeEnvironmentInput,
   type UpdateEnvironmentInput,
 } from "./environment.js";
+
+export {
+  createUserEntityPinSchema,
+  type CreateUserEntityPin,
+} from "./user-entity-pins.js";

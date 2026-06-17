@@ -5,9 +5,12 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { AgentPanelContent } from "../components/InternalAgentPanel";
 import { SessionsSidebar } from "../components/commander";
+import { COMMANDER_PANEL_ROW } from "../components/commander/commanderChrome";
+import { useCommanderSessionsCollapsed } from "../components/commander/useCommanderSessionsCollapsed";
 import { commanderConversationsApi, internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { useBreakpoint } from "../lib/useBreakpoint";
+import { cn } from "../lib/utils";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 export function Commander() {
@@ -20,6 +23,12 @@ export function Commander() {
   // drawer instead of an inline sidebar.
   const { useDrawerSessions } = useBreakpoint();
   const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
+
+  // Phase 6 [A1]: Lift sessions collapse state so the choreography in
+  // AgentPanelContent can collapse sessions (which lives here as a sibling).
+  // Keep the global localStorage key via the existing hook — both the sidebar
+  // and the panel read/write the same key.
+  const [sessionsCollapsed, setSessionsCollapsed] = useCommanderSessionsCollapsed();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Commander" }]);
@@ -64,21 +73,28 @@ export function Commander() {
       )}
 
       {/* Chat workspace — sessions + chat panel, fills remaining height */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className={cn("flex flex-1 min-h-0 overflow-hidden", COMMANDER_PANEL_ROW)}>
         {/* Desktop/wide (>= 1024px): inline sessions sidebar — UNCHANGED */}
         {!useDrawerSessions && (
           <SessionsSidebar
+            chrome
             activeConversationId={activeConversationId}
             onSelect={setActiveConversationId}
             onNewConversation={handleNewConversation}
+            collapsed={sessionsCollapsed}
+            onSetCollapsed={setSessionsCollapsed}
           />
         )}
 
-        <div className="flex-1 min-w-0 overflow-hidden bg-bg">
+        <div className="flex-1 min-w-0 overflow-hidden">
           <AgentPanelContent
             conversationId={activeConversationId}
             onSelectConversation={handleSelectConversation}
             onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
+            enableViewerPanel
+            cardChrome
+            sessionsCollapsed={sessionsCollapsed}
+            onSetSessionsCollapsed={setSessionsCollapsed}
           />
         </div>
 

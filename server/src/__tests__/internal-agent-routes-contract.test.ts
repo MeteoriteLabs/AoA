@@ -275,28 +275,42 @@ describe("internal-agent pin/rename routes source contract (Task 1)", () => {
   );
 
   // ── Helper contract ──────────────────────────────────────────────────────
-  // The ownership logic was extracted into loadOwnedConversation() to remove
-  // the verbatim triplication across archive, pin, and rename. These assertions
-  // verify the helper itself contains the full ownership guard.
+  // loadOwnedConversation was extracted to the shared module
+  // conversation-authz.ts (Task 1 refactor). These assertions verify the
+  // shared module contains the full ownership guard, and that internal-agent.ts
+  // imports it (rather than duplicating the logic inline).
 
   it("loadOwnedConversation helper contains userId ownership condition for non-founders", () => {
-    // The helper body must push userId into convConditions for non-founders,
+    // The shared helper body must push userId into convConditions for non-founders,
     // preserving the anti-leak pattern (no 403 vs 404 distinction for non-owners).
-    const helperStart = routeSrc.indexOf("async function loadOwnedConversation(");
+    const authzSrc = readFileSync(
+      resolve(__dirname, "../routes/conversation-authz.ts"),
+      "utf8",
+    );
+    const helperStart = authzSrc.indexOf("export async function loadOwnedConversation(");
     expect(helperStart).toBeGreaterThan(-1);
-    // Slice from the helper start to the next route registration to scope the check
-    const nextRouteStart = routeSrc.indexOf("router.post(", helperStart);
-    const helperBlock = routeSrc.slice(helperStart, nextRouteStart);
+    const helperBlock = authzSrc.slice(helperStart);
     expect(helperBlock).toContain("internalAgentConversations.userId");
     expect(helperBlock).toContain("actor.actorId");
+    // internal-agent.ts must import the shared helper (not define it locally)
+    expect(routeSrc).toContain('from "./conversation-authz.js"');
+    expect(routeSrc).not.toContain("async function loadOwnedConversation(");
   });
 
-  it("loadOwnedConversation helper resolves founder role (getEffectiveRole)", () => {
-    const helperStart = routeSrc.indexOf("async function loadOwnedConversation(");
-    const nextRouteStart = routeSrc.indexOf("router.post(", helperStart);
-    const helperBlock = routeSrc.slice(helperStart, nextRouteStart);
-    expect(helperBlock).toContain("getEffectiveRole");
+  it("loadOwnedConversation helper delegates role resolution to resolveActorRole", () => {
+    const authzSrc = readFileSync(
+      resolve(__dirname, "../routes/conversation-authz.ts"),
+      "utf8",
+    );
+    // loadOwnedConversation now delegates to resolveActorRole (single-sourced board-gate).
+    // The founder-role resolution (including getEffectiveRole for board sessions) lives in
+    // resolveActorRole — both helpers are in the same file.
+    const helperStart = authzSrc.indexOf("export async function loadOwnedConversation(");
+    const helperBlock = authzSrc.slice(helperStart);
+    expect(helperBlock).toContain("resolveActorRole");
     expect(helperBlock).toContain("isFounderRole");
+    // resolveActorRole (defined in the same file) calls getEffectiveRole for board sessions.
+    expect(authzSrc).toContain("getEffectiveRole");
   });
 
   // ── Per-route delegation assertions ─────────────────────────────────────

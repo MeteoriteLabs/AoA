@@ -1171,6 +1171,7 @@ export function memoryService(db: Db) {
             itemId: memoryItems.id,
             itemTitle: memoryItems.title,
             itemLayer: memoryItems.layer,
+            itemDepartmentId: memoryItems.departmentId,
             itemCategory: memoryItems.category,
             itemSource: memoryItems.source,
             currentContent: memoryItems.content,
@@ -1248,6 +1249,7 @@ export function memoryService(db: Db) {
         itemId: row.itemId,
         itemTitle: row.itemTitle,
         itemLayer: row.itemLayer,
+        itemDepartmentId: row.itemDepartmentId,
         itemCategory: row.itemCategory,
         itemSource: row.itemSource,
         currentContent: row.currentContent,
@@ -1369,6 +1371,55 @@ export function memoryService(db: Db) {
           and(
             eq(memoryRetrievals.companyId, companyId),
             eq(memoryRetrievals.taskId, issueId),
+          ),
+        )
+        .orderBy(desc(memoryRetrievals.createdAt))
+        .limit(limit);
+    },
+
+    /**
+     * Phase 7 — Memory cockpit card.
+     *
+     * Returns retrievals for a Commander conversation, newest first.
+     * Items deleted after the retrieval surface with null fields (audit-preserve).
+     * Limit defaults to 100; hard-cap 500.
+     */
+    listRetrievalsForConversation: async (
+      companyId: string,
+      conversationId: string,
+      options: { limit?: number } = {},
+    ) => {
+      const limit = Math.min(options.limit ?? 100, 500);
+
+      return await db
+        .select({
+          id: memoryRetrievals.id,
+          companyId: memoryRetrievals.companyId,
+          agentId: memoryRetrievals.agentId,
+          runId: memoryRetrievals.runId,
+          taskId: memoryRetrievals.taskId,
+          conversationId: memoryRetrievals.conversationId,
+          triggeredBy: memoryRetrievals.triggeredBy,
+          query: memoryRetrievals.query,
+          itemId: memoryRetrievals.itemId,
+          similarityScore: memoryRetrievals.similarityScore,
+          rank: memoryRetrievals.rank,
+          shownToAgent: memoryRetrievals.shownToAgent,
+          createdAt: memoryRetrievals.createdAt,
+          // joined item fields (LEFT JOIN — null when item deleted)
+          itemTitle: memoryItems.title,
+          itemContent: memoryItems.content,
+          itemCategory: memoryItems.category,
+          itemLayer: memoryItems.layer,
+          itemStatus: memoryItems.status,
+          itemPinnedToSkill: memoryItems.pinnedToSkill,
+        })
+        .from(memoryRetrievals)
+        .leftJoin(memoryItems, eq(memoryRetrievals.itemId, memoryItems.id))
+        .where(
+          and(
+            eq(memoryRetrievals.companyId, companyId),
+            eq(memoryRetrievals.conversationId, conversationId),
           ),
         )
         .orderBy(desc(memoryRetrievals.createdAt))

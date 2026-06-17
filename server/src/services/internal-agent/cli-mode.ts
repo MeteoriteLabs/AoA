@@ -15,6 +15,11 @@ import {
   type NormalizedCommanderContextScope,
 } from "./context-scope.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
+import { COMMANDER_MAX_THINKING_TOKENS } from "./thinking-config.js";
+import {
+  resolveCodexChatModel,
+  COMMANDER_CODEX_REASONING_EFFORT,
+} from "./codex-model.js";
 import { logger } from "../../middleware/logger.js";
 
 const require = createRequire(import.meta.url);
@@ -293,6 +298,8 @@ interface CliInvocation {
   spawnEnv?: Record<string, string>;
   /** Primary temp artifact to record as session.mcpConfigPath for cleanup. */
   mcpArtifactPath: string;
+  /** Resolved model actually used for this invocation (for provenance, not cost). */
+  resolvedModel?: string;
 }
 
 /**
@@ -354,6 +361,7 @@ async function resolveCliInvocation(
   // of the legacy single -p path.  Strings are pre-escaped by the caller.
   systemSplitArgs?: SystemSplitArgs,
   vendorCliBypassEnabled = true,
+  codexModel?: string | null,
 ): Promise<CliInvocation | null> {
   const isWin = platform() === "win32";
   const claudeBypassArgs = vendorCliBypassEnabled
@@ -406,6 +414,7 @@ async function resolveCliInvocation(
             "--verbose",
             systemSplitArgs.safeRawContent,
           ],
+          spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
           mcpArtifactPath: configPath,
         };
       }
@@ -421,6 +430,7 @@ async function resolveCliInvocation(
           "--verbose",
           safeContent,
         ],
+        spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
         mcpArtifactPath: configPath,
       };
     }
@@ -431,9 +441,8 @@ async function resolveCliInvocation(
       // there via the MX3 writer. Prompt is delivered over stdin: `codex
       // exec --json -` reads instructions from stdin (matches the chat's
       // persistent stdin-piping model for multi-turn).
-      const { writeCodexMcpConfigToml, ensureCodexAuthInHome } = await import(
-        "@armyofagents/adapter-codex-local/server"
-      );
+      const { writeCodexMcpConfigToml, ensureCodexAuthInHome, readSharedCodexModel } =
+        await import("@armyofagents/adapter-codex-local/server");
       const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
       await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
       // MX-chatauth: the per-session CODEX_HOME has config.toml but no
@@ -443,17 +452,24 @@ async function resolveCliInvocation(
       // Session-isolated: this home/config.toml encodes THIS chat
       // session's identity and must not be shared with the agent path.
       await ensureCodexAuthInHome(codexHomeDir);
-      // ONE-SHOT model (MX-chatparse): turn-1 = `codex exec --json -`
-      // (prompt via stdin). Continuation turn appends `resume <sessionId>
-      // -` — same convention as the codex-local adapter (buildArgs:
-      // resumeSessionId ? push("resume", id, "-") : push("-")).
-      // --dangerously-bypass-approvals-and-sandbox: Commander is a trusted
-      // internal process (MCP bridge is AoA-owned, not user code). Without
-      // this flag Codex's approval gate cancels every MCP tool call since
-      // there is no interactive console to approve them.
+      // MX-chatmodel: pin a subscription-supported model + effort. The
+      // per-session CODEX_HOME has no `model` line, so without --model codex
+      // falls back to its default (gpt-5.3-codex), which a ChatGPT-account
+      // codex rejects with a 400 → empty turn. effort=high is REQUIRED for
+      // codex to emit reasoning summaries (medium emits none). The summary
+      // flag stays BARE (quoted emits nothing). See codex-model.ts + the plan.
+      const sharedCodexModel = await readSharedCodexModel(); // shared ~/.codex, NOT the per-session home
+      const resolvedCodexModel = resolveCodexChatModel(codexModel, sharedCodexModel);
+      const modelArgs = ["--model", resolvedCodexModel];
+      const reasoningArgs = [
+        "-c",
+        `model_reasoning_effort=${COMMANDER_CODEX_REASONING_EFFORT}`,
+        "-c",
+        "model_reasoning_summary=detailed",
+      ];
       const codexArgs = resumeCodexSessionId
-        ? ["exec", "--json", ...codexBypassArgs, "resume", resumeCodexSessionId, "-"]
-        : ["exec", "--json", ...codexBypassArgs, "-"];
+        ? ["exec", "--json", ...codexBypassArgs, ...modelArgs, ...reasoningArgs, "resume", resumeCodexSessionId, "-"]
+        : ["exec", "--json", ...codexBypassArgs, ...modelArgs, ...reasoningArgs, "-"];
       return {
         binary: "codex",
         args: codexArgs,
@@ -462,6 +478,7 @@ async function resolveCliInvocation(
         // (cli-session-store.killSession) reaps the primary artifact, the
         // same way it reaps claude's tmp .json. Parity, no new machinery.
         mcpArtifactPath: codexConfigTomlPath(params.companyId, params.userId),
+        resolvedModel: resolvedCodexModel,
       };
     }
     default:
@@ -505,6 +522,8 @@ export function cliModeService(db: Db) {
         cliTool: string | null;
         executionMode: string;
         vendorCliBypassEnabled?: boolean;
+        /** internal_agent_config.model — used (validated) for the codex spawn. */
+        model?: string | null;
       },
     ): AsyncGenerator<AgentStreamChunk> {
       // 1. Validate CLI tool config
@@ -525,9 +544,9 @@ export function cliModeService(db: Db) {
 
       const sessionKey = `${params.companyId}:${params.userId}`;
       let session = sessionStore.get(sessionKey);
-      let accumulatedText = "";
 
       try {
+        let sawRealDone = false;
         if (config.cliTool === "codex") {
           // ── codex: ONE-SHOT per turn + resume continuity ──────────────
           // codex `exec` is one-shot (runs the turn, exits). So there is
@@ -557,6 +576,7 @@ export function cliModeService(db: Db) {
             isWin,
             resumeSessionId: session?.codexSessionId ?? null,
             vendorCliBypassEnabled: config.vendorCliBypassEnabled ?? true,
+            codexModel: config.model ?? null,
             onSessionId: (sid) => {
               const existing = sessionStore.get(sessionKey);
               if (existing) {
@@ -589,21 +609,23 @@ export function cliModeService(db: Db) {
               }
             },
           })) {
-            if (chunk.type === "text") accumulatedText += chunk.delta;
+            if (chunk.type === "done") sawRealDone = true;
             yield chunk;
           }
 
-          // Done event (shape UNCHANGED).
-          yield {
-            type: "done",
-            summary: {
-              runId: "",
-              toolsCalled: [],
-              durationMs: 0,
-              costCents: 0,
-              tokenUsage: { inputTokens: 0, outputTokens: 0 },
-            },
-          };
+          // Fallback only — runCodexTurn now emits a real-usage done.
+          if (!sawRealDone) {
+            yield {
+              type: "done",
+              summary: {
+                runId: "",
+                toolsCalled: [],
+                durationMs: 0,
+                costCents: 0,
+                tokenUsage: { inputTokens: 0, outputTokens: 0 },
+              },
+            };
+          }
           return;
         }
 
@@ -713,7 +735,7 @@ export function cliModeService(db: Db) {
           // claude_cli uses stream-json; codex/opencode use the text parser.
           const useStreamJson = config.cliTool === "claude_cli";
           for await (const chunk of streamProcessOutput(cliProcess, useStreamJson)) {
-            if (chunk.type === "text") accumulatedText += chunk.delta;
+            if (chunk.type === "done") sawRealDone = true;
             yield chunk;
           }
         } else {
@@ -737,7 +759,7 @@ export function cliModeService(db: Db) {
             cliProc.stdin.write(turnInput + "\n");
             const useStreamJsonCont = config.cliTool === "claude_cli";
             for await (const chunk of streamProcessOutput(cliProc, useStreamJsonCont)) {
-              if (chunk.type === "text") accumulatedText += chunk.delta;
+              if (chunk.type === "done") sawRealDone = true;
               yield chunk;
             }
           } else {
@@ -750,17 +772,21 @@ export function cliModeService(db: Db) {
           }
         }
 
-        // Done event
-        yield {
-          type: "done",
-          summary: {
-            runId: "",
-            toolsCalled: [],
-            durationMs: 0,
-            costCents: 0,
-            tokenUsage: { inputTokens: 0, outputTokens: 0 },
-          },
-        };
+        // Fallback only — handleResultEvent emits the real done from the
+        // stream-json `result` event. This covers the plain-text MCP-tool turn
+        // (no result event) so the route always sees exactly one done.
+        if (!sawRealDone) {
+          yield {
+            type: "done",
+            summary: {
+              runId: "",
+              toolsCalled: [],
+              durationMs: 0,
+              costCents: 0,
+              tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            },
+          };
+        }
       } catch (err: any) {
         sessionStore.cleanup(sessionKey);
         yield {
@@ -883,6 +909,8 @@ interface RunCodexTurnArgs {
   isWin: boolean;
   resumeSessionId: string | null;
   vendorCliBypassEnabled: boolean;
+  /** internal_agent_config.model (validated downstream) — pins the codex model. */
+  codexModel?: string | null;
   /** Called with the parsed codex sessionId so the caller can persist it. */
   onSessionId: (sessionId: string | null) => void;
 }
@@ -895,9 +923,11 @@ async function* runCodexTurn(
   );
 
   // Buffer the full stdout+stderr of one codex process to completion.
+  // Returns the collected output AND the resolved model string from the
+  // invocation (for provenance reporting — F1).
   async function spawnAndCollect(
     resume: string | null,
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; resolvedModel: string | undefined }> {
     // Shell-boundary re-validation: validateSessionId() strips metacharacters
     // that would execute as shell commands on Windows (spawn uses shell:true).
     // The primary validation runs at onSessionId (store time); this is
@@ -915,6 +945,7 @@ async function* runCodexTurn(
       safeResume,
       undefined,
       args.vendorCliBypassEnabled,
+      args.codexModel ?? null,
     );
     if (!invocation) {
       // codex is a wired CLI — resolveCliInvocation never returns null for
@@ -955,7 +986,7 @@ async function* runCodexTurn(
       proc.on("error", () => resolveExit(-1));
     });
 
-    return { stdout, stderr, exitCode };
+    return { stdout, stderr, exitCode, resolvedModel: invocation.resolvedModel };
   }
 
   let result = await spawnAndCollect(args.resumeSessionId);
@@ -1000,4 +1031,25 @@ async function* runCodexTurn(
   if (parsed.summary) {
     yield { type: "text", delta: parsed.summary };
   }
+
+  // Real-usage done (cost left 0 — codex subscription has no per-run billing;
+  // the route estimates from tokens via computeCostCents).
+  // Carry the resolved model + provider for F1 provenance columns in the DB.
+  yield {
+    type: "done",
+    summary: {
+      runId: "",
+      toolsCalled: [],
+      durationMs: 0,
+      costCents: 0,
+      tokenUsage: {
+        inputTokens: parsed.usage?.inputTokens ?? 0,
+        outputTokens: parsed.usage?.outputTokens ?? 0,
+        cachedInputTokens: parsed.usage?.cachedInputTokens ?? 0,
+      },
+      ...(result.resolvedModel
+        ? { model: result.resolvedModel, provider: "openai" }
+        : {}),
+    },
+  };
 }

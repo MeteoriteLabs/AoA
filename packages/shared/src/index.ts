@@ -987,6 +987,8 @@ export {
   createInboxDismissalSchema,
   type InboxDismissal,
   type CreateInboxDismissal,
+  createUserEntityPinSchema,
+  type CreateUserEntityPin,
   createEnvironmentSchema,
   e2bEnvironmentConfigSchema,
   environmentDriverSchema,
@@ -1009,6 +1011,24 @@ export {
 } from "./constants/github.js";
 
 export { API_PREFIX, API } from "./api.js";
+
+// Phase 3b/3c/3d: Commander cockpit data contract
+export type {
+  CockpitTaskItem,
+  CockpitRunItem,
+  CockpitReminderItem,
+  CockpitDiscussionItem,
+  CockpitData,
+  CockpitApprovalSource,
+  CockpitApprovalItem,
+  CockpitPinnedEntityType,
+  CockpitPinnedItem,
+  CockpitGoalsAtRiskItem,
+  CockpitBudgetPulseItem,
+  CockpitDoneTodayItem,
+  CockpitProactiveItem,
+  CockpitTeammatesActivityItem,
+} from "./cockpit.js";
 
 // Marketplace catalog types
 export {
@@ -1105,6 +1125,7 @@ export {
 export * from "./teams.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
+export * from "./commander-output-refs.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).

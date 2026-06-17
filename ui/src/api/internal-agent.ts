@@ -1,4 +1,4 @@
-import type { CommanderContextScope, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
+import type { CommanderContextScope, CommanderOutputRef, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */
@@ -20,11 +20,15 @@ export interface AgentConversation {
   offset: number;
 }
 
+export interface AgentMessageToolCall { name: string; success?: boolean; summary?: string }
+
 export interface AgentMessage {
   id: string;
   role: "assistant" | "user" | "system" | "tool";
   content: string | null;
-  toolCalls: unknown | null;
+  toolCalls: AgentMessageToolCall[] | null;
+  reasoning: string | null;
+  outputRefs: CommanderOutputRef[] | null;
   pageContext: string | null;
   createdAt: string;
 }
@@ -67,7 +71,7 @@ export interface AgentRun {
   triggerSource: string;
   status: "running" | "completed" | "failed";
   toolsCalled: AgentRunToolCall[];
-  tokenUsage: { inputTokens: number; outputTokens: number };
+  tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
   costCents: number;
   durationMs: number;
   summary: string | null;
@@ -120,6 +124,7 @@ export interface AgentRemindersResponse {
 
 export type SSEEventType =
   | "thinking"
+  | "reasoning"
   | "tool_call"
   | "tool_result"
   | "content"

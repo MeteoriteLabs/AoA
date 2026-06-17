@@ -2,48 +2,8 @@ import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@armyofagents/shared";
-
-const ACTION_VERBS: Record<string, string> = {
-  "issue.created": "created",
-  "issue.updated": "updated",
-  "issue.checked_out": "checked out",
-  "issue.released": "released",
-  "issue.comment_added": "commented on",
-  "issue.attachment_added": "attached file to",
-  "issue.attachment_removed": "removed attachment from",
-  "issue.commented": "commented on",
-  "issue.deleted": "deleted",
-  "issue.read_marked": "marked as read",
-  "issue.approval_linked": "linked approval to",
-  "issue.approval_unlinked": "unlinked approval from",
-  "issue.checkout_lock_adopted": "adopted checkout lock on",
-  "agent.created": "created",
-  "agent.updated": "updated",
-  "agent.paused": "paused",
-  "agent.resumed": "resumed",
-  "agent.terminated": "terminated",
-  "agent.key_created": "created API key for",
-  "agent.budget_updated": "updated budget for",
-  "agent.runtime_session_reset": "reset session for",
-  "heartbeat.invoked": "invoked heartbeat for",
-  "heartbeat.cancelled": "cancelled heartbeat for",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-  "project.created": "created",
-  "project.updated": "updated",
-  "project.deleted": "deleted",
-  "goal.created": "created",
-  "goal.updated": "updated",
-  "goal.deleted": "deleted",
-  "cost.reported": "reported cost for",
-  "cost.recorded": "recorded cost for",
-  "company.created": "created company",
-  "company.updated": "updated company",
-  "company.archived": "archived",
-  "company.budget_updated": "updated budget for",
-};
+import { type ActivityEvent, type Agent } from "@armyofagents/shared";
+import { activityVerb, entityLink } from "../lib/activityFormat";
 
 function humanizeValue(value: unknown): string {
   if (typeof value !== "string") return String(value ?? "none");
@@ -66,18 +26,7 @@ function formatVerb(action: string, details?: Record<string, unknown> | null): s
         : `changed priority to ${humanizeValue(details.priority)} on`;
     }
   }
-  return ACTION_VERBS[action] ?? action.replace(/[._]/g, " ").replace(/\bissue\b/g, "task");
-}
-
-function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
-  switch (entityType) {
-    case "issue": return `/issues/${name ?? entityId}`;
-    case "agent": return `/agents/${entityId}`;
-    case "project": return `/projects/${deriveProjectUrlKey(name, entityId)}`;
-    case "goal": return `/goals/${entityId}`;
-    case "approval": return `/approvals/${entityId}`;
-    default: return null;
-  }
+  return activityVerb(action);
 }
 
 interface ActivityRowProps {

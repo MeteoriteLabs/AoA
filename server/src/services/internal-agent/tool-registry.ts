@@ -32,6 +32,7 @@ import { attachToThreadTool } from "./tools/inbox-attach-to-thread.js";
 import { spinOffThreadTool } from "./tools/thread-spin-off.js";
 import { createArtifactVersionTool } from "./tools/artifact-create-version.js";
 import { queryArtifactsTool } from "./tools/artifact-query.js";
+import { queryCompanyArtifactsTool } from "./tools/artifact-query-company.js";
 import { requestThreadWorkspaceTool } from "./tools/workspace-request-for-thread.js";
 // Task C2 batch 3 — 7 memory tools (T15)
 // Extraction wrappers (4) call into C1's named exports (extractMemoryCandidates
@@ -122,6 +123,7 @@ export function createToolRegistry(): AgentTool[] {
     deferInboxToHumanTool,      // NEW — Navigator "unsure" finalization (Codex P1 #2)
     createArtifactVersionTool,
     queryArtifactsTool,
+    queryCompanyArtifactsTool,
     requestThreadWorkspaceTool,
     // Task C2 batch 3 — 7 memory tools (T15)
     // Memory Keeper allowlist (ensure-command-staff.ts roleToolAllowlist['memory_keeper'])

@@ -1,7 +1,7 @@
 import { Compass, FileText, Globe, LayoutGrid, Network } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BrowserViewer } from "../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../viewers/ViewerTabs";
-import { BrowserViewer } from "./ThreadViewer";
 import {
   OPEN_TAB_KEY,
   browserTab,

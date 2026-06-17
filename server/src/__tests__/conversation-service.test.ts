@@ -41,6 +41,9 @@ vi.mock("../middleware/logger.js", () => ({
 
 import { conversationService } from "../services/internal-agent/conversation.js";
 
+// NOTE: outputRefs persistence-boundary tests (insert-capture mock style) live in
+// server/src/services/internal-agent/__tests__/conversation-output-refs.test.ts.
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 type MockRow = Record<string, unknown>;

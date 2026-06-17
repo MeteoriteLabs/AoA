@@ -3,12 +3,37 @@ import { asString, asNumber, parseObject, parseJson } from "@armyofagents/adapte
 
 const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/s;
 
-type CodexParsedChunk = {
-  type: "action_confirmation";
-  toolName: string;
-  params: unknown;
-  runId: string;
+/**
+ * Structural mirror of @armyofagents/shared CommanderOutputRef (P1: artifact kind).
+ * This package deliberately has no dependency on shared; the screen below
+ * enforces the shape and the server zod-validates again at persist time.
+ */
+type LiftedOutputRef = {
+  v: 1;
+  kind: "artifact";
+  id: string;
+  versionId?: string | null;
+  versionNumber?: number | null;
+  title?: string | null;
+  action: "created" | "referenced";
+  toolCallId?: string | null;
+  mimeType?: string | null;
 };
+
+type CodexParsedChunk =
+  | {
+      type: "action_confirmation";
+      toolName: string;
+      params: unknown;
+      runId: string;
+    }
+  | {
+      type: "tool_result";
+      name: string;
+      result: { success: boolean; data: unknown; summary: string };
+      refs: LiftedOutputRef[];
+    }
+  | { type: "reasoning"; delta: string };
 
 function extractConfirmPayload(text: string): string | null {
   const exactMatch = CONFIRM_RE.exec(text);
@@ -87,6 +112,44 @@ function normalizeToolResultText(item: Record<string, unknown>): string {
   return stringifyUnknown(value);
 }
 
+/** Minimal structural screen — authoritative validation happens server-side. */
+function liftOutputRefs(text: string): LiftedOutputRef[] | null {
+  try {
+    const parsed = JSON.parse(text) as { outputRefs?: unknown };
+    if (!Array.isArray(parsed?.outputRefs) || parsed.outputRefs.length === 0) return null;
+    const screened: LiftedOutputRef[] = [];
+    for (const r of parsed.outputRefs) {
+      const rec = parseObject(r);
+      if (
+        rec.v === 1 &&
+        rec.kind === "artifact" &&
+        typeof rec.id === "string" &&
+        rec.id.length > 0 &&
+        rec.id.length <= 256 &&
+        (rec.action === "created" || rec.action === "referenced")
+      ) {
+        screened.push({
+          v: 1,
+          kind: "artifact",
+          id: rec.id,
+          versionId: typeof rec.versionId === "string" ? rec.versionId : null,
+          versionNumber:
+            typeof rec.versionNumber === "number" && Number.isInteger(rec.versionNumber) && rec.versionNumber > 0
+              ? rec.versionNumber
+              : null,
+          title: typeof rec.title === "string" ? rec.title : null,
+          action: rec.action,
+          toolCallId: typeof rec.toolCallId === "string" ? rec.toolCallId : null,
+          mimeType: typeof rec.mimeType === "string" ? rec.mimeType : null,
+        });
+      }
+    }
+    return screened.length > 0 ? screened.slice(0, 20) : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseActionConfirmation(item: Record<string, unknown>): CodexParsedChunk | null {
   const text = normalizeToolResultText(item);
   const confirmPayload = extractConfirmPayload(text);
@@ -142,9 +205,31 @@ export function parseCodexJsonl(stdout: string) {
       if (asString(item.type, "") === "agent_message") {
         const text = asString(item.text, "");
         if (text) messages.push(text);
+      } else if (asString(item.type, "") === "reasoning") {
+        const text = asString(item.text, "");
+        if (text) chunks.push({ type: "reasoning", delta: text });
       } else if (asString(item.type, "") === "tool_result" || asString(item.type, "") === "mcp_tool_call") {
         const chunk = parseActionConfirmation(item);
-        if (chunk) chunks.push(chunk);
+        if (chunk) {
+          chunks.push(chunk);
+        } else if (asString(item.type, "") === "mcp_tool_call") {
+          // Gate: lift outputRefs ONLY from mcp_tool_call items.
+          // Plain tool_result items are built-in/shell results and must never
+          // produce ref chips — that is the phantom-defense gate (mirrors Task 4's
+          // mcp__-prefix gate on the claude parser side).
+          const text = normalizeToolResultText(item);
+          const refs = liftOutputRefs(text);
+          if (refs) {
+            const name = asString(item.name, "") || asString(item.tool, "");
+            // refs imply success: buildOutputRefs only emits for result.success === true (output-refs.ts).
+            chunks.push({
+              type: "tool_result",
+              name,
+              result: { success: true, data: text, summary: text },
+              refs,
+            });
+          }
+        }
       }
       continue;
     }

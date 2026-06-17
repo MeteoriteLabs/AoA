@@ -699,3 +699,18 @@ only.
 - **Extends Decision #99** — the durable transactional-outbox trigger, atomic claim and orphan-recovery generalize framework-wide; the extraction sub-agent is the first migrated `kind='aoa'` citizen, its #99/M2 correctness preserved (the runner re-asserts the atomic `pending→processing` claim).
 - **Discriminator:** `kind='aoa'` + `runtimeConfig.aoa.role` (`lead`|`member`); `agents.role` is NOT overloaded (it is special-cased: `role==='cxo'`, 0070 tiers).
 - **Rationale:** a growing internal automation team needs real agentic execution + a uniform reusable model; ~70–75% is reuse of existing `agents`-keyed infrastructure. Spec: `docs/superpowers/specs/2026-05-17-aoa-agents-framework-design.md`.
+
+---
+
+## Decision #101 — Commander chat bubble + run-cost semantics (2026-06-16)
+
+- The founder's own chat messages use a **neutral surface** (`bg-card`, `rounded-2xl`),
+  NOT brand red (`bg-primary`). Brand red is reserved for primary CTAs; a filled
+  brand-red bubble reads as an error. Actor is distinguished by alignment, not hue —
+  mirroring the workspace timeline (`TimelineUserMessage.tsx`). Timestamps are
+  hover-revealed (relative time), no avatars (1:1 chat).
+- Commander **per-run cost is a list-price ESTIMATE**, always labeled "Est." CLI
+  subscription runs report `total_cost_usd: 0` by design (see `cost-model.ts`); the
+  estimate is `computeCostCents(model, tokens)`. Tokens are real. Cost is surfaced
+  only in Settings → Run History, never in the chat. (Partially un-defers the
+  per-run accounting deferral of Decision #91, for observability only.)

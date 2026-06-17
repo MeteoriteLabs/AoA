@@ -267,6 +267,7 @@ describe("Commander memory recall runtime", () => {
       agentId: "commander-agent",
       taskId: null,
       runId: null,
+      conversationId: null, // no conversationId passed in this call → null recorded
       triggeredBy: "commander_context",
       query: "refund policy",
       items: [
@@ -275,6 +276,57 @@ describe("Commander memory recall runtime", () => {
       ],
     });
     expect(recallMocks.updateValues).toHaveBeenCalledWith(expect.objectContaining({ accessedAt: expect.any(Date) }));
+  });
+
+  // ── Codex P2 #2: conversationId recorded on auto-recall (commander_context) ──
+
+  it("records conversationId when called with the real agent-loop shape (Codex P2 #2)", async () => {
+    // Mirrors how agent-loop.ts:226-234 calls recall:
+    //   recall({ …, conversationId: conversation.id, scope: { conversationId: conversation.id, … } })
+    recallMocks.searchMultiPath.mockResolvedValue([
+      searchResult({ id: "mem-1" }),
+    ]);
+
+    const db = buildDb();
+    await commanderMemoryRecallService(db).recall({
+      companyId: "company-1",
+      userId: "user-1",
+      userRole: "founder",
+      agentId: "commander-agent",
+      latestUserMessage: "refund policy",
+      conversationId: "conv-abc-123",
+      scope: { conversationId: "conv-abc-123", departmentId: "dept-1" },
+    });
+
+    expect(recallMocks.recordMemoryRetrievals).toHaveBeenCalledWith(db, expect.objectContaining({
+      triggeredBy: "commander_context",
+      conversationId: "conv-abc-123",
+    }));
+  });
+
+  it("records conversationId: null when both input.conversationId and scope.conversationId are absent (both-absent contract)", async () => {
+    // Documents the contract: if a caller forgets conversationId, the audit row is
+    // still written with conversationId: null — the row is invisible to the
+    // conversation Memory card but not silently dropped.
+    recallMocks.searchMultiPath.mockResolvedValue([
+      searchResult({ id: "mem-2" }),
+    ]);
+
+    const db = buildDb();
+    await commanderMemoryRecallService(db).recall({
+      companyId: "company-1",
+      userId: "user-1",
+      userRole: "founder",
+      agentId: "commander-agent",
+      latestUserMessage: "refund policy",
+      // conversationId intentionally absent
+      scope: { departmentId: "dept-1" }, // scope.conversationId also absent
+    });
+
+    expect(recallMocks.recordMemoryRetrievals).toHaveBeenCalledWith(db, expect.objectContaining({
+      triggeredBy: "commander_context",
+      conversationId: null,
+    }));
   });
 
   it("returns timeout when search exceeds policy timeout", async () => {

@@ -2346,7 +2346,7 @@ describe("ThreadDetail", () => {
     });
 
     await screen.findByTestId("thread-open-viewer");
-    await user.click(screen.getByRole("button", { name: /close viewer/i }));
+    await user.click(screen.getByRole("button", { name: /hide preview/i }));
 
     const strip = screen.getByTestId("thread-viewer-collapsed-strip");
     expect(strip).toBeInTheDocument();

@@ -13,6 +13,7 @@ import { agents } from "./agents.js";
 import { issues } from "./issues.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { memoryItems } from "./memory_items.js";
+import { internalAgentConversations } from "./internal_agent.js";
 
 /**
  * V2.6: per-call audit log for memory retrievals.
@@ -37,6 +38,8 @@ export const memoryRetrievals = pgTable(
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     taskId: uuid("task_id").references(() => issues.id, { onDelete: "set null" }),
+    /** Commander conversation that triggered this retrieval (null for agent/skill). */
+    conversationId: uuid("conversation_id").references(() => internalAgentConversations.id, { onDelete: "set null" }),
     /** Which path triggered this retrieval. See MEMORY_RETRIEVAL_TRIGGERS. */
     triggeredBy: text("triggered_by").notNull(),
     /** The query text (raw or assembled). Nullable for skill_materialize (no query). */
@@ -55,5 +58,6 @@ export const memoryRetrievals = pgTable(
     companyCreatedIdx: index("memory_retrievals_company_created_idx").on(table.companyId, table.createdAt),
     agentCreatedIdx: index("memory_retrievals_agent_created_idx").on(table.agentId, table.createdAt),
     itemCreatedIdx: index("memory_retrievals_item_created_idx").on(table.itemId, table.createdAt),
+    conversationCreatedIdx: index("memory_retrievals_conversation_created_idx").on(table.conversationId, table.createdAt),
   }),
 );

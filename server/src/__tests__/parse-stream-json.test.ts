@@ -492,3 +492,84 @@ describe("StreamJsonParser", () => {
     }
   });
 });
+
+describe("handleResultEvent extracts real usage + cost", () => {
+  it("maps total_cost_usd + usage into the done summary", () => {
+    const parser = new StreamJsonParser();
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1234,
+      total_cost_usd: 0.0321,
+      usage: { input_tokens: 1200, output_tokens: 340, cache_read_input_tokens: 800 },
+    });
+    const chunks = parser.push(line + "\n");
+    const done = chunks.find((c) => c.type === "done");
+    expect(done).toBeDefined();
+    if (done?.type !== "done") throw new Error("no done");
+    expect(done.summary.durationMs).toBe(1234);
+    expect(done.summary.tokenUsage).toEqual({
+      inputTokens: 1200,
+      outputTokens: 340,
+      cachedInputTokens: 800,
+    });
+    // 0.0321 USD -> 3.21 cents -> rounded 3
+    expect(done.summary.costCents).toBe(3);
+  });
+
+  it("yields zero cost when total_cost_usd is 0 (subscription) but keeps real tokens", () => {
+    const parser = new StreamJsonParser();
+    const line = JSON.stringify({
+      type: "result",
+      duration_ms: 60,
+      total_cost_usd: 0,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    const done = parser.push(line + "\n").find((c) => c.type === "done");
+    if (done?.type !== "done") throw new Error("no done");
+    expect(done.summary.costCents).toBe(0);
+    expect(done.summary.tokenUsage.inputTokens).toBe(10);
+    expect(done.summary.tokenUsage.outputTokens).toBe(5);
+  });
+
+  // REVIEW FIX (Lens B): pin the guard — a stream WITH a result event must
+  // produce EXACTLY ONE done carrying the real numbers (no double-done).
+  it("emits exactly one done with real numbers when a result event is present", () => {
+    const parser = new StreamJsonParser();
+    const out = [
+      ...parser.push(
+        JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } } }) + "\n",
+      ),
+      ...parser.push(
+        JSON.stringify({ type: "result", duration_ms: 5, total_cost_usd: 0.01, usage: { input_tokens: 9, output_tokens: 4 } }) + "\n",
+      ),
+      ...parser.flush(),
+    ];
+    const dones = out.filter((c) => c.type === "done");
+    expect(dones).toHaveLength(1);
+    if (dones[0]?.type !== "done") throw new Error("no done");
+    expect(dones[0].summary.tokenUsage.inputTokens).toBe(9);
+    expect(dones[0].summary.costCents).toBe(1);
+  });
+});
+
+describe("handleStreamEvent surfaces thinking_delta as reasoning", () => {
+  it("emits a reasoning chunk for a thinking_delta", () => {
+    const parser = new StreamJsonParser();
+    const line = JSON.stringify({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me reason..." } },
+    });
+    const chunks = parser.push(line + "\n");
+    expect(chunks).toEqual([{ type: "reasoning", delta: "Let me reason..." }]);
+  });
+
+  it("still drops signature_delta (opaque, not human reasoning)", () => {
+    const parser = new StreamJsonParser();
+    const line = JSON.stringify({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "abc" } },
+    });
+    expect(parser.push(line + "\n")).toEqual([]);
+  });
+});

@@ -331,7 +331,8 @@ vi.mock("@/components/ui/popover", () => ({
 }));
 
 import { issuesApi } from "../api/issues";
-import { TaskDetailPanel, TaskSlideOver } from "../components/TaskSlideOver";
+import { TaskSlideOver } from "../components/TaskSlideOver";
+import { TaskDetail } from "@/components/TaskDetail";
 
 function renderSlideOver(props: { issueId: string | null; open: boolean }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -344,19 +345,18 @@ function renderSlideOver(props: { issueId: string | null; open: boolean }) {
   );
 }
 
-function renderTaskDetailPanel(props: {
+function renderTaskDetail(props: {
   issueId: string | null;
-  open?: boolean;
-  onOpenScopeHandoffItem?: ComponentProps<typeof TaskDetailPanel>["onOpenScopeHandoffItem"];
+  active?: boolean;
+  onOpenScopeHandoffItem?: ComponentProps<typeof TaskDetail>["onOpenScopeHandoffItem"];
 }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <TaskDetailPanel
+        <TaskDetail
           issueId={props.issueId}
-          open={props.open ?? true}
-          embedded
+          active={props.active ?? true}
           onOpenScopeHandoffItem={props.onOpenScopeHandoffItem}
         />
       </MemoryRouter>
@@ -390,10 +390,9 @@ describe("TaskSlideOver", () => {
     expect(editors[1]).toHaveTextContent("The login page has a bug");
   });
 
-  it("renders the task detail body without opening a Sheet when embedded", () => {
-    renderTaskDetailPanel({ issueId: "issue-1" });
+  it("renders the task detail body without opening a Sheet when rendered directly", () => {
+    renderTaskDetail({ issueId: "issue-1" });
     expect(screen.queryByTestId("sheet")).not.toBeInTheDocument();
-    expect(screen.getByTestId("task-detail-panel")).toBeInTheDocument();
     expect(screen.getByTestId("issue-properties")).toBeInTheDocument();
     expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
   });
@@ -446,7 +445,7 @@ describe("TaskSlideOver", () => {
       return { data: undefined, isLoading: false, error: null } as any;
     });
 
-    renderTaskDetailPanel({ issueId: "issue-1" });
+    renderTaskDetail({ issueId: "issue-1" });
 
     expect(screen.getByText("Scope handoff")).toBeInTheDocument();
     expect(screen.getByText("Use selected scope evidence.")).toBeInTheDocument();
@@ -454,7 +453,7 @@ describe("TaskSlideOver", () => {
     expect(screen.getByText("https://example.com/ref")).toBeInTheDocument();
   });
 
-  it("shows editable scope handoff between dependencies and attachments in the main slide-over", async () => {
+  it("shows editable scope handoff between dependencies and attachments", async () => {
     const user = userEvent.setup();
     vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
       const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
@@ -511,7 +510,7 @@ describe("TaskSlideOver", () => {
       return { data: undefined, isLoading: false, error: null } as any;
     });
 
-    renderSlideOver({ issueId: "issue-1", open: true });
+    renderTaskDetail({ issueId: "issue-1", onOpenScopeHandoffItem: vi.fn() });
 
     const dependencies = screen.getByText("Dependencies");
     const handoff = screen.getByTestId("task-scope-handoff");
@@ -573,7 +572,7 @@ describe("TaskSlideOver", () => {
       return { data: undefined, isLoading: false, error: null } as any;
     });
 
-    renderTaskDetailPanel({
+    renderTaskDetail({
       issueId: "issue-1",
       onOpenScopeHandoffItem,
     });
@@ -585,9 +584,9 @@ describe("TaskSlideOver", () => {
     );
   });
 
-  it("opens URL scope handoff rows from the main slide-over", async () => {
+  it("opens URL scope handoff rows through the scope handoff callback", async () => {
     const user = userEvent.setup();
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const onOpenScopeHandoffItem = vi.fn();
     vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
       const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
       if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
@@ -628,11 +627,16 @@ describe("TaskSlideOver", () => {
       return { data: undefined, isLoading: false, error: null } as any;
     });
 
-    renderSlideOver({ issueId: "issue-1", open: true });
+    renderTaskDetail({ issueId: "issue-1", onOpenScopeHandoffItem });
     await user.click(screen.getByRole("button", { name: /Open handoff item: Reference URL/i }));
 
-    expect(openSpy).toHaveBeenCalledWith("https://example.com/ref", "_blank", "noopener,noreferrer");
-    openSpy.mockRestore();
+    expect(onOpenScopeHandoffItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "item-url",
+        itemType: "url",
+        metadata: expect.objectContaining({ url: "https://example.com/ref" }),
+      }),
+    );
   });
 
   it("renders properties section", () => {

@@ -48,8 +48,10 @@ describe("Tool Registry", () => {
       // transition, dial-gated via the A4 guard; coordination confers no capability).
       // Commander working memory added 3 temporary context tools:
       // remember_working_context, update_working_context, forget_working_context.
+      // Task 10 (Commander Viewer P1) added 1 query tool:
+      // query_company_artifacts (company-wide artifact listing, ctx.companyId-scoped).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(71);
+      expect(tools).toHaveLength(72);
     });
 
     it("every tool has required fields", () => {

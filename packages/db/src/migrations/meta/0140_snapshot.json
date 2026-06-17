@@ -1,6 +1,6 @@
 {
-  "id": "adcc9d8c-950d-4c4d-a547-b7d72849e895",
-  "prevId": "fcdeb256-e1bd-4c43-ac7d-2b2840d97805",
+  "id": "a9f1961c-e617-4839-ab07-db00a4d097cb",
+  "prevId": "e7bf27df-64a3-4baa-a119-d8da27e07669",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -12151,6 +12151,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "output_refs": {
+          "name": "output_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "page_context": {
           "name": "page_context",
           "type": "text",
@@ -14053,32 +14059,7 @@
           "name": "source_issue_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_discussion_id": {
-          "name": "source_discussion_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_scope_version_id": {
-          "name": "source_scope_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_scope_item_id": {
-          "name": "source_scope_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'issue'"
+          "notNull": true
         },
         "target_issue_id": {
           "name": "target_issue_id",
@@ -14161,48 +14142,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "issue_context_bundles_company_source_discussion_idx": {
-          "name": "issue_context_bundles_company_source_discussion_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_discussion_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_context_bundles_company_scope_version_idx": {
-          "name": "issue_context_bundles_company_scope_version_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_scope_version_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -14230,45 +14169,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "issue_context_bundles_source_discussion_id_discussions_id_fk": {
-          "name": "issue_context_bundles_source_discussion_id_discussions_id_fk",
-          "tableFrom": "issue_context_bundles",
-          "tableTo": "discussions",
-          "columnsFrom": [
-            "source_discussion_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "issue_context_bundles_source_scope_version_id_thread_scope_versions_id_fk": {
-          "name": "issue_context_bundles_source_scope_version_id_thread_scope_versions_id_fk",
-          "tableFrom": "issue_context_bundles",
-          "tableTo": "thread_scope_versions",
-          "columnsFrom": [
-            "source_scope_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "issue_context_bundles_source_scope_item_id_thread_scope_items_id_fk": {
-          "name": "issue_context_bundles_source_scope_item_id_thread_scope_items_id_fk",
-          "tableFrom": "issue_context_bundles",
-          "tableTo": "thread_scope_items",
-          "columnsFrom": [
-            "source_scope_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issue_context_bundles_target_issue_id_issues_id_fk": {
@@ -15306,12 +15206,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "scope_version_id": {
-          "name": "scope_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -15518,21 +15412,6 @@
           "method": "btree",
           "with": {}
         },
-        "issues_scope_version_idx": {
-          "name": "issues_scope_version_idx",
-          "columns": [
-            {
-              "expression": "scope_version_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issues_company_origin_kind_idx": {
           "name": "issues_company_origin_kind_idx",
           "columns": [
@@ -15692,19 +15571,6 @@
           "tableTo": "discussions",
           "columnsFrom": [
             "source_discussion_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "issues_scope_version_id_thread_scope_versions_id_fk": {
-          "name": "issues_scope_version_id_thread_scope_versions_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "thread_scope_versions",
-          "columnsFrom": [
-            "scope_version_id"
           ],
           "columnsTo": [
             "id"
@@ -18702,6 +18568,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "triggered_by": {
           "name": "triggered_by",
           "type": "text",
@@ -18825,6 +18697,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "memory_retrievals_conversation_created_idx": {
+          "name": "memory_retrievals_conversation_created_idx",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -18873,6 +18766,19 @@
           "tableTo": "issues",
           "columnsFrom": [
             "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "memory_retrievals_conversation_id_internal_agent_conversations_id_fk": {
+          "name": "memory_retrievals_conversation_id_internal_agent_conversations_id_fk",
+          "tableFrom": "memory_retrievals",
+          "tableTo": "internal_agent_conversations",
+          "columnsFrom": [
+            "conversation_id"
           ],
           "columnsTo": [
             "id"
@@ -23878,289 +23784,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.thread_agent_actions": {
-      "name": "thread_agent_actions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "action_type": {
-          "name": "action_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'proposed'"
-        },
-        "payload": {
-          "name": "payload",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "freshness": {
-          "name": "freshness",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "blocked_reason": {
-          "name": "blocked_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "committed_entry_id": {
-          "name": "committed_entry_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "committed_scope_version_id": {
-          "name": "committed_scope_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "committed_scope_item_id": {
-          "name": "committed_scope_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "committed_at": {
-          "name": "committed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "thread_agent_actions_company_thread_status_idx": {
-          "name": "thread_agent_actions_company_thread_status_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_agent_actions_run_idx": {
-          "name": "thread_agent_actions_run_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_agent_actions_company_idempotency_uq": {
-          "name": "thread_agent_actions_company_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "thread_agent_actions_company_id_companies_id_fk": {
-          "name": "thread_agent_actions_company_id_companies_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_agent_actions_thread_id_discussions_id_fk": {
-          "name": "thread_agent_actions_thread_id_discussions_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "discussions",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_agent_actions_run_id_internal_agent_runs_id_fk": {
-          "name": "thread_agent_actions_run_id_internal_agent_runs_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "internal_agent_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_agent_actions_agent_id_agents_id_fk": {
-          "name": "thread_agent_actions_agent_id_agents_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_agent_actions_committed_entry_id_discussion_entries_id_fk": {
-          "name": "thread_agent_actions_committed_entry_id_discussion_entries_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "discussion_entries",
-          "columnsFrom": [
-            "committed_entry_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_agent_actions_committed_scope_version_id_thread_scope_versions_id_fk": {
-          "name": "thread_agent_actions_committed_scope_version_id_thread_scope_versions_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "thread_scope_versions",
-          "columnsFrom": [
-            "committed_scope_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_agent_actions_committed_scope_item_id_thread_scope_items_id_fk": {
-          "name": "thread_agent_actions_committed_scope_item_id_thread_scope_items_id_fk",
-          "tableFrom": "thread_agent_actions",
-          "tableTo": "thread_scope_items",
-          "columnsFrom": [
-            "committed_scope_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.thread_inbox_items": {
       "name": "thread_inbox_items",
       "schema": "",
@@ -24871,8 +24494,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.thread_scope_artifact_links": {
-      "name": "thread_scope_artifact_links",
+    "public.user_entity_pins": {
+      "name": "user_entity_pins",
       "schema": "",
       "columns": {
         "id": {
@@ -24882,258 +24505,36 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "company_id": {
           "name": "company_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "scope_version_id": {
-          "name": "scope_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "artifact_id": {
-          "name": "artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "artifact_version_id": {
-          "name": "artifact_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "role": {
-          "name": "role",
+        "entity_type": {
+          "name": "entity_type",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "created_at": {
-          "name": "created_at",
+        "pinned_at": {
+          "name": "pinned_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        }
-      },
-      "indexes": {
-        "thread_scope_artifact_links_scope_version_idx": {
-          "name": "thread_scope_artifact_links_scope_version_idx",
-          "columns": [
-            {
-              "expression": "scope_version_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_scope_artifact_links_artifact_idx": {
-          "name": "thread_scope_artifact_links_artifact_idx",
-          "columns": [
-            {
-              "expression": "artifact_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "thread_scope_artifact_links_company_id_companies_id_fk": {
-          "name": "thread_scope_artifact_links_company_id_companies_id_fk",
-          "tableFrom": "thread_scope_artifact_links",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_artifact_links_scope_version_id_thread_scope_versions_id_fk": {
-          "name": "thread_scope_artifact_links_scope_version_id_thread_scope_versions_id_fk",
-          "tableFrom": "thread_scope_artifact_links",
-          "tableTo": "thread_scope_versions",
-          "columnsFrom": [
-            "scope_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_artifact_links_artifact_id_artifacts_id_fk": {
-          "name": "thread_scope_artifact_links_artifact_id_artifacts_id_fk",
-          "tableFrom": "thread_scope_artifact_links",
-          "tableTo": "artifacts",
-          "columnsFrom": [
-            "artifact_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_artifact_links_artifact_version_id_artifact_versions_id_fk": {
-          "name": "thread_scope_artifact_links_artifact_version_id_artifact_versions_id_fk",
-          "tableFrom": "thread_scope_artifact_links",
-          "tableTo": "artifact_versions",
-          "columnsFrom": [
-            "artifact_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.thread_scope_items": {
-      "name": "thread_scope_items",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope_version_id": {
-          "name": "scope_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "item_order": {
-          "name": "item_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payload": {
-          "name": "payload",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "source_entry_ids": {
-          "name": "source_entry_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "extracted_item_id": {
-          "name": "extracted_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_issue_id": {
-          "name": "target_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_issue_id": {
-          "name": "result_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_memory_id": {
-          "name": "result_memory_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "artifact_id": {
-          "name": "artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "artifact_version_id": {
-          "name": "artifact_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "applied_by_user_id": {
-          "name": "applied_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "applied_at": {
-          "name": "applied_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -25151,327 +24552,15 @@
         }
       },
       "indexes": {
-        "thread_scope_items_scope_version_idx": {
-          "name": "thread_scope_items_scope_version_idx",
+        "user_entity_pins_user_company_entity_uq": {
+          "name": "user_entity_pins_user_company_entity_uq",
           "columns": [
             {
-              "expression": "scope_version_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_scope_items_kind_status_idx": {
-          "name": "thread_scope_items_kind_status_idx",
-          "columns": [
-            {
-              "expression": "kind",
+              "expression": "user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_scope_items_target_issue_idx": {
-          "name": "thread_scope_items_target_issue_idx",
-          "columns": [
-            {
-              "expression": "target_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_scope_items_result_issue_idx": {
-          "name": "thread_scope_items_result_issue_idx",
-          "columns": [
-            {
-              "expression": "result_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "thread_scope_items_company_id_companies_id_fk": {
-          "name": "thread_scope_items_company_id_companies_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_scope_version_id_thread_scope_versions_id_fk": {
-          "name": "thread_scope_items_scope_version_id_thread_scope_versions_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "thread_scope_versions",
-          "columnsFrom": [
-            "scope_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_extracted_item_id_discussion_extracted_items_id_fk": {
-          "name": "thread_scope_items_extracted_item_id_discussion_extracted_items_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "discussion_extracted_items",
-          "columnsFrom": [
-            "extracted_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_target_issue_id_issues_id_fk": {
-          "name": "thread_scope_items_target_issue_id_issues_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "target_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_result_issue_id_issues_id_fk": {
-          "name": "thread_scope_items_result_issue_id_issues_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "result_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_result_memory_id_memory_items_id_fk": {
-          "name": "thread_scope_items_result_memory_id_memory_items_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "memory_items",
-          "columnsFrom": [
-            "result_memory_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_artifact_id_artifacts_id_fk": {
-          "name": "thread_scope_items_artifact_id_artifacts_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "artifacts",
-          "columnsFrom": [
-            "artifact_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_items_artifact_version_id_artifact_versions_id_fk": {
-          "name": "thread_scope_items_artifact_version_id_artifact_versions_id_fk",
-          "tableFrom": "thread_scope_items",
-          "tableTo": "artifact_versions",
-          "columnsFrom": [
-            "artifact_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.thread_scope_versions": {
-      "name": "thread_scope_versions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version_number": {
-          "name": "version_number",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "source_start_seq": {
-          "name": "source_start_seq",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_end_seq": {
-          "name": "source_end_seq",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "base_version_id": {
-          "name": "base_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "proposal_entry_id": {
-          "name": "proposal_entry_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "assumptions": {
-          "name": "assumptions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "decisions": {
-          "name": "decisions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "open_questions": {
-          "name": "open_questions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by_agent_id": {
-          "name": "created_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "accepted_by_user_id": {
-          "name": "accepted_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "accepted_at": {
-          "name": "accepted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rejected_at": {
-          "name": "rejected_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "thread_scope_versions_company_thread_idx": {
-          "name": "thread_scope_versions_company_thread_idx",
-          "columns": [
             {
               "expression": "company_id",
               "isExpression": false,
@@ -25479,59 +24568,41 @@
               "nulls": "last"
             },
             {
-              "expression": "thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_scope_versions_thread_version_uq": {
-          "name": "thread_scope_versions_thread_version_uq",
-          "columns": [
-            {
-              "expression": "thread_id",
+              "expression": "entity_type",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "version_number",
+              "expression": "entity_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "thread_scope_versions_one_draft_uq": {
-          "name": "thread_scope_versions_one_draft_uq",
-          "columns": [
-            {
-              "expression": "thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"thread_scope_versions\".\"status\" = 'draft'",
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
       "foreignKeys": {
-        "thread_scope_versions_company_id_companies_id_fk": {
-          "name": "thread_scope_versions_company_id_companies_id_fk",
-          "tableFrom": "thread_scope_versions",
+        "user_entity_pins_user_id_user_id_fk": {
+          "name": "user_entity_pins_user_id_user_id_fk",
+          "tableFrom": "user_entity_pins",
+          "tableTo": "user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "user_entity_pins_company_id_companies_id_fk": {
+          "name": "user_entity_pins_company_id_companies_id_fk",
+          "tableFrom": "user_entity_pins",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
@@ -25540,58 +24611,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_versions_thread_id_discussions_id_fk": {
-          "name": "thread_scope_versions_thread_id_discussions_id_fk",
-          "tableFrom": "thread_scope_versions",
-          "tableTo": "discussions",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "thread_scope_versions_base_version_id_thread_scope_versions_id_fk": {
-          "name": "thread_scope_versions_base_version_id_thread_scope_versions_id_fk",
-          "tableFrom": "thread_scope_versions",
-          "tableTo": "thread_scope_versions",
-          "columnsFrom": [
-            "base_version_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_versions_proposal_entry_id_discussion_entries_id_fk": {
-          "name": "thread_scope_versions_proposal_entry_id_discussion_entries_id_fk",
-          "tableFrom": "thread_scope_versions",
-          "tableTo": "discussion_entries",
-          "columnsFrom": [
-            "proposal_entry_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "thread_scope_versions_created_by_agent_id_agents_id_fk": {
-          "name": "thread_scope_versions_created_by_agent_id_agents_id_fk",
-          "tableFrom": "thread_scope_versions",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "created_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

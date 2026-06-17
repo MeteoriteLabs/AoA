@@ -119,6 +119,8 @@ export function createMemoryTools(): AgentTool[] {
               agentId: ctx.agentId ?? null,
               runId: ctx.runId ?? null,
               taskId: ctx.contextScope?.taskId ?? null,
+              // A3: conversationId lives in contextScope, not at top-level ctx
+              conversationId: ctx.contextScope?.conversationId ?? null,
               triggeredBy: "commander_query",
               query: query as string,
               items: auditItems,
@@ -153,6 +155,8 @@ export function createMemoryTools(): AgentTool[] {
             agentId: ctx.agentId ?? null,
             runId: ctx.runId ?? null,
             taskId: ctx.contextScope?.taskId ?? null,
+            // A3: conversationId lives in contextScope, not at top-level ctx
+            conversationId: ctx.contextScope?.conversationId ?? null,
             triggeredBy: "commander_query",
             query: null,
             items: auditItems,

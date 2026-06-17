@@ -33,7 +33,7 @@ import {
 } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { IssueProperties } from "@/components/IssueProperties";
-import { TaskDetailPanel } from "@/components/TaskSlideOver";
+import { TaskDetail } from "@/components/TaskDetail";
 import { TaskOutputViewer } from "./TaskOutputViewer";
 import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
 import { ViewerTabs, type ViewerTabModel } from "@/components/viewers/ViewerTabs";
@@ -355,10 +355,9 @@ function ThreadViewerBody({
   if (tab.kind === "task") {
     const payload = tab.payload as ThreadViewerTaskPayload | undefined;
     return payload ? (
-      <TaskDetailPanel
+      <TaskDetail
         issueId={payload.issueId}
-        embedded
-        open
+        active
         onOpenScopeHandoffItem={(item) => {
           const metadata = payloadRecord(item.metadata);
           const label = item.label || item.itemType.replaceAll("_", " ");

@@ -1,4 +1,4 @@
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, PanelRight, PanelRightClose } from "lucide-react";
 import { timeAgo } from "../../lib/timeAgo";
 
 interface ChatPaneCaptionProps {
@@ -6,6 +6,10 @@ interface ChatPaneCaptionProps {
   messageCount: number;
   updatedAt?: string;
   onOpenSessions?: () => void;
+  /** Whether the viewer panel is currently open. */
+  viewerOpen?: boolean;
+  /** Called when the "Open preview" / "Hide preview" toggle is clicked. */
+  onToggleViewer?: () => void;
 }
 
 export function ChatPaneCaption({
@@ -13,11 +17,15 @@ export function ChatPaneCaption({
   messageCount,
   updatedAt,
   onOpenSessions,
+  viewerOpen,
+  onToggleViewer,
 }: ChatPaneCaptionProps) {
   const relTime = updatedAt ? timeAgo(updatedAt) : null;
+  const PreviewIcon = viewerOpen ? PanelRightClose : PanelRight;
+  const previewLabel = viewerOpen ? "Hide preview" : "Open preview";
 
   return (
-    <div className="h-11 flex items-center gap-2 px-5 border-b border-border-soft bg-bg shrink-0">
+    <div className="h-[42px] flex items-center gap-2 px-5 border-b border-border-soft bg-bg shrink-0">
       {/* Mobile/tablet (< 1024px): Sessions button opens the left drawer.
           `lg:hidden` so it stays visible across the whole drawer-layout range
           (mobile + tablet) and disappears exactly when the inline sidebar
@@ -50,6 +58,26 @@ export function ChatPaneCaption({
           <span> msgs</span>
         </span>
       </div>
+
+      {/* "Open preview" / "Hide preview" toggle — right side.
+          Only rendered when a handler is provided (Phase 3 wires this from
+          InternalAgentPanel). Hidden until a conversation exists because the
+          viewer is meaningless with no active conversation; the parent
+          already gates `ChatPaneCaption` behind `conversationId`. */}
+      {onToggleViewer && (
+        <button
+          type="button"
+          onClick={onToggleViewer}
+          data-testid="commander-open-preview"
+          aria-label={previewLabel}
+          aria-pressed={viewerOpen ?? false}
+          title={previewLabel}
+          className="flex items-center gap-1.5 px-2 py-1 rounded text-dim hover:bg-hd hover:text-text transition-colors shrink-0 text-xs"
+        >
+          <PreviewIcon className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">{previewLabel}</span>
+        </button>
+      )}
     </div>
   );
 }
