@@ -26,6 +26,7 @@ import {
 } from "../services/internal-agent/tool-registry.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
 import { permissionService } from "../services/permissions.js";
+import { loadOwnedConversation } from "./conversation-authz.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
@@ -101,46 +102,6 @@ const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
 
 export function internalAgentRoutes(db: Db) {
   const router = Router();
-
-  // ── Conversation ownership helper ────────────────────────────────────────
-  // Resolves whether the actor is a founder-equivalent, then fetches the
-  // conversation enforcing ownership in the WHERE clause — not via a separate
-  // 403 check — to avoid leaking conversation existence to non-owners via a
-  // 403 vs 404 distinction. Shared by archive, pin, and rename routes.
-  async function loadOwnedConversation(req: Request, companyId: string, convId: string) {
-    const actor = getActorInfo(req);
-    const isLocalImplicit =
-      req.actor.type === "board" && req.actor.source === "local_implicit";
-    const isInstanceAdmin =
-      req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-    let isFounderRole: boolean;
-    if (isLocalImplicit || isInstanceAdmin) {
-      isFounderRole = true;
-    } else {
-      const role = await permissionService(db).getEffectiveRole(
-        companyId,
-        actor.actorId,
-      );
-      isFounderRole = role === "founder";
-    }
-
-    const convConditions = [
-      eq(internalAgentConversations.id, convId),
-      eq(internalAgentConversations.companyId, companyId),
-    ];
-    if (!isFounderRole) {
-      convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
-    }
-
-    const [existing] = await db
-      .select()
-      .from(internalAgentConversations)
-      .where(and(...convConditions));
-
-    if (!existing) throw notFound("Conversation not found");
-    return existing;
-  }
 
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
   // Sprint 4 S4-F: rate-limit chat (LLM-billed). 60 requests per minute per
@@ -1185,7 +1146,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -1206,7 +1167,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -1227,7 +1188,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -1249,7 +1210,7 @@ export function internalAgentRoutes(db: Db) {
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
 
-      await loadOwnedConversation(req, companyId, convId);
+      await loadOwnedConversation(db, req, companyId, convId);
 
       await db
         .delete(internalAgentConversations)
@@ -1271,7 +1232,7 @@ export function internalAgentRoutes(db: Db) {
       // archive/pin/rename/delete: founders can access any company conversation,
       // non-founders are scoped to their own userId. Throws 404 (not 403) on
       // mismatch to avoid leaking conversation existence.
-      const conv = await loadOwnedConversation(req, companyId, convId);
+      const conv = await loadOwnedConversation(db, req, companyId, convId);
 
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const offset = parseInt(req.query.offset as string) || 0;
