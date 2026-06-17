@@ -90,6 +90,22 @@ vi.mock("@armyofagents/db", () => ({
   goals: {
     id: "goals_id",
   },
+  discussionEntryAttachments: {
+    id: "dea_id",
+    discussionEntryId: "dea_discussion_entry_id",
+    assetId: "dea_asset_id",
+    artifactId: "dea_artifact_id",
+  },
+  artifacts: {
+    id: "artifacts_id",
+    companyId: "artifacts_company_id",
+    title: "artifacts_title",
+    currentVersionId: "artifacts_current_version_id",
+  },
+  artifactVersions: {
+    id: "artifact_versions_id",
+    filename: "artifact_versions_filename",
+  },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -126,9 +142,14 @@ vi.mock("../services/memory.js", () => ({
   })),
 }));
 
+vi.mock("../services/issue-context-bundles.js", () => ({
+  createIssueContextBundle: vi.fn().mockResolvedValue({ id: "bundle-1", items: [] }),
+}));
+
 import { discussionService } from "../services/discussions.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishLiveEvent } from "../services/live-events.js";
+import { createIssueContextBundle } from "../services/issue-context-bundles.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -140,6 +161,7 @@ function createSequenceDb(selectQueue: any[][]) {
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
       innerJoin: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
@@ -197,6 +219,7 @@ function createSequenceDb(selectQueue: any[][]) {
           where: vi.fn().mockResolvedValue(undefined),
         })),
       };
+      db.__lastTx = tx;
       return fn(tx);
     }),
   };
@@ -310,6 +333,42 @@ describe("discussionService", () => {
       );
     });
 
+    it("links first-entry attachments when creating a discussion", async () => {
+      const createdDiscussion = {
+        id: "disc-with-attachment",
+        companyId: "co-1",
+        title: "Artifact handoff",
+        entryCount: 1,
+      };
+      const createdEntry = {
+        id: "entry-with-attachment",
+        discussionId: "disc-with-attachment",
+        inputType: "paste",
+        rawContent: "Use this attached handoff.",
+      };
+
+      const db = createSequenceDb([
+        [createdDiscussion],
+        [createdEntry],
+        [],
+      ]);
+
+      await discussionService(db).create(
+        "co-1",
+        {
+          title: "Artifact handoff",
+          entry: {
+            inputType: "paste",
+            rawContent: "Use this attached handoff.",
+            attachments: [{ artifactId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }],
+          },
+        },
+        "user-1",
+      );
+
+      expect(db.__lastTx.insert).toHaveBeenCalledTimes(3);
+    });
+
     it("creates a discussion without entry", async () => {
       const createdDiscussion = {
         id: "disc-2",
@@ -384,6 +443,8 @@ describe("discussionService", () => {
         [taskItem, memoryItem],
         // select entries to verify they belong to discussion
         [{ id: "entry-1" }],
+        // select discussion artifacts for task handoff
+        [],
         // issue create result (via mocked issueService)
         // update item status for task — returning
         [{ ...taskItem, status: "approved", resultTaskId: "task-1" }],
@@ -417,6 +478,66 @@ describe("discussionService", () => {
       await expect(
         discussionService(db).approveItems("co-1", "disc-1", [], "user-1"),
       ).rejects.toThrow("No items to approve");
+    });
+
+    it("creates a task context bundle with discussion artifacts when approving a task item", async () => {
+      const taskItem = {
+        id: "item-with-artifact",
+        discussionEntryId: "entry-with-artifact",
+        type: "task",
+        title: "Build from handoff",
+        description: "Use the attached handoff.",
+        status: "pending",
+        priority: null,
+        suggestedPriority: "high",
+        suggestedAssigneeId: null,
+        suggestedDepartmentId: null,
+        suggestedProjectId: null,
+        suggestedGoalId: null,
+        layer: null,
+        suggestedLayer: null,
+        mergedContent: null,
+        dedupAction: null,
+        selectedMemoryId: null,
+      };
+      const db = createSequenceDb([
+        [{ id: "disc-1", companyId: "co-1" }],
+        [taskItem],
+        [{ id: "entry-with-artifact" }],
+        [
+          {
+            artifactId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+            artifactTitle: "Scope Handoff",
+            filename: "scope-handoff.md",
+          },
+        ],
+        [{ ...taskItem, status: "approved", resultTaskId: "task-1" }],
+      ]);
+
+      await discussionService(db).approveItems(
+        "co-1",
+        "disc-1",
+        ["item-with-artifact"],
+        "user-1",
+      );
+
+      expect(createIssueContextBundle).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          companyId: "co-1",
+          sourceIssueId: "task-1",
+          targetIssueId: "task-1",
+          brief: expect.stringContaining("Discussion scope handoff"),
+          items: [
+            expect.objectContaining({
+              type: "artifact",
+              id: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+              label: "scope-handoff.md",
+            }),
+          ],
+          createdByUserId: "user-1",
+        }),
+      );
     });
   });
 

@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { discussionsApi, type DiscussionEntry } from "../../api/discussions";
+import { discussionsApi, type DiscussionEntry, type DiscussionEntryAttachment } from "../../api/discussions";
 import { authApi } from "../../api/auth";
 import { agentsApi } from "../../api/agents";
 import { assetsApi } from "../../api/assets";
@@ -30,6 +30,8 @@ export interface ThreadTabProps {
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
+  onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
 }
 
 export function ThreadTab({
@@ -39,6 +41,8 @@ export function ThreadTab({
   isLoading,
   isError,
   onRetry,
+  onOpenArtifact,
+  onOpenAsset,
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -138,6 +142,18 @@ export function ThreadTab({
     },
     onError: () => {
       pushToast({ title: "Failed to reprocess entry", tone: "warn" });
+    },
+  });
+
+  const removeAttachmentMutation = useMutation({
+    mutationFn: (attachment: DiscussionEntryAttachment) =>
+      discussionsApi.removeAttachment(companyId, threadId, attachment.id),
+    onSuccess: () => {
+      invalidate();
+      pushToast({ title: "Attachment removed from thread", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to remove attachment", tone: "warn" });
     },
   });
 
@@ -283,6 +299,13 @@ export function ThreadTab({
                 isReprocessing={
                   reprocessMutation.isPending && reprocessMutation.variables === entry.id
                 }
+                onOpenArtifact={onOpenArtifact}
+                onOpenAsset={onOpenAsset}
+                onRemoveAttachment={(attachment) => removeAttachmentMutation.mutate(attachment)}
+                isRemovingAttachment={(attachmentId) =>
+                  removeAttachmentMutation.isPending &&
+                  removeAttachmentMutation.variables?.id === attachmentId
+                }
               />
               {replies.map((reply) => (
                 <div key={reply.id} className="pl-10">
@@ -292,6 +315,13 @@ export function ThreadTab({
                     onReprocess={() => reprocessMutation.mutate(reply.id)}
                     isReprocessing={
                       reprocessMutation.isPending && reprocessMutation.variables === reply.id
+                    }
+                    onOpenArtifact={onOpenArtifact}
+                    onOpenAsset={onOpenAsset}
+                    onRemoveAttachment={(attachment) => removeAttachmentMutation.mutate(attachment)}
+                    isRemovingAttachment={(attachmentId) =>
+                      removeAttachmentMutation.isPending &&
+                      removeAttachmentMutation.variables?.id === attachmentId
                     }
                   />
                 </div>

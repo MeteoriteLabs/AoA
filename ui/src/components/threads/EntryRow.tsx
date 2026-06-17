@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { relativeTime } from "@/lib/utils";
 import { Link } from "@/lib/router";
-import type { DiscussionEntry } from "../../api/discussions";
+import type { DiscussionEntry, DiscussionEntryAttachment } from "../../api/discussions";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { ScopeProposalCard } from "./ScopeProposalCard";
 import { SystemEntryCard } from "./SystemEntryCard";
@@ -250,6 +250,9 @@ export interface EntryRowProps {
   onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   /** Phase E2: clicked when the user opens an inline artifact. */
   onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
+  onRemoveAttachment?: (attachment: DiscussionEntryAttachment) => void;
+  isRemovingAttachment?: (attachmentId: string) => boolean;
 }
 
 export function EntryRow({
@@ -263,6 +266,9 @@ export function EntryRow({
   onSpinOffAccept,
   onSpinOffDismiss,
   onOpenArtifact,
+  onOpenAsset,
+  onRemoveAttachment,
+  isRemovingAttachment,
 }: EntryRowProps) {
   // ── Phase E3: scope_proposal entries get the dedicated card ──
   if (entry.inputType === "scope_proposal") {
@@ -356,6 +362,9 @@ export function EntryRow({
         extractionError={extractionError}
         errorMentionsProvider={errorMentionsProvider}
         onOpenArtifact={onOpenArtifact}
+        onOpenAsset={onOpenAsset}
+        onRemoveAttachment={onRemoveAttachment}
+        isRemovingAttachment={isRemovingAttachment}
       />
     );
   }
@@ -368,6 +377,9 @@ export function EntryRow({
         memCount={memCount}
         pendingCount={pendingCount}
         onOpenArtifact={onOpenArtifact}
+        onOpenAsset={onOpenAsset}
+        onRemoveAttachment={onRemoveAttachment}
+        isRemovingAttachment={isRemovingAttachment}
       />
     );
   }
@@ -381,6 +393,9 @@ export function EntryRow({
       extractionError={extractionError}
       errorMentionsProvider={errorMentionsProvider}
       onOpenArtifact={onOpenArtifact}
+      onOpenAsset={onOpenAsset}
+      onRemoveAttachment={onRemoveAttachment}
+      isRemovingAttachment={isRemovingAttachment}
     />
   );
 }
@@ -393,12 +408,18 @@ function MeBubble({
   memCount,
   pendingCount,
   onOpenArtifact,
+  onOpenAsset,
+  onRemoveAttachment,
+  isRemovingAttachment,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
   memCount: number;
   pendingCount: number;
   onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
+  onRemoveAttachment?: (attachment: DiscussionEntryAttachment) => void;
+  isRemovingAttachment?: (attachmentId: string) => boolean;
 }) {
   return (
     <div
@@ -432,6 +453,9 @@ function MeBubble({
               <InlineArtifactCard
                 attachments={entry.attachments}
                 onOpen={onOpenArtifact}
+                onOpenAsset={onOpenAsset}
+                onRemove={onRemoveAttachment}
+                isRemoving={isRemovingAttachment}
               />
             </div>
           )}
@@ -467,6 +491,9 @@ function HumanBubble({
   extractionError,
   errorMentionsProvider,
   onOpenArtifact,
+  onOpenAsset,
+  onRemoveAttachment,
+  isRemovingAttachment,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -475,6 +502,9 @@ function HumanBubble({
   extractionError: string | null;
   errorMentionsProvider: boolean;
   onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
+  onRemoveAttachment?: (attachment: DiscussionEntryAttachment) => void;
+  isRemovingAttachment?: (attachmentId: string) => boolean;
 }) {
   return (
     <div
@@ -513,6 +543,9 @@ function HumanBubble({
           <InlineArtifactCard
             attachments={entry.attachments}
             onOpen={onOpenArtifact}
+            onOpenAsset={onOpenAsset}
+            onRemove={onRemoveAttachment}
+            isRemoving={isRemovingAttachment}
           />
         )}
         <ChipRow
@@ -539,6 +572,9 @@ function AgentCard({
   extractionError,
   errorMentionsProvider,
   onOpenArtifact,
+  onOpenAsset,
+  onRemoveAttachment,
+  isRemovingAttachment,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -547,6 +583,9 @@ function AgentCard({
   extractionError: string | null;
   errorMentionsProvider: boolean;
   onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
+  onRemoveAttachment?: (attachment: DiscussionEntryAttachment) => void;
+  isRemovingAttachment?: (attachmentId: string) => boolean;
 }) {
   const color = agentRoleColor(entry.authorAgentName);
   const agentName = entry.authorAgentName ?? "Agent";
@@ -619,6 +658,9 @@ function AgentCard({
           <InlineArtifactCard
             attachments={entry.attachments}
             onOpen={onOpenArtifact}
+            onOpenAsset={onOpenAsset}
+            onRemove={onRemoveAttachment}
+            isRemoving={isRemovingAttachment}
           />
         )}
 

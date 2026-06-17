@@ -12,6 +12,12 @@ function makeAttachment(overrides: Partial<DiscussionEntryAttachment> = {}): Dis
     artifactId: "art-1",
     artifactType: "document",
     artifactTitle: "Onboarding plan",
+    artifactFilename: null,
+    artifactContentType: null,
+    artifactStorageKind: null,
+    artifactVersionNumber: null,
+    assetFilename: null,
+    assetContentType: null,
     ...overrides,
   };
 }
@@ -31,11 +37,11 @@ describe("InlineArtifactCard", () => {
     const user = userEvent.setup();
     renderWithProviders(
       <InlineArtifactCard
-        attachments={[makeAttachment({ id: "att-1", artifactId: "art-1" })]}
+        attachments={[makeAttachment({ id: "att-1", artifactId: "art-1", artifactFilename: "onboarding-plan.md" })]}
         onOpen={onOpen}
       />,
     );
-    await user.click(screen.getByTestId("inline-artifact-card-att-1"));
+    await user.click(screen.getByRole("button", { name: /open onboarding-plan\.md/i }));
     expect(onOpen).toHaveBeenCalledWith("art-1");
   });
 
@@ -67,11 +73,13 @@ describe("InlineArtifactCard", () => {
             artifactType: null,
             artifactTitle: null,
             assetId: "asset-1",
+            assetFilename: "requirements.csv",
+            assetContentType: "text/csv",
           }),
         ]}
       />,
     );
-    expect(screen.getByText("Attached file")).toBeInTheDocument();
+    expect(screen.getByText("requirements.csv")).toBeInTheDocument();
     expect(screen.getByText("File")).toBeInTheDocument();
   });
 });

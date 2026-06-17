@@ -41,6 +41,9 @@ describe("create_artifact tool (P2.5)", () => {
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({ where: whereMock }),
       }),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockResolvedValue([]),
+      }),
     };
   }
 
@@ -81,6 +84,10 @@ describe("create_artifact tool (P2.5)", () => {
       source: "agent",
       content: "hello",
       fileUrl: null,
+      filename: "Spec Doc",
+      contentType: "text/markdown",
+      extension: null,
+      storageKind: "inline",
     });
   });
 
@@ -101,6 +108,41 @@ describe("create_artifact tool (P2.5)", () => {
     expect(result.success).toBe(true);
     // Verify that update was called
     expect(mockDb.update).toHaveBeenCalled();
+    expect(mockDb.insert).toHaveBeenCalled();
+  });
+
+  it("Test 3b — links artifact to discussion_entry_attachments when attachToEntryId is provided", async () => {
+    const valuesMock = vi.fn().mockResolvedValue([]);
+    const mockDb = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ sourceInfo: { foo: "bar" } }]),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      }),
+      insert: vi.fn().mockReturnValue({ values: valuesMock }),
+    };
+    const ctx = makeCtx({ db: mockDb });
+    const tool = createArtifactTool();
+
+    const result = await tool.execute(
+      {
+        title: "Planner Handoff.md",
+        type: "document",
+        content: "# Scope",
+        attachToEntryId: "entry-5",
+      },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect(valuesMock).toHaveBeenCalledWith({
+      discussionEntryId: "entry-5",
+      artifactId: "art-1",
+      assetId: null,
+    });
   });
 
   it("Test 4 — skips entry update when attachToEntryId absent", async () => {

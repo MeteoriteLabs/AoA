@@ -9,6 +9,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { assets } from "./assets.js";
 
 export const artifacts = pgTable(
   "artifacts",
@@ -42,6 +43,13 @@ export const artifactVersions = pgTable(
     parentVersionId: uuid("parent_version_id").references((): AnyPgColumn => artifactVersions.id, { onDelete: "set null" }),
     content: text("content"),
     fileUrl: text("file_url"),
+    filename: text("filename"),
+    contentType: text("content_type"),
+    extension: text("extension"),
+    storageKind: text("storage_kind").notNull().default("inline"),
+    assetId: uuid("asset_id").references(() => assets.id, { onDelete: "set null" }),
+    byteSize: integer("byte_size"),
+    sha256: text("sha256"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({

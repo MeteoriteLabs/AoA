@@ -130,6 +130,44 @@ describe("ScopeTab", () => {
     expect(screen.getByText("Test it")).toBeInTheDocument();
   });
 
+  it("renders thread artifacts as openable scope handoff material", async () => {
+    const user = userEvent.setup();
+    const onOpenArtifact = vi.fn();
+    renderWithProviders(
+      <ScopeTab
+        summaryText={null}
+        summaryNext={null}
+        items={[]}
+        planSteps={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onItemClick={vi.fn()}
+        attachments={[
+          {
+            id: "att-1",
+            assetId: null,
+            artifactId: "artifact-1",
+            artifactType: "document",
+            artifactTitle: "Planner scope",
+            artifactFilename: "planner-scope.md",
+            artifactContentType: "text/markdown",
+            artifactStorageKind: "inline",
+            artifactVersionNumber: 1,
+            assetFilename: null,
+            assetContentType: null,
+          },
+        ]}
+        onOpenArtifact={onOpenArtifact}
+      />,
+    );
+
+    expect(screen.getByTestId("scope-artifacts")).toBeInTheDocument();
+    expect(screen.getByText("planner-scope.md")).toBeInTheDocument();
+    await user.click(screen.getByLabelText(/open planner-scope/i));
+    expect(onOpenArtifact).toHaveBeenCalledWith("artifact-1");
+  });
+
   it("shows Needs Decision section with pending items (collapsed by default)", () => {
     const items: ScopeItem[] = [
       makeItem({ id: "p1", status: "pending", title: "Pending task A" }),

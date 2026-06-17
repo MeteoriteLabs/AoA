@@ -12,4 +12,12 @@ export const artifactsApi = {
   /** Add immutable version to artifact. */
   addVersion: (artifactId: string, data: CreateArtifactVersion) =>
     api.post<ArtifactVersion>(`/artifacts/${artifactId}/versions`, data),
+
+  archive: (artifactId: string) =>
+    api.post<ArtifactWithVersions>(`/artifacts/${artifactId}/archive`, {}),
+
+  delete: (artifactId: string, opts: { force?: boolean } = {}) =>
+    api.delete<{ deleted: true; mode: "hard_delete"; references: Array<{ type: string; id: string }> }>(
+      `/artifacts/${artifactId}${opts.force ? "?force=true" : ""}`,
+    ),
 };

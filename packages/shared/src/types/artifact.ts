@@ -1,5 +1,7 @@
 import type { ArtifactType, ArtifactStatus, ArtifactVersionSource } from "../constants.js";
 
+export type ArtifactVersionStorageKind = "inline" | "asset" | "external";
+
 export interface Artifact {
   id: string;
   companyId: string;
@@ -23,6 +25,13 @@ export interface ArtifactVersion {
   parentVersionId: string | null;
   content: string | null;
   fileUrl: string | null;
+  filename: string | null;
+  contentType: string | null;
+  extension: string | null;
+  storageKind: ArtifactVersionStorageKind;
+  assetId: string | null;
+  byteSize: number | null;
+  sha256: string | null;
   createdAt: Date;
 }
 

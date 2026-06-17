@@ -12,6 +12,8 @@ import { discussionsApi } from "../../api/discussions";
 import { threadsApi } from "../../api/threads";
 import { useToast } from "../../context/ToastContext";
 import type { ScopeItem } from "./scopeGrouping";
+import type { DiscussionEntryAttachment } from "../../api/discussions";
+import { InlineArtifactCard } from "./InlineArtifactCard";
 import type { ApproveItems } from "@armyofagents/shared";
 
 /* ─── Type → display config ─── */
@@ -62,6 +64,9 @@ export interface ScopeTabProps {
   isError: boolean;
   onRetry: () => void;
   onItemClick: (item: ScopeItem) => void;
+  attachments?: DiscussionEntryAttachment[];
+  onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
   companyId?: string;
   discussionId?: string;
   isFounder?: boolean;
@@ -79,6 +84,9 @@ export function ScopeTab({
   isError,
   onRetry,
   onItemClick,
+  attachments = [],
+  onOpenArtifact,
+  onOpenAsset,
   companyId,
   discussionId,
 }: ScopeTabProps) {
@@ -114,6 +122,14 @@ export function ScopeTab({
         <PlanBlock steps={planSteps} />
       )}
 
+      {attachments.length > 0 && (
+        <ScopeArtifactsSection
+          attachments={attachments}
+          onOpenArtifact={onOpenArtifact}
+          onOpenAsset={onOpenAsset}
+        />
+      )}
+
       {/* Needs Decision */}
       <NeedsDecisionSection
         items={pendingItems}
@@ -133,6 +149,37 @@ export function ScopeTab({
 /* ════════════════════════════════════════════════════════════════════════
    PlanBlock
    ════════════════════════════════════════════════════════════════════════ */
+
+function ScopeArtifactsSection({
+  attachments,
+  onOpenArtifact,
+  onOpenAsset,
+}: {
+  attachments: DiscussionEntryAttachment[];
+  onOpenArtifact?: (artifactId: string) => void;
+  onOpenAsset?: (attachment: DiscussionEntryAttachment) => void;
+}) {
+  return (
+    <section data-testid="scope-artifacts">
+      <div className="flex items-center gap-2 mb-2.5 px-0.5">
+        <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+          Artifacts
+        </h3>
+        <span
+          className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums"
+          style={{ background: "rgba(90,168,126,0.12)", color: "#5AA87E" }}
+        >
+          {attachments.length}
+        </span>
+      </div>
+      <InlineArtifactCard
+        attachments={attachments}
+        onOpen={onOpenArtifact}
+        onOpenAsset={onOpenAsset}
+      />
+    </section>
+  );
+}
 
 function PlanBlock({ steps }: { steps: string[] }) {
   return (

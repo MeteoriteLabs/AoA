@@ -12,6 +12,7 @@
 
 import { eq } from "drizzle-orm";
 import {
+  artifactVersions,
   artifacts,
   discussionEntries,
   discussionEntryAttachments,
@@ -50,8 +51,16 @@ export const queryArtifactsTool: AgentTool = {
         type: artifacts.type,
         currentVersionId: artifacts.currentVersionId,
         status: artifacts.status,
+        filename: artifactVersions.filename,
+        contentType: artifactVersions.contentType,
+        storageKind: artifactVersions.storageKind,
+        versionNumber: artifactVersions.versionNumber,
       })
       .from(artifacts)
+      .leftJoin(
+        artifactVersions,
+        eq(artifactVersions.id, artifacts.currentVersionId),
+      )
       .innerJoin(
         discussionEntryAttachments,
         eq(discussionEntryAttachments.artifactId, artifacts.id),

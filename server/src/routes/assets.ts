@@ -344,6 +344,47 @@ export function assetRoutes(db: Db, storage: StorageService) {
     object.stream.pipe(res);
   });
 
+  router.delete("/assets/:assetId", async (req, res) => {
+    const assetId = req.params.assetId as string;
+    const asset = await svc.getById(assetId);
+    if (!asset) {
+      res.status(404).json({ error: "Asset not found" });
+      return;
+    }
+    assertCompanyAccess(req, asset.companyId);
+
+    try {
+      await storage.deleteObject(asset.companyId, asset.objectKey);
+    } catch (err) {
+      console.warn("[assets] storage delete failed while removing asset", { err, assetId });
+    }
+
+    const removed = await svc.remove(asset.companyId, assetId);
+    if (!removed) {
+      res.status(404).json({ error: "Asset not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: removed.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "asset.deleted",
+      entityType: "asset",
+      entityId: removed.id,
+      details: {
+        originalFilename: removed.originalFilename,
+        contentType: removed.contentType,
+        byteSize: removed.byteSize,
+      },
+    });
+
+    res.json({ ok: true });
+  });
+
   return router;
 }
 

@@ -6,10 +6,13 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType } from "../api/threads";
+import { artifactsApi } from "../api/artifacts";
+import { assetsApi } from "../api/assets";
+import type { DiscussionEntryAttachment } from "../api/discussions";
 import { api } from "../api/client";
 import {
   RefreshCw, Flag, Link2, Brain, X, ArrowRight, PanelRightClose, PanelRightOpen,
-  Pencil, ChevronDown, ChevronRight, Pause, Play,
+  Pencil, ChevronDown, ChevronRight, Pause, Play, Archive, Trash2, Save, FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -17,6 +20,9 @@ import { ThreadTab } from "../components/threads/ThreadTab";
 import { ScopeTab } from "../components/threads/ScopeTab";
 import { BranchesTab } from "../components/threads/BranchesTab";
 import type { ScopeItem } from "../components/threads/scopeGrouping";
+import { WorkProductViewer } from "../components/workspace/WorkProductViewer";
+import { resolveOutputViewer } from "../components/workspace/output-viewer-registry";
+import type { ArtifactVersion, ArtifactWithVersions } from "@armyofagents/shared";
 
 /* ─── Phase constants ─── */
 
@@ -107,6 +113,8 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
   const [mobileTab, setMobileTab] = useState<MobileTab>("thread");
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
   const [viewerItem, setViewerItem] = useState<ScopeItem | null>(null);
+  const [viewerArtifactId, setViewerArtifactId] = useState<string | null>(null);
+  const [viewerAssetAttachment, setViewerAssetAttachment] = useState<DiscussionEntryAttachment | null>(null);
   const [viewerCollapsed, setViewerCollapsed] = useState(false);
 
   // Header state
@@ -174,6 +182,21 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
     );
   }, [thread]);
 
+  const threadAttachments = useMemo((): DiscussionEntryAttachment[] => {
+    if (!thread) return [];
+    const seen = new Set<string>();
+    const attachments: DiscussionEntryAttachment[] = [];
+    for (const entry of thread.entries) {
+      for (const attachment of entry.attachments ?? []) {
+        const key = attachment.artifactId ?? attachment.assetId ?? attachment.id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        attachments.push(attachment);
+      }
+    }
+    return attachments;
+  }, [thread]);
+
   // Derived participant counts from entries
   const participants = useMemo(() => {
     if (!thread) return { humans: [] as string[], agents: [] as { id: string; name: string | null }[] };
@@ -196,6 +219,28 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
   const invalidateThread = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, resolvedId] });
   }, [queryClient, selectedCompanyId, resolvedId]);
+
+  const openArtifactInViewer = useCallback((artifactId: string) => {
+    setViewerItem(null);
+    setViewerAssetAttachment(null);
+    setViewerArtifactId(artifactId);
+    setViewerCollapsed(false);
+    setMobileTab("viewer");
+  }, []);
+
+  const openAssetInViewer = useCallback((attachment: DiscussionEntryAttachment) => {
+    setViewerItem(null);
+    setViewerArtifactId(null);
+    setViewerAssetAttachment(attachment);
+    setViewerCollapsed(false);
+    setMobileTab("viewer");
+  }, []);
+
+  const closeViewerSelection = useCallback(() => {
+    setViewerItem(null);
+    setViewerArtifactId(null);
+    setViewerAssetAttachment(null);
+  }, []);
 
   // Mutations
   const renameMutation = useMutation({
@@ -789,6 +834,8 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 isLoading={isLoading}
                 isError={isError}
                 onRetry={refetch}
+                onOpenArtifact={openArtifactInViewer}
+                onOpenAsset={openAssetInViewer}
               />
             </div>
 
@@ -810,8 +857,13 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
                 onRetry={refetch}
                 onItemClick={(item) => {
                   setViewerItem(item);
+                  setViewerArtifactId(null);
+                  setViewerAssetAttachment(null);
                   setMobileTab("viewer");
                 }}
+                attachments={threadAttachments}
+                onOpenArtifact={openArtifactInViewer}
+                onOpenAsset={openAssetInViewer}
                 companyId={selectedCompanyId ?? undefined}
                 discussionId={resolvedId ?? undefined}
               />
@@ -860,9 +912,12 @@ export function ThreadDetail({ embedded = false }: { embedded?: boolean } = {}) 
               thread={thread}
               companyId={selectedCompanyId!}
               item={viewerItem}
-              onClose={() => setViewerItem(null)}
+              artifactId={viewerArtifactId}
+              assetAttachment={viewerAssetAttachment}
+              onClose={closeViewerSelection}
               onOpenScope={() => { setCenterTab("scope"); setMobileTab("scope"); }}
               onCollapse={() => setViewerCollapsed(true)}
+              onDeleted={invalidateThread}
             />
           )}
         </div>
@@ -984,18 +1039,349 @@ const ITEM_TYPE_COLORS: Record<string, string> = {
   preference:"bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
 };
 
+function extensionFromFilename(value: string | null | undefined): string | null {
+  const name = value?.trim() ?? "";
+  const dot = name.lastIndexOf(".");
+  if (dot < 0 || dot === name.length - 1) return null;
+  return name.slice(dot + 1).toLowerCase();
+}
+
+function artifactFilename(artifact: ArtifactWithVersions, version: ArtifactVersion): string {
+  return version.filename ?? artifact.title;
+}
+
+function artifactContentType(artifact: ArtifactWithVersions, version: ArtifactVersion): string {
+  if (version.contentType) return version.contentType;
+  const filename = artifactFilename(artifact, version);
+  const ext = extensionFromFilename(filename) ?? extensionFromFilename(version.fileUrl);
+  switch (ext) {
+    case "md":
+    case "mdx":
+      return "text/markdown";
+    case "html":
+    case "htm":
+      return "text/html";
+    case "json":
+      return "application/json";
+    case "csv":
+      return "text/csv";
+    case "pdf":
+      return "application/pdf";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "svg":
+      return "image/svg+xml";
+  }
+  if (version.content !== null && version.content !== undefined) return "text/plain";
+  return "application/octet-stream";
+}
+
+function ThreadArtifactViewer({
+  artifactId,
+  companyId,
+  threadId,
+  onClose,
+  onDeleted,
+}: {
+  artifactId: string;
+  companyId?: string;
+  threadId?: string;
+  onClose?: () => void;
+  onDeleted?: () => void;
+}) {
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState("");
+
+  const { data: artifact, isLoading, isError } = useQuery({
+    queryKey: ["artifact-detail", artifactId],
+    queryFn: () => artifactsApi.get(artifactId),
+    enabled: !!artifactId,
+  });
+
+  const version = artifact?.versions?.[0] ?? null;
+
+  useEffect(() => {
+    if (version?.content != null) setEditedContent(version.content);
+    else setEditedContent("");
+    setIsEditing(false);
+  }, [version?.id]);
+
+  const archiveMutation = useMutation({
+    mutationFn: () => artifactsApi.archive(artifactId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["artifact-detail", artifactId] });
+      if (companyId && threadId) {
+        queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
+      }
+      pushToast({ title: "Artifact archived", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to archive artifact", tone: "warn" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => artifactsApi.delete(artifactId, { force: true }),
+    onSuccess: () => {
+      onDeleted?.();
+      onClose?.();
+      pushToast({ title: "Artifact deleted", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to delete artifact", tone: "warn" }),
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      if (!artifact || !version) throw new Error("Missing artifact version");
+      return artifactsApi.addVersion(artifact.id, {
+        source: "founder",
+        sourceDetail: "Edited in discussion viewer",
+        changelog: "Edited from discussion viewer",
+        parentVersionId: version.id,
+        content: editedContent,
+        fileUrl: null,
+        filename: artifactFilename(artifact, version),
+        contentType: artifactContentType(artifact, version),
+        extension: extensionFromFilename(artifactFilename(artifact, version)),
+        storageKind: "inline",
+        assetId: null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["artifact-detail", artifactId] });
+      if (companyId && threadId) {
+        queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
+      }
+      setIsEditing(false);
+      pushToast({ title: "Artifact version saved", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to save artifact", tone: "warn" }),
+  });
+
+  if (isLoading) {
+    return <ViewerLoading title="Artifact" onClose={onClose} />;
+  }
+
+  if (isError || !artifact || !version) {
+    return <ViewerError title="Artifact" message="Could not load artifact." onClose={onClose} />;
+  }
+
+  const filename = artifactFilename(artifact, version);
+  const contentType = artifactContentType(artifact, version);
+  const viewer = resolveOutputViewer({
+    filename,
+    contentType,
+    assetId: version.assetId,
+    assetUrl: version.fileUrl,
+  });
+  const canEditInline = version.content != null && viewer.canShowSource;
+
+  return (
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="thread-artifact-viewer">
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-[120px] flex-1">
+          <div className="truncate text-sm font-medium">{artifact.title}</div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            {filename} - {contentType} - v{version.versionNumber}
+          </div>
+        </div>
+        {canEditInline && (
+          isEditing ? (
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+            >
+              <Save className="mr-1 h-3.5 w-3.5" />
+              Save
+            </Button>
+          ) : (
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setIsEditing(true)}>
+              <Pencil className="mr-1 h-3.5 w-3.5" />
+              Edit
+            </Button>
+          )
+        )}
+        {viewer.canOpenDirectly && (
+          <Button asChild type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">
+            <a href={viewer.assetUrl ?? undefined} target="_blank" rel="noopener noreferrer">
+              Open
+            </a>
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs"
+          onClick={() => archiveMutation.mutate()}
+          disabled={archiveMutation.isPending || artifact.status === "archived"}
+        >
+          <Archive className="mr-1 h-3.5 w-3.5" />
+          Archive
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+          onClick={() => {
+            if (window.confirm("Delete this artifact and remove its thread/task links?")) {
+              deleteMutation.mutate();
+            }
+          }}
+          disabled={deleteMutation.isPending}
+        >
+          <Trash2 className="mr-1 h-3.5 w-3.5" />
+          Delete
+        </Button>
+        {onClose && (
+          <button type="button" onClick={onClose} aria-label="Close artifact" className="text-muted-foreground hover:text-foreground">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+
+      {isEditing ? (
+        <textarea
+          value={editedContent}
+          onChange={(event) => setEditedContent(event.target.value)}
+          className="min-h-0 flex-1 resize-none bg-background p-4 font-mono text-xs leading-relaxed outline-none"
+          data-testid="thread-artifact-editor"
+        />
+      ) : (
+        <WorkProductViewer viewer={viewer} filename={filename} inlineTextContent={version.content ?? null} />
+      )}
+    </div>
+  );
+}
+
+function ThreadAssetViewer({
+  attachment,
+  onClose,
+  onDeleted,
+}: {
+  attachment: DiscussionEntryAttachment;
+  onClose?: () => void;
+  onDeleted?: () => void;
+}) {
+  const { pushToast } = useToast();
+  const filename = attachment.assetFilename ?? "Attached file";
+  const contentType = attachment.assetContentType ?? "application/octet-stream";
+  const viewer = resolveOutputViewer({
+    filename,
+    contentType,
+    assetId: attachment.assetId,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => assetsApi.delete(attachment.assetId!),
+    onSuccess: () => {
+      onDeleted?.();
+      onClose?.();
+      pushToast({ title: "File deleted", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to delete file", tone: "warn" }),
+  });
+
+  return (
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="thread-asset-viewer">
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-[120px] flex-1">
+          <div className="truncate text-sm font-medium">{filename}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{contentType}</div>
+        </div>
+        {viewer.canOpenDirectly && (
+          <Button asChild type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">
+            <a href={viewer.assetUrl ?? undefined} target="_blank" rel="noopener noreferrer">
+              Open
+            </a>
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+          onClick={() => {
+            if (window.confirm("Delete this file from the workspace?")) {
+              deleteMutation.mutate();
+            }
+          }}
+          disabled={deleteMutation.isPending}
+        >
+          <Trash2 className="mr-1 h-3.5 w-3.5" />
+          Delete
+        </Button>
+        {onClose && (
+          <button type="button" onClick={onClose} aria-label="Close file" className="text-muted-foreground hover:text-foreground">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      <WorkProductViewer viewer={viewer} filename={filename} />
+    </div>
+  );
+}
+
+function ViewerLoading({ title, onClose }: { title: string; onClose?: () => void }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
+        {onClose && <button type="button" onClick={onClose}><X className="h-3.5 w-3.5" /></button>}
+      </div>
+      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">Loading...</div>
+    </div>
+  );
+}
+
+function ViewerError({ title, message, onClose }: { title: string; message: string; onClose?: () => void }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
+        {onClose && <button type="button" onClick={onClose}><X className="h-3.5 w-3.5" /></button>}
+      </div>
+      <div className="flex flex-1 items-center justify-center p-4 text-sm text-destructive">{message}</div>
+    </div>
+  );
+}
+
 interface ThreadViewerPanelProps {
   thread: ThreadDetailType;
   companyId: string;
   item?: ScopeItem | null;
+  artifactId?: string | null;
+  assetAttachment?: DiscussionEntryAttachment | null;
   onClose?: () => void;
   onOpenScope?: () => void;
   onCollapse?: () => void;
+  onDeleted?: () => void;
   previewUrl?: string;
   previewHtml?: string;
 }
 
-function ThreadViewerPanel({ thread, companyId, item, onClose, onOpenScope, onCollapse, previewUrl, previewHtml }: ThreadViewerPanelProps) {
+function ThreadViewerPanel({
+  thread,
+  companyId,
+  item,
+  artifactId,
+  assetAttachment,
+  onClose,
+  onOpenScope,
+  onCollapse,
+  onDeleted,
+  previewUrl,
+  previewHtml,
+}: ThreadViewerPanelProps) {
   const { pushToast } = useToast();
 
   const { data: linksData } = useQuery({
@@ -1034,6 +1420,28 @@ function ThreadViewerPanel({ thread, companyId, item, onClose, onOpenScope, onCo
           sandbox={previewHtml ? "allow-same-origin allow-scripts" : "allow-same-origin allow-scripts allow-popups"}
         />
       </div>
+    );
+  }
+
+  if (artifactId) {
+    return (
+      <ThreadArtifactViewer
+        artifactId={artifactId}
+        companyId={companyId}
+        threadId={thread.id}
+        onClose={onClose}
+        onDeleted={onDeleted}
+      />
+    );
+  }
+
+  if (assetAttachment?.assetId) {
+    return (
+      <ThreadAssetViewer
+        attachment={assetAttachment}
+        onClose={onClose}
+        onDeleted={onDeleted}
+      />
     );
   }
 

@@ -26,6 +26,7 @@ import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
 import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+import { IssueContextBundlesSection } from "./IssueContextBundlesSection";
 import { ImageGalleryModal } from "./ImageGalleryModal";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
@@ -285,6 +286,12 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: contextBundles } = useQuery({
+    queryKey: ["issues", "context-bundles", issueId],
+    queryFn: () => issuesApi.listContextBundles(issueId!),
     enabled: !!issueId && open,
   });
 
@@ -1254,6 +1261,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     </DialogBody>
                   </DialogContent>
                 </Dialog>
+
+                <IssueContextBundlesSection bundles={contextBundles} />
 
                 {/* Attachments */}
                 <div className="space-y-3">

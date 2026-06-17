@@ -10,6 +10,7 @@ import {
   threadPlanSteps,
   threadInboxItems,
   discussionEntryAttachments,
+  artifactVersions,
 } from "@armyofagents/db";
 
 // Helper: get Drizzle column names from a table object.
@@ -142,6 +143,13 @@ describe("threads.ts — new tables", () => {
   it("discussion_entry_attachments links assets/artifacts to entries", () => {
     const cols = getColumnNames(discussionEntryAttachments);
     for (const c of ["id", "discussionEntryId", "assetId", "artifactId"]) {
+      expect(cols, `missing column: ${c}`).toContain(c);
+    }
+  });
+
+  it("artifact_versions carries file metadata for viewer and storage decisions", () => {
+    const cols = getColumnNames(artifactVersions);
+    for (const c of ["filename", "contentType", "extension", "storageKind", "assetId", "byteSize", "sha256"]) {
       expect(cols, `missing column: ${c}`).toContain(c);
     }
   });

@@ -70,6 +70,12 @@ export interface DiscussionEntryAttachment {
   artifactId: string | null;
   artifactType: string | null;
   artifactTitle: string | null;
+  artifactFilename: string | null;
+  artifactContentType: string | null;
+  artifactStorageKind: string | null;
+  artifactVersionNumber: number | null;
+  assetFilename: string | null;
+  assetContentType: string | null;
 }
 
 export interface DiscussionEntry {
@@ -223,6 +229,11 @@ export const discussionsApi = {
 
   // TODO: Add entry linking (spec 1.10 — move entries between discussions)
   // TODO: Add updateAnnotation / deleteAnnotation when server endpoints exist
+
+  removeAttachment: (companyId: string, discussionId: string, attachmentId: string) =>
+    api.delete<{ ok: true }>(
+      `/companies/${companyId}/discussions/${discussionId}/attachments/${attachmentId}`,
+    ),
 
   addAnnotation: (
     companyId: string,

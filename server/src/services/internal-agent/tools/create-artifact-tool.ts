@@ -1,6 +1,38 @@
 import { eq } from "drizzle-orm";
-import { discussionEntries } from "@armyofagents/db";
+import { discussionEntries, discussionEntryAttachments } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+
+function extensionFromFilename(filename: string | null): string | null {
+  if (!filename) return null;
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot < 0 || lastDot === filename.length - 1) return null;
+  return filename.slice(lastDot + 1).toLowerCase();
+}
+
+function contentTypeFromExtension(extension: string | null, artifactType: string): string | null {
+  switch (extension) {
+    case "md":
+    case "mdx":
+      return "text/markdown";
+    case "html":
+    case "htm":
+      return "text/html";
+    case "json":
+      return "application/json";
+    case "csv":
+      return "text/csv";
+    case "svg":
+      return "image/svg+xml";
+    case "ts":
+    case "tsx":
+    case "js":
+    case "jsx":
+    case "css":
+      return "text/plain";
+    default:
+      return artifactType === "document" ? "text/markdown" : "text/plain";
+  }
+}
 
 export function createArtifactTool(): AgentTool {
   return {
@@ -28,6 +60,14 @@ export function createArtifactTool(): AgentTool {
           description:
             "File URL reference (optional, use instead of content for file-backed artifacts)",
         },
+        filename: {
+          type: "string",
+          description: "Original filename for the artifact version (optional)",
+        },
+        contentType: {
+          type: "string",
+          description: "MIME content type for the artifact version (optional)",
+        },
         discussionId: {
           type: "string",
           description: "Thread to associate this artifact with (optional, informational)",
@@ -44,18 +84,31 @@ export function createArtifactTool(): AgentTool {
     requiredRole: "team_member",
     requiresConfirmation: false,
     execute: async (params: unknown, ctx) => {
-      const { title, type, content, fileRef, attachToEntryId } =
+      const { title, type, content, fileRef, filename, contentType, attachToEntryId } =
         (params ?? {}) as Record<string, unknown>;
+      const artifactTitle = title as string;
+      const artifactType = (type as string) ?? "document";
+      const versionFilename = typeof filename === "string" && filename.trim()
+        ? filename.trim()
+        : artifactTitle;
+      const extension = extensionFromFilename(versionFilename);
+      const inferredContentType = typeof contentType === "string" && contentType.trim()
+        ? contentType.trim().toLowerCase()
+        : contentTypeFromExtension(extension, artifactType);
 
       const result = await ctx.services.artifacts.create(
         ctx.companyId,
         ctx.agentId ?? "aoa-agent",
         {
-          title: title as string,
-          type: (type as string) ?? "document",
+          title: artifactTitle,
+          type: artifactType,
           source: "agent",
           content: (content as string) ?? null,
           fileUrl: (fileRef as string) ?? null,
+          filename: versionFilename,
+          contentType: inferredContentType,
+          extension,
+          storageKind: fileRef ? "external" : "inline",
         },
       );
 
@@ -81,13 +134,19 @@ export function createArtifactTool(): AgentTool {
               },
             })
             .where(eq(discussionEntries.id, attachToEntryId as string));
+
+          await ctx.db.insert(discussionEntryAttachments).values({
+            discussionEntryId: attachToEntryId as string,
+            assetId: null,
+            artifactId,
+          });
         }
       }
 
       return {
         success: true,
         data: { artifactId, versionId },
-        summary: `Created artifact: ${title as string}`,
+        summary: `Created artifact: ${artifactTitle}`,
       };
     },
   };

@@ -110,7 +110,24 @@ vi.mock("@armyofagents/db", () => ({
     assetId: "dea_asset_id",
     artifactId: "dea_artifact_id",
   },
-  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
+  assets: {
+    id: "assets_id",
+    originalFilename: "assets_original_filename",
+    contentType: "assets_content_type",
+  },
+  artifacts: {
+    id: "artifacts_id",
+    type: "artifacts_type",
+    title: "artifacts_title",
+    currentVersionId: "artifacts_current_version_id",
+  },
+  artifactVersions: {
+    id: "artifact_versions_id",
+    filename: "artifact_versions_filename",
+    contentType: "artifact_versions_content_type",
+    storageKind: "artifact_versions_storage_kind",
+    versionNumber: "artifact_versions_version_number",
+  },
   // Phase E batch 2 (T22): thread_participants + auth users (joined in getById)
   threadParticipants: {
     id: "tp_id",

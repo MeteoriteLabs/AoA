@@ -8,13 +8,14 @@ import { queryArtifactsTool } from "../services/internal-agent/tools/artifact-qu
 import type { ToolContext } from "../services/internal-agent/types.js";
 
 // Mock the chained select: db.select({...}).from(artifacts)
-//   .innerJoin(...).innerJoin(...).where(...) -> Promise<rows>
+//   .leftJoin(currentVersion).innerJoin(...).innerJoin(...).where(...) -> Promise<rows>
 function makeDbReturning(rows: any[]) {
   // The terminal .where(...) call resolves to the rows array.
   const where = vi.fn().mockResolvedValue(rows);
   const innerJoin2 = vi.fn().mockReturnValue({ where });
   const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 });
-  const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 });
+  const leftJoin = vi.fn().mockReturnValue({ innerJoin: innerJoin1 });
+  const from = vi.fn().mockReturnValue({ leftJoin });
   const select = vi.fn().mockReturnValue({ from });
   return { db: { select } as any, whereMock: where };
 }
@@ -47,6 +48,10 @@ describe("query_artifacts tool (C2 batch 2)", () => {
         type: "document",
         currentVersionId: "v-1",
         status: "active",
+        filename: "spec.md",
+        contentType: "text/markdown",
+        storageKind: "inline",
+        versionNumber: 1,
       },
       {
         artifactId: "a-2",
@@ -54,6 +59,10 @@ describe("query_artifacts tool (C2 batch 2)", () => {
         type: "code",
         currentVersionId: "v-2",
         status: "draft",
+        filename: "pr-diff.ts",
+        contentType: "text/typescript",
+        storageKind: "inline",
+        versionNumber: 2,
       },
     ];
     const { db } = makeDbReturning(rows);
@@ -64,6 +73,12 @@ describe("query_artifacts tool (C2 batch 2)", () => {
     );
     expect(result.success).toBe(true);
     expect(result.data).toEqual(rows);
+    expect(result.data[0]).toMatchObject({
+      filename: "spec.md",
+      contentType: "text/markdown",
+      storageKind: "inline",
+      versionNumber: 1,
+    });
     expect(result.summary).toContain("2");
   });
 

@@ -210,6 +210,43 @@ export function discussionRoutes(db: Db) {
   );
 
   // 1.6 Reprocess entry — founder only
+  router.delete(
+    "/companies/:companyId/discussions/:discussionId/attachments/:attachmentId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const attachmentId = req.params.attachmentId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const removed = await svc.removeAttachment(companyId, discussionId, attachmentId);
+      if (!removed) {
+        res.status(404).json({ error: "Attachment not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "discussion.attachment_removed",
+        entityType: "discussion",
+        entityId: discussionId,
+        details: {
+          attachmentId: removed.id,
+          discussionEntryId: removed.discussionEntryId,
+          assetId: removed.assetId,
+          artifactId: removed.artifactId,
+        },
+      });
+
+      res.json({ ok: true });
+    },
+  );
+
   router.post(
     "/companies/:companyId/discussions/:discussionId/entries/:entryId/reprocess",
     async (req, res) => {

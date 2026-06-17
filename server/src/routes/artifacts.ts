@@ -100,6 +100,74 @@ export function artifactRoutes(db: Db) {
     },
   );
 
+  router.post("/artifacts/:id/archive", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+
+    const artifact = await svc.archiveArtifact({
+      companyId: existing.companyId,
+      artifactId: id,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "artifact.archived",
+      entityType: "artifact",
+      entityId: id,
+      details: { title: existing.title, type: existing.type },
+    });
+
+    res.json(artifact);
+  });
+
+  router.delete("/artifacts/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+
+    const result = await svc.deleteArtifact({
+      companyId: existing.companyId,
+      artifactId: id,
+      force: req.query.force === "true",
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "artifact.deleted",
+      entityType: "artifact",
+      entityId: id,
+      details: {
+        title: existing.title,
+        type: existing.type,
+        force: req.query.force === "true",
+        references: result.references,
+      },
+    });
+
+    res.json(result);
+  });
+
   // Add immutable version to artifact
   router.post(
     "/artifacts/:id/versions",

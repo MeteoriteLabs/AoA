@@ -6,7 +6,9 @@ import {
   discussionExtractedItems,
   discussionAnnotations,
   discussionEntryAttachments,
+  assets,
   artifacts,
+  artifactVersions,
   agents,
   projects,
   goals,
@@ -18,6 +20,7 @@ import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
 import { issueService } from "./issues.js";
+import { createIssueContextBundle } from "./issue-context-bundles.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
@@ -183,6 +186,12 @@ export function discussionService(db: Db) {
         artifactId: string | null;
         artifactType: string | null;
         artifactTitle: string | null;
+        artifactFilename: string | null;
+        artifactContentType: string | null;
+        artifactStorageKind: string | null;
+        artifactVersionNumber: number | null;
+        assetFilename: string | null;
+        assetContentType: string | null;
       }> = [];
 
       if (entryIds.length > 0) {
@@ -204,9 +213,17 @@ export function discussionService(db: Db) {
             artifactId: discussionEntryAttachments.artifactId,
             artifactType: artifacts.type,
             artifactTitle: artifacts.title,
+            artifactFilename: artifactVersions.filename,
+            artifactContentType: artifactVersions.contentType,
+            artifactStorageKind: artifactVersions.storageKind,
+            artifactVersionNumber: artifactVersions.versionNumber,
+            assetFilename: assets.originalFilename,
+            assetContentType: assets.contentType,
           })
           .from(discussionEntryAttachments)
+          .leftJoin(assets, eq(discussionEntryAttachments.assetId, assets.id))
           .leftJoin(artifacts, eq(discussionEntryAttachments.artifactId, artifacts.id))
+          .leftJoin(artifactVersions, eq(artifacts.currentVersionId, artifactVersions.id))
           .where(inArray(discussionEntryAttachments.discussionEntryId, entryIds));
       }
 
@@ -242,6 +259,12 @@ export function discussionService(db: Db) {
           artifactId: a.artifactId,
           artifactType: a.artifactType,
           artifactTitle: a.artifactTitle,
+          artifactFilename: a.artifactFilename,
+          artifactContentType: a.artifactContentType,
+          artifactStorageKind: a.artifactStorageKind,
+          artifactVersionNumber: a.artifactVersionNumber,
+          assetFilename: a.assetFilename,
+          assetContentType: a.assetContentType,
         })),
       }));
 
@@ -312,6 +335,7 @@ export function discussionService(db: Db) {
           projectId?: string | null;
           goalId?: string | null;
           sourceInfo?: Record<string, unknown> | null;
+          attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
         };
       },
       actorId: string,
@@ -355,6 +379,19 @@ export function discussionService(db: Db) {
               createdBy: actorId,
             })
             .returning();
+
+          if (data.entry.attachments && data.entry.attachments.length > 0) {
+            const attachmentRows = data.entry.attachments
+              .filter((attachment) => attachment.assetId || attachment.artifactId)
+              .map((attachment) => ({
+                discussionEntryId: entry!.id,
+                assetId: attachment.assetId ?? null,
+                artifactId: attachment.artifactId ?? null,
+              }));
+            if (attachmentRows.length > 0) {
+              await tx.insert(discussionEntryAttachments).values(attachmentRows);
+            }
+          }
         }
 
         return { ...discussion, entry };
@@ -651,6 +688,42 @@ export function discussionService(db: Db) {
       return entry;
     },
 
+    removeAttachment: async (
+      companyId: string,
+      discussionId: string,
+      attachmentId: string,
+    ) => {
+      const attachment = await db
+        .select({
+          id: discussionEntryAttachments.id,
+          discussionEntryId: discussionEntryAttachments.discussionEntryId,
+          assetId: discussionEntryAttachments.assetId,
+          artifactId: discussionEntryAttachments.artifactId,
+        })
+        .from(discussionEntryAttachments)
+        .innerJoin(
+          discussionEntries,
+          eq(discussionEntryAttachments.discussionEntryId, discussionEntries.id),
+        )
+        .innerJoin(discussions, eq(discussionEntries.discussionId, discussions.id))
+        .where(
+          and(
+            eq(discussionEntryAttachments.id, attachmentId),
+            eq(discussions.id, discussionId),
+            eq(discussions.companyId, companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (!attachment) return null;
+
+      await db
+        .delete(discussionEntryAttachments)
+        .where(eq(discussionEntryAttachments.id, attachmentId));
+
+      return attachment;
+    },
+
     /**
      * Approve extracted items — atomic transaction.
      * For task items: creates issue. For memory items: creates memoryItem.
@@ -714,6 +787,41 @@ export function discussionService(db: Db) {
         const createdTaskIds: string[] = [];
         const createdMemoryIds: string[] = [];
         let approvedCount = 0;
+        const artifactRows = await tx
+          .select({
+            artifactId: artifacts.id,
+            artifactTitle: artifacts.title,
+            filename: artifactVersions.filename,
+          })
+          .from(discussionEntryAttachments)
+          .innerJoin(
+            discussionEntries,
+            eq(discussionEntries.id, discussionEntryAttachments.discussionEntryId),
+          )
+          .leftJoin(
+            artifacts,
+            and(
+              eq(artifacts.id, discussionEntryAttachments.artifactId),
+              eq(artifacts.companyId, companyId),
+            ),
+          )
+          .leftJoin(artifactVersions, eq(artifactVersions.id, artifacts.currentVersionId))
+          .where(
+            eq(discussionEntries.discussionId, discussionId),
+          );
+        const seenArtifactIds = new Set<string>();
+        const discussionArtifactItems = artifactRows
+          .flatMap((row) => {
+            if (!row.artifactId || seenArtifactIds.has(row.artifactId)) return [];
+            seenArtifactIds.add(row.artifactId);
+            return [{
+              type: "artifact",
+              id: row.artifactId,
+              label: row.filename ?? row.artifactTitle ?? "Discussion artifact",
+              metadata: { source: "discussion_scope", discussionId },
+            }];
+          })
+          .slice(0, 10);
 
         for (const item of itemRows) {
           if (item.status === "approved") continue; // already approved
@@ -739,6 +847,16 @@ export function discussionService(db: Db) {
 
             if (task) {
               createdTaskIds.push(task.id);
+              if (discussionArtifactItems.length > 0) {
+                await createIssueContextBundle(tx, {
+                  companyId,
+                  sourceIssueId: task.id,
+                  targetIssueId: task.id,
+                  brief: "Discussion scope handoff",
+                  items: discussionArtifactItems,
+                  createdByUserId: actorId,
+                });
+              }
               await tx
                 .update(discussionExtractedItems)
                 .set({

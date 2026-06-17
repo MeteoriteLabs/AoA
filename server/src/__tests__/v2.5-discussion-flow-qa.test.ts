@@ -22,6 +22,8 @@ import { createDiscussionDb } from "./helpers/mock-db.js";
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  isNull: vi.fn((col: any) => ({ isNull: col })),
+  ne: vi.fn((a: any, b: any) => ({ ne: [a, b] })),
   asc: vi.fn((col: any) => ({ asc: col })),
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({ sql: true, strings, values })),
@@ -115,7 +117,24 @@ vi.mock("@armyofagents/db", () => ({
     assetId: "dea_asset_id",
     artifactId: "dea_artifact_id",
   },
-  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
+  assets: {
+    id: "assets_id",
+    originalFilename: "assets_original_filename",
+    contentType: "assets_content_type",
+  },
+  artifacts: {
+    id: "artifacts_id",
+    type: "artifacts_type",
+    title: "artifacts_title",
+    currentVersionId: "artifacts_current_version_id",
+  },
+  artifactVersions: {
+    id: "artifact_versions_id",
+    filename: "artifact_versions_filename",
+    contentType: "artifact_versions_content_type",
+    storageKind: "artifact_versions_storage_kind",
+    versionNumber: "artifact_versions_version_number",
+  },
   // Phase E batch 2 (T22): thread_participants + auth users (joined in getById
   // for the OriginCard static roster).
   threadParticipants: {
@@ -128,6 +147,14 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "tp_company_id",
   },
   authUsers: { id: "auth_users_id", name: "auth_users_name", email: "auth_users_email" },
+  executionWorkspaces: {
+    id: "execution_workspaces_id",
+    threadId: "execution_workspaces_thread_id",
+    status: "execution_workspaces_status",
+    cleanupEligibleAt: "execution_workspaces_cleanup_eligible_at",
+    cleanupReason: "execution_workspaces_cleanup_reason",
+    updatedAt: "execution_workspaces_updated_at",
+  },
 }));
 
 vi.mock("../errors.js", () => ({

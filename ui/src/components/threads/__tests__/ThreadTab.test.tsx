@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ThreadTab } from "../ThreadTab";
 import type { DiscussionEntry } from "../../../api/discussions";
@@ -26,6 +27,7 @@ vi.mock("../../../api/discussions", () => ({
   discussionsApi: {
     addEntry: vi.fn().mockResolvedValue({ id: "entry-new" }),
     reprocessEntry: vi.fn().mockResolvedValue({}),
+    removeAttachment: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -229,6 +231,58 @@ describe("ThreadTab", () => {
         "thread-1",
         expect.objectContaining({ rawContent: "hello world", parentEntryId: null }),
       ),
+    );
+  });
+
+  it("renders artifact attachment metadata and opens/removes it from the thread", async () => {
+    const user = userEvent.setup();
+    const onOpenArtifact = vi.fn();
+    const { discussionsApi } = await import("../../../api/discussions");
+    const entries = [
+      makeEntry({
+        id: "e-art",
+        attachments: [
+          {
+            id: "att-1",
+            assetId: null,
+            artifactId: "artifact-1",
+            artifactType: "document",
+            artifactTitle: "Scope handoff",
+            artifactFilename: "scope-handoff.md",
+            artifactContentType: "text/markdown",
+            artifactStorageKind: "inline",
+            artifactVersionNumber: 2,
+            assetFilename: null,
+            assetContentType: null,
+          },
+        ],
+      }),
+    ];
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={entries}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onOpenArtifact={onOpenArtifact}
+      />,
+    );
+
+    expect(screen.getByText("scope-handoff.md")).toBeInTheDocument();
+    expect(screen.getByText("text/markdown")).toBeInTheDocument();
+    expect(screen.getByText("v2")).toBeInTheDocument();
+
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.click(screen.getByText("scope-handoff.md").closest("button")!);
+    expect(onOpenArtifact).toHaveBeenCalledWith("artifact-1");
+
+    fireEvent.click(screen.getByLabelText(/remove scope-handoff/i));
+    const { waitFor } = await import("@testing-library/react");
+    await waitFor(() =>
+      expect(discussionsApi.removeAttachment).toHaveBeenCalledWith("comp-1", "thread-1", "att-1"),
     );
   });
 });

@@ -52,5 +52,7 @@ export const assetsApi = {
       form,
     );
   },
+
+  delete: (assetId: string) => api.delete<{ ok: true }>(`/assets/${assetId}`),
 };
 

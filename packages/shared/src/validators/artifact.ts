@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { ARTIFACT_TYPES, ARTIFACT_STATUSES, ARTIFACT_VERSION_SOURCES } from "../constants.js";
 
+export const artifactVersionStorageKindSchema = z.enum(["inline", "asset", "external"]);
+
 export const createArtifactSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional().nullable(),
@@ -11,6 +13,13 @@ export const createArtifactSchema = z.object({
   changelog: z.string().optional().nullable(),
   content: z.string().optional().nullable(),
   fileUrl: z.string().optional().nullable(),
+  filename: z.string().optional().nullable(),
+  contentType: z.string().optional().nullable(),
+  extension: z.string().optional().nullable(),
+  storageKind: artifactVersionStorageKindSchema.optional(),
+  assetId: z.string().uuid().optional().nullable(),
+  byteSize: z.number().int().nonnegative().optional().nullable(),
+  sha256: z.string().optional().nullable(),
 });
 
 export type CreateArtifact = z.infer<typeof createArtifactSchema>;
@@ -31,6 +40,13 @@ export const createArtifactVersionSchema = z.object({
   parentVersionId: z.string().uuid().optional().nullable(),
   content: z.string().optional().nullable(),
   fileUrl: z.string().optional().nullable(),
+  filename: z.string().optional().nullable(),
+  contentType: z.string().optional().nullable(),
+  extension: z.string().optional().nullable(),
+  storageKind: artifactVersionStorageKindSchema.optional(),
+  assetId: z.string().uuid().optional().nullable(),
+  byteSize: z.number().int().nonnegative().optional().nullable(),
+  sha256: z.string().optional().nullable(),
 });
 
 export type CreateArtifactVersion = z.infer<typeof createArtifactVersionSchema>;
@@ -42,6 +58,13 @@ export const mcpArtifactVersionSchema = z.object({
   parentVersionId: z.string().uuid().optional().nullable(),
   content: z.string().optional().nullable(),
   fileUrl: z.string().optional().nullable(),
+  filename: z.string().optional().nullable(),
+  contentType: z.string().optional().nullable(),
+  extension: z.string().optional().nullable(),
+  storageKind: artifactVersionStorageKindSchema.optional(),
+  assetId: z.string().uuid().optional().nullable(),
+  byteSize: z.number().int().nonnegative().optional().nullable(),
+  sha256: z.string().optional().nullable(),
 });
 
 export type McpArtifactVersion = z.infer<typeof mcpArtifactVersionSchema>;

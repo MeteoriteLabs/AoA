@@ -147,4 +147,35 @@ describe("run input bundles", () => {
     expect(await fs.readFile(path.join(cwd, localPaths[0]!), "utf8")).toBe("first");
     expect(await fs.readFile(path.join(cwd, localPaths[1]!), "utf8")).toBe("second");
   });
+
+  it("materializes discussion-origin artifact context for created task runs", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-run-inputs-"));
+    tempDirsToCleanup.add(cwd);
+    const db = createSequenceDb([
+      [{ id: "bundle-1", brief: "Discussion scope handoff", sourceIssueId: "task-1" }],
+      [{ id: "bundle-item-1", itemType: "artifact", sourceId: "artifact-1", label: "scope-handoff.md" }],
+      [{ id: "artifact-1", title: "Scope Handoff", type: "markdown", currentVersionId: "artifact-version-1" }],
+      [{ content: "Acceptance criteria from discussion", fileUrl: null }],
+    ]);
+
+    const bundle = await buildRunInputBundle({
+      db: db as never,
+      companyId: "company-1",
+      issueId: "task-1",
+      cwd,
+    });
+
+    const artifactInput = bundle.inputs.find((entry) => entry.type === "artifact");
+    expect(artifactInput).toMatchObject({
+      id: "artifact-1",
+      label: "scope-handoff.md",
+    });
+    expect(artifactInput?.localPath).toMatch(/^\.aoa\/inputs\/bundle-item-1\/Scope Handoff\.md$/);
+    expect(await fs.readFile(path.join(cwd, artifactInput!.localPath!), "utf8")).toBe(
+      "Acceptance criteria from discussion",
+    );
+    expect(bundle.markdown).toContain("## Run Inputs");
+    expect(bundle.markdown).toContain("scope-handoff.md");
+    expect(bundle.markdown).toContain(artifactInput!.localPath);
+  });
 });
