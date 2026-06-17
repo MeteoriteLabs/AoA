@@ -6,6 +6,43 @@ import { internalAgentConversations } from "@armyofagents/db";
 import { permissionService } from "../services/permissions.js";
 import { getActorInfo } from "./authz.js";
 import { notFound } from "../errors.js";
+import type { UserRole } from "@armyofagents/shared";
+
+/**
+ * Board-gated effective role for a Commander actor. Founder-equivalence is
+ * conferred ONLY to interactive board sessions (local_implicit / instance
+ * admin / founder role); MCP & agent BEARER TOKENS are always "team_member" —
+ * a founder-created MCP key replays the founder's userId, which must NOT grant
+ * founder reach to a token. Single-sources the rule used by loadOwnedConversation
+ * and the internal-agent chat/confirm/list routes.
+ *
+ * NB: isInstanceAdmin is only ever set on type:"board" actors (auth.ts —
+ * loopback/session/board_key); MCP/agent tokens never carry it, so the
+ * board gate cannot silently demote an instance admin. If the actor shape
+ * changes, re-examine this gate.
+ */
+export async function resolveActorRole(
+  db: Db,
+  req: Request,
+  companyId: string,
+): Promise<UserRole> {
+  const isBoard = req.actor.type === "board";
+  if (isBoard && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true)) {
+    return "founder";
+  }
+  if (!isBoard) {
+    // MCP / agent tokens are NEVER founder-equivalent — a founder-created MCP
+    // key replays the founder's userId (auth.ts → getActorInfo), which would
+    // otherwise resolve to "founder" via getEffectiveRole and grant founder
+    // reach. Owner-scope them instead, limiting bearer-token blast radius.
+    // Interactive founder access is via board sessions only.
+    return "team_member";
+  }
+  // Board session — look up the actor's actual role.
+  const actor = getActorInfo(req);
+  const role = await permissionService(db).getEffectiveRole(companyId, actor.actorId);
+  return (role as UserRole) ?? "team_member";
+}
 
 /**
  * Resolve a Commander conversation the actor is allowed to read, enforcing
@@ -18,6 +55,7 @@ import { notFound } from "../errors.js";
  *
  * Single-sourced authz: shared by internal-agent.ts (archive/pin/rename/delete/
  * messages) and memory-retrievals.ts (the conversation retrieval-audit endpoint).
+ * Role derivation is via resolveActorRole — do not inline the board-gate here.
  */
 export async function loadOwnedConversation(
   db: Db,
@@ -26,29 +64,7 @@ export async function loadOwnedConversation(
   convId: string,
 ) {
   const actor = getActorInfo(req);
-  const isBoard = req.actor.type === "board";
-  const isLocalImplicit = isBoard && req.actor.source === "local_implicit";
-  // NB: isInstanceAdmin is only ever set on type:"board" actors (auth.ts —
-  // loopback/session/board_key); MCP/agent tokens never carry it, so the
-  // board gate below cannot silently demote an instance admin. If the actor
-  // shape changes, re-examine this gate.
-  const isInstanceAdmin = isBoard && req.actor.isInstanceAdmin === true;
-
-  let isFounderRole: boolean;
-  if (isLocalImplicit || isInstanceAdmin) {
-    isFounderRole = true;
-  } else if (isBoard) {
-    const role = await permissionService(db).getEffectiveRole(companyId, actor.actorId);
-    isFounderRole = role === "founder";
-  } else {
-    // MCP / agent tokens are NEVER founder-equivalent for conversation
-    // ownership — a founder-created MCP key replays the founder's userId
-    // (auth.ts → getActorInfo), which would otherwise resolve to "founder"
-    // and grant read-anyone. Owner-scope them instead (they see only their
-    // own userId's conversations), limiting bearer-token blast radius.
-    // Interactive founder read-anyone access is via board sessions only.
-    isFounderRole = false;
-  }
+  const isFounderRole = (await resolveActorRole(db, req, companyId)) === "founder";
 
   const convConditions = [
     eq(internalAgentConversations.id, convId),
