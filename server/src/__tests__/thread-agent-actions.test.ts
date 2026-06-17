@@ -407,8 +407,9 @@ describe("threadAgentActionService", () => {
         [{ ...baseAction, status: "committed", committedEntryId: "existing-entry" }],
       ],
     });
+    // postgres-js emits the index name on `cause.constraint_name` (the REAL shape).
     const wrapped = Object.assign(new Error("duplicate key value"), {
-      cause: { code: "23505", constraint: "discussion_entries_source_action_uq" },
+      cause: { code: "23505", constraint_name: "discussion_entries_source_action_uq" },
     });
     const addEntry = vi.fn().mockRejectedValueOnce(wrapped);
 
@@ -694,8 +695,9 @@ describe("threadAgentActionService", () => {
         [{ ...action, status: "committed" }],
       ],
     });
+    // postgres-js emits the index name on `cause.constraint_name` (the REAL shape).
     const wrapped = Object.assign(new Error("duplicate key value"), {
-      cause: { code: "23505", constraint: "artifacts_source_action_uq" },
+      cause: { code: "23505", constraint_name: "artifacts_source_action_uq" },
     });
     const createArtifact = vi.fn().mockRejectedValueOnce(wrapped);
 

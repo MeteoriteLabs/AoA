@@ -41,6 +41,22 @@ describe("thread action idempotency keys", () => {
     expect(buildArtifactCandidateIdempotencyKey(base)).not.toBe(buildArtifactCandidateIdempotencyKey({ ...base, title: "Other" }));
     expect(buildArtifactCandidateIdempotencyKey(base)).not.toBe(buildArtifactCandidateIdempotencyKey({ ...base, turnAnchor: "h8" }));
   });
+
+  it("artifact key is fileRef-sensitive even when content is present (M2)", () => {
+    const base = { threadId: "t1", agentId: "a1", title: "Spec", content: "body", turnAnchor: "h5" };
+    expect(buildArtifactCandidateIdempotencyKey({ ...base, fileRef: "f1" })).not.toBe(
+      buildArtifactCandidateIdempotencyKey({ ...base, fileRef: "f2" }),
+    );
+  });
+
+  it("artifact key is unambiguous across title/content boundary (M2)", () => {
+    // "A B"/"C" must NOT collide with "A"/"B C" (space-join ambiguity).
+    expect(
+      buildArtifactCandidateIdempotencyKey({ threadId: "t1", agentId: "a1", title: "A B", content: "C", fileRef: null, turnAnchor: "h5" }),
+    ).not.toBe(
+      buildArtifactCandidateIdempotencyKey({ threadId: "t1", agentId: "a1", title: "A", content: "B C", fileRef: null, turnAnchor: "h5" }),
+    );
+  });
 });
 
 describe("#198 boundary — the four deferred action types still embed runId in their key", () => {

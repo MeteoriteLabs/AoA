@@ -34,8 +34,16 @@ export function isUniqueViolation(
     (err as { cause?: { code?: string } }).cause?.code;
   if (code !== "23505") return false;
   if (constraint === undefined) return true;
+  // postgres-js exposes the index name as `constraint_name` (protocol field 'n'),
+  // NOT `constraint`. drizzle-orm wraps the driver error on `.cause`. Check all four
+  // shapes so constraint-specific matching works against the real driver (the pg
+  // `constraint` shape is kept for any pg-style callers / fixtures).
+  const e = err as {
+    constraint?: string;
+    constraint_name?: string;
+    cause?: { constraint?: string; constraint_name?: string };
+  };
   const cName =
-    (err as { constraint?: string }).constraint ??
-    (err as { cause?: { constraint?: string } }).cause?.constraint;
+    e.constraint ?? e.constraint_name ?? e.cause?.constraint ?? e.cause?.constraint_name;
   return cName === constraint;
 }

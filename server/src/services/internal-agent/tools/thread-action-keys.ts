@@ -49,6 +49,8 @@ export function buildArtifactCandidateIdempotencyKey(input: {
     "create_artifact_candidate",
     input.agentId ?? "agent",
     input.turnAnchor ?? "noanchor",
-    sha256(`${input.title} ${input.content ?? input.fileRef ?? ""}`),
+    // Delimited tuple (not space-join) so title/content boundaries are unambiguous,
+    // and fileRef is always included even when content is present.
+    sha256(JSON.stringify([input.title, input.content ?? null, input.fileRef ?? null])),
   ].join(":");
 }

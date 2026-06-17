@@ -737,7 +737,17 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                         scopeVersionId: threadScopeItems.scopeVersionId,
                       })
                       .from(threadScopeItems)
-                      .where(eq(threadScopeItems.artifactId, existingArtifact.id))
+                      // Narrow to the artifact_link row this action created (a later,
+                      // unrelated draft can reference the same artifactId with a
+                      // different kind) and order deterministically so convergence
+                      // stamps the ORIGINAL scope version, not a stale one. (Review I1.)
+                      .where(
+                        and(
+                          eq(threadScopeItems.artifactId, existingArtifact.id),
+                          eq(threadScopeItems.kind, "artifact_link"),
+                        ),
+                      )
+                      .orderBy(asc(threadScopeItems.createdAt))
                       .limit(1)) as Array<{ id: string; scopeVersionId: string }>)
                   : [];
                 await updateActionStatus(actionDb, action.id, {
