@@ -220,19 +220,55 @@ function scopeHandoffItemIncluded(item: IssueContextBundle["items"][number]) {
   return asRecord(item.metadata)?.includeInAgentContext !== false;
 }
 
+// Self-contained openability check (restored from pre-merge TaskSlideOver,
+// commit 851b6e62c). URL items need a url in metadata; other openable types
+// need a sourceId. Used as the default when no parent canOpenItem is provided.
+function canOpenScopeHandoffItem(item: IssueContextBundle["items"][number]): boolean {
+  if (item.itemType === "url") {
+    return typeof asRecord(item.metadata)?.url === "string";
+  }
+  return (
+    ["artifact", "asset", "discussion_entry", "scope_item"].includes(item.itemType) &&
+    Boolean(item.sourceId)
+  );
+}
+
 function ScopeHandoffSection({
   bundles,
   onOpenItem,
   canOpenItem,
   onSetIncluded,
   isUpdatingItemId,
+  pushToast,
 }: {
   bundles: IssueContextBundle[];
   onOpenItem?: (item: IssueContextBundle["items"][number]) => void;
   canOpenItem?: (item: IssueContextBundle["items"][number]) => boolean;
   onSetIncluded?: (item: IssueContextBundle["items"][number], included: boolean) => void;
   isUpdatingItemId?: string | null;
+  pushToast?: ReturnType<typeof useToast>["pushToast"];
 }) {
+  // Self-contained open fallback (restored from pre-merge TaskSlideOver,
+  // commit 851b6e62c): used on every standalone surface (Tasks page, Project /
+  // Crew board, Commander viewer) where no parent passes onOpenScopeHandoffItem.
+  const isItemOpenable = canOpenItem ?? canOpenScopeHandoffItem;
+  const openItem = (item: IssueContextBundle["items"][number]) => {
+    if (onOpenItem) {
+      onOpenItem(item);
+      return;
+    }
+    if (!isItemOpenable(item)) return;
+    const url = asRecord(item.metadata)?.url;
+    if (typeof url === "string") {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    pushToast?.({
+      title: "Open from discussion",
+      body: item.label || item.itemType.replace(/_/g, " "),
+      tone: "info",
+    });
+  };
   const scopeBundles = bundles.filter((bundle) => bundle.sourceKind === "discussion_scope");
   if (scopeBundles.length === 0) return null;
   const itemCount = scopeBundles.reduce((count, bundle) => count + bundle.items.length, 0);
@@ -263,9 +299,10 @@ function ScopeHandoffSection({
                   const meta = scopeHandoffMetaText(item);
                   const included = scopeHandoffItemIncluded(item);
                   const label = item.label || item.itemType.replace("_", " ");
-                  const isOpenable =
-                    onOpenItem &&
-                    (canOpenItem ? canOpenItem(item) : ["artifact", "asset", "url"].includes(item.itemType));
+                  // Render the Open button for every openable item regardless of
+                  // whether a parent callback exists — the standalone slide-over
+                  // falls back to the self-contained open above.
+                  const isOpenable = isItemOpenable(item);
                   const className =
                     "flex w-full min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background px-2.5 py-2 text-left text-xs sm:flex-row sm:items-center";
                   return (
@@ -304,7 +341,7 @@ function ScopeHandoffSection({
                             type="button"
                             className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
                             aria-label={`Open handoff item: ${label}`}
-                            onClick={() => onOpenItem(item)}
+                            onClick={() => openItem(item)}
                           >
                             Open
                           </button>
@@ -1393,6 +1430,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                 <ScopeHandoffSection
                   bundles={contextBundles}
                   onOpenItem={onOpenScopeHandoffItem}
+                  pushToast={pushToast}
                   onSetIncluded={(item, included) =>
                     setScopeHandoffIncluded.mutate({ itemId: item.id, included })}
                   isUpdatingItemId={

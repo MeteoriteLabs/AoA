@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
@@ -17,7 +17,6 @@ import {
   Map as MapIcon,
   Network,
   PanelRightOpen,
-  RefreshCw,
 } from "lucide-react";
 import {
   MEMORY_ITEM_CATEGORIES,
@@ -35,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { IssueProperties } from "@/components/IssueProperties";
 import { TaskDetail } from "@/components/TaskDetail";
 import { TaskOutputViewer } from "./TaskOutputViewer";
+import { BrowserViewer } from "@/components/viewers/BrowserViewer";
 import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
 import { ViewerTabs, type ViewerTabModel } from "@/components/viewers/ViewerTabs";
 import { resolveViewer } from "@/components/viewers/viewer-registry";
@@ -2268,72 +2268,6 @@ function ArtifactAttachmentViewer({
   );
 }
 
-export function BrowserViewer({ initialUrl }: { initialUrl: string }) {
-  const [iframeKey, setIframeKey] = useState(0);
-  const [draftUrl, setDraftUrl] = useState(initialUrl === "about:blank" ? "" : initialUrl);
-  const [url, setUrl] = useState(initialUrl);
-  const showFrame = url !== "about:blank";
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const next = normalizeBrowserUrl(draftUrl);
-    setDraftUrl(next);
-    setUrl(next || "about:blank");
-    setIframeKey((key) => key + 1);
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden" data-testid="thread-browser-viewer">
-      <form onSubmit={submit} className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-2">
-        <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        <input
-          value={draftUrl}
-          onChange={(event) => setDraftUrl(event.target.value)}
-          placeholder="Enter a URL"
-          className="min-w-0 flex-1 rounded-md border border-border bg-muted/30 px-2 py-1 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-brand"
-          aria-label="Browser URL"
-          data-testid="thread-browser-url-input"
-        />
-        <Button type="submit" size="sm" className="h-7 px-2 text-xs">
-          Open
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => setIframeKey((key) => key + 1)}
-          title="Reload"
-          aria-label="Reload browser preview"
-          data-testid="thread-browser-reload"
-          disabled={!showFrame}
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Button>
-        {showFrame && (
-          <Button asChild type="button" variant="ghost" size="icon" className="h-7 w-7" title="Open externally">
-            <a href={url} target="_blank" rel="noopener noreferrer" aria-label="Open browser preview externally">
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          </Button>
-        )}
-      </form>
-      {showFrame ? (
-        <iframe
-          key={iframeKey}
-          title={url}
-          src={url}
-          className="min-h-0 flex-1 border-0 bg-background"
-          sandbox="allow-forms allow-popups allow-same-origin allow-scripts"
-          data-testid="thread-browser-iframe"
-        />
-      ) : (
-        <CenteredMessage title="Browser" body="Enter a URL to open it in the viewer." />
-      )}
-    </div>
-  );
-}
-
 function MapPlaceholder({
   payload,
   thread,
@@ -2446,13 +2380,4 @@ function contentTypeFromArtifactVersion(
     return "text/plain";
   }
   return "application/octet-stream";
-}
-
-function normalizeBrowserUrl(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (trimmed === "about:blank") return trimmed;
-  if (trimmed.startsWith("/")) return trimmed;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
-  return `http://${trimmed}`;
 }

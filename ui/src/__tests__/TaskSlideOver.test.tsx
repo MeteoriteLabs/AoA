@@ -453,6 +453,70 @@ describe("TaskSlideOver", () => {
     expect(screen.getByText("https://example.com/ref")).toBeInTheDocument();
   });
 
+  it("renders a self-contained Open button through the real TaskSlideOver shell (no parent callback) and opens the URL on click", async () => {
+    // Regression guard: TaskSlideOver renders TaskDetail WITHOUT
+    // onOpenScopeHandoffItem (the production standalone path — Tasks page,
+    // Project/Crew board, Commander viewer). Before the integration merge the
+    // slide-over opened scope-handoff items itself; the ported ScopeHandoffSection
+    // accidentally gated the Open button on the parent callback existing. This
+    // test asserts the button renders AND triggers the self-contained window.open.
+    const user = userEvent.setup();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-url",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    try {
+      // Real shell: TaskSlideOver → TaskDetail WITHOUT onOpenScopeHandoffItem.
+      renderSlideOver({ issueId: "issue-1", open: true });
+
+      const openButton = screen.getByRole("button", { name: /Open handoff item: Reference URL/i });
+      expect(openButton).toBeInTheDocument();
+
+      await user.click(openButton);
+
+      expect(openSpy).toHaveBeenCalledWith("https://example.com/ref", "_blank", "noopener,noreferrer");
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   it("shows editable scope handoff between dependencies and attachments", async () => {
     const user = userEvent.setup();
     vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
