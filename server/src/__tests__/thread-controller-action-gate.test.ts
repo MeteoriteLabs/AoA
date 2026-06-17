@@ -75,7 +75,7 @@ type EntryRow = {
   rawContent: string;
 };
 
-function createControllerDb(controller: ControllerState, entries: EntryRow[]) {
+function createControllerDb(controller: ControllerState, entries: EntryRow[], entriesLoadError?: Error) {
   const cursorCommits: string[] = [];
 
   const db = {
@@ -132,6 +132,9 @@ function createControllerDb(controller: ControllerState, entries: EntryRow[]) {
             }
             return {
               orderBy: vi.fn(async () => {
+                // Simulate a transient entries-load failure (exercises the
+                // bounded-reschedule stall path).
+                if (entriesLoadError) throw entriesLoadError;
                 const cursor = entries.find((entry) => entry.id === controller.lastProcessedEntryId);
                 const cursorSeq = cursor?.seq ?? 0;
                 return entries.filter((entry) => entry.seq > cursorSeq);
@@ -420,5 +423,95 @@ describe("runController action gate integration", () => {
     expect(controller.lastProcessedEntryId).toBe("entry-a");
     expect(controller.consecutiveCommitFailures).toBe(0);
     expect(controller.lastError).toBeNull();
+  });
+
+  it("MIXED batch (committed>0 AND failed>0) advances the cursor — does NOT re-run", async () => {
+    // committed===0 guard: a batch where some actions committed and one failed must
+    // NOT reschedule (re-running would re-execute the committed actions). Advance the
+    // cursor instead; the failed action is dropped (no duplicate, no stall) — #198.
+    const threadId = "thread-mixed-batch";
+    const controller: ControllerState = {
+      threadId, runEpoch: 1, pendingRun: true,
+      lastProcessedEntryId: null, lastError: null, consecutiveCommitFailures: 0,
+    };
+    const entry: EntryRow = {
+      id: "entry-a", discussionId: threadId, seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"), inputType: "write", rawContent: "x",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+    commitThreadAgentActionsMock.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1 });
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+    });
+
+    expect(result).toMatchObject({ ran: true, suppressed: false, cursorAdvancedTo: "entry-a" });
+    expect(cursorCommits).toEqual(["entry-a"]);
+    expect(controller.consecutiveCommitFailures).toBe(0);
+    expect((result as { error?: string }).error).toBeUndefined();
+  });
+
+  it("adjutant-runner throw reschedules (pendingRun=true) under the cap", async () => {
+    const threadId = "thread-runner-throw";
+    const controller: ControllerState = {
+      threadId, runEpoch: 1, pendingRun: true,
+      lastProcessedEntryId: null, lastError: null, consecutiveCommitFailures: 0,
+    };
+    const entry: EntryRow = {
+      id: "entry-a", discussionId: threadId, seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"), inputType: "write", rawContent: "x",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => { throw new Error("cli auth failed"); },
+    });
+
+    expect(result).toMatchObject({ ran: true, suppressed: false, cursorAdvancedTo: null });
+    expect(controller.pendingRun).toBe(true); // re-driven by the sweep
+    expect(controller.consecutiveCommitFailures).toBe(1); // bounded
+    expect(cursorCommits).toEqual([]); // not advanced under cap
+    expect(controller.lastError).toBe("cli auth failed");
+  });
+
+  it("adjutant-runner throw at the cap advances past the poison entry", async () => {
+    const threadId = "thread-runner-throw-cap";
+    const controller: ControllerState = {
+      threadId, runEpoch: 1, pendingRun: true,
+      lastProcessedEntryId: null, lastError: null, consecutiveCommitFailures: 2,
+    };
+    const entry: EntryRow = {
+      id: "entry-a", discussionId: threadId, seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"), inputType: "write", rawContent: "x",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => { throw new Error("cli auth failed"); },
+    });
+
+    expect(result).toMatchObject({ ran: true, suppressed: false, cursorAdvancedTo: "entry-a" });
+    expect(cursorCommits).toEqual(["entry-a"]);
+    expect(controller.consecutiveCommitFailures).toBe(0);
+    expect(controller.lastError).toMatch(/action_commit_failed_skipped|cli auth failed/);
+  });
+
+  it("entries-load throw reschedules under the cap (pendingRun=true), no cursor advance", async () => {
+    const threadId = "thread-load-throw";
+    const controller: ControllerState = {
+      threadId, runEpoch: 1, pendingRun: true,
+      lastProcessedEntryId: null, lastError: null, consecutiveCommitFailures: 0,
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [], new Error("db read timeout"));
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+    });
+
+    expect(result).toMatchObject({ ran: true, suppressed: false, cursorAdvancedTo: null });
+    expect(controller.pendingRun).toBe(true);
+    expect(controller.consecutiveCommitFailures).toBe(1);
+    expect(cursorCommits).toEqual([]);
+    expect(controller.lastError).toBe("db read timeout");
   });
 });

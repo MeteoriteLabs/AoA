@@ -534,10 +534,24 @@ export function threadOrchestrationService(db: Db) {
           .orderBy(asc(discussionEntries.seq))) as OrchestratedEntry[];
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        log.error({ threadId, startEpoch, err }, "thread orchestration: failed to load entries");
+        // Bounded reschedule: no cursorTarget exists yet (entries failed to load), so
+        // we cannot advance past a poison entry. Reschedule (pendingRun=true) under
+        // the cap so the 2-min sweep retries a transient load failure; stop after MAX
+        // so a persistent infra failure does not churn (the next human entry re-arms).
+        const newCount = claimed.consecutiveCommitFailures + 1;
+        const atCap = newCount >= MAX_CONSECUTIVE_COMMIT_FAILURES;
+        log.error(
+          { threadId, startEpoch, err },
+          "thread orchestration: failed to load entries — bounded reschedule",
+        );
         await db
           .update(threadOrchestrationState)
-          .set({ lastError: errorMsg, updatedAt: new Date() })
+          .set({
+            lastError: errorMsg,
+            consecutiveCommitFailures: atCap ? 0 : newCount,
+            pendingRun: !atCap,
+            updatedAt: new Date(),
+          })
           .where(eq(threadOrchestrationState.threadId, threadId));
         return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
       }
@@ -557,15 +571,25 @@ export function threadOrchestrationService(db: Db) {
         runResult = await adjutantRunner({ threadId, entries, startEpoch });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
+        // Route the runner-throw through the same bounded circuit-breaker as a commit
+        // failure (cursorTarget is in scope from above): reschedule (pendingRun=true)
+        // under the cap so the sweep re-drives it, and advance past the poison entry
+        // once the cap is hit — so a deterministically-throwing runner cannot stall
+        // the thread forever (Round-1 stall class).
         log.error(
           { threadId, startEpoch, err },
-          "thread orchestration: adjutantRunner threw — recording lastError, cursor NOT advanced",
+          "thread orchestration: adjutantRunner threw — recording failure (circuit-breaker)",
         );
-        await db
-          .update(threadOrchestrationState)
-          .set({ lastError: errorMsg, updatedAt: new Date() })
-          .where(eq(threadOrchestrationState.threadId, threadId));
-        return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
+        const { circuitBroken } = await recordCommitFailure(
+          db, threadId, claimed.consecutiveCommitFailures, cursorTarget, errorMsg, log,
+        );
+        return {
+          ran: true,
+          suppressed: false,
+          error: circuitBroken ? undefined : errorMsg,
+          startEpoch,
+          cursorAdvancedTo: circuitBroken ? cursorTarget : null,
+        };
       }
 
       // ── Step 4: Re-check epoch (stale-run suppression) ────────────────────
@@ -605,7 +629,9 @@ export function threadOrchestrationService(db: Db) {
           // tick re-selects the still-retryable `failed` rows (under their attempt
           // cap) and retries them. Once a poison row exhausts its attempts it stops
           // being re-selected, so a later tick will advance past it. (Review fix (c).)
-          if (commitResult.failed > 0) {
+          if (commitResult.failed > 0 && commitResult.committed === 0) {
+            // PURE failure (nothing committed) → safe to reschedule/retry via the
+            // circuit-breaker; a re-run cannot duplicate because nothing committed.
             log.warn(
               {
                 threadId,
@@ -631,6 +657,23 @@ export function threadOrchestrationService(db: Db) {
               startEpoch,
               cursorAdvancedTo: circuitBroken ? cursorTarget : null,
             };
+          }
+          if (commitResult.failed > 0) {
+            // MIXED batch (committed>0 AND failed>0): re-running the agent would
+            // re-execute the already-committed actions. Do NOT reschedule — fall
+            // through to the Step-5 success commit, which advances the cursor and
+            // resets the failure counter. The failed action is dropped (no duplicate,
+            // no stall); thread-scoped retry of the failed row is tracked in #198.
+            log.warn(
+              {
+                threadId,
+                startEpoch,
+                runId: runResult.runId,
+                failed: commitResult.failed,
+                committed: commitResult.committed,
+              },
+              "thread orchestration: mixed batch — failed actions dropped, advancing cursor (retry-safety #198)",
+            );
           }
         } catch (commitErr) {
           const errorMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
