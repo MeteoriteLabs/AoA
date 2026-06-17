@@ -25,8 +25,7 @@ import {
   executeTool,
 } from "../services/internal-agent/tool-registry.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
-import { permissionService } from "../services/permissions.js";
-import { loadOwnedConversation } from "./conversation-authz.js";
+import { loadOwnedConversation, resolveActorRole } from "./conversation-authz.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
 import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
@@ -158,32 +157,11 @@ export function internalAgentRoutes(db: Db) {
 
       try {
         const svc = agentLoopService(db);
-        // C13 fix: look up the caller's actual effective role and
-        // capability set instead of hardcoding "founder". Special-case
-        // local_implicit actors (loopback in local_trusted mode) — they
-        // bypass RBAC elsewhere in the codebase and have no userRoles row,
-        // so getEffectiveRole would return "team_member" by default.
-        const isLocalImplicit =
-          req.actor.type === "board" && req.actor.source === "local_implicit";
-        const isInstanceAdmin =
-          req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-        let userRole: UserRole;
-        // Match middleware/rbac.ts:36-39 bypass semantics: local_implicit (local_trusted
-        // mode) and isInstanceAdmin actors get founder-equivalent access. Note: any
-        // future audit log that records userRole per-tool-call should preserve the
-        // actor's actual identity (the userId is unchanged here) — the coercion to
-        // "founder" applies only to the role string used for tool-dispatch authorization.
-        if (isLocalImplicit || isInstanceAdmin) {
-          userRole = "founder";
-        } else {
-          const role = await permissionService(db).getEffectiveRole(
-            companyId,
-            actor.actorId,
-          );
-          // getEffectiveRole defaults to "team_member" when no role is
-          // assigned; we mirror that fallback here for clarity.
-          userRole = role ?? "team_member";
-        }
+        // Board-gated role: founder-equivalence requires a type:"board" actor.
+        // MCP/agent bearer tokens are always "team_member" regardless of the
+        // userId they carry (a founder-created MCP key replays the founder's
+        // userId, which must NOT grant founder tool-dispatch). See resolveActorRole.
+        const userRole = await resolveActorRole(db, req, companyId);
 
         // Look up the company's enabled capabilities. Empty array if no
         // config row exists — chat will surface "not configured" further
@@ -398,22 +376,9 @@ export function internalAgentRoutes(db: Db) {
       // pending.enabledCapabilities. Those were snapshotted at prompt time and
       // may be stale if the user's role or company capabilities changed within
       // the TTL window. Using stale values would allow execution under
-      // revoked permissions (privilege-retention gap).
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let currentUserRole: UserRole;
-      if (isLocalImplicit || isInstanceAdmin) {
-        currentUserRole = "founder";
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        currentUserRole = role ?? "team_member";
-      }
+      // revoked permissions (privilege-retention gap). Board-gated: MCP/agent
+      // tokens are always "team_member" (see resolveActorRole).
+      const currentUserRole = await resolveActorRole(db, req, companyId);
 
       const [cfgForConfirm] = await db
         .select({
@@ -999,24 +964,10 @@ export function internalAgentRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
 
-      // RBAC: local_implicit and isInstanceAdmin actors get founder-equivalent
-      // access (mirrors the chat route bypass semantics at lines 113-133).
-      // Otherwise, look up the actor's effective role.
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let isFounder: boolean;
-      if (isLocalImplicit || isInstanceAdmin) {
-        isFounder = true;
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        isFounder = role === "founder";
-      }
+      // Board-gated: MCP/agent tokens are always "team_member" and see only
+      // their own conversations (userId scoped). Board founders see all.
+      // See resolveActorRole for the single-sourced rule.
+      const isFounder = (await resolveActorRole(db, req, companyId)) === "founder";
 
       // Build conditions array — Drizzle's and() does not accept undefined.
       const conditions: SQL[] = [

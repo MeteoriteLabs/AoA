@@ -297,15 +297,20 @@ describe("internal-agent pin/rename routes source contract (Task 1)", () => {
     expect(routeSrc).not.toContain("async function loadOwnedConversation(");
   });
 
-  it("loadOwnedConversation helper resolves founder role (getEffectiveRole)", () => {
+  it("loadOwnedConversation helper delegates role resolution to resolveActorRole", () => {
     const authzSrc = readFileSync(
       resolve(__dirname, "../routes/conversation-authz.ts"),
       "utf8",
     );
+    // loadOwnedConversation now delegates to resolveActorRole (single-sourced board-gate).
+    // The founder-role resolution (including getEffectiveRole for board sessions) lives in
+    // resolveActorRole — both helpers are in the same file.
     const helperStart = authzSrc.indexOf("export async function loadOwnedConversation(");
     const helperBlock = authzSrc.slice(helperStart);
-    expect(helperBlock).toContain("getEffectiveRole");
+    expect(helperBlock).toContain("resolveActorRole");
     expect(helperBlock).toContain("isFounderRole");
+    // resolveActorRole (defined in the same file) calls getEffectiveRole for board sessions.
+    expect(authzSrc).toContain("getEffectiveRole");
   });
 
   // ── Per-route delegation assertions ─────────────────────────────────────
