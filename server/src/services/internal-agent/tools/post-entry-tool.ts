@@ -1,14 +1,6 @@
 import type { AgentTool } from "../types.js";
 import { parseMentions, processMentions } from "../../threads.js";
-
-function buildPostReplyIdempotencyKey(input: {
-  runId: string;
-  agentId?: string | null;
-  parentEntryId?: string | null;
-  content: string;
-}) {
-  return `${input.runId}:post_reply:${input.agentId ?? "agent"}:${input.parentEntryId ?? "root"}:${input.content}`;
-}
+import { buildPostReplyIdempotencyKey } from "./thread-action-keys.js";
 
 export function createPostEntryTool(): AgentTool {
   return {
@@ -69,10 +61,18 @@ export function createPostEntryTool(): AgentTool {
             sourceInfo: (sourceInfo as Record<string, unknown>) ?? null,
           },
           idempotencyKey: buildPostReplyIdempotencyKey({
-            runId: ctx.runId,
+            threadId: threadId as string,
             agentId: ctx.agentId,
             parentEntryId: (parentEntryId as string) ?? null,
             content: content as string,
+            // Turn anchor: the latest human entry's seq at run start. Stable across a
+            // turn's retries (a newer human entry would supersede the run), distinct
+            // across turns — so an identical reply in two genuine turns is NOT deduped
+            // while a same-turn retry is. Null (agent-only thread) → content-only (#198).
+            turnAnchor:
+              ctx.threadFreshness?.latestHumanSeq != null
+                ? String(ctx.threadFreshness.latestHumanSeq)
+                : null,
           }),
           freshness: ctx.threadFreshness ?? {},
         }) as { id?: string };

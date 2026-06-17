@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { discussionEntries } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { buildArtifactCandidateIdempotencyKey } from "./thread-action-keys.js";
 
 export function createArtifactTool(): AgentTool {
   return {
@@ -83,7 +84,17 @@ export function createArtifactTool(): AgentTool {
             discussionId: threadId,
             attachToEntryId: (attachToEntryId as string) ?? null,
           },
-          idempotencyKey: `${ctx.runId}:create_artifact_candidate:${threadId}:${title as string}`,
+          idempotencyKey: buildArtifactCandidateIdempotencyKey({
+            threadId,
+            agentId: ctx.agentId,
+            title: title as string,
+            content: (content as string) ?? null,
+            fileRef: (fileRef as string) ?? null,
+            turnAnchor:
+              ctx.threadFreshness?.latestHumanSeq != null
+                ? String(ctx.threadFreshness.latestHumanSeq)
+                : null,
+          }),
           freshness: ctx.threadFreshness ?? {},
         }) as { id?: string };
 
