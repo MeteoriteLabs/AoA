@@ -925,7 +925,13 @@ if (notificationRetryTimer) {
 // partial unique index. discussions.addEntry imports getThreadEventListener()
 // to push events here — the singleton MUST be initialized before the HTTP
 // server starts accepting requests so the first addEntry call finds it.
-const threadEventListener = initThreadEventListener(db as any);
+const threadEventDebounceMs = Number(process.env.AOA_THREAD_EVENT_DEBOUNCE_MS);
+const threadEventListener = initThreadEventListener(
+  db as any,
+  Number.isFinite(threadEventDebounceMs) && threadEventDebounceMs >= 0
+    ? { debounceMs: threadEventDebounceMs }
+    : undefined,
+);
 process.once("SIGTERM", () => threadEventListener.shutdown());
 process.once("SIGINT", () => threadEventListener.shutdown());
 

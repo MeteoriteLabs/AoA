@@ -148,6 +148,7 @@ export function makeControllerAdjutantRunner(
     return {
       output: { status: result.status },
       error: result.errorMessage,
+      runId: result.runId,
     };
   };
 }

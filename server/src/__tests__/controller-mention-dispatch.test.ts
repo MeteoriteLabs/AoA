@@ -228,4 +228,47 @@ describe("Task 1.2 — controller-path @mention routing", () => {
       {},
     );
   });
+
+  it("does not let a slow first controller-path crew mention block later crew mentions", async () => {
+    let releaseFirst: (value: { spawned: true; hopCount: number; entryId: null }) => void = () => {};
+    const firstRun = new Promise<{ spawned: true; hopCount: number; entryId: null }>((resolve) => {
+      releaseFirst = resolve;
+    });
+    requestParticipationMock
+      .mockImplementationOnce(() => firstRun)
+      .mockResolvedValue({ spawned: true, hopCount: 1, entryId: null });
+
+    const { db } = makeMockDb([
+      CONTROLLER_THREAD, // 0 thread row
+      ENTRY_TEXT, // 1 entry text
+      [{ id: "agent-scout", name: "Scout" }], // 2 @Scout agent lookup
+      [{ id: "agent-eng", name: "Engineer" }], // 3 @Engineer agent lookup
+    ]);
+
+    const processing = processMentions(db, "company-1", "thread-1", "entry-1", [
+      { raw: "@Scout", name: "Scout" },
+      { raw: "@Engineer", name: "Engineer" },
+    ]);
+
+    await vi.waitFor(() => {
+      expect(requestParticipationMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(requestParticipationMock).toHaveBeenCalledTimes(2);
+    expect(requestParticipationMock).toHaveBeenNthCalledWith(
+      1,
+      "thread-1",
+      expect.objectContaining({ agentId: "agent-scout" }),
+      {},
+    );
+    expect(requestParticipationMock).toHaveBeenNthCalledWith(
+      2,
+      "thread-1",
+      expect.objectContaining({ agentId: "agent-eng" }),
+      {},
+    );
+
+    releaseFirst({ spawned: true, hopCount: 1, entryId: null });
+    await processing;
+  });
 });

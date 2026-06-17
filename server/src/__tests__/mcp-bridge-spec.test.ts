@@ -62,6 +62,20 @@ describe("buildMcpBridgeSpec", () => {
     expect("AOA_TOOL_ALLOWLIST" in spec.env).toBe(false);
   });
 
+  it("runs TypeScript bridge entrypoints through node + tsx cli instead of a shell shim", () => {
+    const spec = buildMcpBridgeSpec({
+      companyId: "c",
+      userId: "u",
+      userRole: "founder",
+      enabledCapabilities: [],
+      bridgeEntrypoint: "C:/repo/server/src/services/internal-agent/mcp-bridge.ts",
+    });
+
+    expect(spec.command).toBe(process.execPath);
+    expect(spec.args[0]).toMatch(/tsx[\\/]+dist[\\/]+cli\.mjs$/);
+    expect(spec.args[1]).toBe("C:/repo/server/src/services/internal-agent/mcp-bridge.ts");
+  });
+
   it("buildMcpConfig is a thin {mcpServers:{aoa:spec}} wrapper over buildMcpBridgeSpec", () => {
     expect(buildMcpConfig(params)).toEqual({
       mcpServers: { aoa: buildMcpBridgeSpec(params) },

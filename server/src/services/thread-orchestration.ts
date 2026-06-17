@@ -41,7 +41,7 @@
 
 import { eq, gt, and, asc, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { threadOrchestrationState, discussionEntries, discussions } from "@armyofagents/db";
+import { agents, threadOrchestrationState, discussionEntries, discussions, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
@@ -59,6 +59,7 @@ export interface OrchestratedEntry {
 export interface AdjutantRunResult {
   output: unknown;
   error?: string;
+  runId?: string | null;
 }
 
 /** Input to the adjutantRunner seam. */
@@ -118,6 +119,12 @@ export type ParticipantRunner = (
 
 /** The union of outcomes that requestParticipation can return. */
 export type RequestParticipationResult =
+  | {
+      spawned: false;
+      atCap: false;
+      hopCount: number;
+      blockedReason: "thread_disabled" | "thread_paused" | "company_paused";
+    }
   | { spawned: false; atCap: true; hopCount: number }
   // `entryId` is the id of the agent-comment entry this call inserted, OR null
   // when the participant runner self-posted via MCP (returned ""): in that case
@@ -527,8 +534,31 @@ export function threadOrchestrationService(db: Db) {
         return { ran: true, suppressed: true, startEpoch, endEpoch };
       }
 
+      if (threadRow && runResult.runId) {
+        try {
+          const { threadAgentActionService } = await import("./thread-agent-actions.js");
+          await threadAgentActionService(db).commitThreadAgentActions({
+            companyId: threadRow.companyId,
+            threadId,
+            runId: runResult.runId,
+          });
+        } catch (commitErr) {
+          const errorMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+          log.error(
+            { threadId, startEpoch, runId: runResult.runId, err: commitErr },
+            "thread orchestration: action gate commit failed — cursor NOT advanced",
+          );
+          await db
+            .update(threadOrchestrationState)
+            .set({ lastError: errorMsg, updatedAt: new Date() })
+            .where(eq(threadOrchestrationState.threadId, threadId));
+          return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
+        }
+      }
+
       // ── Step 5: Commit ─────────────────────────────────────────────────────
-      // Epoch matches — advance the cursor, leave pendingRun = false.
+      // Epoch matches and action-gated side effects are committed; advance the
+      // cursor and leave pendingRun = false.
       await db
         .update(threadOrchestrationState)
         .set({
@@ -601,11 +631,51 @@ export function threadOrchestrationService(db: Db) {
       params: { agentId: string; prompt: string },
       opts: RequestParticipationOpts = {},
     ): Promise<RequestParticipationResult> => {
-      // Task 2.1: the default now wires the real crew runner (lazily). Tests
-      // inject opts.participantRunner and never resolve the default.
-      const participantRunner =
-        opts.participantRunner ?? (await resolveDefaultParticipantRunner(db));
-      const actorId = opts.actorId ?? params.agentId;
+      const [threadGate] = await db
+        .select({
+          companyId: discussions.companyId,
+          adjutantEnabled: discussions.adjutantEnabled,
+          crewPaused: discussions.crewPaused,
+        })
+        .from(discussions)
+        .where(eq(discussions.id, threadId))
+        .limit(1);
+
+      if (!threadGate) {
+        log.info({ threadId, agentId: params.agentId }, "requestParticipation: thread disabled - not spawning");
+        return { spawned: false, atCap: false, hopCount: 0, blockedReason: "thread_disabled" };
+      }
+
+      if (threadGate.adjutantEnabled === false) {
+        const [targetAgent] = await db
+          .select({ name: agents.name })
+          .from(agents)
+          .where(and(eq(agents.id, params.agentId), eq(agents.companyId, threadGate.companyId)))
+          .limit(1);
+        if (targetAgent?.name === "Adjutant") {
+          log.info({ threadId, agentId: params.agentId }, "requestParticipation: adjutant disabled - not spawning");
+          return { spawned: false, atCap: false, hopCount: 0, blockedReason: "thread_disabled" };
+        }
+      }
+
+      if (threadGate.crewPaused === true) {
+        log.info({ threadId, agentId: params.agentId }, "requestParticipation: thread paused - not spawning");
+        return { spawned: false, atCap: false, hopCount: 0, blockedReason: "thread_paused" };
+      }
+
+      const [companyCfg] = await db
+        .select({ crewPaused: internalAgentConfig.crewPaused })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, threadGate.companyId))
+        .limit(1);
+
+      if (companyCfg?.crewPaused === true) {
+        log.info(
+          { threadId, agentId: params.agentId, companyId: threadGate.companyId },
+          "requestParticipation: company crew paused - not spawning",
+        );
+        return { spawned: false, atCap: false, hopCount: 0, blockedReason: "company_paused" };
+      }
 
       // ── Step 1: Cap check — read current hopCount ──────────────────────────
       // ensureController first so the row always exists.
@@ -682,6 +752,13 @@ export function threadOrchestrationService(db: Db) {
       }
 
       // ── Step 2: Increment hop (this participation counts) ─────────────────
+      // Task 2.1: the default now wires the real crew runner (lazily). Tests
+      // inject opts.participantRunner and never resolve the default. Resolve it
+      // only after pause/cap gates so blocked paths do not import or run crew.
+      const participantRunner =
+        opts.participantRunner ?? (await resolveDefaultParticipantRunner(db));
+      const actorId = opts.actorId ?? params.agentId;
+
       const { hopCount } = await threadOrchestrationService(db).incrementHop(threadId);
 
       // ── Step 3: Run the participant (injected seam) ────────────────────────

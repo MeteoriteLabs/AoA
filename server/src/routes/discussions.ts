@@ -17,10 +17,11 @@ import {
 import { validate } from "../middleware/validate.js";
 import { discussionService, logActivity, permissionService } from "../services/index.js";
 import { HttpError } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { threadService, parseMentions, processMentions } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
+import { threadScopeVersionService } from "../services/thread-scope-versions.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
@@ -34,6 +35,77 @@ const addParticipantSchema = z.object({
   principalId: z.string().min(1),
   role: z.enum(THREAD_PARTICIPANT_ROLES),
 });
+const createScopeDraftSchema = z.object({
+  summary: z.string().min(1).optional(),
+  assumptions: z.array(z.unknown()).optional(),
+  decisions: z.array(z.unknown()).optional(),
+  openQuestions: z.array(z.unknown()).optional(),
+  mode: z.enum(["generate", "manual"]).optional(),
+});
+const updateScopeDraftSchema = createScopeDraftSchema.omit({ mode: true }).partial().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one scope field is required" },
+);
+const acceptScopeDraftSchema = z.object({
+  itemIds: z.array(z.string()).default([]),
+});
+const reviewScopeItemsSchema = z.object({
+  items: z.array(z.object({
+    itemId: z.string().uuid(),
+    status: z.enum(["draft", "accepted", "rejected"]),
+  })).min(1),
+});
+const updateScopeItemSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+  description: z.string().nullable().optional(),
+  payload: z.record(z.unknown()).optional(),
+  sourceEntryIds: z.array(z.string().uuid()).optional(),
+  status: z.enum(["draft", "accepted", "rejected"]).optional(),
+});
+
+function scopeVersionFailureStatus(reason: string): number {
+  const statusMap: Record<string, number> = {
+    not_found: 404,
+    item_not_found: 404,
+    stale: 409,
+    not_draft: 409,
+    rejected: 409,
+    nothing_accepted: 422,
+    unsupported_action: 422,
+    invalid_status: 422,
+    already_applied: 409,
+  };
+  return statusMap[reason] ?? 400;
+}
+
+async function logScopeActivity(
+  db: Db,
+  req: Parameters<typeof getActorInfo>[0],
+  companyId: string,
+  action: string,
+  discussionId: string,
+  details: Record<string, unknown>,
+) {
+  const actor = getActorInfo(req);
+  try {
+    await logActivity(db, {
+      companyId,
+      action,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      entityType: "discussion",
+      entityId: discussionId,
+      details,
+    });
+  } catch (err) {
+    logger.warn(
+      { err, action, discussionId, companyId },
+      "scope activity log failed (non-fatal; mutation already applied)",
+    );
+  }
+}
 
 export function discussionRoutes(db: Db) {
   const router = Router();
@@ -146,6 +218,391 @@ export function discussionRoutes(db: Db) {
         return;
       }
       res.json(discussion);
+    },
+  );
+
+  router.get(
+    "/companies/:companyId/discussions/:discussionId/scope-versions",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+
+      try {
+        const versions = await threadScopeVersionService(db).listVersions(companyId, discussionId);
+        res.json({ versions, total: versions.length });
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/draft",
+    validate(createScopeDraftSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      try {
+        const result = await threadScopeVersionService(db).createDraftFromThread(
+          companyId,
+          discussionId,
+          { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+          req.body,
+        );
+        await logScopeActivity(db, req, companyId, "discussion.scope_version_draft_created", discussionId, {
+          scopeVersionId: result.version?.id ?? null,
+          status: result.status,
+        });
+        res.status(result.status === "created" ? 201 : 200).json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  router.get(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+
+      const version = await threadScopeVersionService(db).getVersion(companyId, discussionId, scopeVersionId);
+      if (!version) {
+        res.status(404).json({ error: "Scope version not found" });
+        return;
+      }
+      res.json(version);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId",
+    validate(updateScopeDraftSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const version = await threadScopeVersionService(db).updateDraft(companyId, discussionId, scopeVersionId, req.body);
+      if (!version) {
+        res.status(404).json({ error: "Scope draft not found" });
+        return;
+      }
+      await logScopeActivity(db, req, companyId, "discussion.scope_version_updated", discussionId, {
+        scopeVersionId,
+        fields: Object.keys(req.body ?? {}),
+      });
+      res.json(version);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/items/review",
+    validate(reviewScopeItemsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      try {
+        const result = await threadScopeVersionService(db).reviewItems(
+          companyId,
+          discussionId,
+          scopeVersionId,
+          req.body,
+          { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+        );
+        if (!result.ok) {
+          res.status(scopeVersionFailureStatus(result.reason)).json({ error: result.message });
+          return;
+        }
+        await logScopeActivity(db, req, companyId, "discussion.scope_items_reviewed", discussionId, {
+          scopeVersionId,
+          itemCount: req.body.items.length,
+          statuses: req.body.items.map((item: { status: string }) => item.status),
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/items/:itemId",
+    validate(updateScopeItemSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      const itemId = req.params.itemId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      try {
+        const result = await threadScopeVersionService(db).updateItem(
+          companyId,
+          discussionId,
+          scopeVersionId,
+          itemId,
+          req.body,
+          { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+        );
+        if (!result.ok) {
+          res.status(scopeVersionFailureStatus(result.reason)).json({ error: result.message });
+          return;
+        }
+        await logScopeActivity(db, req, companyId, "discussion.scope_item_updated", discussionId, {
+          scopeVersionId,
+          itemId,
+          fields: Object.keys(req.body ?? {}),
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/items/:itemId/create",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      const itemId = req.params.itemId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      try {
+        const memoryStatus =
+          req.body?.memoryStatus === "approved" || req.body?.memoryStatus === "pending"
+            ? req.body.memoryStatus
+            : undefined;
+        const options = memoryStatus
+          ? {
+              memoryStatus,
+              ...(memoryStatus === "approved"
+                ? {
+                    approveMemory: (memoryItem: { layer?: string | null; departmentId?: string | null }) =>
+                      assertMemoryApproval(db, req, companyId, memoryItem),
+                  }
+                : {}),
+            }
+          : undefined;
+        const result = await threadScopeVersionService(db).createOutputItem(
+          companyId,
+          discussionId,
+          scopeVersionId,
+          itemId,
+          { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+          ...(options ? [options] : []),
+        );
+        if (!result.ok) {
+          res.status(scopeVersionFailureStatus(result.reason)).json({ error: result.message });
+          return;
+        }
+
+        if (result.createdTask && shouldDispatchIssueWakeup(result.createdTask) && result.createdTask.assigneeAgentId) {
+          await enqueueIssueAssigneeWakeup(db, {
+            companyId,
+            issueId: result.createdTask.id,
+            agentId: result.createdTask.assigneeAgentId,
+            source: "assignment",
+            reason: "scope_item_create",
+            requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+          });
+        }
+        await logScopeActivity(db, req, companyId, "discussion.scope_item_output_created", discussionId, {
+          scopeVersionId,
+          itemId,
+          resultIssueId: result.createdTask?.id ?? null,
+          resultMemoryId: result.createdMemoryId ?? null,
+          artifactLinkId: result.artifactLinkId ?? null,
+          memoryStatus: memoryStatus ?? null,
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/apply",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      try {
+        const result = await threadScopeVersionService(db).applyAcceptedDraft(
+          companyId,
+          discussionId,
+          scopeVersionId,
+          { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+        );
+        if (!result.ok) {
+          res.status(scopeVersionFailureStatus(result.reason)).json({ error: result.message });
+          return;
+        }
+
+        for (const task of result.createdTasks) {
+          if (shouldDispatchIssueWakeup(task) && task.assigneeAgentId) {
+            await enqueueIssueAssigneeWakeup(db, {
+              companyId,
+              issueId: task.id,
+              agentId: task.assigneeAgentId,
+              source: "assignment",
+              reason: "scope_version_apply",
+              requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+              requestedByActorId: actor.actorId,
+            });
+          }
+        }
+        await logScopeActivity(db, req, companyId, "discussion.scope_version_applied", discussionId, {
+          scopeVersionId,
+          createdTaskIds: result.createdTasks.map((task) => task.id),
+          appliedItemIds: result.appliedItems.map((item) => item.id),
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+        throw err;
+      }
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/accept",
+    validate(acceptScopeDraftSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      const result = await threadScopeVersionService(db).acceptDraft(
+        companyId,
+        discussionId,
+        scopeVersionId,
+        { itemIds: req.body.itemIds },
+        { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+      );
+
+      if (!result.ok) {
+        res.status(scopeVersionFailureStatus(result.reason)).json({ error: result.message });
+        return;
+      }
+
+      for (const task of result.createdTasks) {
+        if (shouldDispatchIssueWakeup(task) && task.assigneeAgentId) {
+          await enqueueIssueAssigneeWakeup(db, {
+            companyId,
+            issueId: task.id,
+            agentId: task.assigneeAgentId,
+            source: "assignment",
+            reason: "scope_version_accept",
+            requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+          });
+        }
+      }
+      await logScopeActivity(db, req, companyId, "discussion.scope_version_accepted", discussionId, {
+        scopeVersionId,
+        selectedItemIds: req.body.itemIds ?? [],
+        createdTaskIds: result.createdTasks.map((task) => task.id),
+        appliedItemIds: result.appliedItems.map((item) => item.id),
+      });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/reject",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      const result = await threadScopeVersionService(db).rejectDraft(
+        companyId,
+        discussionId,
+        scopeVersionId,
+        { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+      );
+      if (!result.ok) {
+        res.status(404).json({ error: "Scope draft not found" });
+        return;
+      }
+      await logScopeActivity(db, req, companyId, "discussion.scope_version_rejected", discussionId, {
+        scopeVersionId,
+      });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/scope-versions/:scopeVersionId/complete",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      const scopeVersionId = req.params.scopeVersionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      await assertRole(db, req, companyId, "founder", "team_lead");
+
+      const actor = getActorInfo(req);
+      const result = await threadScopeVersionService(db).completeVersion(
+        companyId,
+        discussionId,
+        scopeVersionId,
+        { userId: actor.actorId, agentId: actor.agentId ?? undefined, isHuman: actor.actorType === "user" },
+      );
+      if (!result.ok) {
+        res.status(404).json({ error: "Scope version not found" });
+        return;
+      }
+      await logScopeActivity(db, req, companyId, "discussion.scope_version_completed", discussionId, {
+        scopeVersionId,
+      });
+      res.json(result);
     },
   );
 
@@ -907,6 +1364,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
+      assertBoard(req);
       assertCompanyAccess(req, companyId);
       const actor = await buildActor(req, companyId);
       const parsed = planBodySchema.safeParse(req.body);
@@ -1172,6 +1630,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
+      assertBoard(req);
       await assertRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
 
@@ -1198,6 +1657,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
+      assertBoard(req);
       await assertRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
 

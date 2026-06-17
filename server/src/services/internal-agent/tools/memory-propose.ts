@@ -99,6 +99,45 @@ export const proposeMemoryFromThreadTool: AgentTool = {
       };
     }
     const category = type && VALID_CATEGORIES.has(type) ? type : "context";
+    const defaultedTitle =
+      title && title.trim().length > 0
+        ? title.trim()
+        : content.trim().split("\n")[0].slice(0, 200);
+
+    if (ctx.discussionRunMode === "controller_action_gate") {
+      if (!ctx.runId) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cannot queue memory candidate without a run id",
+          error: "MISSING_RUN_ID",
+        };
+      }
+
+      const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+      const action = await threadAgentActionService(ctx.db).proposeThreadAction({
+        companyId: ctx.companyId,
+        threadId: sourceThreadId,
+        runId: ctx.runId,
+        agentId: ctx.agentId ?? null,
+        actionType: "add_scope_item",
+        payload: {
+          kind: "memory_candidate",
+          title: defaultedTitle,
+          content,
+          layer,
+          category,
+        },
+        idempotencyKey: `${ctx.runId}:add_scope_item:memory:${sourceThreadId}:${defaultedTitle}`,
+        freshness: ctx.threadFreshness ?? {},
+      }) as { id?: string };
+
+      return {
+        success: true,
+        data: { actionId: action.id, queued: true },
+        summary: "Queued memory candidate for freshness-checked scope commit",
+      };
+    }
 
     // Look up the source thread for visibility + extraction-allowed checks
     // and to inherit scope (department/project/goal) onto the memory item.
@@ -169,11 +208,6 @@ export const proposeMemoryFromThreadTool: AgentTool = {
     }
 
     // Default the title to a truncated first line of content when caller omits.
-    const defaultedTitle =
-      title && title.trim().length > 0
-        ? title.trim()
-        : content.trim().split("\n")[0].slice(0, 200);
-
     const inserted = await ctx.db
       .insert(memoryItems)
       .values({

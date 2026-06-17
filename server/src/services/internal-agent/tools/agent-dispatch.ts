@@ -82,6 +82,52 @@ export const agentDispatchTool: AgentTool = {
 
     // Resolve the target agent — required to enforce the cross-company guard
     // and to confirm the agent exists before queuing a wakeup row.
+    const threadId = (context?.threadId as string | undefined) ?? null;
+
+    if (ctx.discussionRunMode === "controller_action_gate") {
+      if (!ctx.runId) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cannot queue agent dispatch without a run id",
+          error: "MISSING_RUN_ID",
+        };
+      }
+      if (!threadId) {
+        return {
+          success: false,
+          data: null,
+          summary: "threadId is required in action-gated discussion dispatch context",
+          error: "INVALID_PARAMS",
+        };
+      }
+
+      const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+      const action = await threadAgentActionService(ctx.db).proposeThreadAction({
+        companyId: ctx.companyId,
+        threadId,
+        runId: ctx.runId,
+        agentId: ctx.agentId ?? null,
+        actionType: "convene_agent",
+        payload: {
+          targetAgentId: agentId,
+          reason: reason ?? "agent_dispatch",
+          context: {
+            ...(context ?? {}),
+            hopCount: incomingHopCount + 1,
+          },
+        },
+        idempotencyKey: `${ctx.runId}:convene_agent:${agentId}:${threadId}`,
+        freshness: ctx.threadFreshness ?? {},
+      }) as { id?: string };
+
+      return {
+        success: true,
+        data: { actionId: action.id, queued: true, hopCount: incomingHopCount + 1 },
+        summary: "Queued agent dispatch for freshness-checked commit",
+      };
+    }
+
     const [agent] = await ctx.db
       .select({
         id: agents.id,
@@ -116,7 +162,6 @@ export const agentDispatchTool: AgentTool = {
     // When threadId is absent we deliberately leave dedupKey NULL so the
     // partial unique index doesn't fire — a dispatch with no thread context
     // is treated as a one-off rather than a recurring stream.
-    const threadId = (context?.threadId as string | undefined) ?? null;
     const dedupKey = threadId ? `${agentId}:${threadId}:queued` : null;
 
     const inserted = await ctx.db

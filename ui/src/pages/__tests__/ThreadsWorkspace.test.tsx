@@ -971,6 +971,11 @@ describe("ThreadsWorkspace", () => {
     await user.click(screen.getByRole("button", { name: /thread one actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /archive thread/i }));
 
+    expect(threadsApi.setStatus).not.toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: /archive thread/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^archive$/i }));
+
     expect(threadsApi.setStatus).toHaveBeenCalledWith("comp-1", "thread-1", "archived");
   });
 

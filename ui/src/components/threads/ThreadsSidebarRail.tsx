@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import {
   Archive,
+  ArchiveRestore,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
@@ -51,6 +52,7 @@ interface ThreadsSidebarRailProps {
   onToggle: () => void;
   onOpenHome: () => void;
   onArchiveThread: (threadId: string) => void;
+  onUnarchiveThread: (threadId: string) => void;
   threads: ThreadListItem[];
   archivedThreads: ThreadListItem[];
   unlistedHasItems?: boolean;
@@ -66,6 +68,7 @@ export function ThreadsSidebarRail({
   onToggle,
   onOpenHome,
   onArchiveThread,
+  onUnarchiveThread,
   threads,
   archivedThreads,
   unlistedHasItems = false,
@@ -75,6 +78,7 @@ export function ThreadsSidebarRail({
   setSearch,
 }: ThreadsSidebarRailProps) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [archiveConfirm, setArchiveConfirm] = useState<{ id: string; title: string } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     unlisted: true,
@@ -313,12 +317,17 @@ export function ThreadsSidebarRail({
                           thread={thread}
                           active={thread.id === currentId}
                           menuOpen={openMenuId === thread.id}
+                          archived={section.key === "archived"}
                           onMenuToggle={() =>
                             setOpenMenuId((current) => (current === thread.id ? null : thread.id))
                           }
                           onArchive={() => {
                             setOpenMenuId(null);
-                            onArchiveThread(thread.id);
+                            setArchiveConfirm({ id: thread.id, title: thread.title });
+                          }}
+                          onUnarchive={() => {
+                            setOpenMenuId(null);
+                            onUnarchiveThread(thread.id);
                           }}
                         />
                       ))}
@@ -330,6 +339,44 @@ export function ThreadsSidebarRail({
           </div>
         )}
       </div>
+      {archiveConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Archive thread"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4"
+          onClick={() => setArchiveConfirm(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-lg"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-foreground">Archive thread</h2>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              Archive "{archiveConfirm.title}"? It will move out of the live rail and can be restored from Archived.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setArchiveConfirm(null)}
+                className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onArchiveThread(archiveConfirm.id);
+                  setArchiveConfirm(null);
+                }}
+                className="inline-flex h-8 items-center justify-center rounded-md bg-brand px-3 text-xs font-semibold text-white transition-colors hover:bg-brand/90"
+              >
+                Archive
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div
         data-testid="thread-rail-footer"
@@ -343,14 +390,18 @@ function ThreadRailRow({
   thread,
   active,
   menuOpen,
+  archived,
   onMenuToggle,
   onArchive,
+  onUnarchive,
 }: {
   thread: ThreadListItem;
   active: boolean;
   menuOpen: boolean;
+  archived: boolean;
   onMenuToggle: () => void;
   onArchive: () => void;
+  onUnarchive: () => void;
 }) {
   return (
     <div
@@ -410,11 +461,11 @@ function ThreadRailRow({
           <button
             type="button"
             role="menuitem"
-            onClick={onArchive}
+            onClick={archived ? onUnarchive : onArchive}
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           >
-            <Archive className="h-3.5 w-3.5" />
-            Archive thread
+            {archived ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
+            {archived ? "Unarchive thread" : "Archive thread"}
           </button>
         </div>
       )}

@@ -170,6 +170,29 @@ describe("ThreadBoard — Archived column", () => {
     expect(within(col).queryByText("Active thread")).not.toBeInTheDocument();
     expect(within(col).getByText("Archived thread")).toBeInTheDocument();
   });
+
+  it("exposes an Unarchive action for archived threads", async () => {
+    const user = userEvent.setup();
+    const onUnarchiveThread = vi.fn();
+    const archived = [
+      makeThread({ id: "arc1", title: "Archived thread", status: "archived" }),
+    ];
+
+    renderWithProviders(
+      <ThreadBoard
+        threads={[]}
+        archivedThreads={archived}
+        onNewThread={vi.fn()}
+        onUnarchiveThread={onUnarchiveThread}
+      />,
+      { initialEntries: ["/TC/discussions"] },
+    );
+
+    const col = screen.getByTestId("archived-column");
+    await user.click(within(col).getByRole("button", { name: /unarchive archived thread/i }));
+
+    expect(onUnarchiveThread).toHaveBeenCalledWith("arc1");
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -279,7 +302,7 @@ describe("ThreadLeftRail — hover-kebab Archive action", () => {
     expect(kebab).toBeInTheDocument();
   });
 
-  it("clicking Archive in the kebab calls setStatus with 'archived'", async () => {
+  it("clicking Archive in the kebab asks for confirmation before archiving", async () => {
     const user = userEvent.setup();
 
     renderWithProviders(<ThreadDetail />, {
@@ -298,8 +321,12 @@ describe("ThreadLeftRail — hover-kebab Archive action", () => {
     const archiveItem = await screen.findByText("Archive");
     expect(archiveItem).toBeInTheDocument();
 
-    // Click it
     await user.click(archiveItem);
+
+    expect(threadsApi.setStatus).not.toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: /archive thread/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^archive$/i }));
 
     await waitFor(() => {
       expect(threadsApi.setStatus).toHaveBeenCalledWith(

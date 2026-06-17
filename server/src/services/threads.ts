@@ -219,6 +219,7 @@ export async function processMentions(
 
   const useControllerPath = threadRow?.useControllerPath === true;
   const entryPrompt = entryRow?.rawContent ?? "";
+  const controllerParticipations: Array<Promise<unknown>> = [];
 
   for (const mention of mentions) {
     // 1) Check if name resolves to an AoA agent in this company (kind='aoa' only)
@@ -245,10 +246,12 @@ export async function processMentions(
       // therefore routes/discussions.ts) module-load path.
       if (useControllerPath) {
         const { threadOrchestrationService } = await import("./thread-orchestration.js");
-        await threadOrchestrationService(db).requestParticipation(
-          threadId,
-          { agentId: agentRows[0].id, prompt: entryPrompt },
-          {},
+        controllerParticipations.push(
+          threadOrchestrationService(db).requestParticipation(
+            threadId,
+            { agentId: agentRows[0].id, prompt: entryPrompt },
+            {},
+          ),
         );
         continue;
       }
@@ -319,6 +322,10 @@ export async function processMentions(
       });
     }
     // if neither → skip
+  }
+
+  if (controllerParticipations.length > 0) {
+    await Promise.allSettled(controllerParticipations);
   }
 }
 

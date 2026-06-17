@@ -33,9 +33,9 @@
  * no aoaAgentTriggers read).
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussions, internalAgentConfig } from "@armyofagents/db";
+import { discussionEntries, discussions, internalAgentConfig } from "@armyofagents/db";
 // `runner.ts` eagerly builds the full crew tool-registry at module load
 // (embeddings, ~40 tool modules). thread-orchestration.ts wires THIS factory as
 // its default participantRunner, and discussions.ts imports thread-orchestration
@@ -110,6 +110,7 @@ export function makeThreadParticipationRunner(
     // builder's `typeof payload.role === "string"` check skips it cleanly.
     const resolveRole = deps.resolveRole ?? resolveCrewRole;
     const role = await resolveRole(db, agentId);
+    const beforeAgentEntryCount = await countAgentThreadEntries(db, threadId, agentId);
 
     // Step 4: run the agent. wakeupId/entryId are intentionally omitted — the
     // controller participation path has no agentWakeupRequests row, and the
@@ -130,6 +131,19 @@ export function makeThreadParticipationRunner(
       ...(role ? { role } : {}),
     });
 
+    if (result.status === "succeeded") {
+      const afterAgentEntryCount = await countAgentThreadEntries(db, threadId, agentId);
+      if (afterAgentEntryCount <= beforeAgentEntryCount) {
+        log.error(
+          { threadId, agentId, role, effectiveAutonomy, beforeAgentEntryCount, afterAgentEntryCount },
+          "participation runner: run succeeded but agent did not post to the thread",
+        );
+        throw new Error(
+          `thread participation run completed without an agent-authored post_entry for thread ${threadId}`,
+        );
+      }
+    }
+
     log.debug(
       { threadId, agentId, role, effectiveAutonomy, status: result.status },
       "participation runner: runAoaAgent returned — agent self-posted via MCP; returning empty",
@@ -139,4 +153,19 @@ export function makeThreadParticipationRunner(
     // so requestParticipation SKIPS its entry-insert (no double-post).
     return "";
   };
+}
+
+async function countAgentThreadEntries(db: Db, threadId: string, agentId: string): Promise<number> {
+  const rows = await db
+    .select({ id: discussionEntries.id })
+    .from(discussionEntries)
+    .where(
+      and(
+        eq(discussionEntries.discussionId, threadId),
+        eq(discussionEntries.authorAgentId, agentId),
+      ),
+    )
+    .limit(1000);
+
+  return rows.length;
 }

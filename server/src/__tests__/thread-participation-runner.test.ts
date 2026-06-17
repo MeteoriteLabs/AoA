@@ -32,6 +32,7 @@ function tableProxy(name: string) {
 }
 
 vi.mock("@armyofagents/db", () => ({
+  discussionEntries: tableProxy("discussionEntries"),
   discussions: tableProxy("discussions"),
   internalAgentConfig: tableProxy("internalAgentConfig"),
 }));
@@ -83,12 +84,21 @@ import { makeThreadParticipationRunner } from "../services/internal-agent/aoa-ag
 function makeDb(opts: {
   threadRow?: Record<string, unknown> | null;
   companyCfgRow?: Record<string, unknown> | null;
+  beforeEntryRows?: Array<Record<string, unknown>>;
+  afterEntryRows?: Array<Record<string, unknown>>;
 }) {
-  const { threadRow = null, companyCfgRow = null } = opts;
+  const {
+    threadRow = null,
+    companyCfgRow = null,
+    beforeEntryRows = [],
+    afterEntryRows = [{ id: "agent-entry-posted" }],
+  } = opts;
 
   const results: Array<Array<Record<string, unknown>>> = [
     threadRow ? [threadRow] : [],
     companyCfgRow ? [companyCfgRow] : [],
+    beforeEntryRows,
+    afterEntryRows,
   ];
   let callIdx = 0;
 
@@ -240,7 +250,24 @@ describe("makeThreadParticipationRunner", () => {
     expect(reply).toBe("");
   });
 
-  it("7: throws when the thread is not found (caller surfaces the error)", async () => {
+  it("7: throws when a successful run does not create an agent-authored post_entry", async () => {
+    mockRunAoaAgent.mockResolvedValue({ status: "succeeded" });
+    mockResolveCrewRole.mockResolvedValue("adjutant");
+
+    const db = makeDb({
+      threadRow: { companyId: "company-no-post", autonomyLevel: 1 },
+      companyCfgRow: { autonomyLevel: 0 },
+      beforeEntryRows: [{ id: "old-entry" }],
+      afterEntryRows: [{ id: "old-entry" }],
+    });
+
+    const runner = makeThreadParticipationRunner(db as any);
+    await expect(
+      runner({ threadId: "thread-no-post", agentId: "agent-adj", prompt: "@Adjutant respond" }),
+    ).rejects.toThrow(/without an agent-authored post_entry/i);
+  });
+
+  it("8: throws when the thread is not found (caller surfaces the error)", async () => {
     mockResolveCrewRole.mockResolvedValue("scout");
     const db = makeDb({ threadRow: null });
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type IssueContextBundle } from "../api/issues";
 import { feedbackApi } from "../api/feedback";
 import { contextPackagingApi } from "../api/context-packaging";
 import { artifactsApi } from "../api/artifacts";
@@ -129,6 +129,140 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1) + "\u2026";
 }
 
+function scopeHandoffMetaText(item: IssueContextBundle["items"][number]): string | null {
+  const metadata = asRecord(item.metadata);
+  if (!metadata) return null;
+  const url = typeof metadata.url === "string" ? metadata.url : null;
+  const excerpt = typeof metadata.excerpt === "string" ? metadata.excerpt : null;
+  const body = typeof metadata.body === "string" ? metadata.body : null;
+  const artifactType = typeof metadata.artifactType === "string" ? metadata.artifactType : null;
+  const contentType = typeof metadata.contentType === "string" ? metadata.contentType : null;
+  return url ?? excerpt ?? body ?? artifactType ?? contentType;
+}
+
+function scopeHandoffTypeLabel(type: string) {
+  if (type === "discussion_entry") return "Source";
+  if (type === "scope_item") return "Scope";
+  return type.replace("_", " ");
+}
+
+function scopeHandoffItemIncluded(item: IssueContextBundle["items"][number]) {
+  return asRecord(item.metadata)?.includeInAgentContext !== false;
+}
+
+function ScopeHandoffSection({
+  bundles,
+  onOpenItem,
+  canOpenItem,
+  onSetIncluded,
+  isUpdatingItemId,
+}: {
+  bundles: IssueContextBundle[];
+  onOpenItem?: (item: IssueContextBundle["items"][number]) => void;
+  canOpenItem?: (item: IssueContextBundle["items"][number]) => boolean;
+  onSetIncluded?: (item: IssueContextBundle["items"][number], included: boolean) => void;
+  isUpdatingItemId?: string | null;
+}) {
+  const scopeBundles = bundles.filter((bundle) => bundle.sourceKind === "discussion_scope");
+  if (scopeBundles.length === 0) return null;
+  const itemCount = scopeBundles.reduce((count, bundle) => count + bundle.items.length, 0);
+
+  return (
+    <section className="rounded-lg border border-border bg-card/35 p-3" data-testid="task-scope-handoff">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          <h3 className="text-sm font-medium text-foreground">Scope handoff</h3>
+        </div>
+        <span className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {itemCount} {itemCount === 1 ? "ref" : "refs"}
+        </span>
+        <p className="basis-full text-[11px] leading-snug text-muted-foreground">
+          Included refs are passed to agents.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {scopeBundles.map((bundle) => (
+          <div key={bundle.id} className="space-y-2">
+            {bundle.brief && (
+              <p className="text-xs leading-relaxed text-muted-foreground">{bundle.brief}</p>
+            )}
+            {bundle.items.length > 0 && (
+              <div className="space-y-1.5">
+                {bundle.items.map((item) => {
+                  const meta = scopeHandoffMetaText(item);
+                  const included = scopeHandoffItemIncluded(item);
+                  const label = item.label || item.itemType.replace("_", " ");
+                  const isOpenable =
+                    onOpenItem &&
+                    (canOpenItem ? canOpenItem(item) : ["artifact", "asset", "url"].includes(item.itemType));
+                  const className =
+                    "flex w-full min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background px-2.5 py-2 text-left text-xs sm:flex-row sm:items-center";
+                  return (
+                    <div
+                      key={item.id}
+                      className={className}
+                    >
+                      <div className="flex min-w-0 flex-1 items-start gap-2">
+                        <span className="mt-0.5 shrink-0 rounded border border-border/70 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                          {scopeHandoffTypeLabel(item.itemType)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium text-foreground">
+                            {label}
+                          </span>
+                          {meta && (
+                            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                              {meta}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:ml-auto sm:justify-end">
+                        <span
+                          className={cn(
+                            "rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                            included
+                              ? "border-green-500/25 bg-green-500/10 text-green-700 dark:text-green-400"
+                              : "border-muted-foreground/20 bg-muted/50 text-muted-foreground",
+                          )}
+                        >
+                          {included ? "In context" : "Excluded"}
+                        </span>
+                        {isOpenable && (
+                          <button
+                            type="button"
+                            className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                            aria-label={`Open handoff item: ${label}`}
+                            onClick={() => onOpenItem(item)}
+                          >
+                            Open
+                          </button>
+                        )}
+                        {onSetIncluded && (
+                          <button
+                            type="button"
+                            className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
+                            aria-label={`${included ? "Exclude" : "Include"} ${label} ${included ? "from" : "in"} agent context`}
+                            disabled={isUpdatingItemId === item.id}
+                            onClick={() => onSetIncluded(item, !included)}
+                          >
+                            {included ? "Exclude" : "Include"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function formatAction(action: string, details?: Record<string, unknown> | null): string {
   if (action === "issue.updated" && details) {
     const previous = (details._previous ?? {}) as Record<string, unknown>;
@@ -208,6 +342,211 @@ interface TaskSlideOverProps {
 }
 
 /* ── Component ── */
+
+export interface TaskDetailPanelProps {
+  issueId: string | null;
+  open?: boolean;
+  onClose?: () => void;
+  embedded?: boolean;
+  onOpenScopeHandoffItem?: (item: IssueContextBundle["items"][number]) => void;
+}
+
+export function TaskDetailPanel({
+  issueId,
+  open = true,
+  onClose,
+  embedded = false,
+  onOpenScopeHandoffItem,
+}: TaskDetailPanelProps) {
+  const { selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
+
+  const { data: issue, isLoading, error } = useQuery({
+    queryKey: queryKeys.issues.detail(issueId!),
+    queryFn: () => issuesApi.get(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const updateIssue = useMutation({
+    mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+    },
+  });
+
+  const { data: artifact } = useQuery({
+    queryKey: queryKeys.artifacts.byIssue(issueId!),
+    queryFn: () => artifactsApi.getByIssueId(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: contextBundles = [] } = useQuery({
+    queryKey: ["issues", "contextBundles", issueId],
+    queryFn: () => issuesApi.listContextBundles(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const setScopeHandoffIncluded = useMutation({
+    mutationFn: ({ itemId, included }: { itemId: string; included: boolean }) =>
+      issuesApi.updateContextBundleItemIncluded(issueId!, itemId, included),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["issues", "contextBundles", issueId] });
+    },
+  });
+
+  if (!open) return null;
+
+  return (
+    <div
+      className={cn(
+        "flex h-full min-h-0 flex-col overflow-hidden bg-background",
+        embedded ? "rounded-none" : "rounded-md",
+      )}
+      data-testid="task-detail-panel"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {issue && (
+            <>
+              <StatusIcon status={issue.status} onChange={(status) => updateIssue.mutate({ status })} />
+              <PriorityIcon priority={issue.priority} onChange={(priority) => updateIssue.mutate({ priority })} />
+              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                {issue.identifier ?? issue.id.slice(0, 8)}
+              </span>
+              {issue.workMode === "planning" && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                  <ClipboardList className="h-2.5 w-2.5" />
+                  Planning
+                </span>
+              )}
+            </>
+          )}
+        </div>
+        {onClose && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={onClose}
+            className="shrink-0"
+            data-testid="close-button"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        )}
+      </div>
+
+      <ScrollArea className="flex-1 overflow-y-auto">
+        <div className="space-y-5 p-4">
+          {isLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
+          {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
+          {!isLoading && !error && !issue && (
+            <p className="text-sm text-muted-foreground">Task not found.</p>
+          )}
+
+          {issue && (
+            <>
+              <div className="space-y-3">
+                <InlineEditor
+                  value={issue.title}
+                  onSave={(title) => updateIssue.mutate({ title })}
+                  as="h2"
+                  className="text-xl font-bold"
+                />
+                <InlineEditor
+                  value={issue.description ?? ""}
+                  onSave={(description) => updateIssue.mutate({ description })}
+                  as="p"
+                  className="text-sm text-muted-foreground"
+                  placeholder="Add a description..."
+                  multiline
+                  companyId={selectedCompanyId}
+                />
+              </div>
+
+              <div className="rounded-lg border border-border p-3">
+                <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
+              </div>
+
+              <ScopeHandoffSection
+                bundles={contextBundles}
+                onOpenItem={onOpenScopeHandoffItem}
+                onSetIncluded={(item, included) =>
+                  setScopeHandoffIncluded.mutate({ itemId: item.id, included })}
+                isUpdatingItemId={
+                  setScopeHandoffIncluded.isPending
+                    ? (setScopeHandoffIncluded.variables as { itemId?: string } | undefined)?.itemId ?? null
+                    : null
+                }
+              />
+
+              <IssueDocumentsSection
+                issue={issue}
+                canDeleteDocuments={false}
+                mentions={[]}
+              />
+
+              <div className="space-y-2" data-testid="workspace-section">
+                <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                  <MonitorPlay className="h-3.5 w-3.5" />
+                  Workspace
+                </h3>
+                <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
+                  {issue.executionWorkspaceId
+                    ? "Workspace linked to this task."
+                    : "No workspace yet - will be created when agent starts work"}
+                </p>
+              </div>
+
+              <Tabs defaultValue="comments" className="space-y-3">
+                <TabsList className="grid w-full grid-cols-4">
+                  <TabsTrigger value="comments" className="gap-1.5">
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Comments
+                  </TabsTrigger>
+                  <TabsTrigger value="subissues" className="gap-1.5">
+                    <ListTree className="h-3.5 w-3.5" />
+                    Subtasks
+                  </TabsTrigger>
+                  <TabsTrigger value="activity" className="gap-1.5">
+                    <ActivityIcon className="h-3.5 w-3.5" />
+                    Activity
+                  </TabsTrigger>
+                  <TabsTrigger value="artifacts" className="gap-1.5">
+                    <FileBox className="h-3.5 w-3.5" />
+                    Artifacts
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value="comments">
+                  <div className="rounded-lg border border-border p-3 text-sm text-muted-foreground">
+                    Comments open here in the full task workbench.
+                  </div>
+                </TabsContent>
+                <TabsContent value="subissues">
+                  <div className="rounded-lg border border-border p-3 text-sm text-muted-foreground">
+                    Subtasks open here in the full task workbench.
+                  </div>
+                </TabsContent>
+                <TabsContent value="activity">
+                  <div className="rounded-lg border border-border p-3 text-sm text-muted-foreground">
+                    Activity opens here in the full task workbench.
+                  </div>
+                </TabsContent>
+                <TabsContent value="artifacts">
+                  <div className="rounded-lg border border-border p-3 text-sm text-muted-foreground">
+                    {artifact ? artifact.title : "No artifact linked to this task."}
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
 
 export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -311,6 +650,12 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryKey: queryKeys.issues.dependencies(issueId!),
     queryFn: () => dependenciesApi.list(selectedCompanyId!, issueId!),
     enabled: !!issueId && !!selectedCompanyId && open,
+  });
+
+  const { data: contextBundles = [] } = useQuery({
+    queryKey: ["issues", "contextBundles", issueId],
+    queryFn: () => issuesApi.listContextBundles(issueId!),
+    enabled: !!issueId && open,
   });
 
   // Artifact linked to this task
@@ -551,6 +896,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
+    queryClient.invalidateQueries({ queryKey: ["issues", "contextBundles", issueId] });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
@@ -573,6 +919,39 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       });
     },
   });
+
+  const setScopeHandoffIncluded = useMutation({
+    mutationFn: ({ itemId, included }: { itemId: string; included: boolean }) =>
+      issuesApi.updateContextBundleItemIncluded(issueId!, itemId, included),
+    onSuccess: () => {
+      invalidateIssue();
+      pushToast({ title: "Scope handoff updated", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to update scope handoff", tone: "error" });
+    },
+  });
+
+  const canOpenScopeHandoffItem = (item: IssueContextBundle["items"][number]) => {
+    if (item.itemType === "url") {
+      return typeof asRecord(item.metadata)?.url === "string";
+    }
+    return ["artifact", "asset", "discussion_entry", "scope_item"].includes(item.itemType) && Boolean(item.sourceId);
+  };
+
+  const openScopeHandoffItem = (item: IssueContextBundle["items"][number]) => {
+    if (!canOpenScopeHandoffItem(item)) return;
+    const url = asRecord(item.metadata)?.url;
+    if (typeof url === "string") {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    pushToast({
+      title: "Open from discussion",
+      body: item.label || item.itemType.replace(/_/g, " "),
+      tone: "info",
+    });
+  };
 
   const addComment = useMutation({
     mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
@@ -1261,6 +1640,19 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     </DialogBody>
                   </DialogContent>
                 </Dialog>
+
+                <ScopeHandoffSection
+                  bundles={contextBundles}
+                  onOpenItem={openScopeHandoffItem}
+                  canOpenItem={canOpenScopeHandoffItem}
+                  onSetIncluded={(item, included) =>
+                    setScopeHandoffIncluded.mutate({ itemId: item.id, included })}
+                  isUpdatingItemId={
+                    setScopeHandoffIncluded.isPending
+                      ? (setScopeHandoffIncluded.variables as { itemId?: string } | undefined)?.itemId ?? null
+                      : null
+                  }
+                />
 
                 {/* Attachments */}
                 <div className="space-y-3">

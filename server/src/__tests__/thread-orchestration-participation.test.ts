@@ -65,6 +65,7 @@ vi.mock("@armyofagents/db", () => ({
   threadOrchestrationState: tableProxy("tos"),
   discussionEntries: tableProxy("de"),
   discussions: tableProxy("discussions"),
+  internalAgentConfig: tableProxy("iac"),
   issues: tableProxy("issues"),
   agents: tableProxy("agents"),
   agentWakeupRequests: tableProxy("awr"),
@@ -159,7 +160,16 @@ interface PostedEntry {
  * `de` proxy returns "de.<prop>"; `discussions` returns "discussions.<prop>";
  * `issues` proxy returns "issues.<prop>".
  */
-function makeParticipationDb(controller: ControllerState) {
+function makeParticipationDb(
+  controller: ControllerState,
+  opts: {
+    threadExists?: boolean;
+    threadPaused?: boolean;
+    companyPaused?: boolean;
+    adjutantEnabled?: boolean;
+    agentName?: string | null;
+  } = {},
+) {
   // Track what entries were posted and whether issues were inserted.
   const postedEntries: PostedEntry[] = [];
   let issueInsertCount = 0;
@@ -173,11 +183,17 @@ function makeParticipationDb(controller: ControllerState) {
   function isDiscussionsTable(table: unknown): boolean {
     return String((table as Record<string, unknown>)["entrySeq"]).startsWith("discussions.");
   }
+  function isInternalAgentConfigTable(table: unknown): boolean {
+    return String((table as Record<string, unknown>)["crewPaused"]).startsWith("iac.");
+  }
   function isDeTable(table: unknown): boolean {
     return String((table as Record<string, unknown>)["seq"]).startsWith("de.");
   }
   function isIssuesTable(table: unknown): boolean {
     return String((table as Record<string, unknown>)["id"]).startsWith("issues.");
+  }
+  function isAgentsTable(table: unknown): boolean {
+    return String((table as Record<string, unknown>)["name"]).startsWith("agents.");
   }
 
   // Build the transaction proxy (same interface as the main db)
@@ -299,14 +315,37 @@ function makeParticipationDb(controller: ControllerState) {
     select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn((table: unknown) => ({
         where: vi.fn(() => {
+          let rows: Array<Record<string, unknown>> = [];
           if (isTos(table)) {
             // Return hopCount (and runEpoch for epoch re-reads in other paths)
-            return Promise.resolve([{
+            rows = [{
               hopCount: controller.hopCount,
               runEpoch: controller.runEpoch,
-            }]);
+            }];
+          } else if (
+            isDiscussionsTable(table) &&
+            projection &&
+            ("adjutantEnabled" in projection || "crewPaused" in projection)
+          ) {
+            rows = opts.threadExists === false
+              ? []
+              : [{
+                  companyId: "company-test-1",
+                  adjutantEnabled: opts.adjutantEnabled ?? true,
+                  crewPaused: opts.threadPaused ?? false,
+                }];
+          } else if (isAgentsTable(table)) {
+            rows = opts.agentName === null
+              ? []
+              : [{ name: opts.agentName ?? "Scout" }];
+          } else if (isInternalAgentConfigTable(table)) {
+            rows = [{ crewPaused: opts.companyPaused ?? false }];
           }
-          return Promise.resolve([]);
+          return {
+            limit: vi.fn(async () => rows),
+            then: (resolve: (value: Array<Record<string, unknown>>) => unknown) =>
+              Promise.resolve(rows).then(resolve),
+          };
         }),
       })),
     })),
@@ -984,5 +1023,125 @@ describe("requestParticipation — skip-on-empty (no double-post; B1)", () => {
     expect(result.entryId).toBe(postedEntries[0].id);
     // And the live events fire for the inserted entry.
     expect(mockPublishLiveEvent).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("requestParticipation - pause gates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
+  });
+
+  it("does not invoke the participant runner when the thread is paused", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-paused",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller, { threadPaused: true });
+    const svc = threadOrchestrationService(db);
+    const runner = vi.fn(async () => "should not run");
+
+    const result = await svc.requestParticipation(
+      "thread-paused",
+      { agentId: "agent-scout-paused", prompt: "@Scout check" },
+      { participantRunner: runner },
+    );
+
+    expect(result).toMatchObject({ spawned: false, atCap: false, blockedReason: "thread_paused" });
+    expect(runner).not.toHaveBeenCalled();
+    expect(controller.hopCount).toBe(0);
+    expect(postedEntries).toHaveLength(0);
+    expect(mockPublishLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke the participant runner when company crew is paused", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-company-paused",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db } = makeParticipationDb(controller, { companyPaused: true });
+    const svc = threadOrchestrationService(db);
+    const runner = vi.fn(async () => "should not run");
+
+    const result = await svc.requestParticipation(
+      "thread-company-paused",
+      { agentId: "agent-scout-company-paused", prompt: "@Scout check" },
+      { participantRunner: runner },
+    );
+
+    expect(result).toMatchObject({ spawned: false, atCap: false, blockedReason: "company_paused" });
+    expect(runner).not.toHaveBeenCalled();
+    expect(controller.hopCount).toBe(0);
+  });
+});
+
+describe("requestParticipation - adjutant opt-out semantics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
+  });
+
+  it("allows direct non-Adjutant participation when adjutantEnabled is false", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-adjutant-disabled-scout",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller, {
+      adjutantEnabled: false,
+      agentName: "Scout",
+    });
+    const svc = threadOrchestrationService(db);
+    const runner = vi.fn(async () => "Scout can still answer");
+
+    const result = await svc.requestParticipation(
+      "thread-adjutant-disabled-scout",
+      { agentId: "agent-scout", prompt: "@Scout check this" },
+      { participantRunner: runner },
+    );
+
+    expect(result).toMatchObject({ spawned: true, hopCount: 1 });
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(postedEntries).toHaveLength(1);
+    expect(postedEntries[0].authorAgentId).toBe("agent-scout");
+  });
+
+  it("blocks Adjutant participation when adjutantEnabled is false", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-adjutant-disabled",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller, {
+      adjutantEnabled: false,
+      agentName: "Adjutant",
+    });
+    const svc = threadOrchestrationService(db);
+    const runner = vi.fn(async () => "Adjutant should not answer");
+
+    const result = await svc.requestParticipation(
+      "thread-adjutant-disabled",
+      { agentId: "agent-adjutant", prompt: "@Adjutant check this" },
+      { participantRunner: runner },
+    );
+
+    expect(result).toMatchObject({ spawned: false, atCap: false, blockedReason: "thread_disabled" });
+    expect(runner).not.toHaveBeenCalled();
+    expect(controller.hopCount).toBe(0);
+    expect(postedEntries).toHaveLength(0);
   });
 });

@@ -27,17 +27,21 @@ vi.mock("@armyofagents/db", () => ({
   aoaAgentTriggers: new Proxy({} as any, { get: (_t, p) => p }),
   discussions: new Proxy({} as any, { get: (_t, p) => p }),
   agentWakeupRequests: new Proxy({} as any, { get: (_t, p) => p }),
+  internalAgentConfig: new Proxy({} as any, { get: (_t, p) => `iac.${String(p)}` }),
 }));
 
 import {
   runChroniclerSweep,
   CHRONICLER_MAX_CONCURRENT,
 } from "../services/internal-agent/aoa-agents/sweep-chronicler.js";
+import { eq } from "drizzle-orm";
 
 const AGENT_ID = "agent-chronicler-1";
 const COMPANY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const THREAD_1 = "t1-cccc-cccc-cccc-cccccccccccc";
 const THREAD_2 = "t2-dddd-dddd-dddd-dddddddddddd";
+const LAST_ENTRY_AT = new Date("2026-06-14T08:00:00Z");
+const FINISHED_AFTER_LAST_ENTRY = new Date("2026-06-14T08:01:00Z");
 
 // A "result holder" that is BOTH awaitable (for the no-limit recentWakeups
 // query) AND has a `.limit(n)` (for the staleThreads query, which the real code
@@ -51,15 +55,20 @@ function holder(rows: object[]) {
 
 function makeDb({
   chroniclerRows = [{ agentId: AGENT_ID, companyId: COMPANY_ID }],
-  staleThreads = [{ id: THREAD_1 }, { id: THREAD_2 }],
+  companyConfigRows = [{ crewPaused: false }],
+  staleThreads = [{ id: THREAD_1, lastEntryAt: LAST_ENTRY_AT }, { id: THREAD_2, lastEntryAt: LAST_ENTRY_AT }],
   recentWakeups = [] as object[],
+  finishedWakeups = [] as object[],
 }: {
   chroniclerRows?: object[];
+  companyConfigRows?: object[];
   staleThreads?: object[];
   recentWakeups?: object[];
+  finishedWakeups?: object[];
 } = {}) {
-  // select call order: 1) chronicler agents (innerJoin) 2) staleThreads 3) recentWakeups
-  const seq = [staleThreads, recentWakeups];
+  // select call order: 1) chronicler agents (innerJoin) 2) company config
+  // 3) staleThreads 4) recentWakeups 5) finishedWakeups
+  const seq = [companyConfigRows, staleThreads, recentWakeups, finishedWakeups];
   let seqCall = 0;
 
   const insertSpy = vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue([]) });
@@ -86,6 +95,22 @@ describe("runChroniclerSweep", () => {
     expect(result.queued).toBe(2);
   });
 
+  it("stale-thread query excludes paused threads", async () => {
+    const db = makeDb();
+    await runChroniclerSweep(db as any);
+
+    expect(eq).toHaveBeenCalledWith("crewPaused", false);
+  });
+
+  it("returns 0 and queues nothing when company crew is paused", async () => {
+    const db = makeDb({ companyConfigRows: [{ crewPaused: true }] });
+
+    const result = await runChroniclerSweep(db as any);
+
+    expect(result.queued).toBe(0);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it("returns 0 when no Chronicler agents found", async () => {
     const db = makeDb({ chroniclerRows: [] });
     const result = await runChroniclerSweep(db as any);
@@ -101,6 +126,21 @@ describe("runChroniclerSweep", () => {
     });
     const result = await runChroniclerSweep(db as any);
     expect(result.queued).toBe(0);
+  });
+
+  it("does not requeue the same stale thread immediately after a completed Chronicler wake", async () => {
+    const db = makeDb({
+      staleThreads: [{ id: THREAD_1, lastEntryAt: LAST_ENTRY_AT }],
+      recentWakeups: [],
+      finishedWakeups: [
+        { payload: { threadId: THREAD_1 }, finishedAt: FINISHED_AFTER_LAST_ENTRY },
+      ],
+    });
+
+    const result = await runChroniclerSweep(db as any);
+
+    expect(result.queued).toBe(0);
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it("queues 0 when no stale threads", async () => {

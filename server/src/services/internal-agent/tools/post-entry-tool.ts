@@ -1,6 +1,15 @@
 import type { AgentTool } from "../types.js";
 import { parseMentions, processMentions } from "../../threads.js";
 
+function buildPostReplyIdempotencyKey(input: {
+  runId: string;
+  agentId?: string | null;
+  parentEntryId?: string | null;
+  content: string;
+}) {
+  return `${input.runId}:post_reply:${input.agentId ?? "agent"}:${input.parentEntryId ?? "root"}:${input.content}`;
+}
+
 export function createPostEntryTool(): AgentTool {
   return {
     name: "post_entry",
@@ -36,6 +45,44 @@ export function createPostEntryTool(): AgentTool {
         string,
         unknown
       >;
+
+      if (ctx.discussionRunMode === "controller_action_gate") {
+        if (!ctx.runId) {
+          return {
+            success: false,
+            data: null,
+            summary: "Cannot queue thread reply without a run id",
+            error: "MISSING_RUN_ID",
+          };
+        }
+
+        const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+        const action = await threadAgentActionService(ctx.db).proposeThreadAction({
+          companyId: ctx.companyId,
+          threadId: threadId as string,
+          runId: ctx.runId,
+          agentId: ctx.agentId ?? null,
+          actionType: "post_reply",
+          payload: {
+            rawContent: content as string,
+            parentEntryId: (parentEntryId as string) ?? null,
+            sourceInfo: (sourceInfo as Record<string, unknown>) ?? null,
+          },
+          idempotencyKey: buildPostReplyIdempotencyKey({
+            runId: ctx.runId,
+            agentId: ctx.agentId,
+            parentEntryId: (parentEntryId as string) ?? null,
+            content: content as string,
+          }),
+          freshness: ctx.threadFreshness ?? {},
+        }) as { id?: string };
+
+        return {
+          success: true,
+          data: { actionId: action.id, queued: true },
+          summary: "Queued thread reply for freshness-checked commit",
+        };
+      }
 
       const entry = await ctx.services.discussions.addEntry(
         ctx.companyId,

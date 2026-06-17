@@ -1,19 +1,34 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
+  assets,
   artifacts,
+  discussionEntries,
+  discussions,
   issueAttachments,
   issueComments,
   issueContextBundleItems,
   issueContextBundles,
   issues,
   memoryItems,
+  threadScopeItems,
+  threadScopeVersions,
 } from "@armyofagents/db";
 import { unprocessable } from "../errors.js";
 
-type ContextBundleDb = Pick<Db, "select" | "insert">;
+type ContextBundleDb = Pick<Db, "select" | "insert" | "update">;
 
-export const CONTEXT_BUNDLE_ITEM_TYPES = ["comment", "attachment", "artifact", "memory", "text"] as const;
+export const CONTEXT_BUNDLE_ITEM_TYPES = [
+  "comment",
+  "attachment",
+  "artifact",
+  "memory",
+  "text",
+  "discussion_entry",
+  "asset",
+  "url",
+  "scope_item",
+] as const;
 export type ContextBundleItemType = (typeof CONTEXT_BUNDLE_ITEM_TYPES)[number];
 
 export type CreateIssueContextBundleItemInput = {
@@ -25,7 +40,11 @@ export type CreateIssueContextBundleItemInput = {
 
 export type CreateIssueContextBundleInput = {
   companyId: string;
-  sourceIssueId: string;
+  sourceIssueId?: string | null;
+  sourceDiscussionId?: string | null;
+  sourceScopeVersionId?: string | null;
+  sourceScopeItemId?: string | null;
+  sourceKind?: "issue" | "discussion_scope" | string | null;
   targetIssueId: string;
   brief?: string | null;
   items?: CreateIssueContextBundleItemInput[];
@@ -33,7 +52,11 @@ export type CreateIssueContextBundleInput = {
   createdByUserId?: string | null;
 };
 
-const MAX_CONTEXT_BUNDLE_ITEMS = 10;
+const MAX_CONTEXT_BUNDLE_ITEMS = 20;
+
+export function isContextBundleItemIncluded(item: { metadata?: Record<string, unknown> | null }) {
+  return item.metadata?.includeInAgentContext !== false;
+}
 
 function isContextBundleItemType(value: string): value is ContextBundleItemType {
   return (CONTEXT_BUNDLE_ITEM_TYPES as readonly string[]).includes(value);
@@ -53,12 +76,30 @@ async function assertIssueInCompany(db: ContextBundleDb, companyId: string, issu
   if (!row) throw unprocessable(`${field} does not belong to this company`);
 }
 
+async function assertDiscussionInCompany(db: ContextBundleDb, companyId: string, discussionId: string, field: string) {
+  const row = await db
+    .select({ id: discussions.id })
+    .from(discussions)
+    .where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!row) throw unprocessable(`${field} does not belong to this company`);
+}
+
+async function assertScopeVersionInCompany(db: ContextBundleDb, companyId: string, scopeVersionId: string, field: string) {
+  const row = await db
+    .select({ id: threadScopeVersions.id })
+    .from(threadScopeVersions)
+    .where(and(eq(threadScopeVersions.id, scopeVersionId), eq(threadScopeVersions.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!row) throw unprocessable(`${field} does not belong to this company`);
+}
+
 async function assertContextItemInCompany(db: ContextBundleDb, companyId: string, item: CreateIssueContextBundleItemInput) {
   if (!isContextBundleItemType(item.type)) {
     throw unprocessable(`Unsupported context item type: ${item.type}`);
   }
 
-  if (item.type === "text") return;
+  if (item.type === "text" || item.type === "url") return;
 
   const sourceId = requireSourceId(item);
   const lookup =
@@ -74,13 +115,29 @@ async function assertContextItemInCompany(db: ContextBundleDb, companyId: string
             .where(and(eq(issueAttachments.id, sourceId), eq(issueAttachments.companyId, companyId)))
         : item.type === "artifact"
           ? db
-              .select({ id: artifacts.id })
-              .from(artifacts)
-              .where(and(eq(artifacts.id, sourceId), eq(artifacts.companyId, companyId)))
-          : db
-              .select({ id: memoryItems.id })
-              .from(memoryItems)
-              .where(and(eq(memoryItems.id, sourceId), eq(memoryItems.companyId, companyId)));
+            .select({ id: artifacts.id })
+            .from(artifacts)
+            .where(and(eq(artifacts.id, sourceId), eq(artifacts.companyId, companyId)))
+          : item.type === "memory"
+            ? db
+                .select({ id: memoryItems.id })
+                .from(memoryItems)
+                .where(and(eq(memoryItems.id, sourceId), eq(memoryItems.companyId, companyId)))
+            : item.type === "discussion_entry"
+              ? db
+                  .select({ id: discussionEntries.id })
+                  .from(discussionEntries)
+                  .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+                  .where(and(eq(discussionEntries.id, sourceId), eq(discussions.companyId, companyId)))
+              : item.type === "asset"
+                ? db
+                    .select({ id: assets.id })
+                    .from(assets)
+                    .where(and(eq(assets.id, sourceId), eq(assets.companyId, companyId)))
+                : db
+                    .select({ id: threadScopeItems.id })
+                    .from(threadScopeItems)
+                    .where(and(eq(threadScopeItems.id, sourceId), eq(threadScopeItems.companyId, companyId)));
 
   const row = await lookup.then((rows) => rows[0] ?? null);
   if (!row) throw unprocessable(`Context item ${item.type} does not belong to this company`);
@@ -92,7 +149,25 @@ export async function validateContextBundleItems(db: ContextBundleDb, input: Cre
     throw unprocessable(`At most ${MAX_CONTEXT_BUNDLE_ITEMS} context items are allowed`);
   }
 
-  await assertIssueInCompany(db, input.companyId, input.sourceIssueId, "sourceIssueId");
+  if (!input.sourceIssueId && !input.sourceDiscussionId) {
+    throw unprocessable("Context bundle requires sourceIssueId or sourceDiscussionId");
+  }
+
+  if (input.sourceIssueId) {
+    await assertIssueInCompany(db, input.companyId, input.sourceIssueId, "sourceIssueId");
+  }
+  if (input.sourceDiscussionId) {
+    await assertDiscussionInCompany(db, input.companyId, input.sourceDiscussionId, "sourceDiscussionId");
+  }
+  if (input.sourceScopeVersionId) {
+    await assertScopeVersionInCompany(db, input.companyId, input.sourceScopeVersionId, "sourceScopeVersionId");
+  }
+  if (input.sourceScopeItemId) {
+    await assertContextItemInCompany(db, input.companyId, {
+      type: "scope_item",
+      id: input.sourceScopeItemId,
+    });
+  }
   await assertIssueInCompany(db, input.companyId, input.targetIssueId, "targetIssueId");
 
   for (const item of items) {
@@ -107,7 +182,11 @@ export async function createIssueContextBundle(db: ContextBundleDb, input: Creat
     .insert(issueContextBundles)
     .values({
       companyId: input.companyId,
-      sourceIssueId: input.sourceIssueId,
+      sourceIssueId: input.sourceIssueId ?? null,
+      sourceDiscussionId: input.sourceDiscussionId ?? null,
+      sourceScopeVersionId: input.sourceScopeVersionId ?? null,
+      sourceScopeItemId: input.sourceScopeItemId ?? null,
+      sourceKind: input.sourceKind ?? (input.sourceDiscussionId ? "discussion_scope" : "issue"),
       targetIssueId: input.targetIssueId,
       brief: input.brief ?? null,
       createdByAgentId: input.createdByAgentId ?? null,
@@ -148,4 +227,48 @@ export async function listIssueContextBundlesForIssue(db: ContextBundleDb, compa
     results.push({ ...bundle, items });
   }
   return results;
+}
+
+export async function setIssueContextBundleItemIncluded(
+  db: ContextBundleDb,
+  input: {
+    companyId: string;
+    targetIssueId: string;
+    itemId: string;
+    included: boolean;
+  },
+) {
+  const existing = await db
+    .select({
+      id: issueContextBundleItems.id,
+      metadata: issueContextBundleItems.metadata,
+      bundleId: issueContextBundleItems.bundleId,
+      targetIssueId: issueContextBundles.targetIssueId,
+    })
+    .from(issueContextBundleItems)
+    .innerJoin(issueContextBundles, eq(issueContextBundles.id, issueContextBundleItems.bundleId))
+    .where(and(
+      eq(issueContextBundleItems.companyId, input.companyId),
+      eq(issueContextBundleItems.id, input.itemId),
+      eq(issueContextBundles.targetIssueId, input.targetIssueId),
+    ))
+    .then((rows) => rows[0] ?? null);
+
+  if (!existing) return null;
+
+  const metadata = {
+    ...(existing.metadata ?? {}),
+    includeInAgentContext: input.included,
+  };
+
+  const [updated] = await db
+    .update(issueContextBundleItems)
+    .set({ metadata })
+    .where(and(
+      eq(issueContextBundleItems.companyId, input.companyId),
+      eq(issueContextBundleItems.id, input.itemId),
+    ))
+    .returning();
+
+  return updated ?? null;
 }

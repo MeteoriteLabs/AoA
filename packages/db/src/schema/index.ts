@@ -81,6 +81,9 @@ export {
   threadInboxItems,
   discussionEntryAttachments,
 } from "./threads.js";
+export { threadScopeVersions } from "./thread_scope_versions.js";
+export { threadScopeItems, threadScopeArtifactLinks } from "./thread_scope_items.js";
+export { threadAgentActions } from "./thread_agent_actions.js";
 export { threadOrchestrationState } from "./thread_orchestration_state.js";
 export {
   internalAgentConfig,

@@ -97,6 +97,20 @@ vi.mock("@armyofagents/db", () => ({
     id: "agents_id",
     name: "agents_name",
   },
+  threadScopeVersions: {
+    id: "tsv_id",
+    companyId: "tsv_company_id",
+    threadId: "tsv_thread_id",
+    versionNumber: "tsv_version_number",
+    status: "tsv_status",
+    sourceEndSeq: "tsv_source_end_seq",
+    createdAt: "tsv_created_at",
+  },
+  threadScopeItems: {
+    id: "tsi_id",
+    scopeVersionId: "tsi_scope_version_id",
+    status: "tsi_status",
+  },
   authUsers: {
     id: "auth_users_id",
     name: "auth_users_name",
@@ -254,6 +268,14 @@ describe("discussionService", () => {
           participantPreview: [],
           participantCount: 0,
           linkCount: 0,
+          derivedStage: {
+            stage: "discussing",
+            label: "Discussing v1",
+            versionNumber: 1,
+            scopeVersionId: null,
+            hasNewEntries: false,
+            newEntryCount: 0,
+          },
         },
       ]);
       expect(db.select).toHaveBeenCalled();
@@ -277,6 +299,14 @@ describe("discussionService", () => {
           participantPreview: [],
           participantCount: 0,
           linkCount: 0,
+          derivedStage: {
+            stage: "discussing",
+            label: "Discussing v1",
+            versionNumber: 1,
+            scopeVersionId: null,
+            hasNewEntries: false,
+            newEntryCount: 0,
+          },
         },
       ]);
       expect(db.selectDistinctOn).toHaveBeenCalled();
@@ -299,6 +329,14 @@ describe("discussionService", () => {
           participantPreview: [],
           participantCount: 0,
           linkCount: 0,
+          derivedStage: {
+            stage: "discussing",
+            label: "Discussing v1",
+            versionNumber: 1,
+            scopeVersionId: null,
+            hasNewEntries: false,
+            newEntryCount: 0,
+          },
         },
       ]);
     });

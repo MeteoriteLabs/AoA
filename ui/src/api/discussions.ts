@@ -24,6 +24,16 @@ export interface DiscussionListItem {
   participantPreview?: DiscussionParticipantPreview[];
   participantCount?: number;
   linkCount?: number;
+  derivedStage?: ThreadDerivedStage;
+}
+
+export interface ThreadDerivedStage {
+  stage: "live" | "discussing" | "scoping" | "scoped" | "assigned" | "complete" | "archived";
+  label: string;
+  versionNumber: number | null;
+  scopeVersionId: string | null;
+  hasNewEntries: boolean;
+  newEntryCount: number;
 }
 
 export interface DiscussionParticipantPreview {
@@ -128,6 +138,83 @@ export interface DiscussionDetail {
   entries: DiscussionEntry[];
   crewPaused: boolean;
   autonomyLevel: number | null;
+  derivedStage?: ThreadDerivedStage;
+}
+
+export type ThreadScopeVersionStatus = "draft" | "accepted" | "superseded" | "completed" | "rejected";
+export type ThreadScopeItemKind =
+  | "task_proposal"
+  | "task_change"
+  | "memory_candidate"
+  | "artifact_link"
+  | "decision"
+  | "assumption"
+  | "open_question"
+  | "source_signal";
+export type ThreadScopeItemStatus = "draft" | "accepted" | "applied" | "rejected";
+
+export interface ThreadScopeVersionSummary {
+  id: string;
+  threadId: string;
+  versionNumber: number;
+  status: ThreadScopeVersionStatus;
+  sourceStartSeq: number;
+  sourceEndSeq: number;
+  summary: string;
+  assumptions: unknown[];
+  decisions: unknown[];
+  openQuestions: unknown[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ThreadScopeItem {
+  id: string;
+  kind: ThreadScopeItemKind;
+  status: ThreadScopeItemStatus;
+  title: string;
+  description: string | null;
+  payload: Record<string, unknown>;
+  sourceEntryIds: unknown[];
+  resultIssueId: string | null;
+  resultMemoryId: string | null;
+  artifactId: string | null;
+  artifactVersionId: string | null;
+}
+
+export interface ThreadScopeVersionDetail extends ThreadScopeVersionSummary {
+  items: ThreadScopeItem[];
+}
+
+export interface ThreadScopeVersionsResponse {
+  versions: ThreadScopeVersionSummary[];
+  total: number;
+}
+
+export interface ReviewScopeItemsRequest {
+  items: Array<{ itemId: string; status: "draft" | "accepted" | "rejected" }>;
+}
+
+export interface UpdateScopeItemRequest {
+  title?: string;
+  description?: string | null;
+  payload?: Record<string, unknown>;
+  sourceEntryIds?: string[];
+  status?: "draft" | "accepted" | "rejected";
+}
+
+export interface CreateScopeOutputItemResponse {
+  ok: boolean;
+  item: ThreadScopeItem;
+  createdTask?: {
+    id: string;
+    assigneeAgentId: string | null;
+    workMode: string | null;
+    sourceDiscussionId?: string | null;
+    scopeVersionId?: string | null;
+  };
+  createdMemoryId?: string;
+  artifactLinkId?: string;
 }
 
 // TODO: Verify ApproveItemsResponse shape matches backend — spec shows object arrays
@@ -255,6 +342,85 @@ export const discussionsApi = {
   approveProposal: (companyId: string, discussionId: string, proposalEntryId: string) =>
     api.post<{ alreadyApproved: boolean; tasksCreated: string[] }>(
       `/companies/${companyId}/discussions/${discussionId}/proposals/${proposalEntryId}/approve`,
+      {},
+    ),
+
+  listScopeVersions: (companyId: string, discussionId: string) =>
+    api.get<ThreadScopeVersionsResponse>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions`,
+    ),
+
+  getScopeVersion: (companyId: string, discussionId: string, scopeVersionId: string) =>
+    api.get<ThreadScopeVersionDetail>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}`,
+    ),
+
+  createScopeDraft: (
+    companyId: string,
+    discussionId: string,
+    data: { summary?: string; assumptions?: unknown[]; decisions?: unknown[]; openQuestions?: unknown[]; mode?: "generate" | "manual" } = {},
+  ) =>
+    api.post<{ status: "created" | "existing_draft" | "no_entries"; version?: ThreadScopeVersionSummary }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/draft`,
+      data,
+    ),
+
+  acceptScopeVersion: (companyId: string, discussionId: string, scopeVersionId: string, itemIds: string[]) =>
+    api.post<{ ok: boolean; alreadyAccepted?: boolean; createdTasks?: unknown[]; appliedItems?: unknown[] }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/accept`,
+      { itemIds },
+    ),
+
+  reviewScopeItems: (
+    companyId: string,
+    discussionId: string,
+    scopeVersionId: string,
+    data: ReviewScopeItemsRequest,
+  ) =>
+    api.post<{ ok: boolean; updatedItems: ThreadScopeItem[] }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/items/review`,
+      data,
+    ),
+
+  updateScopeItem: (
+    companyId: string,
+    discussionId: string,
+    scopeVersionId: string,
+    itemId: string,
+    data: UpdateScopeItemRequest,
+  ) =>
+    api.patch<{ ok: boolean; item: ThreadScopeItem }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/items/${itemId}`,
+      data,
+    ),
+
+  createScopeOutputItem: (
+    companyId: string,
+    discussionId: string,
+    scopeVersionId: string,
+    itemId: string,
+    data: { memoryStatus?: "approved" | "pending" } = {},
+  ) =>
+    api.post<CreateScopeOutputItemResponse>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/items/${itemId}/create`,
+      data,
+    ),
+
+  applyScopeVersion: (companyId: string, discussionId: string, scopeVersionId: string) =>
+    api.post<{ ok: boolean; createdTasks?: unknown[]; appliedItems?: unknown[] }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/apply`,
+      {},
+    ),
+
+  rejectScopeVersion: (companyId: string, discussionId: string, scopeVersionId: string) =>
+    api.post<{ ok: boolean }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/reject`,
+      {},
+    ),
+
+  completeScopeVersion: (companyId: string, discussionId: string, scopeVersionId: string) =>
+    api.post<{ ok: boolean }>(
+      `/companies/${companyId}/discussions/${discussionId}/scope-versions/${scopeVersionId}/complete`,
       {},
     ),
 };

@@ -29,6 +29,20 @@ vi.mock("@armyofagents/db", () => ({
   agents: { id: "ag_id", name: "ag_name", icon: "ag_icon" },
   projects: {}, goals: {},
   threadPlanSteps: { id: "tps_id", threadId: "tps_thread", stepOrder: "tps_order" },
+  threadScopeVersions: {
+    id: "tsv_id",
+    companyId: "tsv_company_id",
+    threadId: "tsv_thread_id",
+    versionNumber: "tsv_version_number",
+    status: "tsv_status",
+    sourceEndSeq: "tsv_source_end_seq",
+    createdAt: "tsv_created_at",
+  },
+  threadScopeItems: {
+    id: "tsi_id",
+    scopeVersionId: "tsi_scope_version_id",
+    status: "tsi_status",
+  },
   // Phase E batch 2 (T22): thread_participants + auth users (joined in getById)
   threadParticipants: {
     id: "tp_id",

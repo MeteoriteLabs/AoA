@@ -967,6 +967,27 @@
       "when": 1780480105434,
       "tag": "0137_worthless_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1780862424983,
+      "tag": "0138_left_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 139,
+      "version": "7",
+      "when": 1781196064840,
+      "tag": "0139_watery_nighthawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1781523660786,
+      "tag": "0140_brainy_toad",
+      "breakpoints": true
     }
   ]
 }

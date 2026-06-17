@@ -28,6 +28,7 @@ import { threadOrchestrationService } from "./thread-orchestration.js";
 // new load-time cost or cycle (discussions → threads is one-directional;
 // threads.ts does not import discussions.ts).
 import { parseMentions } from "./threads.js";
+import { deriveThreadStage, loadLatestScopeForThreadStages } from "./thread-scope-versions.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
 // Several test suites (notably cli-mode.test.ts) partially mock node:child_process
@@ -257,14 +258,23 @@ async function enrichDiscussionListRows(
     );
   }
 
+  const latestScopesByThread = await loadLatestScopeForThreadStages(db, companyId, ids);
+
   return rows.map((row) => {
     const participants = participantsByThread.get(row.id) ?? [];
+    const latestScope = latestScopesByThread.get(row.id) ?? null;
     return {
       ...row,
       scopeName: row.scopeId ? scopeNames.get(row.scopeId) ?? null : null,
       participantPreview: participants.slice(0, 3),
       participantCount: participants.length,
       linkCount: linkCountByThread.get(row.id) ?? 0,
+      derivedStage: deriveThreadStage({
+        subtype: row.subtype,
+        status: row.status,
+        entrySeq: row.entrySeq ?? 0,
+        latest: latestScope,
+      }),
     };
   });
 }
@@ -610,7 +620,21 @@ export function discussionService(db: Db) {
         };
       });
 
-      return { ...discussion, entries: enrichedEntries, planSteps, participants };
+      const latestScopesByThread = await loadLatestScopeForThreadStages(db, companyId, [id]);
+      const latestScope = latestScopesByThread.get(id) ?? null;
+
+      return {
+        ...discussion,
+        entries: enrichedEntries,
+        planSteps,
+        participants,
+        derivedStage: deriveThreadStage({
+          subtype: discussion.subtype,
+          status: discussion.status,
+          entrySeq: discussion.entrySeq ?? 0,
+          latest: latestScope,
+        }),
+      };
     },
 
     /**

@@ -23,6 +23,7 @@ export function createDiscussionDb(selectQueue: any[][]) {
       innerJoin: vi.fn().mockReturnThis(),
       leftJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
+      groupBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),

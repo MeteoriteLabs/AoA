@@ -35,6 +35,11 @@ vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContext: () 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
 vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefined), unlink: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
+vi.mock("../services/thread-agent-actions.js", () => ({
+  threadAgentActionService: () => ({
+    commitThreadAgentActions: vi.fn().mockResolvedValue({ committed: 0, suppressed: 0, blocked: 0, failed: 0 }),
+  }),
+}));
 
 // The crew context bundle — module-mocked. Its internals are tested separately.
 vi.mock("../services/internal-agent/aoa-agents/crew-context-bundle.js", () => ({

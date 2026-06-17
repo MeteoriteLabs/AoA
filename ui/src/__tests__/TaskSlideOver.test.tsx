@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
@@ -91,7 +92,8 @@ vi.mock("@tanstack/react-query", async () => {
           key.includes("runs") || key.includes("approvals") ||
           key.includes("attachments") || key.includes("liveRuns") ||
           key.includes("dependencies") || key.includes("list") ||
-          key.includes("agents") || key.includes("projects")) {
+          key.includes("agents") || key.includes("projects") ||
+          key.includes("contextBundles")) {
         return { data: [], isLoading: false, error: null };
       }
       // activeRun returns null
@@ -114,9 +116,9 @@ vi.mock("@tanstack/react-query", async () => {
     }),
     useQueries: ({ queries }: any) =>
       (queries ?? []).map(() => ({ data: null, isLoading: false, error: null })),
-    useMutation: () => ({
-      mutate: vi.fn(),
-      mutateAsync: vi.fn().mockResolvedValue({}),
+    useMutation: (options: any = {}) => ({
+      mutate: vi.fn((variables: unknown) => options.mutationFn?.(variables)),
+      mutateAsync: vi.fn((variables: unknown) => options.mutationFn?.(variables) ?? Promise.resolve({})),
       isPending: false,
       isSuccess: false,
       isError: false,
@@ -169,7 +171,15 @@ vi.mock("../hooks/useProjectOrder", () => ({
 }));
 
 vi.mock("../api/issues", () => ({
-  issuesApi: { get: vi.fn(), update: vi.fn(), addComment: vi.fn(), markRead: vi.fn(), delete: vi.fn() },
+  issuesApi: {
+    get: vi.fn(),
+    update: vi.fn(),
+    addComment: vi.fn(),
+    markRead: vi.fn(),
+    delete: vi.fn(),
+    listContextBundles: vi.fn().mockResolvedValue([]),
+    updateContextBundleItemIncluded: vi.fn().mockResolvedValue({}),
+  },
 }));
 
 vi.mock("../api/dependencies", () => ({
@@ -320,7 +330,8 @@ vi.mock("@/components/ui/popover", () => ({
   PopoverContent: ({ children }: any) => <div>{children}</div>,
 }));
 
-import { TaskSlideOver } from "../components/TaskSlideOver";
+import { issuesApi } from "../api/issues";
+import { TaskDetailPanel, TaskSlideOver } from "../components/TaskSlideOver";
 
 function renderSlideOver(props: { issueId: string | null; open: boolean }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -328,6 +339,26 @@ function renderSlideOver(props: { issueId: string | null; open: boolean }) {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <TaskSlideOver issueId={props.issueId} open={props.open} onClose={mockOnClose} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderTaskDetailPanel(props: {
+  issueId: string | null;
+  open?: boolean;
+  onOpenScopeHandoffItem?: ComponentProps<typeof TaskDetailPanel>["onOpenScopeHandoffItem"];
+}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <TaskDetailPanel
+          issueId={props.issueId}
+          open={props.open ?? true}
+          embedded
+          onOpenScopeHandoffItem={props.onOpenScopeHandoffItem}
+        />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -357,6 +388,251 @@ describe("TaskSlideOver", () => {
     const editors = screen.getAllByTestId("inline-editor");
     expect(editors[0]).toHaveTextContent("Fix login bug");
     expect(editors[1]).toHaveTextContent("The login page has a bug");
+  });
+
+  it("renders the task detail body without opening a Sheet when embedded", () => {
+    renderTaskDetailPanel({ issueId: "issue-1" });
+    expect(screen.queryByTestId("sheet")).not.toBeInTheDocument();
+    expect(screen.getByTestId("task-detail-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("issue-properties")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+  });
+
+  it("shows scope handoff context for discussion-created tasks", () => {
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected scope evidence.",
+              items: [
+                {
+                  id: "item-1",
+                  itemType: "discussion_entry",
+                  sourceId: "entry-1",
+                  label: "Founder request",
+                  metadata: { excerpt: "Need guided onboarding cleanup." },
+                },
+                {
+                  id: "item-2",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetailPanel({ issueId: "issue-1" });
+
+    expect(screen.getByText("Scope handoff")).toBeInTheDocument();
+    expect(screen.getByText("Use selected scope evidence.")).toBeInTheDocument();
+    expect(screen.getByText("Founder request")).toBeInTheDocument();
+    expect(screen.getByText("https://example.com/ref")).toBeInTheDocument();
+  });
+
+  it("shows editable scope handoff between dependencies and attachments in the main slide-over", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceScopeVersionId: "scope-v1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-1",
+                  itemType: "asset",
+                  sourceId: "asset-1",
+                  label: "interview-notes.pdf",
+                  metadata: { contentType: "application/pdf" },
+                },
+                {
+                  id: "item-artifact",
+                  itemType: "artifact",
+                  sourceId: "artifact-1",
+                  label: "Design spec",
+                  metadata: { artifactVersionId: "version-1" },
+                },
+                {
+                  id: "item-2",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref", includeInAgentContext: false },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    const dependencies = screen.getByText("Dependencies");
+    const handoff = screen.getByTestId("task-scope-handoff");
+    const attachments = screen.getByText("Attachments");
+    expect(dependencies.compareDocumentPosition(handoff) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(handoff.compareDocumentPosition(attachments) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("interview-notes.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open handoff item: interview-notes\.pdf/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open handoff item: Design spec/i })).toBeInTheDocument();
+    expect(screen.getAllByText("In context")).toHaveLength(2);
+    expect(screen.getByText("Excluded")).toBeInTheDocument();
+    expect(screen.queryByText("Included in agent context")).not.toBeInTheDocument();
+    expect(screen.queryByText("Excluded from agent context")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Exclude interview-notes\.pdf from agent context/i }));
+    expect(issuesApi.updateContextBundleItemIncluded).toHaveBeenCalledWith("issue-1", "item-1", false);
+  });
+
+  it("opens scope handoff items through the embedded task viewer callback", async () => {
+    const user = userEvent.setup();
+    const onOpenScopeHandoffItem = vi.fn();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-url",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetailPanel({
+      issueId: "issue-1",
+      onOpenScopeHandoffItem,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Open handoff item: Reference URL/i }));
+
+    expect(onOpenScopeHandoffItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "item-url", itemType: "url" }),
+    );
+  });
+
+  it("opens URL scope handoff rows from the main slide-over", async () => {
+    const user = userEvent.setup();
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-url",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderSlideOver({ issueId: "issue-1", open: true });
+    await user.click(screen.getByRole("button", { name: /Open handoff item: Reference URL/i }));
+
+    expect(openSpy).toHaveBeenCalledWith("https://example.com/ref", "_blank", "noopener,noreferrer");
+    openSpy.mockRestore();
   });
 
   it("renders properties section", () => {

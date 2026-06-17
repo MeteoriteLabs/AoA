@@ -63,6 +63,16 @@ export interface ToolContext {
   conversationId?: string | null;
   /** Current internal agent run id, when available. */
   runId?: string | null;
+  /** Discussion controller runs queue visible side effects until freshness commit. */
+  discussionRunMode?: "direct" | "controller_action_gate" | null;
+  /** Thread freshness snapshot captured when the controller/participation run started. */
+  threadFreshness?: {
+    startEpoch?: number;
+    latestHumanSeq?: number;
+    entrySeq?: number;
+    latestScopeVersionId?: string | null;
+    latestScopeVersionStatus?: string | null;
+  } | null;
   /** Current structured Commander UI/runtime scope, when available. */
   contextScope?: NormalizedCommanderContextScope | null;
   /** Commander per-tool policy overrides from internal_agent_config. */

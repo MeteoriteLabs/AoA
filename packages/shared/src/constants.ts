@@ -821,6 +821,64 @@ export type ThreadIntent = (typeof THREAD_INTENTS)[number];
 export const THREAD_PHASES = ["discuss", "scope", "assign", "done"] as const;
 export type ThreadPhase = (typeof THREAD_PHASES)[number];
 
+export const THREAD_SCOPE_VERSION_STATUSES = [
+  "draft",
+  "accepted",
+  "superseded",
+  "completed",
+  "rejected",
+] as const;
+export type ThreadScopeVersionStatus = (typeof THREAD_SCOPE_VERSION_STATUSES)[number];
+
+export const THREAD_SCOPE_ITEM_KINDS = [
+  "task_proposal",
+  "task_change",
+  "memory_candidate",
+  "artifact_link",
+  "decision",
+  "assumption",
+  "open_question",
+  "source_signal",
+] as const;
+export type ThreadScopeItemKind = (typeof THREAD_SCOPE_ITEM_KINDS)[number];
+
+export const THREAD_SCOPE_ITEM_STATUSES = ["draft", "accepted", "applied", "rejected"] as const;
+export type ThreadScopeItemStatus = (typeof THREAD_SCOPE_ITEM_STATUSES)[number];
+
+export const THREAD_AGENT_ACTION_TYPES = [
+  "post_reply",
+  "create_scope_draft",
+  "update_scope_draft",
+  "add_scope_item",
+  "create_scope_output",
+  "convene_agent",
+  "create_artifact_candidate",
+  "advance_phase",
+  "request_thread_workspace",
+] as const;
+export type ThreadAgentActionType = (typeof THREAD_AGENT_ACTION_TYPES)[number];
+
+export const THREAD_AGENT_ACTION_STATUSES = [
+  "proposed",
+  "committing",
+  "committed",
+  "suppressed_stale",
+  "blocked_policy",
+  "failed",
+] as const;
+export type ThreadAgentActionStatus = (typeof THREAD_AGENT_ACTION_STATUSES)[number];
+
+export const THREAD_DERIVED_STAGES = [
+  "live",
+  "discussing",
+  "scoping",
+  "scoped",
+  "assigned",
+  "complete",
+  "archived",
+] as const;
+export type ThreadDerivedStage = (typeof THREAD_DERIVED_STAGES)[number];
+
 // Phase 1 (Task A2): canonicalized from legacy ["open", "private"] to the
 // 3-tier model used across the new thread coordination contract. Existing
 // rows defaulting to "open" are migrated to "company" (open ≈ everyone with

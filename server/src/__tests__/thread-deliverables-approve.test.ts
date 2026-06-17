@@ -826,10 +826,12 @@ describe("parseScopeProposalContent (pure helper via importActual)", () => {
       summary: "Proposal",
       proposedTasks: [{ title: "T1" }],
       proposalCursorSeq: 12,
+      scopeVersionId: "scope-version-1",
     });
     const result = parseScopeProposalContent(raw);
     expect(result).not.toBeNull();
     expect(result?.proposalCursorSeq).toBe(12);
+    expect(result?.scopeVersionId).toBe("scope-version-1");
     expect(result?.proposedTasks[0].title).toBe("T1");
   });
 

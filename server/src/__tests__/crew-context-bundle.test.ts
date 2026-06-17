@@ -37,8 +37,11 @@ vi.mock("@armyofagents/db", () => ({
   discussions: tableProxy("discussions"),
   agents: tableProxy("agents"),
   issues: tableProxy("issues"),
+  projects: tableProxy("projects"),
   artifacts: tableProxy("artifacts"),
   artifactVersions: tableProxy("artifactVersions"),
+  issueContextBundles: tableProxy("issueContextBundles"),
+  issueContextBundleItems: tableProxy("issueContextBundleItems"),
 }));
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
@@ -153,6 +156,123 @@ describe("buildCrewContextBundle", () => {
     // Upstream deliverable rendered.
     expect(out).toContain("Upstream deliverable:");
     expect(out).toContain("Use SAML 2.0 with the IdP-initiated flow.");
+  });
+
+  it("(b2) task branch: scopes memory search to the task's project and goal", async () => {
+    mockSearchMultiPath.mockResolvedValue([]);
+    const db = makeSeqDb([
+      [{
+        id: "task-9",
+        title: "Build the SSO login form",
+        description: "Implement SAML SSO per the approved spec.",
+        status: "todo",
+        priority: "high",
+        artifactId: null,
+        projectId: "project-auth",
+        projectType: "project",
+        goalId: "goal-enterprise",
+      }],
+    ]);
+
+    await buildCrewContextBundle(db as any, {
+      companyId: "co-1",
+      issueId: "task-9",
+      agentId: "agent-eng",
+    });
+
+    expect(mockSearchMultiPath).toHaveBeenCalledWith(
+      "co-1",
+      expect.stringContaining("Build the SSO login form"),
+      expect.objectContaining({
+        limit: 5,
+        projectId: "project-auth",
+        goalId: "goal-enterprise",
+      }),
+    );
+  });
+
+  it("(b2a) task branch: scopes memory search to departmentId when the task project is a department", async () => {
+    mockSearchMultiPath.mockResolvedValue([]);
+    const db = makeSeqDb([
+      [{
+        id: "task-10",
+        title: "Use discussion scope memory",
+        description: "The task should retrieve approved department memory.",
+        status: "todo",
+        priority: "high",
+        artifactId: null,
+        projectId: "dept-software",
+        projectType: "department",
+        goalId: null,
+      }],
+    ]);
+
+    await buildCrewContextBundle(db as any, {
+      companyId: "co-1",
+      issueId: "task-10",
+      agentId: "agent-eng",
+    });
+
+    expect(mockSearchMultiPath).toHaveBeenCalledWith(
+      "co-1",
+      expect.stringContaining("Use discussion scope memory"),
+      expect.objectContaining({
+        limit: 5,
+        departmentId: "dept-software",
+      }),
+    );
+    expect(mockSearchMultiPath.mock.calls[0][2]).not.toHaveProperty("projectId");
+  });
+
+  it("(b3) task branch: includes discussion-origin scope handoff context", async () => {
+    const db = makeSeqDb([
+      [{
+        id: "task-9",
+        title: "Build guided checklist",
+        description: "Use the accepted scope evidence.",
+        status: "todo",
+        priority: "high",
+        artifactId: null,
+        projectId: "project-onboarding",
+        goalId: "goal-activation",
+      }],
+      [{
+        id: "bundle-1",
+        sourceKind: "discussion_scope",
+        brief: "Use selected scope evidence.",
+      }],
+      [
+        {
+          itemType: "discussion_entry",
+          label: "Founder requirement",
+          metadata: { excerpt: "Need guided checklist" },
+        },
+        {
+          itemType: "artifact",
+          label: "Checklist mockup",
+          metadata: { artifactType: "design" },
+        },
+        {
+          itemType: "url",
+          label: "Reference URL",
+          metadata: { url: "https://example.com/ref" },
+        },
+      ],
+    ]);
+
+    const out = await buildCrewContextBundle(db as any, {
+      companyId: "co-1",
+      issueId: "task-9",
+      agentId: "agent-eng",
+    });
+
+    expect(out).toContain("Scope handoff:");
+    expect(out).toContain("Use selected scope evidence.");
+    expect(out).toContain("Founder requirement");
+    expect(out).toContain("Need guided checklist");
+    expect(out).toContain("Checklist mockup");
+    expect(out).toContain("design");
+    expect(out).toContain("https://example.com/ref");
   });
 
   // (c) MEMORY section populated when searchMultiPath returns items.

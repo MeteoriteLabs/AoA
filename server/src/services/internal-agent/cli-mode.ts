@@ -1,8 +1,9 @@
 import { execSync, spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
 import type { AgentTool } from "./types.js";
@@ -15,6 +16,8 @@ import {
 } from "./context-scope.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
 import { logger } from "../../middleware/logger.js";
+
+const require = createRequire(import.meta.url);
 
 function normalizeCliContextScope(
   scope: ChatInput["contextScope"] | undefined,
@@ -73,7 +76,7 @@ export async function detectCliTool(tool: string): Promise<CLIDetectionResult> {
 
 // ── MCP Config Builder ────────────────────────────────────────────────────────
 
-interface McpConfigParams {
+export interface McpConfigParams {
   companyId: string;
   userId: string;
   userRole: string;
@@ -87,6 +90,15 @@ interface McpConfigParams {
   actorType?: string;
   /** Agent DB ID — set as AOA_AGENT_ID in the bridge so tools can stamp authorAgentId. */
   agentId?: string;
+  runId?: string | null;
+  discussionRunMode?: "direct" | "controller_action_gate" | null;
+  threadFreshness?: {
+    startEpoch?: number;
+    latestHumanSeq?: number;
+    entrySeq?: number;
+    latestScopeVersionId?: string | null;
+    latestScopeVersionStatus?: string | null;
+  } | null;
   /** Resolved effective autonomy (D10: threadLevel ?? companyLevel). Absent → bridge uses null. */
   effectiveAutonomy?: number | null;
   /** Normalized structured Commander scope for memory/tool policy. */
@@ -133,9 +145,14 @@ export interface McpBridgeSpec {
  */
 export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
   const isTsBridge = params.bridgeEntrypoint.endsWith(".ts");
+  const tsxCliPath = isTsBridge
+    ? join(dirname(require.resolve("tsx/package.json")), "dist", "cli.mjs")
+    : null;
   return {
-    command: isTsBridge ? "tsx" : "node",
-    args: [params.bridgeEntrypoint],
+    command: isTsBridge ? process.execPath : "node",
+    args: isTsBridge && tsxCliPath
+      ? [tsxCliPath, params.bridgeEntrypoint]
+      : [params.bridgeEntrypoint],
     env: {
       // The bridge owns stdout for JSON-RPC frames. Force its pino logger to
       // stderr (see middleware/logger.ts) so a stray log (e.g. the embeddings
@@ -158,6 +175,9 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
         : {}),
       ...(params.actorType ? { AOA_ACTOR_TYPE: params.actorType } : {}),
       ...(params.agentId ? { AOA_AGENT_ID: params.agentId } : {}),
+      ...(params.runId ? { AOA_RUN_ID: params.runId } : {}),
+      ...(params.discussionRunMode ? { AOA_DISCUSSION_RUN_MODE: params.discussionRunMode } : {}),
+      ...(params.threadFreshness ? { AOA_THREAD_FRESHNESS: JSON.stringify(params.threadFreshness) } : {}),
       ...(params.effectiveAutonomy != null
         ? { AOA_EFFECTIVE_AUTONOMY: String(params.effectiveAutonomy) }
         : {}),

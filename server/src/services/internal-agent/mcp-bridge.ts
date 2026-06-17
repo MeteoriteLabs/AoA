@@ -17,6 +17,19 @@ export function parseCommanderContextScopeEnv() {
   return parseCommanderContextScopeJson(process.env.AOA_COMMANDER_CONTEXT_SCOPE);
 }
 
+function parseThreadFreshnessEnv() {
+  const raw = process.env.AOA_THREAD_FRESHNESS;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as ToolContext["threadFreshness"]
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
 interface ToolCallHandlerDeps {
@@ -207,6 +220,13 @@ export async function startBridge(): Promise<void> {
 
   // P2.0: Calling agent's ID and effective autonomy level
   const agentId = process.env.AOA_AGENT_ID || undefined;
+  const runId = process.env.AOA_RUN_ID || null;
+  const discussionRunModeRaw = process.env.AOA_DISCUSSION_RUN_MODE;
+  const discussionRunMode =
+    discussionRunModeRaw === "controller_action_gate" || discussionRunModeRaw === "direct"
+      ? discussionRunModeRaw
+      : null;
+  const threadFreshness = parseThreadFreshnessEnv();
   const effectiveAutonomyRaw = process.env.AOA_EFFECTIVE_AUTONOMY;
   const effectiveAutonomy = effectiveAutonomyRaw ? parseInt(effectiveAutonomyRaw, 10) : null;
   const contextScope = parseCommanderContextScopeEnv();
@@ -240,6 +260,9 @@ export async function startBridge(): Promise<void> {
     toolAllowlist,
     actorType,
     agentId,
+    runId,
+    discussionRunMode,
+    threadFreshness,
     effectiveAutonomy,
     commanderToolPermissions:
       (config?.commanderToolPermissions as CommanderToolPermissions | null | undefined) ?? null,

@@ -10,10 +10,13 @@
 // company) and runExtractionConsumer is invoked under a bounded limiter.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { consumerMock, ensureExtractionMock, listOutboxMock, publishLiveEventMock, runAoaMock } =
+const { consumerMock, ensureExtractionMock, isCrewPausedMock, listOutboxMock, publishLiveEventMock, runAoaMock } =
   vi.hoisted(() => ({
     consumerMock: vi.fn().mockResolvedValue(undefined),
     ensureExtractionMock: vi.fn().mockResolvedValue("ext-1"),
+    isCrewPausedMock: vi.fn(({ companyPaused, threadPaused }: { companyPaused: boolean; threadPaused: boolean }) =>
+      companyPaused || threadPaused,
+    ),
     listOutboxMock: vi.fn().mockResolvedValue(["ext-1"]),
     publishLiveEventMock: vi.fn(),
     runAoaMock: vi.fn().mockResolvedValue(undefined),
@@ -87,7 +90,7 @@ vi.mock("../services/budgets.js", () => ({
   budgetService: () => ({ getInvocationBlock: vi.fn().mockResolvedValue(null) }),
 }));
 vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
-  isCrewPaused: () => false, // never paused in dispatcher contract tests
+  isCrewPaused: isCrewPausedMock,
 }));
 vi.mock("../services/internal-agent/cost-caps.js", () => ({
   runRateExceeded: () => false, // run-rate never exceeded in dispatcher contract tests
@@ -185,6 +188,11 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     listOutboxMock.mockClear();
     publishLiveEventMock.mockClear();
     runAoaMock.mockClear();
+    isCrewPausedMock.mockClear();
+    isCrewPausedMock.mockImplementation(
+      ({ companyPaused, threadPaused }: { companyPaused: boolean; threadPaused: boolean }) =>
+        companyPaused || threadPaused,
+    );
     consumerMock.mockResolvedValue(undefined);
     runAoaMock.mockResolvedValue(undefined);
     ensureExtractionMock.mockResolvedValue("ext-1");
@@ -706,7 +714,7 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 effectiveAutonomy thread lookup — thread sets dial=2 (Drive) to make
         //   the thread override observable in the forwarded payload below.
-        [{ autonomyLevel: 2 }],
+        [{ crewPaused: false, useControllerPath: true, autonomyLevel: 2 }],
         [],  // 5 D3 SPEND-brake window count
         [],  // 6 A5/T1.9 run-COUNT brake window count
         [{ runtimeConfig: {}, adapterConfig: {} }],  // 7 agent row
@@ -726,6 +734,31 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     expect(runAoaMock).toHaveBeenCalledWith(
       db, "a-chr",
       expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-chr", effectiveAutonomy: 2 }),
+    );
+  });
+
+  it("infra sweep (sweep.chronicler) respects thread crewPaused before running", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [],
+        [],
+        [{ id: "wr-chr-paused", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-paused", role: "chronicler" } }],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewPaused: true, useControllerPath: true, autonomyLevel: 2 }],
+        [],
+      ],
+      [
+        [],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(runAoaMock).not.toHaveBeenCalled();
+    expect(db._sets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: "skipped_paused" }),
+      ]),
     );
   });
 });

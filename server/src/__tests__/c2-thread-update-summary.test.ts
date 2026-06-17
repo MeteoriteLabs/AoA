@@ -9,20 +9,26 @@ import { describe, expect, it, vi } from "vitest";
 import { threadUpdateSummaryTool } from "../services/internal-agent/tools/thread-update-summary.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-function makeDb(opts: { companyId?: string; threadExists?: boolean } = {}) {
+function makeDb(opts: { companyId?: string; threadExists?: boolean; crewPaused?: boolean; companyCrewPaused?: boolean } = {}) {
   const {
     companyId = "co-1",
     threadExists = true,
+    crewPaused = false,
+    companyCrewPaused = false,
   } = opts;
 
   // Pre-flight select: the tool checks thread existence + companyId before UPDATE.
   // Chain: .select().from().where().then(cb) — resolves via .then() to a single row or null.
-  const selectResult = threadExists ? [{ companyId }] : [];
+  const selectResults = [
+    threadExists ? [{ companyId, crewPaused }] : [],
+    [{ crewPaused: companyCrewPaused }],
+  ];
+  let selectIdx = 0;
   const makeSelectChain = () => {
     const chain: any = {};
     chain.from = vi.fn().mockReturnValue(chain);
     chain.where = vi.fn().mockReturnValue(chain);
-    chain.then = (resolve: any) => Promise.resolve(resolve(selectResult));
+    chain.then = (resolve: any) => Promise.resolve(resolve(selectResults[selectIdx++] ?? []));
     return chain;
   };
   const select = vi.fn(() => makeSelectChain());
@@ -169,6 +175,32 @@ describe("thread.updateSummary tool (C2 batch 1)", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe("COMPANY_MISMATCH");
     // No UPDATE should be issued.
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent summary writes when thread crew is paused", async () => {
+    const { db } = makeDb({ crewPaused: true });
+    const ctx = makeCtx(db, { agentId: "agent-chronicler-1" });
+    const result = await threadUpdateSummaryTool.execute(
+      { threadId: "t-paused", summary: "paused summary should not be written" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("THREAD_PAUSED");
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent summary writes when company crew is paused", async () => {
+    const { db } = makeDb({ companyCrewPaused: true });
+    const ctx = makeCtx(db, { agentId: "agent-chronicler-1" });
+    const result = await threadUpdateSummaryTool.execute(
+      { threadId: "t-company-paused", summary: "company pause should block this write" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("COMPANY_PAUSED");
     expect(db.update).not.toHaveBeenCalled();
   });
 

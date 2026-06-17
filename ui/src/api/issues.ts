@@ -4,7 +4,11 @@ import { api } from "./client";
 export type IssueContextBundle = {
   id: string;
   companyId: string;
-  sourceIssueId: string;
+  sourceIssueId?: string | null;
+  sourceDiscussionId?: string | null;
+  sourceScopeVersionId?: string | null;
+  sourceScopeItemId?: string | null;
+  sourceKind?: "issue" | "discussion_scope" | string;
   targetIssueId: string;
   brief?: string | null;
   items: Array<{
@@ -133,6 +137,11 @@ export const issuesApi = {
   },
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   listContextBundles: (id: string) => api.get<IssueContextBundle[]>(`/issues/${id}/context-bundles`),
+  updateContextBundleItemIncluded: (issueId: string, itemId: string, included: boolean) =>
+    api.patch<IssueContextBundle["items"][number]>(
+      `/issues/${issueId}/context-bundles/items/${itemId}`,
+      { included },
+    ),
   uploadAttachment: (
     companyId: string,
     issueId: string,

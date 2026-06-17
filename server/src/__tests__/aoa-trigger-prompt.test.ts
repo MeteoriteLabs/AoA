@@ -213,6 +213,40 @@ describe("buildTriggerPrompt (T1.2)", () => {
     });
   });
 
+  describe("tool call visibility", () => {
+    it("makes MCP tool names and final stdout visibility explicit", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: { companyId: "co", source: "thread.participation", threadId: "thr-1", mention: "@Adjutant" },
+        agentName: "Adjutant",
+        agentRoleKey: "adjutant",
+      });
+
+      expect(out).toContain("mcp__aoa__foo");
+      expect(out).toMatch(/Final text\/stdout is internal/i);
+      expect(out).toMatch(/not shown in the thread/i);
+    });
+
+    it("uses routed payload role for the directive when display/config role is renamed", () => {
+      const out = buildTriggerPrompt({
+        instruction: BASE_INSTRUCTION,
+        payload: {
+          companyId: "co",
+          source: "thread.participation",
+          threadId: "thr-1",
+          mention: "@Adjutant",
+          role: "adjutant",
+        },
+        agentName: "AoA Adjutant",
+        agentRoleKey: "aoa_adjutant",
+      });
+
+      expect(out).toContain("founder");
+      expect(out).toContain("call `post_entry` exactly once");
+      expect(out).not.toContain("use the tools in your allowlist appropriate to this trigger");
+    });
+  });
+
   describe("trigger context block", () => {
     it("includes trigger source verbatim (codex F6 dispatcher pass-through)", () => {
       const out = buildTriggerPrompt({

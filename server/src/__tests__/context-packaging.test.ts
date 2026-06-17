@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { renderScopeHandoffSection } from "../services/context-packaging.js";
 
 /**
  * Context packaging service tests.
@@ -64,6 +65,70 @@ describe("context-packaging contract", () => {
     const assembled = sections.join("\n\n---\n\n");
     expect(assembled).toContain("---");
     expect(assembled.split("---")).toHaveLength(2);
+  });
+
+  it("renders discussion-origin scope handoff bundles into markdown", () => {
+    const section = renderScopeHandoffSection([
+      {
+        brief: "Use the selected scope sources.",
+        sourceKind: "discussion_scope",
+        items: [
+          {
+            itemType: "discussion_entry",
+            label: "Founder request",
+            metadata: { excerpt: "Need guided checklist" },
+          },
+          {
+            itemType: "artifact",
+            label: "Checklist mockup",
+            metadata: { artifactType: "design", artifactVersionId: "version-design" },
+          },
+          {
+            itemType: "asset",
+            label: "interview-notes.pdf",
+            metadata: { contentType: "application/pdf" },
+          },
+          {
+            itemType: "url",
+            label: "Reference URL",
+            metadata: { url: "https://example.com/ref" },
+          },
+        ],
+      },
+    ]);
+
+    expect(section).toContain("## Scope Handoff");
+    expect(section).toContain("Use the selected scope sources.");
+    expect(section).toContain("Founder request");
+    expect(section).toContain("Need guided checklist");
+    expect(section).toContain("Checklist mockup");
+    expect(section).toContain("design");
+    expect(section).toContain("interview-notes.pdf");
+    expect(section).toContain("https://example.com/ref");
+  });
+
+  it("excludes scope handoff items removed from agent context", () => {
+    const section = renderScopeHandoffSection([
+      {
+        brief: "Use only included sources.",
+        sourceKind: "discussion_scope",
+        items: [
+          {
+            itemType: "artifact",
+            label: "Included artifact",
+            metadata: { artifactType: "design" },
+          },
+          {
+            itemType: "asset",
+            label: "Excluded notes.pdf",
+            metadata: { contentType: "application/pdf", includeInAgentContext: false },
+          },
+        ],
+      },
+    ]);
+
+    expect(section).toContain("Included artifact");
+    expect(section).not.toContain("Excluded notes.pdf");
   });
 
   it("8000 token warning threshold", () => {

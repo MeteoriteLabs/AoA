@@ -54,16 +54,32 @@ const issueExecutionWorkspaceSettingsSchema = z
   });
 
 export const issueContextBundleItemSchema = z.object({
-  type: z.enum(["comment", "attachment", "artifact", "memory", "text"]),
+  type: z.enum([
+    "comment",
+    "attachment",
+    "artifact",
+    "memory",
+    "text",
+    "discussion_entry",
+    "asset",
+    "url",
+    "scope_item",
+  ]),
   id: z.string().uuid().optional().nullable(),
   label: z.string().trim().max(240).optional().nullable(),
   metadata: z.record(z.unknown()).optional(),
 });
 
 export const issueContextBundleSchema = z.object({
-  sourceIssueId: z.string().uuid(),
+  sourceIssueId: z.string().uuid().optional().nullable(),
+  sourceDiscussionId: z.string().uuid().optional().nullable(),
+  sourceScopeVersionId: z.string().uuid().optional().nullable(),
+  sourceScopeItemId: z.string().uuid().optional().nullable(),
+  sourceKind: z.enum(["issue", "discussion_scope"]).optional().default("issue"),
   brief: z.string().trim().max(4000).optional().nullable(),
-  items: z.array(issueContextBundleItemSchema).max(10).optional().default([]),
+  items: z.array(issueContextBundleItemSchema).max(20).optional().default([]),
+}).refine((value) => Boolean(value.sourceIssueId || value.sourceDiscussionId), {
+  message: "contextBundle requires sourceIssueId or sourceDiscussionId",
 });
 
 export const createIssueSchema = z.object({
