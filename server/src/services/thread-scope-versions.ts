@@ -674,17 +674,19 @@ export function threadScopeVersionService(db: Db) {
         .orderBy(asc(discussionEntries.seq));
 
       const entryIds = entries.map((entry) => entry.id);
-      // Only map extracted items that are still pending and have not already
-      // produced a task or memory. Without these predicates, re-running scope
-      // draft creation re-maps already-resolved items and creates duplicate
-      // proposal cards (and, on apply, duplicate tasks/memory).
+      // Only map extracted items that are still actionable (pending OR edited)
+      // and have not already produced a task or memory. Without these predicates,
+      // re-running scope draft creation re-maps already-resolved items and creates
+      // duplicate proposal cards (and, on apply, duplicate tasks/memory). `edited`
+      // is included because a founder lightly editing an item before the draft
+      // compile must not silently drop it from the scope draft.
       const extractedItems = entryIds.length > 0
         ? await db
           .select()
           .from(discussionExtractedItems)
           .where(and(
             inArray(discussionExtractedItems.discussionEntryId, entryIds),
-            eq(discussionExtractedItems.status, "pending"),
+            inArray(discussionExtractedItems.status, ["pending", "edited"]),
             isNull(discussionExtractedItems.resultTaskId),
             isNull(discussionExtractedItems.resultMemoryId),
           ))

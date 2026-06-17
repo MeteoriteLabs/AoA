@@ -779,11 +779,10 @@ export interface ReapStaleThreadAgentActionsResult {
  * Mirrors `sweepExpiredWorkspaces` in `workspace-ttl-sweeper.ts`: a single
  * bounded UPDATE, returns a count, safe to run on the existing sweep cadence.
  *
- * TODO(cron-wiring): wire this into the server sweep cadence in
- * `server/src/index.ts` (alongside `scheduleTtlSweeper` /
- * `scheduleCleanupRetrySweeper`). Left unwired here to keep this change scoped
- * to the commit/retry hardening; a follow-up should add a `setInterval` (or fold
- * it into the existing periodic `setInterval` block) calling this function.
+ * Wired into `runControllerSweep` (`sweep-controller.ts`), which runs on the
+ * 2-minute controller-sweep cadence: the reaper fires best-effort at the start
+ * of each sweep so stranded `committing` rows are flipped to `failed` (under the
+ * attempt cap) before the sweep drains pending threads.
  */
 export async function reapStaleThreadAgentActions(
   db: Db | DbLike,

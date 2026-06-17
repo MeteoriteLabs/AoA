@@ -63,6 +63,7 @@ type ControllerState = {
   pendingRun: boolean;
   lastProcessedEntryId: string | null;
   lastError: string | null;
+  consecutiveCommitFailures: number;
 };
 
 type EntryRow = {
@@ -80,7 +81,11 @@ function createControllerDb(controller: ControllerState, entries: EntryRow[]) {
   const db = {
     update: vi.fn(() => ({
       set: vi.fn((payload: Record<string, unknown>) => {
-        const isClaim = "pendingRun" in payload && !("lastProcessedEntryId" in payload);
+        // The Step-1 atomic claim is the only update that sets pendingRun=false
+        // (the failure/circuit-break paths set pendingRun=true). Identify it by
+        // that flag so the failure-path re-schedule (pendingRun=true) is NOT
+        // misclassified as a claim.
+        const isClaim = "pendingRun" in payload && payload.pendingRun === false;
         return {
           where: vi.fn(() => {
             if (isClaim) {
@@ -98,6 +103,12 @@ function createControllerDb(controller: ControllerState, entries: EntryRow[]) {
             }
             if ("lastError" in payload) {
               controller.lastError = payload.lastError as string | null;
+            }
+            if ("consecutiveCommitFailures" in payload) {
+              controller.consecutiveCommitFailures = payload.consecutiveCommitFailures as number;
+            }
+            if ("pendingRun" in payload) {
+              controller.pendingRun = payload.pendingRun as boolean;
             }
             return Promise.resolve([{ ...controller }]);
           }),
@@ -148,6 +159,7 @@ describe("runController action gate integration", () => {
       pendingRun: true,
       lastProcessedEntryId: null,
       lastError: null,
+      consecutiveCommitFailures: 0,
     };
     const entry: EntryRow = {
       id: "entry-a",
@@ -193,6 +205,7 @@ describe("runController action gate integration", () => {
       pendingRun: true,
       lastProcessedEntryId: null,
       lastError: null,
+      consecutiveCommitFailures: 0,
     };
     const entry: EntryRow = {
       id: "entry-a",
@@ -243,6 +256,7 @@ describe("runController action gate integration", () => {
       pendingRun: true,
       lastProcessedEntryId: null,
       lastError: null,
+      consecutiveCommitFailures: 0,
     };
     const entry: EntryRow = {
       id: "entry-a",
@@ -265,5 +279,146 @@ describe("runController action gate integration", () => {
     expect(result).toMatchObject({ ran: true, suppressed: true, startEpoch: 1, endEpoch: 2 });
     expect(commitThreadAgentActionsMock).not.toHaveBeenCalled();
     expect(cursorCommits).toEqual([]);
+  });
+
+  it("re-schedules (pendingRun=true) and does NOT advance the cursor on the first commit failure", async () => {
+    // First failure (priorFailures=0 → newCount=1 < MAX): the controller must
+    // re-schedule (pendingRun=true → the 2-min sweep retries) WITHOUT advancing
+    // the cursor, and bump consecutiveCommitFailures to 1.
+    const threadId = "thread-action-gate-first-failure";
+    const controller: ControllerState = {
+      threadId,
+      runEpoch: 1,
+      pendingRun: true,
+      lastProcessedEntryId: null,
+      lastError: null,
+      consecutiveCommitFailures: 0,
+    };
+    const entry: EntryRow = {
+      id: "entry-a",
+      discussionId: threadId,
+      seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"),
+      inputType: "write",
+      rawContent: "Please help scope this.",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+    commitThreadAgentActionsMock.mockResolvedValueOnce({
+      committed: 0,
+      suppressed: 0,
+      blocked: 0,
+      failed: 1,
+    });
+    const onCommit = vi.fn();
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+      onCommit,
+    });
+
+    expect(result).toMatchObject({
+      ran: true,
+      suppressed: false,
+      error: "action_commit_failed:1",
+      cursorAdvancedTo: null,
+    });
+    expect(cursorCommits).toEqual([]);
+    expect(controller.lastProcessedEntryId).toBeNull();
+    expect(controller.consecutiveCommitFailures).toBe(1);
+    expect(controller.pendingRun).toBe(true);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("circuit-breaks after MAX consecutive failures: advances the cursor, resets the counter, sets a skip lastError", async () => {
+    // priorFailures = MAX-1 (2). One more failure (newCount=3 === MAX) trips the
+    // breaker: advance the cursor past the poison entry, reset the counter,
+    // re-schedule to drain later entries, and write a human-visible lastError.
+    const threadId = "thread-action-gate-circuit-break";
+    const controller: ControllerState = {
+      threadId,
+      runEpoch: 1,
+      pendingRun: true,
+      lastProcessedEntryId: null,
+      lastError: null,
+      consecutiveCommitFailures: 2,
+    };
+    const entry: EntryRow = {
+      id: "entry-a",
+      discussionId: threadId,
+      seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"),
+      inputType: "write",
+      rawContent: "Please help scope this.",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+    commitThreadAgentActionsMock.mockResolvedValueOnce({
+      committed: 0,
+      suppressed: 0,
+      blocked: 0,
+      failed: 1,
+    });
+    const onCommit = vi.fn();
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+      onCommit,
+    });
+
+    expect(result).toMatchObject({
+      ran: true,
+      suppressed: false,
+      cursorAdvancedTo: "entry-a",
+    });
+    // On circuit-break the run does NOT surface an error (the cursor advanced,
+    // the thread is unstuck) — it is undefined, not the commit-failure string.
+    expect((result as { error?: string }).error).toBeUndefined();
+    // Cursor advanced past the poison entry.
+    expect(cursorCommits).toEqual(["entry-a"]);
+    expect(controller.lastProcessedEntryId).toBe("entry-a");
+    expect(controller.consecutiveCommitFailures).toBe(0);
+    expect(controller.pendingRun).toBe(true);
+    expect(controller.lastError).toMatch(/action_commit_failed_skipped/);
+    // The breaker advanced the cursor itself; the success-path onCommit hook
+    // does NOT fire (the run returned from the commit-failure branch).
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("resets consecutiveCommitFailures to 0 on a successful commit", async () => {
+    // priorFailures = 2; this commit reports failed:0 → the success path resets
+    // the counter, advances the cursor, and clears lastError.
+    const threadId = "thread-action-gate-success-reset";
+    const controller: ControllerState = {
+      threadId,
+      runEpoch: 1,
+      pendingRun: true,
+      lastProcessedEntryId: null,
+      lastError: "action_commit_failed:1",
+      consecutiveCommitFailures: 2,
+    };
+    const entry: EntryRow = {
+      id: "entry-a",
+      discussionId: threadId,
+      seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"),
+      inputType: "write",
+      rawContent: "Please help scope this.",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+    commitThreadAgentActionsMock.mockResolvedValueOnce({
+      committed: 1,
+      suppressed: 0,
+      blocked: 0,
+      failed: 0,
+    });
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+    });
+
+    expect(result).toMatchObject({ ran: true, suppressed: false, cursorAdvancedTo: "entry-a" });
+    expect(cursorCommits).toEqual(["entry-a"]);
+    expect(controller.lastProcessedEntryId).toBe("entry-a");
+    expect(controller.consecutiveCommitFailures).toBe(0);
+    expect(controller.lastError).toBeNull();
   });
 });

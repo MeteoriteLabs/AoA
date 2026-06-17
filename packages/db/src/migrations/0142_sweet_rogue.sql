@@ -1,4 +1,4 @@
-CREATE TABLE "thread_agent_actions" (
+CREATE TABLE IF NOT EXISTS "thread_agent_actions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"thread_id" uuid NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE "thread_agent_actions" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "thread_scope_artifact_links" (
+CREATE TABLE IF NOT EXISTS "thread_scope_artifact_links" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"scope_version_id" uuid NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE "thread_scope_artifact_links" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "thread_scope_items" (
+CREATE TABLE IF NOT EXISTS "thread_scope_items" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"scope_version_id" uuid NOT NULL,
@@ -52,7 +52,7 @@ CREATE TABLE "thread_scope_items" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "thread_scope_versions" (
+CREATE TABLE IF NOT EXISTS "thread_scope_versions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"thread_id" uuid NOT NULL,
@@ -106,22 +106,22 @@ ALTER TABLE "thread_scope_versions" ADD CONSTRAINT "thread_scope_versions_thread
 ALTER TABLE "thread_scope_versions" ADD CONSTRAINT "thread_scope_versions_base_version_id_thread_scope_versions_id_fk" FOREIGN KEY ("base_version_id") REFERENCES "public"."thread_scope_versions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "thread_scope_versions" ADD CONSTRAINT "thread_scope_versions_proposal_entry_id_discussion_entries_id_fk" FOREIGN KEY ("proposal_entry_id") REFERENCES "public"."discussion_entries"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "thread_scope_versions" ADD CONSTRAINT "thread_scope_versions_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "thread_agent_actions_company_thread_status_idx" ON "thread_agent_actions" USING btree ("company_id","thread_id","status","created_at");--> statement-breakpoint
-CREATE INDEX "thread_agent_actions_run_idx" ON "thread_agent_actions" USING btree ("run_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "thread_agent_actions_company_idempotency_uq" ON "thread_agent_actions" USING btree ("company_id","idempotency_key");--> statement-breakpoint
-CREATE INDEX "thread_scope_artifact_links_scope_version_idx" ON "thread_scope_artifact_links" USING btree ("scope_version_id");--> statement-breakpoint
-CREATE INDEX "thread_scope_artifact_links_artifact_idx" ON "thread_scope_artifact_links" USING btree ("artifact_id");--> statement-breakpoint
-CREATE INDEX "thread_scope_items_scope_version_idx" ON "thread_scope_items" USING btree ("scope_version_id");--> statement-breakpoint
-CREATE INDEX "thread_scope_items_kind_status_idx" ON "thread_scope_items" USING btree ("kind","status");--> statement-breakpoint
-CREATE INDEX "thread_scope_items_target_issue_idx" ON "thread_scope_items" USING btree ("target_issue_id");--> statement-breakpoint
-CREATE INDEX "thread_scope_items_result_issue_idx" ON "thread_scope_items" USING btree ("result_issue_id");--> statement-breakpoint
-CREATE INDEX "thread_scope_versions_company_thread_idx" ON "thread_scope_versions" USING btree ("company_id","thread_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "thread_scope_versions_thread_version_uq" ON "thread_scope_versions" USING btree ("thread_id","version_number");--> statement-breakpoint
-CREATE UNIQUE INDEX "thread_scope_versions_one_draft_uq" ON "thread_scope_versions" USING btree ("thread_id") WHERE "thread_scope_versions"."status" = 'draft';--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_agent_actions_company_thread_status_idx" ON "thread_agent_actions" USING btree ("company_id","thread_id","status","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_agent_actions_run_idx" ON "thread_agent_actions" USING btree ("run_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "thread_agent_actions_company_idempotency_uq" ON "thread_agent_actions" USING btree ("company_id","idempotency_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_artifact_links_scope_version_idx" ON "thread_scope_artifact_links" USING btree ("scope_version_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_artifact_links_artifact_idx" ON "thread_scope_artifact_links" USING btree ("artifact_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_items_scope_version_idx" ON "thread_scope_items" USING btree ("scope_version_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_items_kind_status_idx" ON "thread_scope_items" USING btree ("kind","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_items_target_issue_idx" ON "thread_scope_items" USING btree ("target_issue_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_items_result_issue_idx" ON "thread_scope_items" USING btree ("result_issue_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "thread_scope_versions_company_thread_idx" ON "thread_scope_versions" USING btree ("company_id","thread_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "thread_scope_versions_thread_version_uq" ON "thread_scope_versions" USING btree ("thread_id","version_number");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "thread_scope_versions_one_draft_uq" ON "thread_scope_versions" USING btree ("thread_id") WHERE "thread_scope_versions"."status" = 'draft';--> statement-breakpoint
 ALTER TABLE "issue_context_bundles" ADD CONSTRAINT "issue_context_bundles_source_discussion_id_discussions_id_fk" FOREIGN KEY ("source_discussion_id") REFERENCES "public"."discussions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "issue_context_bundles" ADD CONSTRAINT "issue_context_bundles_source_scope_version_id_thread_scope_versions_id_fk" FOREIGN KEY ("source_scope_version_id") REFERENCES "public"."thread_scope_versions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "issue_context_bundles" ADD CONSTRAINT "issue_context_bundles_source_scope_item_id_thread_scope_items_id_fk" FOREIGN KEY ("source_scope_item_id") REFERENCES "public"."thread_scope_items"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "issues" ADD CONSTRAINT "issues_scope_version_id_thread_scope_versions_id_fk" FOREIGN KEY ("scope_version_id") REFERENCES "public"."thread_scope_versions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "issue_context_bundles_company_source_discussion_idx" ON "issue_context_bundles" USING btree ("company_id","source_discussion_id");--> statement-breakpoint
-CREATE INDEX "issue_context_bundles_company_scope_version_idx" ON "issue_context_bundles" USING btree ("company_id","source_scope_version_id");--> statement-breakpoint
-CREATE INDEX "issues_scope_version_idx" ON "issues" USING btree ("scope_version_id");
+CREATE INDEX IF NOT EXISTS "issue_context_bundles_company_source_discussion_idx" ON "issue_context_bundles" USING btree ("company_id","source_discussion_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issue_context_bundles_company_scope_version_idx" ON "issue_context_bundles" USING btree ("company_id","source_scope_version_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issues_scope_version_idx" ON "issues" USING btree ("scope_version_id");

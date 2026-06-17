@@ -20,6 +20,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussions, threadOrchestrationState } from "@armyofagents/db";
 import { threadOrchestrationService } from "../../thread-orchestration.js";
+import { reapStaleThreadAgentActions } from "../../thread-agent-actions.js";
 import { makeControllerAdjutantRunner } from "./controller-adjutant-runner.js";
 import type { AdjutantRunner } from "../../thread-orchestration.js";
 import { logger } from "../../../middleware/logger.js";
@@ -38,6 +39,14 @@ export async function runControllerSweep(
   deps: { adjutantRunner?: AdjutantRunner } = {},
 ): Promise<void> {
   const adjutantRunner = deps.adjutantRunner ?? makeControllerAdjutantRunner(db);
+
+  // Reap crash-stranded `committing` rows (past STALE_COMMITTING_TTL_MS) so they
+  // don't accumulate; best-effort — never block the sweep.
+  try {
+    await reapStaleThreadAgentActions(db);
+  } catch (err) {
+    log.warn({ err }, "controller sweep: stale-action reaper failed — continuing");
+  }
 
   // Select threads that need a run: pendingRun=true + useControllerPath=true
   // + not done + crew not paused. The `innerJoin` ties the state row to the

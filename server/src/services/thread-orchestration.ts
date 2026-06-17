@@ -172,6 +172,61 @@ export interface RunControllerOpts {
 
 const log = logger.child({ service: "thread-orchestration" });
 
+// ── Commit-failure circuit-breaker ─────────────────────────────────────────────
+/** After this many consecutive action-commit failures, the controller advances
+ *  the cursor past the failing entry so one poison action cannot stall the
+ *  thread forever. Transient failures recover before reaching the cap. */
+const MAX_CONSECUTIVE_COMMIT_FAILURES = 3;
+
+/** Records an action-commit failure on the controller row.
+ *  - Under the cap: re-schedule the thread (pendingRun=true → the 2-min sweep
+ *    re-drives it) WITHOUT advancing the cursor, so a transient failure retries.
+ *  - At the cap: circuit-break — advance the cursor past `cursorTarget` (skip the
+ *    poison), reset the counter, keep pendingRun=true to drain later entries, and
+ *    write a human-visible `lastError` (surfaced in the thread UI).
+ *  Returns whether the breaker fired. */
+async function recordCommitFailure(
+  db: Db,
+  threadId: string,
+  priorFailures: number,
+  cursorTarget: string,
+  errorMsg: string,
+  log: { warn: (o: unknown, m: string) => void; error: (o: unknown, m: string) => void },
+): Promise<{ circuitBroken: boolean }> {
+  const newCount = priorFailures + 1;
+  if (newCount >= MAX_CONSECUTIVE_COMMIT_FAILURES) {
+    log.error(
+      { threadId, cursorTarget, failures: newCount },
+      "thread orchestration: action commit failed repeatedly — advancing cursor past the entry (circuit breaker)",
+    );
+    await db
+      .update(threadOrchestrationState)
+      .set({
+        lastProcessedEntryId: cursorTarget,
+        consecutiveCommitFailures: 0,
+        pendingRun: true,
+        lastError: `action_commit_failed_skipped:${errorMsg}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(threadOrchestrationState.threadId, threadId));
+    return { circuitBroken: true };
+  }
+  log.warn(
+    { threadId, cursorTarget, failures: newCount },
+    "thread orchestration: action commit failed — re-scheduling for retry (cursor NOT advanced)",
+  );
+  await db
+    .update(threadOrchestrationState)
+    .set({
+      consecutiveCommitFailures: newCount,
+      pendingRun: true,
+      lastError: errorMsg,
+      updatedAt: new Date(),
+    })
+    .where(eq(threadOrchestrationState.threadId, threadId));
+  return { circuitBroken: false };
+}
+
 // ── Hop-cap constant ───────────────────────────────────────────────────────────
 /**
  * Max agent rounds per quiet window (since the last human entry) before the
@@ -559,34 +614,40 @@ export function threadOrchestrationService(db: Db) {
                 failed: commitResult.failed,
                 committed: commitResult.committed,
               },
-              "thread orchestration: action commit reported failures — cursor NOT advanced, will retry",
+              "thread orchestration: action commit reported failures — recording failure (circuit-breaker)",
             );
-            await db
-              .update(threadOrchestrationState)
-              .set({
-                lastError: `action_commit_failed:${commitResult.failed}`,
-                updatedAt: new Date(),
-              })
-              .where(eq(threadOrchestrationState.threadId, threadId));
+            const { circuitBroken } = await recordCommitFailure(
+              db,
+              threadId,
+              claimed.consecutiveCommitFailures,
+              cursorTarget,
+              `action_commit_failed:${commitResult.failed}`,
+              log,
+            );
             return {
               ran: true,
               suppressed: false,
-              error: `action_commit_failed:${commitResult.failed}`,
+              error: circuitBroken ? undefined : `action_commit_failed:${commitResult.failed}`,
               startEpoch,
-              cursorAdvancedTo: null,
+              cursorAdvancedTo: circuitBroken ? cursorTarget : null,
             };
           }
         } catch (commitErr) {
           const errorMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
           log.error(
             { threadId, startEpoch, runId: runResult.runId, err: commitErr },
-            "thread orchestration: action gate commit failed — cursor NOT advanced",
+            "thread orchestration: action gate commit threw — recording failure (circuit-breaker)",
           );
-          await db
-            .update(threadOrchestrationState)
-            .set({ lastError: errorMsg, updatedAt: new Date() })
-            .where(eq(threadOrchestrationState.threadId, threadId));
-          return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
+          const { circuitBroken } = await recordCommitFailure(
+            db, threadId, claimed.consecutiveCommitFailures, cursorTarget, errorMsg, log,
+          );
+          return {
+            ran: true,
+            suppressed: false,
+            error: circuitBroken ? undefined : errorMsg,
+            startEpoch,
+            cursorAdvancedTo: circuitBroken ? cursorTarget : null,
+          };
         }
       }
 
@@ -598,6 +659,7 @@ export function threadOrchestrationService(db: Db) {
         .set({
           lastProcessedEntryId: cursorTarget,
           lastError: null,
+          consecutiveCommitFailures: 0,
           updatedAt: new Date(),
         })
         .where(eq(threadOrchestrationState.threadId, threadId));

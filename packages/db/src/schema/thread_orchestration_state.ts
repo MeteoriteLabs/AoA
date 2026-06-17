@@ -53,6 +53,14 @@ export const threadOrchestrationState = pgTable(
     // successful run. Surfaced in the thread UI for founder visibility.
     lastError: text("last_error"),
 
+    // Consecutive action-commit failures since the last successful run. Reset
+    // to 0 on success. When it reaches MAX_CONSECUTIVE_COMMIT_FAILURES the
+    // orchestrator circuit-breaks: it advances the cursor past the failing
+    // entry so one poison action cannot permanently stall the thread.
+    consecutiveCommitFailures: integer("consecutive_commit_failures")
+      .notNull()
+      .default(0),
+
     // Lifecycle: 'active' while the thread is open; 'closed' when the thread
     // is archived. Closed controllers are skipped by the dispatch gate.
     status: text("status").notNull().default("active"),

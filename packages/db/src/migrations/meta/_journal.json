@@ -1009,6 +1009,13 @@
       "when": 1781712485796,
       "tag": "0143_fat_magneto",
       "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1781716908184,
+      "tag": "0144_flowery_amphibian",
+      "breakpoints": true
     }
   ]
 }

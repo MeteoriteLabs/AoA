@@ -50,6 +50,28 @@ function sqlConditionContainsColumn(value: unknown, columnName: string): boolean
   return false;
 }
 
+// Walks a drizzle SQL tree looking for a literal string value (used to assert
+// the dedup filter's inArray includes both "pending" and "edited"). drizzle's
+// `inArray(col, [...])` places the values array directly inside `queryChunks`,
+// so this must descend into arbitrary arrays and object values, not just a
+// known key list. Guards against cycles via a visited set.
+function sqlConditionContainsValue(
+  value: unknown,
+  target: string,
+  seen: WeakSet<object> = new WeakSet(),
+): boolean {
+  if (value === target) return true;
+  if (!value || typeof value !== "object") return false;
+  if (seen.has(value as object)) return false;
+  seen.add(value as object);
+  if (Array.isArray(value)) {
+    return value.some((item) => sqlConditionContainsValue(item, target, seen));
+  }
+  return Object.values(value as Record<string, unknown>).some((v) =>
+    sqlConditionContainsValue(v, target, seen),
+  );
+}
+
 describe("threadScopeVersionService.createDraftFromThread", () => {
   it("rejects live threads with conflict", async () => {
     const db = createSequenceDb([
@@ -439,6 +461,88 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
     expect(sqlConditionContainsColumn(whereArg, "status")).toBe(true);
     expect(sqlConditionContainsColumn(whereArg, "result_task_id")).toBe(true);
     expect(sqlConditionContainsColumn(whereArg, "result_memory_id")).toBe(true);
+  });
+
+  it("includes pending AND edited unresolved items, excludes resolved ones", async () => {
+    // The dedup filter must select both `pending` and `edited` extracted items
+    // (both are actionable / unresolved). An item the founder lightly edited
+    // before the draft compile must not silently vanish from the scope draft.
+    const version = {
+      id: "scope1",
+      threadId: "thread1",
+      versionNumber: 1,
+      sourceStartSeq: 1,
+      sourceEndSeq: 1,
+      status: "draft",
+    };
+    const db = createSequenceDb([
+      [{ id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 }],
+      [],
+      [{ id: "entry-1", discussionId: "thread1", seq: 1, inputType: "write", rawContent: "Scope this work." }],
+      // Extracted-items select: the real query filters status IN (pending, edited)
+      // + null result links, so the mock returns exactly those rows.
+      [
+        {
+          id: "extracted-pending",
+          discussionEntryId: "entry-1",
+          type: "task",
+          title: "Pending task item",
+          description: "Still pending.",
+          suggestedPriority: null,
+          suggestedAssigneeId: null,
+          suggestedDepartmentId: null,
+          suggestedProjectId: null,
+          suggestedLayer: null,
+          suggestedGoalId: null,
+          status: "pending",
+          resultTaskId: null,
+          resultMemoryId: null,
+        },
+        {
+          id: "extracted-edited",
+          discussionEntryId: "entry-1",
+          type: "task",
+          title: "Edited task item",
+          description: "Founder lightly edited this.",
+          suggestedPriority: null,
+          suggestedAssigneeId: null,
+          suggestedDepartmentId: null,
+          suggestedProjectId: null,
+          suggestedLayer: null,
+          suggestedGoalId: null,
+          status: "edited",
+          resultTaskId: null,
+          resultMemoryId: null,
+        },
+      ],
+      [],
+      [version],
+    ]);
+
+    const result = await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "thread1",
+      { userId: "u1", isHuman: true },
+      { summary: "Draft v1" },
+    );
+
+    expect(result).toEqual({ status: "created", version });
+
+    // The dedup filter must enumerate BOTH actionable statuses.
+    const extractedSelect = db.__selectChains[3];
+    const whereArg = extractedSelect.where.mock.calls[0]?.[0];
+    expect(sqlConditionContainsValue(whereArg, "pending")).toBe(true);
+    expect(sqlConditionContainsValue(whereArg, "edited")).toBe(true);
+
+    // Both items flow through into the compiled scope items.
+    const scopeItemInsert = db.insert.mock.results[1]?.value.values;
+    const insertedItems = scopeItemInsert?.mock.calls[0]?.[0] ?? [];
+    expect(insertedItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ extractedItemId: "extracted-pending" }),
+        expect.objectContaining({ extractedItemId: "extracted-edited" }),
+      ]),
+    );
   });
 
   it("skips already-resolved extracted items when compiling scope items (defense-in-depth)", async () => {
