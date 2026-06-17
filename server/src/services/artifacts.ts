@@ -46,14 +46,16 @@ export function artifactService(db: Db) {
         changelog?: string | null;
         content?: string | null;
         fileUrl?: string | null;
+        sourceActionId?: string | null;
       },
     ) => {
-      const { source, sourceDetail, changelog, content, fileUrl, ...artifactData } = data;
+      const { source, sourceDetail, changelog, content, fileUrl, sourceActionId, ...artifactData } =
+        data;
 
       return db.transaction(async (tx) => {
         const [artifact] = await tx
           .insert(artifacts)
-          .values({ ...artifactData, companyId, createdById })
+          .values({ ...artifactData, companyId, createdById, sourceActionId: sourceActionId ?? null })
           .returning();
 
         if (source) {

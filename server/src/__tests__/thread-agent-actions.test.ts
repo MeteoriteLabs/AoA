@@ -31,6 +31,7 @@ import {
   reapStaleThreadAgentActions,
   threadAgentActionService,
 } from "../services/thread-agent-actions.js";
+import { buildPostReplyIdempotencyKey } from "../services/internal-agent/tools/thread-action-keys.js";
 
 function createSequenceDb(config: { selects?: unknown[][]; inserts?: unknown[][]; updates?: Array<unknown[] | Error> } = {}) {
   let selectIdx = 0;
@@ -651,6 +652,8 @@ describe("threadAgentActionService", () => {
         source: "agent",
         content: "# Plan",
         fileUrl: null,
+        // #197: the action id is stamped so the partial unique index dedups re-commits.
+        sourceActionId: "action-1",
       },
     );
     expect(db.__insertValues).toContainEqual(expect.objectContaining({
@@ -668,6 +671,92 @@ describe("threadAgentActionService", () => {
       committedScopeVersionId: "scope-version-1",
       committedScopeItemId: "scope-item-artifact",
     }));
+  });
+
+  it("converges (idempotent) when create_artifact_candidate raises the source_action_id unique violation (#197)", async () => {
+    // A re-commit of the SAME artifact action must NOT create a second artifact.
+    // txArtifacts.create raises a WRAPPED 23505; the tx rolls back and the branch
+    // re-selects the existing artifact + its scope item and converges — no
+    // duplicate, NOT counted as failed.
+    const action = {
+      ...baseAction,
+      actionType: "create_artifact_candidate",
+      payload: { title: "Onboarding plan", artifactType: "document", content: "# Plan" },
+    };
+    const db = createSequenceDb({
+      selects: [
+        [action], // commit selection
+        [{ id: "existing-artifact" }], // re-select artifact by (company, source_action_id)
+        [{ id: "existing-item", scopeVersionId: "scope-version-1" }], // re-select its scope item
+      ],
+      updates: [
+        [{ ...action, status: "committing" }],
+        [{ ...action, status: "committed" }],
+      ],
+    });
+    const wrapped = Object.assign(new Error("duplicate key value"), {
+      cause: { code: "23505", constraint: "artifacts_source_action_uq" },
+    });
+    const createArtifact = vi.fn().mockRejectedValueOnce(wrapped);
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: {
+        createDraftFromThread: vi.fn().mockResolvedValue({
+          status: "existing_draft",
+          version: { id: "scope-version-1" },
+        }),
+      },
+      artifacts: { create: createArtifact },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(createArtifact).toHaveBeenCalledTimes(1);
+    expect(db.__updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "committed",
+        committedScopeVersionId: "scope-version-1",
+        committedScopeItemId: "existing-item",
+      }),
+    );
+  });
+
+  it("a re-proposed post_reply with the SAME stable key returns the existing action, not a new row (cross-run dedup)", async () => {
+    // End-to-end of the headline guarantee at the propose layer: run-2 re-proposes
+    // the identical reply; the stable key collides on (companyId, idempotencyKey) so
+    // onConflictDoNothing inserts nothing and the existing (already committed) row is
+    // returned. Since it is `committed`, the commit (which selects only proposed /
+    // retryable failed) will not re-run the side effect — no duplicate.
+    const key = buildPostReplyIdempotencyKey({
+      threadId: "thread-1",
+      agentId: "agent-1",
+      parentEntryId: null,
+      content: "Status: green.",
+      turnAnchor: "5",
+    });
+    const existingCommitted = { ...baseAction, id: "existing-committed", status: "committed", idempotencyKey: key };
+    const db = createSequenceDb({
+      selects: [[thread], [existingCommitted]], // thread check, then re-select on conflict
+      inserts: [[]], // onConflictDoNothing → no row (key already exists from run-1)
+    });
+
+    const result = await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-2",
+      agentId: "agent-1",
+      actionType: "post_reply",
+      payload: { rawContent: "Status: green." },
+      idempotencyKey: key,
+    });
+
+    expect(result).toEqual(existingCommitted);
+    expect((result as { status: string }).status).toBe("committed");
   });
 
   it("claims create_artifact_candidate before creating artifact and scope item side effects", async () => {

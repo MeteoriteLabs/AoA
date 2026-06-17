@@ -7,6 +7,7 @@ import type {
 import {
   agentWakeupRequests,
   agents,
+  artifacts,
   discussionEntries,
   discussionEntryAttachments,
   discussions,
@@ -125,6 +126,7 @@ type ArtifactCommitService = {
       source: string;
       content?: string | null;
       fileUrl?: string | null;
+      sourceActionId?: string | null;
     },
   ) => Promise<{ id: string; versions?: Array<{ id: string }> }>;
 };
@@ -662,6 +664,9 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                     source: "agent",
                     content: asString(payload.content) ?? null,
                     fileUrl: asString(payload.fileRef) ?? null,
+                    // #197: stamp the action id so the partial unique index makes this
+                    // artifact commit idempotent across re-runs / reaper re-commits.
+                    sourceActionId: action.id,
                   },
                 );
                 const artifactVersionId = artifact.versions?.[0]?.id ?? null;
@@ -709,6 +714,38 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                   blockedReason: "scope_draft_unavailable",
                 });
                 result.blocked += 1;
+                continue;
+              }
+              if (isUniqueViolation(txError, "artifacts_source_action_uq")) {
+                // #197: the artifact for this action already exists (single-invocation
+                // partial crash / reaper re-commit). The tx rolled back; converge on
+                // the existing rows — no duplicate, NOT counted as a failure.
+                const [existingArtifact] = (await actionDb
+                  .select({ id: artifacts.id })
+                  .from(artifacts)
+                  .where(
+                    and(
+                      eq(artifacts.companyId, input.companyId),
+                      eq(artifacts.sourceActionId, action.id),
+                    ),
+                  )
+                  .limit(1)) as Array<{ id: string }>;
+                const [existingItem] = existingArtifact
+                  ? ((await actionDb
+                      .select({
+                        id: threadScopeItems.id,
+                        scopeVersionId: threadScopeItems.scopeVersionId,
+                      })
+                      .from(threadScopeItems)
+                      .where(eq(threadScopeItems.artifactId, existingArtifact.id))
+                      .limit(1)) as Array<{ id: string; scopeVersionId: string }>)
+                  : [];
+                await updateActionStatus(actionDb, action.id, {
+                  status: "committed",
+                  committedScopeVersionId: existingItem?.scopeVersionId ?? null,
+                  committedScopeItemId: existingItem?.id ?? null,
+                });
+                result.committed += 1;
                 continue;
               }
               throw txError;
