@@ -28,6 +28,10 @@ import { proposeMemoryFromThreadTool } from "../services/internal-agent/tools/me
 import { agentDispatchTool } from "../services/internal-agent/tools/agent-dispatch.js";
 import { createArtifactTool } from "../services/internal-agent/tools/create-artifact-tool.js";
 import { createAdvancePhaseTool } from "../services/internal-agent/tools/advance-phase-tool.js";
+import {
+  buildPostReplyIdempotencyKey,
+  buildArtifactCandidateIdempotencyKey,
+} from "../services/internal-agent/tools/thread-action-keys.js";
 import { processMentions } from "../services/threads.js";
 import { buildMcpBridgeSpec } from "../services/internal-agent/cli-mode.js";
 
@@ -90,7 +94,15 @@ describe("action-gated discussion tools", () => {
         parentEntryId: "entry-1",
         sourceInfo: null,
       },
-      idempotencyKey: `${runId}:post_reply:${agentId}:entry-1:I can help with this.`,
+      // #197: run-independent + turn-anchored (latestHumanSeq=4 → "4"); the key is
+      // derived by the shared builder, so assert via the builder for the same inputs.
+      idempotencyKey: buildPostReplyIdempotencyKey({
+        threadId,
+        agentId,
+        parentEntryId: "entry-1",
+        content: "I can help with this.",
+        turnAnchor: "4",
+      }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
     });
   });
@@ -275,7 +287,15 @@ describe("action-gated discussion tools", () => {
         discussionId: threadId,
         attachToEntryId: "entry-3",
       },
-      idempotencyKey: `${runId}:create_artifact_candidate:${threadId}:Onboarding plan`,
+      // #197: run-independent + turn-anchored; derived by the shared builder.
+      idempotencyKey: buildArtifactCandidateIdempotencyKey({
+        threadId,
+        agentId,
+        title: "Onboarding plan",
+        content: "# Plan\nUse the versioned scope.",
+        fileRef: null,
+        turnAnchor: "4",
+      }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
     });
   });
