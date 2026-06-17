@@ -18,6 +18,9 @@
  *   - non-founder board user, userId ≠ owner     → 404 (existence-leak-safe)
  *   - agent token (non-founder)                  → 404 (actorId ≠ conversation.userId)
  *   - mcp token (no matching userId)             → 404 (actorId ≠ conversation.userId)
+ *   - founder-role mcp token, NOT owner          → 404 (Codex re-review P2: founder
+ *       bypass is board-only; a founder-created token is owner-scoped, no role lookup)
+ *   - founder-role mcp token, owns the conv      → 200 (self-management still works)
  *
  * Issue endpoint distinction (Codex #3): the issue endpoint is intentionally NOT
  * owner-guarded (tasks are company resources). An explicit test locks this.
@@ -208,6 +211,20 @@ const mcpActor = (): ActorShape => ({
   runId: null,
 });
 
+/**
+ * Codex re-review P2: an MCP key created by a FOUNDER replays the founder's
+ * userId, which would resolve to "founder" via getEffectiveRole and grant the
+ * read-anyone bypass. The fix gates the founder bypass on type:"board", so a
+ * founder-backed mcp token is owner-scoped. `userId` here is a real (founder)
+ * user id; the role lookup must NOT be reached for it after the fix.
+ */
+const founderMcpActor = (userId: string): ActorShape => ({
+  type: "mcp",
+  companyId: COMPANY_ID,
+  userId,
+  runId: null,
+});
+
 const convUrl = `/api/companies/${COMPANY_ID}/conversations/${CONV_ID}/memory-retrievals`;
 const issueUrl = `/api/companies/${COMPANY_ID}/issues/${ISSUE_ID}/memory-retrievals`;
 
@@ -246,6 +263,10 @@ describe("GET /companies/:cid/conversations/:convId/memory-retrievals — owner 
     // FIX #1: Founders bypass userId scoping — eq must NOT have been called with
     // the userId column. If a regression re-adds userId scoping for founders, this fails.
     expect(eqCalledWithUserIdColumn()).toBe(false);
+
+    // Codex re-review P2: a BOARD founder DOES go through the role lookup
+    // (this is the only path that may founder-bypass via getEffectiveRole).
+    expect(mockGetEffectiveRole).toHaveBeenCalled();
 
     // FIX #3: Service receives the correct (companyId, conversationId) args.
     expect(mockListRetrievalsForConversation).toHaveBeenCalledWith(
@@ -376,6 +397,48 @@ describe("GET /companies/:cid/conversations/:convId/memory-retrievals — owner 
     const userIdCol = internalAgentConversations.userId;
     expect(eqSpy.mock.calls.some(
       (args: unknown[]) => args[0] === userIdCol && args[1] === MCP_ANON_ID
+    )).toBe(true);
+  });
+
+  /**
+   * Codex re-review P2 — the core case. A founder-CREATED MCP token replays the
+   * founder's userId, which getEffectiveRole would resolve to "founder" and
+   * (pre-fix) grant read-anyone. The fix gates the founder bypass on
+   * type:"board", so this token is owner-scoped: the conversation is owned by
+   * OWNER_ID, the token's userId is OTHER_ID → 404. The role lookup is NOT
+   * reached for the non-board actor.
+   */
+  it("founder-role mcp token, NOT the owner → 404 (founder bypass is board-only)", async () => {
+    mockGetEffectiveRole.mockResolvedValue("founder"); // would bypass IF the role lookup ran
+    const res = await request(makeApp(makeDb([]), founderMcpActor(OTHER_ID)))
+      .get(convUrl);
+    expect(res.status).toBe(404);
+    expect(res.status).not.toBe(403);
+
+    // P2: role lookup is skipped entirely for non-board actors (board-gated).
+    expect(mockGetEffectiveRole).not.toHaveBeenCalled();
+
+    // The userId predicate IS applied (owner-scoped), with the token's own userId.
+    expect(eqCalledWithUserIdColumn()).toBe(true);
+    const userIdCol = internalAgentConversations.userId;
+    expect(eqSpy.mock.calls.some(
+      (args: unknown[]) => args[0] === userIdCol && args[1] === OTHER_ID
+    )).toBe(true);
+  });
+
+  it("founder-role mcp token, owns the conversation → 200 (self-management still works)", async () => {
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    const res = await request(makeApp(makeDb([CONV_ROW]), founderMcpActor(OWNER_ID)))
+      .get(convUrl);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+
+    // Still board-gated (no role lookup); owner-scoped predicate matched OWNER_ID.
+    expect(mockGetEffectiveRole).not.toHaveBeenCalled();
+    expect(eqCalledWithUserIdColumn()).toBe(true);
+    const userIdCol = internalAgentConversations.userId;
+    expect(eqSpy.mock.calls.some(
+      (args: unknown[]) => args[0] === userIdCol && args[1] === OWNER_ID
     )).toBe(true);
   });
 });
