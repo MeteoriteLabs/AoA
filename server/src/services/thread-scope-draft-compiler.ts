@@ -91,10 +91,6 @@ function entryIds(entries: ScopeCompilerEntry[]): string[] {
   return entries.map((entry) => entry.id);
 }
 
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function titleForGeneratedTask(entries: ScopeCompilerEntry[]): string {
   const combined = entries.map((entry) => cleanText(entry.rawContent)).join(" ").toLowerCase();
   if (combined.includes("scope")) return "Implement real multi-message scope generation";
@@ -164,21 +160,10 @@ function mapExtractedItem(item: ScopeCompilerExtractedItem): CompiledScopeItem {
   }
 
   if (item.type === "artifact") {
-    const artifactId = stringValue(item.payload?.artifactId);
-    const artifactVersionId = stringValue(item.payload?.artifactVersionId);
-    if (artifactId) {
-      return {
-        kind: "artifact_link",
-        title: item.title,
-        description: item.description ?? null,
-        sourceEntryIds,
-        extractedItemId: item.id,
-        artifactId,
-        artifactVersionId,
-        payload: { role: "reference", source: "extracted_item" },
-      };
-    }
-
+    // Extraction does not emit artifact ids today, and discussion_extracted_items
+    // has no `payload` column to read one from — so an artifact-typed extracted
+    // item always degrades to an evidence source_signal. Concrete artifact links
+    // still flow through the attachment join (compileAttachmentItem).
     return {
       kind: "source_signal",
       title: item.title,

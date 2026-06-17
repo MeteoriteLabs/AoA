@@ -225,4 +225,135 @@ describe("threadScopeVersionService item review", () => {
     });
     expect(db.capturedUpdates).toEqual([]);
   });
+
+  it("wraps the batch in a transaction and rolls back when a row disappears mid-batch", async () => {
+    // Minor: reviewItems must apply per-item updates inside the guarded
+    // transaction so a mid-batch failure does not leave partial accepted/rejected
+    // state committed.
+    let selectIdx = 0;
+    let updateIdx = 0;
+    const selectQueue: any[][] = [
+      [draftVersion],
+      [{ id: "task-item" }, { id: "noisy-item" }], // both exist on the pre-check
+    ];
+    // First update succeeds; second update returns no row (concurrent change).
+    const updateQueue: any[][] = [[{ ...taskItem, status: "accepted" }], []];
+    let committed = false;
+    let rolledBack = false;
+
+    function makeSelectChain() {
+      return {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        then: vi.fn((fn: (rows: any[]) => any) =>
+          Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
+        ),
+      };
+    }
+    function makeUpdateChain() {
+      return {
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn(async () => updateQueue[updateIdx++] ?? []),
+          })),
+        })),
+      };
+    }
+
+    const db: any = {
+      select: vi.fn(() => makeSelectChain()),
+      update: vi.fn(() => makeUpdateChain()),
+      transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => {
+        try {
+          const out = await fn(db);
+          committed = true;
+          return out;
+        } catch (err) {
+          rolledBack = true;
+          throw err;
+        }
+      }),
+    };
+
+    const result = await (threadScopeVersionService(db) as any).reviewItems(
+      "co1",
+      "thread1",
+      "scope1",
+      {
+        items: [
+          { itemId: "task-item", status: "accepted" },
+          { itemId: "noisy-item", status: "rejected" },
+        ],
+      },
+      { userId: "u1", isHuman: true },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "item_not_found",
+      message: "Scope item not found",
+    });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(rolledBack).toBe(true);
+    expect(committed).toBe(false);
+  });
+
+  it("commits a successful batch through the transaction", async () => {
+    let selectIdx = 0;
+    let updateIdx = 0;
+    const selectQueue: any[][] = [
+      [draftVersion],
+      [{ id: "task-item" }],
+    ];
+    const updateQueue: any[][] = [[{ ...taskItem, status: "accepted" }]];
+    let committed = false;
+
+    function makeSelectChain() {
+      return {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        then: vi.fn((fn: (rows: any[]) => any) =>
+          Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
+        ),
+      };
+    }
+    function makeUpdateChain() {
+      return {
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn(async () => updateQueue[updateIdx++] ?? []),
+          })),
+        })),
+      };
+    }
+
+    const db: any = {
+      select: vi.fn(() => makeSelectChain()),
+      update: vi.fn(() => makeUpdateChain()),
+      transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => {
+        const out = await fn(db);
+        committed = true;
+        return out;
+      }),
+    };
+
+    const result = await (threadScopeVersionService(db) as any).reviewItems(
+      "co1",
+      "thread1",
+      "scope1",
+      { items: [{ itemId: "task-item", status: "accepted" }] },
+      { userId: "u1", isHuman: true },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      updatedItems: [expect.objectContaining({ id: "task-item", status: "accepted" })],
+    });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(committed).toBe(true);
+  });
 });

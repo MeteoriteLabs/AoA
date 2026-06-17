@@ -7,13 +7,17 @@ import {
   discussionEntryAttachments,
   discussionExtractedItems,
   discussions,
+  goals,
+  projects,
   threadScopeArtifactLinks,
   threadScopeItems,
   threadScopeVersions,
 } from "@armyofagents/db";
-import { and, asc, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
-import { conflict, forbidden, notFound } from "../errors.js";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { isUniqueViolation } from "./db-errors.js";
 import { issueService } from "./issues.js";
+import { MAX_CONTEXT_BUNDLE_ITEMS } from "./issue-context-bundles.js";
 import { memoryService } from "./memory.js";
 import { compileThreadScopeDraft } from "./thread-scope-draft-compiler.js";
 
@@ -109,6 +113,45 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Validate that a task_proposal's payload `projectId` / `goalId` belong to the
+ * same company before they are forwarded to issueService.create. The scope item
+ * payload is founder-editable and can reference foreign or stale ids;
+ * issueService.create does not currently company-scope these fields, so we mirror
+ * the assigneeAgentId-style check here (the minimal correct spot — validating in
+ * issueService.create would change behavior for all 30+ callers). Only runs when
+ * a value is present so the common null case stays a no-op.
+ */
+async function assertScopeTaskScopeFields(
+  tx: Pick<Db, "select">,
+  companyId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const projectId = asString(payload.projectId);
+  if (projectId) {
+    const [row] = await tx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+      .limit(1);
+    if (!row) {
+      throw unprocessable("projectId does not belong to this company");
+    }
+  }
+
+  const goalId = asString(payload.goalId);
+  if (goalId) {
+    const [row] = await tx
+      .select({ id: goals.id })
+      .from(goals)
+      .where(and(eq(goals.id, goalId), eq(goals.companyId, companyId)))
+      .limit(1);
+    if (!row) {
+      throw unprocessable("goalId does not belong to this company");
+    }
+  }
 }
 
 async function resolveMemoryStatus(
@@ -280,7 +323,12 @@ function buildScopeTaskContextBundle(input: {
     .filter((related) => related.id !== input.item.id && related.status !== "rejected")
     .map(scopeItemToHandoffRef)
     .filter((ref): ref is ScopeHandoffRef => Boolean(ref));
-  const items = selectedRefs.length > 0 ? selectedRefs : dedupeHandoffRefs([...fallbackRefs, ...relatedRefs]);
+  const items = (selectedRefs.length > 0 ? selectedRefs : dedupeHandoffRefs([...fallbackRefs, ...relatedRefs]))
+    // The synthetic fallback task can carry one ref per scoped entry. Threads with
+    // >20 entries would exceed MAX_CONTEXT_BUNDLE_ITEMS and trip a 422 rollback in
+    // issueService.create's context-bundle validation. Cap the assembled refs so
+    // apply succeeds for large threads.
+    .slice(0, MAX_CONTEXT_BUNDLE_ITEMS);
 
   return {
     sourceDiscussionId: input.version.threadId,
@@ -436,6 +484,22 @@ export function deriveThreadStage(input: {
       versionNumber,
       scopeVersionId: input.latest.id,
       hasNewEntries: true,
+      newEntryCount,
+    };
+  }
+
+  // A rejected scope version means scoping was abandoned — the thread is back to
+  // discussing, not actively scoped. Return a discussing-equivalent stage for the
+  // next scope attempt (versionNumber + 1) and do NOT expose the rejected
+  // scopeVersionId, which would otherwise render as an active "Scoped vN".
+  if (input.latest.status === "rejected") {
+    const versionNumber = input.latest.versionNumber + 1;
+    return {
+      stage: "discussing",
+      label: `Discussing v${versionNumber}`,
+      versionNumber,
+      scopeVersionId: null,
+      hasNewEntries: newEntryCount > 0,
       newEntryCount,
     };
   }
@@ -610,11 +674,20 @@ export function threadScopeVersionService(db: Db) {
         .orderBy(asc(discussionEntries.seq));
 
       const entryIds = entries.map((entry) => entry.id);
+      // Only map extracted items that are still pending and have not already
+      // produced a task or memory. Without these predicates, re-running scope
+      // draft creation re-maps already-resolved items and creates duplicate
+      // proposal cards (and, on apply, duplicate tasks/memory).
       const extractedItems = entryIds.length > 0
         ? await db
           .select()
           .from(discussionExtractedItems)
-          .where(inArray(discussionExtractedItems.discussionEntryId, entryIds))
+          .where(and(
+            inArray(discussionExtractedItems.discussionEntryId, entryIds),
+            eq(discussionExtractedItems.status, "pending"),
+            isNull(discussionExtractedItems.resultTaskId),
+            isNull(discussionExtractedItems.resultMemoryId),
+          ))
         : [];
       const attachments = entryIds.length > 0
         ? await db
@@ -649,21 +722,26 @@ export function threadScopeVersionService(db: Db) {
           inputType: entry.inputType,
           rawContent: entry.rawContent,
         })),
-        extractedItems: extractedItems.map((item) => ({
-          id: item.id,
-          discussionEntryId: item.discussionEntryId,
-          type: item.type,
-          title: item.title,
-          description: item.description,
-          suggestedPriority: item.suggestedPriority,
-          suggestedAssigneeId: item.suggestedAssigneeId,
-          suggestedDepartmentId: item.suggestedDepartmentId,
-          suggestedProjectId: item.suggestedProjectId,
-          suggestedLayer: item.suggestedLayer,
-          suggestedGoalId: item.suggestedGoalId,
-          status: item.status,
-          payload: (item as { payload?: Record<string, unknown> | null }).payload,
-        })),
+        extractedItems: extractedItems
+          // Defense-in-depth: even if a future caller bypasses the select
+          // predicate above, never re-map an extracted item that already
+          // produced a task or memory.
+          .filter((item) => !item.resultTaskId && !item.resultMemoryId)
+          .map((item) => ({
+            id: item.id,
+            discussionEntryId: item.discussionEntryId,
+            type: item.type,
+            title: item.title,
+            description: item.description,
+            suggestedPriority: item.suggestedPriority,
+            suggestedAssigneeId: item.suggestedAssigneeId,
+            suggestedDepartmentId: item.suggestedDepartmentId,
+            suggestedProjectId: item.suggestedProjectId,
+            suggestedLayer: item.suggestedLayer,
+            suggestedGoalId: item.suggestedGoalId,
+            status: item.status,
+            payload: (item as { payload?: Record<string, unknown> | null }).payload,
+          })),
         attachments: attachments.map((attachment) => ({
           entryId: attachment.discussionEntryId,
           artifactId: attachment.artifactId,
@@ -717,9 +795,24 @@ export function threadScopeVersionService(db: Db) {
 
         return version;
       };
-      const version = typeof db.transaction === "function"
-        ? await db.transaction((tx) => work(tx as unknown as ScopeDraftWriteDb))
-        : await work(db);
+      let version: typeof threadScopeVersions.$inferSelect;
+      try {
+        version = typeof db.transaction === "function"
+          ? await db.transaction((tx) => work(tx as unknown as ScopeDraftWriteDb))
+          : await work(db);
+      } catch (err) {
+        // A concurrent createDraft can race past the latest?.status === "draft"
+        // check above and both attempt the insert. The one-draft partial unique
+        // index (thread_scope_versions_one_draft_uq) lets exactly one win; the
+        // loser gets a 23505. Convert that to the existing draft rather than a 500.
+        if (isUniqueViolation(err, "thread_scope_versions_one_draft_uq")) {
+          const existing = await loadLatestScopeVersion(db, companyId, threadId);
+          if (existing?.status === "draft") {
+            return { status: "existing_draft" as const, version: existing };
+          }
+        }
+        throw err;
+      }
 
       return { status: "created" as const, version };
     },
@@ -818,29 +911,48 @@ export function threadScopeVersionService(db: Db) {
         };
       }
 
-      const updatedItems: Array<typeof threadScopeItems.$inferSelect> = [];
-      for (const item of input.items) {
-        const [updatedItem] = await db
-          .update(threadScopeItems)
-          .set({ status: item.status, updatedAt: new Date() })
-          .where(and(
-            eq(threadScopeItems.companyId, companyId),
-            eq(threadScopeItems.scopeVersionId, scopeVersionId),
-            eq(threadScopeItems.id, item.itemId),
-          ))
-          .returning();
+      // Sentinel used to roll back the batch transaction when a row disappears
+      // mid-loop (concurrent change). Thrown inside the transaction so no partial
+      // status updates are committed, then translated back to the structured
+      // item_not_found result below.
+      class ItemMissingDuringReview extends Error {}
 
-        if (!updatedItem) {
+      const applyReview = async (tx: Pick<Db, "update">) => {
+        const updated: Array<typeof threadScopeItems.$inferSelect> = [];
+        for (const item of input.items) {
+          const [updatedItem] = await tx
+            .update(threadScopeItems)
+            .set({ status: item.status, updatedAt: new Date() })
+            .where(and(
+              eq(threadScopeItems.companyId, companyId),
+              eq(threadScopeItems.scopeVersionId, scopeVersionId),
+              eq(threadScopeItems.id, item.itemId),
+            ))
+            .returning();
+
+          if (!updatedItem) {
+            throw new ItemMissingDuringReview();
+          }
+          updated.push(updatedItem);
+        }
+        return updated;
+      };
+
+      try {
+        const updatedItems = typeof db.transaction === "function"
+          ? await db.transaction((tx) => applyReview(tx as unknown as Pick<Db, "update">))
+          : await applyReview(db);
+        return { ok: true as const, updatedItems };
+      } catch (err) {
+        if (err instanceof ItemMissingDuringReview) {
           return {
             ok: false as const,
             reason: "item_not_found" as const,
             message: "Scope item not found",
           };
         }
-        updatedItems.push(updatedItem);
+        throw err;
       }
-
-      return { ok: true as const, updatedItems };
     },
 
     updateItem: async (
@@ -1084,6 +1196,7 @@ export function threadScopeVersionService(db: Db) {
           let resultMemoryId: string | null = null;
 
           if (item.kind === "task_proposal") {
+            await assertScopeTaskScopeFields(tx as unknown as Pick<Db, "select">, companyId, payload);
             const created = await issueService(tx as unknown as Db).create(companyId, {
               title: item.title,
               description: item.description,
@@ -1294,6 +1407,7 @@ export function threadScopeVersionService(db: Db) {
         let createdTask: CreatedScopeTask | undefined;
 
         if (item.kind === "task_proposal") {
+          await assertScopeTaskScopeFields(tx as unknown as Pick<Db, "select">, companyId, payload);
           const created = await issueService(tx as unknown as Db).create(companyId, {
             title: item.title,
             description: item.description,

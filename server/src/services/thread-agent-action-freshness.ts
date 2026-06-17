@@ -32,6 +32,12 @@ export type ThreadFreshnessComparison =
       reason:
         | "thread_missing"
         | "thread_done"
+        // The snapshot captured at run start was empty/absent (capture threw, so
+        // `runner.ts` stored `{}`). We cannot verify freshness against a baseline
+        // we never recorded, so we suppress the action under THIS distinct
+        // "could not verify" reason rather than letting an empty snapshot
+        // masquerade as a `newer_human_entry` human-conflict (a FALSE reason).
+        | "snapshot_unavailable"
         | "newer_human_entry"
         | "newer_scope_version";
     };
@@ -97,11 +103,43 @@ export async function captureFreshnessSnapshot(
   };
 }
 
+/**
+ * A stored snapshot is "unavailable" when freshness capture threw at run start
+ * and `runner.ts` persisted an empty `{}` in its place. Detect it by the absence
+ * of the always-present baseline fields — a real snapshot ALWAYS carries a string
+ * `threadId` and a numeric `entrySeq` (see `captureFreshnessSnapshot`). Treating
+ * an empty snapshot as a real baseline would coerce `latestHumanSeq` /
+ * `latestScopeVersionNumber` to 0 and falsely report a `newer_human_entry` /
+ * `newer_scope_version` conflict for any thread with ≥1 human entry or scope
+ * version. Typed loosely because the runtime value may genuinely be `{}` even
+ * though the static type says `ThreadFreshnessSnapshot`. Note: `null`
+ * `latestScopeVersionId` / `latestHumanSeq` are LEGITIMATE values on a real
+ * snapshot (no human entry / no scope version yet) and must NOT be treated as
+ * unavailable — hence the baseline check keys off `threadId` + `entrySeq` only.
+ */
+function isSnapshotUnavailable(snapshot: ThreadFreshnessSnapshot | null | undefined): boolean {
+  if (!snapshot || typeof snapshot !== "object") return true;
+  const s = snapshot as Partial<ThreadFreshnessSnapshot>;
+  return typeof s.threadId !== "string" && typeof s.entrySeq !== "number";
+}
+
 export async function compareFreshnessSnapshot(
   db: DbLike,
   threadId: string,
   snapshot: ThreadFreshnessSnapshot,
 ): Promise<ThreadFreshnessComparison> {
+  // An empty/absent baseline snapshot means freshness capture threw at run start
+  // (runner.ts stores `{}` in that case). We have no recorded baseline to compare
+  // against — so DO NOT silently drop the work as if a human spoke. A `{}`
+  // snapshot has `latestHumanSeq === undefined`, which coerces to 0 below and
+  // would falsely trip `newer_human_entry` for any thread with ≥1 human entry.
+  // Report the distinct "could not verify" reason instead. The snapshot is
+  // detected as empty when it carries neither of its always-present baseline
+  // keys (`threadId` string + `entrySeq` number) — see isSnapshotUnavailable.
+  if (isSnapshotUnavailable(snapshot)) {
+    return { fresh: false, reason: "snapshot_unavailable" };
+  }
+
   let current: ThreadFreshnessSnapshot;
   try {
     current = await captureFreshnessSnapshot(db, threadId);

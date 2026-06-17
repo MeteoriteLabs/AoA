@@ -884,6 +884,12 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["issues", "contextBundles", issueId] });
     },
+    onError: () => {
+      // Server rejected the include/exclude change — refetch to revert any
+      // optimistic toggle state and surface the failure (context-leak risk).
+      queryClient.invalidateQueries({ queryKey: ["issues", "contextBundles", issueId] });
+      pushToast({ title: "Failed to update context item", tone: "warn" });
+    },
   });
 
 

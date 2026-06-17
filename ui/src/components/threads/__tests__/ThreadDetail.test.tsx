@@ -1974,9 +1974,106 @@ describe("ThreadDetail", () => {
     });
 
     await user.click(await screen.findByRole("tab", { name: /scope/i }));
-    await user.click(await screen.findByRole("button", { name: /apply accepted/i }));
+    // Wait until the scope version has loaded so the baseline refetch count is stable.
+    await screen.findByRole("button", { name: /apply accepted/i });
+    const scopeFetchesBeforeApply = vi.mocked(threadsApi.getScopeVersion).mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: /apply accepted/i }));
 
     expect(threadsApi.applyScopeVersion).toHaveBeenCalledWith("comp-1", "thread-1", "scope-1");
+    // On success the component invalidates the scope-versions cache, which must
+    // refetch the active scope version (applyScopeMutation.onSuccess →
+    // invalidateScopeVersionsOnly + invalidateThread).
+    await waitFor(() => {
+      expect(vi.mocked(threadsApi.getScopeVersion).mock.calls.length).toBeGreaterThan(
+        scopeFetchesBeforeApply,
+      );
+    });
+  });
+
+  it("refetches the scope-versions cache after accepting scope cards", async () => {
+    vi.mocked(threadsApi.detail).mockResolvedValue({
+      ...mockThread,
+      derivedStage: {
+        stage: "scoping",
+        label: "Scoping v1",
+        versionNumber: 1,
+        scopeVersionId: "scope-1",
+        hasNewEntries: false,
+        newEntryCount: 0,
+      },
+    } as ThreadDetailType);
+    vi.mocked(threadsApi.listScopeVersions).mockResolvedValue({
+      total: 1,
+      versions: [
+        {
+          id: "scope-1",
+          threadId: "thread-1",
+          versionNumber: 1,
+          status: "draft",
+          sourceStartSeq: 1,
+          sourceEndSeq: 2,
+          summary: "Draft scope summary.",
+          assumptions: [],
+          decisions: [],
+          openQuestions: [],
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    vi.mocked(threadsApi.getScopeVersion).mockResolvedValue({
+      id: "scope-1",
+      threadId: "thread-1",
+      versionNumber: 1,
+      status: "draft",
+      sourceStartSeq: 1,
+      sourceEndSeq: 2,
+      summary: "Draft scope summary.",
+      assumptions: [],
+      decisions: [],
+      openQuestions: [],
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      items: [
+        {
+          id: "scope-item-task",
+          kind: "task_proposal",
+          status: "draft",
+          title: "Implement checkout scope",
+          description: "Create the first implementation task.",
+          payload: {},
+          sourceEntryIds: [],
+          resultIssueId: null,
+          resultMemoryId: null,
+          artifactId: null,
+          artifactVersionId: null,
+        },
+      ],
+    });
+    vi.mocked(threadsApi.reviewScopeItems).mockResolvedValue({ ok: true, items: [] } as any);
+
+    const user = userEvent.setup();
+    renderWithProviders(<ThreadDetail />, {
+      initialEntries: ["/TC/discussions/thread-1"],
+    });
+
+    await user.click(await screen.findByRole("tab", { name: /scope/i }));
+    const acceptAll = await screen.findByRole("button", { name: /accept all/i });
+    const scopeFetchesBeforeReview = vi.mocked(threadsApi.getScopeVersion).mock.calls.length;
+
+    await user.click(acceptAll);
+
+    expect(threadsApi.reviewScopeItems).toHaveBeenCalledWith("comp-1", "thread-1", "scope-1", {
+      items: [{ itemId: "scope-item-task", status: "accepted" }],
+    });
+    // reviewScopeItemsMutation.onSuccess → invalidateScopeVersionsOnly, so the
+    // active scope version must refetch after the review succeeds.
+    await waitFor(() => {
+      expect(vi.mocked(threadsApi.getScopeVersion).mock.calls.length).toBeGreaterThan(
+        scopeFetchesBeforeReview,
+      );
+    });
   });
 
   it("updates an edited draft scope card from the right viewer", async () => {

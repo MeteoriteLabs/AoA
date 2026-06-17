@@ -20,6 +20,8 @@ describe("thread agent actions schema contract", () => {
       "payload",
       "idempotencyKey",
       "freshness",
+      "attemptCount",
+      "maxAttempts",
       "blockedReason",
       "committedEntryId",
       "committedScopeVersionId",

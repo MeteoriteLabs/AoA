@@ -4,6 +4,7 @@ import {
   text,
   timestamp,
   jsonb,
+  integer,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -27,6 +28,12 @@ export const threadAgentActions = pgTable(
     payload: jsonb("payload").notNull().default({}),
     idempotencyKey: text("idempotency_key").notNull(),
     freshness: jsonb("freshness").notNull().default({}),
+    // Bounded retry accounting. A per-action commit failure sets status="failed"
+    // and bumps attemptCount; the commit SELECT re-picks failed rows until
+    // attemptCount >= maxAttempts, at which point a poison row is left alone so
+    // the orchestration cursor can finally advance past it. (Review fix (c).)
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
     blockedReason: text("blocked_reason"),
     committedEntryId: uuid("committed_entry_id").references(() => discussionEntries.id, { onDelete: "set null" }),
     committedScopeVersionId: uuid("committed_scope_version_id").references(() => threadScopeVersions.id, {

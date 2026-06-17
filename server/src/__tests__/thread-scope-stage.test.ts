@@ -40,4 +40,39 @@ describe("deriveThreadStage", () => {
       label: "Discussing v2",
     });
   });
+
+  it("derives an un-scoped discussing stage for a rejected latest version", () => {
+    // Defect (i): a rejected version must not render as an active "Scoped vN"
+    // and must not expose its scopeVersionId.
+    const result = deriveThreadStage({
+      subtype: "normal",
+      status: "active",
+      entrySeq: 2,
+      latest: { id: "sv-rejected", versionNumber: 1, status: "rejected", sourceEndSeq: 2, appliedItemCount: 0 },
+    });
+
+    expect(result).toMatchObject({
+      stage: "discussing",
+      versionNumber: 2,
+      label: "Discussing v2",
+      scopeVersionId: null,
+    });
+    expect(result.scopeVersionId).toBeNull();
+  });
+
+  it("flags new entries on a rejected version when the thread advanced past it", () => {
+    const result = deriveThreadStage({
+      subtype: "normal",
+      status: "active",
+      entrySeq: 5,
+      latest: { id: "sv-rejected", versionNumber: 1, status: "rejected", sourceEndSeq: 2, appliedItemCount: 0 },
+    });
+
+    expect(result).toMatchObject({
+      stage: "discussing",
+      scopeVersionId: null,
+      hasNewEntries: true,
+      newEntryCount: 3,
+    });
+  });
 });

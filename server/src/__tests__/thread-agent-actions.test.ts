@@ -1,5 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { threadAgentActionService } from "../services/thread-agent-actions.js";
+
+// Review fix (f): the post_reply commit now runs mention processing on the
+// committed entry (mirroring the non-gated post-entry-tool path). Mock
+// ../services/threads.js so the real (pure) parseMentions runs but
+// processMentions is a spy we can assert on — and threadService stays a callable
+// stub (used only as the default advance_phase committer, never in these tests).
+const { mockProcessMentions, realParseMentions } = vi.hoisted(() => ({
+  mockProcessMentions: vi.fn().mockResolvedValue(undefined),
+  realParseMentions: (text: string) => {
+    const regex = /(?:^|\s)@(\w+)/g;
+    const seen = new Set<string>();
+    const out: Array<{ raw: string; name: string }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+      if (!seen.has(m[1])) {
+        seen.add(m[1]);
+        out.push({ raw: `@${m[1]}`, name: m[1] });
+      }
+    }
+    return out;
+  },
+}));
+vi.mock("../services/threads.js", () => ({
+  parseMentions: realParseMentions,
+  processMentions: mockProcessMentions,
+  threadService: vi.fn(() => ({ advancePhase: vi.fn() })),
+}));
+
+import {
+  reapStaleThreadAgentActions,
+  threadAgentActionService,
+} from "../services/thread-agent-actions.js";
 
 function createSequenceDb(config: { selects?: unknown[][]; inserts?: unknown[][]; updates?: Array<unknown[] | Error> } = {}) {
   let selectIdx = 0;
@@ -55,11 +86,20 @@ const baseAction = {
 describe("threadAgentActionService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    mockProcessMentions.mockClear();
+    mockProcessMentions.mockResolvedValue(undefined);
   });
 
-  it("returns an existing proposed action for the same idempotency key", async () => {
+  it("returns the existing row when a duplicate propose hits the idempotency conflict", async () => {
+    // Race-safe propose (fix: TOCTOU): the insert runs with onConflictDoNothing
+    // and returns no row on conflict; the service then re-selects and returns the
+    // pre-existing action rather than throwing a 500 unique-violation.
     const existing = { ...baseAction, id: "existing-action" };
-    const db = createSequenceDb({ selects: [[thread], [existing]] });
+    const db = createSequenceDb({
+      selects: [[thread], [existing]],
+      // insert returns [] → conflict suppressed (row already existed)
+      inserts: [[]],
+    });
 
     const result = await threadAgentActionService(db as never).proposeThreadAction({
       companyId: "company-1",
@@ -73,7 +113,31 @@ describe("threadAgentActionService", () => {
     });
 
     expect(result).toEqual(existing);
-    expect(db.__insertValues).toHaveLength(0);
+    // The insert is attempted (race-safe), but onConflictDoNothing means no new
+    // row is written — the existing row is returned via the follow-up select.
+    expect(db.__insertValues).toHaveLength(1);
+  });
+
+  it("returns the freshly inserted row when there is no idempotency conflict", async () => {
+    const inserted = { ...baseAction, id: "inserted-action" };
+    const db = createSequenceDb({
+      selects: [[thread]],
+      inserts: [[inserted]],
+    });
+
+    const result = await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      actionType: "post_reply",
+      payload: { rawContent: "Hello" },
+      idempotencyKey: "run-1:post_reply:2",
+      freshness: { latestHumanSeq: 1 },
+    });
+
+    expect(result).toEqual(inserted);
+    expect(db.__insertValues).toHaveLength(1);
   });
 
   it("rejects action proposals for threads outside the company", async () => {
@@ -149,6 +213,110 @@ describe("threadAgentActionService", () => {
       status: "committed",
       committedEntryId: "entry-committed",
     }));
+  });
+
+  it("threads sourceInfo from the action payload through addEntry on a committed post_reply (fix (f))", async () => {
+    const action = {
+      ...baseAction,
+      payload: {
+        rawContent: "Status update.",
+        parentEntryId: "entry-1",
+        sourceInfo: { systemNotice: true },
+      },
+    };
+    const db = createSequenceDb({ selects: [[action]], updates: [[{ ...action, status: "committed" }]] });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(addEntry).toHaveBeenCalledWith(
+      "company-1",
+      "thread-1",
+      expect.objectContaining({ sourceInfo: { systemNotice: true } }),
+      "agent:agent-1",
+    );
+  });
+
+  it("convenes a mentioned crew agent on a committed post_reply via processMentions (fix (f))", async () => {
+    const action = {
+      ...baseAction,
+      payload: {
+        rawContent: "@Planner can you take this from here?",
+        parentEntryId: "entry-1",
+      },
+    };
+    const db = createSequenceDb({ selects: [[action]], updates: [[{ ...action, status: "committed" }]] });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-with-mention" });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    // Mention processing runs against the committed entry, hop-capped at 1 — the
+    // same contract as the non-gated post-entry-tool path.
+    expect(mockProcessMentions).toHaveBeenCalledWith(
+      expect.anything(),
+      "company-1",
+      "thread-1",
+      "entry-with-mention",
+      [{ raw: "@Planner", name: "Planner" }],
+      { hopCount: 1 },
+    );
+  });
+
+  it("does not run mention processing when a committed post_reply has no @mention (fix (f))", async () => {
+    const db = createSequenceDb({ selects: [[baseAction]], updates: [[{ ...baseAction, status: "committed" }]] });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(mockProcessMentions).not.toHaveBeenCalled();
+  });
+
+  it("keeps a committed post_reply when mention processing throws (best-effort, fix (f))", async () => {
+    const action = {
+      ...baseAction,
+      payload: { rawContent: "@Planner please review", parentEntryId: "entry-1" },
+    };
+    const db = createSequenceDb({ selects: [[action]], updates: [[{ ...action, status: "committed" }]] });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-with-mention" });
+    mockProcessMentions.mockRejectedValueOnce(new Error("dispatch offline"));
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    // The reply still commits — a mention-dispatch failure must not roll it back.
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
   });
 
   it("claims a post_reply as committing before writing the discussion entry", async () => {
@@ -408,7 +576,8 @@ describe("threadAgentActionService", () => {
       },
     };
     const db = createSequenceDb({
-      selects: [[action]],
+      // 2nd select is the attachToEntryId in-thread validation lookup.
+      selects: [[action], [{ id: "entry-3" }]],
       inserts: [[{ id: "scope-item-artifact" }]],
       updates: [[{ ...action, status: "committed" }]],
     });
@@ -509,7 +678,11 @@ describe("threadAgentActionService", () => {
     }));
   });
 
-  it("evaluates freshness for a run action batch before self-mutating commits", async () => {
+  it("suppresses a remaining action whose freshness goes stale mid-loop", async () => {
+    // Per-action freshness re-check (fix: freshness was checked once pre-loop).
+    // The artifact action commits and self-mutates the scope; the reply action,
+    // evaluated AFTER that mutation, is now stale and must be suppressed — not
+    // committed against a thread the human has since moved past.
     const artifactAction = {
       ...baseAction,
       id: "action-artifact",
@@ -533,7 +706,7 @@ describe("threadAgentActionService", () => {
       inserts: [[{ id: "scope-item-artifact" }]],
       updates: [
         [{ ...artifactAction, status: "committed" }],
-        [{ ...replyAction, status: "committed" }],
+        [{ ...replyAction, status: "suppressed_stale" }],
       ],
     });
     let scopeMutated = false;
@@ -566,26 +739,18 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 2, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 1, blocked: 0, failed: 0 });
     expect(compareFreshnessSnapshot).toHaveBeenCalledTimes(2);
     expect(createArtifact).toHaveBeenCalled();
-    expect(addEntry).toHaveBeenCalledWith(
-      "company-1",
-      "thread-1",
-      expect.objectContaining({
-        inputType: "agent",
-        rawContent: "I created discussion-scope-notes.md and attached it to the scope draft.",
-        authorAgentId: "agent-1",
-      }),
-      "agent:agent-1",
-    );
+    // The stale reply must NOT have been posted.
+    expect(addEntry).not.toHaveBeenCalled();
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
       status: "committed",
       committedScopeItemId: "scope-item-artifact",
     }));
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
-      status: "committed",
-      committedEntryId: "entry-committed",
+      status: "suppressed_stale",
+      blockedReason: "newer_scope_version",
     }));
   });
 
@@ -716,5 +881,213 @@ describe("threadAgentActionService", () => {
       status: "blocked_policy",
       blockedReason: "autonomy_insufficient",
     }));
+  });
+
+  it("marks a transiently failing action failed and bumps its attempt counter", async () => {
+    // Fix (c): a per-action side-effect throw must set status=failed AND bump
+    // attempt_count so the row is re-selectable on the next tick under its cap.
+    const action = {
+      ...baseAction,
+      actionType: "post_reply",
+      attemptCount: 0,
+      maxAttempts: 3,
+    };
+    const db = createSequenceDb({
+      selects: [[action]],
+      updates: [
+        [{ ...action, status: "committing" }],
+        [{ ...action, status: "failed" }],
+      ],
+    });
+    const addEntry = vi.fn().mockRejectedValue(new Error("transient connection drop"));
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 1 });
+    // The failure update carries both status=failed and an attemptCount bump.
+    const failedSet = db.__updateSets.find(
+      (s) => (s as Record<string, unknown>).status === "failed",
+    ) as Record<string, unknown>;
+    expect(failedSet).toBeDefined();
+    expect(failedSet.blockedReason).toBe("transient connection drop");
+    expect(failedSet.attemptCount).toBeDefined();
+  });
+
+  it("re-selects a still-retryable failed row and can commit it", async () => {
+    // Fix (c): the commit SELECT picks up "failed" rows under the attempt cap, so
+    // a previously transient failure is retried (and now succeeds).
+    const failedRetryable = {
+      ...baseAction,
+      actionType: "post_reply",
+      status: "failed",
+      attemptCount: 1,
+      maxAttempts: 3,
+    };
+    const db = createSequenceDb({
+      selects: [[failedRetryable]],
+      updates: [
+        [{ ...failedRetryable, status: "committing" }],
+        [{ ...failedRetryable, status: "committed", committedEntryId: "entry-retry" }],
+      ],
+    });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-retry" });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(addEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves no orphan artifact when the scope draft is unavailable (transaction rollback)", async () => {
+    // Fix (e): create_artifact_candidate wraps artifact+draft+item+attach in ONE
+    // transaction with the draft resolved FIRST. When the draft is unavailable
+    // the transaction aborts before the artifact is created — no orphan remains.
+    const action = {
+      ...baseAction,
+      actionType: "create_artifact_candidate",
+      payload: { title: "Orphan candidate", artifactType: "document", content: "# X" },
+    };
+    const db = createSequenceDb({
+      selects: [[action]],
+      updates: [
+        [{ ...action, status: "committing" }],
+        [{ ...action, status: "blocked_policy" }],
+      ],
+    });
+    // Draft resolves with NO version → "scope_draft_unavailable".
+    const createDraftFromThread = vi.fn().mockResolvedValue({ status: "no_entries" });
+    const createArtifact = vi.fn().mockResolvedValue({
+      id: "artifact-orphan",
+      versions: [{ id: "v1" }],
+    });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread },
+      artifacts: { create: createArtifact },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0 });
+    // The artifact must NOT have been created — the draft was resolved first and
+    // its absence aborted the transaction before artifactCommitter.create ran.
+    expect(createArtifact).not.toHaveBeenCalled();
+    expect(db.__updateSets).toContainEqual(expect.objectContaining({
+      status: "blocked_policy",
+      blockedReason: "scope_draft_unavailable",
+    }));
+  });
+
+  it("rejects create_artifact_candidate when attachToEntryId points at another thread", async () => {
+    // Fix (minor): the caller-supplied attach target must belong to THIS thread.
+    // A forged cross-thread entry id is rejected up front (no artifact created).
+    const action = {
+      ...baseAction,
+      actionType: "create_artifact_candidate",
+      payload: {
+        title: "Cross-thread candidate",
+        artifactType: "document",
+        content: "# X",
+        attachToEntryId: "entry-from-other-thread",
+      },
+    };
+    const db = createSequenceDb({
+      // 2nd select is the in-thread validation lookup → empty (entry not in thread).
+      selects: [[action], []],
+      updates: [
+        [{ ...action, status: "committing" }],
+        [{ ...action, status: "blocked_policy" }],
+      ],
+    });
+    const createArtifact = vi.fn();
+    const createDraftFromThread = vi.fn();
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread },
+      artifacts: { create: createArtifact },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0 });
+    // No side effects ran — neither the artifact nor the scope draft were touched.
+    expect(createArtifact).not.toHaveBeenCalled();
+    expect(createDraftFromThread).not.toHaveBeenCalled();
+    expect(db.__updateSets).toContainEqual(expect.objectContaining({
+      status: "blocked_policy",
+      blockedReason: "attach_target_not_in_thread",
+    }));
+  });
+});
+
+describe("reapStaleThreadAgentActions", () => {
+  function createReaperDb(reapedRows: unknown[]) {
+    const updateSets: unknown[] = [];
+    const whereArgs: unknown[] = [];
+    const db = {
+      update: () => {
+        const chain: Record<string, unknown> = {};
+        chain.set = (arg: unknown) => {
+          updateSets.push(arg);
+          return chain;
+        };
+        chain.where = (arg: unknown) => {
+          whereArgs.push(arg);
+          return chain;
+        };
+        chain.returning = () => Promise.resolve(reapedRows);
+        return chain;
+      },
+      __updateSets: updateSets,
+      __whereArgs: whereArgs,
+    };
+    return db;
+  }
+
+  it("flips a stale committing row to failed, bumps attempt, and counts it", async () => {
+    const db = createReaperDb([{ id: "stale-1" }, { id: "stale-2" }]);
+
+    const result = await reapStaleThreadAgentActions(db as never, {
+      ttlMs: 10 * 60 * 1000,
+      now: new Date("2026-06-17T12:00:00Z"),
+    });
+
+    expect(result).toEqual({ reaped: 2 });
+    const set = db.__updateSets[0] as Record<string, unknown>;
+    expect(set.status).toBe("failed");
+    expect(set.blockedReason).toBe("reaped_stale_committing");
+    expect(set.attemptCount).toBeDefined();
+  });
+
+  it("reports zero when no stale rows match", async () => {
+    const db = createReaperDb([]);
+
+    const result = await reapStaleThreadAgentActions(db as never);
+
+    expect(result).toEqual({ reaped: 0 });
   });
 });

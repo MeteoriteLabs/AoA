@@ -181,6 +181,60 @@ describe("runController action gate integration", () => {
     expect(order).toEqual(["action-gate", "onCommit"]);
   });
 
+  it("does NOT advance the cursor when an action commit reports failures", async () => {
+    // Fix (c): a per-action commit failure is swallowed inside
+    // commitThreadAgentActions (row set failed, call returns normally). The
+    // orchestration loop must NOT advance the cursor in that case, so the
+    // triggering entry is retried on the next tick instead of being dropped.
+    const threadId = "thread-action-gate-failed";
+    const controller: ControllerState = {
+      threadId,
+      runEpoch: 1,
+      pendingRun: true,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const entry: EntryRow = {
+      id: "entry-a",
+      discussionId: threadId,
+      seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"),
+      inputType: "write",
+      rawContent: "Please help scope this.",
+    };
+    const { db, cursorCommits } = createControllerDb(controller, [entry]);
+    commitThreadAgentActionsMock.mockResolvedValueOnce({
+      committed: 0,
+      suppressed: 0,
+      blocked: 0,
+      failed: 1,
+    });
+    const onCommit = vi.fn();
+
+    const result = await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+      onCommit,
+    });
+
+    expect(result).toMatchObject({
+      ran: true,
+      suppressed: false,
+      error: "action_commit_failed:1",
+      cursorAdvancedTo: null,
+    });
+    expect(commitThreadAgentActionsMock).toHaveBeenCalledWith({
+      companyId: "company-1",
+      threadId,
+      runId: "run-1",
+    });
+    // Cursor not advanced → entry will be retried next tick.
+    expect(cursorCommits).toEqual([]);
+    expect(controller.lastProcessedEntryId).toBeNull();
+    expect(controller.lastError).toBe("action_commit_failed:1");
+    // The post-commit hook must NOT fire on the failed path.
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
   it("does not commit proposed thread actions when a newer human entry makes the run stale", async () => {
     const threadId = "thread-action-gate-stale";
     const controller: ControllerState = {

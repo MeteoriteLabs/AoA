@@ -161,6 +161,9 @@ describe("thread scope journey E2E", () => {
         [draft],
         [thread],
         [{ ...taskItem, status: "accepted" }, memoryItem],
+        // projectId / goalId company-scope validation lookups for the task item.
+        [{ id: "project-1" }],
+        [{ id: "goal-1" }],
       ],
       inserts: [[draft]],
       updates: [

@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type {
   ThreadAgentActionStatus,
   ThreadAgentActionType,
@@ -7,6 +7,7 @@ import type {
 import {
   agentWakeupRequests,
   agents,
+  discussionEntries,
   discussionEntryAttachments,
   discussions,
   threadAgentActions,
@@ -21,7 +22,10 @@ import {
 import { discussionService } from "./discussions.js";
 import { threadScopeVersionService } from "./thread-scope-versions.js";
 import { artifactService } from "./artifacts.js";
-import { threadService } from "./threads.js";
+import { threadService, parseMentions, processMentions } from "./threads.js";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ service: "thread-agent-actions" });
 
 type QueryChain = PromiseLike<unknown[]> & {
   from: (table: unknown) => QueryChain;
@@ -38,6 +42,7 @@ type DbLike = {
   select: (...args: unknown[]) => QueryChain;
   insert: (...args: unknown[]) => QueryChain;
   update: (...args: unknown[]) => QueryChain;
+  transaction?: <T>(fn: (tx: DbLike) => Promise<T> | T) => Promise<T>;
 };
 
 type ThreadActionRow = {
@@ -51,6 +56,8 @@ type ThreadActionRow = {
   payload: unknown;
   idempotencyKey: string;
   freshness: ThreadFreshnessSnapshot;
+  attemptCount?: number;
+  maxAttempts?: number;
 };
 
 export type ProposeThreadActionInput = {
@@ -86,6 +93,7 @@ type DiscussionCommitService = {
       rawContent: string;
       parentEntryId?: string | null;
       authorAgentId?: string | null;
+      sourceInfo?: Record<string, unknown> | null;
     },
     actorId: string,
   ) => Promise<{ id: string }>;
@@ -167,12 +175,19 @@ async function updateActionStatus(
     committedEntryId?: string | null;
     committedScopeVersionId?: string | null;
     committedScopeItemId?: string | null;
+    // When set, atomically bump attempt_count (used on the failed-retry path
+    // so a poison row eventually stops being re-selected). (Review fix (c).)
+    bumpAttempt?: boolean;
   },
 ) {
+  const { bumpAttempt, ...rest } = values;
   const [updated] = await db
     .update(threadAgentActions)
     .set({
-      ...values,
+      ...rest,
+      ...(bumpAttempt
+        ? { attemptCount: sql`${threadAgentActions.attemptCount} + 1` }
+        : {}),
       committedAt: values.status === "committed" ? new Date() : undefined,
       updatedAt: new Date(),
     })
@@ -191,6 +206,19 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
     deps.artifacts ?? artifactService(db as unknown as Db);
   const threadCommitter =
     deps.threads ?? threadService(db as unknown as Db);
+  // Tx-bound resolvers for the create_artifact_candidate transaction (fix (e)):
+  // artifact + draft + scope-item + attach must commit/roll back together. When
+  // a dep override is supplied (tests), it is used verbatim — the fake does not
+  // need a real tx binding; otherwise the committer is re-bound to the tx handle.
+  const resolveScopeVersionCommitter = (dbArg: DbLike): ScopeVersionCommitService =>
+    deps.scopeVersions ?? threadScopeVersionService(dbArg as unknown as Db);
+  const resolveArtifactCommitter = (dbArg: DbLike): ArtifactCommitService =>
+    deps.artifacts ?? artifactService(dbArg as unknown as Db);
+  // Run `fn` inside a DB transaction when the handle supports it; otherwise fall
+  // back to running against the bare handle (defensive — production `Db` always
+  // exposes `.transaction`).
+  const runInTransaction = <T>(fn: (tx: DbLike) => Promise<T>): Promise<T> =>
+    actionDb.transaction ? actionDb.transaction(fn) : fn(actionDb);
   const compare = deps.compareFreshnessSnapshot ?? compareFreshnessSnapshot;
 
   return {
@@ -205,19 +233,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
         throw new Error("Thread not found");
       }
 
-      const [existing] = await actionDb
-        .select()
-        .from(threadAgentActions)
-        .where(
-          and(
-            eq(threadAgentActions.companyId, input.companyId),
-            eq(threadAgentActions.idempotencyKey, input.idempotencyKey),
-          ),
-        )
-        .limit(1);
-
-      if (existing) return existing;
-
+      // Race-safe insert: onConflictDoNothing on the (companyId, idempotencyKey)
+      // unique index means a concurrent propose with the same key does NOT throw
+      // a 500 unique-violation — it returns no row, and we re-select the existing
+      // row instead. (Review fix (minor): TOCTOU between check and insert.)
       const [inserted] = await actionDb
         .insert(threadAgentActions)
         .values({
@@ -231,9 +250,27 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           idempotencyKey: input.idempotencyKey,
           freshness: input.freshness ?? {},
         })
+        .onConflictDoNothing({
+          target: [threadAgentActions.companyId, threadAgentActions.idempotencyKey],
+        })
         .returning();
 
-      return inserted;
+      if (inserted) return inserted;
+
+      // Conflict suppressed → the row already exists. Re-select and return it so
+      // callers see the canonical (idempotent) action.
+      const [existing] = await actionDb
+        .select()
+        .from(threadAgentActions)
+        .where(
+          and(
+            eq(threadAgentActions.companyId, input.companyId),
+            eq(threadAgentActions.idempotencyKey, input.idempotencyKey),
+          ),
+        )
+        .limit(1);
+
+      return existing;
     },
 
     commitThreadAgentActions: async (
@@ -246,6 +283,11 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
         failed: 0,
       };
 
+      // Select both "proposed" rows and "failed" rows that are still under their
+      // attempt cap. A transient per-action failure (status="failed") is thus
+      // retried on the next commit tick instead of being permanently dropped;
+      // once attemptCount >= maxAttempts the row is no longer re-selected (poison
+      // pill stops). (Review fix (c) part 3.)
       const actions = await actionDb
         .select()
         .from(threadAgentActions)
@@ -254,29 +296,30 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             eq(threadAgentActions.companyId, input.companyId),
             eq(threadAgentActions.threadId, input.threadId),
             eq(threadAgentActions.runId, input.runId),
-            eq(threadAgentActions.status, "proposed"),
+            or(
+              eq(threadAgentActions.status, "proposed"),
+              and(
+                eq(threadAgentActions.status, "failed"),
+                lt(threadAgentActions.attemptCount, threadAgentActions.maxAttempts),
+              ),
+            ),
           ),
         )
         .orderBy(asc(threadAgentActions.createdAt)) as ThreadActionRow[];
 
-      const freshActions: ThreadActionRow[] = [];
-      for (const action of actions) {
-        const freshness = await compare(actionDb, input.threadId, action.freshness);
-        if (!freshness.fresh) {
-          await updateActionStatus(actionDb, action.id, {
-            status: "suppressed_stale",
-            blockedReason: freshness.reason,
-          });
-          result.suppressed += 1;
-          continue;
-        }
-        freshActions.push(action);
-      }
+      // Freshness is re-checked INSIDE the per-action loop (not once up front) so
+      // a human entry arriving mid-commit suppresses the *remaining* actions, not
+      // just the ones evaluated before the batch started. (Review fix (minor).)
+      const freshActions: ThreadActionRow[] = actions;
 
       const sameRunArtifacts: Array<{ artifactId: string; attachedEntryId: string | null }> = [];
       let sameRunReplyEntryId: string | null = null;
-      const attachArtifactToEntry = async (artifactId: string, entryId: string) => {
-        await actionDb
+      const attachArtifactToEntry = async (
+        artifactId: string,
+        entryId: string,
+        dbArg: DbLike = actionDb,
+      ) => {
+        await dbArg
           .insert(discussionEntryAttachments)
           .values({
             discussionEntryId: entryId,
@@ -285,15 +328,46 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           .returning();
       };
 
+      // Validate that a caller-supplied target entry actually belongs to THIS
+      // thread (and company) before attaching an artifact to it. Prevents a
+      // cross-thread attachment within a company via a forged attachToEntryId.
+      // (Review fix (minor): attachToEntryId not scoped to thread/company.)
+      const isEntryInThread = async (entryId: string): Promise<boolean> => {
+        const [row] = (await actionDb
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.id, entryId),
+              eq(discussionEntries.discussionId, input.threadId),
+            ),
+          )
+          .limit(1)) as Array<{ id: string }>;
+        return Boolean(row);
+      };
+
       for (const action of freshActions) {
         try {
+          // Per-action freshness re-check (Review fix (minor)): re-evaluate against
+          // the live thread state before each action so a human entry that arrives
+          // mid-commit suppresses the REMAINING actions in the batch.
+          const freshness = await compare(actionDb, input.threadId, action.freshness);
+          if (!freshness.fresh) {
+            await updateActionStatus(actionDb, action.id, {
+              status: "suppressed_stale",
+              blockedReason: freshness.reason,
+            });
+            result.suppressed += 1;
+            continue;
+          }
+
           // NOTE: the "committing" status only de-duplicates within a single
           // commitThreadAgentActions invocation (the action query above selects
-          // status="proposed" only). It does NOT prevent duplicate side effects on
-          // the cross-run retry path (orchestration re-proposes with a fresh runId →
-          // new idempotencyKey). Real retry-safety is a tracked follow-up: wrap each
-          // action body in db.transaction(), make idempotencyKey stable, add a reaper
-          // for stale "committing" rows.
+          // status="proposed" + retryable "failed" rows only). It does NOT prevent
+          // duplicate side effects on the cross-run retry path (orchestration
+          // re-proposes with a fresh runId → new idempotencyKey). Real retry-safety
+          // is a tracked follow-up: make idempotencyKey stable. A reaper for stale
+          // "committing" rows is wired via reapStaleThreadAgentActions below.
           await updateActionStatus(actionDb, action.id, {
             status: "committing",
           });
@@ -318,6 +392,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 rawContent,
                 parentEntryId: asString(payload.parentEntryId) ?? null,
                 authorAgentId: action.agentId,
+                // Review fix (f): carry `sourceInfo` from the action payload
+                // through the commit so the committed entry preserves the same
+                // metadata the non-gated path persists (post-entry-tool.ts).
+                sourceInfo: (payload.sourceInfo as Record<string, unknown> | null) ?? null,
               },
               `agent:${action.agentId}`,
             );
@@ -332,6 +410,37 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               committedEntryId: entry.id,
             });
             result.committed += 1;
+
+            // Review fix (f): run mention processing on the committed entry, just
+            // like the non-gated post path (post-entry-tool.ts). Without this a
+            // "@Planner …" reply that committed through the action queue would
+            // never convene Planner — the gated path silently dropped mentions.
+            // Hop-capped at 1 (same as the non-gated path) so a chain of mentions
+            // can't spiral. Best-effort: a mention-dispatch failure must not roll
+            // back the already-committed reply, so it is caught and logged.
+            try {
+              const mentions = parseMentions(rawContent);
+              if (mentions.length > 0) {
+                await processMentions(
+                  actionDb as unknown as Db,
+                  input.companyId,
+                  input.threadId,
+                  entry.id,
+                  mentions,
+                  { hopCount: 1 },
+                );
+              }
+            } catch (mentionErr) {
+              log.warn(
+                {
+                  err: mentionErr,
+                  threadId: input.threadId,
+                  entryId: entry.id,
+                  actionId: action.id,
+                },
+                "thread-agent-actions: mention processing failed for committed post_reply — entry kept",
+              );
+            }
             continue;
           }
 
@@ -462,7 +571,8 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           if (action.actionType === "create_artifact_candidate") {
             const payload = asRecord(action.payload);
             const title = asString(payload.title);
-            if (!title || !action.agentId) {
+            const agentId = action.agentId;
+            if (!title || !agentId) {
               await updateActionStatus(actionDb, action.id, {
                 status: "blocked_policy",
                 blockedReason: "invalid_artifact_candidate_payload",
@@ -471,69 +581,111 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               continue;
             }
 
-            const artifact = await artifactCommitter.create(
-              input.companyId,
-              action.agentId,
-              {
-                title,
-                type: asString(payload.artifactType) ?? "document",
-                source: "agent",
-                content: asString(payload.content) ?? null,
-                fileUrl: asString(payload.fileRef) ?? null,
-              },
-            );
-            const artifactVersionId = artifact.versions?.[0]?.id ?? null;
             const explicitEntryId = asString(payload.attachToEntryId);
-
-            const draft = await scopeVersionCommitter.createDraftFromThread(
-              input.companyId,
-              input.threadId,
-              { agentId: action.agentId, isHuman: false },
-              {},
-            );
-            const scopeVersionId = draft.version?.id;
-            if (!scopeVersionId) {
+            // Validate the caller-supplied attach target is in THIS thread BEFORE
+            // any writes — reject a forged cross-thread attachToEntryId up front
+            // so no artifact is created for an invalid target. (Review fix (minor).)
+            if (explicitEntryId && !(await isEntryInThread(explicitEntryId))) {
               await updateActionStatus(actionDb, action.id, {
                 status: "blocked_policy",
-                blockedReason: "scope_draft_unavailable",
+                blockedReason: "attach_target_not_in_thread",
               });
               result.blocked += 1;
               continue;
             }
 
-            const [item] = await actionDb
-              .insert(threadScopeItems)
-              .values({
-                companyId: input.companyId,
-                scopeVersionId,
-                kind: "artifact_link",
-                status: "draft",
-                title,
-                description: "Artifact candidate created by agent",
-                artifactId: artifact.id,
-                artifactVersionId,
-                payload: {
-                  ...payload,
-                  artifactId: artifact.id,
-                  artifactVersionId,
-                  role: "reference",
-                },
-                sourceEntryIds: explicitEntryId ? [explicitEntryId] : [],
-              })
-              .returning();
+            // Sentinel used to abort the transaction when the scope draft is
+            // unavailable — rolls back the artifact + version so no orphan remains.
+            const SCOPE_DRAFT_UNAVAILABLE = Symbol("scope_draft_unavailable");
 
-            if (explicitEntryId) {
-              await attachArtifactToEntry(artifact.id, explicitEntryId);
-            } else if (sameRunReplyEntryId) {
-              await attachArtifactToEntry(artifact.id, sameRunReplyEntryId);
-            } else {
-              sameRunArtifacts.push({ artifactId: artifact.id, attachedEntryId: null });
+            // Wrap the whole action body in ONE transaction (Review fix (e)): the
+            // artifact, its version, the scope draft, the scope item, and the
+            // attachment all commit or roll back together. The scope draft is
+            // resolved+validated FIRST so an unavailable draft aborts before any
+            // artifact row is written — the previously-reachable orphan path is
+            // closed.
+            let committed: { scopeVersionId: string; scopeItemId: string | null } | null = null;
+            try {
+              committed = await runInTransaction(async (tx) => {
+                const txScopeVersions = resolveScopeVersionCommitter(tx);
+                const txArtifacts = resolveArtifactCommitter(tx);
+
+                const draft = await txScopeVersions.createDraftFromThread(
+                  input.companyId,
+                  input.threadId,
+                  { agentId, isHuman: false },
+                  {},
+                );
+                const scopeVersionId = draft.version?.id;
+                if (!scopeVersionId) {
+                  throw SCOPE_DRAFT_UNAVAILABLE;
+                }
+
+                const artifact = await txArtifacts.create(
+                  input.companyId,
+                  agentId,
+                  {
+                    title,
+                    type: asString(payload.artifactType) ?? "document",
+                    source: "agent",
+                    content: asString(payload.content) ?? null,
+                    fileUrl: asString(payload.fileRef) ?? null,
+                  },
+                );
+                const artifactVersionId = artifact.versions?.[0]?.id ?? null;
+
+                const [item] = await tx
+                  .insert(threadScopeItems)
+                  .values({
+                    companyId: input.companyId,
+                    scopeVersionId,
+                    kind: "artifact_link",
+                    status: "draft",
+                    title,
+                    description: "Artifact candidate created by agent",
+                    artifactId: artifact.id,
+                    artifactVersionId,
+                    payload: {
+                      ...payload,
+                      artifactId: artifact.id,
+                      artifactVersionId,
+                      role: "reference",
+                    },
+                    sourceEntryIds: explicitEntryId ? [explicitEntryId] : [],
+                  })
+                  .returning();
+
+                if (explicitEntryId) {
+                  await attachArtifactToEntry(artifact.id, explicitEntryId, tx);
+                } else if (sameRunReplyEntryId) {
+                  await attachArtifactToEntry(artifact.id, sameRunReplyEntryId, tx);
+                } else {
+                  sameRunArtifacts.push({ artifactId: artifact.id, attachedEntryId: null });
+                }
+
+                return {
+                  scopeVersionId,
+                  scopeItemId: (item as { id?: string } | undefined)?.id ?? null,
+                };
+              });
+            } catch (txError) {
+              if (txError === SCOPE_DRAFT_UNAVAILABLE) {
+                // Draft never materialized → artifact (if any) rolled back. Mark
+                // the action blocked; no orphan artifact exists.
+                await updateActionStatus(actionDb, action.id, {
+                  status: "blocked_policy",
+                  blockedReason: "scope_draft_unavailable",
+                });
+                result.blocked += 1;
+                continue;
+              }
+              throw txError;
             }
 
             await updateActionStatus(actionDb, action.id, {
               status: "committed",
-              committedScopeVersionId: scopeVersionId,
-              committedScopeItemId: (item as { id?: string } | undefined)?.id ?? null,
+              committedScopeVersionId: committed.scopeVersionId,
+              committedScopeItemId: committed.scopeItemId,
             });
             result.committed += 1;
             continue;
@@ -585,9 +737,12 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           });
           result.blocked += 1;
         } catch (error) {
+          // Bump attempt_count on every failure so a poison row eventually stops
+          // being re-selected once it hits maxAttempts. (Review fix (c) part 3.)
           await updateActionStatus(actionDb, action.id, {
             status: "failed",
             blockedReason: error instanceof Error ? error.message : "commit_failed",
+            bumpAttempt: true,
           });
           result.failed += 1;
         }
@@ -596,4 +751,64 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       return result;
     },
   };
+}
+
+/**
+ * Default TTL after which a `committing` thread-agent-action row is considered
+ * crash-stranded. A commit that takes longer than this almost certainly died
+ * mid-flight (process crash, lost connection) rather than legitimately running,
+ * so the reaper resets it for a bounded retry.
+ */
+export const STALE_COMMITTING_TTL_MS = 10 * 60 * 1000;
+
+export interface ReapStaleThreadAgentActionsResult {
+  reaped: number;
+}
+
+/**
+ * Reaper for crash-stranded thread-agent-action rows.
+ *
+ * A row left in `committing` past {@link STALE_COMMITTING_TTL_MS} (because the
+ * committing process crashed before it could write a terminal status) would
+ * otherwise sit forever — never re-selected by `commitThreadAgentActions`
+ * (which only picks `proposed` + retryable `failed`) and never advancing the
+ * orchestration cursor. This sweeper flips such rows to `failed` and bumps
+ * `attemptCount`, so they become re-selectable under the attempt cap (fix (c))
+ * but a perpetually-crashing row eventually stops once it hits `maxAttempts`.
+ *
+ * Mirrors `sweepExpiredWorkspaces` in `workspace-ttl-sweeper.ts`: a single
+ * bounded UPDATE, returns a count, safe to run on the existing sweep cadence.
+ *
+ * TODO(cron-wiring): wire this into the server sweep cadence in
+ * `server/src/index.ts` (alongside `scheduleTtlSweeper` /
+ * `scheduleCleanupRetrySweeper`). Left unwired here to keep this change scoped
+ * to the commit/retry hardening; a follow-up should add a `setInterval` (or fold
+ * it into the existing periodic `setInterval` block) calling this function.
+ */
+export async function reapStaleThreadAgentActions(
+  db: Db | DbLike,
+  opts: { ttlMs?: number; now?: Date } = {},
+): Promise<ReapStaleThreadAgentActionsResult> {
+  const reaperDb = db as unknown as DbLike;
+  const ttlMs = opts.ttlMs ?? STALE_COMMITTING_TTL_MS;
+  const now = opts.now ?? new Date();
+  const cutoff = new Date(now.getTime() - ttlMs);
+
+  const reaped = (await reaperDb
+    .update(threadAgentActions)
+    .set({
+      status: "failed",
+      blockedReason: "reaped_stale_committing",
+      attemptCount: sql`${threadAgentActions.attemptCount} + 1`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        inArray(threadAgentActions.status, ["committing"]),
+        lt(threadAgentActions.updatedAt, cutoff),
+      ),
+    )
+    .returning()) as unknown[];
+
+  return { reaped: reaped.length };
 }

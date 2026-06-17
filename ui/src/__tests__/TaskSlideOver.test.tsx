@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -28,6 +28,9 @@ vi.mock("@mdxeditor/editor", () => ({
 // --- We test the component's API surface by mocking heavy dependencies ---
 
 const mockOnClose = vi.fn();
+// Stable toast spy so tests can assert on onError/onSuccess toasts. Hoisted so it
+// exists before the ToastContext mock factory runs.
+const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssue = {
   id: "issue-1",
   title: "Fix login bug",
@@ -46,6 +49,43 @@ const mockIssue = {
   updatedAt: new Date().toISOString(),
 };
 
+// Default useQuery implementation shared by the mock factory and beforeEach.
+// Tests that need bespoke query data override this per-test; beforeEach restores
+// it so tests stay order-independent (a leaked override must not bleed forward).
+function defaultUseQueryImpl({ queryKey }: any) {
+  const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+  // Return mock issue for the detail query
+  if (key.includes("detail")) {
+    return { data: mockIssue, isLoading: false, error: null };
+  }
+  // Return empty arrays for list-type queries
+  if (key.includes("comments") || key.includes("activity") ||
+      key.includes("runs") || key.includes("approvals") ||
+      key.includes("attachments") || key.includes("liveRuns") ||
+      key.includes("dependencies") || key.includes("list") ||
+      key.includes("agents") || key.includes("projects") ||
+      key.includes("contextBundles")) {
+    return { data: [], isLoading: false, error: null };
+  }
+  // activeRun returns null
+  if (key.includes("activeRun")) {
+    return { data: null, isLoading: false, error: null };
+  }
+  // Artifacts — return null (no linked artifact)
+  if (key.includes("artifacts")) {
+    return { data: null, isLoading: false, error: null };
+  }
+  // Detected outputs — return empty array
+  if (key.includes("detected-outputs")) {
+    return { data: [], isLoading: false, error: null };
+  }
+  // Execution workspaces — return null by default (no workspace)
+  if (key.includes("executionWorkspaces")) {
+    return { data: null, isLoading: false, error: null };
+  }
+  return { data: undefined, isLoading: false, error: null };
+}
+
 // Mock all heavy dependencies
 const mockNavigate = vi.fn();
 vi.mock("@/lib/router", async () => {
@@ -63,7 +103,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => ({ pushToast: vi.fn() }),
+  useToast: () => ({ pushToast: mockPushToast }),
 }));
 
 vi.mock("../hooks/useTeamAccess", () => ({
@@ -81,43 +121,25 @@ vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
     ...actual,
-    useQuery: vi.fn(({ queryKey }: any) => {
-      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
-      // Return mock issue for the detail query
-      if (key.includes("detail")) {
-        return { data: mockIssue, isLoading: false, error: null };
-      }
-      // Return empty arrays for list-type queries
-      if (key.includes("comments") || key.includes("activity") ||
-          key.includes("runs") || key.includes("approvals") ||
-          key.includes("attachments") || key.includes("liveRuns") ||
-          key.includes("dependencies") || key.includes("list") ||
-          key.includes("agents") || key.includes("projects") ||
-          key.includes("contextBundles")) {
-        return { data: [], isLoading: false, error: null };
-      }
-      // activeRun returns null
-      if (key.includes("activeRun")) {
-        return { data: null, isLoading: false, error: null };
-      }
-      // Artifacts — return null (no linked artifact)
-      if (key.includes("artifacts")) {
-        return { data: null, isLoading: false, error: null };
-      }
-      // Detected outputs — return empty array
-      if (key.includes("detected-outputs")) {
-        return { data: [], isLoading: false, error: null };
-      }
-      // Execution workspaces — return null by default (no workspace)
-      if (key.includes("executionWorkspaces")) {
-        return { data: null, isLoading: false, error: null };
-      }
-      return { data: undefined, isLoading: false, error: null };
-    }),
+    useQuery: vi.fn(defaultUseQueryImpl),
     useQueries: ({ queries }: any) =>
       (queries ?? []).map(() => ({ data: null, isLoading: false, error: null })),
     useMutation: (options: any = {}) => ({
-      mutate: vi.fn((variables: unknown) => options.mutationFn?.(variables)),
+      // Route the mutationFn result through onSuccess/onError so tests can drive
+      // the error path (a rejecting mutationFn must invoke onError, like the real
+      // useMutation does). We still call mutationFn synchronously first so existing
+      // "API was called with …" assertions keep working.
+      mutate: vi.fn((variables: unknown) => {
+        try {
+          const result = options.mutationFn?.(variables);
+          Promise.resolve(result).then(
+            (data) => options.onSuccess?.(data, variables, undefined),
+            (error) => options.onError?.(error, variables, undefined),
+          );
+        } catch (error) {
+          options.onError?.(error, variables, undefined);
+        }
+      }),
       mutateAsync: vi.fn((variables: unknown) => options.mutationFn?.(variables) ?? Promise.resolve({})),
       isPending: false,
       isSuccess: false,
@@ -369,6 +391,14 @@ function renderTaskDetail(props: {
 describe("TaskSlideOver", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Several tests in this block call vi.mocked(useQuery).mockImplementation(...)
+    // for bespoke query data. vi.clearAllMocks() only clears call history, NOT the
+    // implementation, so that override would leak into later tests and make them
+    // order-dependent. Explicitly restore the default impl here so every test in
+    // this block starts from the same query state regardless of run order.
+    // (resetAllMocks() can't be used: it would wipe the factory-provided default
+    // implementation too, leaving useQuery returning undefined.)
+    vi.mocked(useQuery).mockImplementation(defaultUseQueryImpl);
   });
 
   it("renders nothing when open=false", () => {
@@ -591,6 +621,67 @@ describe("TaskSlideOver", () => {
 
     await user.click(screen.getByRole("button", { name: /Exclude interview-notes\.pdf from agent context/i }));
     expect(issuesApi.updateContextBundleItemIncluded).toHaveBeenCalledWith("issue-1", "item-1", false);
+  });
+
+  it("surfaces an error toast when the include/exclude toggle is rejected by the server", async () => {
+    const user = userEvent.setup();
+    // Server rejects the include/exclude change — the optimistic toggle must not
+    // silently stick (context-leak risk); onError shows a warn toast.
+    vi.mocked(issuesApi.updateContextBundleItemIncluded).mockRejectedValueOnce(
+      new Error("forbidden"),
+    );
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-1",
+                  itemType: "asset",
+                  sourceId: "asset-1",
+                  label: "interview-notes.pdf",
+                  metadata: { contentType: "application/pdf" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetail({ issueId: "issue-1", onOpenScopeHandoffItem: vi.fn() });
+
+    await user.click(
+      screen.getByRole("button", { name: /Exclude interview-notes\.pdf from agent context/i }),
+    );
+
+    expect(issuesApi.updateContextBundleItemIncluded).toHaveBeenCalledWith("issue-1", "item-1", false);
+    await waitFor(() => {
+      expect(mockPushToast).toHaveBeenCalledWith(
+        expect.objectContaining({ tone: "warn" }),
+      );
+    });
   });
 
   it("opens scope handoff items through the embedded task viewer callback", async () => {

@@ -537,11 +537,45 @@ export function threadOrchestrationService(db: Db) {
       if (threadRow && runResult.runId) {
         try {
           const { threadAgentActionService } = await import("./thread-agent-actions.js");
-          await threadAgentActionService(db).commitThreadAgentActions({
+          const commitResult = await threadAgentActionService(db).commitThreadAgentActions({
             companyId: threadRow.companyId,
             threadId,
             runId: runResult.runId,
           });
+
+          // A per-action commit failure is swallowed inside commitThreadAgentActions
+          // (the row is set `failed` and the call returns normally). If we advanced
+          // the cursor here, the triggering entry would be permanently dropped and
+          // the side effect lost. Instead, leave the cursor where it is so the next
+          // tick re-selects the still-retryable `failed` rows (under their attempt
+          // cap) and retries them. Once a poison row exhausts its attempts it stops
+          // being re-selected, so a later tick will advance past it. (Review fix (c).)
+          if (commitResult.failed > 0) {
+            log.warn(
+              {
+                threadId,
+                startEpoch,
+                runId: runResult.runId,
+                failed: commitResult.failed,
+                committed: commitResult.committed,
+              },
+              "thread orchestration: action commit reported failures — cursor NOT advanced, will retry",
+            );
+            await db
+              .update(threadOrchestrationState)
+              .set({
+                lastError: `action_commit_failed:${commitResult.failed}`,
+                updatedAt: new Date(),
+              })
+              .where(eq(threadOrchestrationState.threadId, threadId));
+            return {
+              ran: true,
+              suppressed: false,
+              error: `action_commit_failed:${commitResult.failed}`,
+              startEpoch,
+              cursorAdvancedTo: null,
+            };
+          }
         } catch (commitErr) {
           const errorMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
           log.error(

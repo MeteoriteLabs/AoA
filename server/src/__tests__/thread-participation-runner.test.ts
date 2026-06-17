@@ -24,6 +24,10 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   ne: vi.fn((a: unknown, b: unknown) => ({ ne: [a, b] })),
+  sql: Object.assign(
+    vi.fn((s: TemplateStringsArray) => ({ _sql: s })),
+    { raw: vi.fn() },
+  ),
 }));
 
 // ── @armyofagents/db mock ─────────────────────────────────────────────────────
@@ -35,6 +39,7 @@ vi.mock("@armyofagents/db", () => ({
   discussionEntries: tableProxy("discussionEntries"),
   discussions: tableProxy("discussions"),
   internalAgentConfig: tableProxy("internalAgentConfig"),
+  threadAgentActions: tableProxy("threadAgentActions"),
 }));
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
@@ -76,42 +81,62 @@ import { makeThreadParticipationRunner } from "../services/internal-agent/aoa-ag
 
 /**
  * Build a minimal stub db.
- * The runner does:
- *   select 1: discussions (returns threadRow or [])           — .limit()
- *   select 2: internalAgentConfig (returns companyCfgRow or []) — .limit()
+ *
+ * The runner issues these selects in order:
+ *   1. discussions          (threadRow)        — terminated by .limit(1)
+ *   2. internalAgentConfig  (companyCfgRow)    — terminated by .limit(1)
+ *   3. discussionEntries     count BEFORE run  — COUNT(*) awaited after .where()
+ *   (runAgent runs)
+ *   4. discussionEntries     count AFTER run   — COUNT(*) awaited after .where()
+ *   5. threadAgentActions    post_reply probe  — awaited after .where() (fix (g),
+ *      only when after<=before AND result.runId set)
+ *
+ * Review fix (g): the entry counts now use a COUNT(*) aggregate (rows of shape
+ * [{ count }]) instead of a row LIMIT, and the post-detection probe reads
+ * thread_agent_actions. The stub returns a flat sequence consumed at the terminal
+ * op — `.limit()` for queries 1-2, awaiting `.where()` for queries 3-5.
  * resolveCrewRole is module-mocked so it does NOT touch this db.
  */
 function makeDb(opts: {
   threadRow?: Record<string, unknown> | null;
   companyCfgRow?: Record<string, unknown> | null;
-  beforeEntryRows?: Array<Record<string, unknown>>;
-  afterEntryRows?: Array<Record<string, unknown>>;
+  beforeCount?: number;
+  afterCount?: number;
+  postReplyRows?: Array<Record<string, unknown>>;
 }) {
   const {
     threadRow = null,
     companyCfgRow = null,
-    beforeEntryRows = [],
-    afterEntryRows = [{ id: "agent-entry-posted" }],
+    beforeCount = 0,
+    afterCount = 1,
+    postReplyRows = [],
   } = opts;
 
+  // Flat sequence of terminal results, consumed in issue order.
   const results: Array<Array<Record<string, unknown>>> = [
-    threadRow ? [threadRow] : [],
-    companyCfgRow ? [companyCfgRow] : [],
-    beforeEntryRows,
-    afterEntryRows,
+    threadRow ? [threadRow] : [],        // 1: discussions
+    companyCfgRow ? [companyCfgRow] : [], // 2: internalAgentConfig
+    [{ count: beforeCount }],             // 3: COUNT(*) before
+    [{ count: afterCount }],              // 4: COUNT(*) after
+    postReplyRows,                        // 5: thread_agent_actions probe
   ];
   let callIdx = 0;
+  const next = () => Promise.resolve(results[callIdx++] ?? []);
 
   const db = {
-    select: vi.fn(() => ({
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      limit: vi.fn(() => {
-        const row = results[callIdx] ?? [];
-        callIdx++;
-        return Promise.resolve(row);
-      }),
-    })),
+    select: vi.fn(() => {
+      // `where()` returns a thenable (for the awaited COUNT/probe queries) that
+      // ALSO exposes `.limit()` (for the threadRow/companyCfg queries). Whichever
+      // terminal the runner uses consumes exactly one sequence slot.
+      const whereResult: Record<string, unknown> = {
+        limit: vi.fn(() => next()),
+        then: (resolve: (v: unknown) => unknown) => next().then(resolve),
+      };
+      return {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn(() => whereResult),
+      };
+    }),
   };
 
   return db;
@@ -250,21 +275,95 @@ describe("makeThreadParticipationRunner", () => {
     expect(reply).toBe("");
   });
 
-  it("7: throws when a successful run does not create an agent-authored post_entry", async () => {
+  it("7: throws when a successful run produced NO post action and posted no entry", async () => {
+    // No runId on the result AND no post_reply action → genuinely posted nothing.
     mockRunAoaAgent.mockResolvedValue({ status: "succeeded" });
     mockResolveCrewRole.mockResolvedValue("adjutant");
 
     const db = makeDb({
       threadRow: { companyId: "company-no-post", autonomyLevel: 1 },
       companyCfgRow: { autonomyLevel: 0 },
-      beforeEntryRows: [{ id: "old-entry" }],
-      afterEntryRows: [{ id: "old-entry" }],
+      beforeCount: 1,
+      afterCount: 1, // unchanged → no new agent entry
+      postReplyRows: [], // no post_reply action produced
     });
 
     const runner = makeThreadParticipationRunner(db as any);
     await expect(
       runner({ threadId: "thread-no-post", agentId: "agent-adj", prompt: "@Adjutant respond" }),
     ).rejects.toThrow(/without an agent-authored post_entry/i);
+  });
+
+  it("7b: returns benignly (no throw) when the post_reply was suppressed-stale (fix (g))", async () => {
+    // The gated agent queued a post_reply that runAoaAgent then suppressed as
+    // stale (a newer human entry arrived). Entry count is unchanged, but this is
+    // a benign outcome — the runner must NOT throw.
+    mockRunAoaAgent.mockResolvedValue({ status: "succeeded", runId: "run-stale" });
+    mockResolveCrewRole.mockResolvedValue("planner");
+
+    const db = makeDb({
+      threadRow: { companyId: "company-stale", autonomyLevel: 1 },
+      companyCfgRow: { autonomyLevel: 0 },
+      beforeCount: 3,
+      afterCount: 3, // unchanged
+      postReplyRows: [{ status: "suppressed_stale" }],
+    });
+
+    const runner = makeThreadParticipationRunner(db as any);
+    const reply = await runner({
+      threadId: "thread-stale",
+      agentId: "agent-planner",
+      prompt: "@Planner take this",
+    });
+
+    // Benign info return — no throw, no synthesized entry.
+    expect(reply).toBe("");
+  });
+
+  it("7c: returns benignly when a post_reply WAS produced even if no new entry counted (fix (g))", async () => {
+    mockRunAoaAgent.mockResolvedValue({ status: "succeeded", runId: "run-produced" });
+    mockResolveCrewRole.mockResolvedValue("engineer");
+
+    const db = makeDb({
+      threadRow: { companyId: "company-produced", autonomyLevel: 1 },
+      companyCfgRow: { autonomyLevel: 0 },
+      beforeCount: 5,
+      afterCount: 5,
+      postReplyRows: [{ status: "committed" }],
+    });
+
+    const runner = makeThreadParticipationRunner(db as any);
+    const reply = await runner({
+      threadId: "thread-produced",
+      agentId: "agent-eng",
+      prompt: "@Engineer build",
+    });
+
+    expect(reply).toBe("");
+  });
+
+  it("7d: COUNT(*) above 1000 is read correctly — a posted entry is detected (fix (g))", async () => {
+    // Regression for the old `.limit(1000)` cap: with 1500 before / 1501 after the
+    // count must reflect the true totals so the new-entry check passes (no throw,
+    // no spurious post-action probe).
+    mockRunAoaAgent.mockResolvedValue({ status: "succeeded", runId: "run-big" });
+    mockResolveCrewRole.mockResolvedValue("scout");
+
+    const db = makeDb({
+      threadRow: { companyId: "company-big", autonomyLevel: 1 },
+      companyCfgRow: { autonomyLevel: 0 },
+      beforeCount: 1500,
+      afterCount: 1501, // a real new entry above the old 1000 cap
+    });
+
+    const runner = makeThreadParticipationRunner(db as any);
+    const reply = await runner({
+      threadId: "thread-big",
+      agentId: "agent-scout-big",
+      prompt: "go",
+    });
+
+    expect(reply).toBe("");
   });
 
   it("8: throws when the thread is not found (caller surfaces the error)", async () => {

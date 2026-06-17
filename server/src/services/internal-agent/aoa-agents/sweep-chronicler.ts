@@ -144,29 +144,37 @@ async function queueForCompany(db: Db, agentId: string, companyId: string): Prom
       .filter(Boolean),
   );
 
-  const finishedWakeups = await db
-    .select({
-      payload: agentWakeupRequests.payload,
-      finishedAt: agentWakeupRequests.finishedAt,
-    })
-    .from(agentWakeupRequests)
-    .where(
-      and(
-        eq(agentWakeupRequests.companyId, companyId),
-        eq(agentWakeupRequests.agentId, agentId),
-        inArray(agentWakeupRequests.status, ["succeeded", "completed", "failed"]),
-        isNotNull(agentWakeupRequests.finishedAt),
-      ),
-    );
-
+  // ── Per-thread "last finished" lookup (bounded — review fix (k)) ───────────
+  // The previous version loaded ALL finished Chronicler wakeups for the agent in
+  // one unbounded query (no finishedAt lower bound, no LIMIT) and built a map in
+  // JS — on a long-lived company that is an ever-growing table scan per tick.
+  // Mirror the sibling `sweep-adjutant` no-flood gate: query the most recent
+  // finished wakeup PER stale thread with `ORDER BY finishedAt DESC LIMIT 1`,
+  // filtered by the thread id in the payload. `staleThreads` is already capped at
+  // CHRONICLER_MAX_CONCURRENT, so this is a bounded number of single-row lookups.
   const latestFinishedByThread = new Map<string, Date>();
-  for (const row of finishedWakeups) {
-    const threadId = (row.payload as Record<string, unknown> | null)?.threadId;
-    if (typeof threadId !== "string" || !row.finishedAt) continue;
-    const finishedAt = row.finishedAt instanceof Date ? row.finishedAt : new Date(row.finishedAt);
-    const existing = latestFinishedByThread.get(threadId);
-    if (!existing || finishedAt > existing) {
-      latestFinishedByThread.set(threadId, finishedAt);
+  for (const t of staleThreads) {
+    if (alreadyQueued.has(t.id)) continue; // skip — debounced, never queued below
+    const [lastFinished] = await db
+      .select({ finishedAt: agentWakeupRequests.finishedAt })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          inArray(agentWakeupRequests.status, ["succeeded", "completed", "failed"]),
+          isNotNull(agentWakeupRequests.finishedAt),
+          sql`${agentWakeupRequests.payload} ->> 'threadId' = ${t.id}`,
+        ),
+      )
+      .orderBy(sql`${agentWakeupRequests.finishedAt} DESC`)
+      .limit(1);
+    if (lastFinished?.finishedAt) {
+      const finishedAt =
+        lastFinished.finishedAt instanceof Date
+          ? lastFinished.finishedAt
+          : new Date(lastFinished.finishedAt);
+      latestFinishedByThread.set(t.id, finishedAt);
     }
   }
 

@@ -278,7 +278,11 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
     );
   });
 
-  it("preserves extracted artifact payload when creating scope items", async () => {
+  it("degrades artifact-typed extracted items to evidence source signals", async () => {
+    // discussion_extracted_items has no `payload` column, and extraction does not
+    // emit artifact ids, so an artifact-typed extracted item becomes an evidence
+    // source_signal — never a fabricated artifact_link. Concrete artifact links
+    // come only from the attachment join.
     const version = {
       id: "scope1",
       threadId: "thread1",
@@ -313,10 +317,6 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
           suggestedLayer: null,
           suggestedGoalId: null,
           status: "pending",
-          payload: {
-            artifactId: "artifact1",
-            artifactVersionId: "version1",
-          },
         },
       ],
       [],
@@ -332,17 +332,22 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
 
     expect(result).toEqual({ status: "created", version });
     const scopeItemInsert = db.insert.mock.results[1]?.value.values;
-    expect(scopeItemInsert).toHaveBeenCalledWith(
+    const insertedItems = scopeItemInsert.mock.calls[0]?.[0] ?? [];
+    expect(insertedItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: "artifact_link",
+          kind: "source_signal",
           title: "Design artifact",
-          artifactId: "artifact1",
-          artifactVersionId: "version1",
-          payload: expect.objectContaining({ role: "reference" }),
           extractedItemId: "extracted-artifact-1",
           sourceEntryIds: ["entry-1"],
+          payload: expect.objectContaining({ role: "evidence", category: "artifact" }),
         }),
+      ]),
+    );
+    // No fabricated artifact_link is produced for the extracted artifact item.
+    expect(insertedItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "artifact_link", artifactId: "artifact1" }),
       ]),
     );
   });
@@ -407,5 +412,150 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
 
     expect(result).toEqual({ status: "existing_draft", version: draft });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("only selects pending, unresolved extracted items when compiling a draft", async () => {
+    // Defect (a): re-running draft creation must not re-map already-resolved
+    // extracted items, so the select must scope to pending + null result links.
+    const db = createSequenceDb([
+      [{ id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 }],
+      [],
+      [{ id: "entry-1", discussionId: "thread1", seq: 1, inputType: "write", rawContent: "Scope this." }],
+      [],
+      [],
+      [{ id: "scope1", threadId: "thread1", versionNumber: 1, sourceStartSeq: 1, sourceEndSeq: 1, status: "draft" }],
+    ]);
+
+    await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "thread1",
+      { userId: "u1", isHuman: true },
+      { summary: "Draft v1" },
+    );
+
+    // selectChains[3] is the discussion_extracted_items query.
+    const extractedSelect = db.__selectChains[3];
+    const whereArg = extractedSelect.where.mock.calls[0]?.[0];
+    expect(sqlConditionContainsColumn(whereArg, "status")).toBe(true);
+    expect(sqlConditionContainsColumn(whereArg, "result_task_id")).toBe(true);
+    expect(sqlConditionContainsColumn(whereArg, "result_memory_id")).toBe(true);
+  });
+
+  it("skips already-resolved extracted items when compiling scope items (defense-in-depth)", async () => {
+    const version = {
+      id: "scope1",
+      threadId: "thread1",
+      versionNumber: 1,
+      sourceStartSeq: 1,
+      sourceEndSeq: 1,
+      status: "draft",
+    };
+    const db = createSequenceDb([
+      [{ id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 }],
+      [],
+      [{ id: "entry-1", discussionId: "thread1", seq: 1, inputType: "write", rawContent: "Already-handled task." }],
+      [
+        {
+          id: "resolved-task-item",
+          discussionEntryId: "entry-1",
+          type: "task",
+          title: "Already created task",
+          description: "This already produced a task.",
+          status: "approved",
+          resultTaskId: "task-existing",
+          resultMemoryId: null,
+        },
+      ],
+      [],
+      [version],
+    ]);
+
+    const result = await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "thread1",
+      { userId: "u1", isHuman: true },
+      { summary: "Draft v1" },
+    );
+
+    expect(result).toEqual({ status: "created", version });
+    const scopeItemInsert = db.insert.mock.results[1]?.value.values;
+    const insertedItems = scopeItemInsert?.mock.calls[0]?.[0] ?? [];
+    // The resolved extracted item must not be re-mapped into a fresh proposal card.
+    expect(insertedItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ extractedItemId: "resolved-task-item" }),
+      ]),
+    );
+  });
+
+  it("returns the existing draft when a concurrent insert hits the one-draft unique index", async () => {
+    // Minor: concurrent createDraft can race past the latest-draft guard and lose
+    // the one-draft partial unique index. The 23505 must become the existing draft,
+    // not a 500.
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const winningDraft = {
+      id: "scope-winner",
+      threadId: "thread1",
+      versionNumber: 1,
+      sourceEndSeq: 1,
+      status: "draft",
+    };
+
+    let latestReloads = 0;
+    const selectQueue: any[][] = [
+      [thread], // thread lookup
+      [], // loadLatestScopeVersion (first call) — no existing version
+      [{ id: "entry-1", discussionId: "thread1", seq: 1, inputType: "write", rawContent: "Scope this." }],
+      [], // extracted items
+      [], // attachments
+    ];
+    let idx = 0;
+
+    function makeSelectChain() {
+      const chain: any = {
+        from: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
+        where: vi.fn(() => chain),
+        orderBy: vi.fn(() => chain),
+        limit: vi.fn(() => chain),
+        then: (resolve: (rows: any[]) => any) => {
+          // After the queue is exhausted, the post-violation loadLatestScopeVersion
+          // returns the winning draft.
+          if (idx >= selectQueue.length) {
+            latestReloads += 1;
+            return Promise.resolve(selectQueue[idx] ?? []).then(() => resolve([winningDraft]));
+          }
+          return Promise.resolve(selectQueue[idx++] ?? []).then(resolve);
+        },
+      };
+      return chain;
+    }
+
+    const uniqueErr = Object.assign(new Error("duplicate key value violates unique constraint"), {
+      code: "23505",
+      constraint: "thread_scope_versions_one_draft_uq",
+    });
+
+    const db: any = {
+      select: vi.fn(() => makeSelectChain()),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(async () => {
+            throw uniqueErr;
+          }),
+        })),
+      })),
+      transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => fn(db)),
+    };
+
+    const result = await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "thread1",
+      { userId: "u1", isHuman: true },
+      { summary: "Draft v1" },
+    );
+
+    expect(result).toEqual({ status: "existing_draft", version: winningDraft });
+    expect(latestReloads).toBeGreaterThan(0);
   });
 });

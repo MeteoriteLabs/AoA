@@ -114,6 +114,52 @@ export const proposeMemoryFromThreadTool: AgentTool = {
         };
       }
 
+      // PRIVACY (review fix (b)): enforce the same per-thread privacy gates the
+      // non-gated path runs — load the source thread's `allowMemoryExtraction`
+      // + `visibility` and short-circuit BEFORE queuing the action. Without this
+      // the gated branch would queue (and later commit) a memory candidate even
+      // when the founder disabled extraction for the thread, or when a private
+      // thread tried to seed identity/domain memory. Mirrors the non-gated
+      // checks below verbatim (same error codes).
+      const gateRows = await ctx.db
+        .select({
+          id: discussions.id,
+          visibility: discussions.visibility,
+          allowMemoryExtraction: discussions.allowMemoryExtraction,
+        })
+        .from(discussions)
+        .where(eq(discussions.id, sourceThreadId))
+        .limit(1);
+      const gateThread = Array.isArray(gateRows) ? gateRows[0] : null;
+      if (!gateThread) {
+        return {
+          success: false,
+          data: null,
+          summary: "Source thread not found",
+          error: "THREAD_NOT_FOUND",
+        };
+      }
+      if (gateThread.allowMemoryExtraction === false) {
+        return {
+          success: false,
+          data: null,
+          summary: "Memory extraction is disabled for this thread",
+          error: "MEMORY_EXTRACTION_DISABLED",
+        };
+      }
+      if (
+        gateThread.visibility === "private" &&
+        !PRIVATE_THREAD_ALLOWED_LAYERS.has(layer)
+      ) {
+        return {
+          success: false,
+          data: null,
+          summary:
+            "Private threads can only propose memory at layer 'working' or 'active_context'",
+          error: "VISIBILITY_VIOLATION",
+        };
+      }
+
       const { threadAgentActionService } = await import("../../thread-agent-actions.js");
       const action = await threadAgentActionService(ctx.db).proposeThreadAction({
         companyId: ctx.companyId,

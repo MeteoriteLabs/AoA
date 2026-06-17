@@ -149,9 +149,18 @@ describe("action-gated discussion tools", () => {
   });
 
   it("propose_memory_from_thread queues a memory candidate scope item in controller action-gate mode", async () => {
+    // Review fix (b): the gated branch now loads the thread's privacy gates
+    // (allowMemoryExtraction + visibility) BEFORE queuing. Provide a thread row
+    // that permits extraction so the candidate is queued.
+    const limit = vi.fn().mockResolvedValue([
+      { id: threadId, visibility: "company", allowMemoryExtraction: true },
+    ]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const select = vi.fn().mockReturnValue({ from });
     const ctx = makeCtx({
       db: {
-        select: vi.fn(),
+        select,
         insert: vi.fn(),
       } as never,
     });
@@ -169,7 +178,8 @@ describe("action-gated discussion tools", () => {
 
     expect(result.success).toBe(true);
     expect(result.data).toEqual({ actionId: "action-1", queued: true });
-    expect(ctx.db.select).not.toHaveBeenCalled();
+    // The privacy gate select runs, but no memory_items insert happens in gated
+    // mode (the candidate is committed later via the action queue).
     expect(ctx.db.insert).not.toHaveBeenCalled();
     expect(proposeThreadAction).toHaveBeenCalledWith({
       companyId,

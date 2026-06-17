@@ -52,7 +52,7 @@ export type CreateIssueContextBundleInput = {
   createdByUserId?: string | null;
 };
 
-const MAX_CONTEXT_BUNDLE_ITEMS = 20;
+export const MAX_CONTEXT_BUNDLE_ITEMS = 20;
 
 export function isContextBundleItemIncluded(item: { metadata?: Record<string, unknown> | null }) {
   return item.metadata?.includeInAgentContext !== false;

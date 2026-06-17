@@ -52,7 +52,11 @@ export interface FakeCrewDeps {
 }
 
 export function isFakeCrewLlmEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.AOA_E2E_FAKE_CREW_LLM === "1";
+  // Defense-in-depth (review fix (minor)): the fake-crew harness is an E2E-only
+  // escape hatch that fabricates crew replies without calling a real LLM. Gate it
+  // on NODE_ENV in addition to the opt-in env var so it can NEVER activate in
+  // production even if AOA_E2E_FAKE_CREW_LLM leaks into a prod environment.
+  return env.AOA_E2E_FAKE_CREW_LLM === "1" && env.NODE_ENV !== "production";
 }
 
 function wantsScope(content: string): boolean {

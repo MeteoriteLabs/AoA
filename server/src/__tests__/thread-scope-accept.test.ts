@@ -155,6 +155,7 @@ describe("threadScopeVersionService.acceptDraft", () => {
       [thread],
       [draftTask],
       [],
+      [{ id: "project1" }], // projectId company-scope validation lookup
       [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
     ], [
       [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
@@ -1121,5 +1122,98 @@ describe("threadScopeVersionService.acceptDraft", () => {
       reason: "stale",
       message: "Scope draft is stale because the thread has newer human entries",
     });
+  });
+
+  it("caps the task context bundle so threads with >20 entries do not trip the 422 limit", async () => {
+    // Defect (h): the synthetic fallback task carries one ref per scoped entry.
+    // For a thread with >20 entries, the bundle must be capped at 20 so apply
+    // does not roll back with a 422 in issueService.create's bundle validation.
+    const manyEntryIds = Array.from({ length: 25 }, (_, i) => `entry-${i + 1}`);
+    const draftTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "draft",
+      title: "Turn discussion into a scoped work package",
+      description: "Synthetic fallback task",
+      sourceEntryIds: manyEntryIds,
+      payload: { priority: "medium" }, // no handoffRefs -> fallback refs generated
+    };
+    const db = createSequenceDb([
+      [draftVersion],
+      [thread],
+      [draftTask],
+      [], // relatedItems
+    ], [
+      [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
+    ]);
+
+    const result = await threadScopeVersionService(db).createOutputItem(
+      "co1",
+      "thread1",
+      "scope1",
+      "task-item",
+      { userId: "u1", isHuman: true },
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    const createCall = issueCreate.mock.calls.at(-1)?.[1];
+    expect(createCall.contextBundle.items.length).toBeLessThanOrEqual(20);
+    expect(createCall.contextBundle.items).toHaveLength(20);
+  });
+
+  it("rejects a task_proposal whose payload projectId does not belong to the company", async () => {
+    const draftTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "draft",
+      title: "Build scope task",
+      description: "Task from scope",
+      payload: { priority: "high", projectId: "foreign-project" },
+    };
+    const db = createSequenceDb([
+      [draftVersion],
+      [thread],
+      [draftTask],
+      [], // relatedItems
+      [], // projectId lookup -> not found in company
+    ]);
+
+    await expect(threadScopeVersionService(db).createOutputItem(
+      "co1",
+      "thread1",
+      "scope1",
+      "task-item",
+      { userId: "u1", isHuman: true },
+    )).rejects.toThrow("projectId does not belong to this company");
+
+    expect(issueCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a task_proposal whose payload goalId does not belong to the company", async () => {
+    const draftTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "draft",
+      title: "Build scope task",
+      description: "Task from scope",
+      payload: { priority: "high", goalId: "foreign-goal" },
+    };
+    const db = createSequenceDb([
+      [draftVersion],
+      [thread],
+      [draftTask],
+      [], // relatedItems
+      [], // goalId lookup -> not found in company
+    ]);
+
+    await expect(threadScopeVersionService(db).createOutputItem(
+      "co1",
+      "thread1",
+      "scope1",
+      "task-item",
+      { userId: "u1", isHuman: true },
+    )).rejects.toThrow("goalId does not belong to this company");
+
+    expect(issueCreate).not.toHaveBeenCalled();
   });
 });

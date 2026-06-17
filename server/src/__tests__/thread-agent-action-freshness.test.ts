@@ -129,4 +129,18 @@ describe("thread agent action freshness", () => {
 
     expect(result).toEqual({ fresh: false, reason: "thread_done" });
   });
+
+  it("reports snapshot_unavailable (not newer_human_entry) for an empty snapshot", async () => {
+    // When captureFreshnessSnapshot threw at run start, the stored snapshot is
+    // empty `{}`. The live thread has a human entry, so the legacy code reported
+    // `newer_human_entry` (a FALSE human-conflict reason). It must now report a
+    // distinct `snapshot_unavailable` reason instead.
+    const result = await compareFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [baseScope]]) as never,
+      "thread-1",
+      {} as never,
+    );
+
+    expect(result).toEqual({ fresh: false, reason: "snapshot_unavailable" });
+  });
 });

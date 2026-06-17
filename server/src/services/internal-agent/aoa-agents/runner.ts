@@ -267,7 +267,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         const { captureFreshnessSnapshot } = await import("../../thread-agent-action-freshness.js");
         threadFreshness = await captureFreshnessSnapshot(db as never, bridgeThreadId);
       } catch (freshnessErr) {
-        log.warn({ err: freshnessErr, threadId: bridgeThreadId }, "aoa-runner: failed to capture thread freshness snapshot");
+        // The captured snapshot stays null → the action row stores `{}` → the
+        // later commit reports `snapshot_unavailable` (NOT a false
+        // `newer_human_entry`). Escalate with threadId+runId so a fully-
+        // suppressed run can be traced back to this capture failure.
+        log.warn(
+          { err: freshnessErr, threadId: bridgeThreadId, runId },
+          "aoa-runner: failed to capture thread freshness snapshot — actions this run proposes may be suppressed as snapshot_unavailable",
+        );
       }
     }
 
@@ -534,10 +541,25 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         threadId: bridgeThreadId,
         runId,
       });
-      log.info(
-        { runId, threadId: bridgeThreadId, commitResult },
-        "aoa-runner: committed direct discussion actions",
-      );
+      // A run whose work was ENTIRELY discarded (nothing committed, yet it
+      // proposed actions that were suppressed/blocked/failed) is otherwise
+      // invisible — the run row still reads "completed". Surface it at warn so a
+      // fully-suppressed run (e.g. all actions stale, or snapshot_unavailable
+      // from a freshness-capture failure above) is operator-visible, not silent.
+      const fullySuppressed =
+        commitResult.committed === 0 &&
+        commitResult.suppressed + commitResult.blocked + commitResult.failed > 0;
+      if (fullySuppressed) {
+        log.warn(
+          { runId, threadId: bridgeThreadId, commitResult },
+          "aoa-runner: discussion run fully suppressed — no actions committed",
+        );
+      } else {
+        log.info(
+          { runId, threadId: bridgeThreadId, commitResult },
+          "aoa-runner: committed direct discussion actions",
+        );
+      }
     }
 
     if (runId) {

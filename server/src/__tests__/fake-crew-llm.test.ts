@@ -24,6 +24,29 @@ describe("fake crew LLM e2e harness", () => {
     expect(addEntry).not.toHaveBeenCalled();
   });
 
+  it("review fix (minor): never enables in production even when the env flag is set", async () => {
+    // Defense-in-depth: NODE_ENV=production must hard-disable the harness even if
+    // AOA_E2E_FAKE_CREW_LLM leaked into the prod environment.
+    expect(
+      isFakeCrewLlmEnabled({
+        AOA_E2E_FAKE_CREW_LLM: "1",
+        NODE_ENV: "production",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+
+    const addEntry = vi.fn();
+    const result = await maybeExecuteFakeCrewTurn({
+      db,
+      agent: { id: "agent-adj", name: "Adjutant" },
+      payload: { companyId: "co-1", source: "thread.controller", threadId: "thr-1" },
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", NODE_ENV: "production" } as NodeJS.ProcessEnv,
+      deps: { addEntry },
+    });
+
+    expect(result).toBeNull();
+    expect(addEntry).not.toHaveBeenCalled();
+  });
+
   it("posts an Adjutant chat reply for a normal founder message", async () => {
     const addEntry = vi.fn().mockResolvedValue({});
     const result = await maybeExecuteFakeCrewTurn({
