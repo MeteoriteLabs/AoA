@@ -183,7 +183,7 @@ const MAX_CONSECUTIVE_COMMIT_FAILURES = 3;
  *    re-drives it) WITHOUT advancing the cursor, so a transient failure retries.
  *  - At the cap: circuit-break — advance the cursor past `cursorTarget` (skip the
  *    poison), reset the counter, keep pendingRun=true to drain later entries, and
- *    write a human-visible `lastError` (surfaced in the thread UI).
+ *    write a `lastError` (persisted + logged; a UI/Inbox surface is tracked in #198).
  *  Returns whether the breaker fired. */
 async function recordCommitFailure(
   db: Db,
@@ -623,12 +623,14 @@ export function threadOrchestrationService(db: Db) {
           });
 
           // A per-action commit failure is swallowed inside commitThreadAgentActions
-          // (the row is set `failed` and the call returns normally). If we advanced
-          // the cursor here, the triggering entry would be permanently dropped and
-          // the side effect lost. Instead, leave the cursor where it is so the next
-          // tick re-selects the still-retryable `failed` rows (under their attempt
-          // cap) and retries them. Once a poison row exhausts its attempts it stops
-          // being re-selected, so a later tick will advance past it. (Review fix (c).)
+          // (the row is set `failed` and the call returns normally). On a PURE failure
+          // (nothing committed) we do NOT advance — the circuit-breaker reschedules so
+          // a transient failure retries; after MAX consecutive failures it advances
+          // past the poison entry. NOTE: the commit selection is run-scoped (eq(runId)),
+          // so a fresh-runId re-run does NOT re-select the prior run's `failed` rows —
+          // the retry happens by re-running the agent, whose re-proposals dedup for the
+          // two stable-key action types (post_reply, create_artifact_candidate). Full
+          // thread-scoped retry of all action types is #198.
           if (commitResult.failed > 0 && commitResult.committed === 0) {
             // PURE failure (nothing committed) → safe to reschedule/retry via the
             // circuit-breaker; a re-run cannot duplicate because nothing committed.

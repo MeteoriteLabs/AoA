@@ -365,13 +365,16 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             continue;
           }
 
-          // NOTE: the "committing" status only de-duplicates within a single
-          // commitThreadAgentActions invocation (the action query above selects
-          // status="proposed" + retryable "failed" rows only). It does NOT prevent
-          // duplicate side effects on the cross-run retry path (orchestration
-          // re-proposes with a fresh runId → new idempotencyKey). Real retry-safety
-          // is a tracked follow-up: make idempotencyKey stable. A reaper for stale
-          // "committing" rows is wired via reapStaleThreadAgentActions below.
+          // NOTE: the "committing" status de-duplicates within a single
+          // commitThreadAgentActions invocation. Cross-run safety for the two
+          // highest-value action types is now provided by run-INDEPENDENT stable keys
+          // (post_reply, create_artifact_candidate — a re-propose dedups on the
+          // (companyId, idempotencyKey) unique index) PLUS a `source_action_id` partial
+          // unique index on discussion_entries/artifacts that makes the side-effect
+          // itself idempotent (the branches below converge on the unique violation).
+          // The other four action types keep run-scoped keys; full thread-scoped retry
+          // for all types is #198. A reaper for stale "committing" rows is wired via
+          // reapStaleThreadAgentActions below.
           await updateActionStatus(actionDb, action.id, {
             status: "committing",
           });
