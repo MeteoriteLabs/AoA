@@ -606,6 +606,16 @@ export function discussionRoutes(db: Db) {
       return { userId: info.actorId, role: "team_member", isHuman: false };
     }
 
+    // Non-board bearer tokens (mcp) are NEVER founder/team_lead for thread
+    // access: a founder-created MCP key replays the founder's userId, which
+    // would otherwise resolve to "founder" via getEffectiveRole and grant
+    // read-anyone + privileged writes + agent dispatch on the threads surface.
+    // Confine them to team_member (participant/owner-scoped). Interactive
+    // founder access is via board sessions only. (Mirrors conversation-authz.ts.)
+    if (req.actor.type !== "board") {
+      return { userId: info.actorId, role: "team_member", isHuman: false };
+    }
+
     const perms = permissionService(db);
     const role = await perms.getEffectiveRole(companyId, info.actorId);
     return { userId: info.actorId, role, isHuman };
