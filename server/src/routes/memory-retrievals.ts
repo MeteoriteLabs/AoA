@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { memoryService } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
+import { loadOwnedConversation } from "./conversation-authz.js";
 
 /**
  * V2.6 Phase 3 — read-only API for memory_retrievals audit rows.
@@ -21,9 +22,13 @@ import { assertCompanyAccess } from "./authz.js";
  *     (triggeredBy:"commander_query", conversationId set via [A3] fix).
  *     Same shape as the issue route; newest first.
  *
- * RBAC: assertCompanyAccess (board / agent / mcp matched to companyId).
- * No additional gating — retrievals are scoped to the resource, and any
- * caller who can read the resource can see what was searched against it.
+ * RBAC:
+ *   - Issue endpoint: assertCompanyAccess only — tasks are company resources,
+ *     so any actor with company membership can read retrieval rows for a task.
+ *   - Conversation endpoint: assertCompanyAccess + loadOwnedConversation —
+ *     conversations are per-user resources, so only the owner or a
+ *     founder-equivalent (local_implicit board, instance admin, founder role)
+ *     may read retrieval rows. Returns 404 on mismatch (no existence leak).
  */
 export function memoryRetrievalsRoutes(db: Db) {
   const router = Router();
@@ -46,6 +51,12 @@ export function memoryRetrievalsRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const conversationId = req.params.conversationId as string;
     assertCompanyAccess(req, companyId);
+
+    // Per-user conversation: enforce owner/founder access (not just company
+    // membership) — mirrors the /internal-agent/conversations/:id/messages guard.
+    // Throws 404 on mismatch (no existence leak). The issue endpoint stays
+    // company-scoped: tasks are company resources, not per-user.
+    await loadOwnedConversation(db, req, companyId, conversationId);
 
     const limitRaw = req.query.limit as string | undefined;
     const limit = limitRaw ? Math.max(1, parseInt(limitRaw, 10) || 0) : undefined;
