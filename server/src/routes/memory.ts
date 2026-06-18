@@ -38,6 +38,12 @@ function resolveAgentRequestId(
   return authenticatedAgentId;
 }
 
+// Statuses whose assignment IS an approval decision. Setting one on create/update
+// requires the SAME authority as the dedicated approve/reject routes (canApproveMemory)
+// — otherwise a non-founder could POST/PATCH a `domain` item straight to "approved" and
+// bypass the founder-only gate this PR enforces (R5, #199). (Codex #201 P1.)
+const APPROVAL_DECISION_STATUSES = new Set(["approved", "rejected"]);
+
 export function memoryRoutes(db: Db) {
   const router = Router();
   const svc = memoryService(db);
@@ -308,6 +314,16 @@ export function memoryRoutes(db: Db) {
       layer: req.body.layer,
       departmentId: req.body.departmentId,
     });
+    // R5 (#199): creating an item already in an approval-decision status requires
+    // approval authority for the target layer. Founders pass for all layers; team
+    // leads only for active_context (mirrors canApproveMemory). Without this a lead
+    // could POST a domain item with status:"approved", bypassing the founder gate.
+    if (typeof req.body.status === "string" && APPROVAL_DECISION_STATUSES.has(req.body.status)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: req.body.layer,
+        departmentId: req.body.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const source = req.actor.type === "agent" ? "agent" : req.body.source;
     const item = await svc.create(companyId, {
@@ -343,6 +359,15 @@ export function memoryRoutes(db: Db) {
       departmentId: existing.departmentId,
       visibility: existing.visibility,
     });
+    // R5 (#199): patching status to an approval-decision value requires approval
+    // authority for the item's (effective) layer — closes the PATCH-to-approved
+    // bypass. Layer/dept come from the patch when re-specified, else the existing item.
+    if (typeof req.body.status === "string" && APPROVAL_DECISION_STATUSES.has(req.body.status)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: req.body.layer ?? existing.layer,
+        departmentId: req.body.departmentId ?? existing.departmentId,
+      });
+    }
     const item = await svc.update(companyId, id, req.body);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
