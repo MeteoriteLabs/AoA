@@ -76,7 +76,12 @@ export type ProposeThreadActionInput = {
 export type CommitThreadAgentActionsInput = {
   companyId: string;
   threadId: string;
-  runId: string;
+  // #198 PR-B: the commit is THREAD-scoped, not run-scoped — any run drains the
+  // thread's pending actions. `runId` is retained as an OPTIONAL audit stamp (the
+  // run that triggered this commit tick); it is NOT used to filter the SELECT. The
+  // fenced CAS claim + the source_action_id partial-unique indexes are the
+  // duplicate-suppression backstop, so a thread-wide drain is safe.
+  runId?: string;
 };
 
 export type CommitThreadAgentActionsResult = {
@@ -386,6 +391,18 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
         failed: 0,
       };
 
+      // #198 PR-B: the selection is THREAD-scoped, not run-scoped. The previous
+      // `eq(runId, input.runId)` coupled a commit to the single run that proposed
+      // each row, so a pending action stranded by an earlier run (re-proposed under
+      // a new run, reaped to `failed`, etc.) could only ever be flushed by that
+      // original run. Dropping the run filter lets ANY run drain the thread's
+      // pending actions. Safe because: (1) the per-action fenced CAS claim
+      // (`claimActionForCommit`) serializes concurrent committers on the same row,
+      // and (2) the `source_action_id` partial-unique indexes make the side-effects
+      // themselves idempotent. The existing
+      // `thread_agent_actions_company_thread_status_idx` (companyId, threadId,
+      // status, createdAt) covers this WHERE — no new index / migration needed.
+      //
       // Select both "proposed" rows and "failed" rows that are still under their
       // attempt cap. A transient per-action failure (status="failed") is thus
       // retried on the next commit tick instead of being permanently dropped;
@@ -398,7 +415,6 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           and(
             eq(threadAgentActions.companyId, input.companyId),
             eq(threadAgentActions.threadId, input.threadId),
-            eq(threadAgentActions.runId, input.runId),
             or(
               eq(threadAgentActions.status, "proposed"),
               and(

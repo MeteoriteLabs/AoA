@@ -38,6 +38,10 @@ import { companyService } from "../services/companies.js";
 import { discussionService } from "../services/discussions.js";
 import { artifactService } from "../services/artifacts.js";
 import { threadAgentActionService } from "../services/thread-agent-actions.js";
+import {
+  captureFreshnessSnapshot,
+  type ThreadFreshnessSnapshot,
+} from "../services/thread-agent-action-freshness.js";
 import { isUniqueViolation } from "../services/db-errors.js";
 import {
   buildAdvancePhaseIdempotencyKey,
@@ -63,6 +67,9 @@ let db: Db;
 let setupError: unknown = null;
 let companyId = "";
 let threadId = "";
+// A real agent row — the post_reply commit handler blocks on a null agentId and
+// discussion_entries.author_agent_id is an FK, so the cross-run e2e needs one.
+let agentId = "";
 
 const PORT = 59000 + Math.floor(Math.random() * 1000);
 
@@ -103,6 +110,17 @@ beforeAll(async () => {
       `),
     );
     threadId = String(thread.id);
+
+    // Seed an agent for the post_reply commit path (author_agent_id FK + the
+    // handler's non-null agentId guard). Only company_id + name are NOT NULL.
+    const [agent] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO agents (id, company_id, name)
+        VALUES (gen_random_uuid(), ${companyId}, 'Cross-Run Agent')
+        RETURNING id
+      `),
+    );
+    agentId = String(agent.id);
   } catch (err) {
     setupError = err;
     // eslint-disable-next-line no-console
@@ -124,6 +142,30 @@ afterAll(async () => {
 }, 60_000);
 
 describe.skipIf(process.platform === "win32")("thread-commit idempotency (real DB)", () => {
+  // ── Harness helpers (PR-B) ─────────────────────────────────────────────────
+  // thread_agent_actions.run_id is an FK to internal_agent_runs, so the cross-run
+  // e2e needs real run rows. internal_agent_runs requires company_id (FK) +
+  // trigger_type + trigger_source (both NOT NULL, no default); status defaults to
+  // 'running' and id/created_at are auto-filled.
+  async function seedRun(): Promise<string> {
+    const [run] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source)
+        VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test')
+        RETURNING id
+      `),
+    );
+    return String(run.id);
+  }
+
+  // Capture a REAL freshness snapshot via the production primitive so seeded
+  // action rows carry a snapshot the commit path's compareFreshnessSnapshot
+  // recognizes as fresh (matching the live thread state). A hand-rolled `{}`
+  // would be detected as `snapshot_unavailable` and the action suppressed.
+  async function captureSnapshot(tid: string): Promise<ThreadFreshnessSnapshot> {
+    return captureFreshnessSnapshot(db as never, tid);
+  }
+
   it("builds the three partial unique indexes", async () => {
     if (setupError) throw new Error(String(setupError));
     const names = new Set(
@@ -369,5 +411,53 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       `),
     );
     expect(Number(count[0].n)).toBe(1);
+  });
+
+  it("thread-scoped commit drains a prior run's proposed row (cross-run)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    // A proposed post_reply belongs to runA. The commit is invoked under runB —
+    // a DIFFERENT run. Pre-PR-B the SELECT filtered `eq(runId, input.runId)`, so
+    // runB would never see runA's row and `committed` would be 0. Thread-scoped
+    // selection drains it: any run flushes the thread's pending actions.
+    const runA = await seedRun();
+    const snap = await captureSnapshot(threadId);
+    const actionId = randomUUID();
+    // Seed the proposed row directly. agent_id is the real seeded agent (the
+    // handler blocks null agentId; author_agent_id is an FK). The freshness column
+    // carries the real snapshot so the per-action freshness re-check passes.
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${actionId}, ${companyId}, ${threadId}, ${runA}, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "cross-run reply" })}::jsonb, ${`k:${actionId}`},
+         ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    const runB = await seedRun();
+    const res = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId,
+      runId: runB,
+    });
+    expect(res.committed).toBe(1);
+
+    // Exactly one discussion_entries row was produced for this action (the
+    // source_action_id is stamped by the post_reply commit handler).
+    const n = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM discussion_entries WHERE source_action_id = ${actionId}
+      `),
+    );
+    expect(Number(n[0].n)).toBe(1);
+
+    // The action row itself is now committed and stamped with the entry it created.
+    const committedRow = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_entry_id FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(String(committedRow[0].status)).toBe("committed");
+    expect(committedRow[0].committed_entry_id).toBeTruthy();
   });
 });
