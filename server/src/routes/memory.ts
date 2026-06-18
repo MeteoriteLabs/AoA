@@ -744,6 +744,20 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    // R5 (#199): restore sets the item's status → "approved", so it requires the same
+    // approval authority as the approve route, for the item's layer/dept. Without this
+    // a non-founder could write a domain item as `status:"archived"` (which the create
+    // gate does not treat as an approval decision) and then restore it to approved,
+    // bypassing the founder-only domain gate (Codex #201 P1).
+    const existing = await svc.getById(companyId, id);
+    if (!existing) {
+      res.status(404).json({ error: "Memory item not found" });
+      return;
+    }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const item = await svc.restore(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found or not archived" });
