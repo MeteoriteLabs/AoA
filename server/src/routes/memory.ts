@@ -44,6 +44,16 @@ function resolveAgentRequestId(
 // bypass the founder-only gate this PR enforces (R5, #199). (Codex #201 P1.)
 const APPROVAL_DECISION_STATUSES = new Set(["approved", "rejected"]);
 
+// `working` memory is auto-created and explicitly NOT approval-gated — canApproveMemory
+// only gates identity/domain/active_context (permissions.ts), so a scoped lead manages
+// working memory directly. An approved/rejected write to a working-layer item must
+// therefore skip the founder/lead approval gate (it would wrongly 403); normal memory
+// access checks still apply. (Codex #201 P2.)
+const requiresApprovalGate = (
+  status: string | null | undefined,
+  layer: string | null | undefined,
+) => typeof status === "string" && APPROVAL_DECISION_STATUSES.has(status) && layer !== "working";
+
 export function memoryRoutes(db: Db) {
   const router = Router();
   const svc = memoryService(db);
@@ -326,7 +336,7 @@ export function memoryRoutes(db: Db) {
       source === "agent"
         ? "pending"
         : (req.body.status ?? (source === "founder" ? "approved" : "pending"));
-    if (APPROVAL_DECISION_STATUSES.has(effectiveCreateStatus)) {
+    if (requiresApprovalGate(effectiveCreateStatus, req.body.layer)) {
       await assertMemoryApproval(db, req, companyId, {
         layer: req.body.layer,
         departmentId: req.body.departmentId,
@@ -384,7 +394,7 @@ export function memoryRoutes(db: Db) {
       APPROVAL_DECISION_STATUSES.has(effectiveStatus ?? "") &&
       ((req.body.layer !== undefined && req.body.layer !== existing.layer) ||
         (req.body.departmentId !== undefined && req.body.departmentId !== existing.departmentId));
-    if (settingDecisionStatus || relocatingDecisionItem) {
+    if ((settingDecisionStatus || relocatingDecisionItem) && effectiveLayer !== "working") {
       await assertMemoryApproval(db, req, companyId, {
         layer: effectiveLayer,
         departmentId: effectiveDepartmentId,
@@ -662,10 +672,12 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item or draft not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const version = await svc.publishDraft(companyId, id, actor.actorId);
     if (!version) {
@@ -766,10 +778,12 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const item = await svc.restore(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found or not archived" });

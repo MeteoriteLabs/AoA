@@ -308,4 +308,48 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     await publish().expect(403);
     expect(mockMemoryService.publishDraft).not.toHaveBeenCalled();
   });
+
+  // ── `working` layer is NOT approval-gated (Codex #201 P2) ──────────────────
+  it("POST working-layer with status=approved → gate NOT fired (working is not approval-gated)", async () => {
+    await post({ ...basePost, layer: "working", status: "approved" }).expect(201);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+  });
+
+  it("PATCH status=approved on a working-layer item → gate NOT fired", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "working",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "pending",
+    });
+    await patch({ status: "approved" }).expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+  });
+
+  it("POST /restore on a working-layer item → gate NOT fired", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "working",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "archived",
+    });
+    await restore().expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+    expect(mockMemoryService.restore).toHaveBeenCalled();
+  });
+
+  it("POST /publish on a working-layer item → gate NOT fired", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "working",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    await publish().expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+    expect(mockMemoryService.publishDraft).toHaveBeenCalled();
+  });
 });
