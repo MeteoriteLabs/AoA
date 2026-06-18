@@ -39,6 +39,8 @@ const mockMemoryService = vi.hoisted(() => ({
   update: vi.fn(),
   restore: vi.fn(),
   publishDraft: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
 }));
 const mockAssertMemoryApproval = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
@@ -125,12 +127,18 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     mockMemoryService.update.mockResolvedValue({ id: ITEM_ID, title: "t" });
     mockMemoryService.restore.mockResolvedValue({ id: ITEM_ID, title: "t", status: "approved" });
     mockMemoryService.publishDraft.mockResolvedValue({ id: "ver-1", status: "approved" });
+    mockMemoryService.approve.mockResolvedValue({ id: ITEM_ID, title: "t", status: "approved" });
+    mockMemoryService.reject.mockResolvedValue({ id: ITEM_ID, title: "t", status: "rejected" });
   });
 
   const restore = () =>
     request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/restore`).send({});
   const publish = () =>
     request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/publish`).send({});
+  const approve = () =>
+    request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/approve`).send({});
+  const reject = () =>
+    request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/reject`).send({});
 
   // ── POST /memory ──────────────────────────────────────────────────────────
   it("POST explicit status=approved → gate fires with the requested layer/dept", async () => {
@@ -351,5 +359,66 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     await publish().expect(200);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
     expect(mockMemoryService.publishDraft).toHaveBeenCalled();
+  });
+
+  // ── /approve + /reject also skip working (Decision #52: working = no approval) ──
+  it("POST /approve on a working-layer item → gate NOT fired; approve proceeds", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "working",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "pending",
+    });
+    await approve().expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+    expect(mockMemoryService.approve).toHaveBeenCalled();
+  });
+
+  it("POST /approve on a domain item → gate STILL fires (regression guard)", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "domain",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "pending",
+    });
+    await approve().expect(200);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      { layer: "domain", departmentId: "dep-a" },
+    );
+  });
+
+  it("POST /reject on a working-layer item → gate NOT fired; reject proceeds", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "working",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "pending",
+    });
+    await reject().expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+    expect(mockMemoryService.reject).toHaveBeenCalled();
+  });
+
+  it("POST /reject on a domain item → gate STILL fires (regression guard)", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "domain",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "pending",
+    });
+    await reject().expect(200);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      { layer: "domain", departmentId: "dep-a" },
+    );
   });
 });

@@ -463,10 +463,15 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory is auto-created and needs no approval, so the
+    // approve action is not founder/lead-gated for working items (a scoped lead can
+    // clear a pending working suggestion). identity/domain/active_context still gate.
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const item = await svc.approve(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -496,10 +501,14 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory needs no approval — reject is not founder/lead-gated
+    // for working items (parallels /approve). identity/domain/active_context still gate.
+    if (requiresApprovalGate("rejected", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const item = await svc.reject(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
