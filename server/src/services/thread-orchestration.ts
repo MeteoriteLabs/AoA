@@ -626,11 +626,15 @@ export function threadOrchestrationService(db: Db) {
           // (the row is set `failed` and the call returns normally). On a PURE failure
           // (nothing committed) we do NOT advance — the circuit-breaker reschedules so
           // a transient failure retries; after MAX consecutive failures it advances
-          // past the poison entry. NOTE: the commit selection is run-scoped (eq(runId)),
-          // so a fresh-runId re-run does NOT re-select the prior run's `failed` rows —
-          // the retry happens by re-running the agent, whose re-proposals dedup for the
-          // two stable-key action types (post_reply, create_artifact_candidate). Full
-          // thread-scoped retry of all action types is #198.
+          // past the poison entry. (#198 PR-B) The commit is now THREAD-scoped, so a
+          // later run's commit re-selects the prior run's retryable `failed` rows
+          // directly (bounded by attemptCount < maxAttempts) — the retry no longer
+          // depends on re-running the agent. Cross-run drain is safe because each row
+          // commits against its OWN stored freshness snapshot, and `runEpoch`
+          // (controller staleness) and `freshness.latestHumanSeq` advance on the SAME
+          // event (a new human entry via triggerOnHumanEntry), so the per-action
+          // freshness re-check subsumes the epoch gate for the runner self-flush path
+          // that does not read runEpoch.
           if (commitResult.failed > 0 && commitResult.committed === 0) {
             // PURE failure (nothing committed) → safe to reschedule/retry via the
             // circuit-breaker; a re-run cannot duplicate because nothing committed.
@@ -661,11 +665,11 @@ export function threadOrchestrationService(db: Db) {
             };
           }
           if (commitResult.failed > 0) {
-            // MIXED batch (committed>0 AND failed>0): re-running the agent would
-            // re-execute the already-committed actions. Do NOT reschedule — fall
-            // through to the Step-5 success commit, which advances the cursor and
-            // resets the failure counter. The failed action is dropped (no duplicate,
-            // no stall); thread-scoped retry of the failed row is tracked in #198.
+            // MIXED batch (committed>0 AND failed>0): do NOT reschedule — fall through
+            // to the Step-5 success commit, which advances the cursor and resets the
+            // failure counter. (#198 PR-B) The failed row is NOT dropped: the next
+            // thread-scoped commit tick re-selects it directly (until attemptCount hits
+            // maxAttempts), a strict improvement over the prior run-scoped drop.
             log.warn(
               {
                 threadId,
