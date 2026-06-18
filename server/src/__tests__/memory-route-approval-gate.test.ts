@@ -1,26 +1,27 @@
 /**
- * Memory route — approval-decision status gate (Codex #201 P1 / R5).
+ * Memory route — approval-decision authority gate (Codex #201 P1 / R5).
  *
  * PR #199 made `canApproveMemory` founder-only for `domain` (leads → active_context
- * only). But the create/update routes accept a client-supplied `status` and gate only
- * on `canAccessMemory` (which lets a lead write `domain` in their dept), so a lead
- * could POST a `domain` item already "approved" or PATCH a pending one to approved —
- * bypassing the founder gate. The fix routes any `approved`/`rejected` status through
- * `assertMemoryApproval`.
+ * only). The create/update routes accept a client-supplied `status`/`layer` and gate
+ * only on `canAccessMemory` (which lets a lead write `domain` in their dept), so an
+ * approval decision could be reached without founder authority via several paths:
+ *   1. explicit `status: "approved"` on create/update;
+ *   2. `source: "founder"` on create with no status — memoryService.create defaults
+ *      founder-source items to "approved" (Codex P1 #3);
+ *   3. PATCHing the layer/department of an already-approved item into a scope the
+ *      actor cannot approve (Codex P1 #4).
+ * The fix routes any such EFFECTIVE approval decision through `assertMemoryApproval`.
  *
  * These tests assert the WIRING (the gate fires with the right layer/dept iff the
- * requested status is an approval decision, and a rejection becomes a 403). The
- * approval DECISION itself (lead cannot approve domain) is unit-tested in
- * permissions.test.ts; here `assertMemoryApproval` is a controllable spy.
+ * operation asserts/relocates an approval decision, and a denial → 403). The approval
+ * DECISION itself (lead cannot approve domain) is unit-tested in permissions.test.ts;
+ * here `assertMemoryApproval` is a controllable spy.
  */
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTableProxy } from "./helpers/drizzle-mock.js";
 
-// @armyofagents/db / drizzle are not exercised at runtime (services + middleware are
-// mocked below), but the middleware barrel's import graph can touch them — a catch-all
-// proxy keeps any transitive load from resolving to undefined.
 vi.mock("@armyofagents/db", () => ({
   __esModule: true,
   default: {},
@@ -50,8 +51,6 @@ vi.mock("../middleware/rbac.js", () => ({
   assertMemoryApproval: mockAssertMemoryApproval,
 }));
 
-// Passthrough validate — the gate reads req.body directly; schema coverage lives
-// elsewhere. Avoids constructing fully schema-valid enum bodies here.
 vi.mock("../middleware/validate.js", () => ({
   validate: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
@@ -88,16 +87,22 @@ function makeApp() {
   return app;
 }
 
+// Non-founder, non-agent source → memoryService.create defaults status to "pending".
 const basePost = {
   title: "t",
   content: "c",
   category: "coding",
-  source: "founder",
+  source: "external",
   layer: "domain",
   departmentId: "dep-a",
 };
 
-describe("memory routes — approval-decision status gate (Codex #201 P1 / R5)", () => {
+const post = (body: Record<string, unknown>) =>
+  request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory`).send(body);
+const patch = (body: Record<string, unknown>) =>
+  request(makeApp()).patch(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}`).send(body);
+
+describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAssertMemoryApproval.mockResolvedValue(undefined);
@@ -105,24 +110,22 @@ describe("memory routes — approval-decision status gate (Codex #201 P1 / R5)",
       id: ITEM_ID,
       title: "t",
       category: "coding",
-      source: "founder",
-      status: "approved",
+      source: "external",
+      status: "pending",
     });
     mockMemoryService.getById.mockResolvedValue({
       id: ITEM_ID,
       layer: "domain",
       departmentId: "dep-a",
       visibility: "scoped",
+      status: "pending",
     });
     mockMemoryService.update.mockResolvedValue({ id: ITEM_ID, title: "t" });
   });
 
   // ── POST /memory ──────────────────────────────────────────────────────────
-  it("POST status=approved → approval gate fires with the requested layer/dept", async () => {
-    await request(makeApp())
-      .post(`/api/companies/${COMPANY_ID}/memory`)
-      .send({ ...basePost, status: "approved" })
-      .expect(201);
+  it("POST explicit status=approved → gate fires with the requested layer/dept", async () => {
+    await post({ ...basePost, status: "approved" }).expect(201);
     expect(mockAssertMemoryApproval).toHaveBeenCalledTimes(1);
     expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
       expect.anything(),
@@ -132,45 +135,41 @@ describe("memory routes — approval-decision status gate (Codex #201 P1 / R5)",
     );
   });
 
-  it("POST status=approved → 403 when the actor cannot approve that layer (gate throws); create not called", async () => {
-    mockAssertMemoryApproval.mockRejectedValue(forbidden("Insufficient permissions to approve/reject memory items"));
-    await request(makeApp())
-      .post(`/api/companies/${COMPANY_ID}/memory`)
-      .send({ ...basePost, status: "approved" })
-      .expect(403);
+  it("POST explicit status=approved → 403 when the gate throws; create not called", async () => {
+    mockAssertMemoryApproval.mockRejectedValue(forbidden("nope"));
+    await post({ ...basePost, status: "approved" }).expect(403);
     expect(mockMemoryService.create).not.toHaveBeenCalled();
   });
 
-  it("POST status=rejected → approval gate fires (rejection is also an approval decision)", async () => {
-    await request(makeApp())
-      .post(`/api/companies/${COMPANY_ID}/memory`)
-      .send({ ...basePost, status: "rejected" })
-      .expect(201);
+  it("POST explicit status=rejected → gate fires (rejection is an approval decision)", async () => {
+    await post({ ...basePost, status: "rejected" }).expect(201);
     expect(mockAssertMemoryApproval).toHaveBeenCalledTimes(1);
   });
 
-  it("POST status=pending → approval gate NOT fired", async () => {
-    await request(makeApp())
-      .post(`/api/companies/${COMPANY_ID}/memory`)
-      .send({ ...basePost, status: "pending" })
-      .expect(201);
+  it("POST source=founder with NO status → gate fires (effective status defaults to approved) (Codex #3)", async () => {
+    await post({ ...basePost, source: "founder" }).expect(201);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledTimes(1);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      { layer: "domain", departmentId: "dep-a" },
+    );
+  });
+
+  it("POST non-founder source, no status → gate NOT fired (effective pending)", async () => {
+    await post({ ...basePost }).expect(201);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
   });
 
-  it("POST with no status → approval gate NOT fired", async () => {
-    await request(makeApp())
-      .post(`/api/companies/${COMPANY_ID}/memory`)
-      .send({ ...basePost })
-      .expect(201);
+  it("POST non-founder source, status=pending → gate NOT fired", async () => {
+    await post({ ...basePost, status: "pending" }).expect(201);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
   });
 
   // ── PATCH /memory/:id ─────────────────────────────────────────────────────
-  it("PATCH status=approved → gate fires with the EXISTING item's layer/dept", async () => {
-    await request(makeApp())
-      .patch(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}`)
-      .send({ status: "approved" })
-      .expect(200);
+  it("PATCH status=approved → gate fires with the effective layer/dept", async () => {
+    await patch({ status: "approved" }).expect(200);
     expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -180,19 +179,13 @@ describe("memory routes — approval-decision status gate (Codex #201 P1 / R5)",
   });
 
   it("PATCH status=approved → 403 when gate throws; update not called", async () => {
-    mockAssertMemoryApproval.mockRejectedValue(forbidden("Insufficient permissions to approve/reject memory items"));
-    await request(makeApp())
-      .patch(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}`)
-      .send({ status: "approved" })
-      .expect(403);
+    mockAssertMemoryApproval.mockRejectedValue(forbidden("nope"));
+    await patch({ status: "approved" }).expect(403);
     expect(mockMemoryService.update).not.toHaveBeenCalled();
   });
 
-  it("PATCH status=approved with a re-specified layer → gate uses the effective (patch) layer", async () => {
-    await request(makeApp())
-      .patch(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}`)
-      .send({ layer: "active_context", status: "approved" })
-      .expect(200);
+  it("PATCH status=approved + re-specified layer → gate uses the effective (patch) layer", async () => {
+    await patch({ layer: "active_context", status: "approved" }).expect(200);
     expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -201,11 +194,38 @@ describe("memory routes — approval-decision status gate (Codex #201 P1 / R5)",
     );
   });
 
-  it("PATCH status=pending → approval gate NOT fired", async () => {
-    await request(makeApp())
-      .patch(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}`)
-      .send({ content: "x", status: "pending" })
-      .expect(200);
+  it("PATCH layer:domain on an already-approved active_context item → gate fires for the TARGET scope (Codex #4)", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "active_context",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    await patch({ layer: "domain" }).expect(200);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledTimes(1);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      { layer: "domain", departmentId: "dep-a" },
+    );
+  });
+
+  it("PATCH content-only on an already-approved item → gate NOT fired (decision not moved)", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "domain",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    await patch({ content: "new content" }).expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+  });
+
+  it("PATCH status=pending → gate NOT fired", async () => {
+    await patch({ content: "x", status: "pending" }).expect(200);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
   });
 });

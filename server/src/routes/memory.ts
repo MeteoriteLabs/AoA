@@ -314,18 +314,25 @@ export function memoryRoutes(db: Db) {
       layer: req.body.layer,
       departmentId: req.body.departmentId,
     });
-    // R5 (#199): creating an item already in an approval-decision status requires
-    // approval authority for the target layer. Founders pass for all layers; team
-    // leads only for active_context (mirrors canApproveMemory). Without this a lead
-    // could POST a domain item with status:"approved", bypassing the founder gate.
-    if (typeof req.body.status === "string" && APPROVAL_DECISION_STATUSES.has(req.body.status)) {
+    // R5 (#199): a create that RESULTS in an approval-decision status (approved/
+    // rejected) requires approval authority for the target layer. This MUST use the
+    // EFFECTIVE status, not just an explicit `status` field: memoryService.create
+    // defaults founder-source items to "approved" even when the request omits
+    // `status`, so a non-founder posting source:"founder" would otherwise mint
+    // approved memory (Codex #201 P1). The computation mirrors memoryService.create.
+    // Founders pass for all layers; team leads only for active_context.
+    const source = req.actor.type === "agent" ? "agent" : req.body.source;
+    const effectiveCreateStatus =
+      source === "agent"
+        ? "pending"
+        : (req.body.status ?? (source === "founder" ? "approved" : "pending"));
+    if (APPROVAL_DECISION_STATUSES.has(effectiveCreateStatus)) {
       await assertMemoryApproval(db, req, companyId, {
         layer: req.body.layer,
         departmentId: req.body.departmentId,
       });
     }
     const actor = getActorInfo(req);
-    const source = req.actor.type === "agent" ? "agent" : req.body.source;
     const item = await svc.create(companyId, {
       ...req.body,
       source,
@@ -359,13 +366,28 @@ export function memoryRoutes(db: Db) {
       departmentId: existing.departmentId,
       visibility: existing.visibility,
     });
-    // R5 (#199): patching status to an approval-decision value requires approval
-    // authority for the item's (effective) layer — closes the PATCH-to-approved
-    // bypass. Layer/dept come from the patch when re-specified, else the existing item.
-    if (typeof req.body.status === "string" && APPROVAL_DECISION_STATUSES.has(req.body.status)) {
+    // R5 (#199): re-check approval authority when the patch ASSERTS or RELOCATES an
+    // approval decision, against the EFFECTIVE (post-patch) layer/dept. Fires when
+    // (a) the patch sets status to approved/rejected, or (b) the item is already
+    // approved/rejected and the patch moves its layer or department — otherwise a lead
+    // could PATCH only layer:"domain" on an approved active_context item and leave it
+    // approved in a layer they cannot approve (Codex #201 P1). A plain content edit of
+    // an already-approved item does not move the decision and is not gated here.
+    const effectiveLayer = req.body.layer !== undefined ? req.body.layer : existing.layer;
+    const effectiveDepartmentId =
+      req.body.departmentId !== undefined ? req.body.departmentId : existing.departmentId;
+    const effectiveStatus =
+      typeof req.body.status === "string" ? req.body.status : existing.status;
+    const settingDecisionStatus =
+      typeof req.body.status === "string" && APPROVAL_DECISION_STATUSES.has(req.body.status);
+    const relocatingDecisionItem =
+      APPROVAL_DECISION_STATUSES.has(effectiveStatus ?? "") &&
+      ((req.body.layer !== undefined && req.body.layer !== existing.layer) ||
+        (req.body.departmentId !== undefined && req.body.departmentId !== existing.departmentId));
+    if (settingDecisionStatus || relocatingDecisionItem) {
       await assertMemoryApproval(db, req, companyId, {
-        layer: req.body.layer ?? existing.layer,
-        departmentId: req.body.departmentId ?? existing.departmentId,
+        layer: effectiveLayer,
+        departmentId: effectiveDepartmentId,
       });
     }
     const item = await svc.update(companyId, id, req.body);
