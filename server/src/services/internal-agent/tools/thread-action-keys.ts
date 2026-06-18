@@ -66,11 +66,16 @@ export function buildArtifactCandidateIdempotencyKey(input: {
  * action-level dedup but the second's wakeup would be swallowed by the lower-level
  * dedup — the action commits yet the distinct dispatch never reaches the target. We
  * align the action key to the wakeup dedup scope (target + thread + turn) so the two
- * layers agree. `reason` stays on the action payload (the woken agent reads the thread
- * for full context). The param is accepted for call-site compatibility but ignored.
+ * layers agree. NEITHER `reason` NOR the source `agentId` is part of the key — the
+ * wakeup dedup ignores both, so two different source agents (or reasons) dispatching
+ * the same target in the same turn must collapse to one action, matching the single
+ * coalesced wakeup. Both stay on the action/wakeup payload (the woken agent reads the
+ * thread for full context); the params are accepted for call-site compatibility but
+ * intentionally NOT part of the key.
  */
 export function buildConveneAgentIdempotencyKey(input: {
   threadId: string;
+  /** Accepted for call-site compatibility but intentionally NOT part of the key. */
   agentId?: string | null;
   targetAgentId: string;
   /** Accepted for call-site compatibility but intentionally NOT part of the key. */
@@ -80,7 +85,6 @@ export function buildConveneAgentIdempotencyKey(input: {
   return [
     input.threadId,
     "convene_agent",
-    input.agentId ?? "agent",
     input.turnAnchor ?? "noanchor",
     sha256(JSON.stringify([input.targetAgentId])),
   ].join(":");
