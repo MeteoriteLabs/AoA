@@ -471,6 +471,15 @@ export function memoryRoutes(db: Db) {
         layer: existing.layer,
         departmentId: existing.departmentId,
       });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
     }
     const item = await svc.approve(companyId, id);
     if (!item) {
@@ -505,6 +514,15 @@ export function memoryRoutes(db: Db) {
     // for working items (parallels /approve). identity/domain/active_context still gate.
     if (requiresApprovalGate("rejected", existing.layer)) {
       await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
         layer: existing.layer,
         departmentId: existing.departmentId,
       });
@@ -686,6 +704,15 @@ export function memoryRoutes(db: Db) {
         layer: existing.layer,
         departmentId: existing.departmentId,
       });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
     }
     const actor = getActorInfo(req);
     const version = await svc.publishDraft(companyId, id, actor.actorId);
@@ -722,6 +749,15 @@ export function memoryRoutes(db: Db) {
     // layers gate as before.
     if (requiresApprovalGate("approved", existing.layer)) {
       await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
         layer: existing.layer,
         departmentId: existing.departmentId,
       });
@@ -762,6 +798,15 @@ export function memoryRoutes(db: Db) {
         layer: existing.layer,
         departmentId: existing.departmentId,
       });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
     }
     const actor = getActorInfo(req);
     const version = await svc.rejectSuggestedVersion(companyId, id, versionId);
@@ -798,6 +843,15 @@ export function memoryRoutes(db: Db) {
     }
     if (requiresApprovalGate("approved", existing.layer)) {
       await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
         layer: existing.layer,
         departmentId: existing.departmentId,
       });

@@ -45,6 +45,7 @@ const mockMemoryService = vi.hoisted(() => ({
   rejectSuggestedVersion: vi.fn(),
 }));
 const mockAssertMemoryApproval = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockAssertMemoryAccess = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("../services/index.js", () => ({
   memoryService: () => mockMemoryService,
@@ -53,7 +54,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../middleware/rbac.js", () => ({
-  assertMemoryAccess: vi.fn().mockResolvedValue(undefined),
+  assertMemoryAccess: mockAssertMemoryAccess,
   assertMemoryApproval: mockAssertMemoryApproval,
 }));
 
@@ -112,6 +113,7 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
   beforeEach(() => {
     vi.clearAllMocks();
     mockAssertMemoryApproval.mockResolvedValue(undefined);
+    mockAssertMemoryAccess.mockResolvedValue(undefined);
     mockMemoryService.create.mockResolvedValue({
       id: ITEM_ID,
       title: "t",
@@ -370,7 +372,7 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
   });
 
   // ── /approve + /reject also skip working (Decision #52: working = no approval) ──
-  it("POST /approve on a working-layer item → gate NOT fired; approve proceeds", async () => {
+  it("POST /approve on a working-layer item → approval gate skipped but ACCESS check still enforced; approve proceeds", async () => {
     mockMemoryService.getById.mockResolvedValue({
       id: ITEM_ID,
       layer: "working",
@@ -380,7 +382,28 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     });
     await approve().expect(200);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+    // working is not approval-gated, but must still be access-controlled (Codex P1):
+    expect(mockAssertMemoryAccess).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "update",
+      { layer: "working", departmentId: "dep-a" },
+    );
     expect(mockMemoryService.approve).toHaveBeenCalled();
+  });
+
+  it("POST /approve on a working-layer item → 403 when the access check denies; approve not called", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "working",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "pending",
+    });
+    mockAssertMemoryAccess.mockRejectedValue(forbidden("no access"));
+    await approve().expect(403);
+    expect(mockMemoryService.approve).not.toHaveBeenCalled();
   });
 
   it("POST /approve on a domain item → gate STILL fires (regression guard)", async () => {
