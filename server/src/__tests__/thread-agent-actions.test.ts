@@ -123,6 +123,62 @@ describe("threadAgentActionService", () => {
     expect(db.__insertValues).toHaveLength(1);
   });
 
+  it("re-homes a still-committable colliding row onto the current run (Codex #202 P2)", async () => {
+    // An earlier run (run-1) proposed this action and left it uncommitted. A
+    // same-turn retry under a NEW run (run-2) hits the run-independent key. The
+    // service must transfer the row onto run-2 so run-2's commit (which filters on
+    // runId) actually flushes it instead of silently dropping the phase advance.
+    const existing = { ...baseAction, id: "existing-action", runId: "run-1", status: "proposed" };
+    const db = createSequenceDb({
+      selects: [[thread], [existing]],
+      inserts: [[]], // conflict suppressed
+      updates: [[{ ...existing, runId: "run-2" }]], // re-home UPDATE ... RETURNING
+    });
+
+    const result = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-2",
+      agentId: "agent-1",
+      actionType: "post_reply",
+      payload: { rawContent: "Hello" },
+      idempotencyKey: "run-1:post_reply:1",
+      freshness: { latestHumanSeq: 1 },
+    })) as { id: string; runId: string };
+
+    expect(result.id).toBe("existing-action");
+    expect(result.runId).toBe("run-2");
+    // The re-home UPDATE was issued and set runId to the current run.
+    expect(db.__updateSets).toHaveLength(1);
+    expect(db.__updateSets[0]).toMatchObject({ runId: "run-2" });
+  });
+
+  it("does NOT re-home a committed/in-flight colliding row (status guard)", async () => {
+    // The earlier run already committed (or is mid-commit). Re-homing would risk a
+    // double-commit, so the guard leaves it alone and returns the canonical row.
+    const existing = { ...baseAction, id: "existing-action", runId: "run-1", status: "committed" };
+    const db = createSequenceDb({
+      selects: [[thread], [existing]],
+      inserts: [[]],
+      // no updates configured — none should be issued
+    });
+
+    const result = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-2",
+      agentId: "agent-1",
+      actionType: "post_reply",
+      payload: { rawContent: "Hello" },
+      idempotencyKey: "run-1:post_reply:1",
+      freshness: { latestHumanSeq: 1 },
+    })) as { id: string; runId: string };
+
+    expect(result.id).toBe("existing-action");
+    expect(result.runId).toBe("run-1"); // unchanged
+    expect(db.__updateSets).toHaveLength(0); // guard prevented the UPDATE
+  });
+
   it("returns the freshly inserted row when there is no idempotency conflict", async () => {
     const inserted = { ...baseAction, id: "inserted-action" };
     const db = createSequenceDb({

@@ -263,7 +263,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 
       // Conflict suppressed → the row already exists. Re-select and return it so
       // callers see the canonical (idempotent) action.
-      const [existing] = await actionDb
+      const [existing] = (await actionDb
         .select()
         .from(threadAgentActions)
         .where(
@@ -272,7 +272,40 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             eq(threadAgentActions.idempotencyKey, input.idempotencyKey),
           ),
         )
-        .limit(1);
+        .limit(1)) as ThreadActionRow[];
+
+      // #198 follow-up (Codex #202 P2): with run-INDEPENDENT keys a same-turn retry
+      // under a new run collides with a row created by an EARLIER run. commitThread-
+      // AgentActions filters on runId, so if that earlier run left the row committable
+      // (proposed, or failed under its attempt cap) the current run would never flush
+      // it — the action is silently lost. Re-home the still-committable row onto THIS
+      // run so this run's commit picks it up. Guarded on status so a committed /
+      // mid-commit (committing) / terminally-suppressed row is never stolen. Race-safe:
+      // the status predicate in the UPDATE is the compare-and-swap — a concurrent
+      // committer that already moved the row out of {proposed,failed} yields 0 rows and
+      // we fall through to the canonical row unchanged. attemptCount is preserved, so
+      // the commit's attemptCount < maxAttempts poison-pill bound still holds.
+      if (
+        existing &&
+        input.runId != null &&
+        existing.runId !== input.runId &&
+        (existing.status === "proposed" || existing.status === "failed")
+      ) {
+        const [rehomed] = await actionDb
+          .update(threadAgentActions)
+          .set({ runId: input.runId, updatedAt: new Date() })
+          .where(
+            and(
+              eq(threadAgentActions.id, existing.id),
+              or(
+                eq(threadAgentActions.status, "proposed"),
+                eq(threadAgentActions.status, "failed"),
+              ),
+            ),
+          )
+          .returning();
+        if (rehomed) return rehomed;
+      }
 
       return existing;
     },
