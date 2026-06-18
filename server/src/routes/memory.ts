@@ -654,6 +654,18 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    // R5 (#199): publishing a draft marks a version `approved` and swaps the item's
+    // current content — an approval decision on this memory item — so it needs the same
+    // authority as the version-approve route, for the item's layer/dept (Codex #201 P1).
+    const existing = await svc.getById(companyId, id);
+    if (!existing) {
+      res.status(404).json({ error: "Memory item or draft not found" });
+      return;
+    }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const actor = getActorInfo(req);
     const version = await svc.publishDraft(companyId, id, actor.actorId);
     if (!version) {

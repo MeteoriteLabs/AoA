@@ -38,6 +38,7 @@ const mockMemoryService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   restore: vi.fn(),
+  publishDraft: vi.fn(),
 }));
 const mockAssertMemoryApproval = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
@@ -123,10 +124,13 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     });
     mockMemoryService.update.mockResolvedValue({ id: ITEM_ID, title: "t" });
     mockMemoryService.restore.mockResolvedValue({ id: ITEM_ID, title: "t", status: "approved" });
+    mockMemoryService.publishDraft.mockResolvedValue({ id: "ver-1", status: "approved" });
   });
 
   const restore = () =>
     request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/restore`).send({});
+  const publish = () =>
+    request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/publish`).send({});
 
   // ── POST /memory ──────────────────────────────────────────────────────────
   it("POST explicit status=approved → gate fires with the requested layer/dept", async () => {
@@ -271,5 +275,37 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     await restore().expect(404);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
     expect(mockMemoryService.restore).not.toHaveBeenCalled();
+  });
+
+  // ── POST /memory/:id/publish (publishDraft → version approved) ─────────────
+  it("POST /publish → gate fires with the item's layer/dept (publish approves a version edit) (Codex publish P1)", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "domain",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    await publish().expect(200);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledTimes(1);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      { layer: "domain", departmentId: "dep-a" },
+    );
+  });
+
+  it("POST /publish → 403 when the actor cannot approve that layer; publishDraft not called", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "domain",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    mockAssertMemoryApproval.mockRejectedValue(forbidden("nope"));
+    await publish().expect(403);
+    expect(mockMemoryService.publishDraft).not.toHaveBeenCalled();
   });
 });
