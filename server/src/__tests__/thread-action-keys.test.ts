@@ -67,24 +67,47 @@ describe("deferred-type idempotency keys (#198 PR-A)", () => {
     expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey(base));
     expect(buildConveneAgentIdempotencyKey(base)).not.toMatch(/run/);
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, targetAgentId: "tg2" }));
+    expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, reason: "other" }));
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, turnAnchor: "6" }));
   });
   it("create_scope_draft key hashes summary + tasks (no raw interpolation), turn-anchored", () => {
     const base = { threadId: "t1", agentId: "a1", summary: "Scope it", proposedTasks: [{ title: "X" }], turnAnchor: "5" };
     expect(buildScopeDraftIdempotencyKey(base)).toBe(buildScopeDraftIdempotencyKey(base));
     expect(buildScopeDraftIdempotencyKey(base)).not.toBe(buildScopeDraftIdempotencyKey({ ...base, summary: "Other" }));
+    // task-content sensitivity: the proposedTasks hashing path must matter
+    expect(buildScopeDraftIdempotencyKey(base)).not.toBe(buildScopeDraftIdempotencyKey({ ...base, proposedTasks: [{ title: "Y" }] }));
+    expect(buildScopeDraftIdempotencyKey(base)).not.toBe(buildScopeDraftIdempotencyKey({ ...base, proposedTasks: [{ title: "X", assigneeRole: "eng" }] }));
     expect(buildScopeDraftIdempotencyKey(base)).not.toBe(buildScopeDraftIdempotencyKey({ ...base, turnAnchor: "6" }));
   });
   it("add_scope_item key hashes title/content/layer/category, turn-anchored", () => {
     const base = { threadId: "t1", agentId: "a1", title: "Decision", content: "c", layer: "active_context", category: "decision", turnAnchor: "5" };
     expect(buildAddScopeItemIdempotencyKey(base)).toBe(buildAddScopeItemIdempotencyKey(base));
     expect(buildAddScopeItemIdempotencyKey(base)).not.toBe(buildAddScopeItemIdempotencyKey({ ...base, content: "d" }));
+    expect(buildAddScopeItemIdempotencyKey(base)).not.toBe(buildAddScopeItemIdempotencyKey({ ...base, layer: "domain" }));
+    expect(buildAddScopeItemIdempotencyKey(base)).not.toBe(buildAddScopeItemIdempotencyKey({ ...base, category: "insight" }));
     expect(buildAddScopeItemIdempotencyKey(base)).not.toBe(buildAddScopeItemIdempotencyKey({ ...base, turnAnchor: "6" }));
+  });
+  it("add_scope_item key is unambiguous across the title/content boundary", () => {
+    // "A B"/"C" must NOT collide with "A"/"B C" (raw-join ambiguity the JSON.stringify tuple prevents).
+    const a = buildAddScopeItemIdempotencyKey({ threadId: "t1", agentId: "a1", title: "A B", content: "C", layer: "domain", category: "decision", turnAnchor: "5" });
+    const b = buildAddScopeItemIdempotencyKey({ threadId: "t1", agentId: "a1", title: "A", content: "B C", layer: "domain", category: "decision", turnAnchor: "5" });
+    expect(a).not.toBe(b);
   });
   it("advance_phase key is run-independent + phase-keyed", () => {
     const base = { threadId: "t1", agentId: "a1", toPhase: "assign", turnAnchor: "5" };
     expect(buildAdvancePhaseIdempotencyKey(base)).toBe(buildAdvancePhaseIdempotencyKey(base));
     expect(buildAdvancePhaseIdempotencyKey(base)).not.toMatch(/run/);
     expect(buildAdvancePhaseIdempotencyKey(base)).not.toBe(buildAdvancePhaseIdempotencyKey({ ...base, toPhase: "done" }));
+  });
+  it("all four builders tolerate null agent/anchor without colliding distinct content", () => {
+    // exercises the `?? "agent"` / `?? "noanchor"` fallbacks on agent-only threads
+    expect(buildConveneAgentIdempotencyKey({ threadId: "t1", agentId: null, targetAgentId: "tg1", reason: null, turnAnchor: null }))
+      .not.toBe(buildConveneAgentIdempotencyKey({ threadId: "t1", agentId: null, targetAgentId: "tg2", reason: null, turnAnchor: null }));
+    expect(buildScopeDraftIdempotencyKey({ threadId: "t1", agentId: null, summary: "a", proposedTasks: [], turnAnchor: null }))
+      .not.toBe(buildScopeDraftIdempotencyKey({ threadId: "t1", agentId: null, summary: "b", proposedTasks: [], turnAnchor: null }));
+    expect(buildAddScopeItemIdempotencyKey({ threadId: "t1", agentId: null, title: "a", content: null, layer: null, category: null, turnAnchor: null }))
+      .not.toBe(buildAddScopeItemIdempotencyKey({ threadId: "t1", agentId: null, title: "b", content: null, layer: null, category: null, turnAnchor: null }));
+    expect(buildAdvancePhaseIdempotencyKey({ threadId: "t1", agentId: null, toPhase: "assign", turnAnchor: null }))
+      .not.toBe(buildAdvancePhaseIdempotencyKey({ threadId: "t1", agentId: null, toPhase: "done", turnAnchor: null }));
   });
 });
