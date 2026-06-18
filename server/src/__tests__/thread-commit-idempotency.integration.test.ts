@@ -37,7 +37,10 @@ import {
 import { companyService } from "../services/companies.js";
 import { discussionService } from "../services/discussions.js";
 import { artifactService } from "../services/artifacts.js";
-import { threadAgentActionService } from "../services/thread-agent-actions.js";
+import {
+  threadAgentActionService,
+  reapStaleThreadAgentActions,
+} from "../services/thread-agent-actions.js";
 import {
   captureFreshnessSnapshot,
   type ThreadFreshnessSnapshot,
@@ -64,6 +67,11 @@ type EmbeddedPostgresCtor = new (opts: {
 let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let db: Db;
+// Module-scoped so the two-connection concurrency proof (Test 9) can spin up a
+// SECOND independent postgres pool against the SAME embedded-postgres instance via
+// createDb(connectionString). createDb() opens a fresh postgres() pool per call, so
+// this yields genuine cross-connection contention (not two handles sharing a socket).
+let connectionString = "";
 let setupError: unknown = null;
 let companyId = "";
 let threadId = "";
@@ -95,7 +103,7 @@ beforeAll(async () => {
     });
     await pg.initialise();
     await pg.start();
-    const connectionString = `postgres://test:test@localhost:${PORT}/postgres`;
+    connectionString = `postgres://test:test@localhost:${PORT}/postgres`;
     await applyPendingMigrations(connectionString);
     db = createDb(connectionString);
 
@@ -459,5 +467,306 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     );
     expect(String(committedRow[0].status)).toBe("committed");
     expect(committedRow[0].committed_entry_id).toBeTruthy();
+  });
+
+  // ── PR-B real-DB proofs (#198) ─────────────────────────────────────────────
+
+  // Test 6 — crash-recovery convergence (THE most important).
+  //
+  // Reconstruct the exact torn-write a crash leaves behind: a `post_reply` action
+  // stranded in `committing` PAST the reaper TTL, with its side-effect entry
+  // (the discussion_entries row stamped with source_action_id) ALREADY landed
+  // pre-crash. The reaper flips the stranded row committing→failed (+attempt), then
+  // a fresh commit re-selects it, re-attempts the entry write, hits the partial
+  // unique index (discussion_entries_source_action_uq), and converges via the
+  // inner unique-violation branch — re-selecting the existing entry and stamping
+  // the action `committed` WITHOUT producing a duplicate. This is the property the
+  // whole #197/#198 substrate exists to guarantee: a side effect that landed once
+  // can never land twice, even across a crash + reaper + re-commit.
+  it("converges a crash-stranded committing row: reaper→failed, re-commit dedups via unique index (no duplicate, ends committed)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+    const snap = await captureSnapshot(threadId);
+    const actionId = randomUUID();
+
+    // The pre-crash side effect: a discussion_entries row already stamped with
+    // this action's id (input_type='agent' + the real seeded agent, matching what
+    // the post_reply commit handler writes). discussion_id + source_action_id are
+    // what the handler's convergence re-select keys on.
+    await db.execute(sql`
+      INSERT INTO discussion_entries
+        (id, discussion_id, input_type, raw_content, author_agent_id, source_action_id, created_by)
+      VALUES
+        (gen_random_uuid(), ${threadId}, 'agent', 'pre-crash reply', ${agentId}, ${actionId}, ${`agent:${agentId}`})
+    `);
+
+    // The torn action: stuck in 'committing', last touched 20 minutes ago (well
+    // past STALE_COMMITTING_TTL_MS = 10m). Carries the real freshness snapshot and
+    // a valid post_reply payload so the post-reap re-commit reaches the entry write.
+    const runA = await seedRun();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES
+        (${actionId}, ${companyId}, ${threadId}, ${runA}, ${agentId}, 'post_reply', 'committing',
+         ${JSON.stringify({ rawContent: "pre-crash reply" })}::jsonb, ${`k:${actionId}`},
+         ${JSON.stringify(snap)}::jsonb, now() - interval '20 minutes')
+    `);
+
+    // Reaper flips the stranded committing row → failed (+ bumps attempt_count to 1).
+    const reap = await reapStaleThreadAgentActions(db, { now: new Date() });
+    expect(reap.reaped).toBeGreaterThanOrEqual(1);
+
+    const afterReap = rowsOf(
+      await db.execute(sql`
+        SELECT status, attempt_count FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(String(afterReap[0].status)).toBe("failed");
+    expect(Number(afterReap[0].attempt_count)).toBe(1);
+
+    // Re-commit under a DIFFERENT run. The failed row (attempt 1 < max 3) is
+    // re-selected, claimed (fence on attempt_count=1), and the entry re-write hits
+    // the unique index → convergence branch.
+    const runB = await seedRun();
+    const res = await svc.commitThreadAgentActions({ companyId, threadId, runId: runB });
+    expect(res.committed).toBe(1);
+    expect(res.failed).toBe(0);
+
+    // No duplicate: exactly ONE discussion_entries row carries this source_action_id.
+    const entryCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM discussion_entries WHERE source_action_id = ${actionId}
+      `),
+    );
+    expect(Number(entryCount[0].n)).toBe(1);
+
+    // The action converged to committed and is stamped with the PRE-EXISTING entry
+    // (not stuck/looping in failed/committing).
+    const finalRow = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_entry_id FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(String(finalRow[0].status)).toBe("committed");
+    expect(finalRow[0].committed_entry_id).toBeTruthy();
+  });
+
+  // Test 7 — poison-row attempt cap (no livelock).
+  //
+  // A permanently-failing action must NOT be retried forever. We seed a post_reply
+  // whose payload.parentEntryId points at a non-existent entry: discussionService
+  // .addEntry validates the parent belongs to the thread and throws badRequest. That
+  // throw is NOT a unique violation, so the inner catch re-throws → the outer commit
+  // catch sets status='failed' + bumps attempt_count (the genuine failed-retry loop,
+  // not a terminal blocked_policy first-try). Driven maxAttempts+1 times, the failing
+  // row climbs to attempt_count >= max_attempts and the commit SELECT
+  // (status='failed' AND attempt_count < max_attempts) stops re-selecting it — while
+  // a sibling always-succeeding post_reply on the SAME thread commits normally. This
+  // proves the poison pill self-limits without starving healthy work.
+  it("caps a permanently-failing action at max_attempts and stops re-selecting it (no livelock); a healthy sibling still commits", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    // The healthy action: a valid post_reply that commits on the first tick.
+    const goodSnap = await captureSnapshot(threadId);
+    const goodId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${goodId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "healthy reply" })}::jsonb, ${`k:good:${goodId}`},
+         ${JSON.stringify(goodSnap)}::jsonb)
+    `);
+
+    // The poison action: a post_reply pointing at a bogus parentEntryId. addEntry
+    // throws badRequest("parentEntryId must reference an entry in the same
+    // discussion") on EVERY attempt → the commit catch marks it failed + bumps.
+    const poisonSnap = await captureSnapshot(threadId);
+    const poisonId = randomUUID();
+    const bogusParent = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${poisonId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "poison reply", parentEntryId: bogusParent })}::jsonb,
+         ${`k:poison:${poisonId}`}, ${JSON.stringify(poisonSnap)}::jsonb)
+    `);
+
+    // Drive commit maxAttempts+1 (=4) times. Each tick the poison row is re-picked
+    // while attempt_count < max_attempts (3), fails, and bumps; once it reaches 3 it
+    // is no longer re-selected.
+    for (let i = 0; i < 4; i++) {
+      await svc.commitThreadAgentActions({ companyId, threadId, runId: await seedRun() });
+    }
+
+    // Poison row: failed and at/over the cap.
+    const poisonRow = rowsOf(
+      await db.execute(sql`
+        SELECT status, attempt_count, max_attempts FROM thread_agent_actions WHERE id = ${poisonId}
+      `),
+    );
+    expect(String(poisonRow[0].status)).toBe("failed");
+    expect(Number(poisonRow[0].attempt_count)).toBeGreaterThanOrEqual(
+      Number(poisonRow[0].max_attempts),
+    );
+
+    // Direct proof it is NOT in the commit's selected set anymore: the SELECT
+    // predicate is (status='proposed') OR (status='failed' AND attempt_count <
+    // max_attempts). The poison row matches neither.
+    const selectable = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM thread_agent_actions
+        WHERE id = ${poisonId}
+          AND (status = 'proposed'
+               OR (status = 'failed' AND attempt_count < max_attempts))
+      `),
+    );
+    expect(Number(selectable[0].n)).toBe(0);
+
+    // The healthy sibling committed (proving the poison row never starved it).
+    const goodRow = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_entry_id FROM thread_agent_actions WHERE id = ${goodId}
+      `),
+    );
+    expect(String(goodRow[0].status)).toBe("committed");
+    expect(goodRow[0].committed_entry_id).toBeTruthy();
+  });
+
+  // Test 8 — snapshot_unavailable suppresses for EVERY action type.
+  //
+  // The per-action freshness re-check runs FIRST in the commit loop — before the
+  // claim CAS and before any per-type payload validation. An empty freshness ('{}')
+  // is detected by isSnapshotUnavailable (it carries neither the always-present
+  // string threadId nor numeric entrySeq) → compareFreshnessSnapshot returns
+  // { fresh:false, reason:"snapshot_unavailable" } → the action is marked
+  // suppressed_stale and counted in result.suppressed, REGARDLESS of action type or
+  // payload validity. This is what prevents a dropped run/turn from replaying an old
+  // empty-snapshot row out of turn. We seed one proposed row of each of the six
+  // types (minimal valid payloads, but they're never reached) and assert all six
+  // suppress and none commit.
+  it("suppresses an empty-snapshot row (snapshot_unavailable) for all six action types; none commit", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    // One isolated thread so this test's six rows are the only pending actions the
+    // thread-scoped commit drains (no interference from rows left by other tests).
+    const [t8] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const t8Id = String(t8.id);
+
+    // Minimal valid payload per type (read off each handler's required keys). These
+    // are intentionally well-formed so a FAILURE here can only come from the
+    // snapshot gate, not a payload-validation block — but the freshness gate fires
+    // before any of them is inspected.
+    const seeds: Array<{ type: string; payload: Record<string, unknown> }> = [
+      { type: "post_reply", payload: { rawContent: "x" } },
+      { type: "advance_phase", payload: { toPhase: "scope", effectiveAutonomy: 2 } },
+      { type: "convene_agent", payload: { targetAgentId: agentId } },
+      { type: "add_scope_item", payload: { kind: "decision", title: "x" } },
+      { type: "create_artifact_candidate", payload: { title: "x" } },
+      { type: "create_scope_draft", payload: { summary: "x" } },
+    ];
+
+    for (const seed of seeds) {
+      const id = randomUUID();
+      // freshness = '{}'::jsonb → snapshot_unavailable.
+      await db.execute(sql`
+        INSERT INTO thread_agent_actions
+          (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+        VALUES
+          (${id}, ${companyId}, ${t8Id}, NULL, ${agentId}, ${seed.type}, 'proposed',
+           ${JSON.stringify(seed.payload)}::jsonb, ${`k:t8:${seed.type}:${id}`}, '{}'::jsonb)
+      `);
+    }
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: t8Id, runId: await seedRun() });
+    expect(res.committed).toBe(0);
+    expect(res.suppressed).toBe(6);
+
+    // Zero rows on this thread reached 'committed'; all six are suppressed_stale.
+    const committedCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM thread_agent_actions
+        WHERE thread_id = ${t8Id} AND status = 'committed'
+      `),
+    );
+    expect(Number(committedCount[0].n)).toBe(0);
+
+    const suppressedCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM thread_agent_actions
+        WHERE thread_id = ${t8Id} AND status = 'suppressed_stale'
+      `),
+    );
+    expect(Number(suppressedCount[0].n)).toBe(6);
+  });
+
+  // Test 9 — two-connection concurrency (won/lost split).
+  //
+  // Two independent postgres connections (db / db2, each its own pool against the
+  // same embedded-postgres DB) race to commit the SAME proposed post_reply. The
+  // fenced CAS claim (claimActionForCommit: UPDATE … WHERE status IN
+  // ('proposed','failed') AND attempt_count = observed) lets exactly ONE committer
+  // win the row; the loser's UPDATE touches 0 rows and it skips the action. Plus the
+  // discussion_entries_source_action_uq partial index is the side-effect backstop.
+  // Timing-independent assertions: exactly one discussion_entries row for the action,
+  // and committed counts sum to exactly 1 across the two results.
+  it("two real connections racing the same proposed action: exactly one wins the fenced claim, one entry total", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // A genuine SECOND pool against the same DB. createDb() opens a fresh
+    // postgres() connection per call → real cross-connection contention.
+    const db2 = createDb(connectionString) as Db;
+
+    const snap = await captureSnapshot(threadId);
+    const actionId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${actionId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "raced reply" })}::jsonb, ${`k:race:${actionId}`},
+         ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    const svc1 = threadAgentActionService(db);
+    const svc2 = threadAgentActionService(db2);
+    const runA = await seedRun();
+    const runB = await seedRun();
+
+    const [r1, r2] = await Promise.all([
+      svc1.commitThreadAgentActions({ companyId, threadId, runId: runA }),
+      svc2.commitThreadAgentActions({ companyId, threadId, runId: runB }),
+    ]);
+
+    // Exactly one committer claimed + committed the row.
+    expect(r1.committed + r2.committed).toBe(1);
+
+    // Exactly one discussion_entries row was produced (the unique-index + fenced-CAS
+    // backstop held under genuine two-connection contention).
+    const entryCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM discussion_entries WHERE source_action_id = ${actionId}
+      `),
+    );
+    expect(Number(entryCount[0].n)).toBe(1);
+
+    // The action row converged to committed exactly once.
+    const finalRow = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_entry_id FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(String(finalRow[0].status)).toBe("committed");
+    expect(finalRow[0].committed_entry_id).toBeTruthy();
   });
 });
