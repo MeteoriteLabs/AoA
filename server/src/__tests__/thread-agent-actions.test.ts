@@ -33,7 +33,7 @@ import {
 } from "../services/thread-agent-actions.js";
 import { buildPostReplyIdempotencyKey } from "../services/internal-agent/tools/thread-action-keys.js";
 
-function createSequenceDb(config: { selects?: unknown[][]; inserts?: unknown[][]; updates?: Array<unknown[] | Error> } = {}) {
+function createSequenceDb(config: { selects?: unknown[][]; inserts?: Array<unknown[] | Error>; updates?: Array<unknown[] | Error> } = {}) {
   let selectIdx = 0;
   let insertIdx = 0;
   let updateIdx = 0;
@@ -55,7 +55,11 @@ function createSequenceDb(config: { selects?: unknown[][]; inserts?: unknown[][]
 
   const db = {
     select: () => makeChain(() => config.selects?.[selectIdx++] ?? []),
-    insert: () => makeChain(() => config.inserts?.[insertIdx++] ?? []),
+    insert: () => makeChain(() => {
+      const next = config.inserts?.[insertIdx++] ?? [];
+      if (next instanceof Error) throw next;
+      return next;
+    }),
     update: () => makeChain(() => {
       const next = config.updates?.[updateIdx++] ?? [];
       if (next instanceof Error) throw next;
@@ -561,6 +565,59 @@ describe("threadAgentActionService", () => {
       kind: "memory_candidate",
       title: "Architecture decision",
     }));
+  });
+
+  it("converges (idempotent) when add_scope_item raises the source_action_id unique violation (#198)", async () => {
+    // A re-commit of the SAME add_scope_item action (single-invocation partial
+    // crash / reaper re-commit) must NOT create a second scope item. The
+    // threadScopeItems insert raises a WRAPPED 23505 (postgres-js puts the code on
+    // err.cause); the branch re-selects the existing scope item and marks the
+    // action committed — no duplicate, NOT counted as failed.
+    const action = {
+      ...baseAction,
+      actionType: "add_scope_item",
+      payload: {
+        kind: "memory_candidate",
+        title: "Architecture decision",
+        content: "Use the versioned scope as the handoff.",
+      },
+    };
+    const db = createSequenceDb({
+      selects: [
+        [action], // commit selection
+        [{ id: "existing-item", scopeVersionId: "scope-version-1" }], // re-select after the unique violation
+      ],
+      // The insert raises a wrapped 23505 → converge on the existing row.
+      inserts: [
+        Object.assign(new Error("duplicate key value"), {
+          cause: { code: "23505", constraint_name: "thread_scope_items_source_action_uq" },
+        }),
+      ],
+      updates: [
+        [{ ...action, status: "committing" }],
+        [{ ...action, status: "committed", committedScopeItemId: "existing-item" }],
+      ],
+    });
+    const createDraftFromThread = vi.fn().mockResolvedValue({
+      status: "existing_draft",
+      version: { id: "scope-version-1" },
+    });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    // Converged, not failed.
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(db.__updateSets).toContainEqual(
+      expect.objectContaining({ status: "committed", committedScopeItemId: "existing-item" }),
+    );
   });
 
   it("commits a fresh convene_agent as a queued wakeup after company validation", async () => {

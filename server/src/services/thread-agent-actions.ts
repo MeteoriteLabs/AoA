@@ -531,19 +531,52 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               continue;
             }
 
-            const [item] = await actionDb
-              .insert(threadScopeItems)
-              .values({
-                companyId: input.companyId,
-                scopeVersionId,
-                kind,
-                status: "draft",
-                title,
-                description: asString(payload.content) ?? asString(payload.description) ?? null,
-                payload,
-                sourceEntryIds: asArray(payload.sourceEntryIds) ?? [],
-              })
-              .returning();
+            let item: { id?: string } | undefined;
+            try {
+              [item] = (await actionDb
+                .insert(threadScopeItems)
+                .values({
+                  companyId: input.companyId,
+                  scopeVersionId,
+                  kind,
+                  status: "draft",
+                  title,
+                  description: asString(payload.content) ?? asString(payload.description) ?? null,
+                  payload,
+                  sourceEntryIds: asArray(payload.sourceEntryIds) ?? [],
+                  // #198: stamp the action id so the partial unique index makes this
+                  // commit idempotent — the SAME action can never produce two items.
+                  sourceActionId: action.id,
+                })
+                .returning()) as Array<{ id?: string }>;
+            } catch (err) {
+              if (!isUniqueViolation(err, "thread_scope_items_source_action_uq")) throw err;
+              // #198: this action already produced a scope item (single-invocation
+              // partial crash, or the reaper flipped a stranded `committing` row to
+              // `failed` after the item write succeeded). Re-select and converge — no
+              // duplicate, NOT counted as a failure. Stamp the EXISTING row's scope
+              // version (a re-run may have landed in a new draft version).
+              const [existing] = (await actionDb
+                .select({
+                  id: threadScopeItems.id,
+                  scopeVersionId: threadScopeItems.scopeVersionId,
+                })
+                .from(threadScopeItems)
+                .where(
+                  and(
+                    eq(threadScopeItems.companyId, input.companyId),
+                    eq(threadScopeItems.sourceActionId, action.id),
+                  ),
+                )
+                .limit(1)) as Array<{ id: string; scopeVersionId: string }>;
+              await updateActionStatus(actionDb, action.id, {
+                status: "committed",
+                committedScopeVersionId: existing?.scopeVersionId ?? scopeVersionId,
+                committedScopeItemId: existing?.id ?? null,
+              });
+              result.committed += 1;
+              continue;
+            }
 
             await updateActionStatus(actionDb, action.id, {
               status: "committed",
