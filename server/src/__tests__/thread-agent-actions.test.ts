@@ -465,6 +465,66 @@ describe("threadAgentActionService", () => {
     });
   });
 
+  it("skips a post_reply as a lost race when the fenced claim returns no row (PR-B CAS)", async () => {
+    // PR-B fenced CAS: the proposed→committing claim is a compare-and-swap fenced
+    // on the row's observed attempt_count + updated_at. If a concurrent
+    // reaper/failure flips the row between the freshness re-check and the claim,
+    // the fence no longer matches → the UPDATE returns 0 rows. The committer must
+    // treat the empty result as a LOST RACE and skip the action: NO side effect
+    // (addEntry) runs, and the action is NOT counted as committed/failed/suppressed.
+    const db = createSequenceDb({
+      selects: [[baseAction]],
+      // The claim's UPDATE ... RETURNING resolves to [] (fence mismatch / lost race).
+      updates: [[]],
+    });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    // Lost race → nothing counted, no side effect.
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 0 });
+    expect(addEntry).not.toHaveBeenCalled();
+    // The claim was attempted (it set status=committing) but produced no further
+    // updates — the loop short-circuited on the empty returning.
+    expect(db.__updateSets).toHaveLength(1);
+    expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
+  });
+
+  it("proceeds with a post_reply when the fenced claim wins (returns the row) (PR-B CAS)", async () => {
+    // PR-B fenced CAS, won race: the claim's UPDATE ... RETURNING resolves to the
+    // row → this committer owns it → the side effect runs and the action commits.
+    const db = createSequenceDb({
+      selects: [[baseAction]],
+      updates: [
+        [{ ...baseAction, status: "committing" }], // claim wins
+        [{ ...baseAction, status: "committed", committedEntryId: "entry-committed" }],
+      ],
+    });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(addEntry).toHaveBeenCalledTimes(1);
+    expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
+  });
+
   it("does not replay a post_reply side effect after the action was already claimed as committing", async () => {
     const claimedAction = { ...baseAction, status: "committing" };
     const db = createSequenceDb({
@@ -1076,9 +1136,14 @@ describe("threadAgentActionService", () => {
     const db = createSequenceDb({
       selects: [[artifactAction, replyAction]],
       inserts: [[{ id: "scope-item-artifact" }], [{ id: "attachment-1" }]],
+      // PR-B fenced CAS: each action now issues a claim UPDATE ... RETURNING (which
+      // must return the row to win) BEFORE its final committed UPDATE — so the
+      // sequence interleaves claim + committed per action.
       updates: [
-        [{ ...artifactAction, status: "committed" }],
-        [{ ...replyAction, status: "committed" }],
+        [{ ...artifactAction, status: "committing" }], // artifact claim
+        [{ ...artifactAction, status: "committed" }], // artifact committed
+        [{ ...replyAction, status: "committing" }], // reply claim
+        [{ ...replyAction, status: "committed" }], // reply committed
       ],
     });
     const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });

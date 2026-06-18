@@ -60,6 +60,9 @@ type ThreadActionRow = {
   freshness: ThreadFreshnessSnapshot;
   attemptCount?: number;
   maxAttempts?: number;
+  // Fence token for the proposed→committing CAS claim: the value observed when
+  // the row was SELECTed. (PR-B Release-1.)
+  updatedAt?: Date;
 };
 
 export type ProposeThreadActionInput = {
@@ -198,6 +201,46 @@ async function updateActionStatus(
     .where(eq(threadAgentActions.id, actionId))
     .returning();
   return updated;
+}
+
+/**
+ * Fenced compare-and-swap for the proposed→committing claim. (PR-B Release-1.)
+ *
+ * Unlike {@link updateActionStatus} (which keys only on `id` and is used for the
+ * downstream transitions this committer already owns), the claim must be a CAS:
+ * it only wins if the row is still claimable AND its `attempt_count` + `updated_at`
+ * still match the values observed when the row was SELECTed. Those two fence tokens
+ * close the check-then-act gap between the per-action freshness re-check and the
+ * claim — if a concurrent reaper/failure flips the row in that window, the fence no
+ * longer matches, the UPDATE touches 0 rows, and the empty `.returning()` signals a
+ * LOST RACE. The caller then skips the action (does not re-run the side effect).
+ *
+ * Mirrors the inbox-router status-CAS idiom (UPDATE … WHERE id=? AND status IN (…)
+ * RETURNING *, empty returning = lost race / no-op). This is a strict narrowing of
+ * the previously-unconditional claim, so it stays backward-compatible with the
+ * still-present run-scoped commit SELECT.
+ */
+async function claimActionForCommit(
+  db: DbLike,
+  actionId: string,
+  fence: { attemptCount?: number; updatedAt?: Date },
+) {
+  const [claimed] = await db
+    .update(threadAgentActions)
+    .set({ status: "committing", updatedAt: new Date() })
+    .where(
+      and(
+        eq(threadAgentActions.id, actionId),
+        or(
+          eq(threadAgentActions.status, "proposed"),
+          eq(threadAgentActions.status, "failed"),
+        ),
+        eq(threadAgentActions.attemptCount, fence.attemptCount ?? 0),
+        eq(threadAgentActions.updatedAt, fence.updatedAt as Date),
+      ),
+    )
+    .returning();
+  return claimed;
 }
 
 export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActionDeps = {}) {
@@ -429,9 +472,23 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           // The other four action types keep run-scoped keys; full thread-scoped retry
           // for all types is #198. A reaper for stale "committing" rows is wired via
           // reapStaleThreadAgentActions below.
-          await updateActionStatus(actionDb, action.id, {
-            status: "committing",
+          //
+          // PR-B Release-1: the claim is a FENCED CAS, not an unconditional update.
+          // It only wins if the row is still claimable (proposed|failed) AND its
+          // attempt_count + updated_at still match what we SELECTed — closing the
+          // check-then-act gap with the per-action freshness re-check above. A
+          // concurrent reaper/failure that flips the row in that window makes the
+          // fence miss → 0 rows returned → this committer LOST the race and skips the
+          // action entirely (NOT counted as committed/failed/suppressed). After a won
+          // claim this committer owns the row, so the downstream transitions stay
+          // unfenced (updateActionStatus, keyed on id).
+          const claimed = await claimActionForCommit(actionDb, action.id, {
+            attemptCount: action.attemptCount,
+            updatedAt: action.updatedAt,
           });
+          if (!claimed) {
+            continue;
+          }
 
           if (action.actionType === "post_reply") {
             const payload = asRecord(action.payload);
