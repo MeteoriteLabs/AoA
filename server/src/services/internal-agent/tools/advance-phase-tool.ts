@@ -1,5 +1,6 @@
 import type { AgentTool } from "../types.js";
 import type { ThreadPhase } from "@armyofagents/shared";
+import { buildAdvancePhaseIdempotencyKey } from "./thread-action-keys.js";
 
 export function createAdvancePhaseTool(): AgentTool {
   return {
@@ -53,7 +54,16 @@ export function createAdvancePhaseTool(): AgentTool {
             toPhase: toPhase as string,
             effectiveAutonomy: ctx.effectiveAutonomy ?? 0,
           },
-          idempotencyKey: `${ctx.runId}:advance_phase:${threadId as string}:${toPhase as string}`,
+          idempotencyKey: buildAdvancePhaseIdempotencyKey({
+            threadId: threadId as string,
+            agentId: ctx.agentId,
+            toPhase: toPhase as string,
+            // Turn anchor: latest human entry seq at run start (null → content-only). #198.
+            turnAnchor:
+              ctx.threadFreshness?.latestHumanSeq != null
+                ? String(ctx.threadFreshness.latestHumanSeq)
+                : null,
+          }),
           freshness: ctx.threadFreshness ?? {},
         }) as { id?: string };
 

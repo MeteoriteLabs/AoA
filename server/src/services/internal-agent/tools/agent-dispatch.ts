@@ -22,6 +22,7 @@
 import { eq } from "drizzle-orm";
 import { agents, agentWakeupRequests } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { buildConveneAgentIdempotencyKey } from "./thread-action-keys.js";
 
 /** Matches thread-events.ts MAX_HOP_COUNT. Keep in sync. */
 const MAX_HOP_COUNT = 3;
@@ -117,7 +118,21 @@ export const agentDispatchTool: AgentTool = {
             hopCount: incomingHopCount + 1,
           },
         },
-        idempotencyKey: `${ctx.runId}:convene_agent:${agentId}:${threadId}`,
+        // hopCount is intentionally NOT folded into the key: the payload's
+        // incomingHopCount+1 can differ across re-proposes, so including it would
+        // split the key across runs. Leaving it out returns the existing wakeup
+        // row as-is and hops are not re-incremented.
+        idempotencyKey: buildConveneAgentIdempotencyKey({
+          threadId,
+          agentId: ctx.agentId,
+          targetAgentId: agentId,
+          reason: reason ?? "agent_dispatch",
+          // Turn anchor: latest human entry seq at run start (null → content-only). #198.
+          turnAnchor:
+            ctx.threadFreshness?.latestHumanSeq != null
+              ? String(ctx.threadFreshness.latestHumanSeq)
+              : null,
+        }),
         freshness: ctx.threadFreshness ?? {},
       }) as { id?: string };
 

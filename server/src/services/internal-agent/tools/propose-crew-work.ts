@@ -15,6 +15,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import { agents } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { buildScopeDraftIdempotencyKey } from "./thread-action-keys.js";
 
 // ── Role → agent name map ────────────────────────────────────────────────────
 // Source of truth: ensure-*.ts files. Only crew AoA roles are listed here;
@@ -175,7 +176,17 @@ export const proposeCrewWorkTool: AgentTool = {
             ...(task.assigneeRole ? { assigneeRole: task.assigneeRole } : {}),
           })),
         },
-        idempotencyKey: `${ctx.runId}:create_scope_draft:${threadId}:${summary}`,
+        idempotencyKey: buildScopeDraftIdempotencyKey({
+          threadId,
+          agentId: ctx.agentId,
+          summary,
+          proposedTasks,
+          // Turn anchor: latest human entry seq at run start (null → content-only). #198.
+          turnAnchor:
+            ctx.threadFreshness?.latestHumanSeq != null
+              ? String(ctx.threadFreshness.latestHumanSeq)
+              : null,
+        }),
         freshness: ctx.threadFreshness ?? {},
       }) as { id?: string };
 
