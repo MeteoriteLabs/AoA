@@ -3,7 +3,7 @@
  *
  * Security gate:
  *   - founder → all source queries run; items mapped with correct source discriminator.
- *   - team_lead → memory/memory_version (dept-scoped, non-identity) + runtime (own). No other sources.
+ *   - team_lead → memory/memory_version (dept-scoped, active_context ONLY; R5: domain is founder-only) + runtime (own). No other sources.
  *   - team_member → runtime (own) only. memory NOT called.
  *
  * Constraint verification (plan Hard Constraints):
@@ -664,19 +664,21 @@ describe("cockpitApprovals — team_lead scope (A4)", () => {
       items: [
         // identity layer → excluded even for dep-a lead
         { id: "m-ident", title: "I", layer: "identity", departmentId: "dep-a", category: null, status: "pending" },
-        // domain, dep-a → INCLUDED
-        { id: "m-ok", title: "OK", layer: "domain", departmentId: "dep-a", category: "coding", status: "pending" },
-        // domain, dep-b → excluded (not lead's dept)
-        { id: "m-other", title: "O", layer: "domain", departmentId: "dep-b", category: null, status: "pending" },
+        // R5: domain, dep-a → now EXCLUDED (founder-only since PR #201)
+        { id: "m-domain", title: "D", layer: "domain", departmentId: "dep-a", category: "coding", status: "pending" },
+        // active_context, dep-a → INCLUDED (the one layer a lead may approve)
+        { id: "m-ok", title: "OK", layer: "active_context", departmentId: "dep-a", category: "coding", status: "pending" },
+        // active_context, dep-b → excluded (not lead's dept)
+        { id: "m-other", title: "O", layer: "active_context", departmentId: "dep-b", category: null, status: "pending" },
         // active_context, no dept → excluded (departmentId null)
         { id: "m-nodept", title: "N", layer: "active_context", departmentId: null, category: null, status: "pending" },
       ],
       versions: [
-        // domain, dep-a → INCLUDED
+        // active_context, dep-a → INCLUDED
         {
           itemId: "v-ok",
           itemTitle: "V",
-          itemLayer: "domain",
+          itemLayer: "active_context",
           itemDepartmentId: "dep-a",
           itemCategory: "coding",
           itemSource: "agent",
@@ -684,17 +686,17 @@ describe("cockpitApprovals — team_lead scope (A4)", () => {
           currentVersionId: "c0",
           version: { id: "ver-1", memoryItemId: "v-ok", versionNumber: 2, content: "c2", status: "pending", createdBy: "a", createdAt: new Date() },
         },
-        // domain, dep-b → excluded
+        // R5: domain, dep-a version → now EXCLUDED
         {
-          itemId: "v-other",
-          itemTitle: "VO",
+          itemId: "v-domain",
+          itemTitle: "VD",
           itemLayer: "domain",
-          itemDepartmentId: "dep-b",
+          itemDepartmentId: "dep-a",
           itemCategory: null,
           itemSource: "agent",
           currentContent: "c",
           currentVersionId: "c0",
-          version: { id: "ver-2", memoryItemId: "v-other", versionNumber: 2, content: "c2", status: "pending", createdBy: "a", createdAt: new Date() },
+          version: { id: "ver-2", memoryItemId: "v-domain", versionNumber: 2, content: "c2", status: "pending", createdBy: "a", createdAt: new Date() },
         },
       ],
       archives: [archiveFixture],
@@ -702,23 +704,24 @@ describe("cockpitApprovals — team_lead scope (A4)", () => {
     });
   });
 
-  it("lead sees dep-a non-identity memory + own runtime; excludes identity/other-dept/no-dept/archive", async () => {
+  it("lead sees dep-a active_context memory only; excludes domain/identity/other-dept/no-dept/archive (R5)", async () => {
     // LEAD sequence (8 selects): reminders=[], dueTasks=[], runtime=[runtimeRow],
     //   pinned=[], goalsAtRisk=[], doneToday=[], proactive=[], teammates-dept=[]
     const db = buildSequenceDb([[], [], [runtimeRow], [], [], [], [], []]);
     const result = await cockpitService(db).get(COMPANY, LEAD_ACTOR);
 
-    // INCLUDED: m-ok (memory), ver-1 (memory_version), rt-lead (runtime_tool_trust)
+    // INCLUDED: m-ok (active_context memory), ver-1 (active_context version), rt-lead (runtime)
     const ids = result.approvals.map((a) => a.id);
     expect(ids).toContain("m-ok");
     expect(result.approvals.find((a) => a.source === "memory_version")?.relatedEntityId).toBe("ver-1");
     expect(ids).toContain("rt-lead");
 
-    // EXCLUDED: identity, other dept, no dept
+    // EXCLUDED: domain (R5 founder-only), identity, other dept, no dept
+    expect(ids).not.toContain("m-domain");
     expect(ids).not.toContain("m-ident");
     expect(ids).not.toContain("m-other");
     expect(ids).not.toContain("m-nodept");
-    // EXCLUDED: dep-b version
+    // EXCLUDED: domain version (R5)
     expect(result.approvals.find((a) => a.source === "memory_version" && a.relatedEntityId === "ver-2")).toBeUndefined();
     // EXCLUDED: archive (founder-only)
     expect(result.approvals.find((a) => a.source === "memory_archive")).toBeUndefined();
@@ -727,7 +730,7 @@ describe("cockpitApprovals — team_lead scope (A4)", () => {
     expect(result.approvals.find((a) => a.source === "discussion_item")).toBeUndefined();
     expect(result.approvals.find((a) => a.source === "join_request")).toBeUndefined();
 
-    // memory service WAS called (leads can see memory)
+    // memory service WAS called (leads can still see active_context memory)
     expect(mockMemoryServiceListPending).toHaveBeenCalledWith(COMPANY);
 
     // Exactly 3 items total
