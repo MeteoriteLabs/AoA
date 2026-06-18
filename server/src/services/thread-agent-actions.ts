@@ -60,9 +60,6 @@ type ThreadActionRow = {
   freshness: ThreadFreshnessSnapshot;
   attemptCount?: number;
   maxAttempts?: number;
-  // Fence token for the proposed→committing CAS claim: the value observed when
-  // the row was SELECTed. (PR-B Release-1.)
-  updatedAt?: Date;
 };
 
 export type ProposeThreadActionInput = {
@@ -208,22 +205,28 @@ async function updateActionStatus(
  *
  * Unlike {@link updateActionStatus} (which keys only on `id` and is used for the
  * downstream transitions this committer already owns), the claim must be a CAS:
- * it only wins if the row is still claimable AND its `attempt_count` + `updated_at`
- * still match the values observed when the row was SELECTed. Those two fence tokens
- * close the check-then-act gap between the per-action freshness re-check and the
- * claim — if a concurrent reaper/failure flips the row in that window, the fence no
- * longer matches, the UPDATE touches 0 rows, and the empty `.returning()` signals a
- * LOST RACE. The caller then skips the action (does not re-run the side effect).
+ * it only wins if the row is still claimable (`status IN ('proposed','failed')`) AND
+ * its `attempt_count` still matches the value observed when the row was SELECTed.
+ * Together those close the check-then-act gap between the per-action freshness
+ * re-check and the claim: a concurrent committer that already claimed the row flips
+ * `status` out of the claimable set, and a concurrent reaper/failure that bumps
+ * `attempt_count` changes the fence — either way the UPDATE touches 0 rows and the
+ * empty `.returning()` signals a LOST RACE, so the caller skips the action.
  *
- * Mirrors the inbox-router status-CAS idiom (UPDATE … WHERE id=? AND status IN (…)
- * RETURNING *, empty returning = lost race / no-op). This is a strict narrowing of
- * the previously-unconditional claim, so it stays backward-compatible with the
- * still-present run-scoped commit SELECT.
+ * NOTE: `updated_at` is deliberately NOT a fence token. The column is microsecond
+ * `timestamptz`, but a SELECTed value round-trips through a millisecond JS `Date`, so
+ * `eq(updated_at, observed)` would almost never match a freshly-proposed row (its
+ * default `now()` is microsecond) and the legitimate first claimer would phantom-lose.
+ * `attempt_count` is an exact integer and advances on every failure/reaper flip, so it
+ * fences the only mutation that matters here without the precision hazard.
+ *
+ * Mirrors the inbox-router status-CAS idiom. Strict narrowing of the previously-
+ * unconditional claim → backward-compatible with the still-present run-scoped SELECT.
  */
 async function claimActionForCommit(
   db: DbLike,
   actionId: string,
-  fence: { attemptCount?: number; updatedAt?: Date },
+  fence: { attemptCount?: number },
 ) {
   const [claimed] = await db
     .update(threadAgentActions)
@@ -236,7 +239,6 @@ async function claimActionForCommit(
           eq(threadAgentActions.status, "failed"),
         ),
         eq(threadAgentActions.attemptCount, fence.attemptCount ?? 0),
-        eq(threadAgentActions.updatedAt, fence.updatedAt as Date),
       ),
     )
     .returning();
@@ -484,7 +486,6 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           // unfenced (updateActionStatus, keyed on id).
           const claimed = await claimActionForCommit(actionDb, action.id, {
             attemptCount: action.attemptCount,
-            updatedAt: action.updatedAt,
           });
           if (!claimed) {
             continue;
