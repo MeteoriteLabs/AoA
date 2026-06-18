@@ -1,9 +1,9 @@
 /**
- * #197 — Real-DB proof of the action-commit idempotency substrate.
+ * #197 / #198 — Real-DB proof of the action-commit idempotency substrate.
  *
- * Boots embedded-postgres, applies all migrations (incl. 0145), then verifies
- * what the sequence-mock suites structurally cannot:
- *   1. the two partial unique indexes actually build in Postgres;
+ * Boots embedded-postgres, applies all migrations (incl. 0145 + 0146), then
+ * verifies what the sequence-mock suites structurally cannot:
+ *   1. the three partial unique indexes actually build in Postgres;
  *   2. the discussion_entries partial unique index ENFORCES a duplicate
  *      source_action_id — AND the real postgres-js error matches
  *      `isUniqueViolation(err, "..._source_action_uq")` (the exact C1 failure
@@ -13,6 +13,11 @@
  *   4. proposeThreadAction dedups a re-proposed run-independent key cross-run
  *      via onConflictDoNothing against the real (companyId, idempotencyKey)
  *      unique index, returning the same row (same action.id).
+ *   5. (#198) the thread_scope_items partial unique index ENFORCES a duplicate
+ *      source_action_id (the add_scope_item commit guarantee) + NULL exemption.
+ *   6. (#198) a key-only action type (advance_phase) dedups end-to-end at the
+ *      (companyId, idempotencyKey) unique index — the cross-run guarantee for
+ *      the types with no source_action_id side-effect.
  *
  * Skipped on Windows (embedded-postgres / migration-chain issue — Issue #114);
  * Linux CI is the authoritative gate. Modeled on aoa-backend.integration.test.ts.
@@ -318,13 +323,15 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
 
   it("dedups a re-proposed key-only action (advance_phase) cross-run (one action row)", async () => {
     if (setupError) throw new Error(String(setupError));
-    // The four key-only action types (advance_phase / convene_agent /
-    // create_scope_draft, plus add_scope_item) have NO source_action_id
-    // side-effect index — their sole cross-run idempotency guarantee is the
-    // proposeThreadAction onConflictDoNothing against (company_id,
-    // idempotency_key). post_reply (above) is a stable-key type that ALSO
-    // carries a side-effect index; this case proves the same dedup holds for a
-    // key-only type whose only protection is the action-row unique index.
+    // The three key-only action types (advance_phase / convene_agent /
+    // create_scope_draft) have NO source_action_id side-effect index — their
+    // sole cross-run idempotency guarantee is the proposeThreadAction
+    // onConflictDoNothing against (company_id, idempotency_key). By contrast
+    // add_scope_item DOES carry a side-effect index (thread_scope_items_source_action_uq,
+    // exercised by the thread_scope_items case above), as do post_reply and
+    // create_artifact_candidate. post_reply (case 4 above) is a stable-key type
+    // that ALSO carries a side-effect index; this case proves the same dedup
+    // holds for a key-only type whose only protection is the action-row index.
     const svc = threadAgentActionService(db);
     const key = buildAdvancePhaseIdempotencyKey({
       threadId,
