@@ -123,16 +123,27 @@ describe("threadAgentActionService", () => {
     expect(db.__insertValues).toHaveLength(1);
   });
 
-  it("re-homes a still-committable colliding row onto the current run (Codex #202 P2)", async () => {
+  it("re-homes a still-committable colliding row onto the current run, adopting the current freshness (Codex #202 P1/P2)", async () => {
     // An earlier run (run-1) proposed this action and left it uncommitted. A
     // same-turn retry under a NEW run (run-2) hits the run-independent key. The
     // service must transfer the row onto run-2 so run-2's commit (which filters on
     // runId) actually flushes it instead of silently dropping the phase advance.
-    const existing = { ...baseAction, id: "existing-action", runId: "run-1", status: "proposed" };
+    // It must ALSO adopt run-2's freshness snapshot — keeping run-1's stale snapshot
+    // would let the per-action freshness re-check wrongly mark a fresh re-proposal
+    // `suppressed_stale` (and the run-independent key would then keep colliding with
+    // that terminal row). (Codex #202 P1.)
+    const existing = {
+      ...baseAction,
+      id: "existing-action",
+      runId: "run-1",
+      status: "proposed",
+      freshness: { latestHumanSeq: 1, latestScopeVersionId: "sv-1" }, // STALE
+    };
+    const freshSnapshot = { latestHumanSeq: 1, latestScopeVersionId: "sv-2" }; // run-2 saw newer scope
     const db = createSequenceDb({
       selects: [[thread], [existing]],
       inserts: [[]], // conflict suppressed
-      updates: [[{ ...existing, runId: "run-2" }]], // re-home UPDATE ... RETURNING
+      updates: [[{ ...existing, runId: "run-2", freshness: freshSnapshot }]], // re-home UPDATE ... RETURNING
     });
 
     const result = (await threadAgentActionService(db as never).proposeThreadAction({
@@ -143,14 +154,14 @@ describe("threadAgentActionService", () => {
       actionType: "post_reply",
       payload: { rawContent: "Hello" },
       idempotencyKey: "run-1:post_reply:1",
-      freshness: { latestHumanSeq: 1 },
+      freshness: freshSnapshot,
     })) as { id: string; runId: string };
 
     expect(result.id).toBe("existing-action");
     expect(result.runId).toBe("run-2");
-    // The re-home UPDATE was issued and set runId to the current run.
+    // The re-home UPDATE set BOTH the current run AND the current freshness snapshot.
     expect(db.__updateSets).toHaveLength(1);
-    expect(db.__updateSets[0]).toMatchObject({ runId: "run-2" });
+    expect(db.__updateSets[0]).toMatchObject({ runId: "run-2", freshness: freshSnapshot });
   });
 
   it("does NOT re-home a committed/in-flight colliding row (status guard)", async () => {

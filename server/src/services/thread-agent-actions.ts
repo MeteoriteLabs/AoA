@@ -285,6 +285,14 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // committer that already moved the row out of {proposed,failed} yields 0 rows and
       // we fall through to the canonical row unchanged. attemptCount is preserved, so
       // the commit's attemptCount < maxAttempts poison-pill bound still holds.
+      //
+      // (Codex #202 P1) We ALSO adopt the current run's freshness snapshot. The row
+      // carries the earlier run's snapshot, but the commit re-checks freshness per
+      // action against the row's stored snapshot — keeping the stale one would let a
+      // scope-version bump (with no new human entry) wrongly mark this fresh
+      // re-proposal `suppressed_stale`, and since the key is run-independent every
+      // same-turn retry would then keep colliding with that terminal row. The current
+      // run re-proposed from a fresh view, so the row must represent THAT freshness.
       if (
         existing &&
         input.runId != null &&
@@ -293,7 +301,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       ) {
         const [rehomed] = await actionDb
           .update(threadAgentActions)
-          .set({ runId: input.runId, updatedAt: new Date() })
+          .set({ runId: input.runId, freshness: input.freshness ?? {}, updatedAt: new Date() })
           .where(
             and(
               eq(threadAgentActions.id, existing.id),
