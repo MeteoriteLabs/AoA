@@ -62,15 +62,15 @@ describe("thread action idempotency keys", () => {
 });
 
 describe("deferred-type idempotency keys (#198 PR-A)", () => {
-  it("convene_agent key is run-independent, turn-anchored, target-sensitive, reason+source-agent-INsensitive (Codex #202 P2)", () => {
+  it("convene_agent key is run-independent, turn-anchored, target/reason/source-agent-sensitive (#198 PR-A; wakeup-dedup alignment deferred to PR-B)", () => {
     const base = { threadId: "t1", agentId: "a1", targetAgentId: "tg1", reason: "review", turnAnchor: "5" };
     expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey(base));
     expect(buildConveneAgentIdempotencyKey(base)).not.toMatch(/run/);
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, targetAgentId: "tg2" }));
-    // Neither reason nor the SOURCE agentId is a dedup discriminator — the wakeup
-    // coalesces by target+thread only, so neither may change the action key.
-    expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey({ ...base, reason: "other" }));
-    expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey({ ...base, agentId: "a2" }));
+    // Discriminated key keeps genuinely-distinct dispatches distinct. The mismatch with
+    // the wakeup dedup scope (Codex #202 P2) is a known benign edge deferred to PR-B.
+    expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, reason: "other" }));
+    expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, agentId: "a2" }));
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, turnAnchor: "6" }));
   });
   it("create_scope_draft key hashes summary + tasks (no raw interpolation), turn-anchored", () => {

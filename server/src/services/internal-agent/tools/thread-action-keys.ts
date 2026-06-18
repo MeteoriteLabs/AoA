@@ -57,36 +57,35 @@ export function buildArtifactCandidateIdempotencyKey(input: {
 
 /**
  * Run-INDEPENDENT, turn-anchored idempotency key for a `convene_agent` thread
- * action. Same construction discipline as the keys above. Keyed on the target
- * agent only — NOT `reason`.
+ * action. Keyed on the source agent + target agent + reason so genuinely distinct
+ * dispatches stay distinct.
  *
- * (Codex #202 P2) The commit path coalesces wakeups by `${targetAgentId}:${threadId}:queued`
- * (no reason), inserting with onConflictDoNothing. If `reason` were part of this key,
- * two same-turn dispatches to the same target with different reasons would survive
- * action-level dedup but the second's wakeup would be swallowed by the lower-level
- * dedup — the action commits yet the distinct dispatch never reaches the target. We
- * align the action key to the wakeup dedup scope (target + thread + turn) so the two
- * layers agree. NEITHER `reason` NOR the source `agentId` is part of the key — the
- * wakeup dedup ignores both, so two different source agents (or reasons) dispatching
- * the same target in the same turn must collapse to one action, matching the single
- * coalesced wakeup. Both stay on the action/wakeup payload (the woken agent reads the
- * thread for full context); the params are accepted for call-site compatibility but
- * intentionally NOT part of the key.
+ * (Codex #202 P2 — KNOWN, deferred to #198 PR-B.) There is an inherent scope mismatch
+ * with the commit-path wakeup dedup (`${targetAgentId}:${threadId}:queued`, no
+ * discriminator). Two key-only choices each have an edge and NEITHER fully aligns:
+ *   - Discriminated key (this one): a 2nd same-turn dispatch to the same target commits
+ *     a distinct action whose wakeup is coalesced while the FIRST is still queued — but
+ *     the target reads the full thread on wake, so no context is lost (benign).
+ *   - Target-only key: dedups a genuinely-NEW dispatch AFTER the first wakeup is claimed/
+ *     finished — the target has already run and won't re-wake (worse).
+ * We keep the discriminated key (the benign edge). The correct fix — aligning the
+ * wakeup dedup scope to the action semantics — touches the shared agent_wakeup_requests
+ * dedup + its unique constraint, which is the deferred #198 PR-B (thread-scoped
+ * commit/dedup) work, out of scope for this minimal PR-A.
  */
 export function buildConveneAgentIdempotencyKey(input: {
   threadId: string;
-  /** Accepted for call-site compatibility but intentionally NOT part of the key. */
   agentId?: string | null;
   targetAgentId: string;
-  /** Accepted for call-site compatibility but intentionally NOT part of the key. */
   reason?: string | null;
   turnAnchor?: string | null;
 }): string {
   return [
     input.threadId,
     "convene_agent",
+    input.agentId ?? "agent",
     input.turnAnchor ?? "noanchor",
-    sha256(JSON.stringify([input.targetAgentId])),
+    sha256(JSON.stringify([input.targetAgentId, input.reason ?? "agent_dispatch"])),
   ].join(":");
 }
 
