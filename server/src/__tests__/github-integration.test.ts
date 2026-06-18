@@ -364,17 +364,15 @@ describe("github integration routes", () => {
   });
 
   describe("authorization", () => {
-    it("rejects anonymous actor with 401 (assertCompanyAccess throws unauthorized before board check)", async () => {
-      // assertBoard runs first and throws 403; but the task spec treats `{type:"none"}`
-      // as 401 via assertCompanyAccess. Since assertBoard sees type!="board", it
-      // returns 403 first. Verify that path.
+    it("rejects anonymous actor with 401", async () => {
+      // R9a: assertBoard returns 401 (unauthorized) for an unauthenticated actor
+      // (type "none"), matching assertCompanyAccess — no ordering workaround needed.
       const app = createApp({ type: "none" });
       const res = await request(app).get(
         "/api/companies/company-1/github/pat/status",
       );
 
-      // assertBoard runs first -> 403
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(401);
     });
 
     it("rejects agent actor for different company with 403", async () => {

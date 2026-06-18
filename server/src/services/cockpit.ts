@@ -24,7 +24,7 @@
  *     extraction entry over the visible ids. Map to CockpitDiscussionItem.
  *   - Approvals (Phase 3c + A4): per-role scoping.
  *     approval/discussion_item/join_request/memory_archive → founder-only.
- *     memory/memory_version → founder OR (team_lead AND layer!=="identity" AND dept ∈ leadDepartmentIds).
+ *     memory/memory_version → founder OR (team_lead AND layer==="active_context" AND dept ∈ leadDepartmentIds).
  *     runtime_tool_trust → any role, owner-scoped by userId (HC4).
  */
 
@@ -503,7 +503,7 @@ async function cockpitTeammatesActivity(
  *
  * A4: per-role scoping (replaces the old founder-only short-circuit). approval / discussion_item /
  *      join_request / memory_archive → founder-only; memory / memory_version → founder OR dept-lead
- *      (non-identity layer, dept ∈ leadDepartmentIds); runtime_tool_trust → any role, owner-scoped (HC4).
+ *      (active_context layer only, dept ∈ leadDepartmentIds); runtime_tool_trust → any role, owner-scoped (HC4).
  * HC2: memory.listPending returns { items, versions, archives, totalCount } — use .items for
  *      the original "memory" source; .versions and .archives for the new memory_version /
  *      memory_archive sources (reuses same call, no extra query).
@@ -518,7 +518,7 @@ async function cockpitApprovals(
 ): Promise<CockpitApprovalItem[]> {
   // A4: per-role scoping.
   // - approval (hire), discussion_item, memory_archive, join_request → founder-only.
-  // - memory + memory_version → founder OR (team_lead AND layer!=="identity" AND dept ∈ leadDepartmentIds).
+  // - memory + memory_version → founder OR (team_lead AND layer==="active_context" AND dept ∈ leadDepartmentIds).
   // - runtime_tool_trust → any role, owner-scoped by userId (HC4).
   const isFounder = scope.isFounder;
   const isLead = scope.role === "team_lead";
@@ -580,9 +580,12 @@ async function cockpitApprovals(
 
   // Replicate canApproveMemory in-memory (mirrors permissions.ts:185-205).
   // NO per-item DB call — pure filter over the already-fetched memPending results.
+  // R5 (PR #199): the founder is sole gatekeeper for identity AND domain. A team
+  // lead may approve only `active_context` for their own department — keep this in
+  // lockstep with canApproveMemory in permissions.ts.
   const canApproveMem = (layer: string | null, departmentId: string | null) =>
     isFounder ||
-    (isLead && layer !== "identity" && !!departmentId && scope.leadDepartmentIds.includes(departmentId));
+    (isLead && layer === "active_context" && !!departmentId && scope.leadDepartmentIds.includes(departmentId));
 
   const memItems = memPending.items.filter((m) =>
     canApproveMem(m.layer ?? null, m.departmentId ?? null),
