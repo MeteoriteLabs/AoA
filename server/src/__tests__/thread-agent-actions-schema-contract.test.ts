@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { threadAgentActions, discussionEntries, artifacts } from "@armyofagents/db";
+import { threadAgentActions, discussionEntries, artifacts, threadScopeItems } from "@armyofagents/db";
 
 function columnNames(table: Record<string, unknown>) {
   return new Set(Object.keys(table));
@@ -47,6 +47,12 @@ describe("sourceActionId idempotency schema (#197)", () => {
     ).toBe(true);
   });
 
+  it("thread_scope_items exposes a sourceActionId column (#198 PR-A)", () => {
+    expect(
+      columnNames(threadScopeItems as unknown as Record<string, unknown>).has("sourceActionId"),
+    ).toBe(true);
+  });
+
   it("the generated migration creates the two idempotent partial unique indexes", () => {
     // Three '../' from server/src/__tests__ reaches the worktree root.
     const migDir = join(__dirname, "../../../packages/db/src/migrations");
@@ -62,6 +68,21 @@ describe("sourceActionId idempotency schema (#197)", () => {
       /CREATE UNIQUE INDEX IF NOT EXISTS[^;]*discussion_entries[^;]*source_action_id/s,
     );
     expect(sql).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS[^;]*artifacts[^;]*source_action_id/s);
+    expect(sql).toMatch(/WHERE[^;]*source_action_id[^;]*IS NOT NULL/s);
+  });
+
+  it("the generated migration creates the thread_scope_items idempotent partial unique index (#198 PR-A)", () => {
+    const migDir = join(__dirname, "../../../packages/db/src/migrations");
+    const sql = readdirSync(migDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort()
+      .map((f) => readFileSync(join(migDir, f), "utf8"))
+      .filter((s) => s.includes("source_action_id"))
+      .join("\n");
+    expect(sql).toContain("thread_scope_items_source_action_uq");
+    expect(sql).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS[^;]*thread_scope_items[^;]*source_action_id/s,
+    );
     expect(sql).toMatch(/WHERE[^;]*source_action_id[^;]*IS NOT NULL/s);
   });
 });

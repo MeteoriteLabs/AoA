@@ -263,7 +263,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 
       // Conflict suppressed → the row already exists. Re-select and return it so
       // callers see the canonical (idempotent) action.
-      const [existing] = await actionDb
+      const [existing] = (await actionDb
         .select()
         .from(threadAgentActions)
         .where(
@@ -272,7 +272,61 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             eq(threadAgentActions.idempotencyKey, input.idempotencyKey),
           ),
         )
-        .limit(1);
+        .limit(1)) as ThreadActionRow[];
+
+      // #198 follow-up (Codex #202 P2): with run-INDEPENDENT keys a same-turn retry
+      // under a new run collides with a row created by an EARLIER run. commitThread-
+      // AgentActions filters on runId, so if that earlier run left the row committable
+      // (proposed, or failed under its attempt cap) the current run would never flush
+      // it — the action is silently lost. Re-home the re-proposable row onto THIS run
+      // so this run's commit picks it up. NEVER steal a committed / mid-commit
+      // (committing) / policy-blocked row. Race-safe: the status predicate in the
+      // UPDATE is the compare-and-swap — a concurrent committer that already moved the
+      // row out of the re-homable set yields 0 rows and we fall through to the
+      // canonical row unchanged. attemptCount is preserved, so the commit's
+      // attemptCount < maxAttempts poison-pill bound still holds.
+      //
+      // (Codex #202 P1) We ALSO adopt the current run's freshness snapshot. The row
+      // carries the earlier run's snapshot, but the commit re-checks freshness per
+      // action against the row's stored snapshot — keeping the stale one would let a
+      // scope-version bump (with no new human entry) wrongly mark this fresh
+      // re-proposal `suppressed_stale`. The current run re-proposed from a fresh view,
+      // so the row must represent THAT freshness.
+      //
+      // (Codex #202 P1, round 2) `suppressed_stale` is included in the re-homable set
+      // and REVIVED to `proposed`. It is terminal, but the run-independent key means a
+      // genuine same-turn re-proposal collides with it; without revival commit would
+      // never re-select it (it filters proposed/retryable-failed) and the action would
+      // be stranded until a new human message moves the turn anchor. Reviving with the
+      // fresh snapshot lets commit re-evaluate it — if still genuinely stale it simply
+      // re-suppresses. `blocked_policy` is NOT revived (re-proposing won't change a
+      // policy outcome).
+      const REHOMABLE_STATUSES = ["proposed", "failed", "suppressed_stale"];
+      if (
+        existing &&
+        input.runId != null &&
+        existing.runId !== input.runId &&
+        REHOMABLE_STATUSES.includes(existing.status)
+      ) {
+        const [rehomed] = await actionDb
+          .update(threadAgentActions)
+          .set({
+            runId: input.runId,
+            freshness: input.freshness ?? {},
+            ...(existing.status === "suppressed_stale"
+              ? { status: "proposed", blockedReason: null }
+              : {}),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(threadAgentActions.id, existing.id),
+              inArray(threadAgentActions.status, REHOMABLE_STATUSES),
+            ),
+          )
+          .returning();
+        if (rehomed) return rehomed;
+      }
 
       return existing;
     },
@@ -531,19 +585,52 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               continue;
             }
 
-            const [item] = await actionDb
-              .insert(threadScopeItems)
-              .values({
-                companyId: input.companyId,
-                scopeVersionId,
-                kind,
-                status: "draft",
-                title,
-                description: asString(payload.content) ?? asString(payload.description) ?? null,
-                payload,
-                sourceEntryIds: asArray(payload.sourceEntryIds) ?? [],
-              })
-              .returning();
+            let item: { id?: string } | undefined;
+            try {
+              [item] = (await actionDb
+                .insert(threadScopeItems)
+                .values({
+                  companyId: input.companyId,
+                  scopeVersionId,
+                  kind,
+                  status: "draft",
+                  title,
+                  description: asString(payload.content) ?? asString(payload.description) ?? null,
+                  payload,
+                  sourceEntryIds: asArray(payload.sourceEntryIds) ?? [],
+                  // #198: stamp the action id so the partial unique index makes this
+                  // commit idempotent — the SAME action can never produce two items.
+                  sourceActionId: action.id,
+                })
+                .returning()) as Array<{ id?: string }>;
+            } catch (err) {
+              if (!isUniqueViolation(err, "thread_scope_items_source_action_uq")) throw err;
+              // #198: this action already produced a scope item (single-invocation
+              // partial crash, or the reaper flipped a stranded `committing` row to
+              // `failed` after the item write succeeded). Re-select and converge — no
+              // duplicate, NOT counted as a failure. Stamp the EXISTING row's scope
+              // version (a re-run may have landed in a new draft version).
+              const [existing] = (await actionDb
+                .select({
+                  id: threadScopeItems.id,
+                  scopeVersionId: threadScopeItems.scopeVersionId,
+                })
+                .from(threadScopeItems)
+                .where(
+                  and(
+                    eq(threadScopeItems.companyId, input.companyId),
+                    eq(threadScopeItems.sourceActionId, action.id),
+                  ),
+                )
+                .limit(1)) as Array<{ id: string; scopeVersionId: string }>;
+              await updateActionStatus(actionDb, action.id, {
+                status: "committed",
+                committedScopeVersionId: existing?.scopeVersionId ?? scopeVersionId,
+                committedScopeItemId: existing?.id ?? null,
+              });
+              result.committed += 1;
+              continue;
+            }
 
             await updateActionStatus(actionDb, action.id, {
               status: "committed",

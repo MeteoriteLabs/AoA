@@ -21,6 +21,7 @@
 import { eq } from "drizzle-orm";
 import { memoryItems, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { buildAddScopeItemIdempotencyKey } from "./thread-action-keys.js";
 
 const PRIVATE_THREAD_ALLOWED_LAYERS = new Set(["working", "active_context"]);
 const VALID_LAYERS = new Set(["identity", "domain", "active_context", "working"]);
@@ -174,7 +175,19 @@ export const proposeMemoryFromThreadTool: AgentTool = {
           layer,
           category,
         },
-        idempotencyKey: `${ctx.runId}:add_scope_item:memory:${sourceThreadId}:${defaultedTitle}`,
+        idempotencyKey: buildAddScopeItemIdempotencyKey({
+          threadId: sourceThreadId,
+          agentId: ctx.agentId,
+          title: defaultedTitle,
+          content,
+          layer,
+          category,
+          // Turn anchor: latest human entry seq at run start (null → content-only). #198.
+          turnAnchor:
+            ctx.threadFreshness?.latestHumanSeq != null
+              ? String(ctx.threadFreshness.latestHumanSeq)
+              : null,
+        }),
         freshness: ctx.threadFreshness ?? {},
       }) as { id?: string };
 

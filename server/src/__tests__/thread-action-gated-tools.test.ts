@@ -31,6 +31,10 @@ import { createAdvancePhaseTool } from "../services/internal-agent/tools/advance
 import {
   buildPostReplyIdempotencyKey,
   buildArtifactCandidateIdempotencyKey,
+  buildConveneAgentIdempotencyKey,
+  buildScopeDraftIdempotencyKey,
+  buildAddScopeItemIdempotencyKey,
+  buildAdvancePhaseIdempotencyKey,
 } from "../services/internal-agent/tools/thread-action-keys.js";
 import { processMentions } from "../services/threads.js";
 import { buildMcpBridgeSpec } from "../services/internal-agent/cli-mode.js";
@@ -130,7 +134,14 @@ describe("action-gated discussion tools", () => {
         summary: "Build a scoped onboarding flow.",
         proposedTasks: [{ title: "Draft the onboarding plan" }],
       },
-      idempotencyKey: `${runId}:create_scope_draft:${threadId}:Build a scoped onboarding flow.`,
+      // #198: run-independent + turn-anchored (latestHumanSeq=4 → "4"); derived by the shared builder.
+      idempotencyKey: buildScopeDraftIdempotencyKey({
+        threadId,
+        agentId,
+        summary: "Build a scoped onboarding flow.",
+        proposedTasks: [{ title: "Draft the onboarding plan" }],
+        turnAnchor: "4",
+      }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
     });
   });
@@ -206,7 +217,16 @@ describe("action-gated discussion tools", () => {
         layer: "active_context",
         category: "decision",
       },
-      idempotencyKey: `${runId}:add_scope_item:memory:${threadId}:Onboarding source of truth`,
+      // #198: run-independent + turn-anchored; derived by the shared builder.
+      idempotencyKey: buildAddScopeItemIdempotencyKey({
+        threadId,
+        agentId,
+        title: "Onboarding source of truth",
+        content: "Use department-scoped onboarding docs as the source of truth.",
+        layer: "active_context",
+        category: "decision",
+        turnAnchor: "4",
+      }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
     });
   });
@@ -244,7 +264,16 @@ describe("action-gated discussion tools", () => {
         reason: "Need engineering review",
         context: { threadId, mentionEntryId: "entry-2", hopCount: 2 },
       },
-      idempotencyKey: `${runId}:convene_agent:${targetAgentId}:${threadId}`,
+      // #198: run-independent + turn-anchored; derived by the shared builder.
+      // hopCount is intentionally excluded from the key (folding it in would split
+      // the key across re-proposes that increment the hop).
+      idempotencyKey: buildConveneAgentIdempotencyKey({
+        threadId,
+        agentId,
+        targetAgentId,
+        reason: "Need engineering review",
+        turnAnchor: "4",
+      }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
     });
   });
@@ -321,7 +350,13 @@ describe("action-gated discussion tools", () => {
         toPhase: "assign",
         effectiveAutonomy: 2,
       },
-      idempotencyKey: `${runId}:advance_phase:${threadId}:assign`,
+      // #198: run-independent + turn-anchored; derived by the shared builder.
+      idempotencyKey: buildAdvancePhaseIdempotencyKey({
+        threadId,
+        agentId,
+        toPhase: "assign",
+        turnAnchor: "4",
+      }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
     });
   });
