@@ -198,22 +198,25 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       content: "Status: green.",
       turnAnchor: "1",
     });
+    // Dedup is on (companyId, idempotencyKey), independent of runId. Pass runId=null
+    // (run_id is a nullable FK to internal_agent_runs) so the test doesn't need a
+    // seeded run row — the point is that the SAME stable key dedups across proposes.
     const a = (await svc.proposeThreadAction({
       companyId,
       threadId,
-      runId: "run-A",
+      runId: null,
       agentId: null,
       actionType: "post_reply",
       payload: { rawContent: "Status: green." },
       idempotencyKey: key,
     })) as { id: string };
-    // A different run re-proposes the identical reply → same stable key → the real
-    // unique index rejects the insert (onConflictDoNothing) → the existing row is
-    // returned, NOT a new one.
+    // A re-propose of the identical reply → same stable key → the real unique index
+    // rejects the insert (onConflictDoNothing) → the existing row is returned, NOT a
+    // new one.
     const b = (await svc.proposeThreadAction({
       companyId,
       threadId,
-      runId: "run-B",
+      runId: null,
       agentId: null,
       actionType: "post_reply",
       payload: { rawContent: "Status: green." },
