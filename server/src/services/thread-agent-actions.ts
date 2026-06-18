@@ -24,6 +24,7 @@ import { discussionService } from "./discussions.js";
 import { threadScopeVersionService } from "./thread-scope-versions.js";
 import { artifactService } from "./artifacts.js";
 import { threadService, parseMentions, processMentions } from "./threads.js";
+import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action-keys.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -703,7 +704,17 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 
             const context = asRecord(payload.context);
             const reason = asString(payload.reason) ?? "agent_dispatch";
-            const dedupKey = `${targetAgentId}:${input.threadId}:queued`;
+            // PR-B2 (#202 P2): discriminate the wakeup dedupKey on the STABLE committing
+            // action id — NOT free-text reason — so two genuinely-distinct convene actions
+            // to the same target both enqueue a wakeup while a same-action commit race
+            // collapses to one. The `:queued` suffix keeps the partial unique index
+            // agent_wakeup_requests_dedup_key_queued_uq the cross-process guard (bare
+            // onConflictDoNothing below).
+            const dedupKey = buildConveneWakeupDedupKey({
+              targetAgentId,
+              threadId: input.threadId,
+              sourceActionId: action.id,
+            });
             await actionDb
               .insert(agentWakeupRequests)
               .values({

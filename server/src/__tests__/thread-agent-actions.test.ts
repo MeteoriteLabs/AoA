@@ -31,7 +31,10 @@ import {
   reapStaleThreadAgentActions,
   threadAgentActionService,
 } from "../services/thread-agent-actions.js";
-import { buildPostReplyIdempotencyKey } from "../services/internal-agent/tools/thread-action-keys.js";
+import {
+  buildPostReplyIdempotencyKey,
+  buildConveneWakeupDedupKey,
+} from "../services/internal-agent/tools/thread-action-keys.js";
 
 function createSequenceDb(config: { selects?: unknown[][]; inserts?: Array<unknown[] | Error>; updates?: Array<unknown[] | Error> } = {}) {
   let selectIdx = 0;
@@ -760,7 +763,14 @@ describe("threadAgentActionService", () => {
       source: "agent.dispatch",
       reason: "Need planning input",
       payload: { threadId: "thread-1", hopCount: 2 },
-      dedupKey: "agent-2:thread-1:queued",
+      // PR-B2: dedupKey is now discriminated by the STABLE sourceActionId (action.id),
+      // not target+thread alone, so distinct convene actions both enqueue while a
+      // same-action commit race collapses. baseAction.id === "action-1".
+      dedupKey: buildConveneWakeupDedupKey({
+        targetAgentId: "agent-2",
+        threadId: "thread-1",
+        sourceActionId: "action-1",
+      }),
       status: "queued",
     }));
     expect(db.__updateSets).toContainEqual(expect.objectContaining({

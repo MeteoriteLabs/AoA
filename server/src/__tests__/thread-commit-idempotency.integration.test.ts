@@ -48,6 +48,7 @@ import {
 import { isUniqueViolation } from "../services/db-errors.js";
 import {
   buildAdvancePhaseIdempotencyKey,
+  buildConveneWakeupDedupKey,
   buildPostReplyIdempotencyKey,
 } from "../services/internal-agent/tools/thread-action-keys.js";
 
@@ -768,5 +769,108 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     );
     expect(String(finalRow[0].status)).toBe("committed");
     expect(finalRow[0].committed_entry_id).toBeTruthy();
+  });
+
+  // Test 10 — convene wakeup dedup discriminated by stable sourceActionId (PR-B2 / #202 P2).
+  //
+  // Two genuinely-DISTINCT convene_agent actions to the SAME target on the SAME thread
+  // (distinct action ids, distinct payloads) must BOTH enqueue a queued
+  // agent_wakeup_requests row — the old `${target}:${thread}:queued` key collapsed them
+  // to one (the swallowed-second-dispatch bug). Because the new dedupKey is discriminated
+  // by the committing action.id, their dedupKeys differ → the partial unique index
+  // (agent_wakeup_requests_dedup_key_queued_uq) lets both insert. Then a re-commit of the
+  // SAME action id (idempotent re-run) collapses to one: the still-queued row blocks the
+  // duplicate via onConflictDoNothing. The seeded target reuses the integration agent (a
+  // valid in-company targetAgentId — the handler blocks targets outside the company).
+  it("two distinct convene_agent actions both enqueue a queued wakeup (discriminated dedupKey); a same-action re-commit collapses to one", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // Isolated thread so this test's wakeup rows + actions are the only pending work
+    // the thread-scoped commit drains (no interference from other tests' rows).
+    const [t10] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const t10Id = String(t10.id);
+
+    const svc = threadAgentActionService(db);
+    const snap = await captureSnapshot(t10Id);
+    const runA = await seedRun();
+    const actionId1 = randomUUID();
+    const actionId2 = randomUUID();
+
+    // Two distinct proposed convene_agent actions: same target (the seeded agent), same
+    // thread, DISTINCT ids + DISTINCT payloads (different reason/context). Real freshness
+    // snapshot so the per-action freshness re-check passes (an empty snapshot would
+    // suppress them as snapshot_unavailable). agent_id is the seeded agent (the handler
+    // does not gate convene on a null agentId, but seeding a real one matches the harness).
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${actionId1}, ${companyId}, ${t10Id}, ${runA}, ${agentId}, 'convene_agent', 'proposed',
+         ${JSON.stringify({ targetAgentId: agentId, reason: "review pass", context: { hop: 1 } })}::jsonb,
+         ${`k:convene:${actionId1}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${actionId2}, ${companyId}, ${t10Id}, ${runA}, ${agentId}, 'convene_agent', 'proposed',
+         ${JSON.stringify({ targetAgentId: agentId, reason: "second pass", context: { hop: 2 } })}::jsonb,
+         ${`k:convene:${actionId2}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: t10Id, runId: await seedRun() });
+    expect(res.committed).toBe(2);
+
+    // BOTH distinct actions enqueued a queued wakeup for the target — the discriminated
+    // dedupKey (keyed on the stable sourceActionId) kept them apart.
+    const queuedCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM agent_wakeup_requests
+        WHERE company_id = ${companyId}
+          AND agent_id = ${agentId}
+          AND status = 'queued'
+          AND source = 'agent.dispatch'
+          AND dedup_key LIKE ${`${agentId}:${t10Id}:%:queued`}
+      `),
+    );
+    expect(Number(queuedCount[0].n)).toBe(2);
+
+    // SAME-action collapse: a second wakeup carrying the SAME committing action id (a
+    // claim race / idempotent re-fire of actionId1) must NOT double-enqueue. Recompute
+    // actionId1's exact dedupKey and attempt the duplicate insert through the same path
+    // the handler uses (bare onConflictDoNothing). The still-queued first row blocks it
+    // via the partial unique index → no row returned, queued count unchanged at 2.
+    const dupKey = buildConveneWakeupDedupKey({
+      targetAgentId: agentId,
+      threadId: t10Id,
+      sourceActionId: actionId1,
+    });
+    const dupInsert = rowsOf(
+      await db.execute(sql`
+        INSERT INTO agent_wakeup_requests (id, company_id, agent_id, source, reason, status, dedup_key)
+        VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'agent.dispatch', 'review pass', 'queued', ${dupKey})
+        ON CONFLICT DO NOTHING
+        RETURNING id
+      `),
+    );
+    expect(dupInsert.length).toBe(0); // collapsed — the queued row blocked the duplicate.
+
+    const queuedCountAfter = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM agent_wakeup_requests
+        WHERE company_id = ${companyId}
+          AND agent_id = ${agentId}
+          AND status = 'queued'
+          AND source = 'agent.dispatch'
+          AND dedup_key LIKE ${`${agentId}:${t10Id}:%:queued`}
+      `),
+    );
+    expect(Number(queuedCountAfter[0].n)).toBe(2); // still 2 — same-action re-fire collapsed.
   });
 });

@@ -60,18 +60,12 @@ export function buildArtifactCandidateIdempotencyKey(input: {
  * action. Keyed on the source agent + target agent + reason so genuinely distinct
  * dispatches stay distinct.
  *
- * (Codex #202 P2 — KNOWN, deferred to #198 PR-B.) There is an inherent scope mismatch
- * with the commit-path wakeup dedup (`${targetAgentId}:${threadId}:queued`, no
- * discriminator). Two key-only choices each have an edge and NEITHER fully aligns:
- *   - Discriminated key (this one): a 2nd same-turn dispatch to the same target commits
- *     a distinct action whose wakeup is coalesced while the FIRST is still queued — but
- *     the target reads the full thread on wake, so no context is lost (benign).
- *   - Target-only key: dedups a genuinely-NEW dispatch AFTER the first wakeup is claimed/
- *     finished — the target has already run and won't re-wake (worse).
- * We keep the discriminated key (the benign edge). The correct fix — aligning the
- * wakeup dedup scope to the action semantics — touches the shared agent_wakeup_requests
- * dedup + its unique constraint, which is the deferred #198 PR-B (thread-scoped
- * commit/dedup) work, out of scope for this minimal PR-A.
+ * (Codex #202 P2 — RESOLVED by PR-B2.) The commit-path wakeup dedup scope mismatch
+ * is now fixed: the wakeup dedupKey is discriminated on the STABLE committing
+ * `sourceActionId` via `buildConveneWakeupDedupKey` (below), so two genuinely-distinct
+ * convene actions to the same target both enqueue a wakeup while a same-action claim
+ * race still collapses to one. See that helper's docblock for the rationale (the
+ * action id — not free-text reason — is the byte-stable, idempotent discriminator).
  */
 export function buildConveneAgentIdempotencyKey(input: {
   threadId: string;
@@ -87,6 +81,15 @@ export function buildConveneAgentIdempotencyKey(input: {
     input.turnAnchor ?? "noanchor",
     sha256(JSON.stringify([input.targetAgentId, input.reason ?? "agent_dispatch"])),
   ].join(":");
+}
+
+/** Wakeup dedup key for a convene_agent action. Discriminated by the STABLE sourceActionId
+ *  (the action's id) — NOT free-text reason — so distinct convene actions both enqueue while a
+ *  same-action commit race collapses to one. Keep the `:queued` suffix so the partial unique
+ *  index agent_wakeup_requests_dedup_key_queued_uq fires unchanged. */
+export function buildConveneWakeupDedupKey(input: { targetAgentId: string; threadId: string; sourceActionId: string }): string {
+  const discriminator = sha256(JSON.stringify([input.targetAgentId, input.sourceActionId])).slice(0, 16);
+  return `${input.targetAgentId}:${input.threadId}:${discriminator}:queued`;
 }
 
 /**
