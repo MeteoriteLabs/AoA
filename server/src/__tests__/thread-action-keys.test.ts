@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildPostReplyIdempotencyKey,
   buildArtifactCandidateIdempotencyKey,
+  buildConveneAgentIdempotencyKey,
+  buildScopeDraftIdempotencyKey,
+  buildAddScopeItemIdempotencyKey,
+  buildAdvancePhaseIdempotencyKey,
 } from "../services/internal-agent/tools/thread-action-keys.js";
 
 describe("thread action idempotency keys", () => {
@@ -59,22 +61,30 @@ describe("thread action idempotency keys", () => {
   });
 });
 
-describe("#198 boundary — the four deferred action types still embed runId in their key", () => {
-  const TOOLS_DIR = join(__dirname, "../services/internal-agent/tools");
-  const DEFERRED: Array<{ file: string; discriminator: string }> = [
-    { file: "agent-dispatch.ts", discriminator: "convene_agent" },
-    { file: "propose-crew-work.ts", discriminator: "create_scope_draft" },
-    { file: "advance-phase-tool.ts", discriminator: "advance_phase" },
-    { file: "memory-propose.ts", discriminator: "add_scope_item" },
-  ];
-
-  for (const { file, discriminator } of DEFERRED) {
-    it(`${file} (${discriminator}) keeps \${ctx.runId} in its idempotencyKey (locks #197/#198 boundary)`, () => {
-      const src = readFileSync(join(TOOLS_DIR, file), "utf8");
-      // The stable-key change is scoped to post_reply + create_artifact_candidate ONLY.
-      // If a future edit makes one of these run-independent, it must be a deliberate
-      // #198 change — this guard makes that visible instead of silent.
-      expect(src).toMatch(/\$\{ctx\.runId\}/);
-    });
-  }
+describe("deferred-type idempotency keys (#198 PR-A)", () => {
+  it("convene_agent key is run-independent, turn-anchored, target/reason-sensitive", () => {
+    const base = { threadId: "t1", agentId: "a1", targetAgentId: "tg1", reason: "review", turnAnchor: "5" };
+    expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey(base));
+    expect(buildConveneAgentIdempotencyKey(base)).not.toMatch(/run/);
+    expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, targetAgentId: "tg2" }));
+    expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, turnAnchor: "6" }));
+  });
+  it("create_scope_draft key hashes summary + tasks (no raw interpolation), turn-anchored", () => {
+    const base = { threadId: "t1", agentId: "a1", summary: "Scope it", proposedTasks: [{ title: "X" }], turnAnchor: "5" };
+    expect(buildScopeDraftIdempotencyKey(base)).toBe(buildScopeDraftIdempotencyKey(base));
+    expect(buildScopeDraftIdempotencyKey(base)).not.toBe(buildScopeDraftIdempotencyKey({ ...base, summary: "Other" }));
+    expect(buildScopeDraftIdempotencyKey(base)).not.toBe(buildScopeDraftIdempotencyKey({ ...base, turnAnchor: "6" }));
+  });
+  it("add_scope_item key hashes title/content/layer/category, turn-anchored", () => {
+    const base = { threadId: "t1", agentId: "a1", title: "Decision", content: "c", layer: "active_context", category: "decision", turnAnchor: "5" };
+    expect(buildAddScopeItemIdempotencyKey(base)).toBe(buildAddScopeItemIdempotencyKey(base));
+    expect(buildAddScopeItemIdempotencyKey(base)).not.toBe(buildAddScopeItemIdempotencyKey({ ...base, content: "d" }));
+    expect(buildAddScopeItemIdempotencyKey(base)).not.toBe(buildAddScopeItemIdempotencyKey({ ...base, turnAnchor: "6" }));
+  });
+  it("advance_phase key is run-independent + phase-keyed", () => {
+    const base = { threadId: "t1", agentId: "a1", toPhase: "assign", turnAnchor: "5" };
+    expect(buildAdvancePhaseIdempotencyKey(base)).toBe(buildAdvancePhaseIdempotencyKey(base));
+    expect(buildAdvancePhaseIdempotencyKey(base)).not.toMatch(/run/);
+    expect(buildAdvancePhaseIdempotencyKey(base)).not.toBe(buildAdvancePhaseIdempotencyKey({ ...base, toPhase: "done" }));
+  });
 });
