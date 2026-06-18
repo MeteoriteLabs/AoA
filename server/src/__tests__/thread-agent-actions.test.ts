@@ -123,50 +123,30 @@ describe("threadAgentActionService", () => {
     expect(db.__insertValues).toHaveLength(1);
   });
 
-  it("re-homes a still-committable colliding row onto the current run, adopting the current freshness (Codex #202 P1/P2)", async () => {
-    // An earlier run (run-1) proposed this action and left it uncommitted. A
-    // same-turn retry under a NEW run (run-2) hits the run-independent key. The
-    // service must transfer the row onto run-2 so run-2's commit (which filters on
-    // runId) actually flushes it instead of silently dropping the phase advance.
-    // It must ALSO adopt run-2's freshness snapshot — keeping run-1's stale snapshot
-    // would let the per-action freshness re-check wrongly mark a fresh re-proposal
-    // `suppressed_stale` (and the run-independent key would then keep colliding with
-    // that terminal row). (Codex #202 P1.)
-    const existing = {
-      ...baseAction,
-      id: "existing-action",
-      runId: "run-1",
-      status: "proposed",
-      freshness: { latestHumanSeq: 1, latestScopeVersionId: "sv-1" }, // STALE
-    };
-    const freshSnapshot = { latestHumanSeq: 1, latestScopeVersionId: "sv-2" }; // run-2 saw newer scope
-    const db = createSequenceDb({
-      selects: [[thread], [existing]],
-      inserts: [[]], // conflict suppressed
-      updates: [[{ ...existing, runId: "run-2", freshness: freshSnapshot }]], // re-home UPDATE ... RETURNING
-    });
-
-    const result = (await threadAgentActionService(db as never).proposeThreadAction({
-      companyId: "company-1",
-      threadId: "thread-1",
-      runId: "run-2",
-      agentId: "agent-1",
-      actionType: "post_reply",
-      payload: { rawContent: "Hello" },
-      idempotencyKey: "run-1:post_reply:1",
-      freshness: freshSnapshot,
-    })) as { id: string; runId: string };
-
-    expect(result.id).toBe("existing-action");
-    expect(result.runId).toBe("run-2");
-    // The re-home UPDATE set BOTH the current run AND the current freshness snapshot.
-    expect(db.__updateSets).toHaveLength(1);
-    expect(db.__updateSets[0]).toMatchObject({ runId: "run-2", freshness: freshSnapshot });
+  it("re-propose of a suppressed_stale row revives it to proposed (status flip only, no runId/freshness rewrite)", async () => {
+    // PR-B: the commit SELECT is now THREAD-scoped, so the runId re-home is gone. We
+    // keep ONE narrow case: a same-turn re-proposal (same idempotencyKey) that
+    // collides with a terminal `suppressed_stale` row must revive it to `proposed`
+    // so the thread-scoped SELECT (which only picks proposed/retryable-failed) can
+    // re-pick it — otherwise the action is stranded. Status flip ONLY: no runId
+    // forward, no freshness rewrite. The row commits against its own stored snapshot;
+    // a genuinely-stale row simply re-suppresses on the next commit tick.
+    const existing = { ...baseAction, id: "ex", runId: "run-1", status: "suppressed_stale", blockedReason: "newer_scope_version" };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[{ ...existing, status: "proposed", blockedReason: null }]] });
+    const res = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
+      actionType: "post_reply", payload: { rawContent: "x" }, idempotencyKey: existing.idempotencyKey, freshness: {},
+    })) as { id: string; status: string };
+    expect(res.status).toBe("proposed");
+    expect(db.__updateSets[0]).toMatchObject({ status: "proposed", blockedReason: null });
+    expect(db.__updateSets[0]).not.toHaveProperty("runId");   // runId NOT forwarded
+    expect(db.__updateSets[0]).not.toHaveProperty("freshness"); // freshness NOT rewritten
   });
 
-  it("does NOT re-home a committed/in-flight colliding row (status guard)", async () => {
-    // The earlier run already committed (or is mid-commit). Re-homing would risk a
-    // double-commit, so the guard leaves it alone and returns the canonical row.
+  it("returns a non-suppressed_stale colliding row unchanged (revive is narrow)", async () => {
+    // The revive fires ONLY for `suppressed_stale`. A colliding row in any other
+    // status (here: committed) is returned as-is with NO UPDATE — the thread-scoped
+    // commit already sees proposed/retryable-failed rows regardless of runId.
     const existing = { ...baseAction, id: "existing-action", runId: "run-1", status: "committed" };
     const db = createSequenceDb({
       selects: [[thread], [existing]],
@@ -187,52 +167,7 @@ describe("threadAgentActionService", () => {
 
     expect(result.id).toBe("existing-action");
     expect(result.runId).toBe("run-1"); // unchanged
-    expect(db.__updateSets).toHaveLength(0); // guard prevented the UPDATE
-  });
-
-  it("revives a suppressed_stale colliding row on a fresh same-turn re-proposal (Codex #202 P1 round 2)", async () => {
-    // An earlier run's action was marked suppressed_stale (a scope bump with no new
-    // human entry). The run-independent key makes the fresh re-proposal collide with
-    // that terminal row; without revival commit (which selects proposed/retryable-
-    // failed) would never re-pick it. Re-home must revive it to `proposed` with the
-    // current freshness so commit re-evaluates it.
-    const existing = {
-      ...baseAction,
-      id: "existing-action",
-      runId: "run-1",
-      status: "suppressed_stale",
-      blockedReason: "newer_scope_version",
-      freshness: { latestHumanSeq: 1, latestScopeVersionId: "sv-1" },
-    };
-    const fresh = { latestHumanSeq: 1, latestScopeVersionId: "sv-2" };
-    const db = createSequenceDb({
-      selects: [[thread], [existing]],
-      inserts: [[]],
-      updates: [[{ ...existing, runId: "run-2", status: "proposed", blockedReason: null, freshness: fresh }]],
-    });
-
-    const result = (await threadAgentActionService(db as never).proposeThreadAction({
-      companyId: "company-1",
-      threadId: "thread-1",
-      runId: "run-2",
-      agentId: "agent-1",
-      actionType: "post_reply",
-      payload: { rawContent: "Hello" },
-      idempotencyKey: "run-1:post_reply:1",
-      freshness: fresh,
-    })) as { id: string; runId: string; status: string };
-
-    expect(result.id).toBe("existing-action");
-    expect(result.runId).toBe("run-2");
-    expect(result.status).toBe("proposed"); // revived
-    // The UPDATE flipped status→proposed, cleared the stale reason, adopted run + freshness.
-    expect(db.__updateSets).toHaveLength(1);
-    expect(db.__updateSets[0]).toMatchObject({
-      runId: "run-2",
-      status: "proposed",
-      blockedReason: null,
-      freshness: fresh,
-    });
+    expect(db.__updateSets).toHaveLength(0); // no revive UPDATE issued
   });
 
   it("returns the freshly inserted row when there is no idempotency conflict", async () => {
