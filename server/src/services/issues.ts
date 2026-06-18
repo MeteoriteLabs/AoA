@@ -873,7 +873,11 @@ export function issueService(db: Db) {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
         contextBundle?: {
-          sourceIssueId: string;
+          sourceIssueId?: string | null;
+          sourceDiscussionId?: string | null;
+          sourceScopeVersionId?: string | null;
+          sourceScopeItemId?: string | null;
+          sourceKind?: "issue" | "discussion_scope";
           brief?: string | null;
           items?: CreateIssueContextBundleItemInput[];
         };
@@ -1037,7 +1041,11 @@ export function issueService(db: Db) {
         if (contextBundle) {
           await createIssueContextBundle(tx, {
             companyId,
-            sourceIssueId: contextBundle.sourceIssueId,
+            sourceIssueId: contextBundle.sourceIssueId ?? null,
+            sourceDiscussionId: contextBundle.sourceDiscussionId ?? null,
+            sourceScopeVersionId: contextBundle.sourceScopeVersionId ?? null,
+            sourceScopeItemId: contextBundle.sourceScopeItemId ?? null,
+            sourceKind: contextBundle.sourceKind ?? "issue",
             targetIssueId: issue.id,
             brief: contextBundle.brief ?? null,
             items: contextBundle.items ?? [],

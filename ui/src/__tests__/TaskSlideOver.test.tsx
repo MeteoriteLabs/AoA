@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
@@ -27,6 +28,9 @@ vi.mock("@mdxeditor/editor", () => ({
 // --- We test the component's API surface by mocking heavy dependencies ---
 
 const mockOnClose = vi.fn();
+// Stable toast spy so tests can assert on onError/onSuccess toasts. Hoisted so it
+// exists before the ToastContext mock factory runs.
+const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssue = {
   id: "issue-1",
   title: "Fix login bug",
@@ -45,6 +49,43 @@ const mockIssue = {
   updatedAt: new Date().toISOString(),
 };
 
+// Default useQuery implementation shared by the mock factory and beforeEach.
+// Tests that need bespoke query data override this per-test; beforeEach restores
+// it so tests stay order-independent (a leaked override must not bleed forward).
+function defaultUseQueryImpl({ queryKey }: any) {
+  const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+  // Return mock issue for the detail query
+  if (key.includes("detail")) {
+    return { data: mockIssue, isLoading: false, error: null };
+  }
+  // Return empty arrays for list-type queries
+  if (key.includes("comments") || key.includes("activity") ||
+      key.includes("runs") || key.includes("approvals") ||
+      key.includes("attachments") || key.includes("liveRuns") ||
+      key.includes("dependencies") || key.includes("list") ||
+      key.includes("agents") || key.includes("projects") ||
+      key.includes("contextBundles")) {
+    return { data: [], isLoading: false, error: null };
+  }
+  // activeRun returns null
+  if (key.includes("activeRun")) {
+    return { data: null, isLoading: false, error: null };
+  }
+  // Artifacts — return null (no linked artifact)
+  if (key.includes("artifacts")) {
+    return { data: null, isLoading: false, error: null };
+  }
+  // Detected outputs — return empty array
+  if (key.includes("detected-outputs")) {
+    return { data: [], isLoading: false, error: null };
+  }
+  // Execution workspaces — return null by default (no workspace)
+  if (key.includes("executionWorkspaces")) {
+    return { data: null, isLoading: false, error: null };
+  }
+  return { data: undefined, isLoading: false, error: null };
+}
+
 // Mock all heavy dependencies
 const mockNavigate = vi.fn();
 vi.mock("@/lib/router", async () => {
@@ -62,7 +103,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => ({ pushToast: vi.fn() }),
+  useToast: () => ({ pushToast: mockPushToast }),
 }));
 
 vi.mock("../hooks/useTeamAccess", () => ({
@@ -80,43 +121,26 @@ vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
     ...actual,
-    useQuery: vi.fn(({ queryKey }: any) => {
-      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
-      // Return mock issue for the detail query
-      if (key.includes("detail")) {
-        return { data: mockIssue, isLoading: false, error: null };
-      }
-      // Return empty arrays for list-type queries
-      if (key.includes("comments") || key.includes("activity") ||
-          key.includes("runs") || key.includes("approvals") ||
-          key.includes("attachments") || key.includes("liveRuns") ||
-          key.includes("dependencies") || key.includes("list") ||
-          key.includes("agents") || key.includes("projects")) {
-        return { data: [], isLoading: false, error: null };
-      }
-      // activeRun returns null
-      if (key.includes("activeRun")) {
-        return { data: null, isLoading: false, error: null };
-      }
-      // Artifacts — return null (no linked artifact)
-      if (key.includes("artifacts")) {
-        return { data: null, isLoading: false, error: null };
-      }
-      // Detected outputs — return empty array
-      if (key.includes("detected-outputs")) {
-        return { data: [], isLoading: false, error: null };
-      }
-      // Execution workspaces — return null by default (no workspace)
-      if (key.includes("executionWorkspaces")) {
-        return { data: null, isLoading: false, error: null };
-      }
-      return { data: undefined, isLoading: false, error: null };
-    }),
+    useQuery: vi.fn(defaultUseQueryImpl),
     useQueries: ({ queries }: any) =>
       (queries ?? []).map(() => ({ data: null, isLoading: false, error: null })),
-    useMutation: () => ({
-      mutate: vi.fn(),
-      mutateAsync: vi.fn().mockResolvedValue({}),
+    useMutation: (options: any = {}) => ({
+      // Route the mutationFn result through onSuccess/onError so tests can drive
+      // the error path (a rejecting mutationFn must invoke onError, like the real
+      // useMutation does). We still call mutationFn synchronously first so existing
+      // "API was called with …" assertions keep working.
+      mutate: vi.fn((variables: unknown) => {
+        try {
+          const result = options.mutationFn?.(variables);
+          Promise.resolve(result).then(
+            (data) => options.onSuccess?.(data, variables, undefined),
+            (error) => options.onError?.(error, variables, undefined),
+          );
+        } catch (error) {
+          options.onError?.(error, variables, undefined);
+        }
+      }),
+      mutateAsync: vi.fn((variables: unknown) => options.mutationFn?.(variables) ?? Promise.resolve({})),
       isPending: false,
       isSuccess: false,
       isError: false,
@@ -169,7 +193,15 @@ vi.mock("../hooks/useProjectOrder", () => ({
 }));
 
 vi.mock("../api/issues", () => ({
-  issuesApi: { get: vi.fn(), update: vi.fn(), addComment: vi.fn(), markRead: vi.fn(), delete: vi.fn() },
+  issuesApi: {
+    get: vi.fn(),
+    update: vi.fn(),
+    addComment: vi.fn(),
+    markRead: vi.fn(),
+    delete: vi.fn(),
+    listContextBundles: vi.fn().mockResolvedValue([]),
+    updateContextBundleItemIncluded: vi.fn().mockResolvedValue({}),
+  },
 }));
 
 vi.mock("../api/dependencies", () => ({
@@ -320,7 +352,9 @@ vi.mock("@/components/ui/popover", () => ({
   PopoverContent: ({ children }: any) => <div>{children}</div>,
 }));
 
+import { issuesApi } from "../api/issues";
 import { TaskSlideOver } from "../components/TaskSlideOver";
+import { TaskDetail } from "@/components/TaskDetail";
 
 function renderSlideOver(props: { issueId: string | null; open: boolean }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -333,11 +367,38 @@ function renderSlideOver(props: { issueId: string | null; open: boolean }) {
   );
 }
 
+function renderTaskDetail(props: {
+  issueId: string | null;
+  active?: boolean;
+  onOpenScopeHandoffItem?: ComponentProps<typeof TaskDetail>["onOpenScopeHandoffItem"];
+}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <TaskDetail
+          issueId={props.issueId}
+          active={props.active ?? true}
+          onOpenScopeHandoffItem={props.onOpenScopeHandoffItem}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 // --- Tests ---
 
 describe("TaskSlideOver", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Several tests in this block call vi.mocked(useQuery).mockImplementation(...)
+    // for bespoke query data. vi.clearAllMocks() only clears call history, NOT the
+    // implementation, so that override would leak into later tests and make them
+    // order-dependent. Explicitly restore the default impl here so every test in
+    // this block starts from the same query state regardless of run order.
+    // (resetAllMocks() can't be used: it would wipe the factory-provided default
+    // implementation too, leaving useQuery returning undefined.)
+    vi.mocked(useQuery).mockImplementation(defaultUseQueryImpl);
   });
 
   it("renders nothing when open=false", () => {
@@ -357,6 +418,380 @@ describe("TaskSlideOver", () => {
     const editors = screen.getAllByTestId("inline-editor");
     expect(editors[0]).toHaveTextContent("Fix login bug");
     expect(editors[1]).toHaveTextContent("The login page has a bug");
+  });
+
+  it("renders the task detail body without opening a Sheet when rendered directly", () => {
+    renderTaskDetail({ issueId: "issue-1" });
+    expect(screen.queryByTestId("sheet")).not.toBeInTheDocument();
+    expect(screen.getByTestId("issue-properties")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+  });
+
+  it("shows scope handoff context for discussion-created tasks", () => {
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected scope evidence.",
+              items: [
+                {
+                  id: "item-1",
+                  itemType: "discussion_entry",
+                  sourceId: "entry-1",
+                  label: "Founder request",
+                  metadata: { excerpt: "Need guided onboarding cleanup." },
+                },
+                {
+                  id: "item-2",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetail({ issueId: "issue-1" });
+
+    expect(screen.getByText("Scope handoff")).toBeInTheDocument();
+    expect(screen.getByText("Use selected scope evidence.")).toBeInTheDocument();
+    expect(screen.getByText("Founder request")).toBeInTheDocument();
+    expect(screen.getByText("https://example.com/ref")).toBeInTheDocument();
+  });
+
+  it("renders a self-contained Open button through the real TaskSlideOver shell (no parent callback) and opens the URL on click", async () => {
+    // Regression guard: TaskSlideOver renders TaskDetail WITHOUT
+    // onOpenScopeHandoffItem (the production standalone path — Tasks page,
+    // Project/Crew board, Commander viewer). Before the integration merge the
+    // slide-over opened scope-handoff items itself; the ported ScopeHandoffSection
+    // accidentally gated the Open button on the parent callback existing. This
+    // test asserts the button renders AND triggers the self-contained window.open.
+    const user = userEvent.setup();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-url",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    try {
+      // Real shell: TaskSlideOver → TaskDetail WITHOUT onOpenScopeHandoffItem.
+      renderSlideOver({ issueId: "issue-1", open: true });
+
+      const openButton = screen.getByRole("button", { name: /Open handoff item: Reference URL/i });
+      expect(openButton).toBeInTheDocument();
+
+      await user.click(openButton);
+
+      expect(openSpy).toHaveBeenCalledWith("https://example.com/ref", "_blank", "noopener,noreferrer");
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  it("shows editable scope handoff between dependencies and attachments", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceScopeVersionId: "scope-v1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-1",
+                  itemType: "asset",
+                  sourceId: "asset-1",
+                  label: "interview-notes.pdf",
+                  metadata: { contentType: "application/pdf" },
+                },
+                {
+                  id: "item-artifact",
+                  itemType: "artifact",
+                  sourceId: "artifact-1",
+                  label: "Design spec",
+                  metadata: { artifactVersionId: "version-1" },
+                },
+                {
+                  id: "item-2",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref", includeInAgentContext: false },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetail({ issueId: "issue-1", onOpenScopeHandoffItem: vi.fn() });
+
+    const dependencies = screen.getByText("Dependencies");
+    const handoff = screen.getByTestId("task-scope-handoff");
+    const attachments = screen.getByText("Attachments");
+    expect(dependencies.compareDocumentPosition(handoff) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(handoff.compareDocumentPosition(attachments) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("interview-notes.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open handoff item: interview-notes\.pdf/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open handoff item: Design spec/i })).toBeInTheDocument();
+    expect(screen.getAllByText("In context")).toHaveLength(2);
+    expect(screen.getByText("Excluded")).toBeInTheDocument();
+    expect(screen.queryByText("Included in agent context")).not.toBeInTheDocument();
+    expect(screen.queryByText("Excluded from agent context")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Exclude interview-notes\.pdf from agent context/i }));
+    expect(issuesApi.updateContextBundleItemIncluded).toHaveBeenCalledWith("issue-1", "item-1", false);
+  });
+
+  it("surfaces an error toast when the include/exclude toggle is rejected by the server", async () => {
+    const user = userEvent.setup();
+    // Server rejects the include/exclude change — the optimistic toggle must not
+    // silently stick (context-leak risk); onError shows a warn toast.
+    vi.mocked(issuesApi.updateContextBundleItemIncluded).mockRejectedValueOnce(
+      new Error("forbidden"),
+    );
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-1",
+                  itemType: "asset",
+                  sourceId: "asset-1",
+                  label: "interview-notes.pdf",
+                  metadata: { contentType: "application/pdf" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetail({ issueId: "issue-1", onOpenScopeHandoffItem: vi.fn() });
+
+    await user.click(
+      screen.getByRole("button", { name: /Exclude interview-notes\.pdf from agent context/i }),
+    );
+
+    expect(issuesApi.updateContextBundleItemIncluded).toHaveBeenCalledWith("issue-1", "item-1", false);
+    await waitFor(() => {
+      expect(mockPushToast).toHaveBeenCalledWith(
+        expect.objectContaining({ tone: "warn" }),
+      );
+    });
+  });
+
+  it("opens scope handoff items through the embedded task viewer callback", async () => {
+    const user = userEvent.setup();
+    const onOpenScopeHandoffItem = vi.fn();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-url",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetail({
+      issueId: "issue-1",
+      onOpenScopeHandoffItem,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Open handoff item: Reference URL/i }));
+
+    expect(onOpenScopeHandoffItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "item-url", itemType: "url" }),
+    );
+  });
+
+  it("opens URL scope handoff rows through the scope handoff callback", async () => {
+    const user = userEvent.setup();
+    const onOpenScopeHandoffItem = vi.fn();
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("contextBundles")) {
+        return {
+          data: [
+            {
+              id: "bundle-1",
+              companyId: "comp-1",
+              sourceIssueId: null,
+              sourceDiscussionId: "thread-1",
+              sourceKind: "discussion_scope",
+              targetIssueId: "issue-1",
+              brief: "Use selected sources for this task.",
+              items: [
+                {
+                  id: "item-url",
+                  itemType: "url",
+                  sourceId: null,
+                  label: "Reference URL",
+                  metadata: { url: "https://example.com/ref" },
+                },
+              ],
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+          key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+          key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+          key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+      if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+      if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+      return { data: undefined, isLoading: false, error: null } as any;
+    });
+
+    renderTaskDetail({ issueId: "issue-1", onOpenScopeHandoffItem });
+    await user.click(screen.getByRole("button", { name: /Open handoff item: Reference URL/i }));
+
+    expect(onOpenScopeHandoffItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "item-url",
+        itemType: "url",
+        metadata: expect.objectContaining({ url: "https://example.com/ref" }),
+      }),
+    );
   });
 
   it("renders properties section", () => {

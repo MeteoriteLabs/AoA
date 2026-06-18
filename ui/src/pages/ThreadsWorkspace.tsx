@@ -157,6 +157,19 @@ export function ThreadsWorkspace() {
     },
   });
 
+  const unarchiveThread = useMutation({
+    mutationFn: (threadId: string) =>
+      threadsApi.setStatus(selectedCompanyId!, threadId, "active"),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["threads", selectedCompanyId, "list"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["threads", selectedCompanyId, "list", "archived"],
+      });
+    },
+  });
+
   const refreshInboxAndThreads = useCallback(() => {
     void queryClient.invalidateQueries({
       queryKey: ["threads-inbox", selectedCompanyId],
@@ -300,6 +313,7 @@ export function ThreadsWorkspace() {
               onToggle={toggleBrowserCollapse}
               onOpenHome={openHomeBrowser}
               onArchiveThread={(threadId) => archiveThread.mutate(threadId)}
+              onUnarchiveThread={(threadId) => unarchiveThread.mutate(threadId)}
               search={search}
               setSearch={setSearch}
             />

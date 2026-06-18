@@ -314,13 +314,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // #4: the payload deliberately omits threadId so the thread-level
           // pause/controller skips cannot silently swallow the escalation.
           const isInboxRouting = w.source === "inbox.routing_ambiguous";
-          // Chronicler is always-on infrastructure (autonomy 0): it maintains
-          // each thread's routing card regardless of the strangler controller
-          // path or crew-pause. Like inbox-routing, its sweep wakeups must NOT
-          // be swallowed by the thread-level crewPaused / useControllerPath
-          // gates below — otherwise cards never refresh on modern
-          // (useControllerPath=true) threads and the routing redesign is inert.
-          // It STILL passes through the autonomy gate (chronicler:0 → always on).
+          // Chronicler is infrastructure-level (autonomy 0): it can maintain
+          // thread summaries without the crew autonomy dial being on, but it
+          // still honors explicit company/thread pause. It only bypasses the
+          // controller-path gate so summary maintenance is not swallowed by
+          // strangler routing on modern threads.
           const isInfraSweep = w.source === "sweep.chronicler";
           if (isInboxRouting) {
             if (companyCfg.inboundRoutingLevel === "off") {
@@ -357,20 +355,29 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // The isInboxRouting branch above returns early on 'off', so by the
           // time we reach here, inbox-routing wakeups have inboundRoutingLevel
           // != 'off' and must fall straight through to dispatch.
-          // Infra sweeps (Chronicler) bypass the thread-level pause/controller
-          // gates, so we don't need the threadRow lookup for them.
+          // Infra sweeps (Chronicler) still read the thread row so pause applies,
+          // but bypass the controller-path gate to keep summary maintenance from
+          // being swallowed by strangler routing.
           const threadIdInPayload = (w.payload as Record<string, unknown> | null)?.threadId;
-          const threadRow = !isInboxRouting && !isInfraSweep && typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
+          const threadRow = !isInboxRouting && typeof threadIdInPayload === "string" && threadIdInPayload.length > 0
             ? await db
-                .select({ crewPaused: discussions.crewPaused, useControllerPath: discussions.useControllerPath })
+                .select({
+                  crewPaused: discussions.crewPaused,
+                  useControllerPath: discussions.useControllerPath,
+                  autonomyLevel: discussions.autonomyLevel,
+                })
                 .from(discussions)
                 .where(eq(discussions.id, threadIdInPayload))
-                .then((rows: Array<{ crewPaused: boolean | null; useControllerPath: boolean | null }>) => rows[0] ?? null)
+                .then((rows: Array<{
+                  crewPaused: boolean | null;
+                  useControllerPath: boolean | null;
+                  autonomyLevel: number | null;
+                }>) => rows[0] ?? null)
             : null;
-          // Thread-level pause + controller-path gates: skipped for inbox-routing
-          // (#3/#4) AND infra sweeps (Chronicler), both of which must run on every
-          // thread regardless of the strangler controller path.
-          if (!isInboxRouting && !isInfraSweep) {
+          // Thread-level pause is skipped only for inbox-routing (#3/#4). Infra
+          // sweeps still obey pause, but controller-path checks only apply to
+          // peer-wake agent work.
+          if (!isInboxRouting) {
             const threadPaused = Boolean(threadRow?.crewPaused);
             if (isCrewPaused({ companyPaused: companyCfg.crewPaused, threadPaused })) {
               // P2 fix: distinct terminal status so the wakeup table tells you
@@ -397,7 +404,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // the sibling skip branches (skipped_paused / skipped_autonomy /
             // skipped_rate_limit / skipped_budget): write a distinct terminal
             // status + finishedAt so the wakeup table records WHY it ended.
-            if (threadRow?.useControllerPath) {
+            if (!isInfraSweep && threadRow?.useControllerPath) {
               await db
                 .update(agentWakeupRequests)
                 .set({ status: "skipped_controller_path", finishedAt: new Date() })
@@ -426,13 +433,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           const wkPayload = (w.payload ?? {}) as Record<string, unknown>;
           let effectiveAutonomy: number = companyCfg.autonomyLevel;
           if (typeof wkPayload.threadId === "string") {
-            const thread = await db
-              .select({ autonomyLevel: discussions.autonomyLevel })
-              .from(discussions)
-              .where(eq(discussions.id, wkPayload.threadId))
-              .then((rows: Array<{ autonomyLevel: number | null }>) => rows[0] ?? null);
-            if (thread) {
-              effectiveAutonomy = thread.autonomyLevel ?? companyCfg.autonomyLevel;
+            if (threadRow) {
+              effectiveAutonomy = threadRow.autonomyLevel ?? companyCfg.autonomyLevel;
             }
           }
 
@@ -696,26 +698,27 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     for (const fr of failedRunRows) {
       // Guarded on status='processing' so a concurrent transition is never
       // clobbered.
-      await db
-        .update(discussionEntries)
-        .set({
-          extractionStatus: "failed",
-          sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(reclaimErr)}::jsonb)`,
-        })
-        .where(
-          and(
-            eq(discussionEntries.id, fr.id),
-            eq(discussionEntries.extractionStatus, "processing"),
-          ),
-        )
-        .catch((updateErr: unknown) => {
-          logger
-            .child({ subagent: "aoa-dispatcher" })
-            .error(
-              { err: updateErr, entryId: fr.id },
-              "Phase-4: failed to terminalize entry with failed linked run",
-            );
-        });
+      try {
+        await db
+          .update(discussionEntries)
+          .set({
+            extractionStatus: "failed",
+            sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(reclaimErr)}::jsonb)`,
+          })
+          .where(
+            and(
+              eq(discussionEntries.id, fr.id),
+              eq(discussionEntries.extractionStatus, "processing"),
+            ),
+          );
+      } catch (updateErr: unknown) {
+        logger
+          .child({ subagent: "aoa-dispatcher" })
+          .error(
+            { err: updateErr, entryId: fr.id },
+            "Phase-4: failed to terminalize entry with failed linked run",
+          );
+      }
       publishLiveEvent({
         companyId: fr.companyId,
         type: "discussion.extraction.failed",

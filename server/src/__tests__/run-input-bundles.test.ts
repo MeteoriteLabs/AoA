@@ -96,6 +96,41 @@ describe("run input bundles", () => {
     expect(bundle.markdown).toContain("Skipped attachment missing-attachment: not_found");
   });
 
+  it("includes selected URL and discussion entry handoff rows in run input markdown", async () => {
+    const db = createSequenceDb([
+      [{ id: "bundle-1", brief: "Use scope handoff.", sourceIssueId: null, sourceDiscussionId: "thread-1" }],
+      [
+        {
+          id: "item-url",
+          itemType: "url",
+          sourceId: null,
+          label: "Reference URL",
+          metadata: { url: "https://example.com/ref" },
+        },
+        {
+          id: "item-entry",
+          itemType: "discussion_entry",
+          sourceId: "entry-1",
+          label: "Founder message",
+          metadata: { excerpt: "Build the handoff exactly like this." },
+        },
+      ],
+      [{ id: "entry-1", rawContent: "Build the handoff exactly like this." }],
+    ]);
+
+    const bundle = await buildRunInputBundle({
+      db: db as never,
+      companyId: "company-1",
+      issueId: "task-1",
+    });
+
+    expect(bundle.markdown).toContain("Reference URL");
+    expect(bundle.markdown).toContain("https://example.com/ref");
+    expect(bundle.markdown).toContain("Founder message");
+    expect(bundle.markdown).toContain("Build the handoff exactly like this.");
+    expect(bundle.skipped).toEqual([]);
+  });
+
   it("materializes same-named selected attachments without overwriting one another", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-run-inputs-"));
     tempDirsToCleanup.add(cwd);

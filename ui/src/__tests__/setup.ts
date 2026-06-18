@@ -17,6 +17,8 @@ vi.mock("@mdxeditor/editor", () => ({
   linkDialogPlugin: () => ({}),
   codeBlockPlugin: () => ({}),
   codeMirrorPlugin: () => ({}),
+  tablePlugin: () => ({}),
+  imagePlugin: () => ({}),
 }));
 
 // Stub window.matchMedia for jsdom (used by Radix UI, responsive components)

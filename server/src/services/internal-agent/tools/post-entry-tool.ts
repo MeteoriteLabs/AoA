@@ -1,5 +1,6 @@
 import type { AgentTool } from "../types.js";
 import { parseMentions, processMentions } from "../../threads.js";
+import { buildPostReplyIdempotencyKey } from "./thread-action-keys.js";
 
 export function createPostEntryTool(): AgentTool {
   return {
@@ -36,6 +37,52 @@ export function createPostEntryTool(): AgentTool {
         string,
         unknown
       >;
+
+      if (ctx.discussionRunMode === "controller_action_gate") {
+        if (!ctx.runId) {
+          return {
+            success: false,
+            data: null,
+            summary: "Cannot queue thread reply without a run id",
+            error: "MISSING_RUN_ID",
+          };
+        }
+
+        const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+        const action = await threadAgentActionService(ctx.db).proposeThreadAction({
+          companyId: ctx.companyId,
+          threadId: threadId as string,
+          runId: ctx.runId,
+          agentId: ctx.agentId ?? null,
+          actionType: "post_reply",
+          payload: {
+            rawContent: content as string,
+            parentEntryId: (parentEntryId as string) ?? null,
+            sourceInfo: (sourceInfo as Record<string, unknown>) ?? null,
+          },
+          idempotencyKey: buildPostReplyIdempotencyKey({
+            threadId: threadId as string,
+            agentId: ctx.agentId,
+            parentEntryId: (parentEntryId as string) ?? null,
+            content: content as string,
+            // Turn anchor: the latest human entry's seq at run start. Stable across a
+            // turn's retries (a newer human entry would supersede the run), distinct
+            // across turns — so an identical reply in two genuine turns is NOT deduped
+            // while a same-turn retry is. Null (agent-only thread) → content-only (#198).
+            turnAnchor:
+              ctx.threadFreshness?.latestHumanSeq != null
+                ? String(ctx.threadFreshness.latestHumanSeq)
+                : null,
+          }),
+          freshness: ctx.threadFreshness ?? {},
+        }) as { id?: string };
+
+        return {
+          success: true,
+          data: { actionId: action.id, queued: true },
+          summary: "Queued thread reply for freshness-checked commit",
+        };
+      }
 
       const entry = await ctx.services.discussions.addEntry(
         ctx.companyId,

@@ -131,6 +131,59 @@ describe("claude execute target", () => {
     }
   });
 
+  it("places variadic extra CLI options after the stdin prompt marker", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-extra-args-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    const mcpConfigPath = path.join(root, "mcp.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(mcpConfigPath, "{}", "utf8");
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        runId: "run-claude-extra-args",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Prompt for {{agent.id}}.",
+          args: ["--mcp-config", mcpConfigPath],
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "claude", installCommand: "do-not-run" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[] };
+      const promptMarkerIndex = capture.argv.findIndex((arg) => arg === "-");
+      const mcpConfigIndex = capture.argv.findIndex((arg) => arg === "--mcp-config");
+      expect(mcpConfigIndex).toBeGreaterThanOrEqual(0);
+      expect(mcpConfigIndex).toBeGreaterThan(promptMarkerIndex);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("syncs provider-sandbox instructions and DB-backed skills before execution", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-provider-instructions-"));
     const workspace = path.join(root, "workspace");

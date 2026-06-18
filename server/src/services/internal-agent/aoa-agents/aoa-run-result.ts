@@ -103,6 +103,9 @@ export function buildAoaRunResultFromAdapter(
 }
 
 export interface AoaRunResult {
+  /** Internal agent run row id, when runAoaAgent created one. */
+  runId?: string | null;
+
   /** Terminal outcome. 'failed' covers: adapter threw, adapter returned
    *  non-zero exit code, adapter returned errorMessage, or the runner's
    *  own guards (e.g. silent-failure guard from T1.5) tripped. */

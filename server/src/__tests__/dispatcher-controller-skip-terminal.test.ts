@@ -188,8 +188,8 @@ describe("runAoaDispatch — controller-path peer-wake skip is terminalized (Tas
         [{ id: "w-ctrl", agentId: "a-1", companyId: "co-1", source: "thread_mention", payload: { threadId: "th-controller", role: "scout" } }],
         // 3 resolveCompanyConfig
         [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        // 4 threadRow pause/controller lookup: NOT paused, controller-path=true → SKIP here
-        [{ crewPaused: false, useControllerPath: true }],
+        // 4 threadRow pause/controller/effective-autonomy lookup: NOT paused, controller-path=true → SKIP here
+        [{ crewPaused: false, useControllerPath: true, autonomyLevel: 2 }],
         // 5 Phase-4 reclaim-select (after Promise.all; the skip returns before any
         //   effectiveAutonomy / brake / agent-row / claim selects)
         [],
@@ -231,17 +231,15 @@ describe("runAoaDispatch — controller-path peer-wake skip is terminalized (Tas
         [{ id: "w-legacy", agentId: "a-2", companyId: "co-2", source: "thread_mention", payload: { threadId: "th-legacy", role: "scout" } }],
         // 3 resolveCompanyConfig (Drive so the autonomy gate passes)
         [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
-        // 4 threadRow lookup: NOT paused, controller-path=FALSE → no skip
-        [{ crewPaused: false, useControllerPath: false }],
-        // 5 effectiveAutonomy threadId lookup (fires: threadId present)
-        [{ autonomyLevel: 2 }],
-        // 6 D3 SPEND-brake count
+        // 4 threadRow/effectiveAutonomy lookup: NOT paused, controller-path=FALSE → no skip
+        [{ crewPaused: false, useControllerPath: false, autonomyLevel: 2 }],
+        // 5 D3 SPEND-brake count
         [],
-        // 7 A5/T1.9 run-COUNT brake count
+        // 6 A5/T1.9 run-COUNT brake count
         [],
-        // 8 agent-row model select
+        // 7 agent-row model select
         [{ runtimeConfig: {}, adapterConfig: {} }],
-        // 9 Phase-4 reclaim-select (after Promise.all)
+        // 8 Phase-4 failed-run reclaim-select (after Promise.all)
         [],
       ],
       [

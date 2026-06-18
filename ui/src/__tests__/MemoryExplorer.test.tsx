@@ -329,7 +329,7 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
       screen.getByLabelText("Collapse folders"),
     );
     expect(screen.getByTestId("memory-viewer-header")).toContainElement(
-      screen.getByLabelText("Close viewer"),
+      screen.getByLabelText("Hide preview"),
     );
   });
 

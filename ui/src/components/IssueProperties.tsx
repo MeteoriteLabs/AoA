@@ -25,6 +25,7 @@ interface IssuePropertiesProps {
   issue: Issue;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
+  hideStatus?: boolean;
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -98,7 +99,7 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -203,10 +204,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       : null;
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const selectedLabels =
+    issue.labels ??
+    (labels ?? []).filter((label) => (issue.labelIds ?? []).includes(label.id));
 
-  const labelsTrigger = (issue.labels ?? []).length > 0 ? (
+  const labelsTrigger = selectedLabels.length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
-      {(issue.labels ?? []).slice(0, 3).map((label) => (
+      {selectedLabels.slice(0, 3).map((label) => (
         <span
           key={label.id}
           className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
@@ -219,8 +223,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {label.name}
         </span>
       ))}
-      {(issue.labels ?? []).length > 3 && (
-        <span className="text-xs text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+      {selectedLabels.length > 3 && (
+        <span className="text-xs text-muted-foreground">+{selectedLabels.length - 3}</span>
       )}
     </div>
   ) : (
@@ -437,13 +441,15 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
-          <StatusIcon
-            status={issue.status}
-            onChange={(status) => onUpdate({ status })}
-            showLabel
-          />
-        </PropertyRow>
+        {!hideStatus && (
+          <PropertyRow label="Status">
+            <StatusIcon
+              status={issue.status}
+              onChange={(status) => onUpdate({ status })}
+              showLabel
+            />
+          </PropertyRow>
+        )}
 
         <PropertyRow label="Priority">
           <PriorityIcon

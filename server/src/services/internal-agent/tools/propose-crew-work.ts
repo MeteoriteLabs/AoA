@@ -151,6 +151,41 @@ export const proposeCrewWorkTool: AgentTool = {
     // and dispatcher both compute thread.autonomyLevel ?? company.autonomyLevel
     // before calling runAoaAgent, which sets it in mcpParams). Prefer this value;
     // fall back to 0 (fail-closed) when absent so the gate never silently opens.
+    if (ctx.discussionRunMode === "controller_action_gate") {
+      if (!ctx.runId) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cannot queue scope draft without a run id",
+          error: "MISSING_RUN_ID",
+        };
+      }
+
+      const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+      const action = await threadAgentActionService(ctx.db).proposeThreadAction({
+        companyId: ctx.companyId,
+        threadId,
+        runId: ctx.runId,
+        agentId: ctx.agentId ?? null,
+        actionType: "create_scope_draft",
+        payload: {
+          summary,
+          proposedTasks: proposedTasks.map((task) => ({
+            title: task.title as string,
+            ...(task.assigneeRole ? { assigneeRole: task.assigneeRole } : {}),
+          })),
+        },
+        idempotencyKey: `${ctx.runId}:create_scope_draft:${threadId}:${summary}`,
+        freshness: ctx.threadFreshness ?? {},
+      }) as { id?: string };
+
+      return {
+        success: true,
+        data: { actionId: action.id, queued: true },
+        summary: "Queued versioned scope draft for freshness-checked commit",
+      };
+    }
+
     const effectiveAutonomy: number =
       typeof ctx.effectiveAutonomy === "number" ? ctx.effectiveAutonomy : 0;
 

@@ -33,9 +33,14 @@
  * no aoaAgentTriggers read).
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussions, internalAgentConfig } from "@armyofagents/db";
+import {
+  discussionEntries,
+  discussions,
+  internalAgentConfig,
+  threadAgentActions,
+} from "@armyofagents/db";
 // `runner.ts` eagerly builds the full crew tool-registry at module load
 // (embeddings, ~40 tool modules). thread-orchestration.ts wires THIS factory as
 // its default participantRunner, and discussions.ts imports thread-orchestration
@@ -110,6 +115,7 @@ export function makeThreadParticipationRunner(
     // builder's `typeof payload.role === "string"` check skips it cleanly.
     const resolveRole = deps.resolveRole ?? resolveCrewRole;
     const role = await resolveRole(db, agentId);
+    const beforeAgentEntryCount = await countAgentThreadEntries(db, threadId, agentId);
 
     // Step 4: run the agent. wakeupId/entryId are intentionally omitted — the
     // controller participation path has no agentWakeupRequests row, and the
@@ -130,6 +136,50 @@ export function makeThreadParticipationRunner(
       ...(role ? { role } : {}),
     });
 
+    if (result.status === "succeeded") {
+      const afterAgentEntryCount = await countAgentThreadEntries(db, threadId, agentId);
+      if (afterAgentEntryCount <= beforeAgentEntryCount) {
+        // No NEW agent entry landed. In controller_action_gate mode that is NOT
+        // automatically a failure: the agent posts via a queued post_reply action
+        // that runAoaAgent commits — or suppresses as stale — in its own pass.
+        // Review fix (g): inspect the run's post_reply action(s) before deciding.
+        //   - suppressed-stale  → benign (a newer human entry arrived; the reply
+        //     was correctly discarded). Return info, do NOT throw.
+        //   - produced (other)  → the agent DID act; the entry just isn't visible
+        //     to this count (committed concurrently / non-entry outcome). Benign.
+        //   - none produced     → the agent genuinely posted nothing → throw.
+        const post = result.runId
+          ? await inspectRunPostReply(db, result.runId)
+          : { produced: false, suppressedStale: false };
+
+        if (post.produced) {
+          log.info(
+            {
+              threadId,
+              agentId,
+              role,
+              effectiveAutonomy,
+              beforeAgentEntryCount,
+              afterAgentEntryCount,
+              suppressedStale: post.suppressedStale,
+            },
+            post.suppressedStale
+              ? "participation runner: post_reply suppressed as stale — benign, no agent entry expected"
+              : "participation runner: post_reply produced but no new entry counted — treating as benign",
+          );
+          return "";
+        }
+
+        log.error(
+          { threadId, agentId, role, effectiveAutonomy, beforeAgentEntryCount, afterAgentEntryCount },
+          "participation runner: run succeeded but agent did not post to the thread",
+        );
+        throw new Error(
+          `thread participation run completed without an agent-authored post_entry for thread ${threadId}`,
+        );
+      }
+    }
+
     log.debug(
       { threadId, agentId, role, effectiveAutonomy, status: result.status },
       "participation runner: runAoaAgent returned — agent self-posted via MCP; returning empty",
@@ -139,4 +189,58 @@ export function makeThreadParticipationRunner(
     // so requestParticipation SKIPS its entry-insert (no double-post).
     return "";
   };
+}
+
+async function countAgentThreadEntries(db: Db, threadId: string, agentId: string): Promise<number> {
+  // Review fix (g): use a COUNT(*) aggregate, not a row LIMIT. The previous
+  // `.limit(1000)` + `rows.length` silently capped the count at 1000 — on a busy
+  // thread with ≥1000 agent entries the before/after comparison would read equal
+  // and the post-detection guard below would wrongly fire.
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(discussionEntries)
+    .where(
+      and(
+        eq(discussionEntries.discussionId, threadId),
+        eq(discussionEntries.authorAgentId, agentId),
+      ),
+    );
+
+  return Number(row?.count ?? 0);
+}
+
+/**
+ * Review fix (g): distinguish "the agent produced no post action at all" from
+ * "the agent's post_reply was correctly suppressed as stale". The participation
+ * runner runs in `controller_action_gate` mode, where the agent does NOT insert
+ * a discussion entry directly — it queues a `post_reply` thread-agent-action that
+ * is committed (or suppressed-stale) inside runAoaAgent's own commit pass. So an
+ * unchanged entry count is NOT proof the agent did nothing: a benign stale
+ * suppression also leaves the count unchanged.
+ *
+ * Returns:
+ *   - `produced: false` when no post_reply action exists for this run → the agent
+ *     genuinely posted nothing (legitimate guard failure → throw).
+ *   - `produced: true, suppressedStale: true` when the post_reply was suppressed
+ *     as stale (a benign, expected outcome → info return, no throw).
+ *   - `produced: true, suppressedStale: false` for any other produced action.
+ */
+async function inspectRunPostReply(
+  db: Db,
+  runId: string,
+): Promise<{ produced: boolean; suppressedStale: boolean }> {
+  const rows = await db
+    .select({ status: threadAgentActions.status })
+    .from(threadAgentActions)
+    .where(
+      and(
+        eq(threadAgentActions.runId, runId),
+        eq(threadAgentActions.actionType, "post_reply"),
+      ),
+    );
+  if (rows.length === 0) {
+    return { produced: false, suppressedStale: false };
+  }
+  const suppressedStale = rows.every((r) => r.status === "suppressed_stale");
+  return { produced: true, suppressedStale };
 }

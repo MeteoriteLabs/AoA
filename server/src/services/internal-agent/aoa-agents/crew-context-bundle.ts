@@ -30,10 +30,14 @@ import {
   discussions,
   agents,
   issues,
+  projects,
   artifacts,
   artifactVersions,
+  issueContextBundleItems,
+  issueContextBundles,
 } from "@armyofagents/db";
 import { memoryService } from "../../memory.js";
+import { isContextBundleItemIncluded } from "../../issue-context-bundles.js";
 import { logger } from "../../../middleware/logger.js";
 
 const log = logger.child({ svc: "crew-context-bundle" });
@@ -80,6 +84,34 @@ interface ThreadContext {
   summaryLines: string[];
   /** Best query text for memory search (latest entry text or the summary). */
   queryText: string;
+  memoryFilters: MemoryScopeFilters;
+}
+
+interface MemoryScopeFilters {
+  departmentId?: string;
+  projectId?: string;
+  goalId?: string;
+}
+
+function discussionScopeFilters(input: {
+  scopeType?: string | null;
+  scopeId?: string | null;
+  goalId?: string | null;
+}): MemoryScopeFilters {
+  const filters: MemoryScopeFilters = {};
+  if (input.scopeType === "department" && input.scopeId) {
+    filters.departmentId = input.scopeId;
+  }
+  if (input.scopeType === "project" && input.scopeId) {
+    filters.projectId = input.scopeId;
+  }
+  if (input.scopeType === "goal" && input.scopeId) {
+    filters.goalId = input.scopeId;
+  }
+  if (input.goalId && !filters.goalId) {
+    filters.goalId = input.goalId;
+  }
+  return filters;
 }
 
 /**
@@ -120,10 +152,19 @@ async function loadThreadContext(
     .select({
       summaryText: discussions.summaryText,
       routingTerms: discussions.routingTerms,
+      scopeType: discussions.scopeType,
+      scopeId: discussions.scopeId,
+      goalId: discussions.goalId,
     })
     .from(discussions)
     .where(eq(discussions.id, threadId))
-    .limit(1)) as Array<{ summaryText: string | null; routingTerms: unknown }>;
+    .limit(1)) as Array<{
+    summaryText: string | null;
+    routingTerms: unknown;
+    scopeType: string | null;
+    scopeId: string | null;
+    goalId: string | null;
+  }>;
   const summaryRow = Array.isArray(summaryRows) ? summaryRows[0] : null;
 
   const summaryLines: string[] = [];
@@ -177,40 +218,107 @@ async function loadThreadContext(
     QUERY_TEXT_CAP,
   );
 
-  return { entryLines, summaryLines, queryText };
+  return { entryLines, summaryLines, queryText, memoryFilters: discussionScopeFilters(summaryRow ?? {}) };
 }
 
 interface TaskContext {
   lines: string[];
   queryText: string;
+  memoryFilters: MemoryScopeFilters;
+}
+
+function metadataString(metadata: unknown, key: string): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function loadScopeHandoffLines(db: Db, companyId: string, issueId: string): Promise<string[]> {
+  const bundles = (await db
+    .select({
+      id: issueContextBundles.id,
+      sourceKind: issueContextBundles.sourceKind,
+      brief: issueContextBundles.brief,
+    })
+    .from(issueContextBundles)
+    .where(and(
+      eq(issueContextBundles.companyId, companyId),
+      eq(issueContextBundles.targetIssueId, issueId),
+    ))) as Array<{ id: string; sourceKind: string | null; brief: string | null }>;
+
+  const scopeBundles = bundles.filter((bundle) => bundle.sourceKind === "discussion_scope");
+  if (scopeBundles.length === 0) return [];
+
+  const lines = ["Scope handoff:"];
+  for (const bundle of scopeBundles) {
+    if (bundle.brief && bundle.brief.trim().length > 0) {
+      lines.push(bundle.brief.trim());
+    }
+
+    const items = (await db
+      .select({
+        itemType: issueContextBundleItems.itemType,
+        label: issueContextBundleItems.label,
+        metadata: issueContextBundleItems.metadata,
+      })
+      .from(issueContextBundleItems)
+      .where(and(
+        eq(issueContextBundleItems.companyId, companyId),
+        eq(issueContextBundleItems.bundleId, bundle.id),
+      ))) as Array<{ itemType: string; label: string | null; metadata: Record<string, unknown> | null }>;
+
+    for (const item of items) {
+      if (!isContextBundleItemIncluded(item)) continue;
+      const label = item.label?.trim() || item.itemType;
+      const bits = [
+        metadataString(item.metadata, "artifactType"),
+        metadataString(item.metadata, "contentType"),
+        metadataString(item.metadata, "url"),
+      ].filter((value): value is string => Boolean(value));
+      const suffix = bits.length > 0 ? ` (${bits.join(" · ")})` : "";
+      const excerpt = metadataString(item.metadata, "excerpt") ?? metadataString(item.metadata, "body");
+      lines.push(`- ${label}${suffix}${excerpt ? `: ${truncate(excerpt, 300)}` : ""}`);
+    }
+  }
+
+  return lines.length > 1 ? lines : [];
 }
 
 /**
  * TASK branch — fetch the issue (title/description/status/priority) and, when
  * it points at an artifact, the artifact's current-version body (truncated).
  */
-async function loadTaskContext(db: Db, issueId: string): Promise<TaskContext> {
+async function loadTaskContext(db: Db, companyId: string, issueId: string): Promise<TaskContext> {
   const issueRows = (await db
     .select({
       id: issues.id,
+      companyId: issues.companyId,
       title: issues.title,
       description: issues.description,
       status: issues.status,
       priority: issues.priority,
       artifactId: issues.artifactId,
+      projectId: issues.projectId,
+      projectType: projects.type,
+      goalId: issues.goalId,
     })
     .from(issues)
+    .leftJoin(projects, eq(projects.id, issues.projectId))
     .where(eq(issues.id, issueId))
     .limit(1)) as Array<{
     id: string;
+    companyId: string;
     title: string | null;
     description: string | null;
     status: string | null;
     priority: string | null;
     artifactId: string | null;
+    projectId: string | null;
+    projectType: string | null;
+    goalId: string | null;
   }>;
   const issue = Array.isArray(issueRows) ? issueRows[0] : null;
-  if (!issue) return { lines: [], queryText: "" };
+  if (!issue) return { lines: [], queryText: "", memoryFilters: {} };
 
   const lines: string[] = [];
   if (issue.title) lines.push(`Task: ${issue.title}`);
@@ -240,11 +348,29 @@ async function loadTaskContext(db: Db, issueId: string): Promise<TaskContext> {
     }
   }
 
+  const handoffLines = await loadScopeHandoffLines(db, companyId, issue.id);
+  if (handoffLines.length > 0) {
+    lines.push(handoffLines.join("\n"));
+  }
+
   const queryText = truncate(
     [issue.title ?? "", issue.description ?? ""].join(" ").trim(),
     QUERY_TEXT_CAP,
   );
-  return { lines, queryText };
+  const projectScope =
+    issue.projectId && issue.projectType === "department"
+      ? { departmentId: issue.projectId }
+      : issue.projectId
+        ? { projectId: issue.projectId }
+        : {};
+  return {
+    lines,
+    queryText,
+    memoryFilters: {
+      ...projectScope,
+      ...(issue.goalId ? { goalId: issue.goalId } : {}),
+    },
+  };
 }
 
 /**
@@ -256,12 +382,14 @@ async function loadMemoryLines(
   db: Db,
   companyId: string,
   queryText: string,
+  filters: MemoryScopeFilters = {},
 ): Promise<string[]> {
   const q = queryText.trim();
   if (q.length === 0) return [];
   try {
     const items = await memoryService(db).searchMultiPath(companyId, q, {
       limit: MEMORY_LIMIT,
+      ...filters,
     });
     if (!Array.isArray(items) || items.length === 0) return [];
     return items.map((m) => {
@@ -307,14 +435,17 @@ export async function buildCrewContextBundle(
     thread = await loadThreadContext(db, args.threadId, DEFAULT_ENTRY_LIMIT);
   }
   if (args.issueId) {
-    task = await loadTaskContext(db, args.issueId);
+    task = await loadTaskContext(db, args.companyId, args.issueId);
   }
 
   // Memory query: thread takes precedence (the live conversation), else task.
   const queryText = (thread?.queryText && thread.queryText.length > 0)
     ? thread.queryText
     : (task?.queryText ?? "");
-  const memoryLines = await loadMemoryLines(db, args.companyId, queryText);
+  const memoryFilters = thread?.queryText && thread.queryText.length > 0
+    ? thread.memoryFilters
+    : (task?.memoryFilters ?? {});
+  const memoryLines = await loadMemoryLines(db, args.companyId, queryText, memoryFilters);
 
   // ── Assemble with the token budget ──────────────────────────────────────
   // Build the fixed (non-droppable) sections first: summary + task. Then add

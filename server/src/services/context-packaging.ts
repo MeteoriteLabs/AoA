@@ -11,6 +11,48 @@ import {
   projects,
   taskDependencies,
 } from "@armyofagents/db";
+import { isContextBundleItemIncluded, listIssueContextBundlesForIssue } from "./issue-context-bundles.js";
+
+type ScopeHandoffBundleForRender = {
+  brief?: string | null;
+  sourceKind?: string | null;
+  items?: Array<{
+    itemType: string;
+    label?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }>;
+};
+
+function metadataText(metadata: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function renderScopeHandoffSection(bundles: ScopeHandoffBundleForRender[]): string | null {
+  const scopeBundles = bundles.filter((bundle) => bundle.sourceKind === "discussion_scope");
+  if (scopeBundles.length === 0) return null;
+
+  const lines: string[] = ["## Scope Handoff"];
+  for (const bundle of scopeBundles) {
+    if (bundle.brief && bundle.brief.trim().length > 0) {
+      lines.push(bundle.brief.trim());
+    }
+    for (const item of bundle.items ?? []) {
+      if (!isContextBundleItemIncluded(item)) continue;
+      const label = item.label?.trim() || item.itemType;
+      const bits = [
+        metadataText(item.metadata, "artifactType"),
+        metadataText(item.metadata, "contentType"),
+        metadataText(item.metadata, "url"),
+      ].filter((value): value is string => Boolean(value));
+      const suffix = bits.length > 0 ? ` (${bits.join(" · ")})` : "";
+      const excerpt = metadataText(item.metadata, "excerpt") ?? metadataText(item.metadata, "body");
+      lines.push(`- **${label}**${suffix}${excerpt ? `: ${excerpt}` : ""}`);
+    }
+  }
+
+  return lines.length > 1 ? lines.join("\n") : null;
+}
 
 /**
  * Assembles a full context package for a task, formatted as markdown
@@ -41,7 +83,7 @@ export function contextPackagingService(db: Db) {
 
     // Resolve contextMode and injectCompanyContext from assigned agent (if any)
     let contextMode = "standard";
-    let injectCompanyContext = false;
+    let injectCompanyContext = true;
     if (issue.assigneeAgentId) {
       const assignedAgent = await db
         .select({ runtimeConfig: agents.runtimeConfig })
@@ -51,7 +93,7 @@ export function contextPackagingService(db: Db) {
       if (assignedAgent) {
         const rc = (assignedAgent.runtimeConfig as Record<string, unknown>) ?? {};
         contextMode = (rc.contextMode as string) ?? "standard";
-        injectCompanyContext = rc.injectCompanyContext === true;
+        injectCompanyContext = rc.injectCompanyContext !== false;
       }
     }
 
@@ -230,6 +272,12 @@ export function contextPackagingService(db: Db) {
         if (dep.description) depParts.push(dep.description);
       }
       sections.push(depParts.join("\n"));
+    }
+
+    const contextBundles = await listIssueContextBundlesForIssue(db, companyId, issueId);
+    const scopeHandoffSection = renderScopeHandoffSection(contextBundles);
+    if (scopeHandoffSection) {
+      sections.push(scopeHandoffSection);
     }
 
     // 5. Task Details

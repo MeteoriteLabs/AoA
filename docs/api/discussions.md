@@ -209,6 +209,107 @@ Returns:
 }
 ```
 
+## Scope Versions
+
+Scope versions turn a messy discussion into a reviewed handoff. A discussion can
+have multiple scope versions over time; after an accepted version, a later
+re-scope uses only the newer source range.
+
+Read routes remain company-scoped:
+
+```
+GET /api/companies/{companyId}/discussions/{discussionId}/scope-versions
+GET /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}
+```
+
+Manual mutation routes are board/human actions. Agent API-key actors must use
+the internal action-gated thread-agent path rather than these REST endpoints:
+
+```
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/draft
+PATCH /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/items/review
+PATCH /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/items/{itemId}
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/items/{itemId}/create
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/apply
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/accept
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/reject
+POST  /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/complete
+PUT   /api/companies/{companyId}/discussions/{discussionId}/scope/plan
+```
+
+### Create Draft
+
+```
+POST /api/companies/{companyId}/discussions/{discussionId}/scope-versions/draft
+```
+
+Body:
+
+```json
+{
+  "mode": "generate",
+  "summary": "Optional override",
+  "assumptions": [],
+  "decisions": [],
+  "openQuestions": []
+}
+```
+
+Returns `201` when a new draft is created, `200` when an existing draft is
+returned, and `409` when the thread cannot be scoped directly.
+
+### Review Or Edit Scope Items
+
+```
+POST /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/items/review
+PATCH /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/items/{itemId}
+```
+
+Review body:
+
+```json
+{
+  "items": [
+    { "itemId": "{itemId}", "status": "accepted" }
+  ]
+}
+```
+
+Item statuses are `draft`, `accepted`, or `rejected`.
+
+### Create One Output
+
+```
+POST /api/companies/{companyId}/discussions/{discussionId}/scope-versions/{scopeVersionId}/items/{itemId}/create
+```
+
+For task cards, this creates a task with `sourceDiscussionId`,
+`scopeVersionId`, and a scope handoff context bundle. For memory cards, the
+optional `memoryStatus` controls whether the memory is saved as pending or
+approved:
+
+```json
+{
+  "memoryStatus": "pending"
+}
+```
+
+`memoryStatus: "approved"` is allowed only when the current board user passes
+the normal memory approval policy for the candidate layer and department.
+Unauthorized approved saves return a permission error; callers should offer
+`pending` as the safe fallback.
+
+### Apply, Accept, Reject, Complete
+
+`apply` creates outputs for accepted cards without accepting the whole version.
+`accept` accepts selected cards and applies them. `reject` rejects the draft.
+`complete` marks an already-accepted/applied version complete.
+
+All successful scope mutations write activity log entries with the discussion,
+scope version, item IDs, created task IDs, memory IDs, and artifact link IDs
+where relevant.
+
 ## Extraction Item Types
 
 Extracted items have a `type` field:

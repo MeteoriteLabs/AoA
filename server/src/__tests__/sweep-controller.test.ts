@@ -60,6 +60,16 @@ vi.mock(
   }),
 );
 
+// ── stale-action reaper mock — assert the sweep invokes it ────────────────────
+// vi.hoisted so the spy exists before vi.mock's hoisted factory references it.
+const { mockReapStaleThreadAgentActions } = vi.hoisted(() => ({
+  mockReapStaleThreadAgentActions: vi.fn().mockResolvedValue({ reaped: 0 }),
+}));
+
+vi.mock("../services/thread-agent-actions.js", () => ({
+  reapStaleThreadAgentActions: mockReapStaleThreadAgentActions,
+}));
+
 // ── Import AFTER mocks ────────────────────────────────────────────────────────
 import { runControllerSweep } from "../services/internal-agent/aoa-agents/sweep-controller.js";
 
@@ -89,6 +99,38 @@ describe("runControllerSweep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRunController.mockResolvedValue({ ran: false, reason: "no-pending" });
+    mockReapStaleThreadAgentActions.mockResolvedValue({ reaped: 0 });
+  });
+
+  it("4: reaps stale committing rows once at the start of the sweep", async () => {
+    const db = makeDb(["thread-A"]);
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    expect(mockReapStaleThreadAgentActions).toHaveBeenCalledTimes(1);
+    expect(mockReapStaleThreadAgentActions).toHaveBeenCalledWith(db);
+  });
+
+  it("5: a reaper failure does not abort the sweep — pending threads still drain", async () => {
+    const db = makeDb(["thread-A"]);
+    mockReapStaleThreadAgentActions.mockRejectedValueOnce(new Error("reaper db error"));
+
+    await expect(
+      runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner }),
+    ).resolves.toBeUndefined();
+
+    // The reaper threw but the sweep continued and still drove the pending thread.
+    expect(mockRunController).toHaveBeenCalledTimes(1);
+    expect(mockRunController).toHaveBeenCalledWith("thread-A", { adjutantRunner: fakeAdjutantRunner });
+  });
+
+  it("6: reaps even when there are no pending threads", async () => {
+    const db = makeDb([]);
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    expect(mockReapStaleThreadAgentActions).toHaveBeenCalledTimes(1);
+    expect(mockRunController).not.toHaveBeenCalled();
   });
 
   it("1: calls runController once per pending thread with the injected adjutantRunner", async () => {

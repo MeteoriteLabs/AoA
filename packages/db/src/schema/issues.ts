@@ -23,6 +23,7 @@ import { environments } from "./environments.js";
 // table-build time (after both modules have finished loading), matching the
 // existing executionWorkspaces ↔ issues circular pattern.
 import { discussions } from "./discussions.js";
+import { threadScopeVersions } from "./thread_scope_versions.js";
 
 export const issues = pgTable(
   "issues",
@@ -80,6 +81,10 @@ export const issues = pgTable(
       (): AnyPgColumn => discussions.id,
       { onDelete: "set null" },
     ),
+    scopeVersionId: uuid("scope_version_id").references(
+      (): AnyPgColumn => threadScopeVersions.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -103,6 +108,7 @@ export const issues = pgTable(
       .where(sql`origin_kind IS NOT NULL AND status NOT IN ('done', 'cancelled')`),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     sourceDiscussionIdx: index("issues_source_discussion_idx").on(table.sourceDiscussionId),
+    scopeVersionIdx: index("issues_scope_version_idx").on(table.scopeVersionId),
     companyOriginKindIdx: index("issues_company_origin_kind_idx").on(table.companyId, table.originKind),
   }),
 );

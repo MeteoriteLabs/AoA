@@ -57,6 +57,10 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
 const GENERIC_DIRECTIVE =
   "use the tools in your allowlist appropriate to this trigger, then return";
 
+const TOOL_VISIBILITY_DIRECTIVE =
+  "When a directive names an AoA tool like `foo`, call the MCP tool named `mcp__aoa__foo`. " +
+  "Final text/stdout is internal and is not shown in the thread; any visible reply, update, artifact, task, or memory proposal must be made through the appropriate MCP tool.";
+
 // Spec B Task 5 — task-execution directive. Fires when the dispatcher wakes a
 // crew agent with a `payload.issueId` (a TASK assignment, not a thread). Steers
 // the agent to the task tool surface and explicitly away from thread/post_entry
@@ -116,6 +120,10 @@ export interface BuildTriggerPromptArgs {
  */
 export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
   const { instruction, payload, agentName, agentRoleKey, contextBundle } = args;
+  const directiveRoleKey =
+    typeof payload.role === "string" && payload.role.trim().length > 0
+      ? payload.role.trim()
+      : agentRoleKey;
 
   // Trigger context block. Filter out empty fields so the LLM doesn't see
   // "Inviting entry: undefined" lines (which would confuse it).
@@ -159,7 +167,7 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     directive = TASK_EXECUTION_DIRECTIVE;
     ctxLines.push(`Task: ${payload.issueId}`);
   } else {
-    directive = ROLE_ACTION_DIRECTIVE[agentRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;
+    directive = ROLE_ACTION_DIRECTIVE[directiveRoleKey.toLowerCase()] ?? GENERIC_DIRECTIVE;
   }
 
   // Phase 4 (Task 4.3): the crew context bundle. Rendered as a `## Context`
@@ -181,6 +189,8 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     "## This wakeup",
     ctxLines.join("\n"),
     "",
-    `You are ${agentName}. ${directive}. Return when done. If you cannot act for any reason (missing data, ambiguity), use whatever tool in your allowlist surfaces feedback to the human (a thread post, a notification, or your own report) rather than returning silently. Silence is acceptable when there is genuinely nothing to do.`,
+    TOOL_VISIBILITY_DIRECTIVE,
+    "",
+    `You are ${agentName}. ${directive}. Return when done. If you cannot act for any reason (missing data, ambiguity), use whatever tool in your allowlist surfaces feedback to the human rather than returning silently. Silence is acceptable when there is genuinely nothing to do.`,
   ].join("\n");
 }

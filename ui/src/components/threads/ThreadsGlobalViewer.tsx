@@ -16,6 +16,10 @@ import {
 const HOME_VIEWER_ICON_FOR_KIND: Record<ThreadViewerTabKind, typeof LayoutGrid> = {
   open: LayoutGrid,
   scope_item: FileText,
+  task: FileText,
+  task_output: FileText,
+  memory: FileText,
+  artifact_ref: FileText,
   asset: FileText,
   artifact: FileText,
   browser: Globe,

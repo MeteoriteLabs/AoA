@@ -2,7 +2,7 @@ import { Link } from "@/lib/router";
 import { THREAD_PHASES, type ThreadPhase } from "@armyofagents/shared";
 import type { ThreadListItem } from "../../api/threads";
 import { cn } from "../../lib/utils";
-import { Plus, Archive } from "lucide-react";
+import { Plus, Archive, ArchiveRestore } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UnlistedLane } from "./UnlistedLane";
 import { groupThreadsForBoard } from "./boardModel";
@@ -41,6 +41,7 @@ interface ThreadBoardProps {
   inboxItems?: InboxCardItem[];
   onNewThread: () => void;
   onInboxUpdate?: () => void;
+  onUnarchiveThread?: (threadId: string) => void;
 }
 
 export interface InboxCardItem {
@@ -55,7 +56,14 @@ export interface InboxCardItem {
   routingStatus?: string | null;
 }
 
-export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], onNewThread, onInboxUpdate }: ThreadBoardProps) {
+export function ThreadBoard({
+  threads,
+  archivedThreads = [],
+  inboxItems = [],
+  onNewThread,
+  onInboxUpdate,
+  onUnarchiveThread,
+}: ThreadBoardProps) {
   const byPhase = groupThreadsForBoard(threads);
   const threadsById = new Map<string, string>();
   for (const t of threads) threadsById.set(t.id, t.title);
@@ -85,7 +93,7 @@ export function ThreadBoard({ threads, archivedThreads = [], inboxItems = [], on
         />
       ))}
 
-      <ArchivedColumn threads={archivedThreads} />
+      <ArchivedColumn threads={archivedThreads} onUnarchiveThread={onUnarchiveThread} />
     </div>
   );
 }
@@ -141,7 +149,13 @@ function PhaseColumn({ phase, label, headerClass, threads, onNewThread }: PhaseC
   );
 }
 
-function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
+function ArchivedColumn({
+  threads,
+  onUnarchiveThread,
+}: {
+  threads: ThreadListItem[];
+  onUnarchiveThread?: (threadId: string) => void;
+}) {
   return (
     <div
       role="region"
@@ -166,7 +180,13 @@ function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
           </p>
         ) : (
           threads.map((thread) => (
-            <BoardCard key={thread.id} thread={thread} phase={"done" as ThreadPhase} archived />
+            <BoardCard
+              key={thread.id}
+              thread={thread}
+              phase={"done" as ThreadPhase}
+              archived
+              onUnarchiveThread={onUnarchiveThread}
+            />
           ))
         )}
       </div>
@@ -174,7 +194,17 @@ function ArchivedColumn({ threads }: { threads: ThreadListItem[] }) {
   );
 }
 
-function BoardCard({ thread, phase: _phase, archived = false }: { thread: ThreadListItem; phase: ThreadPhase; archived?: boolean }) {
+function BoardCard({
+  thread,
+  phase: _phase,
+  archived = false,
+  onUnarchiveThread,
+}: {
+  thread: ThreadListItem;
+  phase: ThreadPhase;
+  archived?: boolean;
+  onUnarchiveThread?: (threadId: string) => void;
+}) {
   const source = getInputSourceMeta(thread.lastEntryInputType);
   const scope = getScopeMeta(thread);
   const visibility = getVisibilityMeta(thread.visibility);
@@ -186,41 +216,55 @@ function BoardCard({ thread, phase: _phase, archived = false }: { thread: Thread
     : [{ name: thread.ownerUserId ?? "Unclaimed" }];
 
   return (
-    <Link
-      to={`/discussions/${thread.id}`}
+    <div
       className={cn(
-        "relative block rounded-md border p-2.5 pr-9 text-left transition-colors",
+        "relative rounded-md border transition-colors",
         archived
-          ? "border-border bg-muted/30 opacity-60 hover:bg-muted/50"
+          ? "border-border bg-muted/30 opacity-70 hover:bg-muted/50"
           : "border-border bg-background hover:bg-accent/40",
       )}
     >
-      {attention && <AttentionCount count={attention.count} />}
-      {thread.subtype === "live" && !attention && <LiveMarker />}
+      <Link
+        to={`/discussions/${thread.id}`}
+        className="block p-2.5 pr-9 text-left"
+      >
+        {attention && <AttentionCount count={attention.count} />}
+        {thread.subtype === "live" && !attention && <LiveMarker />}
 
-      <p className="line-clamp-2 text-xs font-medium leading-snug">{thread.title}</p>
-      {thread.summaryNext && (
-        <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-          {thread.summaryNext}
-        </p>
+        <p className="line-clamp-2 text-xs font-medium leading-snug">{thread.title}</p>
+        {thread.summaryNext && (
+          <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+            {thread.summaryNext}
+          </p>
+        )}
+
+        <div className="mt-2 flex items-center gap-1">
+          <IconChip Icon={source.Icon} label={`Source: ${source.label}`} tone="source" />
+          {scope && <IconChip Icon={scope.Icon} label={scope.title} tone="scope" />}
+          <IconChip Icon={visibility.Icon} label={visibility.label} tone="visibility" />
+          {branch && <IconChip Icon={branch.Icon} label={branch.title} tone="branch" />}
+        </div>
+
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <ParticipantStack
+            participants={participantFallback}
+            total={thread.participantCount ?? participants.length}
+          />
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            {relativeTime(thread.lastEntryAt)}
+          </span>
+        </div>
+      </Link>
+      {archived && onUnarchiveThread && (
+        <button
+          type="button"
+          aria-label={`Unarchive ${thread.title}`}
+          onClick={() => onUnarchiveThread(thread.id)}
+          className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+        >
+          <ArchiveRestore className="h-3.5 w-3.5" />
+        </button>
       )}
-
-      <div className="mt-2 flex items-center gap-1">
-        <IconChip Icon={source.Icon} label={`Source: ${source.label}`} tone="source" />
-        {scope && <IconChip Icon={scope.Icon} label={scope.title} tone="scope" />}
-        <IconChip Icon={visibility.Icon} label={visibility.label} tone="visibility" />
-        {branch && <IconChip Icon={branch.Icon} label={branch.title} tone="branch" />}
-      </div>
-
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <ParticipantStack
-          participants={participantFallback}
-          total={thread.participantCount ?? participants.length}
-        />
-        <span className="shrink-0 text-[10px] text-muted-foreground">
-          {relativeTime(thread.lastEntryAt)}
-        </span>
-      </div>
-    </Link>
+    </div>
   );
 }

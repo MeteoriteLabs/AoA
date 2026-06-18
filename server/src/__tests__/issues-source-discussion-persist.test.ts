@@ -18,6 +18,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
+const createIssueContextBundleSpy = vi.hoisted(() => vi.fn().mockResolvedValue({ id: "bundle-1" }));
+
 // ─── 1. Source-level contract (no mocks needed) ────────────────────────────────
 
 describe("issues.ts source contract — sourceDiscussionId is not stripped before INSERT", () => {
@@ -134,6 +136,10 @@ vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../services/issue-context-bundles.js", () => ({
+  createIssueContextBundle: createIssueContextBundleSpy,
+}));
+
 vi.mock("../errors.js", () => ({
   badRequest: (msg: string) => Object.assign(new Error(msg), { status: 400 }),
   notFound: (msg: string) => Object.assign(new Error(msg), { status: 404 }),
@@ -233,5 +239,45 @@ describe("issueService.create — sourceDiscussionId flows through to INSERT", (
     const captured = db.getCaptured();
     expect(captured).not.toBeNull();
     expect(captured?.sourceDiscussionId ?? null).toBeNull();
+  });
+
+  it("forwards discussion-origin context bundle fields when creating the task", async () => {
+    const db = makeDb();
+    const svc = issueService(db);
+
+    await svc.create(COMPANY_ID, {
+      title: "Task with accepted scope handoff",
+      status: "todo",
+      createdByUserId: USER_ID,
+      contextBundle: {
+        sourceDiscussionId: THREAD_ID,
+        sourceScopeVersionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        sourceScopeItemId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        sourceKind: "discussion_scope",
+        brief: "Use selected scope evidence.",
+        items: [
+          { type: "discussion_entry", id: "ffffffff-ffff-4fff-8fff-ffffffffffff", label: "Founder request" },
+          { type: "url", label: "Reference", metadata: { url: "https://example.com/ref" } },
+        ],
+      },
+    } as any);
+
+    expect(createIssueContextBundleSpy).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        sourceIssueId: null,
+        sourceDiscussionId: THREAD_ID,
+        sourceScopeVersionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        sourceScopeItemId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        sourceKind: "discussion_scope",
+        targetIssueId: "new-issue-id",
+        brief: "Use selected scope evidence.",
+        items: expect.arrayContaining([
+          expect.objectContaining({ type: "discussion_entry", label: "Founder request" }),
+          expect.objectContaining({ type: "url", label: "Reference" }),
+        ]),
+      }),
+    );
   });
 });

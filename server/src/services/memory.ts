@@ -67,6 +67,8 @@ export interface MultiPathSearchFilters {
   departmentId?: string;
   /** Restrict to items scoped to this project (project of type 'project'). */
   projectId?: string;
+  /** Restrict to items scoped to this goal. */
+  goalId?: string;
   /** Restrict to items in this category. */
   category?: string;
   /** Final top-K to return after RRF + trust weighting. Default 10. */
@@ -405,7 +407,7 @@ export function memoryService(db: Db) {
      * Cost: 3 parallel queries (one of which may also hit OpenAI for
      * embedding the query). p50 ~150ms.
      *
-     * Scope filters (departmentId, projectId, layer, category) apply
+     * Scope filters (departmentId, projectId, goalId, layer, category) apply
      * BEFORE search runs. Caller is responsible for downstream RBAC
      * filtering (filterMemoryForScope).
      */
@@ -425,6 +427,7 @@ export function memoryService(db: Db) {
         if (filters.category) conds.push(eq(memoryItems.category, filters.category));
         if (filters.departmentId) conds.push(eq(memoryItems.departmentId, filters.departmentId));
         if (filters.projectId) conds.push(eq(memoryItems.projectId, filters.projectId));
+        if (filters.goalId) conds.push(eq(memoryItems.goalId, filters.goalId));
         return conds;
       };
 

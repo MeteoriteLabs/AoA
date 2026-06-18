@@ -41,7 +41,7 @@
 
 import { eq, gt, and, asc, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { threadOrchestrationState, discussionEntries, discussions } from "@armyofagents/db";
+import { agents, threadOrchestrationState, discussionEntries, discussions, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
@@ -59,6 +59,7 @@ export interface OrchestratedEntry {
 export interface AdjutantRunResult {
   output: unknown;
   error?: string;
+  runId?: string | null;
 }
 
 /** Input to the adjutantRunner seam. */
@@ -118,6 +119,12 @@ export type ParticipantRunner = (
 
 /** The union of outcomes that requestParticipation can return. */
 export type RequestParticipationResult =
+  | {
+      spawned: false;
+      atCap: false;
+      hopCount: number;
+      blockedReason: "thread_disabled" | "thread_paused" | "company_paused";
+    }
   | { spawned: false; atCap: true; hopCount: number }
   // `entryId` is the id of the agent-comment entry this call inserted, OR null
   // when the participant runner self-posted via MCP (returned ""): in that case
@@ -164,6 +171,61 @@ export interface RunControllerOpts {
 }
 
 const log = logger.child({ service: "thread-orchestration" });
+
+// ── Commit-failure circuit-breaker ─────────────────────────────────────────────
+/** After this many consecutive action-commit failures, the controller advances
+ *  the cursor past the failing entry so one poison action cannot stall the
+ *  thread forever. Transient failures recover before reaching the cap. */
+const MAX_CONSECUTIVE_COMMIT_FAILURES = 3;
+
+/** Records an action-commit failure on the controller row.
+ *  - Under the cap: re-schedule the thread (pendingRun=true → the 2-min sweep
+ *    re-drives it) WITHOUT advancing the cursor, so a transient failure retries.
+ *  - At the cap: circuit-break — advance the cursor past `cursorTarget` (skip the
+ *    poison), reset the counter, keep pendingRun=true to drain later entries, and
+ *    write a `lastError` (persisted + logged; a UI/Inbox surface is tracked in #198).
+ *  Returns whether the breaker fired. */
+async function recordCommitFailure(
+  db: Db,
+  threadId: string,
+  priorFailures: number,
+  cursorTarget: string,
+  errorMsg: string,
+  log: { warn: (o: unknown, m: string) => void; error: (o: unknown, m: string) => void },
+): Promise<{ circuitBroken: boolean }> {
+  const newCount = priorFailures + 1;
+  if (newCount >= MAX_CONSECUTIVE_COMMIT_FAILURES) {
+    log.error(
+      { threadId, cursorTarget, failures: newCount },
+      "thread orchestration: action commit failed repeatedly — advancing cursor past the entry (circuit breaker)",
+    );
+    await db
+      .update(threadOrchestrationState)
+      .set({
+        lastProcessedEntryId: cursorTarget,
+        consecutiveCommitFailures: 0,
+        pendingRun: true,
+        lastError: `action_commit_failed_skipped:${errorMsg}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(threadOrchestrationState.threadId, threadId));
+    return { circuitBroken: true };
+  }
+  log.warn(
+    { threadId, cursorTarget, failures: newCount },
+    "thread orchestration: action commit failed — re-scheduling for retry (cursor NOT advanced)",
+  );
+  await db
+    .update(threadOrchestrationState)
+    .set({
+      consecutiveCommitFailures: newCount,
+      pendingRun: true,
+      lastError: errorMsg,
+      updatedAt: new Date(),
+    })
+    .where(eq(threadOrchestrationState.threadId, threadId));
+  return { circuitBroken: false };
+}
 
 // ── Hop-cap constant ───────────────────────────────────────────────────────────
 /**
@@ -472,10 +534,24 @@ export function threadOrchestrationService(db: Db) {
           .orderBy(asc(discussionEntries.seq))) as OrchestratedEntry[];
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        log.error({ threadId, startEpoch, err }, "thread orchestration: failed to load entries");
+        // Bounded reschedule: no cursorTarget exists yet (entries failed to load), so
+        // we cannot advance past a poison entry. Reschedule (pendingRun=true) under
+        // the cap so the 2-min sweep retries a transient load failure; stop after MAX
+        // so a persistent infra failure does not churn (the next human entry re-arms).
+        const newCount = claimed.consecutiveCommitFailures + 1;
+        const atCap = newCount >= MAX_CONSECUTIVE_COMMIT_FAILURES;
+        log.error(
+          { threadId, startEpoch, err },
+          "thread orchestration: failed to load entries — bounded reschedule",
+        );
         await db
           .update(threadOrchestrationState)
-          .set({ lastError: errorMsg, updatedAt: new Date() })
+          .set({
+            lastError: errorMsg,
+            consecutiveCommitFailures: atCap ? 0 : newCount,
+            pendingRun: !atCap,
+            updatedAt: new Date(),
+          })
           .where(eq(threadOrchestrationState.threadId, threadId));
         return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
       }
@@ -495,15 +571,25 @@ export function threadOrchestrationService(db: Db) {
         runResult = await adjutantRunner({ threadId, entries, startEpoch });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
+        // Route the runner-throw through the same bounded circuit-breaker as a commit
+        // failure (cursorTarget is in scope from above): reschedule (pendingRun=true)
+        // under the cap so the sweep re-drives it, and advance past the poison entry
+        // once the cap is hit — so a deterministically-throwing runner cannot stall
+        // the thread forever (Round-1 stall class).
         log.error(
           { threadId, startEpoch, err },
-          "thread orchestration: adjutantRunner threw — recording lastError, cursor NOT advanced",
+          "thread orchestration: adjutantRunner threw — recording failure (circuit-breaker)",
         );
-        await db
-          .update(threadOrchestrationState)
-          .set({ lastError: errorMsg, updatedAt: new Date() })
-          .where(eq(threadOrchestrationState.threadId, threadId));
-        return { ran: true, suppressed: false, error: errorMsg, startEpoch, cursorAdvancedTo: null };
+        const { circuitBroken } = await recordCommitFailure(
+          db, threadId, claimed.consecutiveCommitFailures, cursorTarget, errorMsg, log,
+        );
+        return {
+          ran: true,
+          suppressed: false,
+          error: circuitBroken ? undefined : errorMsg,
+          startEpoch,
+          cursorAdvancedTo: circuitBroken ? cursorTarget : null,
+        };
       }
 
       // ── Step 4: Re-check epoch (stale-run suppression) ────────────────────
@@ -527,13 +613,98 @@ export function threadOrchestrationService(db: Db) {
         return { ran: true, suppressed: true, startEpoch, endEpoch };
       }
 
+      if (threadRow && runResult.runId) {
+        try {
+          const { threadAgentActionService } = await import("./thread-agent-actions.js");
+          const commitResult = await threadAgentActionService(db).commitThreadAgentActions({
+            companyId: threadRow.companyId,
+            threadId,
+            runId: runResult.runId,
+          });
+
+          // A per-action commit failure is swallowed inside commitThreadAgentActions
+          // (the row is set `failed` and the call returns normally). On a PURE failure
+          // (nothing committed) we do NOT advance — the circuit-breaker reschedules so
+          // a transient failure retries; after MAX consecutive failures it advances
+          // past the poison entry. NOTE: the commit selection is run-scoped (eq(runId)),
+          // so a fresh-runId re-run does NOT re-select the prior run's `failed` rows —
+          // the retry happens by re-running the agent, whose re-proposals dedup for the
+          // two stable-key action types (post_reply, create_artifact_candidate). Full
+          // thread-scoped retry of all action types is #198.
+          if (commitResult.failed > 0 && commitResult.committed === 0) {
+            // PURE failure (nothing committed) → safe to reschedule/retry via the
+            // circuit-breaker; a re-run cannot duplicate because nothing committed.
+            log.warn(
+              {
+                threadId,
+                startEpoch,
+                runId: runResult.runId,
+                failed: commitResult.failed,
+                committed: commitResult.committed,
+              },
+              "thread orchestration: action commit reported failures — recording failure (circuit-breaker)",
+            );
+            const { circuitBroken } = await recordCommitFailure(
+              db,
+              threadId,
+              claimed.consecutiveCommitFailures,
+              cursorTarget,
+              `action_commit_failed:${commitResult.failed}`,
+              log,
+            );
+            return {
+              ran: true,
+              suppressed: false,
+              error: circuitBroken ? undefined : `action_commit_failed:${commitResult.failed}`,
+              startEpoch,
+              cursorAdvancedTo: circuitBroken ? cursorTarget : null,
+            };
+          }
+          if (commitResult.failed > 0) {
+            // MIXED batch (committed>0 AND failed>0): re-running the agent would
+            // re-execute the already-committed actions. Do NOT reschedule — fall
+            // through to the Step-5 success commit, which advances the cursor and
+            // resets the failure counter. The failed action is dropped (no duplicate,
+            // no stall); thread-scoped retry of the failed row is tracked in #198.
+            log.warn(
+              {
+                threadId,
+                startEpoch,
+                runId: runResult.runId,
+                failed: commitResult.failed,
+                committed: commitResult.committed,
+              },
+              "thread orchestration: mixed batch — failed actions dropped, advancing cursor (retry-safety #198)",
+            );
+          }
+        } catch (commitErr) {
+          const errorMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+          log.error(
+            { threadId, startEpoch, runId: runResult.runId, err: commitErr },
+            "thread orchestration: action gate commit threw — recording failure (circuit-breaker)",
+          );
+          const { circuitBroken } = await recordCommitFailure(
+            db, threadId, claimed.consecutiveCommitFailures, cursorTarget, errorMsg, log,
+          );
+          return {
+            ran: true,
+            suppressed: false,
+            error: circuitBroken ? undefined : errorMsg,
+            startEpoch,
+            cursorAdvancedTo: circuitBroken ? cursorTarget : null,
+          };
+        }
+      }
+
       // ── Step 5: Commit ─────────────────────────────────────────────────────
-      // Epoch matches — advance the cursor, leave pendingRun = false.
+      // Epoch matches and action-gated side effects are committed; advance the
+      // cursor and leave pendingRun = false.
       await db
         .update(threadOrchestrationState)
         .set({
           lastProcessedEntryId: cursorTarget,
           lastError: null,
+          consecutiveCommitFailures: 0,
           updatedAt: new Date(),
         })
         .where(eq(threadOrchestrationState.threadId, threadId));
@@ -601,11 +772,51 @@ export function threadOrchestrationService(db: Db) {
       params: { agentId: string; prompt: string },
       opts: RequestParticipationOpts = {},
     ): Promise<RequestParticipationResult> => {
-      // Task 2.1: the default now wires the real crew runner (lazily). Tests
-      // inject opts.participantRunner and never resolve the default.
-      const participantRunner =
-        opts.participantRunner ?? (await resolveDefaultParticipantRunner(db));
-      const actorId = opts.actorId ?? params.agentId;
+      const [threadGate] = await db
+        .select({
+          companyId: discussions.companyId,
+          adjutantEnabled: discussions.adjutantEnabled,
+          crewPaused: discussions.crewPaused,
+        })
+        .from(discussions)
+        .where(eq(discussions.id, threadId))
+        .limit(1);
+
+      if (!threadGate) {
+        log.info({ threadId, agentId: params.agentId }, "requestParticipation: thread disabled - not spawning");
+        return { spawned: false, atCap: false, hopCount: 0, blockedReason: "thread_disabled" };
+      }
+
+      if (threadGate.adjutantEnabled === false) {
+        const [targetAgent] = await db
+          .select({ name: agents.name })
+          .from(agents)
+          .where(and(eq(agents.id, params.agentId), eq(agents.companyId, threadGate.companyId)))
+          .limit(1);
+        if (targetAgent?.name === "Adjutant") {
+          log.info({ threadId, agentId: params.agentId }, "requestParticipation: adjutant disabled - not spawning");
+          return { spawned: false, atCap: false, hopCount: 0, blockedReason: "thread_disabled" };
+        }
+      }
+
+      if (threadGate.crewPaused === true) {
+        log.info({ threadId, agentId: params.agentId }, "requestParticipation: thread paused - not spawning");
+        return { spawned: false, atCap: false, hopCount: 0, blockedReason: "thread_paused" };
+      }
+
+      const [companyCfg] = await db
+        .select({ crewPaused: internalAgentConfig.crewPaused })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, threadGate.companyId))
+        .limit(1);
+
+      if (companyCfg?.crewPaused === true) {
+        log.info(
+          { threadId, agentId: params.agentId, companyId: threadGate.companyId },
+          "requestParticipation: company crew paused - not spawning",
+        );
+        return { spawned: false, atCap: false, hopCount: 0, blockedReason: "company_paused" };
+      }
 
       // ── Step 1: Cap check — read current hopCount ──────────────────────────
       // ensureController first so the row always exists.
@@ -682,6 +893,13 @@ export function threadOrchestrationService(db: Db) {
       }
 
       // ── Step 2: Increment hop (this participation counts) ─────────────────
+      // Task 2.1: the default now wires the real crew runner (lazily). Tests
+      // inject opts.participantRunner and never resolve the default. Resolve it
+      // only after pause/cap gates so blocked paths do not import or run crew.
+      const participantRunner =
+        opts.participantRunner ?? (await resolveDefaultParticipantRunner(db));
+      const actorId = opts.actorId ?? params.agentId;
+
       const { hopCount } = await threadOrchestrationService(db).incrementHop(threadId);
 
       // ── Step 3: Run the participant (injected seam) ────────────────────────

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useTeamAccess } from "../hooks/useTeamAccess";
@@ -102,6 +102,7 @@ export function ThreadsList() {
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const { openNewThread } = useDialog();
   const [searchParams, setSearchParams] = useSearchParams();
+  const queryClient = useQueryClient();
 
   // View mode persisted in URL param
   const viewParam = searchParams.get("view");
@@ -155,6 +156,15 @@ export function ThreadsList() {
   const inboxItems = inboxData?.items ?? [];
 
   const threads = (data?.discussions ?? []) as ThreadListItem[];
+
+  const unarchiveThread = useMutation({
+    mutationFn: (threadId: string) =>
+      threadsApi.setStatus(selectedCompanyId!, threadId, "active"),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, "list", "archived"] });
+    },
+  });
 
   // Subtitle: count with pending
   useEffect(() => {
@@ -311,6 +321,7 @@ export function ThreadsList() {
             void refetchInbox();
             void refetch();
           }}
+          onUnarchiveThread={(threadId) => unarchiveThread.mutate(threadId)}
         />
       )}
 

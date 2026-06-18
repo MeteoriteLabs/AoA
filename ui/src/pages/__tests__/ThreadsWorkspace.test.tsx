@@ -344,7 +344,7 @@ describe("ThreadsWorkspace", () => {
     );
 
     await screen.findByTestId("threads-global-viewer");
-    await user.click(screen.getByRole("button", { name: /close viewer/i }));
+    await user.click(screen.getByRole("button", { name: /hide preview/i }));
     expect(screen.getByTestId("thread-viewer-collapsed-strip")).toBeInTheDocument();
 
     const index = screen.getByTestId("threads-index");
@@ -375,7 +375,7 @@ describe("ThreadsWorkspace", () => {
     renderWithProviders(<ThreadsWorkspace />, { initialEntries: ["/TC/discussions"] });
 
     await screen.findByTestId("threads-global-viewer");
-    await user.click(screen.getByRole("button", { name: /close viewer/i }));
+    await user.click(screen.getByRole("button", { name: /hide preview/i }));
 
     const strip = screen.getByTestId("thread-viewer-collapsed-strip");
     expect(strip).toBeInTheDocument();
@@ -970,6 +970,11 @@ describe("ThreadsWorkspace", () => {
     });
     await user.click(screen.getByRole("button", { name: /thread one actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /archive thread/i }));
+
+    expect(threadsApi.setStatus).not.toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: /archive thread/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^archive$/i }));
 
     expect(threadsApi.setStatus).toHaveBeenCalledWith("comp-1", "thread-1", "archived");
   });

@@ -2,12 +2,15 @@ import type {
   DiscussionDetail,
   DiscussionEntry,
   DiscussionEntryAttachment,
-  ExtractedItem,
 } from "../../api/discussions";
 
 export type ThreadViewerTabKind =
   | "open"
   | "scope_item"
+  | "task"
+  | "task_output"
+  | "memory"
+  | "artifact_ref"
   | "asset"
   | "artifact"
   | "browser"
@@ -21,13 +24,61 @@ export interface ThreadViewerTab {
   payload?: unknown;
 }
 
+export interface ThreadViewerScopeItem {
+  id: string;
+  type: string;
+  kind?: string;
+  scopeVersionId?: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  resultIssueId?: string | null;
+  resultMemoryId?: string | null;
+  artifactId?: string | null;
+  artifactVersionId?: string | null;
+  sourceEntryIds?: unknown[];
+  payload?: Record<string, unknown>;
+  suggestedPriority?: string | null;
+  priority?: string | null;
+  suggestedAssigneeId?: string | null;
+  suggestedDepartmentId?: string | null;
+  suggestedLayer?: string | null;
+  layer?: string | null;
+}
+
 export interface ThreadViewerScopePayload {
-  item: ExtractedItem;
+  item: ThreadViewerScopeItem;
 }
 
 export interface ThreadViewerAttachmentPayload {
   attachment: DiscussionEntryAttachment;
   entryId?: string;
+}
+
+export interface ThreadViewerTaskPayload {
+  issueId: string;
+  title: string;
+  scopeItemId?: string;
+}
+
+export interface ThreadViewerTaskOutputPayload {
+  issueId: string;
+  title: string;
+  scopeItemId?: string;
+}
+
+export interface ThreadViewerMemoryPayload {
+  companyId: string;
+  memoryId: string;
+  title: string;
+  scopeItemId?: string;
+}
+
+export interface ThreadViewerArtifactRefPayload {
+  artifactId: string;
+  artifactVersionId?: string | null;
+  title: string;
+  scopeItemId?: string;
 }
 
 export interface ThreadViewerBrowserPayload {
@@ -73,7 +124,7 @@ export function createGlobalMapTab(): ThreadViewerTab {
   };
 }
 
-export function scopeItemToTab(item: ExtractedItem): ThreadViewerTab {
+export function scopeItemToTab(item: ThreadViewerScopeItem): ThreadViewerTab {
   return {
     key: `scope:${item.id}`,
     label: item.title || "Scope item",
@@ -81,6 +132,67 @@ export function scopeItemToTab(item: ExtractedItem): ThreadViewerTab {
     closeable: true,
     payload: { item } satisfies ThreadViewerScopePayload,
   };
+}
+
+export function taskTab(issueId: string, title: string, scopeItemId?: string): ThreadViewerTab {
+  return {
+    key: `task:${issueId}`,
+    label: title || "Task",
+    kind: "task",
+    closeable: true,
+    payload: { issueId, title: title || "Task", scopeItemId } satisfies ThreadViewerTaskPayload,
+  };
+}
+
+export function taskOutputTab(issueId: string, title: string, scopeItemId?: string): ThreadViewerTab {
+  return {
+    key: `task-output:${issueId}`,
+    label: `${title} · Outputs` || "Task Outputs",
+    kind: "task_output",
+    closeable: true,
+    payload: { issueId, title: title || "Task", scopeItemId } satisfies ThreadViewerTaskOutputPayload,
+  };
+}
+
+export function memoryTab(
+  companyId: string,
+  memoryId: string,
+  title: string,
+  scopeItemId?: string,
+): ThreadViewerTab {
+  return {
+    key: `memory:${memoryId}`,
+    label: title || "Memory",
+    kind: "memory",
+    closeable: true,
+    payload: { companyId, memoryId, title: title || "Memory", scopeItemId } satisfies ThreadViewerMemoryPayload,
+  };
+}
+
+export function artifactRefTab(
+  artifactId: string,
+  title: string,
+  artifactVersionId?: string | null,
+  scopeItemId?: string,
+): ThreadViewerTab {
+  const scopeSuffix = scopeItemId ?? artifactVersionId ?? "latest";
+  return {
+    key: `artifact-ref:${artifactId}:${scopeSuffix}`,
+    label: title || "Artifact",
+    kind: "artifact_ref",
+    closeable: true,
+    payload: {
+      artifactId,
+      artifactVersionId,
+      title: title || "Artifact",
+      scopeItemId,
+    } satisfies ThreadViewerArtifactRefPayload,
+  };
+}
+
+export function scopeArtifactToTab(item: ThreadViewerScopeItem): ThreadViewerTab | null {
+  if (!item.artifactId) return null;
+  return artifactRefTab(item.artifactId, item.title, item.artifactVersionId, item.id);
 }
 
 export function threadAttachmentToTab(

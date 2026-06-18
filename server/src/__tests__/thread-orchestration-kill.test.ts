@@ -108,6 +108,9 @@ interface ControllerState {
   hopCount: number;
   lastProcessedEntryId: string | null;
   lastError: string | null;
+  // Optional in fixtures (defaults to 0 at claim time) — the circuit-breaker /
+  // bounded-reschedule paths read and bump this.
+  consecutiveCommitFailures?: number;
 }
 
 /**
@@ -168,8 +171,10 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
     claimCount++;
     // Apply the SET payload to the in-memory state.
     if ("pendingRun" in setPayload) controller.pendingRun = setPayload.pendingRun as boolean;
-    // Return a snapshot (not a reference) so the caller captures the epoch at claim time.
-    return [{ ...controller }];
+    // Return a snapshot (not a reference) so the caller captures the epoch at claim
+    // time. The real claimed row always carries consecutive_commit_failures (DB
+    // default 0), so default it here for the circuit-breaker / reschedule paths.
+    return [{ ...controller, consecutiveCommitFailures: controller.consecutiveCommitFailures ?? 0 }];
   }
 
   /**
@@ -186,6 +191,9 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
     }
     if ("pendingRun" in setPayload) {
       controller.pendingRun = setPayload.pendingRun as boolean;
+    }
+    if ("consecutiveCommitFailures" in setPayload) {
+      controller.consecutiveCommitFailures = setPayload.consecutiveCommitFailures as number;
     }
     return [{ ...controller }];
   }
@@ -267,7 +275,11 @@ function makeStateDb(controller: ControllerState, allEntries: EntryRow[]) {
     update: vi.fn(() => {
       return {
         set: vi.fn((payload: Record<string, unknown>) => {
-          const isClaim = "pendingRun" in payload && !("lastProcessedEntryId" in payload);
+          // The claim is the ONLY update that sets pendingRun=FALSE. The bounded
+          // reschedule / circuit-breaker set pendingRun=TRUE, so distinguish by the
+          // value — not by the absence of lastProcessedEntryId (the reschedule omits
+          // it too, and would otherwise be misclassified as a claim).
+          const isClaim = "pendingRun" in payload && payload.pendingRun === false;
           return {
             where: vi.fn(() => {
               if (isClaim) {

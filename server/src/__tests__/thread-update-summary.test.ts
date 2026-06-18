@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@armyofagents/db", () => ({
   discussions: new Proxy({} as any, { get: (_t, p) => p }),
+  internalAgentConfig: new Proxy({} as any, { get: (_t, p) => p }),
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: unknown, b: unknown) => ({ _op: "eq", a, b })),

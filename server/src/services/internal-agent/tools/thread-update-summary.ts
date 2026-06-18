@@ -1,6 +1,6 @@
 // server/src/services/internal-agent/tools/thread-update-summary.ts
 import { eq } from "drizzle-orm";
-import { discussions } from "@armyofagents/db";
+import { discussions, internalAgentConfig } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { logActivity } from "../../activity-log.js";
 
@@ -63,16 +63,29 @@ export const threadUpdateSummaryTool: AgentTool = {
 
     // Cross-tenant guard (#7): verify thread belongs to caller's company.
     const existing = await ctx.db
-      .select({ companyId: discussions.companyId })
+      .select({ companyId: discussions.companyId, crewPaused: discussions.crewPaused })
       .from(discussions)
       .where(eq(discussions.id, threadId))
-      .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+      .then((rows: Array<{ companyId: string; crewPaused?: boolean | null }>) => rows[0] ?? null);
 
     if (!existing) {
       return { success: false, data: null, summary: `Thread ${threadId} not found`, error: "THREAD_NOT_FOUND" };
     }
     if (existing.companyId !== ctx.companyId) {
       return { success: false, data: null, summary: "Thread belongs to a different company", error: "COMPANY_MISMATCH" };
+    }
+    if (ctx.agentId && existing.crewPaused === true) {
+      return { success: false, data: null, summary: "Thread crew is paused; summary update skipped", error: "THREAD_PAUSED" };
+    }
+    if (ctx.agentId) {
+      const companyPause = await ctx.db
+        .select({ crewPaused: internalAgentConfig.crewPaused })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, existing.companyId))
+        .then((rows: Array<{ crewPaused?: boolean | null }>) => rows[0] ?? null);
+      if (companyPause?.crewPaused === true) {
+        return { success: false, data: null, summary: "Company crew is paused; summary update skipped", error: "COMPANY_PAUSED" };
+      }
     }
 
     const summaryUpdatedAt = new Date();

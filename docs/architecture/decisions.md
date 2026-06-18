@@ -714,3 +714,38 @@ only.
   estimate is `computeCostCents(model, tokens)`. Tokens are real. Cost is surfaced
   only in Settings → Run History, never in the chat. (Partially un-defers the
   per-run accounting deferral of Decision #91, for observability only.)
+
+## Decision #102 — Thread action-commit idempotency: minimum bar ([#197]) + full outbox alignment ([#198]) (2026-06-18)
+
+The thread-orchestration action-commit path (`thread-agent-actions.ts` / `thread-orchestration.ts`)
+kept producing edge cases across three review rounds (stall → park → mixed-batch
+duplicate) because "retry" meant "re-run the agent," and the agent re-proposed actions
+with **run-scoped** idempotency keys (`${runId}:…`) + a **run-scoped** commit selection
+(`eq(runId)`) over **non-idempotent** side-effects — the inverse of the transactional
+outbox the org already locked in **Decision #99/#100** (where the stable key is the
+entry id, not the run id). PR **[#197]** ships the **minimum non-flaky bar**, every part
+a forward-compatible subset of the full fix:
+
+- **Run-independent, turn-anchored keys** for the two highest-value action types
+  (`post_reply`, `create_artifact_candidate`); the turn anchor is the latest human
+  entry seq at run start (a same-turn retry dedups, two genuine turns stay distinct).
+  The other four action types keep run-scoped keys (locked by a guard test).
+- **`source_action_id`** column + partial unique index on `discussion_entries` and
+  `artifacts` (migration `0145`); the commit converges on the unique violation
+  (`isUniqueViolation`, which now reads the postgres-js `constraint_name`), so the same
+  action can never produce two side-effects (closes the partial-crash / reaper re-commit).
+- **`committed === 0` guard**: a mixed batch advances the cursor instead of re-running
+  (no re-execution of already-committed actions); the failed action is dropped — not a
+  duplicate, not a stall.
+- **Bounded reschedule** on the adjutant-runner-throw and entries-load stall paths
+  (reusing `consecutive_commit_failures`) so a deterministic failure can't park a thread.
+
+Deferred to **[#198]** (full Decision #99 alignment): run-independent keys for all six
+action types, **thread/company-scoped** commit selection (drop `eq(runId)`) + atomic
+`proposed→committing` claim + a durable sweep that drains orphaned `proposed` rows, and a
+real UI/Inbox surface for `lastError`. Residuals until then (all failure/edge-path only):
+mixed-batch failed-action drop, possible duplicate *draft* on the deferred draft types'
+retry path, and the agent-only-thread null-anchor content-dedup.
+
+[#197]: https://github.com/MeteoriteLabs/AoA/pull/197
+[#198]: https://github.com/MeteoriteLabs/AoA/issues/198

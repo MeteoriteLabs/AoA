@@ -6,6 +6,10 @@ import {
   type DiscussionDetail,
   type DiscussionListFilters,
   type DiscussionListResponse,
+  type ThreadScopeVersionDetail,
+  type ThreadScopeVersionsResponse,
+  type ReviewScopeItemsRequest,
+  type UpdateScopeItemRequest,
 } from "./discussions";
 
 // threads.ts extends the discussions API — threads ARE discussions with extra fields
@@ -189,4 +193,51 @@ export const threadsApi = {
       `/companies/${companyId}/discussions/inbox`,
       payload,
     ),
+
+  listScopeVersions: (companyId: string, id: string): Promise<ThreadScopeVersionsResponse> =>
+    discussionsApi.listScopeVersions(companyId, id),
+
+  getScopeVersion: (companyId: string, id: string, scopeVersionId: string): Promise<ThreadScopeVersionDetail> =>
+    discussionsApi.getScopeVersion(companyId, id, scopeVersionId),
+
+  createScopeDraft: (
+    companyId: string,
+    id: string,
+    data: { summary?: string; assumptions?: unknown[]; decisions?: unknown[]; openQuestions?: unknown[]; mode?: "generate" | "manual" } = {},
+  ) => discussionsApi.createScopeDraft(companyId, id, data),
+
+  acceptScopeVersion: (companyId: string, id: string, scopeVersionId: string, itemIds: string[]) =>
+    discussionsApi.acceptScopeVersion(companyId, id, scopeVersionId, itemIds),
+
+  reviewScopeItems: (
+    companyId: string,
+    id: string,
+    scopeVersionId: string,
+    data: ReviewScopeItemsRequest,
+  ) => discussionsApi.reviewScopeItems(companyId, id, scopeVersionId, data),
+
+  updateScopeItem: (
+    companyId: string,
+    id: string,
+    scopeVersionId: string,
+    itemId: string,
+    data: UpdateScopeItemRequest,
+  ) => discussionsApi.updateScopeItem(companyId, id, scopeVersionId, itemId, data),
+
+  createScopeOutputItem: (
+    companyId: string,
+    id: string,
+    scopeVersionId: string,
+    itemId: string,
+    data?: { memoryStatus?: "approved" | "pending" },
+  ) => discussionsApi.createScopeOutputItem(companyId, id, scopeVersionId, itemId, data),
+
+  applyScopeVersion: (companyId: string, id: string, scopeVersionId: string) =>
+    discussionsApi.applyScopeVersion(companyId, id, scopeVersionId),
+
+  rejectScopeVersion: (companyId: string, id: string, scopeVersionId: string) =>
+    discussionsApi.rejectScopeVersion(companyId, id, scopeVersionId),
+
+  completeScopeVersion: (companyId: string, id: string, scopeVersionId: string) =>
+    discussionsApi.completeScopeVersion(companyId, id, scopeVersionId),
 };

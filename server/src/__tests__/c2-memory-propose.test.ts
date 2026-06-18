@@ -342,4 +342,74 @@ describe("propose_memory_from_thread tool (C2 batch 3)", () => {
     );
     expect(insertValues.last.category).toBe("context");
   });
+
+  // ── Review fix (b): the action-gated path must enforce the SAME per-thread
+  //    privacy gates the non-gated path runs. A founder who disabled extraction
+  //    (or a private thread) must not be bypassed merely because the controller
+  //    routes through the freshness-checked action queue. ──────────────────────
+  describe("controller_action_gate privacy gates (review fix (b))", () => {
+    it("rejects (does NOT queue) when allowMemoryExtraction=false in gated mode", async () => {
+      const proposeThreadAction = vi.fn().mockResolvedValue({ id: "action-1" });
+      vi.doMock("../services/thread-agent-actions.js", () => ({
+        threadAgentActionService: vi.fn(() => ({ proposeThreadAction })),
+      }));
+      const { proposeMemoryFromThreadTool: gatedTool } = await import(
+        "../services/internal-agent/tools/memory-propose.js"
+      );
+
+      const { db } = makeDb({
+        threadRow: {
+          id: "th-1",
+          visibility: "company",
+          allowMemoryExtraction: false,
+        },
+      });
+      const ctx = makeCtx(db, {
+        runId: "run-1",
+        discussionRunMode: "controller_action_gate",
+      } as any);
+
+      const result = await gatedTool.execute(
+        { content: "x", layer: "working", sourceThreadId: "th-1" },
+        ctx,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("MEMORY_EXTRACTION_DISABLED");
+      expect(proposeThreadAction).not.toHaveBeenCalled();
+      vi.doUnmock("../services/thread-agent-actions.js");
+    });
+
+    it("rejects (does NOT queue) a private thread seeding identity layer in gated mode", async () => {
+      const proposeThreadAction = vi.fn().mockResolvedValue({ id: "action-1" });
+      vi.doMock("../services/thread-agent-actions.js", () => ({
+        threadAgentActionService: vi.fn(() => ({ proposeThreadAction })),
+      }));
+      const { proposeMemoryFromThreadTool: gatedTool } = await import(
+        "../services/internal-agent/tools/memory-propose.js"
+      );
+
+      const { db } = makeDb({
+        threadRow: {
+          id: "th-1",
+          visibility: "private",
+          allowMemoryExtraction: true,
+        },
+      });
+      const ctx = makeCtx(db, {
+        runId: "run-1",
+        discussionRunMode: "controller_action_gate",
+      } as any);
+
+      const result = await gatedTool.execute(
+        { content: "x", layer: "identity", sourceThreadId: "th-1" },
+        ctx,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("VISIBILITY_VIOLATION");
+      expect(proposeThreadAction).not.toHaveBeenCalled();
+      vi.doUnmock("../services/thread-agent-actions.js");
+    });
+  });
 });

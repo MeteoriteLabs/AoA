@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "@/lib/router";
+import { useParams, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,15 +7,23 @@ import { useToast } from "../context/ToastContext";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { threadsApi, type ThreadListItem, type ThreadDetail as ThreadDetailType } from "../api/threads";
 import { api } from "../api/client";
-import type { DiscussionEntryAttachment, ExtractedItem } from "../api/discussions";
+import type {
+  DiscussionEntryAttachment,
+  ExtractedItem,
+  ThreadScopeItem,
+  ThreadScopeVersionDetail,
+  UpdateScopeItemRequest,
+} from "../api/discussions";
 import {
-  RefreshCw, Pencil, ChevronDown, ChevronRight, Pause, Play,
-  Archive, ArchiveRestore, MoreHorizontal,
+  RefreshCw, Pencil, ChevronDown, Pause, Play,
+  Archive, MoreHorizontal,
 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
@@ -28,11 +36,16 @@ import type { ScopeItem } from "../components/threads/scopeGrouping";
 import { autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
 import {
   OPEN_TAB_KEY,
+  browserTab,
   closeTab,
   createOpenTab,
+  artifactRefTab,
   ensureTab,
+  memoryTab,
   scopeItemToTab,
+  taskTab,
   threadAttachmentToTab,
+  type ThreadViewerScopeItem,
   type ThreadViewerTab,
 } from "../components/threads/threadViewerModel";
 
@@ -45,12 +58,6 @@ const NEXT_PHASE: Partial<Record<Phase, Phase>> = {
   discuss: "scope",
   scope:   "assign",
   assign:  "done",
-};
-
-const PHASE_BTN: Partial<Record<Phase, string>> = {
-  discuss: "Scope →",
-  scope:   "Assign →",
-  assign:  "Done ✓",
 };
 
 const PHASE_LABELS: Record<Phase, string> = {
@@ -85,7 +92,14 @@ type CenterTab = "thread" | "scope" | "branches";
 
 const VIEWER_MIN_WIDTH = 280;
 const VIEWER_DEFAULT_WIDTH = 340;
-const VIEWER_MAX_WIDTH = 680;
+const VIEWER_MIN_CENTER_WIDTH = 520;
+const VIEWER_ABSOLUTE_MAX_WIDTH = 1040;
+
+function getViewerMaxWidth() {
+  if (typeof window === "undefined") return 920;
+  const available = window.innerWidth - VIEWER_MIN_CENTER_WIDTH;
+  return Math.max(680, Math.min(VIEWER_ABSOLUTE_MAX_WIDTH, available));
+}
 
 /* ─── Phase dot color for left rail ─── */
 
@@ -116,6 +130,62 @@ function agentColor(name: string | null): string {
   return "#7E8AA8";
 }
 
+function apiErrorMessage(error: unknown, fallback: string): string {
+  const record = error as { response?: { data?: { error?: unknown } }; message?: unknown };
+  const serverMessage = record.response?.data?.error;
+  if (typeof serverMessage === "string" && serverMessage.trim().length > 0) return serverMessage;
+  if (typeof record.message === "string" && record.message.trim().length > 0) return record.message;
+  return fallback;
+}
+
+function scopeVersionItemToViewerItem(
+  item: ThreadScopeItem,
+  scopeVersionId?: string | null,
+): ThreadViewerScopeItem & { payload?: Record<string, unknown> } {
+  return {
+    id: item.id,
+    type: item.kind.replaceAll("_", " "),
+    kind: item.kind,
+    scopeVersionId: scopeVersionId ?? null,
+    title: item.title,
+    description: item.description,
+    status: item.status,
+    payload: item.payload,
+    resultIssueId: item.resultIssueId,
+    resultMemoryId: item.resultMemoryId,
+    artifactId: item.artifactId,
+    artifactVersionId: item.artifactVersionId,
+    sourceEntryIds: item.sourceEntryIds,
+    suggestedPriority:
+      typeof item.payload.priority === "string" ? item.payload.priority : null,
+    suggestedAssigneeId:
+      typeof item.payload.assigneeAgentId === "string" ? item.payload.assigneeAgentId : null,
+    suggestedDepartmentId:
+      typeof item.payload.departmentId === "string" ? item.payload.departmentId : null,
+    suggestedLayer:
+      typeof item.payload.layer === "string" ? item.payload.layer : null,
+  };
+}
+
+function payloadString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function sourceSignalToAttachment(item: ThreadScopeItem): DiscussionEntryAttachment | null {
+  const assetId = payloadString(item.payload.assetId);
+  if (!assetId) return null;
+  return {
+    id: item.id,
+    assetId,
+    artifactId: null,
+    artifactType: null,
+    artifactTitle: null,
+    assetContentType: payloadString(item.payload.contentType),
+    assetOriginalFilename: payloadString(item.payload.filename) ?? item.title,
+    assetByteSize: typeof item.payload.byteSize === "number" ? item.payload.byteSize : null,
+  };
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    ThreadDetail Page
    ════════════════════════════════════════════════════════════════════════ */
@@ -133,7 +203,6 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
 
   const [mobileTab, setMobileTab] = useState<MobileTab>("thread");
   const [centerTab, setCenterTab] = useState<CenterTab>("thread");
@@ -141,11 +210,12 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
   const [activeViewerKey, setActiveViewerKey] = useState<string | null>(OPEN_TAB_KEY);
   const [viewerCollapsed, setViewerCollapsed] = useState(false);
   const [viewerWidth, setViewerWidth] = useState(VIEWER_DEFAULT_WIDTH);
+  const [isViewerResizing, setIsViewerResizing] = useState(false);
+  const [selectedScopeVersionId, setSelectedScopeVersionId] = useState<string | null>(null);
 
   // Header state
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [showTitleEdit, setShowTitleEdit] = useState(false);
 
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -160,10 +230,49 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     retry: false,
   });
 
+  const scopeVersionsQuery = useQuery({
+    queryKey: ["threads", selectedCompanyId, resolvedId, "scope-versions"],
+    queryFn: () => threadsApi.listScopeVersions(selectedCompanyId!, resolvedId!),
+    enabled: !!selectedCompanyId && !!resolvedId && centerTab === "scope",
+    retry: false,
+  });
+
+  const currentScopeVersionId = useMemo(() => {
+    if (!thread) return null;
+    return thread.derivedStage?.scopeVersionId ?? scopeVersionsQuery.data?.versions[0]?.id ?? null;
+  }, [scopeVersionsQuery.data?.versions, thread]);
+
+  const activeScopeVersionId = useMemo(() => {
+    if (!thread) return null;
+    return selectedScopeVersionId ?? currentScopeVersionId;
+  }, [currentScopeVersionId, selectedScopeVersionId, thread]);
+
+  const isViewingCurrentScopeVersion = Boolean(
+    activeScopeVersionId && currentScopeVersionId && activeScopeVersionId === currentScopeVersionId,
+  );
+
+  const activeScopeVersionQuery = useQuery<ThreadScopeVersionDetail | null>({
+    queryKey: ["threads", selectedCompanyId, resolvedId, "scope-versions", activeScopeVersionId],
+    queryFn: async () =>
+      activeScopeVersionId
+        ? (await threadsApi.getScopeVersion(selectedCompanyId!, resolvedId!, activeScopeVersionId)) ?? null
+        : null,
+    enabled: !!selectedCompanyId && !!resolvedId && !!activeScopeVersionId,
+    retry: false,
+  });
+
   useEffect(() => {
     setViewerTabs([createOpenTab()]);
     setActiveViewerKey(OPEN_TAB_KEY);
+    setSelectedScopeVersionId(null);
   }, [resolvedId]);
+
+  useEffect(() => {
+    if (!selectedScopeVersionId || !scopeVersionsQuery.data?.versions) return;
+    if (!scopeVersionsQuery.data.versions.some((version) => version.id === selectedScopeVersionId)) {
+      setSelectedScopeVersionId(null);
+    }
+  }, [scopeVersionsQuery.data?.versions, selectedScopeVersionId]);
 
   const openViewerTab = useCallback((tab: ThreadViewerTab) => {
     setViewerTabs((current) => ensureTab(current, tab));
@@ -185,6 +294,38 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
   const openScopeItemInViewer = useCallback((item: ExtractedItem) => {
     openViewerTab(scopeItemToTab(item));
   }, [openViewerTab]);
+
+  const openScopeVersionItemInViewer = useCallback((item: ThreadScopeItem) => {
+    if (item.resultIssueId) {
+      openViewerTab(taskTab(item.resultIssueId, item.title, item.id));
+      return;
+    }
+    if (item.resultMemoryId && selectedCompanyId) {
+      openViewerTab(memoryTab(selectedCompanyId, item.resultMemoryId, item.title, item.id));
+      return;
+    }
+    if (item.artifactId) {
+      openViewerTab(artifactRefTab(item.artifactId, item.title, item.artifactVersionId, item.id));
+      return;
+    }
+    if (item.kind === "source_signal") {
+      const attachment = sourceSignalToAttachment(item);
+      if (attachment) {
+        const sourceEntryId =
+          Array.isArray(item.sourceEntryIds) && typeof item.sourceEntryIds[0] === "string"
+            ? item.sourceEntryIds[0]
+            : undefined;
+        openViewerTab(threadAttachmentToTab(attachment, sourceEntryId));
+        return;
+      }
+      const url = payloadString(item.payload.url);
+      if (url) {
+        openViewerTab(browserTab(url, item.title));
+        return;
+      }
+    }
+    openViewerTab(scopeItemToTab(scopeVersionItemToViewerItem(item, activeScopeVersionId)));
+  }, [activeScopeVersionId, openViewerTab, selectedCompanyId]);
 
   const openAttachmentInViewer = useCallback((
     attachment: DiscussionEntryAttachment,
@@ -241,6 +382,54 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     );
   }, [thread]);
 
+  const viewerScopeItems = useMemo((): ThreadViewerScopeItem[] => {
+    const versionedItems = activeScopeVersionQuery.data?.items;
+    if (versionedItems && versionedItems.length > 0) {
+      return versionedItems.map((item) => ({
+        id: item.id,
+        type: item.kind.replaceAll("_", " "),
+        kind: item.kind,
+        scopeVersionId: activeScopeVersionId,
+        title: item.title,
+        description: item.description,
+        status: item.status,
+        resultIssueId: item.resultIssueId,
+        resultMemoryId: item.resultMemoryId,
+        artifactId: item.artifactId,
+        artifactVersionId: item.artifactVersionId,
+        sourceEntryIds: item.sourceEntryIds,
+        payload: item.payload,
+        suggestedPriority:
+          typeof item.payload.priority === "string" ? item.payload.priority : null,
+        suggestedAssigneeId:
+          typeof item.payload.assigneeAgentId === "string" ? item.payload.assigneeAgentId : null,
+        suggestedDepartmentId:
+          typeof item.payload.departmentId === "string" ? item.payload.departmentId : null,
+        suggestedLayer:
+          typeof item.payload.layer === "string" ? item.payload.layer : null,
+      }));
+    }
+
+    return thread
+      ? thread.entries.flatMap((entry) =>
+          entry.extractedItems.map((item) => ({
+            id: item.id,
+            type: item.type,
+            title: item.title,
+            description: item.description,
+            status: item.status,
+            payload: {},
+            suggestedPriority: item.suggestedPriority,
+            priority: item.priority,
+            suggestedAssigneeId: item.suggestedAssigneeId,
+            suggestedDepartmentId: item.suggestedDepartmentId,
+            suggestedLayer: item.suggestedLayer,
+            layer: item.layer,
+          })),
+        )
+      : [];
+  }, [activeScopeVersionQuery.data?.items, thread]);
+
   const extractedItemById = useMemo(() => {
     const map = new Map<string, ExtractedItem>();
     if (!thread) return map;
@@ -267,13 +456,21 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     };
   }, [thread]);
 
-  const totalParticipants = participants.humans.length + participants.agents.length;
   const branchCount = useMemo(() => scopeItems.filter((i) => i.type === "spin_off_thread").length, [scopeItems]);
 
   // Invalidate helper
   const invalidateThread = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, resolvedId] });
   }, [queryClient, selectedCompanyId, resolvedId]);
+
+  const invalidateScopeVersionsOnly = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId, resolvedId, "scope-versions"] });
+  }, [queryClient, selectedCompanyId, resolvedId]);
+
+  const invalidateScopeVersions = useCallback(() => {
+    invalidateScopeVersionsOnly();
+    invalidateThread();
+  }, [invalidateScopeVersionsOnly, invalidateThread]);
 
   // Mutations
   const renameMutation = useMutation({
@@ -324,26 +521,6 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     onError: () => pushToast({ title: "Failed to resume crew", tone: "warn" }),
   });
 
-  // Archive / unarchive the thread (PATCH /discussions/:id { status }).
-  // Server gates this to founder/team_lead; there is no hard delete.
-  const archiveMutation = useMutation({
-    mutationFn: (next: "active" | "archived") =>
-      threadsApi.setStatus(selectedCompanyId!, resolvedId!, next),
-    onSuccess: (_d, next) => {
-      // Refresh both the thread detail and the left-rail list.
-      invalidateThread();
-      queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId] });
-      if (next === "archived") {
-        pushToast({ title: "Thread archived", tone: "success" });
-        // useNavigate from @/lib/router auto-prepends the company prefix.
-        navigate("/discussions");
-      } else {
-        pushToast({ title: "Thread unarchived", tone: "success" });
-      }
-    },
-    onError: () => pushToast({ title: "Failed to update thread", tone: "warn" }),
-  });
-
   const setAutonomyMutation = useMutation({
     mutationFn: (level: number | null) =>
       threadsApi.setAutonomyLevel(selectedCompanyId!, resolvedId!, level),
@@ -351,8 +528,126 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     onError: () => pushToast({ title: "Failed to update autonomy", tone: "warn" }),
   });
 
-  // Autonomy dropdown state
-  const [autonomyOpen, setAutonomyOpen] = useState(false);
+  const createScopeDraftMutation = useMutation({
+    mutationFn: () => {
+      if (!thread) throw new Error("Thread is not loaded");
+      return threadsApi.createScopeDraft(selectedCompanyId!, resolvedId!, { mode: "generate" });
+    },
+    onSuccess: (result) => {
+      invalidateScopeVersions();
+      setCenterTab("scope");
+      setMobileTab("scope");
+      pushToast({
+        title:
+          result.status === "no_entries"
+            ? "No messages to scope yet"
+            : result.status === "existing_draft"
+              ? "Scope draft already exists"
+              : "Scope draft created",
+        tone: result.status === "no_entries" ? "warn" : "success",
+      });
+    },
+    onError: () => pushToast({ title: "Failed to create scope draft", tone: "warn" }),
+  });
+
+  const acceptScopeMutation = useMutation({
+    mutationFn: ({ scopeVersionId, itemIds }: { scopeVersionId: string; itemIds: string[] }) =>
+      threadsApi.acceptScopeVersion(selectedCompanyId!, resolvedId!, scopeVersionId, itemIds),
+    onSuccess: () => {
+      invalidateScopeVersions();
+      pushToast({ title: "Scope accepted", tone: "success" });
+    },
+    onError: (error) => pushToast({ title: apiErrorMessage(error, "Failed to accept scope"), tone: "warn" }),
+  });
+
+  const reviewScopeItemsMutation = useMutation({
+    mutationFn: ({
+      scopeVersionId,
+      items,
+    }: {
+      scopeVersionId: string;
+      items: Array<{ itemId: string; status: "draft" | "accepted" | "rejected" }>;
+    }) => threadsApi.reviewScopeItems(selectedCompanyId!, resolvedId!, scopeVersionId, { items }),
+    onSuccess: () => {
+      invalidateScopeVersionsOnly();
+      pushToast({ title: "Scope card updated", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to update scope card", tone: "warn" }),
+  });
+
+  const updateScopeItemMutation = useMutation({
+    mutationFn: ({
+      scopeVersionId,
+      itemId,
+      patch,
+    }: {
+      scopeVersionId: string;
+      itemId: string;
+      patch: UpdateScopeItemRequest;
+    }) => threadsApi.updateScopeItem(selectedCompanyId!, resolvedId!, scopeVersionId, itemId, patch),
+    onSuccess: () => {
+      invalidateScopeVersionsOnly();
+      pushToast({ title: "Scope card changed", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to change scope card", tone: "warn" }),
+  });
+
+  const createScopeOutputItemMutation = useMutation({
+    mutationFn: ({
+      scopeVersionId,
+      itemId,
+      memoryStatus,
+    }: {
+      scopeVersionId: string;
+      itemId: string;
+      memoryStatus?: "approved" | "pending";
+    }) =>
+      memoryStatus
+        ? threadsApi.createScopeOutputItem(selectedCompanyId!, resolvedId!, scopeVersionId, itemId, { memoryStatus })
+        : threadsApi.createScopeOutputItem(selectedCompanyId!, resolvedId!, scopeVersionId, itemId),
+    onSuccess: (result) => {
+      invalidateScopeVersionsOnly();
+      invalidateThread();
+      if (result.createdTask?.id) {
+        openViewerTab(taskTab(result.createdTask.id, result.item.title, result.item.id));
+      } else if (result.createdMemoryId && selectedCompanyId) {
+        openViewerTab(memoryTab(selectedCompanyId, result.createdMemoryId, result.item.title, result.item.id));
+      }
+      pushToast({ title: "Scope output created", tone: "success" });
+    },
+    onError: (error) => pushToast({ title: apiErrorMessage(error, "Failed to create scope output"), tone: "warn" }),
+  });
+
+  const applyScopeMutation = useMutation({
+    mutationFn: (scopeVersionId: string) =>
+      threadsApi.applyScopeVersion(selectedCompanyId!, resolvedId!, scopeVersionId),
+    onSuccess: () => {
+      invalidateScopeVersionsOnly();
+      invalidateThread();
+      pushToast({ title: "Accepted scope cards applied", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to apply scope cards", tone: "warn" }),
+  });
+
+  const rejectScopeMutation = useMutation({
+    mutationFn: (scopeVersionId: string) =>
+      threadsApi.rejectScopeVersion(selectedCompanyId!, resolvedId!, scopeVersionId),
+    onSuccess: () => {
+      invalidateScopeVersions();
+      pushToast({ title: "Scope rejected", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to reject scope", tone: "warn" }),
+  });
+
+  const completeScopeMutation = useMutation({
+    mutationFn: (scopeVersionId: string) =>
+      threadsApi.completeScopeVersion(selectedCompanyId!, resolvedId!, scopeVersionId),
+    onSuccess: () => {
+      invalidateScopeVersions();
+      pushToast({ title: "Scope completed", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to complete scope", tone: "warn" }),
+  });
 
   // Rename modal handlers
   function openRename() {
@@ -398,25 +693,53 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     }
   }, []);
 
-  const startViewerResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (viewerCollapsed) return;
-    viewerDragStart.current = { x: event.clientX, width: viewerWidth };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  }, [viewerCollapsed, viewerWidth]);
-
-  const resizeViewer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+  const applyViewerResize = useCallback((clientX: number) => {
     if (!viewerDragStart.current) return;
-    const delta = viewerDragStart.current.x - event.clientX;
+    const delta = viewerDragStart.current.x - clientX;
     const nextWidth = Math.min(
-      VIEWER_MAX_WIDTH,
+      getViewerMaxWidth(),
       Math.max(VIEWER_MIN_WIDTH, viewerDragStart.current.width + delta),
     );
     setViewerWidth(nextWidth);
   }, []);
 
+  const startViewerResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (viewerCollapsed) return;
+    viewerDragStart.current = { x: event.clientX, width: viewerWidth };
+    setIsViewerResizing(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, [viewerCollapsed, viewerWidth]);
+
+  const resizeViewer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    applyViewerResize(event.clientX);
+  }, [applyViewerResize]);
+
   const stopViewerResize = useCallback(() => {
     viewerDragStart.current = null;
+    setIsViewerResizing(false);
   }, []);
+
+  useEffect(() => {
+    if (!isViewerResizing) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      applyViewerResize(event.clientX);
+    };
+    const handlePointerStop = () => {
+      viewerDragStart.current = null;
+      setIsViewerResizing(false);
+    };
+
+    document.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerup", handlePointerStop);
+    document.addEventListener("pointercancel", handlePointerStop);
+
+    return () => {
+      document.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerup", handlePointerStop);
+      document.removeEventListener("pointercancel", handlePointerStop);
+    };
+  }, [applyViewerResize, isViewerResizing]);
 
   // Loading / error
   if (isLoading) {
@@ -470,15 +793,30 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
   // Phase computations
   const phaseIndex = PHASES.indexOf(thread.phase as Phase);
   const nextPhase = NEXT_PHASE[thread.phase as Phase];
-  const phaseButtonLabel = PHASE_BTN[thread.phase as Phase];
+  const derivedStage = thread.derivedStage ?? null;
+  const derivedStageLabel = derivedStage?.label ?? PHASE_LABELS[thread.phase as Phase] ?? thread.phase;
+  const newEntryLabel =
+    derivedStage?.hasNewEntries && derivedStage.newEntryCount > 0
+      ? `${derivedStage.newEntryCount} new ${derivedStage.newEntryCount === 1 ? "message" : "messages"}`
+      : null;
+  const scopeDraftActionLabel =
+    derivedStage?.scopeVersionId && derivedStage.hasNewEntries ? "Re-scope" : "Create scope draft";
+  const canCreateScopeDraft = thread.subtype !== "live";
   const autonomyInfo =
     thread.autonomyLevel != null && thread.autonomyLevel in AUTONOMY_COLORS
       ? { label: autonomyLabel(thread.autonomyLevel), ...AUTONOMY_COLORS[thread.autonomyLevel as AutonomyValue] }
       : null;
 
   // Participant avatars (first 5)
-  const allParticipants: Array<{ type: "human" | "agent"; id: string; name: string | null }> = [
-    ...participants.humans.map((id) => ({ type: "human" as const, id, name: null })),
+  const participantHumanIds = new Set(participants.humans);
+  if (thread.ownerUserId) participantHumanIds.add(thread.ownerUserId);
+  const allParticipants: Array<{ type: "human" | "agent"; id: string; name: string | null; role?: string }> = [
+    ...[...participantHumanIds].map((id) => ({
+      type: "human" as const,
+      id,
+      name: null,
+      role: id === thread.ownerUserId ? "Owner" : undefined,
+    })),
     ...participants.agents.map(({ id, name }) => ({ type: "agent" as const, id, name })),
   ];
   const shownParticipants = allParticipants.slice(0, 5);
@@ -595,12 +933,13 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
           <div
             className="shrink-0 border-b border-border"
             style={{ background: "var(--card, #161a20)" }}
+            data-testid="thread-center-header"
           >
             {/* Row 1: title + controls */}
-            <div className="flex items-center gap-3 px-4 pt-4 pb-2">
+            <div className="flex items-start gap-3 px-4 pt-4 pb-2">
               {/* Title with hover-to-edit */}
               <div
-                className="flex items-center gap-1.5 flex-1 min-w-0 group cursor-pointer"
+                className="flex items-center gap-1.5 flex-1 min-w-0 group cursor-pointer pt-0.5"
                 onMouseEnter={() => setShowTitleEdit(true)}
                 onMouseLeave={() => setShowTitleEdit(false)}
                 onClick={openRename}
@@ -619,82 +958,120 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                 />
               </div>
 
-              {/* Controls: autonomy pill + phase advance + pause */}
-              <div className="flex items-center gap-1.5 shrink-0">
-                {/* Autonomy pill — click opens level picker */}
-                <div className="relative">
-                  <button
-                    type="button"
-                    title="Change autonomy level"
-                    onClick={() => setAutonomyOpen((v) => !v)}
-                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity hover:opacity-80"
-                    style={
-                      autonomyInfo
-                        ? { color: autonomyInfo.color, background: autonomyInfo.bgColor }
-                        : { color: "hsl(0 0% 60%)", background: "hsl(0 0% 14%)" }
-                    }
-                  >
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ background: autonomyInfo?.color ?? "hsl(0 0% 40%)" }}
-                    />
-                    {autonomyInfo?.label ?? "Auto off"}
-                    <ChevronDown className="h-2.5 w-2.5 opacity-60" />
-                  </button>
-
-                  {autonomyOpen && (
-                    <div
-                      className="absolute right-0 top-full mt-1 z-50 min-w-[130px] rounded-lg border border-border shadow-lg py-1"
-                      style={{ background: "var(--card, #161a20)" }}
+              {/* Controls: autonomy + workflow actions + pause */}
+              <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Change autonomy level"
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity hover:opacity-80"
+                      style={
+                        autonomyInfo
+                          ? { color: autonomyInfo.color, background: autonomyInfo.bgColor }
+                          : { color: "hsl(0 0% 60%)", background: "hsl(0 0% 14%)" }
+                      }
                     >
-                      {([null, 0, 1, 2] as Array<AutonomyValue | null>).map((lvl) => {
-                        const label = autonomyLabel(lvl);
-                        const colors = lvl !== null ? AUTONOMY_COLORS[lvl] : null;
-                        const color = colors?.color ?? "hsl(0 0% 40%)";
-                        const bg    = colors?.bgColor ?? "hsl(0 0% 14%)";
-                        const isActive = (thread.autonomyLevel ?? null) === lvl;
-                        return (
-                          <button
-                            key={String(lvl)}
-                            type="button"
-                            onClick={() => {
-                              setAutonomyOpen(false);
-                              if (!isActive) setAutonomyMutation.mutate(lvl);
-                            }}
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium transition-colors hover:bg-muted/30"
-                            style={{ color: isActive ? color : "hsl(0 0% 70%)" }}
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color }} />
-                            {label}
-                            {isActive && <span className="ml-auto text-[9px] opacity-60">✓</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: autonomyInfo?.color ?? "hsl(0 0% 40%)" }}
+                      />
+                      {autonomyInfo?.label ?? "Auto off"}
+                      <ChevronDown className="h-2.5 w-2.5 opacity-60" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[240px]">
+                    <DropdownMenuLabel>Autonomy</DropdownMenuLabel>
+                    {([null, 0, 1, 2] as Array<AutonomyValue | null>).map((lvl) => {
+                      const label = autonomyLabel(lvl);
+                      const colors = lvl !== null ? AUTONOMY_COLORS[lvl] : null;
+                      const color = colors?.color ?? "hsl(0 0% 50%)";
+                      const isActive = (thread.autonomyLevel ?? null) === lvl;
+                      const description =
+                        lvl === null
+                          ? "Use the company default for this thread."
+                          : lvl === 0
+                            ? "Humans drive. Agents answer only when directly called."
+                            : lvl === 1
+                              ? "Agents can assist the discussion without driving delivery."
+                              : "Agents can help move the thread toward work.";
 
-                {/* Phase advance button */}
-                {phaseButtonLabel && nextPhase && (
-                  <button
-                    type="button"
-                    onClick={() => advancePhaseMutation.mutate(nextPhase)}
-                    disabled={advancePhaseMutation.isPending}
-                    className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity disabled:opacity-50"
-                    style={{
-                      color: "#eeeeee",
-                      background: "hsl(0 0% 20%)",
-                      border: "1px solid hsl(0 0% 28%)",
-                    }}
-                  >
-                    {phaseButtonLabel}
-                  </button>
-                )}
+                      return (
+                        <DropdownMenuItem
+                          key={String(lvl)}
+                          onSelect={() => {
+                            if (!isActive) setAutonomyMutation.mutate(lvl);
+                          }}
+                          className={cn("items-start gap-2", isActive && "bg-white/5")}
+                        >
+                          <span
+                            className="mt-1.5 h-1.5 w-1.5 rounded-full shrink-0"
+                            style={{ background: color }}
+                          />
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-2 text-xs font-semibold">
+                              {label}
+                              {isActive && (
+                                <span className="text-[10px] text-muted-foreground">Current</span>
+                              )}
+                            </span>
+                            <span className="block text-[11px] leading-snug text-muted-foreground">
+                              {description}
+                            </span>
+                          </span>
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuContent>
+                </DropdownMenu>
 
-                {/* Pause/resume crew — solid button, wired to crewPaused */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Thread actions"
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity hover:opacity-80"
+                      style={{
+                        color: "#eeeeee",
+                        background: "hsl(0 0% 20%)",
+                        border: "1px solid hsl(0 0% 28%)",
+                      }}
+                    >
+                      Actions
+                      <ChevronDown className="h-2.5 w-2.5 opacity-60" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[220px]">
+                    <DropdownMenuLabel>Thread workflow</DropdownMenuLabel>
+                    <DropdownMenuItem
+                      disabled={!canCreateScopeDraft || createScopeDraftMutation.isPending}
+                      onSelect={() => {
+                        if (canCreateScopeDraft) createScopeDraftMutation.mutate();
+                      }}
+                    >
+                      {scopeDraftActionLabel}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={thread.phase === "discuss" || thread.phase === "done" || advancePhaseMutation.isPending}
+                      onSelect={() => {
+                        if (thread.phase === "scope") advancePhaseMutation.mutate("assign");
+                      }}
+                    >
+                      Assign work
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      disabled={thread.phase === "done" || advancePhaseMutation.isPending}
+                      onSelect={() => advancePhaseMutation.mutate("done")}
+                    >
+                      Mark done
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
                 <button
                   type="button"
-                  title={thread.crewPaused ? "Resume crew" : "Pause crew"}
+                  aria-label={thread.crewPaused ? "Resume crew" : "Pause crew"}
                   onClick={() =>
                     thread.crewPaused
                       ? resumeCrewMutation.mutate()
@@ -704,28 +1081,21 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                   className="w-7 h-7 rounded-full flex items-center justify-center transition-colors disabled:opacity-40"
                   style={
                     thread.crewPaused
-                      ? { background: "#b82d1c", color: "#fff" }
-                      : { background: "hsl(0 0% 20%)", color: "hsl(0 0% 70%)", border: "1px solid hsl(0 0% 28%)" }
+                      ? {
+                          background: "rgba(79,182,126,0.15)",
+                          color: "#4FB67E",
+                          border: "1px solid rgba(79,182,126,0.45)",
+                        }
+                      : {
+                          background: "rgba(217,169,56,0.15)",
+                          color: "#D9A938",
+                          border: "1px solid rgba(217,169,56,0.45)",
+                        }
                   }
                 >
                   {thread.crewPaused
                     ? <Play className="h-3 w-3 ml-0.5" />
                     : <Pause className="h-3.5 w-3.5" />
-                  }
-                </button>
-
-                {/* Archive / unarchive thread */}
-                <button
-                  type="button"
-                  title={thread.status === "archived" ? "Unarchive thread" : "Archive thread"}
-                  onClick={() => archiveMutation.mutate(thread.status === "archived" ? "active" : "archived")}
-                  disabled={archiveMutation.isPending}
-                  className="w-7 h-7 rounded-full flex items-center justify-center transition-colors disabled:opacity-40"
-                  style={{ background: "hsl(0 0% 20%)", color: "hsl(0 0% 70%)", border: "1px solid hsl(0 0% 28%)" }}
-                >
-                  {thread.status === "archived"
-                    ? <ArchiveRestore className="h-3.5 w-3.5" />
-                    : <Archive className="h-3.5 w-3.5" />
                   }
                 </button>
               </div>
@@ -745,27 +1115,22 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
               </div>
             )}
 
-            {/* Claim banner */}
-            {thread.ownerUserId === null && (
-              <div
-                className="mx-4 mb-2 flex items-center justify-between rounded-md px-3 py-1.5"
-                style={{ border: "1px dashed hsl(0 0% 28%)" }}
+            <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
+              <span
+                className="inline-flex items-center rounded-full bg-muted/40 px-2 py-0.5 text-[11px] font-semibold text-muted-foreground"
+                data-testid="thread-derived-stage"
               >
-                <span className="text-[11px] text-muted-foreground">Unclaimed</span>
-                <button
-                  type="button"
-                  onClick={() => claimMutation.mutate()}
-                  disabled={claimMutation.isPending}
-                  className="text-[11px] font-semibold text-primary hover:underline disabled:opacity-50"
-                >
-                  Take ownership
-                </button>
-              </div>
-            )}
+                {derivedStageLabel}
+              </span>
+              {newEntryLabel && (
+                <span className="text-[11px] text-muted-foreground">
+                  {newEntryLabel}
+                </span>
+              )}
+            </div>
 
-            {/* Participant avatars */}
-            {totalParticipants > 0 && (
-              <div className="flex items-center gap-2.5 px-4 pb-2.5">
+            {(shownParticipants.length > 0 || thread.ownerUserId === null) && (
+              <div className="flex items-center gap-2.5 px-4 pb-2.5 min-h-8">
                 <div className="flex items-center -space-x-1.5">
                   {shownParticipants.map((p) =>
                     p.type === "agent" ? (
@@ -791,9 +1156,9 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                         className="w-7 h-7 rounded-full border-2 flex items-center justify-center text-[10px] font-bold text-white shrink-0"
                         style={{
                           background: "hsl(220 14% 28%)",
-                          borderColor: "var(--card, #161a20)",
+                          borderColor: p.role === "Owner" ? "#D9A938" : "var(--card, #161a20)",
                         }}
-                        title={p.id}
+                        title={p.role === "Owner" ? `Owner: ${p.id}` : p.id}
                       >
                         {toInitials(p.id)}
                       </div>
@@ -808,93 +1173,53 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                     </div>
                   )}
                 </div>
-                <span className="text-[11px] text-muted-foreground/60">
-                  {totalParticipants} participant{totalParticipants !== 1 ? "s" : ""}
-                  {participants.humans.length > 0 && ` · ${participants.humans.length} human${participants.humans.length !== 1 ? "s" : ""}`}
-                  {participants.agents.length > 0 && ` · ${participants.agents.length} agent${participants.agents.length !== 1 ? "s" : ""}`}
-                </span>
-              </div>
-            )}
-
-            {/* AI Summary banner */}
-            {thread.summaryText && (
-              <div
-                className="mx-4 mb-2 rounded-lg border border-border/60 overflow-hidden"
-                style={{ background: "hsl(221 15% 18%)" }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setSummaryExpanded((v) => !v)}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-left"
-                >
-                  {summaryExpanded ? (
-                    <ChevronDown className="h-3 w-3 text-muted-foreground/60 shrink-0" />
-                  ) : (
-                    <ChevronRight className="h-3 w-3 text-muted-foreground/60 shrink-0" />
-                  )}
-                  <span className="text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-wider shrink-0">
-                    AI Summary
-                  </span>
-                  {!summaryExpanded && (
-                    <span className="text-[12px] text-muted-foreground truncate flex-1 ml-1">
-                      {thread.summaryText}
-                    </span>
-                  )}
-                </button>
-                {summaryExpanded && (
-                  <div className="px-4 pb-3 space-y-1.5 border-t border-border/40">
-                    <p className="text-xs text-muted-foreground leading-relaxed pt-2">
-                      {thread.summaryText}
-                    </p>
-                    {thread.summaryNext && (
-                      <p className="text-[11px] text-muted-foreground/70 italic">
-                        Next: {thread.summaryNext}
-                      </p>
-                    )}
-                  </div>
+                {thread.ownerUserId === null && (
+                  <button
+                    type="button"
+                    onClick={() => claimMutation.mutate()}
+                    disabled={claimMutation.isPending}
+                    className="text-[11px] font-semibold text-primary hover:underline disabled:opacity-50"
+                  >
+                    Take ownership
+                  </button>
                 )}
               </div>
             )}
 
-            {/* Phase stepper */}
-            <div className="flex items-center justify-center gap-0 px-4 pb-3.5 pt-1">
-              {PHASES.map((phase, i) => {
-                const isDone = i < phaseIndex;
-                const isActive = i === phaseIndex;
-                return (
-                  <div key={phase} className="flex items-center">
-                    <div className="flex flex-col items-center gap-1.5">
+            {thread.summaryNext && (
+              <div className="px-4 pb-2 text-[12px] text-muted-foreground">
+                <span className="font-semibold text-foreground/80">Next:</span>{" "}
+                {thread.summaryNext}
+              </div>
+            )}
+
+            <div
+              className="px-4 pb-3.5 pt-1"
+              aria-label={`Phase: ${PHASE_LABELS[thread.phase as Phase] ?? thread.phase}`}
+            >
+              <div className="flex items-center gap-1">
+                {PHASES.map((phase, i) => {
+                  const isDone = i < phaseIndex;
+                  const isActive = i === phaseIndex;
+                  return (
+                    <div
+                      key={phase}
+                      className="group relative flex flex-1 items-center"
+                      title={PHASE_LABELS[phase]}
+                    >
                       <div
-                        className={cn(
-                          "rounded-full transition-all",
-                          isDone && "w-2.5 h-2.5",
-                          isActive && "w-3 h-3",
-                          !isDone && !isActive && "w-2 h-2",
-                        )}
+                        className="h-1.5 flex-1 rounded-full transition-colors"
                         style={{
-                          background: isDone ? "#4FB67E" : isActive ? "#3b82f6" : "hsl(0 0% 35%)",
-                          boxShadow: isActive ? "0 0 0 3px rgba(59,130,246,0.25)" : undefined,
+                          background: isDone ? "#4FB67E" : isActive ? "#3b82f6" : "hsl(0 0% 22%)",
                         }}
                       />
-                      <span
-                        className="text-[10px] font-medium whitespace-nowrap"
-                        style={{ color: isActive ? "#60a5fa" : isDone ? "#4FB67E" : "hsl(0 0% 45%)" }}
-                      >
+                      <span className="pointer-events-none absolute left-1/2 top-3 hidden -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground shadow-sm group-hover:block">
                         {PHASE_LABELS[phase]}
                       </span>
                     </div>
-                    {i < PHASES.length - 1 && (
-                      <div
-                        className="h-px mb-4 mx-1.5"
-                        style={{
-                          width: "48px",
-                          background: i < phaseIndex ? "#4FB67E" : "hsl(0 0% 22%)",
-                        }}
-                      />
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
 
             {/* Tab bar */}
@@ -926,7 +1251,7 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                     }}
                     className={cn(
                       "flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors capitalize",
-                      "focus-visible:outline-2 focus-visible:outline-primary",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(255,255,255,0.22)] focus-visible:ring-inset",
                       centerTab === tab
                         ? "text-foreground border-b-2 border-foreground"
                         : "text-muted-foreground hover:text-foreground border-b-2 border-transparent",
@@ -988,8 +1313,56 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                   const extracted = extractedItemById.get(item.id);
                   if (extracted) openScopeItemInViewer(extracted);
                 }}
+                onScopeVersionItemClick={openScopeVersionItemInViewer}
                 companyId={selectedCompanyId ?? undefined}
                 discussionId={resolvedId ?? undefined}
+                activeScopeVersion={activeScopeVersionQuery.data ?? null}
+                scopeVersions={scopeVersionsQuery.data?.versions ?? []}
+                isScopeVersionLoading={scopeVersionsQuery.isLoading || activeScopeVersionQuery.isLoading}
+                onScopeVersionSelect={setSelectedScopeVersionId}
+                onCreateScopeDraft={() => createScopeDraftMutation.mutate()}
+                createScopeDraftLabel={scopeDraftActionLabel}
+                createScopeDraftDisabled={!canCreateScopeDraft || createScopeDraftMutation.isPending}
+                showCreateScopeDraftCta={Boolean(
+                  isViewingCurrentScopeVersion && derivedStage?.scopeVersionId && derivedStage.hasNewEntries,
+                )}
+                onAcceptScopeVersion={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId, itemIds) => acceptScopeMutation.mutate({ scopeVersionId, itemIds })
+                    : undefined
+                }
+                onReviewScopeItems={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId, items) => reviewScopeItemsMutation.mutate({ scopeVersionId, items })
+                    : undefined
+                }
+                onUpdateScopeItem={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId, itemId, patch) =>
+                        updateScopeItemMutation.mutate({ scopeVersionId, itemId, patch })
+                    : undefined
+                }
+                onCreateScopeOutputItem={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId, itemId, options) =>
+                        createScopeOutputItemMutation.mutate({ scopeVersionId, itemId, ...options })
+                    : undefined
+                }
+                onApplyScopeVersion={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId) => applyScopeMutation.mutate(scopeVersionId)
+                    : undefined
+                }
+                onRejectScopeVersion={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId) => rejectScopeMutation.mutate(scopeVersionId)
+                    : undefined
+                }
+                onCompleteScopeVersion={
+                  isViewingCurrentScopeVersion
+                    ? (scopeVersionId) => completeScopeMutation.mutate(scopeVersionId)
+                    : undefined
+                }
               />
             </div>
 
@@ -1051,10 +1424,24 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
               thread={thread}
               tabs={viewerTabs}
               activeKey={activeViewerKey}
+              companyId={selectedCompanyId ?? undefined}
+              scopeItems={viewerScopeItems}
               onActivate={setActiveViewerKey}
               onClose={closeViewerTab}
               onOpenTab={openViewerTab}
               onOpenScopePanel={() => { setCenterTab("scope"); setMobileTab("scope"); }}
+              onUpdateScopeItem={(scopeVersionId, itemId, patch) =>
+                updateScopeItemMutation.mutateAsync({ scopeVersionId, itemId, patch }).then(() => undefined).catch(() => undefined)
+              }
+              onCreateScopeOutputItem={(scopeVersionId, itemId, options) =>
+                createScopeOutputItemMutation.mutateAsync({ scopeVersionId, itemId, ...options }).then(() => undefined).catch(() => undefined)
+              }
+              onReviewScopeItem={(scopeVersionId, itemId, status) =>
+                reviewScopeItemsMutation.mutateAsync({
+                  scopeVersionId,
+                  items: [{ itemId, status }],
+                }).then(() => undefined).catch(() => undefined)
+              }
               onToggleCollapse={() => setViewerCollapsed(true)}
             />
           )}
@@ -1111,6 +1498,7 @@ function ConnectionPill({ state }: { state: "connecting" | "open" | "reconnectin
 function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; currentThreadId: string }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [archiveConfirm, setArchiveConfirm] = useState<{ id: string; title: string } | null>(null);
 
   const { data } = useQuery({
     queryKey: ["threads", companyId, "list"],
@@ -1126,6 +1514,7 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
     mutationFn: ({ id }: { id: string }) =>
       threadsApi.setStatus(companyId, id, "archived"),
     onSuccess: () => {
+      setArchiveConfirm(null);
       queryClient.invalidateQueries({ queryKey: ["threads", companyId] });
       pushToast({ title: "Thread archived", tone: "success" });
     },
@@ -1183,7 +1572,9 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="right" align="start">
                       <DropdownMenuItem
-                        onSelect={() => archiveMutation.mutate({ id: t.id })}
+                        onSelect={() => {
+                          setArchiveConfirm({ id: t.id, title: t.title });
+                        }}
                         data-testid={`thread-rail-archive-${t.id}`}
                       >
                         <Archive className="h-4 w-4" />
@@ -1197,6 +1588,43 @@ function ThreadLeftRail({ companyId, currentThreadId }: { companyId: string; cur
           })
         )}
       </nav>
+      {archiveConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Archive thread"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4"
+          onClick={() => setArchiveConfirm(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-lg"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-foreground">Archive thread</h2>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              Archive "{archiveConfirm.title}"? It will move out of the live rail and can be restored from Archived.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setArchiveConfirm(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => archiveMutation.mutate({ id: archiveConfirm.id })}
+                disabled={archiveMutation.isPending}
+              >
+                Archive
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

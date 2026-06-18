@@ -20,6 +20,7 @@ import { buildTriggerPrompt } from "./aoa-trigger-prompt.js";
 import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
+import { maybeExecuteFakeCrewTurn } from "./fake-crew-llm.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
@@ -136,7 +137,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       // so the wakeup row reflects what happened. "agent gone" is a failed
       // run from the wakeup's perspective (something asked for an agent
       // that doesn't exist anymore — orphan wakeup).
-      return { status: "failed", errorMessage: "aoa agent missing" };
+      return { status: "failed", errorMessage: "aoa agent missing", runId };
     }
 
     const inserted = await db.insert(internalAgentRuns).values({
@@ -183,7 +184,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         // dispatcher doesn't count it toward the failure-storm brake (T1.9).
         // The internal_agent_runs row is still marked failed above so the
         // operator sees the skip for this specific run attempt.
-        return { status: "succeeded" };
+        return { status: "succeeded", runId };
       }
       // Claim succeeded — this run now OWNS the entry. Record it so a later
       // failure can terminalize it (FX1/B1).
@@ -209,7 +210,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         await db.update(internalAgentRuns)
           .set({ status: "failed", errorMessage: "task checkout conflict (concurrent)", completedAt: new Date(), durationMs: Date.now() - startedAt })
           .where(eq(internalAgentRuns.id, runId));
-        return { status: "succeeded" }; // benign concurrency skip — mirror entry-claim race
+        return { status: "succeeded", runId }; // benign concurrency skip — mirror entry-claim race
       }
     }
 
@@ -251,6 +252,32 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       TOOL_REGISTRY_FOR_CAPABILITY_DERIVATION,
     );
 
+    const bridgeThreadId = typeof payload.threadId === "string" ? payload.threadId : undefined;
+    const isActionGatedDiscussionRun = Boolean(bridgeThreadId) && (
+      payload.source === "thread.controller" ||
+      payload.source === "thread.participation" ||
+      payload.source === "mention" ||
+      payload.source === "agent.dispatch"
+    );
+    const discussionRunMode: "controller_action_gate" | null =
+      isActionGatedDiscussionRun ? "controller_action_gate" : null;
+    let threadFreshness: Record<string, unknown> | null = null;
+    if (bridgeThreadId && isActionGatedDiscussionRun) {
+      try {
+        const { captureFreshnessSnapshot } = await import("../../thread-agent-action-freshness.js");
+        threadFreshness = await captureFreshnessSnapshot(db as never, bridgeThreadId);
+      } catch (freshnessErr) {
+        // The captured snapshot stays null → the action row stores `{}` → the
+        // later commit reports `snapshot_unavailable` (NOT a false
+        // `newer_human_entry`). Escalate with threadId+runId so a fully-
+        // suppressed run can be traced back to this capture failure.
+        log.warn(
+          { err: freshnessErr, threadId: bridgeThreadId, runId },
+          "aoa-runner: failed to capture thread freshness snapshot — actions this run proposes may be suppressed as snapshot_unavailable",
+        );
+      }
+    }
+
     // MX2: the bridge params are identical for both the claude {mcpServers}
     // envelope and the provider-neutral spec — build them once.
     const mcpParams = {
@@ -263,6 +290,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       agentKind: "aoa",
       toolAllowlist: toolAllowlistFromConfig,
       agentId,
+      runId,
+      discussionRunMode,
+      threadFreshness,
       effectiveAutonomy: typeof payload.effectiveAutonomy === "number"
         ? payload.effectiveAutonomy
         : null,
@@ -322,7 +352,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // pgvector hiccup) must NEVER break a run. Empty bundle ⇒ no `## Context`
     // section (the prompt stays byte-identical to the pre-Phase-4 form).
     let contextBundle = "";
-    const bundleThreadId = typeof payload.threadId === "string" ? payload.threadId : undefined;
+    const bundleThreadId = bridgeThreadId;
     const bundleIssueId = typeof payload.issueId === "string" ? payload.issueId : undefined;
     if (bundleThreadId || bundleIssueId) {
       try {
@@ -411,17 +441,23 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // T1.0: capture the adapter result so we can build AoaRunResult.
     // Adapters populate `usage`, `costUsd`, `exitCode`, `errorMessage` on
     // their AdapterExecutionResult — that data was previously discarded.
-    const adapterResult = await adapter.execute({
-      runId: runId ?? `aoa-${agentId}`,
-      agent,
-      runtime: agent.runtimeConfig ?? {},
-      config,
-      context: { aoaInstruction: instruction, payload },
-      executionTarget, runtimeCommandSpec,
-      mcpBridge: bridgeSpec,
-      onLog: async () => {}, onMeta: async () => {},
-      authToken: undefined, onSpawn: () => {},
-    });
+    const adapterResult =
+      (await maybeExecuteFakeCrewTurn({
+        db,
+        agent: { id: agent.id, name: agent.name },
+        payload,
+      })) ??
+      (await adapter.execute({
+        runId: runId ?? `aoa-${agentId}`,
+        agent,
+        runtime: agent.runtimeConfig ?? {},
+        config,
+        context: { aoaInstruction: instruction, payload },
+        executionTarget, runtimeCommandSpec,
+        mcpBridge: bridgeSpec,
+        onLog: async () => {}, onMeta: async () => {},
+        authToken: undefined, onSpawn: () => {},
+      }));
 
     // Silent-failure guard: a CLI agent can finish its run WITHOUT calling
     // submit_extracted_items (codex/opencode have no MCP-bridge wiring yet — see
@@ -488,6 +524,44 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const adapterUsage = runResult.usage;
     const costCents = runResult.costCents;
 
+    // Thread controller runs commit action-gated side effects in
+    // thread-orchestration.ts after re-checking the controller epoch. Direct
+    // participation / mention / delegated thread runs have no outer controller,
+    // so they must flush their own freshness-checked action queue here.
+    if (
+      runResult.status === "succeeded" &&
+      runId &&
+      bridgeThreadId &&
+      discussionRunMode === "controller_action_gate" &&
+      payload.source !== "thread.controller"
+    ) {
+      const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+      const commitResult = await threadAgentActionService(db).commitThreadAgentActions({
+        companyId: payload.companyId,
+        threadId: bridgeThreadId,
+        runId,
+      });
+      // A run whose work was ENTIRELY discarded (nothing committed, yet it
+      // proposed actions that were suppressed/blocked/failed) is otherwise
+      // invisible — the run row still reads "completed". Surface it at warn so a
+      // fully-suppressed run (e.g. all actions stale, or snapshot_unavailable
+      // from a freshness-capture failure above) is operator-visible, not silent.
+      const fullySuppressed =
+        commitResult.committed === 0 &&
+        commitResult.suppressed + commitResult.blocked + commitResult.failed > 0;
+      if (fullySuppressed) {
+        log.warn(
+          { runId, threadId: bridgeThreadId, commitResult },
+          "aoa-runner: discussion run fully suppressed — no actions committed",
+        );
+      } else {
+        log.info(
+          { runId, threadId: bridgeThreadId, commitResult },
+          "aoa-runner: committed direct discussion actions",
+        );
+      }
+    }
+
     if (runId) {
       await db.update(internalAgentRuns)
         .set({
@@ -532,7 +606,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       occurredAt: new Date(),
     });
 
-    return runResult;
+    return { ...runResult, runId };
   } catch (err) {
     log.error({ err }, "aoa run failed (isolated)");
     const errMessage = err instanceof Error ? err.message : String(err);
@@ -598,7 +672,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // row to status='failed'. Before T1.0 we swallowed silently and the
     // dispatcher inferred 'succeeded' from the absence of a thrown
     // exception — masking every crew failure as a successful wakeup.
-    return { status: "failed", errorMessage: errMessage };
+    return { status: "failed", errorMessage: errMessage, runId };
   } finally {
     // Phase 5 (Tasks 5.1/5.2): clear this agent's thread working-presence (run
     // ended — success OR failure). GUARANTEED removal even on throw: the
@@ -612,7 +686,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         log.warn({ err: presenceErr, threadId: presenceThreadId, agentName: presenceAgentName }, "aoa-runner: failed to clear working presence (best-effort, ignored)");
       }
     }
-    if (cfgPath) {
+    if (cfgPath && process.env.AOA_KEEP_MCP_CONFIG === "1") {
+      log.info({ cfgPath }, "aoa-runner: preserving MCP config for diagnostics");
+    } else if (cfgPath) {
       try {
         await unlink(cfgPath).catch(() => {
           /* best-effort cleanup; never break the run or its hard-error boundary */

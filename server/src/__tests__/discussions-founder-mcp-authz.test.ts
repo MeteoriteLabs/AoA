@@ -192,7 +192,10 @@ vi.mock("../routes/authz.js", () => ({
 // ── misc mocks needed by discussions.ts at module load ────────────────────────
 vi.mock("../middleware/validate.js",          () => ({ validate: () => (_: unknown, __: unknown, next: () => void) => next() }));
 vi.mock("../middleware/rbac.js",              () => ({ assertRole: vi.fn(async () => {}) }));
-vi.mock("../middleware/logger.js",            () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock("../middleware/logger.js",            () => { const logger: any = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }; logger.child = vi.fn(() => logger); return { logger }; });
+// scope-version routes (added to discussionRoutes) pull in memory→embeddings→db at
+// module load; stub the service so this auth-focused test doesn't load that chain.
+vi.mock("../services/thread-scope-versions.js", () => ({ threadScopeVersionService: () => new Proxy({}, { get: () => () => Promise.resolve(undefined) }) }));
 vi.mock("../services/live-events.js",         () => ({ publishLiveEvent: vi.fn(async () => {}) }));
 vi.mock("../services/activity-log.js",        () => ({ logActivity: vi.fn(async () => {}) }));
 vi.mock("../services/issue-assignee-wakeup.js", () => ({ enqueueIssueAssigneeWakeup: vi.fn(async () => {}) }));

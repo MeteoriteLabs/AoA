@@ -5,7 +5,7 @@
 // Queries threads that have new entries since their last card update and
 // queues one agentWakeupRequests row per eligible thread.
 //
-// Eligibility: discussions.status='active' AND
+// Eligibility: discussions.status='active' AND discussions.crewPaused=false AND
 //   (summaryUpdatedAt IS NULL OR lastEntryAt > summaryUpdatedAt)
 // Debounce: skip threads with a Chronicler wakeup queued OR processing in the
 //   last CHRONICLER_DEBOUNCE_MS (45s) to absorb entry bursts.
@@ -21,7 +21,7 @@
 
 import { and, eq, ne, gt, isNull, isNotNull, or, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers, discussions, agentWakeupRequests } from "@armyofagents/db";
+import { agents, aoaAgentTriggers, discussions, agentWakeupRequests, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../../../middleware/logger.js";
 
 const log = logger.child({ svc: "sweep-chronicler" });
@@ -86,6 +86,17 @@ export async function runChroniclerSweep(db: Db): Promise<RunChroniclerSweepResu
 }
 
 async function queueForCompany(db: Db, agentId: string, companyId: string): Promise<number> {
+  const [companyConfig] = await db
+    .select({ crewPaused: internalAgentConfig.crewPaused })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .limit(1);
+
+  if (companyConfig?.crewPaused === true) {
+    log.debug({ companyId }, "sweep-chronicler: company crew paused; skipping");
+    return 0;
+  }
+
   // ── Threads with new entries since last card update ───────────────────────
   // Eligibility: active thread that has at least one entry (lastEntryAt set) AND
   // either no card yet (summaryUpdatedAt null) or new entries since the last card.
@@ -93,12 +104,13 @@ async function queueForCompany(db: Db, agentId: string, companyId: string): Prom
   // Chronicler for brand-new no-entry threads (created with lastEntryAt=null) —
   // there is nothing to summarize until a first entry lands.
   const staleThreads = await db
-    .select({ id: discussions.id })
+    .select({ id: discussions.id, lastEntryAt: discussions.lastEntryAt })
     .from(discussions)
     .where(
       and(
         eq(discussions.companyId, companyId),
         eq(discussions.status, "active"),
+        eq(discussions.crewPaused, false),
         isNotNull(discussions.lastEntryAt),
         or(
           isNull(discussions.summaryUpdatedAt),
@@ -132,7 +144,47 @@ async function queueForCompany(db: Db, agentId: string, companyId: string): Prom
       .filter(Boolean),
   );
 
-  const toQueue = staleThreads.filter((t) => !alreadyQueued.has(t.id));
+  // ── Per-thread "last finished" lookup (bounded — review fix (k)) ───────────
+  // The previous version loaded ALL finished Chronicler wakeups for the agent in
+  // one unbounded query (no finishedAt lower bound, no LIMIT) and built a map in
+  // JS — on a long-lived company that is an ever-growing table scan per tick.
+  // Mirror the sibling `sweep-adjutant` no-flood gate: query the most recent
+  // finished wakeup PER stale thread with `ORDER BY finishedAt DESC LIMIT 1`,
+  // filtered by the thread id in the payload. `staleThreads` is already capped at
+  // CHRONICLER_MAX_CONCURRENT, so this is a bounded number of single-row lookups.
+  const latestFinishedByThread = new Map<string, Date>();
+  for (const t of staleThreads) {
+    if (alreadyQueued.has(t.id)) continue; // skip — debounced, never queued below
+    const [lastFinished] = await db
+      .select({ finishedAt: agentWakeupRequests.finishedAt })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          inArray(agentWakeupRequests.status, ["succeeded", "completed", "failed"]),
+          isNotNull(agentWakeupRequests.finishedAt),
+          sql`${agentWakeupRequests.payload} ->> 'threadId' = ${t.id}`,
+        ),
+      )
+      .orderBy(sql`${agentWakeupRequests.finishedAt} DESC`)
+      .limit(1);
+    if (lastFinished?.finishedAt) {
+      const finishedAt =
+        lastFinished.finishedAt instanceof Date
+          ? lastFinished.finishedAt
+          : new Date(lastFinished.finishedAt);
+      latestFinishedByThread.set(t.id, finishedAt);
+    }
+  }
+
+  const toQueue = staleThreads.filter((t) => {
+    if (alreadyQueued.has(t.id)) return false;
+    const lastFinishedAt = latestFinishedByThread.get(t.id);
+    if (!lastFinishedAt || !t.lastEntryAt) return true;
+    const lastEntryAt = t.lastEntryAt instanceof Date ? t.lastEntryAt : new Date(t.lastEntryAt);
+    return lastFinishedAt < lastEntryAt;
+  });
   if (toQueue.length === 0) return 0;
 
   // ── Insert wakeup rows ────────────────────────────────────────────────────

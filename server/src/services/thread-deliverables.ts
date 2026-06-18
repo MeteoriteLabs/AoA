@@ -127,6 +127,7 @@ export function parseScopeProposalContent(rawContent: string): {
   proposedTasks: Array<{ title: string; [key: string]: unknown }>;
   autoAdvanceAt?: string;
   proposalCursorSeq: number;
+  scopeVersionId?: string;
 } | null {
   try {
     const parsed = JSON.parse(rawContent);
@@ -140,6 +141,7 @@ export function parseScopeProposalContent(rawContent: string): {
       summary: parsed.summary,
       proposedTasks: parsed.proposedTasks,
       autoAdvanceAt: parsed.autoAdvanceAt,
+      scopeVersionId: typeof parsed.scopeVersionId === "string" ? parsed.scopeVersionId : undefined,
       // Legacy proposals (pre-T7) have no stamp — treat as 0 (stale check passes
       // for any thread, which is safe: worst case we create tasks for an old proposal,
       // which the human consciously clicked Approve on).
@@ -389,6 +391,47 @@ export function threadDeliverablesService(db: Db) {
       // CLAIM-FIRST invariant is preserved: only the winner of the conditional
       // UPDATE (WHERE proposalStatus = 'pending' RETURNING) creates tasks; the
       // loser gets zero rows and returns alreadyApproved without creating tasks.
+      if (proposalContent.scopeVersionId) {
+        const { threadScopeVersionService } = await import("./thread-scope-versions.js");
+        const scopeResult = await threadScopeVersionService(db).acceptDraft(
+          companyId,
+          threadId,
+          proposalContent.scopeVersionId,
+          { itemIds: [] },
+          { userId: approver.userId, isHuman: true },
+        );
+
+        if (!scopeResult.ok) {
+          return {
+            ok: false,
+            reason: scopeResult.reason === "stale" ? "stale" : "not_found",
+            message: scopeResult.message,
+          };
+        }
+
+        await db
+          .update(discussionEntries)
+          .set({ proposalStatus: "approved" })
+          .where(
+            and(
+              eq(discussionEntries.id, proposalEntryId),
+              eq(discussionEntries.proposalStatus, "pending"),
+            ),
+          )
+          .returning({ id: discussionEntries.id });
+
+        return {
+          ok: true,
+          alreadyApproved: scopeResult.alreadyAccepted,
+          taskIds: scopeResult.createdTasks.map((task) => task.id),
+          createdTasks: scopeResult.createdTasks.map((task) => ({
+            id: task.id,
+            assigneeAgentId: task.assigneeAgentId ?? null,
+            workMode: task.workMode ?? null,
+          })),
+        };
+      }
+
       let claimResult: { ok: true; alreadyApproved: false; taskIds: string[]; createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> }
                      | { ok: true; alreadyApproved: true }
                      | null = null;

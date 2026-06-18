@@ -2703,6 +2703,42 @@ export function heartbeatService(db: Db) {
           context.projectId = threadOutcome.realizedWorkspace.projectId;
         }
 
+        if (issueId && persistedExecutionWorkspace) {
+          const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
+          const shouldSwitchIssueToExistingWorkspace =
+            issueRef?.executionWorkspacePreference === "reuse_existing" ||
+            executionWorkspaceMode === "isolated_workspace" ||
+            executionWorkspaceMode === "operator_branch";
+          const nextIssuePatch: Record<string, unknown> = {};
+          if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
+            nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
+          }
+          if (shouldSwitchIssueToExistingWorkspace) {
+            nextIssuePatch.executionWorkspacePreference = "reuse_existing";
+            nextIssuePatch.executionWorkspaceSettings = {
+              ...(issueExecutionWorkspaceSettings ?? {}),
+              mode: nextIssueWorkspaceMode,
+            };
+          }
+          if (Object.keys(nextIssuePatch).length > 0) {
+            await db
+              .update(issues)
+              .set({ ...nextIssuePatch, updatedAt: new Date() })
+              .where(eq(issues.id, issueId));
+          }
+        }
+
+        if (persistedExecutionWorkspace) {
+          context.executionWorkspaceId = persistedExecutionWorkspace.id;
+          await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: context,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, run.id));
+        }
+
         // Skip the rest of the isolatedWorkspacesEnabled block (existing path).
         // Fall through to context.paperclipWorkspaces assignment below.
       } else {
@@ -3032,9 +3068,9 @@ export function heartbeatService(db: Db) {
     }
 
     // Enrich context with memory items and company info for the agent
-    // When injectCompanyContext is false (default), skip memory/company injection — agent gets task-only context
+    // Memory injection is enabled by default; agents can opt-out via runtimeConfig.injectCompanyContext = false
     const agentRc = parseObject(agent.runtimeConfig);
-    const injectCompanyContext = agentRc.injectCompanyContext === true;
+    const injectCompanyContext = agentRc.injectCompanyContext !== false;
     if (injectCompanyContext) {
       try {
         const agentContextMode = (agentRc.contextMode as string) ?? "standard";

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type IssueContextBundle } from "../api/issues";
 import { feedbackApi } from "../api/feedback";
 import { contextPackagingApi } from "../api/context-packaging";
 import { artifactsApi } from "../api/artifacts";
@@ -197,17 +197,191 @@ function SourceBadge({ source }: { source: string }) {
   );
 }
 
+/* ── Scope handoff helpers ── */
+
+function scopeHandoffMetaText(item: IssueContextBundle["items"][number]): string | null {
+  const metadata = asRecord(item.metadata);
+  if (!metadata) return null;
+  const url = typeof metadata.url === "string" ? metadata.url : null;
+  const excerpt = typeof metadata.excerpt === "string" ? metadata.excerpt : null;
+  const body = typeof metadata.body === "string" ? metadata.body : null;
+  const artifactType = typeof metadata.artifactType === "string" ? metadata.artifactType : null;
+  const contentType = typeof metadata.contentType === "string" ? metadata.contentType : null;
+  return url ?? excerpt ?? body ?? artifactType ?? contentType;
+}
+
+function scopeHandoffTypeLabel(type: string) {
+  if (type === "discussion_entry") return "Source";
+  if (type === "scope_item") return "Scope";
+  return type.replace("_", " ");
+}
+
+function scopeHandoffItemIncluded(item: IssueContextBundle["items"][number]) {
+  return asRecord(item.metadata)?.includeInAgentContext !== false;
+}
+
+// Self-contained openability check (restored from pre-merge TaskSlideOver,
+// commit 851b6e62c). URL items need a url in metadata; other openable types
+// need a sourceId. Used as the default when no parent canOpenItem is provided.
+function canOpenScopeHandoffItem(item: IssueContextBundle["items"][number]): boolean {
+  if (item.itemType === "url") {
+    return typeof asRecord(item.metadata)?.url === "string";
+  }
+  return (
+    ["artifact", "asset", "discussion_entry", "scope_item"].includes(item.itemType) &&
+    Boolean(item.sourceId)
+  );
+}
+
+function ScopeHandoffSection({
+  bundles,
+  onOpenItem,
+  canOpenItem,
+  onSetIncluded,
+  isUpdatingItemId,
+  pushToast,
+}: {
+  bundles: IssueContextBundle[];
+  onOpenItem?: (item: IssueContextBundle["items"][number]) => void;
+  canOpenItem?: (item: IssueContextBundle["items"][number]) => boolean;
+  onSetIncluded?: (item: IssueContextBundle["items"][number], included: boolean) => void;
+  isUpdatingItemId?: string | null;
+  pushToast?: ReturnType<typeof useToast>["pushToast"];
+}) {
+  // Self-contained open fallback (restored from pre-merge TaskSlideOver,
+  // commit 851b6e62c): used on every standalone surface (Tasks page, Project /
+  // Crew board, Commander viewer) where no parent passes onOpenScopeHandoffItem.
+  const isItemOpenable = canOpenItem ?? canOpenScopeHandoffItem;
+  const openItem = (item: IssueContextBundle["items"][number]) => {
+    if (onOpenItem) {
+      onOpenItem(item);
+      return;
+    }
+    if (!isItemOpenable(item)) return;
+    const url = asRecord(item.metadata)?.url;
+    if (typeof url === "string") {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    pushToast?.({
+      title: "Open from discussion",
+      body: item.label || item.itemType.replace(/_/g, " "),
+      tone: "info",
+    });
+  };
+  const scopeBundles = bundles.filter((bundle) => bundle.sourceKind === "discussion_scope");
+  if (scopeBundles.length === 0) return null;
+  const itemCount = scopeBundles.reduce((count, bundle) => count + bundle.items.length, 0);
+
+  return (
+    <section className="rounded-lg border border-border bg-card/35 p-3" data-testid="task-scope-handoff">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          <h3 className="text-sm font-medium text-foreground">Scope handoff</h3>
+        </div>
+        <span className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {itemCount} {itemCount === 1 ? "ref" : "refs"}
+        </span>
+        <p className="basis-full text-[11px] leading-snug text-muted-foreground">
+          Included refs are passed to agents.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {scopeBundles.map((bundle) => (
+          <div key={bundle.id} className="space-y-2">
+            {bundle.brief && (
+              <p className="text-xs leading-relaxed text-muted-foreground">{bundle.brief}</p>
+            )}
+            {bundle.items.length > 0 && (
+              <div className="space-y-1.5">
+                {bundle.items.map((item) => {
+                  const meta = scopeHandoffMetaText(item);
+                  const included = scopeHandoffItemIncluded(item);
+                  const label = item.label || item.itemType.replace("_", " ");
+                  // Render the Open button for every openable item regardless of
+                  // whether a parent callback exists — the standalone slide-over
+                  // falls back to the self-contained open above.
+                  const isOpenable = isItemOpenable(item);
+                  const className =
+                    "flex w-full min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background px-2.5 py-2 text-left text-xs sm:flex-row sm:items-center";
+                  return (
+                    <div
+                      key={item.id}
+                      className={className}
+                    >
+                      <div className="flex min-w-0 flex-1 items-start gap-2">
+                        <span className="mt-0.5 shrink-0 rounded border border-border/70 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                          {scopeHandoffTypeLabel(item.itemType)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium text-foreground">
+                            {label}
+                          </span>
+                          {meta && (
+                            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                              {meta}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:ml-auto sm:justify-end">
+                        <span
+                          className={cn(
+                            "rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                            included
+                              ? "border-green-500/25 bg-green-500/10 text-green-700 dark:text-green-400"
+                              : "border-muted-foreground/20 bg-muted/50 text-muted-foreground",
+                          )}
+                        >
+                          {included ? "In context" : "Excluded"}
+                        </span>
+                        {isOpenable && (
+                          <button
+                            type="button"
+                            className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                            aria-label={`Open handoff item: ${label}`}
+                            onClick={() => openItem(item)}
+                          >
+                            Open
+                          </button>
+                        )}
+                        {onSetIncluded && (
+                          <button
+                            type="button"
+                            className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
+                            aria-label={`${included ? "Exclude" : "Include"} ${label} ${included ? "from" : "in"} agent context`}
+                            disabled={isUpdatingItemId === item.id}
+                            onClick={() => onSetIncluded(item, !included)}
+                          >
+                            {included ? "Exclude" : "Include"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /* ── Props ── */
 
 interface TaskDetailProps {
   issueId: string | null;
   active: boolean;
   onDismiss?: () => void;
+  onOpenScopeHandoffItem?: (item: IssueContextBundle["items"][number]) => void;
 }
 
 /* ── Component ── */
 
-export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) {
+export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem }: TaskDetailProps) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -315,6 +489,13 @@ export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) {
   const { data: artifact } = useQuery({
     queryKey: queryKeys.artifacts.byIssue(issueId!),
     queryFn: () => artifactsApi.getByIssueId(issueId!),
+    enabled: !!issueId && active,
+  });
+
+  // Scope handoff context bundles (discussion-created tasks)
+  const { data: contextBundles = [] } = useQuery({
+    queryKey: ["issues", "contextBundles", issueId],
+    queryFn: () => issuesApi.listContextBundles(issueId!),
     enabled: !!issueId && active,
   });
 
@@ -697,6 +878,20 @@ export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) {
     },
   });
 
+  const setScopeHandoffIncluded = useMutation({
+    mutationFn: ({ itemId, included }: { itemId: string; included: boolean }) =>
+      issuesApi.updateContextBundleItemIncluded(issueId!, itemId, included),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["issues", "contextBundles", issueId] });
+    },
+    onError: () => {
+      // Server rejected the include/exclude change — refetch to revert any
+      // optimistic toggle state and surface the failure (context-leak risk).
+      queryClient.invalidateQueries({ queryKey: ["issues", "contextBundles", issueId] });
+      pushToast({ title: "Failed to update context item", tone: "warn" });
+    },
+  });
+
 
   /* ── Derived data ── */
 
@@ -777,7 +972,7 @@ export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) {
   /* ── Render ── */
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden" data-testid="task-detail-panel">
         {/* Mode 2: Workspace Chat */}
         {sidebarMode === "workspace" && issue && (
           <>
@@ -1236,6 +1431,20 @@ export function TaskDetail({ issueId, active, onDismiss }: TaskDetailProps) {
                     </DialogBody>
                   </DialogContent>
                 </Dialog>
+
+                {/* Scope handoff (discussion-created tasks) */}
+                <ScopeHandoffSection
+                  bundles={contextBundles}
+                  onOpenItem={onOpenScopeHandoffItem}
+                  pushToast={pushToast}
+                  onSetIncluded={(item, included) =>
+                    setScopeHandoffIncluded.mutate({ itemId: item.id, included })}
+                  isUpdatingItemId={
+                    setScopeHandoffIncluded.isPending
+                      ? (setScopeHandoffIncluded.variables as { itemId?: string } | undefined)?.itemId ?? null
+                      : null
+                  }
+                />
 
                 {/* Attachments */}
                 <div className="space-y-3">

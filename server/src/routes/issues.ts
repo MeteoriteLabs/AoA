@@ -26,7 +26,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
@@ -35,7 +35,10 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
-import { listIssueContextBundlesForIssue } from "../services/issue-context-bundles.js";
+import {
+  listIssueContextBundlesForIssue,
+  setIssueContextBundleItemIncluded,
+} from "../services/issue-context-bundles.js";
 import { assertCanOverrideTaskWorkspace } from "../services/workspace-authz.js";
 import { assertAgentInReviewReviewPath } from "../services/issue-agent-status-guard.js";
 
@@ -1624,6 +1627,51 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, issue.companyId);
     const bundles = await listIssueContextBundlesForIssue(db, issue.companyId, issueId);
     res.json(bundles);
+  });
+
+  router.patch("/issues/:id/context-bundles/items/:itemId", async (req, res) => {
+    const issueId = req.params.id as string;
+    const itemId = req.params.itemId as string;
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertBoard(req);
+    assertCompanyAccess(req, issue.companyId);
+
+    if (typeof req.body?.included !== "boolean") {
+      throw unprocessable("included must be a boolean");
+    }
+
+    const item = await setIssueContextBundleItemIncluded(db, {
+      companyId: issue.companyId,
+      targetIssueId: issueId,
+      itemId,
+      included: req.body.included,
+    });
+    if (!item) {
+      res.status(404).json({ error: "Context bundle item not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      action: "issue.context_handoff_updated",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        itemId,
+        included: req.body.included,
+      },
+    });
+
+    res.json(item);
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {

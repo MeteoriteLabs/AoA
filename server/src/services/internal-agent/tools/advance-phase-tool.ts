@@ -32,6 +32,38 @@ export function createAdvancePhaseTool(): AgentTool {
         };
       }
 
+      if (ctx.discussionRunMode === "controller_action_gate") {
+        if (!ctx.runId) {
+          return {
+            success: false,
+            data: null,
+            summary: "Cannot queue phase advance without a run id",
+            error: "MISSING_RUN_ID",
+          };
+        }
+
+        const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+        const action = await threadAgentActionService(ctx.db).proposeThreadAction({
+          companyId: ctx.companyId,
+          threadId: threadId as string,
+          runId: ctx.runId,
+          agentId: ctx.agentId ?? null,
+          actionType: "advance_phase",
+          payload: {
+            toPhase: toPhase as string,
+            effectiveAutonomy: ctx.effectiveAutonomy ?? 0,
+          },
+          idempotencyKey: `${ctx.runId}:advance_phase:${threadId as string}:${toPhase as string}`,
+          freshness: ctx.threadFreshness ?? {},
+        }) as { id?: string };
+
+        return {
+          success: true,
+          data: { actionId: action.id, queued: true },
+          summary: "Queued phase advance for freshness-checked commit",
+        };
+      }
+
       const actor = {
         userId: ctx.agentId ?? "aoa-agent",
         role: "team_member" as const,
