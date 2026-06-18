@@ -190,6 +190,51 @@ describe("threadAgentActionService", () => {
     expect(db.__updateSets).toHaveLength(0); // guard prevented the UPDATE
   });
 
+  it("revives a suppressed_stale colliding row on a fresh same-turn re-proposal (Codex #202 P1 round 2)", async () => {
+    // An earlier run's action was marked suppressed_stale (a scope bump with no new
+    // human entry). The run-independent key makes the fresh re-proposal collide with
+    // that terminal row; without revival commit (which selects proposed/retryable-
+    // failed) would never re-pick it. Re-home must revive it to `proposed` with the
+    // current freshness so commit re-evaluates it.
+    const existing = {
+      ...baseAction,
+      id: "existing-action",
+      runId: "run-1",
+      status: "suppressed_stale",
+      blockedReason: "newer_scope_version",
+      freshness: { latestHumanSeq: 1, latestScopeVersionId: "sv-1" },
+    };
+    const fresh = { latestHumanSeq: 1, latestScopeVersionId: "sv-2" };
+    const db = createSequenceDb({
+      selects: [[thread], [existing]],
+      inserts: [[]],
+      updates: [[{ ...existing, runId: "run-2", status: "proposed", blockedReason: null, freshness: fresh }]],
+    });
+
+    const result = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-2",
+      agentId: "agent-1",
+      actionType: "post_reply",
+      payload: { rawContent: "Hello" },
+      idempotencyKey: "run-1:post_reply:1",
+      freshness: fresh,
+    })) as { id: string; runId: string; status: string };
+
+    expect(result.id).toBe("existing-action");
+    expect(result.runId).toBe("run-2");
+    expect(result.status).toBe("proposed"); // revived
+    // The UPDATE flipped status→proposed, cleared the stale reason, adopted run + freshness.
+    expect(db.__updateSets).toHaveLength(1);
+    expect(db.__updateSets[0]).toMatchObject({
+      runId: "run-2",
+      status: "proposed",
+      blockedReason: null,
+      freshness: fresh,
+    });
+  });
+
   it("returns the freshly inserted row when there is no idempotency conflict", async () => {
     const inserted = { ...baseAction, id: "inserted-action" };
     const db = createSequenceDb({

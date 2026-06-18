@@ -278,37 +278,50 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // under a new run collides with a row created by an EARLIER run. commitThread-
       // AgentActions filters on runId, so if that earlier run left the row committable
       // (proposed, or failed under its attempt cap) the current run would never flush
-      // it — the action is silently lost. Re-home the still-committable row onto THIS
-      // run so this run's commit picks it up. Guarded on status so a committed /
-      // mid-commit (committing) / terminally-suppressed row is never stolen. Race-safe:
-      // the status predicate in the UPDATE is the compare-and-swap — a concurrent
-      // committer that already moved the row out of {proposed,failed} yields 0 rows and
-      // we fall through to the canonical row unchanged. attemptCount is preserved, so
-      // the commit's attemptCount < maxAttempts poison-pill bound still holds.
+      // it — the action is silently lost. Re-home the re-proposable row onto THIS run
+      // so this run's commit picks it up. NEVER steal a committed / mid-commit
+      // (committing) / policy-blocked row. Race-safe: the status predicate in the
+      // UPDATE is the compare-and-swap — a concurrent committer that already moved the
+      // row out of the re-homable set yields 0 rows and we fall through to the
+      // canonical row unchanged. attemptCount is preserved, so the commit's
+      // attemptCount < maxAttempts poison-pill bound still holds.
       //
       // (Codex #202 P1) We ALSO adopt the current run's freshness snapshot. The row
       // carries the earlier run's snapshot, but the commit re-checks freshness per
       // action against the row's stored snapshot — keeping the stale one would let a
       // scope-version bump (with no new human entry) wrongly mark this fresh
-      // re-proposal `suppressed_stale`, and since the key is run-independent every
-      // same-turn retry would then keep colliding with that terminal row. The current
-      // run re-proposed from a fresh view, so the row must represent THAT freshness.
+      // re-proposal `suppressed_stale`. The current run re-proposed from a fresh view,
+      // so the row must represent THAT freshness.
+      //
+      // (Codex #202 P1, round 2) `suppressed_stale` is included in the re-homable set
+      // and REVIVED to `proposed`. It is terminal, but the run-independent key means a
+      // genuine same-turn re-proposal collides with it; without revival commit would
+      // never re-select it (it filters proposed/retryable-failed) and the action would
+      // be stranded until a new human message moves the turn anchor. Reviving with the
+      // fresh snapshot lets commit re-evaluate it — if still genuinely stale it simply
+      // re-suppresses. `blocked_policy` is NOT revived (re-proposing won't change a
+      // policy outcome).
+      const REHOMABLE_STATUSES = ["proposed", "failed", "suppressed_stale"];
       if (
         existing &&
         input.runId != null &&
         existing.runId !== input.runId &&
-        (existing.status === "proposed" || existing.status === "failed")
+        REHOMABLE_STATUSES.includes(existing.status)
       ) {
         const [rehomed] = await actionDb
           .update(threadAgentActions)
-          .set({ runId: input.runId, freshness: input.freshness ?? {}, updatedAt: new Date() })
+          .set({
+            runId: input.runId,
+            freshness: input.freshness ?? {},
+            ...(existing.status === "suppressed_stale"
+              ? { status: "proposed", blockedReason: null }
+              : {}),
+            updatedAt: new Date(),
+          })
           .where(
             and(
               eq(threadAgentActions.id, existing.id),
-              or(
-                eq(threadAgentActions.status, "proposed"),
-                eq(threadAgentActions.status, "failed"),
-              ),
+              inArray(threadAgentActions.status, REHOMABLE_STATUSES),
             ),
           )
           .returning();
