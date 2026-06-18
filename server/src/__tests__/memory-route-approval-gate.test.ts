@@ -43,6 +43,7 @@ const mockMemoryService = vi.hoisted(() => ({
   reject: vi.fn(),
   approveSuggestedVersion: vi.fn(),
   rejectSuggestedVersion: vi.fn(),
+  changeLayer: vi.fn(),
 }));
 const mockAssertMemoryApproval = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockAssertMemoryAccess = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -135,6 +136,7 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     mockMemoryService.reject.mockResolvedValue({ id: ITEM_ID, title: "t", status: "rejected" });
     mockMemoryService.approveSuggestedVersion.mockResolvedValue({ id: "ver-1", status: "approved" });
     mockMemoryService.rejectSuggestedVersion.mockResolvedValue({ id: "ver-1", status: "rejected" });
+    mockMemoryService.changeLayer.mockResolvedValue({ id: ITEM_ID, layer: "working" });
   });
 
   const restore = () =>
@@ -149,6 +151,8 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/versions/ver-1/approve`).send({});
   const versionReject = () =>
     request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/versions/ver-1/reject`).send({});
+  const changeLayer = (newLayer: string) =>
+    request(makeApp()).post(`/api/companies/${COMPANY_ID}/memory/items/${ITEM_ID}/change-layer`).send({ newLayer });
 
   // ── POST /memory ──────────────────────────────────────────────────────────
   it("POST explicit status=approved → gate fires with the requested layer/dept", async () => {
@@ -495,5 +499,42 @@ describe("memory routes — approval-decision authority gate (Codex #201 P1 / R5
     await versionReject().expect(200);
     expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
     expect(mockMemoryService.rejectSuggestedVersion).toHaveBeenCalled();
+  });
+
+  // ── change-layer: a WORKING destination is access-checked, not approval-gated ──
+  it("POST /change-layer to working → approval gate skipped, ACCESS check enforced", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "domain",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    await changeLayer("working").expect(200);
+    expect(mockAssertMemoryApproval).not.toHaveBeenCalled();
+    expect(mockAssertMemoryAccess).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "update",
+      { layer: "domain", departmentId: "dep-a" },
+    );
+  });
+
+  it("POST /change-layer to a non-working destination (domain) → gate STILL fires on destination", async () => {
+    mockMemoryService.getById.mockResolvedValue({
+      id: ITEM_ID,
+      layer: "active_context",
+      departmentId: "dep-a",
+      visibility: "scoped",
+      status: "approved",
+    });
+    await changeLayer("domain").expect(200);
+    expect(mockAssertMemoryApproval).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      { layer: "domain", departmentId: "dep-a" },
+    );
   });
 });

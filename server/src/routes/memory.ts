@@ -977,13 +977,27 @@ export function memoryRoutes(db: Db) {
           res.status(404).json({ error: "Memory item not found" });
           return;
         }
-        await assertMemoryApproval(db, req, companyId, {
-          layer: parsed.data.newLayer,
-          departmentId:
-            parsed.data.departmentId !== undefined
-              ? parsed.data.departmentId
-              : existing.departmentId,
-        });
+        // Decision #52: a `working` DESTINATION needs no approval (working is
+        // auto-created/ungated), so a move TO working is gated by manage-access to the
+        // item rather than approval authority — consistent with the approve/reject/etc.
+        // working bypasses. Other destinations still require approval for that layer.
+        // (change-layer gates on DESTINATION by existing design; the source's prior
+        // governance is not re-checked here — same as the existing domain→active_context
+        // path, which a lead can already perform.)
+        if (parsed.data.newLayer !== "working") {
+          await assertMemoryApproval(db, req, companyId, {
+            layer: parsed.data.newLayer,
+            departmentId:
+              parsed.data.departmentId !== undefined
+                ? parsed.data.departmentId
+                : existing.departmentId,
+          });
+        } else {
+          await assertMemoryAccess(db, req, companyId, "update", {
+            layer: existing.layer,
+            departmentId: existing.departmentId,
+          });
+        }
         const actor = getActorInfo(req);
         const updated = await svc.changeLayer(id, companyId, {
           ...parsed.data,
