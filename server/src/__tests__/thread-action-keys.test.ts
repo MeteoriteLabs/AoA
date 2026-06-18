@@ -62,12 +62,14 @@ describe("thread action idempotency keys", () => {
 });
 
 describe("deferred-type idempotency keys (#198 PR-A)", () => {
-  it("convene_agent key is run-independent, turn-anchored, target/reason-sensitive", () => {
+  it("convene_agent key is run-independent, turn-anchored, target-sensitive, reason-INsensitive (Codex #202 P2)", () => {
     const base = { threadId: "t1", agentId: "a1", targetAgentId: "tg1", reason: "review", turnAnchor: "5" };
     expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey(base));
     expect(buildConveneAgentIdempotencyKey(base)).not.toMatch(/run/);
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, targetAgentId: "tg2" }));
-    expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, reason: "other" }));
+    // reason is NOT a dedup discriminator — it must NOT change the key (aligns the
+    // action-level dedup with the wakeup coalescing scope target+thread).
+    expect(buildConveneAgentIdempotencyKey(base)).toBe(buildConveneAgentIdempotencyKey({ ...base, reason: "other" }));
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, turnAnchor: "6" }));
   });
   it("create_scope_draft key hashes summary + tasks (no raw interpolation), turn-anchored", () => {

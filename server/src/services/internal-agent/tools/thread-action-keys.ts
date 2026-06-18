@@ -58,12 +58,22 @@ export function buildArtifactCandidateIdempotencyKey(input: {
 /**
  * Run-INDEPENDENT, turn-anchored idempotency key for a `convene_agent` thread
  * action. Same construction discipline as the keys above. Keyed on the target
- * agent + reason so distinct dispatches stay distinct.
+ * agent only — NOT `reason`.
+ *
+ * (Codex #202 P2) The commit path coalesces wakeups by `${targetAgentId}:${threadId}:queued`
+ * (no reason), inserting with onConflictDoNothing. If `reason` were part of this key,
+ * two same-turn dispatches to the same target with different reasons would survive
+ * action-level dedup but the second's wakeup would be swallowed by the lower-level
+ * dedup — the action commits yet the distinct dispatch never reaches the target. We
+ * align the action key to the wakeup dedup scope (target + thread + turn) so the two
+ * layers agree. `reason` stays on the action payload (the woken agent reads the thread
+ * for full context). The param is accepted for call-site compatibility but ignored.
  */
 export function buildConveneAgentIdempotencyKey(input: {
   threadId: string;
   agentId?: string | null;
   targetAgentId: string;
+  /** Accepted for call-site compatibility but intentionally NOT part of the key. */
   reason?: string | null;
   turnAnchor?: string | null;
 }): string {
@@ -72,7 +82,7 @@ export function buildConveneAgentIdempotencyKey(input: {
     "convene_agent",
     input.agentId ?? "agent",
     input.turnAnchor ?? "noanchor",
-    sha256(JSON.stringify([input.targetAgentId, input.reason ?? "agent_dispatch"])),
+    sha256(JSON.stringify([input.targetAgentId])),
   ].join(":");
 }
 
