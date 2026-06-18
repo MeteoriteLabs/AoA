@@ -229,12 +229,14 @@ describe("permissionService", () => {
       expect(await perms.canApproveMemory("c1", "u1", { layer: "domain", departmentId: "d" })).toBe(true);
     });
 
-    it("team_lead can approve domain/active_context in their department", async () => {
+    it("team_lead can approve active_context in their department, NOT domain/identity (founder-only, R5)", async () => {
       const perms = permissionService(createMockDb([
         { id: "1", companyId: "c1", userId: "u1", role: "team_lead", projectId: "dept-1" },
       ]));
-      expect(await perms.canApproveMemory("c1", "u1", { layer: "domain", departmentId: "dept-1" })).toBe(true);
       expect(await perms.canApproveMemory("c1", "u1", { layer: "active_context", departmentId: "dept-1" })).toBe(true);
+      // R5: the founder is the sole gatekeeper for identity + domain (Decisions #15/#52).
+      expect(await perms.canApproveMemory("c1", "u1", { layer: "domain", departmentId: "dept-1" })).toBe(false);
+      expect(await perms.canApproveMemory("c1", "u1", { layer: "identity" })).toBe(false);
     });
 
     it("team_lead cannot approve identity layer", async () => {
@@ -244,11 +246,11 @@ describe("permissionService", () => {
       expect(await perms.canApproveMemory("c1", "u1", { layer: "identity" })).toBe(false);
     });
 
-    it("team_lead cannot approve in other department", async () => {
+    it("team_lead cannot approve active_context in another department", async () => {
       const perms = permissionService(createMockDb([
         { id: "1", companyId: "c1", userId: "u1", role: "team_lead", projectId: "dept-1" },
       ]));
-      expect(await perms.canApproveMemory("c1", "u1", { layer: "domain", departmentId: "dept-2" })).toBe(false);
+      expect(await perms.canApproveMemory("c1", "u1", { layer: "active_context", departmentId: "dept-2" })).toBe(false);
     });
 
     it("team_member cannot approve", async () => {
