@@ -717,10 +717,15 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory needs no approval — version approve/reject of a
+    // working item (saveDraft has no layer guard) is not founder/lead-gated. Other
+    // layers gate as before.
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const version = await svc.approveSuggestedVersion(companyId, id, versionId);
     await logActivity(db, {
@@ -750,10 +755,14 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory needs no approval — version reject of a working
+    // item is not founder/lead-gated (parallels version approve). Other layers gate.
+    if (requiresApprovalGate("rejected", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const version = await svc.rejectSuggestedVersion(companyId, id, versionId);
     await logActivity(db, {
