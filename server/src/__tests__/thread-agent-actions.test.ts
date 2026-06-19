@@ -35,6 +35,20 @@ import {
   buildPostReplyIdempotencyKey,
   buildConveneWakeupDedupKey,
 } from "../services/internal-agent/tools/thread-action-keys.js";
+import { THREAD_AGENT_ACTION_STATUSES } from "@armyofagents/shared";
+
+// Codex #9 / invariant-consolidation C1: the seal persists status='ready' (Decision #99 producer
+// gate) and the relay drains ONLY 'ready'. The shared status alphabet is the single source of truth;
+// if 'ready' (or any persisted lifecycle state) is missing, every typed consumer treats sealed rows
+// as impossible. The `satisfies ThreadAgentActionStatus` annotations on the seal/GC writes make a
+// missing status a COMPILE error; this test additionally guards a non-TS removal.
+describe("thread-action status contract", () => {
+  it("includes every persisted lifecycle state, incl. the sealed 'ready' relay state", () => {
+    for (const s of ["proposed", "ready", "committing", "committed", "suppressed_stale", "blocked_policy", "failed"]) {
+      expect(THREAD_AGENT_ACTION_STATUSES).toContain(s);
+    }
+  });
+});
 
 function createSequenceDb(config: { selects?: unknown[][]; inserts?: Array<unknown[] | Error>; updates?: Array<unknown[] | Error> } = {}) {
   let selectIdx = 0;

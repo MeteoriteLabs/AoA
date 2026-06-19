@@ -859,12 +859,13 @@ export const THREAD_AGENT_ACTION_TYPES = [
 export type ThreadAgentActionType = (typeof THREAD_AGENT_ACTION_TYPES)[number];
 
 export const THREAD_AGENT_ACTION_STATUSES = [
-  "proposed",
-  "committing",
-  "committed",
-  "suppressed_stale",
-  "blocked_policy",
-  "failed",
+  "proposed", // produced mid-run, NOT yet committable (Decision #99 producer gate)
+  "ready", // sealed: the producing run SUCCEEDED — the relay drains only this status
+  "committing", // a committer won the fenced CAS claim and is applying the side-effect
+  "committed", // side-effect applied
+  "suppressed_stale", // the world moved between propose and commit (freshness gate)
+  "blocked_policy", // terminal: a failed/orphaned producer's row can never commit
+  "failed", // post-gate retryable failure (bounded by attempt_count)
 ] as const;
 export type ThreadAgentActionStatus = (typeof THREAD_AGENT_ACTION_STATUSES)[number];
 

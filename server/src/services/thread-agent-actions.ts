@@ -406,7 +406,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       if (input.idempotencyKeys.length === 0) return 0;
       const sealed = (await actionDb
         .update(threadAgentActions)
-        .set({ status: "ready", updatedAt: new Date() })
+        .set({ status: "ready" satisfies ThreadAgentActionStatus, updatedAt: new Date() })
         .where(
           and(
             eq(threadAgentActions.companyId, input.companyId),
@@ -1232,7 +1232,7 @@ export async function gcOrphanedProposedActions(
   // recoverable row becomes `ready` first; the terminalize passes only match `status='proposed'`.
   const resealed = (await gcDb
     .update(threadAgentActions)
-    .set({ status: "ready", blockedReason: null, updatedAt: now })
+    .set({ status: "ready" satisfies ThreadAgentActionStatus, blockedReason: null, updatedAt: now })
     .where(
       and(
         or(
