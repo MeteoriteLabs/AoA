@@ -625,8 +625,18 @@ export function threadOrchestrationService(db: Db) {
       // rows that lost the fenced CAS this tick): the cursor still advances, but pendingRun
       // re-drives the thread-scoped commit on the next sweep so leftovers aren't orphaned
       // until an unrelated future trigger. (Codex P2)
+      // Controller commit gate (outbox seal, must-fix #1): only drain when the controller run
+      // SUCCEEDED. A failed/cancelled run never sealed its actions (the runner seals only on
+      // success), so its rows stay `proposed` — un-committable under the ready-only relay, and we
+      // additionally skip the commit here so the transient superset relay cannot drain them either,
+      // closing the controller-path variant of the failed-run leak (Codex P1). Read defensively:
+      // the run is "not failed" unless output.status==='failed' or an error was surfaced — the mock
+      // adjutantRunner returns output:"done"/no error and is treated as succeeded.
+      const runSucceeded =
+        (runResult.output as { status?: string } | undefined)?.status !== "failed" &&
+        runResult.error == null;
       let rescheduleAfterCommit = false;
-      if (threadRow && runResult.runId) {
+      if (threadRow && runResult.runId && runSucceeded) {
         try {
           const { threadAgentActionService } = await import("./thread-agent-actions.js");
           const commitResult = await threadAgentActionService(db).commitThreadAgentActions({

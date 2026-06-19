@@ -524,10 +524,41 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const adapterUsage = runResult.usage;
     const costCents = runResult.costCents;
 
+    // Outbox SEAL (producer-gate, Decision #99 completion). On run SUCCESS, promote the actions
+    // THIS run proposed (proposed → ready) by the run's durable key-set (recorded by
+    // proposeThreadAction on internal_agent_runs.proposed_action_keys). Fires for ALL
+    // controller_action_gate runs — direct AND controller — and BEFORE the run-status write
+    // below, so a crash between seal and status leaves the rows `ready` (committable by the
+    // relay), never a `completed` run with orphaned `proposed` rows. A run that did NOT succeed
+    // never seals → its proposed rows stay un-committable and are reaped by the GC. The relay
+    // then commits only sealed `ready` rows — the failed-run-leak (Codex P1) is structurally gone.
+    if (
+      runResult.status === "succeeded" &&
+      runId &&
+      bridgeThreadId &&
+      discussionRunMode === "controller_action_gate"
+    ) {
+      const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+      const [runRow] = await db
+        .select({ keys: internalAgentRuns.proposedActionKeys })
+        .from(internalAgentRuns)
+        .where(eq(internalAgentRuns.id, runId))
+        .limit(1);
+      const keys = (runRow?.keys ?? []) as string[];
+      if (keys.length > 0) {
+        await threadAgentActionService(db).sealRunActions({
+          companyId: payload.companyId,
+          threadId: bridgeThreadId,
+          idempotencyKeys: keys,
+        });
+      }
+    }
+
     // Thread controller runs commit action-gated side effects in
     // thread-orchestration.ts after re-checking the controller epoch. Direct
     // participation / mention / delegated thread runs have no outer controller,
-    // so they must flush their own freshness-checked action queue here.
+    // so they must flush their own freshness-checked action queue here (the SEAL
+    // above has already promoted this run's rows to `ready`).
     if (
       runResult.status === "succeeded" &&
       runId &&

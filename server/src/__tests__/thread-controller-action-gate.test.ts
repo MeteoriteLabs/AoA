@@ -479,6 +479,29 @@ describe("runController action gate integration", () => {
     expect(controller.pendingRun).toBe(true); // lost-race work re-driven, not silently dropped
   });
 
+  it("outbox seal: a FAILED controller run does NOT commit (failed runs never seal → never drain)", async () => {
+    // The producer-gate: a controller run that did not succeed never sealed its proposed actions
+    // (the runner seals only on success), and runController additionally skips the commit so the
+    // transient superset relay cannot drain the failed run's proposed rows either. This closes the
+    // controller-path variant of the failed-run leak (Codex P1).
+    const threadId = "thread-failed-controller-run";
+    const controller: ControllerState = {
+      threadId, runEpoch: 1, pendingRun: true,
+      lastProcessedEntryId: null, lastError: null, consecutiveCommitFailures: 0,
+    };
+    const entry: EntryRow = {
+      id: "entry-a", discussionId: threadId, seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"), inputType: "write", rawContent: "x",
+    };
+    const { db } = createControllerDb(controller, [entry]);
+
+    await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: { status: "failed" }, error: "cli failed", runId: "run-1" }),
+    });
+
+    expect(commitThreadAgentActionsMock).not.toHaveBeenCalled(); // failed run → no commit, no leak
+  });
+
   it("adjutant-runner throw reschedules (pendingRun=true) under the cap", async () => {
     const threadId = "thread-runner-throw";
     const controller: ControllerState = {
