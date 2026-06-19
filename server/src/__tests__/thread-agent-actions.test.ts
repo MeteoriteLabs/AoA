@@ -137,14 +137,16 @@ describe("threadAgentActionService", () => {
     // coupled action stuck on newer_scope_version even though THIS run saw the new scope).
     const freshSnap = { threadId: "thread-1", entrySeq: 7, latestScopeVersionId: "v2" };
     const existing = { ...baseAction, id: "ex", runId: "run-1", status: "suppressed_stale", blockedReason: "newer_scope_version", freshness: { threadId: "thread-1", entrySeq: 3, latestScopeVersionId: "v1" } };
-    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[{ ...existing, status: "proposed", blockedReason: null, freshness: freshSnap }]] });
+    // updates[0] = the outbox key-set append (proposed_action_keys on the run row, runId set);
+    // updates[1] = the suppressed_stale→proposed revive.
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[], [{ ...existing, status: "proposed", blockedReason: null, freshness: freshSnap }]] });
     const res = (await threadAgentActionService(db as never).proposeThreadAction({
       companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
       actionType: "add_scope_item", payload: { kind: "decision", title: "x" }, idempotencyKey: existing.idempotencyKey, freshness: freshSnap,
     })) as { id: string; status: string };
     expect(res.status).toBe("proposed");
-    expect(db.__updateSets[0]).toMatchObject({ status: "proposed", blockedReason: null, freshness: freshSnap });
-    expect(db.__updateSets[0]).not.toHaveProperty("runId"); // runId NOT forwarded
+    expect(db.__updateSets[1]).toMatchObject({ status: "proposed", blockedReason: null, freshness: freshSnap });
+    expect(db.__updateSets[1]).not.toHaveProperty("runId"); // runId NOT forwarded
   });
 
   it("returns a non-suppressed_stale colliding row unchanged (revive is narrow)", async () => {
@@ -155,7 +157,7 @@ describe("threadAgentActionService", () => {
     const db = createSequenceDb({
       selects: [[thread], [existing]],
       inserts: [[]],
-      // no updates configured — none should be issued
+      updates: [[]], // only the outbox key-set append; NO revive
     });
 
     const result = (await threadAgentActionService(db as never).proposeThreadAction({
@@ -171,7 +173,10 @@ describe("threadAgentActionService", () => {
 
     expect(result.id).toBe("existing-action");
     expect(result.runId).toBe("run-1"); // unchanged
-    expect(db.__updateSets).toHaveLength(0); // no revive UPDATE issued
+    // The only UPDATE is the proposed-key append (runId set); the colliding committed row is
+    // NOT revived (the revive fires only for suppressed_stale).
+    expect(db.__updateSets).toHaveLength(1);
+    expect(db.__updateSets[0]).toHaveProperty("proposedActionKeys");
   });
 
   it("sealRunActions promotes this run's proposed rows to ready by key-set", async () => {

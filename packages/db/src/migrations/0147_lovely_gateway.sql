@@ -1,0 +1,1 @@
+ALTER TABLE "internal_agent_runs" ADD COLUMN "proposed_action_keys" jsonb DEFAULT '[]'::jsonb NOT NULL;

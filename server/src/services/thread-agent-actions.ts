@@ -11,6 +11,7 @@ import {
   discussionEntries,
   discussionEntryAttachments,
   discussions,
+  internalAgentRuns,
   threadAgentActions,
   threadOrchestrationState,
   threadScopeItems,
@@ -311,6 +312,22 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 
       if (!thread) {
         throw new Error("Thread not found");
+      }
+
+      // Outbox SEAL key-set (Mechanism B'): record that THIS run proposed this idempotency key,
+      // so the runner / controller can seal it (proposed→ready) on run SUCCESS — the producer-gate
+      // that keeps a failed/crashed run's actions from ever committing. Recorded BEFORE the insert
+      // and regardless of insert-vs-collision (a re-proposed/collided key still counts as
+      // proposed-by-this-run, which is how a later run recovers a crashed run's action). Durable on
+      // the run row because proposeThreadAction runs in the bridge SUBPROCESS while the seal runs in
+      // the runner — an in-memory key-set can't cross. 0-row update if the run is absent — harmless.
+      if (input.runId) {
+        await actionDb
+          .update(internalAgentRuns)
+          .set({
+            proposedActionKeys: sql`${internalAgentRuns.proposedActionKeys} || ${JSON.stringify([input.idempotencyKey])}::jsonb`,
+          })
+          .where(eq(internalAgentRuns.id, input.runId));
       }
 
       // Race-safe insert: onConflictDoNothing on the (companyId, idempotencyKey)

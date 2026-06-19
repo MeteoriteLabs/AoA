@@ -32,6 +32,18 @@ Interleave: X inserts `proposed(runId=X)`; Y re-selects + re-homes to runId=Y; X
 `WHERE idempotencyKey IN (run's keys) AND status='proposed'`, covering collided rows regardless
 of runId. A also re-introduces the re-home #102 removed and perturbs `inspectRunPostReply`.
 
+**CORRECTION (found at implementation start) — B → B′.** §0/§4 assumed the key-set is tracked
+IN-MEMORY in the run context. NOT implementable: `proposeThreadAction` runs in the **mcp-bridge
+subprocess** (`mcp-bridge.ts:353` main-module + `StdioServerTransport`, spawned per
+`runner.ts:289`), while the seal runs in the **runner process** — no in-memory channel crosses
+that boundary (the review read the code but missed the process split). **Corrected to B′:**
+persist the run's proposed key-set durably on the run row (`internal_agent_runs.proposed_action_keys`
+jsonb, migration `0147`). `proposeThreadAction` appends each `idempotencyKey` (sequential per
+run → no concurrent-append race; recorded on collision too, so a re-proposed key still counts);
+the runner/controller read it back on run success and seal by that key-set. Race-free, and LESS
+plumbing than in-memory B (no ctx threading through the 6 tools). Cost: one additive migration —
+the "migration-free" claim was predicated on the unimplementable in-memory B.
+
 **MUST-FIX before/within implementation:**
 1. **(BLOCKER) Controller seal gates on run SUCCESS.** thread-orchestration.ts commit (line
    **632**, not 619 — 619 is the stale-suppression log) is status-blind (`if (threadRow &&
