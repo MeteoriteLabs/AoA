@@ -1383,7 +1383,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     const freshRun = await seedRun(); // status 'running', created now
     const freshRowId = await insertRow(freshRun, `k:gcr:${randomUUID()}`);
 
-    const res = await gcOrphanedProposedActions(db, { staleMs: 60_000 });
+    const res = await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
 
     const stat = async (id: string) =>
       String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${id}`))[0].status);
@@ -1393,5 +1393,230 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     const [staleRunRow] = rowsOf(await db.execute(sql`SELECT status FROM internal_agent_runs WHERE id = ${String(staleRun.id)}`));
     expect(String(staleRunRow.status)).toBe("failed"); // crashed run force-failed (#99 rule 3)
     expect(res.runsTerminalized).toBeGreaterThanOrEqual(1);
+  });
+
+  // Codex #3: a COMPLETED run's still-`proposed` rows (in-band seal failed transiently) must be
+  // RE-SEALED by the GC (proposed → ready), never terminalized — the run succeeded.
+  it("GC: re-seals a COMPLETED run's unsealed proposed rows by key-set (does not drop them)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tR] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tRId = String(tR.id);
+
+    const key = `k:reseal:${randomUUID()}`;
+    // completed run that DID record the key on its durable key-set (in-band seal then failed).
+    const [doneRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'completed', ${JSON.stringify([key])}::jsonb)
+      RETURNING id`));
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tRId}, ${String(doneRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb)`);
+
+    const res = await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const status = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
+    expect(status).toBe("ready"); // re-sealed, NOT blocked_policy
+    expect(res.resealed).toBeGreaterThanOrEqual(1);
+  });
+
+  // A COMPLETED run re-proposed a key whose row is still owned by an earlier FAILED run (collision).
+  // The completed run's key-set must re-seal that row — recovery follows the SUCCESSFUL re-proposer,
+  // not the row's runId. (This is exactly why #1 is a false positive, applied to the GC backstop.)
+  it("GC: re-seals a collided row a COMPLETED run re-proposed even though it is owned by a FAILED run", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tC] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tCId = String(tC.id);
+    const key = `k:collide:${randomUUID()}`;
+
+    // earlier FAILED run owns the row...
+    const [failedRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'failed') RETURNING id`));
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tCId}, ${String(failedRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb)`);
+
+    // ...but a COMPLETED run re-proposed the same key (recorded on its durable key-set).
+    await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'completed', ${JSON.stringify([key])}::jsonb)`);
+
+    const res = await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const status = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
+    expect(status).toBe("ready"); // recovered by the completed run's key-set, NOT blocked_policy
+    expect(res.resealed).toBeGreaterThanOrEqual(1);
+  });
+
+  // Adversarial-review fix: a row a COMPLETED run did NOT seal (key never reached its key-set — the
+  // append no-op'd) and a NULL-runId row are both terminal-but-unrecoverable. Past the modest age
+  // cutoff they must be terminalized, not stuck in `proposed` forever. Step 4 only touches null/
+  // completed producers, never a live running run.
+  it("GC: terminalizes orphaned proposed rows under a completed/null producer (Step 4 cleanup net)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tO] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tOId = String(tO.id);
+
+    // (a) completed run, but the row's key is NOT in its (empty) key-set → orphan.
+    const [doneRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'completed', '[]'::jsonb) RETURNING id`));
+    const orphanId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES (${orphanId}, ${companyId}, ${tOId}, ${String(doneRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${`k:orphan:${randomUUID()}`}, '{}'::jsonb, now() - interval '1 hour')`);
+
+    // (b) null-runId row (no producer at all) → also an orphan.
+    const nullRunRowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES (${nullRunRowId}, ${companyId}, ${tOId}, NULL, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "y" })}::jsonb, ${`k:nullrun:${randomUUID()}`}, '{}'::jsonb, now() - interval '1 hour')`);
+
+    const res = await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const stat = async (id: string) =>
+      String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${id}`))[0].status);
+    expect(await stat(orphanId)).toBe("blocked_policy"); // completed-run orphan cleaned (not stuck)
+    expect(await stat(nullRunRowId)).toBe("blocked_policy"); // null-producer orphan cleaned
+    expect(res.reaped).toBeGreaterThanOrEqual(2);
+  });
+
+  // Codex #2: a long-but-LIVE run (past the OLD 10-min seal cutoff, well within the 2h zombie TTL)
+  // must NOT be force-failed by the default sweep — its actions would otherwise be lost on success.
+  it("GC (default TTL): leaves a 40-minute-old RUNNING run and its proposed row untouched", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tL] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tLId = String(tL.id);
+
+    const [liveRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, created_at)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'running', now() - interval '40 minutes')
+      RETURNING id`));
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tLId}, ${String(liveRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${`k:live:${randomUUID()}`}, '{}'::jsonb)`);
+
+    await gcOrphanedProposedActions(db); // DEFAULT zombie TTL = 2h
+
+    const runStatus = String(rowsOf(await db.execute(sql`SELECT status FROM internal_agent_runs WHERE id = ${String(liveRun.id)}`))[0].status);
+    const rowStatus = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
+    expect(runStatus).toBe("running"); // not force-failed
+    expect(rowStatus).toBe("proposed"); // left alone (may still seal in-band)
+  });
+
+  // Step 2 company-correlation is load-bearing: a COMPLETED run in a DIFFERENT company holding the
+  // same key must NOT re-seal this company's row (no cross-tenant bleed). Locks in the r.company_id
+  // predicate so deleting it would fail a test.
+  it("GC: does NOT re-seal a row when only a DIFFERENT company's completed run holds the key", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tX] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tXId = String(tX.id);
+    const key = `k:xco:${randomUUID()}`;
+
+    // our row: company A, under a FRESH running run (so Steps 3/4 never touch it).
+    const liveRun = await seedRun();
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tXId}, ${liveRun}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb)`);
+
+    // a DIFFERENT company with a COMPLETED run that holds the same key.
+    const otherCo = await companyService(db).create({ name: "Other Co" } as never);
+    await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${otherCo.id}, 'event', 'integration-test', 'completed', ${JSON.stringify([key])}::jsonb)`);
+
+    await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const status = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
+    expect(status).toBe("proposed"); // company-correlation excluded the other company's key-set
+  });
+
+  // Codex #2 (positive direction): under the DEFAULT 2h TTL, a >2h-old running run IS force-failed —
+  // guards against an over-large-TTL / NaN-cutoff regression the 40-min liveness test cannot catch.
+  it("GC (default TTL): force-fails a >2h-old RUNNING run and terminalizes its row", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tD] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tDId = String(tD.id);
+
+    const [deadRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, created_at)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'running', now() - interval '3 hours')
+      RETURNING id`));
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES (${rowId}, ${companyId}, ${tDId}, ${String(deadRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${`k:dead:${randomUUID()}`}, '{}'::jsonb, now() - interval '3 hours')`);
+
+    await gcOrphanedProposedActions(db); // DEFAULT 2h zombie TTL
+
+    const runStatus = String(rowsOf(await db.execute(sql`SELECT status FROM internal_agent_runs WHERE id = ${String(deadRun.id)}`))[0].status);
+    const rowStatus = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
+    expect(runStatus).toBe("failed"); // past 2h default → zombie reaped
+    expect(rowStatus).toBe("blocked_policy"); // its orphan row terminalized (failed-run branch)
+  });
+
+  // Step 2 beats Step 4: a STALE recoverable row (past the 10m orphan cutoff, but its key IS in a
+  // completed run's key-set) must be RE-SEALED, not terminalized — proves the re-seal-before-orphan order.
+  it("GC: re-seals a STALE recoverable row instead of terminalizing it (Step 2 precedes Step 4)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tS] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tSId = String(tS.id);
+    const key = `k:stale:${randomUUID()}`;
+
+    const [doneRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'completed', ${JSON.stringify([key])}::jsonb) RETURNING id`));
+    const rowId = randomUUID();
+    // updated_at 1h ago → past the 10m orphan cutoff, so Step 4 WOULD terminalize it if Step 2 didn't run first.
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES (${rowId}, ${companyId}, ${tSId}, ${String(doneRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb, now() - interval '1 hour')`);
+
+    const res = await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const status = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
+    expect(status).toBe("ready"); // re-sealed by Step 2 despite being past the Step 4 orphan cutoff
+    expect(res.resealed).toBeGreaterThanOrEqual(1);
   });
 });

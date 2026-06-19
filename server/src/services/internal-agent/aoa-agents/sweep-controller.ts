@@ -52,9 +52,10 @@ export async function runControllerSweep(
     log.warn({ err }, "controller sweep: stale-action reaper failed — continuing");
   }
 
-  // GC orphaned UNSEALED `proposed` rows whose producing run failed / cancelled / crashed (or
-  // completed with a crashed seal). They are never committable under the ready-only relay; this
-  // keeps them from accumulating. Best-effort — never block the sweep. (Outbox seal, must-fix #5.)
+  // Drive UNSEALED `proposed` rows to a terminal state — the idempotent-retry relay for the producer
+  // seal: re-seal a COMPLETED run's rows (recover a crashed in-band seal), terminalize failed/cancelled
+  // and orphan rows, and force-fail genuinely-crashed (zombie) runs. Best-effort — never block the
+  // sweep. (Outbox seal, must-fix #5.)
   try {
     await gcOrphanedProposedActions(db);
   } catch (err) {

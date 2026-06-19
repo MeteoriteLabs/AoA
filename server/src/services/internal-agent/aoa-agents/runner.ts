@@ -538,10 +538,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       bridgeThreadId &&
       discussionRunMode === "controller_action_gate"
     ) {
-      // Best-effort: a transient seal read/write failure must NOT fail a run that already
-      // succeeded (the agent did its work). On failure the rows stay `proposed` (uncommittable,
-      // reaped by the GC) and the next run can re-do the work — far better than flipping a
-      // succeeded run to `failed`. Mirrors the freshness-capture best-effort guard above.
+      // Best-effort: a transient seal read/write failure must NOT fail a run that already succeeded
+      // (the agent did its work). On failure the rows stay `proposed`; the sweep GC then RE-SEALS this
+      // completed run's key-set (gcOrphanedProposedActions Step 2, ~2-min cadence), so the actions are
+      // recovered and committed — NOT lost. Far better than flipping a succeeded run to `failed`.
+      // Mirrors the freshness-capture best-effort guard above.
       try {
         const { threadAgentActionService } = await import("../../thread-agent-actions.js");
         const [runRow] = await db
@@ -560,7 +561,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       } catch (sealErr) {
         log.warn(
           { err: sealErr, runId, threadId: bridgeThreadId },
-          "aoa-runner: outbox seal failed — actions left unsealed (reaped by GC; not committed this run)",
+          "aoa-runner: outbox seal failed — actions left unsealed; GC will re-seal this completed run on the next sweep",
         );
       }
     }

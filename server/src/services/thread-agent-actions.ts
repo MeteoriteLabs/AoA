@@ -1081,6 +1081,17 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
  */
 export const STALE_COMMITTING_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * Conservative wall-clock age past which a still-`running` run that left unsealed `proposed`
+ * thread actions is treated as hard-CRASHED. Must stay ≫ the longest legitimate run: the CLI
+ * idle timeout is 30 min (`cli-mode.ts`, refreshed per message) and there is NO hard run cap, so
+ * a `running` run older than 2h that still holds unsealed actions has crashed. This is NOT the
+ * seal-window cutoff — a long-but-LIVE run must never be force-failed (a false-crash would drop a
+ * succeeding run's actions). Mirrors Decision #99's rule that staleMs stay larger than any
+ * legitimate run. (2h is "2h of continuous activity", since the timeout is idle-based.)
+ */
+export const ZOMBIE_RUN_TTL_MS = 2 * 60 * 60 * 1000;
+
 export interface ReapStaleThreadAgentActionsResult {
   reaped: number;
 }
@@ -1148,71 +1159,122 @@ export async function reapStaleThreadAgentActions(
 }
 
 export interface GcOrphanedProposedActionsResult {
+  /** Completed (succeeded) runs' proposed rows recovered by re-seal: proposed → ready (Codex #3). */
+  resealed: number;
+  /** Proposed rows terminalized → blocked_policy (failed/cancelled producers + completed/null orphans). */
   reaped: number;
+  /** Genuinely-crashed (zombie) running runs force-failed (#99 rule 3). */
   runsTerminalized: number;
 }
 
 /**
- * Garbage-collect UNSEALED `proposed` thread-agent-actions whose producing run can no longer
- * seal them (Decision #99 outbox completion, must-fix #5). Since the relay drains only sealed
- * `ready` rows, an unsealed `proposed` row left by a failed / cancelled / crashed run is never
- * committed — but without this GC it accumulates forever. We terminalize it to
- * `blocked_policy` (reason `run_not_sealed`) so it can never become committable.
+ * Garbage-collect UNSEALED `proposed` thread-agent-actions and drive each to a terminal state
+ * (Decision #99 outbox completion, must-fix #5). The relay drains only sealed `ready` rows, so the
+ * GC is the idempotent-retry RELAY for the producer seal. It enforces both invariants:
+ *   - SAFETY:   never commit a failed run's action (terminalize them).
+ *   - LIVENESS: never drop a SUCCEEDED run's action, never mistake a slow run for a crashed one,
+ *               and never leave a row stuck in `proposed` forever.
  *
- * Mirrors {@link reapStaleThreadAgentActions} and Decision #99 rule 3 (terminalize the linked
- * run BEFORE touching its rows, so a still-alive run can never seal a row we are reaping):
- *   - Step 1: a `running` producing run past the stale cutoff that still has `proposed` rows is a
- *     CRASH — force it `failed` (guarded on still-`running` so a live run about to seal is never
- *     clobbered).
- *   - Step 2: `proposed` rows whose run is `failed`/`cancelled` (incl. the ones just terminalized)
- *     OR whose run is `completed` but the row is still `proposed` past the cutoff (the seal-crash
- *     window) → `blocked_policy`. Null-runId rows are left (no producer to attribute).
+ * Four status-driven steps (run order matters — re-seal before terminalize):
+ *   1. Zombie reaper — a `running` run past {@link ZOMBIE_RUN_TTL_MS} (≫ the longest legitimate
+ *      run) that still has `proposed` rows has hard-crashed → force `failed` (#99 rule 3, guarded on
+ *      still-`running`). A long-but-LIVE run is never touched (a false-crash would drop its actions).
+ *   2. Re-seal — `proposed` rows whose `idempotency_key` is in some COMPLETED (succeeded) run's
+ *      durable `proposed_action_keys` for the same company → `ready`. Mirrors the in-band runner seal
+ *      (by company+key-set) so a transient in-band seal failure self-heals next sweep, and a collided
+ *      row (re-proposed by a completed run but still owned by an earlier run) is recovered too.
+ *   3. Terminalize (failed) — remaining `proposed` rows whose run is `failed`/`cancelled` (incl. the
+ *      zombies just failed in Step 1) → `blocked_policy` (`run_not_sealed`). Non-zombie `running`
+ *      runs' rows are left alone (they may still seal in-band).
+ *   4. Terminalize (orphan) — `proposed` rows past {@link STALE_COMMITTING_TTL_MS} whose producer is
+ *      terminal-but-unrecoverable: `run_id IS NULL`, or a `completed` run that did NOT re-seal them in
+ *      Step 2 (their key never reached the run's key-set — the propose-time append no-op'd / run was
+ *      absent). Only ever touches null/`completed` producers, so it cannot false-crash a live run.
  *
  * Wired into `runControllerSweep` on the 2-minute cadence, like the reaper.
  */
 export async function gcOrphanedProposedActions(
   db: Db | DbLike,
-  opts: { staleMs?: number; now?: Date } = {},
+  opts: { zombieRunMs?: number; now?: Date } = {},
 ): Promise<GcOrphanedProposedActionsResult> {
   const gcDb = db as unknown as DbLike;
-  const staleMs = opts.staleMs ?? STALE_COMMITTING_TTL_MS;
+  const zombieMs = opts.zombieRunMs ?? ZOMBIE_RUN_TTL_MS;
   const now = opts.now ?? new Date();
-  const cutoff = new Date(now.getTime() - staleMs);
+  const zombieCutoff = new Date(now.getTime() - zombieMs);
 
-  // Step 1 (#99 rule 3): terminalize a CRASHED producing run before touching its rows.
+  // Step 1 (#99 rule 3): force-fail a genuinely-CRASHED running run BEFORE touching its rows. Crash =
+  // `running` past the conservative zombie TTL with unsealed `proposed` rows — a long-but-LIVE run is
+  // never reaped (no false-crash). Guarded on still-`running` so a run about to seal is never clobbered.
   const terminalized = (await gcDb
     .update(internalAgentRuns)
     .set({
       status: "failed",
-      errorMessage: "reaped: stale run left unsealed thread actions",
+      errorMessage: "reaped: running run past zombie TTL left unsealed thread actions",
       completedAt: now,
     })
     .where(
       and(
         eq(internalAgentRuns.status, "running"),
-        lt(internalAgentRuns.createdAt, cutoff),
+        lt(internalAgentRuns.createdAt, zombieCutoff),
         sql`${internalAgentRuns.id} IN (SELECT run_id FROM thread_agent_actions WHERE status = 'proposed' AND run_id IS NOT NULL)`,
       ),
     )
     .returning()) as unknown[];
 
-  // Step 2: terminalize the unsealed `proposed` rows whose run did not (or cannot) seal them.
+  // Step 2 (the seal is RETRYABLE): re-seal proposed rows a COMPLETED (succeeded) run is entitled to
+  // seal — whose idempotency_key is in some completed run's durable key-set, same company. Mirrors the
+  // in-band runner seal (sealRunActions, by company+key-set). Runs BEFORE Steps 3/4 so a recoverable
+  // row becomes `ready` first; the terminalize passes only match `status='proposed'` and never clobber it.
+  const resealed = (await gcDb
+    .update(threadAgentActions)
+    .set({ status: "ready", updatedAt: now })
+    .where(
+      and(
+        eq(threadAgentActions.status, "proposed"),
+        sql`${threadAgentActions.idempotencyKey} IN (
+          SELECT jsonb_array_elements_text(r.proposed_action_keys)
+          FROM internal_agent_runs r
+          WHERE r.status = 'completed'
+            AND jsonb_array_length(r.proposed_action_keys) > 0
+            AND r.company_id = ${threadAgentActions.companyId}
+        )`,
+      ),
+    )
+    .returning()) as unknown[];
+
+  // Step 3: terminalize the remaining unsealed `proposed` rows whose run FAILED/cancelled (incl. the
+  // zombies just failed in Step 1) and which no completed run re-sealed — these must never commit.
   const reaped = (await gcDb
     .update(threadAgentActions)
     .set({ status: "blocked_policy", blockedReason: "run_not_sealed", updatedAt: now })
     .where(
       and(
         eq(threadAgentActions.status, "proposed"),
-        or(
-          sql`${threadAgentActions.runId} IN (SELECT id FROM internal_agent_runs WHERE status IN ('failed','cancelled'))`,
-          and(
-            lt(threadAgentActions.updatedAt, cutoff),
-            sql`${threadAgentActions.runId} IN (SELECT id FROM internal_agent_runs WHERE status = 'completed')`,
-          ),
-        ),
+        sql`${threadAgentActions.runId} IN (SELECT id FROM internal_agent_runs WHERE status IN ('failed','cancelled'))`,
       ),
     )
     .returning()) as unknown[];
 
-  return { reaped: reaped.length, runsTerminalized: terminalized.length };
+  // Step 4: terminalize ORPHANED proposed rows past a modest age whose producer is terminal-but-
+  // unrecoverable — null run_id (no producer), or a `completed` run that did NOT re-seal them in Step 2
+  // (their key never reached the run's key-set). Restores the cleanup net the old age-based completed
+  // branch gave, without re-introducing false-crashes (never touches a live `running` run).
+  const orphanCutoff = new Date(now.getTime() - STALE_COMMITTING_TTL_MS);
+  const orphaned = (await gcDb
+    .update(threadAgentActions)
+    .set({ status: "blocked_policy", blockedReason: "run_not_sealed", updatedAt: now })
+    .where(
+      and(
+        eq(threadAgentActions.status, "proposed"),
+        lt(threadAgentActions.updatedAt, orphanCutoff),
+        sql`(${threadAgentActions.runId} IS NULL OR ${threadAgentActions.runId} IN (SELECT id FROM internal_agent_runs WHERE status = 'completed'))`,
+      ),
+    )
+    .returning()) as unknown[];
+
+  return {
+    resealed: resealed.length,
+    reaped: reaped.length + orphaned.length,
+    runsTerminalized: terminalized.length,
+  };
 }

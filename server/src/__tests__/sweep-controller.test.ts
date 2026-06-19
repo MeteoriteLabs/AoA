@@ -75,7 +75,7 @@ const {
     failed: 0,
     lostRace: 0,
   }),
-  mockGcOrphanedProposedActions: vi.fn().mockResolvedValue({ reaped: 0, runsTerminalized: 0 }),
+  mockGcOrphanedProposedActions: vi.fn().mockResolvedValue({ reaped: 0, runsTerminalized: 0, resealed: 0 }),
 }));
 
 vi.mock("../services/thread-agent-actions.js", () => ({
@@ -129,7 +129,7 @@ describe("runControllerSweep", () => {
       failed: 0,
       lostRace: 0,
     });
-    mockGcOrphanedProposedActions.mockResolvedValue({ reaped: 0, runsTerminalized: 0 });
+    mockGcOrphanedProposedActions.mockResolvedValue({ reaped: 0, runsTerminalized: 0, resealed: 0 });
   });
 
   it("4: reaps stale committing rows once at the start of the sweep", async () => {
