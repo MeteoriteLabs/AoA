@@ -174,6 +174,31 @@ describe("threadAgentActionService", () => {
     expect(db.__updateSets).toHaveLength(0); // no revive UPDATE issued
   });
 
+  it("sealRunActions promotes this run's proposed rows to ready by key-set", async () => {
+    // Outbox SEAL (Mechanism B): on run success the producer promotes the actions it
+    // proposed this turn from `proposed` → `ready`, keyed by idempotencyKey (not runId), so
+    // a re-proposed/collided row is sealed regardless of which run owns it. Returns the count.
+    const db = createSequenceDb({ updates: [[{ id: "a1" }, { id: "a2" }]] });
+    const n = await threadAgentActionService(db as never).sealRunActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      idempotencyKeys: ["k1", "k2"],
+    });
+    expect(n).toBe(2);
+    expect(db.__updateSets[0]).toMatchObject({ status: "ready" });
+  });
+
+  it("sealRunActions is a no-op (issues no UPDATE) on an empty key-set", async () => {
+    const db = createSequenceDb({ updates: [] });
+    const n = await threadAgentActionService(db as never).sealRunActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      idempotencyKeys: [],
+    });
+    expect(n).toBe(0);
+    expect(db.__updateSets).toHaveLength(0);
+  });
+
   it("returns the freshly inserted row when there is no idempotency conflict", async () => {
     const inserted = { ...baseAction, id: "inserted-action" };
     const db = createSequenceDb({

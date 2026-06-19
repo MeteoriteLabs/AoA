@@ -263,6 +263,9 @@ async function claimActionForCommit(
       and(
         eq(threadAgentActions.id, actionId),
         or(
+          // `ready` = sealed (the committable state after the seal migration). `proposed` is
+          // the transient superset during Pass 1; `failed` is the post-gate retry path.
+          eq(threadAgentActions.status, "ready"),
           eq(threadAgentActions.status, "proposed"),
           eq(threadAgentActions.status, "failed"),
         ),
@@ -372,6 +375,34 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       return existing;
     },
 
+    // Outbox SEAL (Decision #99 producer-gate). A producing run, ON SUCCESS, promotes the
+    // actions IT proposed this turn from `proposed` (in-flight, NOT committable) to `ready`
+    // (committable by the relay). Sealed by the run's idempotency-KEY SET (Mechanism B) so a
+    // re-proposed / collided row is covered regardless of which run's id is on it — no re-home.
+    // A run that fails/crashes never seals → its `proposed` rows are never drained (the GC
+    // reaps them). Caller wraps this + the run-status write in ONE tx by constructing the
+    // service with the tx handle. See docs/aoa/plans/2026-06-19-prb-outbox-seal-design.md §0.
+    sealRunActions: async (input: {
+      companyId: string;
+      threadId: string;
+      idempotencyKeys: string[];
+    }): Promise<number> => {
+      if (input.idempotencyKeys.length === 0) return 0;
+      const sealed = (await actionDb
+        .update(threadAgentActions)
+        .set({ status: "ready", updatedAt: new Date() })
+        .where(
+          and(
+            eq(threadAgentActions.companyId, input.companyId),
+            eq(threadAgentActions.threadId, input.threadId),
+            eq(threadAgentActions.status, "proposed"),
+            inArray(threadAgentActions.idempotencyKey, input.idempotencyKeys),
+          ),
+        )
+        .returning()) as unknown[];
+      return sealed.length;
+    },
+
     commitThreadAgentActions: async (
       input: CommitThreadAgentActionsInput,
     ): Promise<CommitThreadAgentActionsResult> => {
@@ -408,6 +439,12 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             eq(threadAgentActions.companyId, input.companyId),
             eq(threadAgentActions.threadId, input.threadId),
             or(
+              // SUPERSET (transient, Pass 1 of the outbox-seal migration): drain `ready`
+              // (sealed — the eventual SOLE committable state) AND `proposed` (legacy/in-flight)
+              // so existing proposed-seeding tests stay green while the seal writers land. Pass 2
+              // narrows this to `ready`-only, at which point an unsealed `proposed` row (a failed
+              // or in-flight run) is never drained — that is the Codex-P1 fix.
+              eq(threadAgentActions.status, "ready"),
               eq(threadAgentActions.status, "proposed"),
               and(
                 eq(threadAgentActions.status, "failed"),
