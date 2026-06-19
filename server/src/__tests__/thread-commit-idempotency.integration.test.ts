@@ -40,6 +40,7 @@ import { artifactService } from "../services/artifacts.js";
 import {
   threadAgentActionService,
   reapStaleThreadAgentActions,
+  gcOrphanedProposedActions,
 } from "../services/thread-agent-actions.js";
 import {
   captureFreshnessSnapshot,
@@ -1335,5 +1336,62 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     expect(String(unsealed.status)).toBe("proposed"); // never drained — the seal is the gate
     expect(String(sealed.status)).toBe("committed"); // sealed → committed
     expect(res.committed).toBe(1); // exactly the sealed one
+  });
+
+  // GC (outbox seal, must-fix #5) — orphaned unsealed `proposed` rows from a failed/crashed run
+  // are terminalized so they don't accumulate (they are never committable under ready-only); a
+  // FRESH running run's rows are left alone (it may still seal). Mirrors Decision #99 rule 3.
+  it("GC: terminalizes proposed rows of a FAILED run + a stale RUNNING run (run failed first); leaves a fresh run alone", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tG] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tGId = String(tG.id);
+
+    const insertRow = async (runId: string, key: string) => {
+      const id = randomUUID();
+      await db.execute(sql`
+        INSERT INTO thread_agent_actions
+          (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+        VALUES
+          (${id}, ${companyId}, ${tGId}, ${runId}, ${agentId}, 'post_reply', 'proposed',
+           ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb)
+      `);
+      return id;
+    };
+
+    // (a) FAILED run → its proposed row must be terminalized.
+    const [failedRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'failed') RETURNING id
+    `));
+    const failedRowId = await insertRow(String(failedRun.id), `k:gcf:${randomUUID()}`);
+
+    // (b) STALE RUNNING run (crashed) → run force-failed first, then row terminalized.
+    const [staleRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, created_at)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'running', now() - interval '1 hour') RETURNING id
+    `));
+    const staleRowId = await insertRow(String(staleRun.id), `k:gcs:${randomUUID()}`);
+
+    // (c) FRESH running run → left alone (might still seal).
+    const freshRun = await seedRun(); // status 'running', created now
+    const freshRowId = await insertRow(freshRun, `k:gcr:${randomUUID()}`);
+
+    const res = await gcOrphanedProposedActions(db, { staleMs: 60_000 });
+
+    const stat = async (id: string) =>
+      String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${id}`))[0].status);
+    expect(await stat(failedRowId)).toBe("blocked_policy"); // failed-run orphan reaped
+    expect(await stat(staleRowId)).toBe("blocked_policy"); // crashed-run orphan reaped
+    expect(await stat(freshRowId)).toBe("proposed"); // fresh running run left alone
+    const [staleRunRow] = rowsOf(await db.execute(sql`SELECT status FROM internal_agent_runs WHERE id = ${String(staleRun.id)}`));
+    expect(String(staleRunRow.status)).toBe("failed"); // crashed run force-failed (#99 rule 3)
+    expect(res.runsTerminalized).toBeGreaterThanOrEqual(1);
   });
 });

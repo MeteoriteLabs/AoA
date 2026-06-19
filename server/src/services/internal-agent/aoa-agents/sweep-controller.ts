@@ -20,7 +20,11 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussions, threadOrchestrationState } from "@armyofagents/db";
 import { threadOrchestrationService } from "../../thread-orchestration.js";
-import { reapStaleThreadAgentActions, threadAgentActionService } from "../../thread-agent-actions.js";
+import {
+  reapStaleThreadAgentActions,
+  gcOrphanedProposedActions,
+  threadAgentActionService,
+} from "../../thread-agent-actions.js";
 import { makeControllerAdjutantRunner } from "./controller-adjutant-runner.js";
 import type { AdjutantRunner } from "../../thread-orchestration.js";
 import { logger } from "../../../middleware/logger.js";
@@ -46,6 +50,15 @@ export async function runControllerSweep(
     await reapStaleThreadAgentActions(db);
   } catch (err) {
     log.warn({ err }, "controller sweep: stale-action reaper failed — continuing");
+  }
+
+  // GC orphaned UNSEALED `proposed` rows whose producing run failed / cancelled / crashed (or
+  // completed with a crashed seal). They are never committable under the ready-only relay; this
+  // keeps them from accumulating. Best-effort — never block the sweep. (Outbox seal, must-fix #5.)
+  try {
+    await gcOrphanedProposedActions(db);
+  } catch (err) {
+    log.warn({ err }, "controller sweep: orphaned-proposed GC failed — continuing");
   }
 
   // Select threads that need a run: pendingRun=true + useControllerPath=true

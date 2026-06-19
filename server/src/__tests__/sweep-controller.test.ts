@@ -62,7 +62,11 @@ vi.mock(
 
 // ── stale-action reaper mock — assert the sweep invokes it ────────────────────
 // vi.hoisted so the spy exists before vi.mock's hoisted factory references it.
-const { mockReapStaleThreadAgentActions, mockCommitThreadAgentActions } = vi.hoisted(() => ({
+const {
+  mockReapStaleThreadAgentActions,
+  mockCommitThreadAgentActions,
+  mockGcOrphanedProposedActions,
+} = vi.hoisted(() => ({
   mockReapStaleThreadAgentActions: vi.fn().mockResolvedValue({ reaped: 0 }),
   mockCommitThreadAgentActions: vi.fn().mockResolvedValue({
     committed: 0,
@@ -71,10 +75,12 @@ const { mockReapStaleThreadAgentActions, mockCommitThreadAgentActions } = vi.hoi
     failed: 0,
     lostRace: 0,
   }),
+  mockGcOrphanedProposedActions: vi.fn().mockResolvedValue({ reaped: 0, runsTerminalized: 0 }),
 }));
 
 vi.mock("../services/thread-agent-actions.js", () => ({
   reapStaleThreadAgentActions: mockReapStaleThreadAgentActions,
+  gcOrphanedProposedActions: mockGcOrphanedProposedActions,
   threadAgentActionService: vi.fn(() => ({
     commitThreadAgentActions: mockCommitThreadAgentActions,
   })),
@@ -123,6 +129,7 @@ describe("runControllerSweep", () => {
       failed: 0,
       lostRace: 0,
     });
+    mockGcOrphanedProposedActions.mockResolvedValue({ reaped: 0, runsTerminalized: 0 });
   });
 
   it("4: reaps stale committing rows once at the start of the sweep", async () => {
@@ -132,6 +139,26 @@ describe("runControllerSweep", () => {
 
     expect(mockReapStaleThreadAgentActions).toHaveBeenCalledTimes(1);
     expect(mockReapStaleThreadAgentActions).toHaveBeenCalledWith(db);
+  });
+
+  it("4b: GCs orphaned unsealed `proposed` rows once at the start of the sweep", async () => {
+    const db = makeDb(["thread-A"]);
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    expect(mockGcOrphanedProposedActions).toHaveBeenCalledTimes(1);
+    expect(mockGcOrphanedProposedActions).toHaveBeenCalledWith(db);
+  });
+
+  it("4c: a GC failure does not abort the sweep — pending threads still drain", async () => {
+    const db = makeDb(["thread-A"]);
+    mockGcOrphanedProposedActions.mockRejectedValueOnce(new Error("gc db error"));
+
+    await expect(
+      runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner }),
+    ).resolves.toBeUndefined();
+
+    expect(mockRunController).toHaveBeenCalledTimes(1);
   });
 
   it("5: a reaper failure does not abort the sweep — pending threads still drain", async () => {

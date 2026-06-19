@@ -1146,3 +1146,73 @@ export async function reapStaleThreadAgentActions(
 
   return { reaped: reaped.length };
 }
+
+export interface GcOrphanedProposedActionsResult {
+  reaped: number;
+  runsTerminalized: number;
+}
+
+/**
+ * Garbage-collect UNSEALED `proposed` thread-agent-actions whose producing run can no longer
+ * seal them (Decision #99 outbox completion, must-fix #5). Since the relay drains only sealed
+ * `ready` rows, an unsealed `proposed` row left by a failed / cancelled / crashed run is never
+ * committed — but without this GC it accumulates forever. We terminalize it to
+ * `blocked_policy` (reason `run_not_sealed`) so it can never become committable.
+ *
+ * Mirrors {@link reapStaleThreadAgentActions} and Decision #99 rule 3 (terminalize the linked
+ * run BEFORE touching its rows, so a still-alive run can never seal a row we are reaping):
+ *   - Step 1: a `running` producing run past the stale cutoff that still has `proposed` rows is a
+ *     CRASH — force it `failed` (guarded on still-`running` so a live run about to seal is never
+ *     clobbered).
+ *   - Step 2: `proposed` rows whose run is `failed`/`cancelled` (incl. the ones just terminalized)
+ *     OR whose run is `completed` but the row is still `proposed` past the cutoff (the seal-crash
+ *     window) → `blocked_policy`. Null-runId rows are left (no producer to attribute).
+ *
+ * Wired into `runControllerSweep` on the 2-minute cadence, like the reaper.
+ */
+export async function gcOrphanedProposedActions(
+  db: Db | DbLike,
+  opts: { staleMs?: number; now?: Date } = {},
+): Promise<GcOrphanedProposedActionsResult> {
+  const gcDb = db as unknown as DbLike;
+  const staleMs = opts.staleMs ?? STALE_COMMITTING_TTL_MS;
+  const now = opts.now ?? new Date();
+  const cutoff = new Date(now.getTime() - staleMs);
+
+  // Step 1 (#99 rule 3): terminalize a CRASHED producing run before touching its rows.
+  const terminalized = (await gcDb
+    .update(internalAgentRuns)
+    .set({
+      status: "failed",
+      errorMessage: "reaped: stale run left unsealed thread actions",
+      completedAt: now,
+    })
+    .where(
+      and(
+        eq(internalAgentRuns.status, "running"),
+        lt(internalAgentRuns.createdAt, cutoff),
+        sql`${internalAgentRuns.id} IN (SELECT run_id FROM thread_agent_actions WHERE status = 'proposed' AND run_id IS NOT NULL)`,
+      ),
+    )
+    .returning()) as unknown[];
+
+  // Step 2: terminalize the unsealed `proposed` rows whose run did not (or cannot) seal them.
+  const reaped = (await gcDb
+    .update(threadAgentActions)
+    .set({ status: "blocked_policy", blockedReason: "run_not_sealed", updatedAt: now })
+    .where(
+      and(
+        eq(threadAgentActions.status, "proposed"),
+        or(
+          sql`${threadAgentActions.runId} IN (SELECT id FROM internal_agent_runs WHERE status IN ('failed','cancelled'))`,
+          and(
+            lt(threadAgentActions.updatedAt, cutoff),
+            sql`${threadAgentActions.runId} IN (SELECT id FROM internal_agent_runs WHERE status = 'completed')`,
+          ),
+        ),
+      ),
+    )
+    .returning()) as unknown[];
+
+  return { reaped: reaped.length, runsTerminalized: terminalized.length };
+}
