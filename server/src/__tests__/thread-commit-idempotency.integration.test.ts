@@ -1775,4 +1775,43 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     const n = rowsOf(await db.execute(sql`SELECT count(*)::int AS n FROM discussion_entries WHERE source_action_id = ${actionId}`));
     expect(Number(n[0].n)).toBe(0);
   });
+
+  // Codex round-8: a run that sealed its rows (→ready) IN-BAND then crashed before its commit leaves
+  // them ready on a pendingRun=false thread — nothing drains them (the sweep visits only pending
+  // threads). The GC re-arms threads holding STALE ready rows (past the commit window); FRESH ready
+  // rows are left for the normal in-band/controller commit so this never fights the happy path.
+  it("GC: re-arms a thread with crash-stranded stale ready rows, but not one with fresh ready rows", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // (a) crash-stranded — ready row last touched 1h ago, thread not pending → must re-arm.
+    const [tStale] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tStaleId = String(tStale.id);
+    await db.execute(sql`INSERT INTO thread_orchestration_state (thread_id, pending_run) VALUES (${tStaleId}, false)`);
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES (${randomUUID()}, ${companyId}, ${tStaleId}, ${await seedRun()}, ${agentId}, 'post_reply', 'ready',
+              ${JSON.stringify({ rawContent: "stranded" })}::jsonb, ${`k:cw:${randomUUID()}`}, '{}'::jsonb, now() - interval '1 hour')`);
+
+    // (b) fresh — ready row touched now, thread not pending → must NOT re-arm (the normal commit drains it).
+    const [tFresh] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tFreshId = String(tFresh.id);
+    await db.execute(sql`INSERT INTO thread_orchestration_state (thread_id, pending_run) VALUES (${tFreshId}, false)`);
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${randomUUID()}, ${companyId}, ${tFreshId}, ${await seedRun()}, ${agentId}, 'post_reply', 'ready',
+              ${JSON.stringify({ rawContent: "fresh" })}::jsonb, ${`k:cwf:${randomUUID()}`}, '{}'::jsonb)`);
+
+    await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const stale = rowsOf(await db.execute(sql`SELECT pending_run FROM thread_orchestration_state WHERE thread_id = ${tStaleId}`))[0];
+    const fresh = rowsOf(await db.execute(sql`SELECT pending_run FROM thread_orchestration_state WHERE thread_id = ${tFreshId}`))[0];
+    expect(stale.pending_run).toBe(true); // crash-stranded ready rows → re-armed for the sweep
+    expect(fresh.pending_run).toBe(false); // fresh ready rows → left for the normal commit path
+  });
 });

@@ -163,6 +163,34 @@ describe("threadAgentActionService", () => {
     expect(db.__updateSets[1]).not.toHaveProperty("runId"); // runId NOT forwarded
   });
 
+  it("re-propose of a blocked_policy/run_not_sealed row revives it to proposed and ADOPTS the fresh snapshot (Codex round-8)", async () => {
+    // The GC self-heal re-seals a failed/crashed producer's blocked_policy/run_not_sealed row by a
+    // completed run's key-set. A same-turn re-proposal must re-stamp freshness so the re-sealed row
+    // commits against what THIS (successful) run saw — else a scope-coupled action is wrongly suppressed
+    // as newer_scope_version carrying the FAILED run's stale snapshot.
+    const freshSnap = { threadId: "thread-1", entrySeq: 7, latestScopeVersionId: "v2" };
+    const existing = { ...baseAction, id: "exb", runId: "run-1", status: "blocked_policy", blockedReason: "run_not_sealed", freshness: { threadId: "thread-1", entrySeq: 3, latestScopeVersionId: "v1" } };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[], [{ ...existing, status: "proposed", blockedReason: null, freshness: freshSnap }]] });
+    const res = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
+      actionType: "add_scope_item", payload: { kind: "decision", title: "x" }, idempotencyKey: existing.idempotencyKey, freshness: freshSnap,
+    })) as { id: string; status: string };
+    expect(res.status).toBe("proposed");
+    expect(db.__updateSets[1]).toMatchObject({ status: "proposed", blockedReason: null, freshness: freshSnap });
+  });
+
+  it("does NOT revive a blocked_policy row blocked for a NON-run_not_sealed reason (revive stays narrow)", async () => {
+    // Only GC-terminalized (run_not_sealed) blocks are revivable; a genuine policy block stays terminal.
+    const existing = { ...baseAction, id: "exp", runId: "run-1", status: "blocked_policy", blockedReason: "some_policy" };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[]] }); // only the key append; NO revive
+    const res = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
+      actionType: "add_scope_item", payload: { kind: "decision", title: "x" }, idempotencyKey: existing.idempotencyKey, freshness: { entrySeq: 1 },
+    })) as { id: string; status: string };
+    expect(res.status).toBe("blocked_policy"); // unchanged — not revived
+    expect(db.__updateSets).toHaveLength(1); // only the outbox key append
+  });
+
   it("returns a non-suppressed_stale colliding row unchanged (revive is narrow)", async () => {
     // The revive fires ONLY for `suppressed_stale`. A colliding row in any other
     // status (here: committed) is returned as-is with NO UPDATE — the thread-scoped

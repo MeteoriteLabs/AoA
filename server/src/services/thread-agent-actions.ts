@@ -74,6 +74,7 @@ type ThreadActionRow = {
   agentId: string | null;
   actionType: string;
   status: string;
+  blockedReason?: string | null;
   payload: unknown;
   idempotencyKey: string;
   freshness: ThreadFreshnessSnapshot;
@@ -375,7 +376,20 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // re-suppress the revived row on the next commit — e.g. a scope-coupled action stuck on
       // newer_scope_version even though THIS run observed the new scope. Persist input.freshness so
       // the row commits against what THIS run saw. (Mirrors the #202 re-home freshness fix.)
-      if (existing && existing.status === "suppressed_stale") {
+      // Revive a TERMINAL row a same-turn re-proposal should re-open, adopting the re-proposal's fresh
+      // freshness: `suppressed_stale` (the world moved, then settled) OR `blocked_policy`/`run_not_sealed`
+      // (a failed/crashed producer's row the GC terminalized, now re-proposed by a fresh successful run).
+      // The latter is required because the GC self-heal re-seals such a row by the completed run's
+      // key-set — without re-stamping freshness here it would carry the FAILED run's stale snapshot and
+      // wrongly suppress a scope-coupled action as newer_scope_version even though THIS run saw the new
+      // scope (Codex round-8; same class as the suppressed_stale revive + the #202 re-home freshness fix).
+      const reviveFrom =
+        existing &&
+        (existing.status === "suppressed_stale" ||
+          (existing.status === "blocked_policy" && existing.blockedReason === "run_not_sealed"))
+          ? existing.status
+          : null;
+      if (existing && reviveFrom) {
         const [revived] = await actionDb
           .update(threadAgentActions)
           .set({
@@ -384,7 +398,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             freshness: input.freshness ?? existing.freshness,
             updatedAt: new Date(),
           })
-          .where(and(eq(threadAgentActions.id, existing.id), eq(threadAgentActions.status, "suppressed_stale")))
+          .where(and(eq(threadAgentActions.id, existing.id), eq(threadAgentActions.status, reviveFrom)))
           .returning();
         if (revived) return revived;
       }
@@ -1297,6 +1311,35 @@ export async function gcOrphanedProposedActions(
       .update(threadOrchestrationState)
       .set({ pendingRun: true, updatedAt: now })
       .where(inArray(threadOrchestrationState.threadId, resealedThreadIds));
+  }
+
+  // Crash-window backstop (Codex round-8): a run that sealed its rows (→ready) IN-BAND then crashed
+  // before its commit leaves them `ready` on a pendingRun=false thread — the sweep visits only pending
+  // threads, and the re-arm above covers only rows THIS GC re-sealed. Re-arm any thread holding `ready`
+  // rows older than the commit window (a normal in-band/controller commit drains within seconds; a
+  // `ready` row past STALE_COMMITTING_TTL_MS is crash-stranded). Fresh rows the re-seal step just
+  // produced (updated_at=now) are excluded by the cutoff, so this never fights the normal commit path.
+  // Two-step (typed lt → inArray), mirroring the re-seal re-arm above — avoids a Date in a raw sql subquery.
+  const readyCutoff = new Date(now.getTime() - STALE_COMMITTING_TTL_MS);
+  const staleReady = (await gcDb
+    .select({ threadId: threadAgentActions.threadId })
+    .from(threadAgentActions)
+    .where(and(eq(threadAgentActions.status, "ready"), lt(threadAgentActions.updatedAt, readyCutoff)))) as Array<{
+    threadId?: string;
+  }>;
+  const staleReadyThreadIds = [
+    ...new Set(staleReady.map((r) => r.threadId).filter((id): id is string => typeof id === "string")),
+  ];
+  if (staleReadyThreadIds.length > 0) {
+    await gcDb
+      .update(threadOrchestrationState)
+      .set({ pendingRun: true, updatedAt: now })
+      .where(
+        and(
+          eq(threadOrchestrationState.pendingRun, false),
+          inArray(threadOrchestrationState.threadId, staleReadyThreadIds),
+        ),
+      );
   }
 
   return {
