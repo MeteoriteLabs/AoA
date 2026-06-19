@@ -438,7 +438,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${actionId}, ${companyId}, ${threadId}, ${runA}, ${agentId}, 'post_reply', 'proposed',
+        (${actionId}, ${companyId}, ${threadId}, ${runA}, ${agentId}, 'post_reply', 'ready',
          ${JSON.stringify({ rawContent: "cross-run reply" })}::jsonb, ${`k:${actionId}`},
          ${JSON.stringify(snap)}::jsonb)
     `);
@@ -576,7 +576,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${goodId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'proposed',
+        (${goodId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'ready',
          ${JSON.stringify({ rawContent: "healthy reply" })}::jsonb, ${`k:good:${goodId}`},
          ${JSON.stringify(goodSnap)}::jsonb)
     `);
@@ -591,7 +591,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${poisonId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'proposed',
+        (${poisonId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'ready',
          ${JSON.stringify({ rawContent: "poison reply", parentEntryId: bogusParent })}::jsonb,
          ${`k:poison:${poisonId}`}, ${JSON.stringify(poisonSnap)}::jsonb)
     `);
@@ -615,13 +615,13 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     );
 
     // Direct proof it is NOT in the commit's selected set anymore: the SELECT
-    // predicate is (status='proposed') OR (status='failed' AND attempt_count <
+    // predicate is (status='ready') OR (status='failed' AND attempt_count <
     // max_attempts). The poison row matches neither.
     const selectable = rowsOf(
       await db.execute(sql`
         SELECT count(*)::int AS n FROM thread_agent_actions
         WHERE id = ${poisonId}
-          AND (status = 'proposed'
+          AND (status = 'ready'
                OR (status = 'failed' AND attempt_count < max_attempts))
       `),
     );
@@ -684,7 +684,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
         INSERT INTO thread_agent_actions
           (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
         VALUES
-          (${id}, ${companyId}, ${t8Id}, NULL, ${agentId}, ${seed.type}, 'proposed',
+          (${id}, ${companyId}, ${t8Id}, NULL, ${agentId}, ${seed.type}, 'ready',
            ${JSON.stringify(seed.payload)}::jsonb, ${`k:t8:${seed.type}:${id}`}, '{}'::jsonb)
       `);
     }
@@ -716,7 +716,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
   // Two independent postgres connections (db / db2, each its own pool against the
   // same embedded-postgres DB) race to commit the SAME proposed post_reply. The
   // fenced CAS claim (claimActionForCommit: UPDATE … WHERE status IN
-  // ('proposed','failed') AND attempt_count = observed) lets exactly ONE committer
+  // ('ready','failed') AND attempt_count = observed) lets exactly ONE committer
   // win the row; the loser's UPDATE touches 0 rows and it skips the action. Plus the
   // discussion_entries_source_action_uq partial index is the side-effect backstop.
   // Timing-independent assertions: exactly one discussion_entries row for the action,
@@ -734,7 +734,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${actionId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'proposed',
+        (${actionId}, ${companyId}, ${threadId}, NULL, ${agentId}, 'post_reply', 'ready',
          ${JSON.stringify({ rawContent: "raced reply" })}::jsonb, ${`k:race:${actionId}`},
          ${JSON.stringify(snap)}::jsonb)
     `);
@@ -811,7 +811,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${actionId1}, ${companyId}, ${t10Id}, ${runA}, ${agentId}, 'convene_agent', 'proposed',
+        (${actionId1}, ${companyId}, ${t10Id}, ${runA}, ${agentId}, 'convene_agent', 'ready',
          ${JSON.stringify({ targetAgentId: agentId, reason: "review pass", context: { hop: 1 } })}::jsonb,
          ${`k:convene:${actionId1}`}, ${JSON.stringify(snap)}::jsonb)
     `);
@@ -819,7 +819,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${actionId2}, ${companyId}, ${t10Id}, ${runA}, ${agentId}, 'convene_agent', 'proposed',
+        (${actionId2}, ${companyId}, ${t10Id}, ${runA}, ${agentId}, 'convene_agent', 'ready',
          ${JSON.stringify({ targetAgentId: agentId, reason: "second pass", context: { hop: 2 } })}::jsonb,
          ${`k:convene:${actionId2}`}, ${JSON.stringify(snap)}::jsonb)
     `);
@@ -922,7 +922,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${replyId}, ${companyId}, ${tF1Id}, NULL, ${agentId}, 'post_reply', 'proposed',
+        (${replyId}, ${companyId}, ${tF1Id}, NULL, ${agentId}, 'post_reply', 'ready',
          ${JSON.stringify({ rawContent: "a fresh, scope-independent reply" })}::jsonb,
          ${`k:f1:${replyId}`}, ${JSON.stringify(snap)}::jsonb)
     `);
@@ -1010,7 +1010,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${advId}, ${companyId}, ${tF2Id}, NULL, ${agentId}, 'advance_phase', 'proposed',
+        (${advId}, ${companyId}, ${tF2Id}, NULL, ${agentId}, 'advance_phase', 'ready',
          ${JSON.stringify({ toPhase: "scope", effectiveAutonomy: 2 })}::jsonb,
          ${`k:f2:${advId}`}, ${JSON.stringify(snap)}::jsonb)
     `);
@@ -1064,7 +1064,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${itemId}, ${companyId}, ${tG1Id}, NULL, ${agentId}, 'add_scope_item', 'proposed',
+        (${itemId}, ${companyId}, ${tG1Id}, NULL, ${agentId}, 'add_scope_item', 'ready',
          ${JSON.stringify({ kind: "decision", title: "x" })}::jsonb,
          ${`k:g1:${itemId}`}, ${JSON.stringify(snap)}::jsonb)
     `);
@@ -1111,7 +1111,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
       VALUES
-        (${advId}, ${companyId}, ${tG2Id}, NULL, ${agentId}, 'advance_phase', 'proposed',
+        (${advId}, ${companyId}, ${tG2Id}, NULL, ${agentId}, 'advance_phase', 'ready',
          ${JSON.stringify({ toPhase: "scope", effectiveAutonomy: 2 })}::jsonb,
          ${`k:g2:${advId}`}, ${JSON.stringify(snap)}::jsonb)
     `);
@@ -1204,7 +1204,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, created_at)
       VALUES
-        (${artId}, ${companyId}, ${tAId}, ${runA}, ${agentId}, 'create_artifact_candidate', 'proposed',
+        (${artId}, ${companyId}, ${tAId}, ${runA}, ${agentId}, 'create_artifact_candidate', 'ready',
          ${JSON.stringify({ title: "Spec", artifactType: "document", content: "# Spec" })}::jsonb,
          ${`k:art:${artId}`}, ${JSON.stringify(snap)}::jsonb, now() - interval '2 seconds')
     `);
@@ -1214,7 +1214,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       INSERT INTO thread_agent_actions
         (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, created_at)
       VALUES
-        (${replyId}, ${companyId}, ${tAId}, ${runB}, ${agentId}, 'post_reply', 'proposed',
+        (${replyId}, ${companyId}, ${tAId}, ${runB}, ${agentId}, 'post_reply', 'ready',
          ${JSON.stringify({ rawContent: "run B reply" })}::jsonb,
          ${`k:rep:${replyId}`}, ${JSON.stringify(snap)}::jsonb, now() - interval '1 second')
     `);
@@ -1287,5 +1287,53 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     const [reply] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${replyId}`));
     expect(String(convene.status)).toBe("failed"); // NOT re-selected — terminal
     expect(String(reply.status)).toBe("committed"); // re-selected and committed (idempotent)
+  });
+
+  // P1 PROOF (outbox seal) — the STRUCTURAL fix for the failed-run leak (Codex P1). The relay
+  // drains only SEALED `ready` rows (a producing run promoted them on success, Decision #99
+  // producer-gate). An unsealed `proposed` row — a run that failed, crashed, or is still in
+  // flight — is NEVER committed, no matter how fresh. This is the regression guard for the
+  // whole class of cross-run holes this branch produced.
+  it("P1: an unsealed `proposed` row is NEVER committed; only a sealed `ready` row commits", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    const [tP] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tPId = String(tP.id);
+    const snap = await captureSnapshot(tPId);
+
+    // (a) UNSEALED `proposed` post_reply — fresh + valid, but its producing run never sealed it
+    // (it failed / crashed). Must NOT commit.
+    const unsealedId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${unsealedId}, ${companyId}, ${tPId}, NULL, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "from a run that never sealed" })}::jsonb, ${`k:p1u:${unsealedId}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+    // (b) SEALED `ready` post_reply — its run succeeded and sealed it. MUST commit.
+    const sealedId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${sealedId}, ${companyId}, ${tPId}, NULL, ${agentId}, 'post_reply', 'ready',
+         ${JSON.stringify({ rawContent: "from a run that sealed" })}::jsonb, ${`k:p1s:${sealedId}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: tPId, runId: await seedRun() });
+
+    const [unsealed] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${unsealedId}`));
+    const [sealed] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${sealedId}`));
+    expect(String(unsealed.status)).toBe("proposed"); // never drained — the seal is the gate
+    expect(String(sealed.status)).toBe("committed"); // sealed → committed
+    expect(res.committed).toBe(1); // exactly the sealed one
   });
 });

@@ -264,10 +264,9 @@ async function claimActionForCommit(
       and(
         eq(threadAgentActions.id, actionId),
         or(
-          // `ready` = sealed (the committable state after the seal migration). `proposed` is
-          // the transient superset during Pass 1; `failed` is the post-gate retry path.
+          // `ready` = sealed (the producer promoted it on run success); `failed` = post-gate retry.
+          // `proposed` is NOT claimable — an unsealed row is never committed (Decision #99 gate).
           eq(threadAgentActions.status, "ready"),
-          eq(threadAgentActions.status, "proposed"),
           eq(threadAgentActions.status, "failed"),
         ),
         eq(threadAgentActions.attemptCount, fence.attemptCount ?? 0),
@@ -456,13 +455,12 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             eq(threadAgentActions.companyId, input.companyId),
             eq(threadAgentActions.threadId, input.threadId),
             or(
-              // SUPERSET (transient, Pass 1 of the outbox-seal migration): drain `ready`
-              // (sealed — the eventual SOLE committable state) AND `proposed` (legacy/in-flight)
-              // so existing proposed-seeding tests stay green while the seal writers land. Pass 2
-              // narrows this to `ready`-only, at which point an unsealed `proposed` row (a failed
-              // or in-flight run) is never drained — that is the Codex-P1 fix.
+              // The relay drains only SEALED `ready` rows — a producing run promoted them on
+              // SUCCESS (Decision #99 producer-gate) — plus post-gate `failed` retries. An unsealed
+              // `proposed` row (a run that failed, was cancelled, crashed, or is still in flight) is
+              // NEVER drained: that is the structural fix for the failed-run-leak (Codex P1). The
+              // freshness gate still applies per action; orphaned `proposed` rows are reaped by the GC.
               eq(threadAgentActions.status, "ready"),
-              eq(threadAgentActions.status, "proposed"),
               and(
                 eq(threadAgentActions.status, "failed"),
                 lt(threadAgentActions.attemptCount, threadAgentActions.maxAttempts),
