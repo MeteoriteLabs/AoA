@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentRuns, discussionEntries, issues } from "@armyofagents/db";
+import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrationState } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
@@ -602,6 +602,19 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           { runId, threadId: bridgeThreadId, commitResult },
           "aoa-runner: committed direct discussion actions",
         );
+      }
+
+      // Re-arm the controller if this self-flush left retryable work (Codex round-8). Mirrors the
+      // controller commit (thread-orchestration Step 5 reschedule), the committing reaper, and the GC
+      // re-seal: EVERY commit path that leaves `failed`/lost-race rows must set pendingRun so the next
+      // sweep re-drives them — otherwise a mixed direct flush (one action commits, another hits a
+      // transient error or loses the CAS) strands retryable rows until an unrelated future human entry.
+      // Only ever writes pendingRun=true (safe vs the claim discriminator, which keys on pendingRun===false).
+      if (commitResult.failed > 0 || commitResult.lostRace > 0) {
+        await db
+          .update(threadOrchestrationState)
+          .set({ pendingRun: true, updatedAt: new Date() })
+          .where(eq(threadOrchestrationState.threadId, bridgeThreadId));
       }
     }
 
