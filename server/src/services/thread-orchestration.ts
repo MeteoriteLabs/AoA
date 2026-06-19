@@ -613,6 +613,11 @@ export function threadOrchestrationService(db: Db) {
         return { ran: true, suppressed: true, startEpoch, endEpoch };
       }
 
+      // Set when a commit leaves retryable work uncommitted (mixed-batch failed rows, or
+      // rows that lost the fenced CAS this tick): the cursor still advances, but pendingRun
+      // re-drives the thread-scoped commit on the next sweep so leftovers aren't orphaned
+      // until an unrelated future trigger. (Codex P2)
+      let rescheduleAfterCommit = false;
       if (threadRow && runResult.runId) {
         try {
           const { threadAgentActionService } = await import("./thread-agent-actions.js");
@@ -621,6 +626,7 @@ export function threadOrchestrationService(db: Db) {
             threadId,
             runId: runResult.runId,
           });
+          rescheduleAfterCommit = commitResult.failed > 0 || commitResult.lostRace > 0;
 
           // A per-action commit failure is swallowed inside commitThreadAgentActions
           // (the row is set `failed` and the call returns normally). On a PURE failure
@@ -665,11 +671,11 @@ export function threadOrchestrationService(db: Db) {
             };
           }
           if (commitResult.failed > 0) {
-            // MIXED batch (committed>0 AND failed>0): do NOT reschedule — fall through
-            // to the Step-5 success commit, which advances the cursor and resets the
-            // failure counter. (#198 PR-B) The failed row is NOT dropped: the next
-            // thread-scoped commit tick re-selects it directly (until attemptCount hits
-            // maxAttempts), a strict improvement over the prior run-scoped drop.
+            // MIXED batch (committed>0 AND failed>0): advance the cursor (committed work
+            // is done) AND reschedule via pendingRun (rescheduleAfterCommit set above) so
+            // the retryable failed rows are re-driven on the next sweep instead of waiting
+            // for an unrelated future trigger. (Codex P2 — this path previously fell
+            // through to Step 5 with pendingRun=false, orphaning the failed rows.)
             log.warn(
               {
                 threadId,
@@ -678,7 +684,7 @@ export function threadOrchestrationService(db: Db) {
                 failed: commitResult.failed,
                 committed: commitResult.committed,
               },
-              "thread orchestration: mixed batch — failed actions dropped, advancing cursor (retry-safety #198)",
+              "thread orchestration: mixed batch — advancing cursor and rescheduling failed actions (retry-safety #198)",
             );
           }
         } catch (commitErr) {
@@ -709,6 +715,12 @@ export function threadOrchestrationService(db: Db) {
           lastProcessedEntryId: cursorTarget,
           lastError: null,
           consecutiveCommitFailures: 0,
+          // Re-drive on the next sweep if a mixed/contended commit left retryable rows
+          // uncommitted. Only WRITE pendingRun when rescheduling — leaving it untouched
+          // otherwise preserves the pre-existing "don't clobber pendingRun on commit"
+          // behavior, so a pendingRun that a concurrent human entry (triggerOnHumanEntry)
+          // set between the claim and here is not lost. (Codex P2)
+          ...(rescheduleAfterCommit ? { pendingRun: true } : {}),
           updatedAt: new Date(),
         })
         .where(eq(threadOrchestrationState.threadId, threadId));

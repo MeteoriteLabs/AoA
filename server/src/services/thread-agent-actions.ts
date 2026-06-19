@@ -12,6 +12,7 @@ import {
   discussionEntryAttachments,
   discussions,
   threadAgentActions,
+  threadOrchestrationState,
   threadScopeItems,
 } from "@armyofagents/db";
 import type { Db } from "@armyofagents/db";
@@ -90,6 +91,10 @@ export type CommitThreadAgentActionsResult = {
   suppressed: number;
   blocked: number;
   failed: number;
+  // Rows that lost the fenced CAS claim to a concurrent committer (or a reaper/failure
+  // flipped them in the check→claim window). They were NOT committed/failed/suppressed
+  // here, so the controller must reschedule rather than treat the batch as done. (Codex P2)
+  lostRace: number;
 };
 
 type DiscussionCommitService = {
@@ -329,12 +334,21 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // (PR-B) Thread-scoped commit sees rows regardless of runId, so the runId re-home is gone.
       // We keep ONE narrow case: a same-turn re-proposal (same idempotencyKey) that collides with a
       // terminal `suppressed_stale` row must revive it to `proposed` so the thread-scoped SELECT can
-      // re-pick it — otherwise the action is stranded. Status flip ONLY (no runId/freshness rewrite:
-      // the row commits against its own snapshot; a genuinely-stale row simply re-suppresses).
+      // re-pick it — otherwise the action is stranded. We DO NOT forward runId, but we DO adopt the
+      // re-proposal's freshness (Codex P2): a same-turn retry under a new run captured a snapshot
+      // reflecting the CURRENT thread state, so keeping the old (already-failed) snapshot would
+      // re-suppress the revived row on the next commit — e.g. a scope-coupled action stuck on
+      // newer_scope_version even though THIS run observed the new scope. Persist input.freshness so
+      // the row commits against what THIS run saw. (Mirrors the #202 re-home freshness fix.)
       if (existing && existing.status === "suppressed_stale") {
         const [revived] = await actionDb
           .update(threadAgentActions)
-          .set({ status: "proposed", blockedReason: null, updatedAt: new Date() })
+          .set({
+            status: "proposed",
+            blockedReason: null,
+            freshness: input.freshness ?? existing.freshness,
+            updatedAt: new Date(),
+          })
           .where(and(eq(threadAgentActions.id, existing.id), eq(threadAgentActions.status, "suppressed_stale")))
           .returning();
         if (revived) return revived;
@@ -350,6 +364,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
         suppressed: 0,
         blocked: 0,
         failed: 0,
+        lostRace: 0,
       };
 
       // #198 PR-B: the selection is THREAD-scoped, not run-scoped. The previous
@@ -392,8 +407,14 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // just the ones evaluated before the batch started. (Review fix (minor).)
       const freshActions: ThreadActionRow[] = actions;
 
-      const sameRunArtifacts: Array<{ artifactId: string; attachedEntryId: string | null }> = [];
-      let sameRunReplyEntryId: string | null = null;
+      // Fallback artifact↔reply attachment state, PARTITIONED BY runId (Codex P2).
+      // The thread-scoped SELECT now drains rows from MULTIPLE runs in one batch, so a
+      // batch-global accumulator would attach a stranded run-A artifact candidate to a
+      // run-B reply. Keying by runId keeps the implicit "same-run" attachment honest.
+      // Actions with a null runId (run-independent) get NO implicit attach — there is
+      // no reliable same-run signal, and the artifact is still created, just unattached.
+      const sameRunArtifacts = new Map<string, Array<{ artifactId: string; attachedEntryId: string | null }>>();
+      const sameRunReplyEntryId = new Map<string, string>();
       const attachArtifactToEntry = async (
         artifactId: string,
         entryId: string,
@@ -465,6 +486,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             attemptCount: action.attemptCount,
           });
           if (!claimed) {
+            // Lost the fenced CAS to a concurrent committer/reaper. Count it so the
+            // controller reschedules instead of treating an all-lost batch as success
+            // (and advancing the cursor past still-uncommitted work). (Codex P2)
+            result.lostRace += 1;
             continue;
           }
 
@@ -525,11 +550,15 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               result.committed += 1;
               continue;
             }
-            sameRunReplyEntryId = entry.id;
-            for (const artifactRef of sameRunArtifacts) {
-              if (artifactRef.attachedEntryId) continue;
-              await attachArtifactToEntry(artifactRef.artifactId, entry.id);
-              artifactRef.attachedEntryId = entry.id;
+            // Record this reply as the same-run attach target + drain any artifacts
+            // already accumulated for THIS run (run-scoped — see declarations above).
+            if (action.runId) {
+              sameRunReplyEntryId.set(action.runId, entry.id);
+              for (const artifactRef of sameRunArtifacts.get(action.runId) ?? []) {
+                if (artifactRef.attachedEntryId) continue;
+                await attachArtifactToEntry(artifactRef.artifactId, entry.id);
+                artifactRef.attachedEntryId = entry.id;
+              }
             }
             await updateActionStatus(actionDb, action.id, {
               status: "committed",
@@ -827,12 +856,18 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                   })
                   .returning();
 
+                // Implicit attach is run-scoped (Codex P2): only attach to a reply
+                // from the SAME run, never across runs in a thread-scoped batch. A
+                // null-runId artifact gets no implicit attach (no same-run signal).
+                const runReplyEntryId = action.runId ? sameRunReplyEntryId.get(action.runId) : undefined;
                 if (explicitEntryId) {
                   await attachArtifactToEntry(artifact.id, explicitEntryId, tx);
-                } else if (sameRunReplyEntryId) {
-                  await attachArtifactToEntry(artifact.id, sameRunReplyEntryId, tx);
-                } else {
-                  sameRunArtifacts.push({ artifactId: artifact.id, attachedEntryId: null });
+                } else if (runReplyEntryId) {
+                  await attachArtifactToEntry(artifact.id, runReplyEntryId, tx);
+                } else if (action.runId) {
+                  const pending = sameRunArtifacts.get(action.runId) ?? [];
+                  pending.push({ artifactId: artifact.id, attachedEntryId: null });
+                  sameRunArtifacts.set(action.runId, pending);
                 }
 
                 return {
@@ -1021,7 +1056,22 @@ export async function reapStaleThreadAgentActions(
         lt(threadAgentActions.updatedAt, cutoff),
       ),
     )
-    .returning()) as unknown[];
+    .returning()) as Array<{ threadId?: string }>;
+
+  // Re-arm the controller for every thread we just reaped (Codex P2): the reaper flips
+  // committing→failed, but runControllerSweep only drives threads with pendingRun=true,
+  // so without this the now-retryable row would sit until some unrelated future trigger.
+  // Marking the affected threads pendingRun lets the next sweep re-drive them and the
+  // thread-scoped commit re-select the failed row (bounded by attemptCount < maxAttempts).
+  const reapedThreadIds = [
+    ...new Set(reaped.map((r) => r.threadId).filter((id): id is string => typeof id === "string")),
+  ];
+  if (reapedThreadIds.length > 0) {
+    await reaperDb
+      .update(threadOrchestrationState)
+      .set({ pendingRun: true, updatedAt: now })
+      .where(inArray(threadOrchestrationState.threadId, reapedThreadIds));
+  }
 
   return { reaped: reaped.length };
 }

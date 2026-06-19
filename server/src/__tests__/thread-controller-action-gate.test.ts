@@ -425,10 +425,12 @@ describe("runController action gate integration", () => {
     expect(controller.lastError).toBeNull();
   });
 
-  it("MIXED batch (committed>0 AND failed>0) advances the cursor — does NOT re-run", async () => {
-    // committed===0 guard: a batch where some actions committed and one failed must
-    // NOT reschedule (re-running would re-execute the committed actions). Advance the
-    // cursor instead; the failed action is dropped (no duplicate, no stall) — #198.
+  it("MIXED batch (committed>0 AND failed>0) advances the cursor AND reschedules the failed row (pendingRun=true)", async () => {
+    // Codex P2: a mixed batch must advance the cursor (committed work is done, and
+    // re-running would re-execute it) BUT also reschedule via pendingRun so the
+    // retryable failed row is re-driven on the next sweep instead of being orphaned
+    // until an unrelated future trigger. The thread-scoped commit re-selects the
+    // failed row directly (bounded by attemptCount < maxAttempts).
     const threadId = "thread-mixed-batch";
     const controller: ControllerState = {
       threadId, runEpoch: 1, pendingRun: true,
@@ -439,7 +441,7 @@ describe("runController action gate integration", () => {
       createdAt: new Date("2026-06-15T10:00:00Z"), inputType: "write", rawContent: "x",
     };
     const { db, cursorCommits } = createControllerDb(controller, [entry]);
-    commitThreadAgentActionsMock.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1 });
+    commitThreadAgentActionsMock.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
 
     const result = await threadOrchestrationService(db).runController(threadId, {
       adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
@@ -447,8 +449,34 @@ describe("runController action gate integration", () => {
 
     expect(result).toMatchObject({ ran: true, suppressed: false, cursorAdvancedTo: "entry-a" });
     expect(cursorCommits).toEqual(["entry-a"]);
+    expect(controller.pendingRun).toBe(true); // rescheduled so the failed row is re-driven
     expect(controller.consecutiveCommitFailures).toBe(0);
     expect((result as { error?: string }).error).toBeUndefined();
+  });
+
+  it("ALL-LOST batch (every action lost the CAS) advances the cursor AND reschedules (pendingRun=true)", async () => {
+    // Codex P2: when every selected action loses the fenced claim to a concurrent
+    // committer, the result is all-zero except lostRace. The controller must NOT treat
+    // that as a clean success and walk away — it advances the cursor (the winner is
+    // committing this turn) but reschedules so any leftover (e.g. if the winner then
+    // crashes and the reaper flips its row to failed) is re-driven.
+    const threadId = "thread-all-lost";
+    const controller: ControllerState = {
+      threadId, runEpoch: 1, pendingRun: true,
+      lastProcessedEntryId: null, lastError: null, consecutiveCommitFailures: 0,
+    };
+    const entry: EntryRow = {
+      id: "entry-a", discussionId: threadId, seq: 1,
+      createdAt: new Date("2026-06-15T10:00:00Z"), inputType: "write", rawContent: "x",
+    };
+    const { db } = createControllerDb(controller, [entry]);
+    commitThreadAgentActionsMock.mockResolvedValueOnce({ committed: 0, suppressed: 0, blocked: 0, failed: 0, lostRace: 1 });
+
+    await threadOrchestrationService(db).runController(threadId, {
+      adjutantRunner: async () => ({ output: "done", runId: "run-1" }),
+    });
+
+    expect(controller.pendingRun).toBe(true); // lost-race work re-driven, not silently dropped
   });
 
   it("adjutant-runner throw reschedules (pendingRun=true) under the cap", async () => {

@@ -126,24 +126,25 @@ describe("threadAgentActionService", () => {
     expect(db.__insertValues).toHaveLength(1);
   });
 
-  it("re-propose of a suppressed_stale row revives it to proposed (status flip only, no runId/freshness rewrite)", async () => {
+  it("re-propose of a suppressed_stale row revives it to proposed and ADOPTS the fresh snapshot (no runId forward)", async () => {
     // PR-B: the commit SELECT is now THREAD-scoped, so the runId re-home is gone. We
     // keep ONE narrow case: a same-turn re-proposal (same idempotencyKey) that
     // collides with a terminal `suppressed_stale` row must revive it to `proposed`
     // so the thread-scoped SELECT (which only picks proposed/retryable-failed) can
-    // re-pick it — otherwise the action is stranded. Status flip ONLY: no runId
-    // forward, no freshness rewrite. The row commits against its own stored snapshot;
-    // a genuinely-stale row simply re-suppresses on the next commit tick.
-    const existing = { ...baseAction, id: "ex", runId: "run-1", status: "suppressed_stale", blockedReason: "newer_scope_version" };
-    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[{ ...existing, status: "proposed", blockedReason: null }]] });
+    // re-pick it — otherwise the action is stranded. We do NOT forward runId, but we
+    // DO adopt the re-proposal's freshness (Codex P2): keeping the old already-failed
+    // snapshot would re-suppress the revived row on the next commit (e.g. a scope-
+    // coupled action stuck on newer_scope_version even though THIS run saw the new scope).
+    const freshSnap = { threadId: "thread-1", entrySeq: 7, latestScopeVersionId: "v2" };
+    const existing = { ...baseAction, id: "ex", runId: "run-1", status: "suppressed_stale", blockedReason: "newer_scope_version", freshness: { threadId: "thread-1", entrySeq: 3, latestScopeVersionId: "v1" } };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[{ ...existing, status: "proposed", blockedReason: null, freshness: freshSnap }]] });
     const res = (await threadAgentActionService(db as never).proposeThreadAction({
       companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
-      actionType: "post_reply", payload: { rawContent: "x" }, idempotencyKey: existing.idempotencyKey, freshness: {},
+      actionType: "add_scope_item", payload: { kind: "decision", title: "x" }, idempotencyKey: existing.idempotencyKey, freshness: freshSnap,
     })) as { id: string; status: string };
     expect(res.status).toBe("proposed");
-    expect(db.__updateSets[0]).toMatchObject({ status: "proposed", blockedReason: null });
-    expect(db.__updateSets[0]).not.toHaveProperty("runId");   // runId NOT forwarded
-    expect(db.__updateSets[0]).not.toHaveProperty("freshness"); // freshness NOT rewritten
+    expect(db.__updateSets[0]).toMatchObject({ status: "proposed", blockedReason: null, freshness: freshSnap });
+    expect(db.__updateSets[0]).not.toHaveProperty("runId"); // runId NOT forwarded
   });
 
   it("returns a non-suppressed_stale colliding row unchanged (revive is narrow)", async () => {
@@ -229,7 +230,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 0, suppressed: 1, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 0, suppressed: 1, blocked: 0, failed: 0, lostRace: 0 });
     expect(addEntry).not.toHaveBeenCalled();
     expect(createDraftFromThread).not.toHaveBeenCalled();
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
@@ -252,7 +253,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(addEntry).toHaveBeenCalledWith(
       "company-1",
       "thread-1",
@@ -321,7 +322,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     // Mention processing runs against the committed entry, hop-capped at 1 — the
     // same contract as the non-gated post-entry-tool path.
     expect(mockProcessMentions).toHaveBeenCalledWith(
@@ -371,7 +372,7 @@ describe("threadAgentActionService", () => {
     });
 
     // The reply still commits — a mention-dispatch failure must not roll it back.
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
   });
 
   it("claims a post_reply as committing before writing the discussion entry", async () => {
@@ -394,7 +395,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
     expect(addEntry).toHaveBeenCalledTimes(1);
     expect(db.__updateSets[1]).toMatchObject({
@@ -409,7 +410,8 @@ describe("threadAgentActionService", () => {
     // reaper/failure flips the row between the freshness re-check and the claim,
     // the fence no longer matches → the UPDATE returns 0 rows. The committer must
     // treat the empty result as a LOST RACE and skip the action: NO side effect
-    // (addEntry) runs, and the action is NOT counted as committed/failed/suppressed.
+    // (addEntry) runs, and the action is NOT counted as committed/failed/suppressed —
+    // it is counted as `lostRace` so the controller reschedules instead of advancing.
     const db = createSequenceDb({
       selects: [[baseAction]],
       // The claim's UPDATE ... RETURNING resolves to [] (fence mismatch / lost race).
@@ -427,8 +429,8 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    // Lost race → nothing counted, no side effect.
-    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 0 });
+    // Lost race → counted as lostRace (so the controller reschedules), no side effect.
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 0, lostRace: 1 });
     expect(addEntry).not.toHaveBeenCalled();
     // The claim was attempted (it set status=committing) but produced no further
     // updates — the loop short-circuited on the empty returning.
@@ -458,7 +460,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(addEntry).toHaveBeenCalledTimes(1);
     expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
   });
@@ -487,7 +489,7 @@ describe("threadAgentActionService", () => {
       threadId: "thread-1",
       runId: "run-1",
     });
-    expect(first).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 1 });
+    expect(first).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
     expect(addEntry).toHaveBeenCalledTimes(1);
     expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
 
@@ -502,7 +504,7 @@ describe("threadAgentActionService", () => {
     });
 
     expect(claimedAction.status).toBe("committing");
-    expect(second).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 0 });
+    expect(second).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(addEntry).toHaveBeenCalledTimes(1);
   });
 
@@ -538,7 +540,7 @@ describe("threadAgentActionService", () => {
     });
 
     // Converged, not failed.
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(addEntry).toHaveBeenCalledTimes(1);
     expect(db.__updateSets).toContainEqual(
       expect.objectContaining({ status: "committed", committedEntryId: "existing-entry" }),
@@ -569,7 +571,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(createDraftFromThread).toHaveBeenCalledWith(
       "company-1",
       "thread-1",
@@ -614,7 +616,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(createDraftFromThread).toHaveBeenCalledWith(
       "company-1",
       "thread-1",
@@ -669,7 +671,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
     expect(db.__insertValues).toContainEqual(expect.objectContaining({
       kind: "memory_candidate",
@@ -724,7 +726,7 @@ describe("threadAgentActionService", () => {
     });
 
     // Converged, not failed.
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(db.__updateSets).toContainEqual(
       expect.objectContaining({ status: "committed", committedScopeItemId: "existing-item" }),
     );
@@ -756,7 +758,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(db.__insertValues).toContainEqual(expect.objectContaining({
       companyId: "company-1",
       agentId: "agent-2",
@@ -817,7 +819,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(createArtifact).toHaveBeenCalledWith(
       "company-1",
       "agent-1",
@@ -891,7 +893,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(createArtifact).toHaveBeenCalledTimes(1);
     expect(db.__updateSets).toContainEqual(
       expect.objectContaining({
@@ -974,7 +976,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(db.__updateSets[0]).toMatchObject({ status: "committing" });
     expect(createArtifact).toHaveBeenCalledTimes(1);
     expect(db.__insertValues).toContainEqual(expect.objectContaining({
@@ -1044,7 +1046,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 1, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 1, blocked: 0, failed: 0, lostRace: 0 });
     expect(compareFreshnessSnapshot).toHaveBeenCalledTimes(2);
     expect(createArtifact).toHaveBeenCalled();
     // The stale reply must NOT have been posted.
@@ -1114,7 +1116,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 2, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 2, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(db.__insertValues).toContainEqual(expect.objectContaining({
       discussionEntryId: "entry-committed",
       artifactId: "artifact-1",
@@ -1147,7 +1149,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(advancePhase).toHaveBeenCalledWith(
       "company-1",
       "thread-1",
@@ -1185,7 +1187,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0 });
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0, lostRace: 0 });
     expect(advancePhase).not.toHaveBeenCalled();
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
       status: "blocked_policy",
@@ -1221,7 +1223,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 1 });
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
     // The failure update carries both status=failed and an attemptCount bump.
     const failedSet = db.__updateSets.find(
       (s) => (s as Record<string, unknown>).status === "failed",
@@ -1260,7 +1262,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0 });
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
     expect(addEntry).toHaveBeenCalledTimes(1);
   });
 
@@ -1298,7 +1300,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0 });
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0, lostRace: 0 });
     // The artifact must NOT have been created — the draft was resolved first and
     // its absence aborted the transaction before artifactCommitter.create ran.
     expect(createArtifact).not.toHaveBeenCalled();
@@ -1343,7 +1345,7 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0 });
+    expect(result).toEqual({ committed: 0, suppressed: 0, blocked: 1, failed: 0, lostRace: 0 });
     // No side effects ran — neither the artifact nor the scope draft were touched.
     expect(createArtifact).not.toHaveBeenCalled();
     expect(createDraftFromThread).not.toHaveBeenCalled();

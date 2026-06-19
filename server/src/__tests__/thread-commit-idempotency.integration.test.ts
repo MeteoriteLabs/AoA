@@ -1125,4 +1125,123 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     expect(String(row.status)).toBe("committed");
     expect(res.committed).toBe(1);
   });
+
+  // FIX #3 (reaper re-arm) — Codex P2: the reaper flips a crash-stranded committing row to
+  // failed AND re-arms the controller (pendingRun=true) so the next sweep re-drives it,
+  // instead of leaving the now-retryable row until an unrelated future trigger.
+  it("FIX #3 reaper: flips a stale committing row to failed AND sets pendingRun on its thread", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tR] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tRId = String(tR.id);
+
+    // Controller currently NOT scheduled (pendingRun=false).
+    await db.execute(sql`
+      INSERT INTO thread_orchestration_state (thread_id, pending_run) VALUES (${tRId}, false)
+    `);
+
+    // A crash-stranded committing row, last touched well before the TTL cutoff.
+    const stuckId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, updated_at)
+      VALUES
+        (${stuckId}, ${companyId}, ${tRId}, NULL, ${agentId}, 'post_reply', 'committing',
+         ${JSON.stringify({ rawContent: "stranded" })}::jsonb, ${`k:reap:${stuckId}`}, '{}'::jsonb,
+         now() - interval '1 hour')
+    `);
+
+    const res = await reapStaleThreadAgentActions(db, { ttlMs: 1000 });
+    expect(res.reaped).toBeGreaterThanOrEqual(1);
+
+    const [row] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${stuckId}`));
+    const [ctrl] = rowsOf(
+      await db.execute(sql`SELECT pending_run FROM thread_orchestration_state WHERE thread_id = ${tRId}`),
+    );
+    expect(String(row.status)).toBe("failed");
+    expect(ctrl.pending_run).toBe(true); // controller re-armed so the next sweep re-drives
+  });
+
+  // FIX #2 (run-scoped fallback attach) — Codex P2: with the thread-scoped SELECT draining
+  // rows from multiple runs, a stranded run-A artifact candidate (no explicit entry) must
+  // NOT be auto-attached to a run-B reply. Run-keyed attach state keeps them apart.
+  it("FIX #2: a run-A artifact candidate is NOT auto-attached to a run-B reply (cross-run drain)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tA] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tAId = String(tA.id);
+
+    // The artifact commit calls createDraftFromThread, which returns `no_entries`
+    // (and the artifact would block) on a thread with zero entries — seed one so the
+    // artifact actually commits and the cross-run attach guard is genuinely exercised.
+    await discussionService(db).addEntry(
+      companyId,
+      tAId,
+      { inputType: "write", rawContent: "scope me" },
+      "integration-test",
+    );
+
+    const runA = await seedRun();
+    const runB = await seedRun();
+    const snap = await captureSnapshot(tAId);
+
+    // Artifact candidate from run-A, no explicit attach target, ordered FIRST (so when it
+    // commits there is no reply yet → it accumulates under run-A's fallback bucket).
+    const artId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, created_at)
+      VALUES
+        (${artId}, ${companyId}, ${tAId}, ${runA}, ${agentId}, 'create_artifact_candidate', 'proposed',
+         ${JSON.stringify({ title: "Spec", artifactType: "document", content: "# Spec" })}::jsonb,
+         ${`k:art:${artId}`}, ${JSON.stringify(snap)}::jsonb, now() - interval '2 seconds')
+    `);
+    // Reply from run-B, ordered SECOND.
+    const replyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, created_at)
+      VALUES
+        (${replyId}, ${companyId}, ${tAId}, ${runB}, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "run B reply" })}::jsonb,
+         ${`k:rep:${replyId}`}, ${JSON.stringify(snap)}::jsonb, now() - interval '1 second')
+    `);
+
+    await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId: tAId,
+      runId: await seedRun(),
+    });
+
+    // The artifact path actually ran (guard is exercised, not vacuous) ...
+    const [artRow] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${artId}`));
+    expect(String(artRow.status)).toBe("committed");
+    // ... the run-B reply entry exists ...
+    const [replyEntry] = rowsOf(
+      await db.execute(
+        sql`SELECT id FROM discussion_entries WHERE discussion_id = ${tAId} AND source_action_id = ${replyId}`,
+      ),
+    );
+    expect(replyEntry?.id).toBeTruthy();
+    // ... but the run-A artifact was NOT auto-attached to it (cross-run guard).
+    const attachCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM discussion_entry_attachments
+        WHERE discussion_entry_id = ${String(replyEntry.id)}
+      `),
+    );
+    expect(Number(attachCount[0].n)).toBe(0);
+  });
 });
