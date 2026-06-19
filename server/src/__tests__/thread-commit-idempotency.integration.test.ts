@@ -1619,4 +1619,103 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     expect(status).toBe("ready"); // re-sealed by Step 2 despite being past the Step 4 orphan cutoff
     expect(res.resealed).toBeGreaterThanOrEqual(1);
   });
+
+  // Codex round-7 #1: Step 2 flips rows proposed→ready but must ALSO re-arm pendingRun, else the
+  // ready row sits undrained (runControllerSweep only drives pendingRun=true threads). Mirrors the reaper.
+  it("GC: re-arms pendingRun on a thread whose rows Step 2 re-sealed", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tA] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tAId = String(tA.id);
+    await db.execute(sql`INSERT INTO thread_orchestration_state (thread_id, pending_run) VALUES (${tAId}, false)`);
+
+    const key = `k:rearm:${randomUUID()}`;
+    const [doneRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'completed', ${JSON.stringify([key])}::jsonb) RETURNING id`));
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tAId}, ${String(doneRun.id)}, ${agentId}, 'post_reply', 'proposed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb)`);
+
+    await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const [row] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`));
+    const [ctrl] = rowsOf(await db.execute(sql`SELECT pending_run FROM thread_orchestration_state WHERE thread_id = ${tAId}`));
+    expect(String(row.status)).toBe("ready"); // re-sealed
+    expect(ctrl.pending_run).toBe(true); // controller re-armed so the ready row actually drains
+  });
+
+  // Codex round-7 #3: a Step-1 false-reap of a >2h-but-still-LIVE run terminalizes its rows to
+  // blocked_policy/run_not_sealed (Step 3); once the run actually COMPLETES (the runner overwrites the
+  // GC's false `failed` on success), Step 2 must recover them by its key-set — so the false-reap is
+  // NON-LOSSY. (Schema-free; a true idle-lease that avoids the false-reap is a tracked follow-up.)
+  it("GC: self-heals blocked_policy/run_not_sealed rows once their run completes (false-reap non-lossy)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tH] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tHId = String(tH.id);
+
+    const key = `k:selfheal:${randomUUID()}`;
+    const [doneRun] = rowsOf(await db.execute(sql`
+      INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, proposed_action_keys)
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'completed', ${JSON.stringify([key])}::jsonb) RETURNING id`));
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, blocked_reason, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tHId}, ${String(doneRun.id)}, ${agentId}, 'post_reply', 'blocked_policy', 'run_not_sealed',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${key}, '{}'::jsonb)`);
+
+    const res = await gcOrphanedProposedActions(db, { zombieRunMs: 60_000 });
+
+    const [row] = rowsOf(await db.execute(sql`SELECT status, blocked_reason FROM thread_agent_actions WHERE id = ${rowId}`));
+    expect(String(row.status)).toBe("ready"); // recovered from blocked_policy
+    expect(row.blocked_reason).toBeNull(); // reason cleared on recovery
+    expect(res.resealed).toBeGreaterThanOrEqual(1);
+  });
+
+  // Codex round-7 #2: the per-action freshness re-check + suppressed_stale write must run AFTER the
+  // fenced claim, so a stale committer can only suppress a row it OWNS — never clobber a concurrent
+  // committer's committed row (which, for convene_agent, would revive into a duplicate wakeup). Proof:
+  // at the moment the freshness re-check runs, the row is already 'committing' (claimed by THIS committer).
+  it("commit: claims a ready row BEFORE the freshness re-check (suppress only touches an owned row)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const [tF] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tFId = String(tF.id);
+
+    const rowId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${rowId}, ${companyId}, ${tFId}, ${await seedRun()}, ${agentId}, 'post_reply', 'ready',
+              ${JSON.stringify({ rawContent: "x" })}::jsonb, ${`k:reorder:${randomUUID()}`}, '{}'::jsonb)`);
+
+    let statusAtFreshnessCheck: string | null = null;
+    const compareFreshnessSnapshot = (async () => {
+      const [r] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`));
+      statusAtFreshnessCheck = String(r.status);
+      return { fresh: false, reason: "newer_human_entry" };
+    }) as never;
+
+    const res = await threadAgentActionService(db, { compareFreshnessSnapshot }).commitThreadAgentActions({
+      companyId,
+      threadId: tFId,
+      runId: await seedRun(),
+    });
+
+    expect(statusAtFreshnessCheck).toBe("committing"); // claimed BEFORE the freshness check (the fix); OLD = 'ready'
+    expect(res.suppressed).toBe(1);
+    const [row] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`));
+    expect(String(row.status)).toBe("suppressed_stale"); // suppressed on the row this committer owns
+  });
 });

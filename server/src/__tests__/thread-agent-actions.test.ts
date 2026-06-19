@@ -1042,8 +1042,10 @@ describe("threadAgentActionService", () => {
       selects: [[artifactAction, replyAction]],
       inserts: [[{ id: "scope-item-artifact" }]],
       updates: [
-        [{ ...artifactAction, status: "committed" }],
-        [{ ...replyAction, status: "suppressed_stale" }],
+        [{ ...artifactAction, status: "committing" }], // artifact claim (fenced CAS, now first)
+        [{ ...artifactAction, status: "committed" }], // artifact final updateActionStatus
+        [{ ...replyAction, status: "committing" }], // reply claim — now happens BEFORE the freshness re-check (Codex round-7 reorder)
+        [{ ...replyAction, status: "suppressed_stale" }], // reply suppress (claimed row we own)
       ],
     });
     let scopeMutated = false;

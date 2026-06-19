@@ -520,9 +520,34 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 
       for (const action of freshActions) {
         try {
-          // Per-action freshness re-check (Review fix (minor)): re-evaluate against
-          // the live thread state before each action so a human entry that arrives
-          // mid-commit suppresses the REMAINING actions in the batch.
+          // Claim FIRST (fenced CAS), THEN run the per-action freshness re-check + any suppress — so the
+          // suppress writes only a row THIS committer exclusively owns (Codex round-7). With the
+          // thread-scoped drain, two committers (a direct/mention run's in-band commit and the controller
+          // sweep) can SELECT the same `ready` row; the fenced claim (status IN ('ready','failed') AND
+          // attempt_count match) lets exactly one win. The loser's claim returns 0 rows → lostRace → skip,
+          // so it can never clobber the winner's committing/committed row back to `suppressed_stale` —
+          // which, for convene_agent, would later revive into a DUPLICATE wakeup. `ready` = sealed (the
+          // producer promoted it on run success), `failed` = post-gate retry; `proposed` is NOT claimable.
+          // Cross-run side-effect idempotency for the other types still rides on the run-independent
+          // stable keys + `source_action_id` partial unique indexes (the branches below converge on the
+          // unique violation); a reaper for stale `committing` rows is wired via reapStaleThreadAgentActions.
+          const claimed = await claimActionForCommit(actionDb, action.id, {
+            attemptCount: action.attemptCount,
+          });
+          if (!claimed) {
+            // Lost the fenced CAS to a concurrent committer/reaper. Count it so the controller
+            // reschedules instead of treating an all-lost batch as success (and advancing the cursor
+            // past still-uncommitted work). (Codex P2)
+            result.lostRace += 1;
+            continue;
+          }
+
+          // Per-action freshness re-check AFTER owning the claim: re-evaluate against the live thread
+          // state so a human entry that arrives mid-commit suppresses this (now-owned) action and the
+          // REMAINING actions in the batch. updateActionStatus-by-id is safe here precisely because we
+          // hold the claim — no concurrent committer can be on this row. Claiming a stale action we then
+          // suppress is free: claimActionForCommit does NOT bump attempt_count, and suppressed_stale is
+          // terminal (the row is not re-selected).
           const freshness = await compare(actionDb, input.threadId, action.freshness, action.actionType);
           if (!freshness.fresh) {
             await updateActionStatus(actionDb, action.id, {
@@ -530,37 +555,6 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               blockedReason: freshness.reason,
             });
             result.suppressed += 1;
-            continue;
-          }
-
-          // NOTE: the "committing" status de-duplicates within a single
-          // commitThreadAgentActions invocation. Cross-run safety for the two
-          // highest-value action types is now provided by run-INDEPENDENT stable keys
-          // (post_reply, create_artifact_candidate — a re-propose dedups on the
-          // (companyId, idempotencyKey) unique index) PLUS a `source_action_id` partial
-          // unique index on discussion_entries/artifacts that makes the side-effect
-          // itself idempotent (the branches below converge on the unique violation).
-          // all six builders produce run-independent, turn-anchored keys; commit is
-          // thread-scoped. A reaper for stale "committing" rows is wired via
-          // reapStaleThreadAgentActions below.
-          //
-          // PR-B Release-1: the claim is a FENCED CAS, not an unconditional update.
-          // It only wins if the row is still claimable (proposed|failed) AND its
-          // attempt_count + updated_at still match what we SELECTed — closing the
-          // check-then-act gap with the per-action freshness re-check above. A
-          // concurrent reaper/failure that flips the row in that window makes the
-          // fence miss → 0 rows returned → this committer LOST the race and skips the
-          // action entirely (NOT counted as committed/failed/suppressed). After a won
-          // claim this committer owns the row, so the downstream transitions stay
-          // unfenced (updateActionStatus, keyed on id).
-          const claimed = await claimActionForCommit(actionDb, action.id, {
-            attemptCount: action.attemptCount,
-          });
-          if (!claimed) {
-            // Lost the fenced CAS to a concurrent committer/reaper. Count it so the
-            // controller reschedules instead of treating an all-lost batch as success
-            // (and advancing the cursor past still-uncommitted work). (Codex P2)
-            result.lostRace += 1;
             continue;
           }
 
@@ -1082,13 +1076,17 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 export const STALE_COMMITTING_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Conservative wall-clock age past which a still-`running` run that left unsealed `proposed`
- * thread actions is treated as hard-CRASHED. Must stay ≫ the longest legitimate run: the CLI
- * idle timeout is 30 min (`cli-mode.ts`, refreshed per message) and there is NO hard run cap, so
- * a `running` run older than 2h that still holds unsealed actions has crashed. This is NOT the
- * seal-window cutoff — a long-but-LIVE run must never be force-failed (a false-crash would drop a
- * succeeding run's actions). Mirrors Decision #99's rule that staleMs stay larger than any
- * legitimate run. (2h is "2h of continuous activity", since the timeout is idle-based.)
+ * Conservative wall-clock age — measured from run START — past which a still-`running` run that left
+ * unsealed `proposed` thread actions is treated as hard-CRASHED by the zombie reaper (GC Step 1).
+ *
+ * IMPORTANT: this is a START-age signal, NOT a liveness/idle signal. `internal_agent_runs` has no
+ * per-event heartbeat column, the runner's stream callbacks don't touch the row mid-run, and the
+ * 30-min idle timeout in `cli-mode.ts` governs the interactive SSE chat session — NOT this
+ * `controller_action_gate` runner, which has no hard wall-clock cap. So a genuinely-LIVE run that
+ * stays continuously active for >2h CAN be force-failed by Step 1. That is made NON-LOSSY by Step 2's
+ * self-heal: when the run actually completes, its key-set recovers any rows Step 3 terminalized (≤2-min
+ * delay). A true idle-lease (heartbeat column) that avoids the false-reap entirely is a tracked
+ * follow-up. 2h is ≫ any realistic coordinator-run duration, so the false-reap is rare in practice.
  */
 export const ZOMBIE_RUN_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -1179,10 +1177,11 @@ export interface GcOrphanedProposedActionsResult {
  *   1. Zombie reaper — a `running` run past {@link ZOMBIE_RUN_TTL_MS} (≫ the longest legitimate
  *      run) that still has `proposed` rows has hard-crashed → force `failed` (#99 rule 3, guarded on
  *      still-`running`). A long-but-LIVE run is never touched (a false-crash would drop its actions).
- *   2. Re-seal — `proposed` rows whose `idempotency_key` is in some COMPLETED (succeeded) run's
+ *   2. Re-seal (+ self-heal) — rows whose `idempotency_key` is in some COMPLETED (succeeded) run's
  *      durable `proposed_action_keys` for the same company → `ready`. Mirrors the in-band runner seal
- *      (by company+key-set) so a transient in-band seal failure self-heals next sweep, and a collided
- *      row (re-proposed by a completed run but still owned by an earlier run) is recovered too.
+ *      (by company+key-set). Recovers `proposed` rows (transient in-band seal failure / collided rows)
+ *      AND `blocked_policy`/`run_not_sealed` rows a prior sweep terminalized — so a Step-1 false-reap of
+ *      a long-but-LIVE run is NON-LOSSY once that run completes (its key-set un-blocks the rows here).
  *   3. Terminalize (failed) — remaining `proposed` rows whose run is `failed`/`cancelled` (incl. the
  *      zombies just failed in Step 1) → `blocked_policy` (`run_not_sealed`). Non-zombie `running`
  *      runs' rows are left alone (they may still seal in-band).
@@ -1191,7 +1190,9 @@ export interface GcOrphanedProposedActionsResult {
  *      Step 2 (their key never reached the run's key-set — the propose-time append no-op'd / run was
  *      absent). Only ever touches null/`completed` producers, so it cannot false-crash a live run.
  *
- * Wired into `runControllerSweep` on the 2-minute cadence, like the reaper.
+ * Finally, threads whose rows Step 2 recovered to `ready` are re-armed (`pendingRun=true`) so the
+ * ready-only relay actually drains them (runControllerSweep drives only pendingRun threads) — mirrors
+ * the committing reaper. Wired into `runControllerSweep` on the 2-minute cadence, like the reaper.
  */
 export async function gcOrphanedProposedActions(
   db: Db | DbLike,
@@ -1221,16 +1222,26 @@ export async function gcOrphanedProposedActions(
     )
     .returning()) as unknown[];
 
-  // Step 2 (the seal is RETRYABLE): re-seal proposed rows a COMPLETED (succeeded) run is entitled to
-  // seal — whose idempotency_key is in some completed run's durable key-set, same company. Mirrors the
-  // in-band runner seal (sealRunActions, by company+key-set). Runs BEFORE Steps 3/4 so a recoverable
-  // row becomes `ready` first; the terminalize passes only match `status='proposed'` and never clobber it.
+  // Step 2 (the seal is RETRYABLE + self-healing): re-seal rows a COMPLETED (succeeded) run is entitled
+  // to seal — whose idempotency_key is in some completed run's durable key-set (same company). Mirrors the
+  // in-band runner seal (sealRunActions, by company+key-set). Recovers BOTH unsealed `proposed` rows
+  // (transient in-band seal failure / collided rows) AND rows a prior sweep falsely terminalized to
+  // `blocked_policy`/`run_not_sealed` — including the case where Step 1 reaped a >2h-but-still-LIVE run by
+  // start-age and Step 3 blocked its rows: once that run actually completes, its key-set recovers them
+  // here, so a false-reap is NON-LOSSY (only a ≤2-min recovery delay). Runs BEFORE Steps 3/4 so a
+  // recoverable row becomes `ready` first; the terminalize passes only match `status='proposed'`.
   const resealed = (await gcDb
     .update(threadAgentActions)
-    .set({ status: "ready", updatedAt: now })
+    .set({ status: "ready", blockedReason: null, updatedAt: now })
     .where(
       and(
-        eq(threadAgentActions.status, "proposed"),
+        or(
+          eq(threadAgentActions.status, "proposed"),
+          and(
+            eq(threadAgentActions.status, "blocked_policy"),
+            eq(threadAgentActions.blockedReason, "run_not_sealed"),
+          ),
+        ),
         sql`${threadAgentActions.idempotencyKey} IN (
           SELECT jsonb_array_elements_text(r.proposed_action_keys)
           FROM internal_agent_runs r
@@ -1240,7 +1251,7 @@ export async function gcOrphanedProposedActions(
         )`,
       ),
     )
-    .returning()) as unknown[];
+    .returning()) as Array<{ threadId?: string }>;
 
   // Step 3: terminalize the remaining unsealed `proposed` rows whose run FAILED/cancelled (incl. the
   // zombies just failed in Step 1) and which no completed run re-sealed — these must never commit.
@@ -1271,6 +1282,22 @@ export async function gcOrphanedProposedActions(
       ),
     )
     .returning()) as unknown[];
+
+  // Re-arm the controller for every thread whose actions Step 2 recovered to `ready` (Codex round-7):
+  // runControllerSweep only drives threads with pendingRun=true, so without this a re-sealed row would
+  // sit `ready` until unrelated future activity (the same gap the committing reaper closes above).
+  // Placed AFTER the terminalize passes so a failure here can't abort them. Safe: only ever writes
+  // pendingRun=true (the round-3/4 claim discriminator keys on pendingRun===false), it is conditional,
+  // idempotent, and cannot clobber a concurrent human-entry pendingRun (triggerOnHumanEntry also =true).
+  const resealedThreadIds = [
+    ...new Set(resealed.map((r) => r.threadId).filter((id): id is string => typeof id === "string")),
+  ];
+  if (resealedThreadIds.length > 0) {
+    await gcDb
+      .update(threadOrchestrationState)
+      .set({ pendingRun: true, updatedAt: now })
+      .where(inArray(threadOrchestrationState.threadId, resealedThreadIds));
+  }
 
   return {
     resealed: resealed.length,
