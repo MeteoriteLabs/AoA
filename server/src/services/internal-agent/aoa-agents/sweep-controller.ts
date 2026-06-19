@@ -75,30 +75,35 @@ export async function runControllerSweep(
   const actionSvc = threadAgentActionService(db);
 
   for (const { threadId, companyId } of pending) {
-    await svc
+    const result = await svc
       .runController(threadId, { adjutantRunner })
-      .catch((err) =>
-        log.warn({ err, threadId }, "controller sweep: runController failed — continuing"),
-      );
+      .catch((err) => {
+        log.warn({ err, threadId }, "controller sweep: runController failed — continuing");
+        return null;
+      });
 
-    // Backstop action drain (Codex P2): runController short-circuits on no-entries BEFORE
-    // its commit, so retryable rows left by a mixed/lost-race commit or the reaper (both of
-    // which set pendingRun → this thread is in `pending`) would be orphaned until a new
-    // human entry. Commit them directly here — thread-scoped + fenced CAS + the
-    // source_action_id partial-unique indexes make this idempotent if runController already
-    // committed. Re-arm pendingRun when retryable work remains so the next sweep retries
-    // (bounded by attemptCount; the non-idempotent types are excluded from retry upstream,
-    // so they don't churn).
-    try {
-      const drain = await actionSvc.commitThreadAgentActions({ companyId, threadId });
-      if (drain.failed > 0 || drain.lostRace > 0) {
-        await db
-          .update(threadOrchestrationState)
-          .set({ pendingRun: true, updatedAt: new Date() })
-          .where(eq(threadOrchestrationState.threadId, threadId));
+    // Backstop action drain (Codex P2/P1): runController short-circuits on no-entries
+    // BEFORE its commit, so retryable rows left by a mixed/lost-race commit or the reaper
+    // (both of which set pendingRun → this thread is in `pending`) would be orphaned until
+    // a new human entry. Drain them here — BUT ONLY when runController reported
+    // "no-entries", which proves THIS sweep won the atomic claim for this tick. We must NOT
+    // drain on "no-pending" (the claim was lost to a concurrently-running inline executor):
+    // that owner may have queued-but-uncommitted actions, and committing them thread-scoped
+    // here would race its freshness/epoch gate, defeating the per-thread serialization. When
+    // runController itself ran (ran:true) it already committed; a mixed/lost leftover re-arms
+    // pendingRun and is drained on the NEXT sweep via this same no-entries path.
+    if (result?.ran === false && result.reason === "no-entries") {
+      try {
+        const drain = await actionSvc.commitThreadAgentActions({ companyId, threadId });
+        if (drain.failed > 0 || drain.lostRace > 0) {
+          await db
+            .update(threadOrchestrationState)
+            .set({ pendingRun: true, updatedAt: new Date() })
+            .where(eq(threadOrchestrationState.threadId, threadId));
+        }
+      } catch (err) {
+        log.warn({ err, threadId }, "controller sweep: thread-action drain failed — continuing");
       }
-    } catch (err) {
-      log.warn({ err, threadId }, "controller sweep: thread-action drain failed — continuing");
     }
   }
 }

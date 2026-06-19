@@ -84,7 +84,13 @@ export type OnCommitFn = (result: AdjutantRunResult, cursorAdvancedTo: string | 
 
 /** The union of outcomes that runController can return. */
 export type RunControllerResult =
+  // The atomic claim was lost (another executor owns this thread's run right now) OR
+  // pendingRun was already false. THIS caller did NOT claim — it must NOT touch the
+  // thread's actions (the owner may have queued-but-uncommitted rows). (Codex P1)
   | { ran: false; reason: "no-pending" }
+  // THIS caller claimed the run but there were no entries after the cursor. It owns the
+  // thread for this tick (the claim serializes), so a backstop action-drain is safe here.
+  | { ran: false; reason: "no-entries" }
   | { ran: true; suppressed: true; startEpoch: number; endEpoch: number }
   | { ran: true; suppressed: false; startEpoch: number; cursorAdvancedTo: string | null }
   | { ran: true; suppressed: false; error: string; startEpoch: number; cursorAdvancedTo: null };
@@ -557,10 +563,12 @@ export function threadOrchestrationService(db: Db) {
       }
 
       // Short-circuit: no new entries to process. This is unexpected given the
-      // trigger fires on new human entries, but handle it gracefully.
+      // trigger fires on new human entries, but handle it gracefully. Distinct reason
+      // ("no-entries") so the sweep knows THIS caller claimed the run (and may safely
+      // run a backstop action-drain) vs the claim-lost "no-pending" above. (Codex P1)
       if (entries.length === 0) {
         log.debug({ threadId, startEpoch }, "thread orchestration: no unprocessed entries — skipping run");
-        return { ran: false, reason: "no-pending" };
+        return { ran: false, reason: "no-entries" };
       }
 
       const cursorTarget = entries[entries.length - 1].id;

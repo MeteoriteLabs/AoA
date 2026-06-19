@@ -192,20 +192,22 @@ describe("runControllerSweep", () => {
     expect(mockRunController).toHaveBeenCalledWith("thread-good", { adjutantRunner: fakeAdjutantRunner });
   });
 
-  // ── Codex P2 #B: backstop action drain ──────────────────────────────────────
-  it("7: drains pending thread actions per thread (backstop for runController's no-entries short-circuit)", async () => {
+  // ── Codex P2 #B + P1: gated backstop action drain ───────────────────────────
+  it("7: drains pending thread actions per thread when runController reports no-entries (claim owned)", async () => {
+    mockRunController.mockResolvedValue({ ran: false, reason: "no-entries" });
     const db = makeDb(["thread-A", "thread-B"]);
 
     await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
 
-    // The action commit is invoked once per pending thread, independent of whether
-    // runController short-circuited on no-entries.
+    // The action commit is invoked once per pending thread that this sweep CLAIMED and
+    // found no entries for (the runController commit was short-circuited).
     expect(mockCommitThreadAgentActions).toHaveBeenCalledTimes(2);
     expect(mockCommitThreadAgentActions).toHaveBeenCalledWith({ companyId: "company-1", threadId: "thread-A" });
     expect(mockCommitThreadAgentActions).toHaveBeenCalledWith({ companyId: "company-1", threadId: "thread-B" });
   });
 
   it("8: re-arms pendingRun (update) when the drain leaves retryable work", async () => {
+    mockRunController.mockResolvedValue({ ran: false, reason: "no-entries" });
     const db = makeDb(["thread-A"]);
     mockCommitThreadAgentActions.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
 
@@ -215,8 +217,9 @@ describe("runControllerSweep", () => {
   });
 
   it("9: does NOT re-arm pendingRun when the drain leaves nothing retryable", async () => {
+    mockRunController.mockResolvedValue({ ran: false, reason: "no-entries" });
     const db = makeDb(["thread-A"]);
-    // default mock: all-zero result → no leftover.
+    // default commit mock: all-zero result → no leftover.
 
     await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
 
@@ -224,6 +227,7 @@ describe("runControllerSweep", () => {
   });
 
   it("10: a drain failure for one thread does not abort the others", async () => {
+    mockRunController.mockResolvedValue({ ran: false, reason: "no-entries" });
     const db = makeDb(["thread-bad", "thread-good"]);
     mockCommitThreadAgentActions
       .mockRejectedValueOnce(new Error("drain db error"))
@@ -234,5 +238,18 @@ describe("runControllerSweep", () => {
     ).resolves.toBeUndefined();
 
     expect(mockCommitThreadAgentActions).toHaveBeenCalledTimes(2);
+  });
+
+  it("11 (P1): does NOT drain when the claim was lost (reason no-pending) — avoids racing the owning inline run", async () => {
+    // runController returns "no-pending" when another executor won the atomic claim and is
+    // actively running this thread. The sweep must NOT commit that owner's queued-but-
+    // uncommitted actions thread-scoped — that would race its freshness/epoch gate.
+    mockRunController.mockResolvedValue({ ran: false, reason: "no-pending" });
+    const db = makeDb(["thread-A"]);
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    expect(mockCommitThreadAgentActions).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
