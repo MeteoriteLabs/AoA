@@ -62,12 +62,22 @@ vi.mock(
 
 // ── stale-action reaper mock — assert the sweep invokes it ────────────────────
 // vi.hoisted so the spy exists before vi.mock's hoisted factory references it.
-const { mockReapStaleThreadAgentActions } = vi.hoisted(() => ({
+const { mockReapStaleThreadAgentActions, mockCommitThreadAgentActions } = vi.hoisted(() => ({
   mockReapStaleThreadAgentActions: vi.fn().mockResolvedValue({ reaped: 0 }),
+  mockCommitThreadAgentActions: vi.fn().mockResolvedValue({
+    committed: 0,
+    suppressed: 0,
+    blocked: 0,
+    failed: 0,
+    lostRace: 0,
+  }),
 }));
 
 vi.mock("../services/thread-agent-actions.js", () => ({
   reapStaleThreadAgentActions: mockReapStaleThreadAgentActions,
+  threadAgentActionService: vi.fn(() => ({
+    commitThreadAgentActions: mockCommitThreadAgentActions,
+  })),
 }));
 
 // ── Import AFTER mocks ────────────────────────────────────────────────────────
@@ -80,13 +90,19 @@ import { runControllerSweep } from "../services/internal-agent/aoa-agents/sweep-
  * The sweep does ONE select (with innerJoin) returning pending thread rows.
  */
 function makeDb(pendingThreadIds: string[]) {
-  const rows = pendingThreadIds.map((id) => ({ threadId: id }));
+  const rows = pendingThreadIds.map((id) => ({ threadId: id, companyId: "company-1" }));
 
   const db = {
     select: vi.fn(() => ({
       from: vi.fn().mockReturnThis(),
       innerJoin: vi.fn().mockReturnThis(),
       where: vi.fn(() => Promise.resolve(rows)),
+    })),
+    // The pendingRun re-arm path (drain left retryable work) issues update().set().where().
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve(undefined)),
+      })),
     })),
   };
 
@@ -100,6 +116,13 @@ describe("runControllerSweep", () => {
     vi.clearAllMocks();
     mockRunController.mockResolvedValue({ ran: false, reason: "no-pending" });
     mockReapStaleThreadAgentActions.mockResolvedValue({ reaped: 0 });
+    mockCommitThreadAgentActions.mockResolvedValue({
+      committed: 0,
+      suppressed: 0,
+      blocked: 0,
+      failed: 0,
+      lostRace: 0,
+    });
   });
 
   it("4: reaps stale committing rows once at the start of the sweep", async () => {
@@ -167,5 +190,49 @@ describe("runControllerSweep", () => {
     expect(mockRunController).toHaveBeenCalledTimes(2);
     expect(mockRunController).toHaveBeenCalledWith("thread-bad", { adjutantRunner: fakeAdjutantRunner });
     expect(mockRunController).toHaveBeenCalledWith("thread-good", { adjutantRunner: fakeAdjutantRunner });
+  });
+
+  // ── Codex P2 #B: backstop action drain ──────────────────────────────────────
+  it("7: drains pending thread actions per thread (backstop for runController's no-entries short-circuit)", async () => {
+    const db = makeDb(["thread-A", "thread-B"]);
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    // The action commit is invoked once per pending thread, independent of whether
+    // runController short-circuited on no-entries.
+    expect(mockCommitThreadAgentActions).toHaveBeenCalledTimes(2);
+    expect(mockCommitThreadAgentActions).toHaveBeenCalledWith({ companyId: "company-1", threadId: "thread-A" });
+    expect(mockCommitThreadAgentActions).toHaveBeenCalledWith({ companyId: "company-1", threadId: "thread-B" });
+  });
+
+  it("8: re-arms pendingRun (update) when the drain leaves retryable work", async () => {
+    const db = makeDb(["thread-A"]);
+    mockCommitThreadAgentActions.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    expect(db.update).toHaveBeenCalledTimes(1); // pendingRun re-armed so the next sweep retries
+  });
+
+  it("9: does NOT re-arm pendingRun when the drain leaves nothing retryable", async () => {
+    const db = makeDb(["thread-A"]);
+    // default mock: all-zero result → no leftover.
+
+    await runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner });
+
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("10: a drain failure for one thread does not abort the others", async () => {
+    const db = makeDb(["thread-bad", "thread-good"]);
+    mockCommitThreadAgentActions
+      .mockRejectedValueOnce(new Error("drain db error"))
+      .mockResolvedValueOnce({ committed: 0, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
+
+    await expect(
+      runControllerSweep(db as any, { adjutantRunner: fakeAdjutantRunner }),
+    ).resolves.toBeUndefined();
+
+    expect(mockCommitThreadAgentActions).toHaveBeenCalledTimes(2);
   });
 });

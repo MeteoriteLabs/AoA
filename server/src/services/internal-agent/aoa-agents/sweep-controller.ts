@@ -20,7 +20,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussions, threadOrchestrationState } from "@armyofagents/db";
 import { threadOrchestrationService } from "../../thread-orchestration.js";
-import { reapStaleThreadAgentActions } from "../../thread-agent-actions.js";
+import { reapStaleThreadAgentActions, threadAgentActionService } from "../../thread-agent-actions.js";
 import { makeControllerAdjutantRunner } from "./controller-adjutant-runner.js";
 import type { AdjutantRunner } from "../../thread-orchestration.js";
 import { logger } from "../../../middleware/logger.js";
@@ -52,7 +52,10 @@ export async function runControllerSweep(
   // + not done + crew not paused. The `innerJoin` ties the state row to the
   // live discussions row so we can filter on phase and crewPaused in one query.
   const pending = await db
-    .select({ threadId: threadOrchestrationState.threadId })
+    .select({
+      threadId: threadOrchestrationState.threadId,
+      companyId: discussions.companyId,
+    })
     .from(threadOrchestrationState)
     .innerJoin(discussions, eq(discussions.id, threadOrchestrationState.threadId))
     .where(
@@ -69,12 +72,33 @@ export async function runControllerSweep(
   log.debug({ count: pending.length }, "controller sweep: draining pending threads");
 
   const svc = threadOrchestrationService(db);
+  const actionSvc = threadAgentActionService(db);
 
-  for (const { threadId } of pending) {
+  for (const { threadId, companyId } of pending) {
     await svc
       .runController(threadId, { adjutantRunner })
       .catch((err) =>
         log.warn({ err, threadId }, "controller sweep: runController failed — continuing"),
       );
+
+    // Backstop action drain (Codex P2): runController short-circuits on no-entries BEFORE
+    // its commit, so retryable rows left by a mixed/lost-race commit or the reaper (both of
+    // which set pendingRun → this thread is in `pending`) would be orphaned until a new
+    // human entry. Commit them directly here — thread-scoped + fenced CAS + the
+    // source_action_id partial-unique indexes make this idempotent if runController already
+    // committed. Re-arm pendingRun when retryable work remains so the next sweep retries
+    // (bounded by attemptCount; the non-idempotent types are excluded from retry upstream,
+    // so they don't churn).
+    try {
+      const drain = await actionSvc.commitThreadAgentActions({ companyId, threadId });
+      if (drain.failed > 0 || drain.lostRace > 0) {
+        await db
+          .update(threadOrchestrationState)
+          .set({ pendingRun: true, updatedAt: new Date() })
+          .where(eq(threadOrchestrationState.threadId, threadId));
+      }
+    } catch (err) {
+      log.warn({ err, threadId }, "controller sweep: thread-action drain failed — continuing");
+    }
   }
 }

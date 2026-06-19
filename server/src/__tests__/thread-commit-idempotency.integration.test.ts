@@ -1244,4 +1244,48 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     );
     expect(Number(attachCount[0].n)).toBe(0);
   });
+
+  // FIX #A (non-idempotent retry exclusion) — Codex P2: a reaped/failed convene_agent or
+  // create_scope_draft must NOT be re-selected for retry (re-running would duplicate the
+  // wakeup / scope version), while idempotent types (post_reply) still retry.
+  it("FIX #A: a failed convene_agent is NOT retried (terminal), but a failed post_reply IS re-selected", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    const [tN] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tNId = String(tN.id);
+    const snap = await captureSnapshot(tNId);
+
+    // A 'failed' convene_agent under the attempt cap — non-idempotent → must NOT retry.
+    const conveneId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, attempt_count)
+      VALUES
+        (${conveneId}, ${companyId}, ${tNId}, NULL, ${agentId}, 'convene_agent', 'failed',
+         ${JSON.stringify({ targetAgentId: agentId })}::jsonb, ${`k:cv:${conveneId}`}, ${JSON.stringify(snap)}::jsonb, 0)
+    `);
+    // A 'failed' post_reply under the attempt cap (control) — idempotent → MUST re-select.
+    const replyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, attempt_count)
+      VALUES
+        (${replyId}, ${companyId}, ${tNId}, NULL, ${agentId}, 'post_reply', 'failed',
+         ${JSON.stringify({ rawContent: "retry me" })}::jsonb, ${`k:rp:${replyId}`}, ${JSON.stringify(snap)}::jsonb, 0)
+    `);
+
+    await svc.commitThreadAgentActions({ companyId, threadId: tNId });
+
+    const [convene] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${conveneId}`));
+    const [reply] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${replyId}`));
+    expect(String(convene.status)).toBe("failed"); // NOT re-selected — terminal
+    expect(String(reply.status)).toBe("committed"); // re-selected and committed (idempotent)
+  });
 });

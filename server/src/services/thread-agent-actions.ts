@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, notInArray, or, sql } from "drizzle-orm";
 import type {
   ThreadAgentActionStatus,
   ThreadAgentActionType,
@@ -30,6 +30,22 @@ import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
 const log = logger.child({ service: "thread-agent-actions" });
+
+// Action types whose side-effects are NOT durably idempotent under a cross-run RETRY,
+// so a reaped/failed row of these types must NOT be re-selected (re-running would
+// duplicate the side-effect). They still commit on their FIRST (`proposed`) attempt; on
+// failure they are terminal and the agent re-proposes next turn if the work is still
+// wanted. (Codex P2)
+//   - convene_agent: its wakeup dedup (`agent_wakeup_requests_dedup_key_queued_uq`) is
+//     scoped to `status = 'queued'`, so once the first wakeup is claimed/finished a retry
+//     enqueues a SECOND wakeup.
+//   - create_scope_draft: mints a `thread_scope_versions` row with no `source_action_id`;
+//     `createDraftFromThread`'s "return existing draft" idempotency only holds while a
+//     draft still exists, so a retry after the draft is accepted/rejected mints a new one.
+// The other four types ARE retry-safe: post_reply / add_scope_item / create_artifact_candidate
+// converge on their `source_action_id` partial-unique indexes, and advance_phase is absolute
+// (re-applying the same phase is a no-op / rejected by canAdvancePhase).
+const NON_IDEMPOTENT_RETRY_TYPES = ["convene_agent", "create_scope_draft"] as const;
 
 type QueryChain = PromiseLike<unknown[]> & {
   from: (table: unknown) => QueryChain;
@@ -396,6 +412,9 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               and(
                 eq(threadAgentActions.status, "failed"),
                 lt(threadAgentActions.attemptCount, threadAgentActions.maxAttempts),
+                // Non-idempotent types are terminal on failure — never retried cross-run
+                // (re-running would duplicate the wakeup / scope version). (Codex P2)
+                notInArray(threadAgentActions.actionType, NON_IDEMPOTENT_RETRY_TYPES as unknown as string[]),
               ),
             ),
           ),
