@@ -1718,4 +1718,61 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     const [row] = rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`));
     expect(String(row.status)).toBe("suppressed_stale"); // suppressed on the row this committer owns
   });
+
+  // KEYSTONE INVARIANT (the load-bearing safety claim for the whole thread-scoped drain): the runner
+  // self-flush path (runner.ts:574-606) commits a participation/mention run's own actions in-band and
+  // NEVER reads the controller runEpoch turn-gate — it relies SOLELY on the per-row freshness snapshot
+  // to catch a human entry that arrived between snapshot-capture (at run start) and the in-band commit.
+  // This proves that subsumption: a human entry after the snapshot suppresses via newer_human_entry,
+  // not commits stale. Asserted-only until now (thread-orchestration.ts:656-661, "prove before deleting").
+  it("self-flush path: a human entry after snapshot-capture suppresses the in-band commit (freshness subsumes runEpoch)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // Isolated thread so other tests' entries can't perturb the latest-human seq.
+    const [tK] = rowsOf(await db.execute(sql`
+      INSERT INTO discussions (id, company_id, status, created_by)
+      VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test') RETURNING id`));
+    const tKId = String(tK.id);
+
+    // H0 — a human entry (author_agent_id NULL = human) is the snapshot baseline. `seq` is assigned by
+    // the app layer (addEntry), not a DB trigger, so we set it explicitly: H0=1, H1=2 below, so the
+    // live latest-human seq advances past the snapshot's.
+    await db.execute(sql`
+      INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, author_agent_id, created_by, seq)
+      VALUES (gen_random_uuid(), ${tKId}, 'write', 'first human msg', NULL, 'human-user', 1)`);
+
+    // Snapshot captured at run start (latestHumanSeq = H0's seq = 1) — what proposeThreadAction stamps.
+    const snap = await captureSnapshot(tKId);
+
+    // The participation run proposed a post_reply (sealed → ready), carrying that snapshot.
+    const actionId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES (${actionId}, ${companyId}, ${tKId}, ${await seedRun()}, ${agentId}, 'post_reply', 'ready',
+              ${JSON.stringify({ rawContent: "reply to a thread the human has since moved past" })}::jsonb,
+              ${`k:keystone:${actionId}`}, ${JSON.stringify(snap)}::jsonb)`);
+
+    // H1 — a NEWER human entry arrives mid-run, AFTER the snapshot (seq=2 > snap.latestHumanSeq=1).
+    await db.execute(sql`
+      INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, author_agent_id, created_by, seq)
+      VALUES (gen_random_uuid(), ${tKId}, 'write', 'human spoke mid-run', NULL, 'human-user', 2)`);
+
+    // The runner self-flush IS commitThreadAgentActions (it never re-checks runEpoch). The per-row
+    // freshness snapshot must catch H1 and SUPPRESS — never post a reply against the stale context.
+    const res = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId: tKId,
+      runId: await seedRun(),
+    });
+
+    expect(res.committed).toBe(0);
+    expect(res.suppressed).toBe(1);
+    const [row] = rowsOf(await db.execute(sql`SELECT status, blocked_reason FROM thread_agent_actions WHERE id = ${actionId}`));
+    expect(String(row.status)).toBe("suppressed_stale");
+    expect(String(row.blocked_reason)).toBe("newer_human_entry");
+    // And no reply entry was produced for the stale action.
+    const n = rowsOf(await db.execute(sql`SELECT count(*)::int AS n FROM discussion_entries WHERE source_action_id = ${actionId}`));
+    expect(Number(n[0].n)).toBe(0);
+  });
 });
