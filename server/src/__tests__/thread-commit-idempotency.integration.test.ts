@@ -873,4 +873,256 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     );
     expect(Number(queuedCountAfter[0].n)).toBe(2); // still 2 — same-action re-fire collapsed.
   });
+
+  // ── F1 / F2 fix verification (post-sweep) ──────────────────────────────────
+  // The cross-run sweep flagged two regressions; both were REPRODUCED against this
+  // real commit path (a fresh post_reply terminally dropped by an unrelated scope
+  // bump; a stale advance_phase applied as a backward jump that regressed the phase).
+  // The freshness gate is now action-type-aware: newer_scope_version no longer
+  // suppresses scope-INDEPENDENT actions (F1), and a new phase_changed reason
+  // suppresses a stale PHASE-coupled advance (F2). These tests verify the fix AND
+  // guard the still-correct cases (scope-coupled action still suppressed; a fresh
+  // same-run advance still commits forward) so the fix stays targeted.
+
+  // REPRO F1 — a fresh, scope-independent post_reply is terminally suppressed merely
+  // because the thread's scope version advanced between snapshot capture and commit.
+  //
+  // newer_scope_version (thread-agent-action-freshness.ts:158-162) is action-type
+  // AGNOSTIC: it fires on ANY change to latestScopeVersionId regardless of whether the
+  // committing action depends on scope. A post_reply only adds a comment — a scope bump
+  // does not invalidate it — yet it is marked suppressed_stale (terminal: never
+  // re-selected by the thread-scoped SELECT; revived only on an explicit re-propose,
+  // which a one-shot crew run does not do; the participation runner accepts the
+  // suppression as "benign" with no retry — thread-participation-runner.ts:213-245).
+  it("FIX F1: a fresh post_reply is NOT suppressed by an unrelated scope-version bump — it commits", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    const [tF1] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tF1Id = String(tF1.id);
+
+    // v1 exists at snapshot capture time.
+    await db.execute(sql`
+      INSERT INTO thread_scope_versions
+        (id, company_id, thread_id, version_number, status, source_start_seq, source_end_seq, summary, created_by)
+      VALUES
+        (gen_random_uuid(), ${companyId}, ${tF1Id}, 1, 'accepted', 0, 0, 'v1', 'integration-test')
+    `);
+
+    const snap = await captureSnapshot(tF1Id); // latestScopeVersionId = v1
+
+    const replyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${replyId}, ${companyId}, ${tF1Id}, NULL, ${agentId}, 'post_reply', 'proposed',
+         ${JSON.stringify({ rawContent: "a fresh, scope-independent reply" })}::jsonb,
+         ${`k:f1:${replyId}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    // A sibling/concurrent scope action mints v2 BEFORE this reply is committed.
+    await db.execute(sql`
+      INSERT INTO thread_scope_versions
+        (id, company_id, thread_id, version_number, status, source_start_seq, source_end_seq, summary, created_by)
+      VALUES
+        (gen_random_uuid(), ${companyId}, ${tF1Id}, 2, 'draft', 0, 0, 'v2', 'integration-test')
+    `);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: tF1Id, runId: await seedRun() });
+
+    const [row] = rowsOf(
+      await db.execute(sql`SELECT status, blocked_reason FROM thread_agent_actions WHERE id = ${replyId}`),
+    );
+    const entryCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM discussion_entries
+        WHERE discussion_id = ${tF1Id} AND source_action_id = ${replyId}
+      `),
+    );
+    // eslint-disable-next-line no-console
+    console.log("[FIX F1] reply:", row.status, row.blocked_reason, "entries:", entryCount[0].n, "result:", JSON.stringify(res));
+
+    // FIX (F1): post_reply is scope-INDEPENDENT, so the unrelated scope bump no longer
+    // suppresses it — the reply COMMITS and its entry is written.
+    expect(String(row.status)).toBe("committed");
+    expect(row.blocked_reason == null).toBe(true);
+    expect(Number(entryCount[0].n)).toBe(1); // the reply landed
+    expect(res.committed).toBe(1);
+    expect(res.suppressed).toBe(0);
+  });
+
+  // REPRO F2 — a stale advance_phase, drained by a later thread-scoped commit, is NOT
+  // guarded by freshness on the PHASE axis and is applied as a BACKWARD jump, regressing
+  // the thread's phase.
+  //
+  // compareFreshnessSnapshot suppresses on phase ONLY when current.threadPhase === 'done'
+  // (freshness.ts:150) — it captures snapshot.threadPhase (freshness.ts:95) but never
+  // compares it. canAdvancePhase (threads.ts:66-73) permits ANY backward jump with no
+  // actor/human gate, and the commit handler (thread-agent-actions.ts:907-945) calls
+  // advancePhase with isHuman:false and never re-validates toPhase against the live phase.
+  //
+  // Re-cycle precondition: a scope version (v1) ALREADY exists when the snapshot is
+  // captured, and the thread then progresses forward WITHOUT minting a new scope version
+  // or adding a human entry — so newer_scope_version / newer_human_entry do NOT
+  // incidentally catch the stale advance. (The common no-pre-existing-version path IS
+  // incidentally guarded: reaching scope mints v1 ≠ snapshot null → newer_scope_version.)
+  it("FIX F2: a stale advance_phase is suppressed (phase_changed) and does NOT regress the thread phase", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    // The thread is CLAIMED (owner_user_id set to a human). This matters: the
+    // commit applies advance_phase with a hardcoded team_member agent actor, and
+    // canViewThread (threads.ts:120-126) blocks a team_member from viewing an
+    // UNCLAIMED thread (ownerUserId null → only a scoped team_lead may view) — so
+    // an unclaimed thread is incidentally guarded (assertCanView throws "Thread not
+    // found"). A claimed, company-visible, unscoped thread (the common case when a
+    // founder is in the loop) IS viewable (hasScopeAccess || isParticipant), so the
+    // agent advance passes authz and the freshness/phase mechanism is exercised.
+    const [tF2] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by, owner_user_id)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 'founder-user-1')
+        RETURNING id
+      `),
+    );
+    const tF2Id = String(tF2.id);
+
+    // Re-cycle precondition: v1 exists BEFORE the snapshot; thread phase defaults to 'discuss'.
+    await db.execute(sql`
+      INSERT INTO thread_scope_versions
+        (id, company_id, thread_id, version_number, status, source_start_seq, source_end_seq, summary, created_by)
+      VALUES
+        (gen_random_uuid(), ${companyId}, ${tF2Id}, 1, 'accepted', 0, 0, 'v1', 'integration-test')
+    `);
+
+    const snap = await captureSnapshot(tF2Id); // threadPhase = 'discuss', latestScopeVersionId = v1
+
+    // Run A's once-valid forward advance (discuss→scope), now stranded as a proposed row.
+    const advId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${advId}, ${companyId}, ${tF2Id}, NULL, ${agentId}, 'advance_phase', 'proposed',
+         ${JSON.stringify({ toPhase: "scope", effectiveAutonomy: 2 })}::jsonb,
+         ${`k:f2:${advId}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    // The thread progressed forward to 'assign' REUSING v1 (no new scope version, no human
+    // entry) — so the stale advance's snapshot still matches live scope/human state.
+    await db.execute(sql`UPDATE discussions SET phase = 'assign' WHERE id = ${tF2Id}`);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: tF2Id, runId: await seedRun() });
+
+    const [thread] = rowsOf(await db.execute(sql`SELECT phase FROM discussions WHERE id = ${tF2Id}`));
+    const [row] = rowsOf(
+      await db.execute(sql`SELECT status, blocked_reason FROM thread_agent_actions WHERE id = ${advId}`),
+    );
+    // eslint-disable-next-line no-console
+    console.log("[FIX F2] final phase:", thread.phase, "action:", row.status, row.blocked_reason, "result:", JSON.stringify(res));
+
+    // FIX (F2): the stale advance is suppressed on the phase axis — phase stays 'assign'.
+    expect(String(thread.phase)).toBe("assign"); // NO regression
+    expect(String(row.status)).toBe("suppressed_stale");
+    expect(String(row.blocked_reason)).toBe("phase_changed");
+  });
+
+  // GUARD F1 — the scope-version exemption is NARROW: a SCOPE-COUPLED action
+  // (add_scope_item) is still suppressed by a scope-version bump. Proves the F1 fix
+  // only exempts scope-INDEPENDENT actions (post_reply/convene), not scope actions.
+  it("GUARD F1: a scope-coupled add_scope_item IS still suppressed by a scope-version bump", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    const [tG1] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const tG1Id = String(tG1.id);
+
+    await db.execute(sql`
+      INSERT INTO thread_scope_versions
+        (id, company_id, thread_id, version_number, status, source_start_seq, source_end_seq, summary, created_by)
+      VALUES
+        (gen_random_uuid(), ${companyId}, ${tG1Id}, 1, 'accepted', 0, 0, 'v1', 'integration-test')
+    `);
+
+    const snap = await captureSnapshot(tG1Id); // latestScopeVersionId = v1
+
+    const itemId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${itemId}, ${companyId}, ${tG1Id}, NULL, ${agentId}, 'add_scope_item', 'proposed',
+         ${JSON.stringify({ kind: "decision", title: "x" })}::jsonb,
+         ${`k:g1:${itemId}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    // Scope bump v2 before commit — a scope-coupled action MUST still be suppressed.
+    await db.execute(sql`
+      INSERT INTO thread_scope_versions
+        (id, company_id, thread_id, version_number, status, source_start_seq, source_end_seq, summary, created_by)
+      VALUES
+        (gen_random_uuid(), ${companyId}, ${tG1Id}, 2, 'draft', 0, 0, 'v2', 'integration-test')
+    `);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: tG1Id, runId: await seedRun() });
+    const [row] = rowsOf(
+      await db.execute(sql`SELECT status, blocked_reason FROM thread_agent_actions WHERE id = ${itemId}`),
+    );
+    expect(String(row.status)).toBe("suppressed_stale");
+    expect(String(row.blocked_reason)).toBe("newer_scope_version");
+    expect(res.committed).toBe(0);
+  });
+
+  // GUARD F2 — the phase guard does NOT break a legitimate advance: when the snapshot
+  // phase matches the live phase (the normal same-run case), advance_phase still
+  // commits and moves the thread forward (discuss→scope).
+  it("GUARD F2: a non-stale advance_phase still commits and advances the phase forward", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    // Claimed thread so the agent advance passes assertCanView; phase defaults to 'discuss'.
+    const [tG2] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by, owner_user_id)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 'founder-user-1')
+        RETURNING id
+      `),
+    );
+    const tG2Id = String(tG2.id);
+
+    const snap = await captureSnapshot(tG2Id); // threadPhase = 'discuss'
+
+    // A fresh advance discuss→scope; the live phase is NOT moved (snapshot == live).
+    const advId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${advId}, ${companyId}, ${tG2Id}, NULL, ${agentId}, 'advance_phase', 'proposed',
+         ${JSON.stringify({ toPhase: "scope", effectiveAutonomy: 2 })}::jsonb,
+         ${`k:g2:${advId}`}, ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: tG2Id, runId: await seedRun() });
+    const [thread] = rowsOf(await db.execute(sql`SELECT phase FROM discussions WHERE id = ${tG2Id}`));
+    const [row] = rowsOf(
+      await db.execute(sql`SELECT status, blocked_reason FROM thread_agent_actions WHERE id = ${advId}`),
+    );
+    expect(String(thread.phase)).toBe("scope"); // advanced forward
+    expect(String(row.status)).toBe("committed");
+    expect(res.committed).toBe(1);
+  });
 });

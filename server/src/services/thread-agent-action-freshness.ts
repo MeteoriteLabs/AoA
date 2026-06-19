@@ -39,7 +39,12 @@ export type ThreadFreshnessComparison =
         // masquerade as a `newer_human_entry` human-conflict (a FALSE reason).
         | "snapshot_unavailable"
         | "newer_human_entry"
-        | "newer_scope_version";
+        | "newer_scope_version"
+        // The thread phase moved on since the action's snapshot. Only suppresses
+        // PHASE_COUPLED_ACTIONS (advance_phase): applying a stale advance whose
+        // FROM-phase no longer matches the live phase would regress/duplicate the
+        // phase transition (a backward jump). See compareFreshnessSnapshot.
+        | "phase_changed";
     };
 
 export async function captureFreshnessSnapshot(
@@ -123,10 +128,24 @@ function isSnapshotUnavailable(snapshot: ThreadFreshnessSnapshot | null | undefi
   return typeof s.threadId !== "string" && typeof s.entrySeq !== "number";
 }
 
+// Actions whose validity does NOT depend on the live scope version. A scope-version
+// bump must NOT suppress these — their content is independent of the scope, so a
+// concurrent/sibling scope change would otherwise terminally drop still-valid work.
+// (Repro F1: a fresh post_reply was suppressed_stale as newer_scope_version and lost.)
+const SCOPE_INDEPENDENT_ACTIONS: ReadonlySet<string> = new Set(["post_reply", "convene_agent"]);
+
+// Actions whose validity depends on the PHASE they were proposed against. A phase
+// change since the snapshot makes them stale: applying a stranded advance_phase whose
+// FROM-phase has moved on regresses or duplicates the transition (a backward jump).
+// (Repro F2.) Scoped so a phase change does NOT suppress a still-valid post_reply /
+// scope action that merely shares the thread-scoped commit batch with an advance.
+const PHASE_COUPLED_ACTIONS: ReadonlySet<string> = new Set(["advance_phase"]);
+
 export async function compareFreshnessSnapshot(
   db: DbLike,
   threadId: string,
   snapshot: ThreadFreshnessSnapshot,
+  actionType: string,
 ): Promise<ThreadFreshnessComparison> {
   // An empty/absent baseline snapshot means freshness capture threw at run start
   // (runner.ts stores `{}` in that case). We have no recorded baseline to compare
@@ -155,9 +174,24 @@ export async function compareFreshnessSnapshot(
     return { fresh: false, reason: "newer_human_entry" };
   }
 
+  // F2: a phase-coupled action (advance_phase) is stale when the live phase no longer
+  // matches the phase it was proposed against. Without this guard, a stranded advance
+  // drained by a later thread-scoped commit is applied even though the thread moved on —
+  // and because canAdvancePhase permits backward jumps for agent actors, it regresses
+  // the phase. Same-run advances still pass: at commit time the live phase is still the
+  // pre-advance phase (the advance has not applied yet), so it equals the snapshot.
+  if (PHASE_COUPLED_ACTIONS.has(actionType) && current.threadPhase !== snapshot.threadPhase) {
+    return { fresh: false, reason: "phase_changed" };
+  }
+
+  // F1: newer_scope_version must not suppress scope-INDEPENDENT actions. A post_reply /
+  // convene_agent does not depend on the live scope version, so a concurrent scope bump
+  // between snapshot and commit must not terminally drop it. Scope-coupled actions
+  // (add_scope_item, create_scope_draft, create_artifact_candidate) keep the check.
   if (
-    current.latestScopeVersionId !== snapshot.latestScopeVersionId ||
-    (current.latestScopeVersionNumber ?? 0) > (snapshot.latestScopeVersionNumber ?? 0)
+    !SCOPE_INDEPENDENT_ACTIONS.has(actionType) &&
+    (current.latestScopeVersionId !== snapshot.latestScopeVersionId ||
+      (current.latestScopeVersionNumber ?? 0) > (snapshot.latestScopeVersionNumber ?? 0))
   ) {
     return { fresh: false, reason: "newer_scope_version" };
   }

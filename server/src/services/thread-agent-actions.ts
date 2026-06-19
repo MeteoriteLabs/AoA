@@ -151,6 +151,7 @@ type ThreadAgentActionDeps = {
     db: DbLike,
     threadId: string,
     snapshot: ThreadFreshnessSnapshot,
+    actionType: string,
   ) => Promise<ThreadFreshnessComparison>;
   discussions?: DiscussionCommitService;
   scopeVersions?: ScopeVersionCommitService;
@@ -430,7 +431,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           // Per-action freshness re-check (Review fix (minor)): re-evaluate against
           // the live thread state before each action so a human entry that arrives
           // mid-commit suppresses the REMAINING actions in the batch.
-          const freshness = await compare(actionDb, input.threadId, action.freshness);
+          const freshness = await compare(actionDb, input.threadId, action.freshness, action.actionType);
           if (!freshness.fresh) {
             await updateActionStatus(actionDb, action.id, {
               status: "suppressed_stale",
