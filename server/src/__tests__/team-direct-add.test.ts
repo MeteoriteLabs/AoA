@@ -24,6 +24,7 @@ vi.mock("@armyofagents/db", () => {
     instanceUserRoles: makeTable("instance_user_roles"),
     invites: makeTable("invites"),
     issues: makeTable("issues"),
+    mcpApiKeys: makeTable("mcp_api_keys"),
     principalPermissionGrants: makeTable("principal_permission_grants"),
     projects: makeTable("projects"),
     userRoles: makeTable("user_roles"),
