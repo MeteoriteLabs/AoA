@@ -89,7 +89,13 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
-const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+// H4 (Codex P1): widened beyond the original key|token|secret|… set to also
+// catch common secret-bearing env-name fragments whose VALUES are
+// provider-specific opaque strings the value patterns below can't all enumerate
+// — e.g. WEBHOOK_SIGNING (whsec_…), NPM_AUTH (npm tokens), *_CREDENTIAL, *_DSN,
+// *_CONNECTION, *_BEARER, *_PAT. Over-redacting a log value is safe.
+const SENSITIVE_ENV_KEY =
+  /(key|token|secret|password|passwd|auth|cookie|credential|bearer|signing|webhook|npm|private|connection)/i;
 
 // H4: key-name matching alone leaked secrets bound (via secret_ref) to env vars
 // whose NAME does not contain one of the words above — DATABASE_URL, STRIPE_LIVE,
@@ -109,6 +115,14 @@ const SENSITIVE_ENV_VALUE_PATTERNS: RegExp[] = [
   /\b[sprSPR]k_(?:live|test)_[A-Za-z0-9]{8,}\b/,
   // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  // AWS access key id
+  /\bAKIA[0-9A-Z]{16}\b/,
+  // Slack tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-)
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  // H4 (Codex P1): generic "<prefix>_<long-random>" token shape — catches
+  // Stripe webhook signing (whsec_…), npm tokens (npm_…), Doppler (dp.pt.…→
+  // not here), and most vendor "prefix_<base62>" keys regardless of the prefix.
+  /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
   // JWTs (three base64url segments)
   /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
   // PEM private-key blocks

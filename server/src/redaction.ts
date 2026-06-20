@@ -1,5 +1,5 @@
 const SECRET_PAYLOAD_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+  /(api[-_]?key|access[-_]?token|auth|bearer|secret|passwd|password|credential|jwt|private|cookie|signing|webhook|npm|connection)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 // H4: redact string VALUES that look like a secret even when the key name is
 // innocuous (DATABASE_URL, STRIPE_LIVE, DSN, …). Previously only JWT-shaped
@@ -11,6 +11,10 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/,
   /\b[sprSPR]k_(?:live|test)_[A-Za-z0-9]{8,}\b/,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  // Generic "<prefix>_<long-random>" tokens — whsec_…, npm_…, vendor keys.
+  /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
   /-----BEGIN[A-Z ]*PRIVATE KEY-----/,
 ];
 function looksLikeSecretValue(value: string): boolean {

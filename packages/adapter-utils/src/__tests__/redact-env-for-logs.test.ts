@@ -33,6 +33,22 @@ describe("redactEnvForLogs (H4)", () => {
     expect(out.SIGNING).toBe("***REDACTED***");
   });
 
+  it("redacts Codex-P1 provider tokens missed by the original key/value sets", () => {
+    const out = redactEnvForLogs({
+      // Caught by the widened key regex (webhook/signing, npm/auth) AND the
+      // generic <prefix>_<random> value pattern.
+      WEBHOOK_SIGNING: "whsec_3f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c",
+      NPM_AUTH: "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+      // Caught by the new value patterns regardless of key name.
+      AWS_ID: "AKIAIOSFODNN7EXAMPLE",
+      SLACK: "xoxb-1234567890-abcdefghijklmnop",
+    });
+    expect(out.WEBHOOK_SIGNING).toBe("***REDACTED***");
+    expect(out.NPM_AUTH).toBe("***REDACTED***");
+    expect(out.AWS_ID).toBe("***REDACTED***");
+    expect(out.SLACK).toBe("***REDACTED***");
+  });
+
   it("preserves non-secret values, including the http:// API URL", () => {
     const out = redactEnvForLogs({
       NODE_ENV: "production",
