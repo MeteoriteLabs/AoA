@@ -9,11 +9,13 @@ on:
       - master
       - main
       - Porting1.1
+      - feat/v1-combined
   push:
     branches:
       - master
       - main
       - Porting1.1
+      - feat/v1-combined
 
 concurrency:
   group: pr-${{ github.workflow }}-${{ github.ref }}

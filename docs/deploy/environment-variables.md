@@ -148,6 +148,25 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_SESSION_USER_ROLE` | Override role (`founder`, `team_lead`, `team_member`) |
 | `AOA_SESSION_ENABLED_CAPABILITIES` | Comma-separated list of `internal_agent_config.enabledCapabilities` consumed by the Commander MCP bridge to gate capability-bound tools (`discussion_processing`, `system_actions`, `memory_management`). Set automatically by the host process when spawning the bridge; set manually only when running the bridge subprocess directly. |
 
+## Commander MCP bridge & internal tuning (injected / advanced)
+
+Set automatically by the host process when spawning the Commander MCP bridge or
+internal services — operators rarely set these directly.
+
+| Variable | Description |
+|----------|-------------|
+| `AOA_ACTOR_TYPE` | Actor type the Commander MCP bridge runs as (`board` default, or `agent`) |
+| `AOA_AGENT_KIND` | Agent kind passed into the MCP bridge for an agent-actor run |
+| `AOA_COMMANDER_CONTEXT_SCOPE` | JSON-encoded context scope handed to the Commander MCP bridge |
+| `AOA_DISCUSSION_RUN_MODE` | Discussion run mode for a bridge-driven discussion/thread run |
+| `AOA_EFFECTIVE_AUTONOMY` | Effective autonomy level injected into the bridge run |
+| `AOA_THREAD_FRESHNESS` | Thread freshness window used when resolving thread context |
+| `AOA_TOOL_ALLOWLIST` | Comma-separated allowlist of tool names exposed to the bridge run |
+| `AOA_KEEP_MCP_CONFIG` | When `1`, retains the generated MCP config file after a run (debugging) |
+| `AOA_LOG_STDOUT` | When `0`, suppresses stdout log output (otherwise logs go to stdout) |
+| `AOA_THREAD_EVENT_DEBOUNCE_MS` | Debounce window (ms) for thread live-event → Commander wakeups |
+| `AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED` | Feature flag for the Scribe autonomous-drain dispatcher path |
+
 ## LLM Provider Keys (for adapters)
 
 | Variable | Description |
@@ -168,3 +187,8 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_CONTEXT` | CLI context-file override |
 | `AOA_E2E_FAKE_AWS_SECRETS_MANAGER` | Playwright/vitest harness flag for the fake AWS Secrets Manager provider |
 | `AOA_E2E_PORT` / `AOA_E2E_SKIP_LLM` / `AOA_E2E_SKIP_MCP` | Playwright e2e harness — see `tests/README.md` |
+| `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
+| `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
+| `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |
+| `AOA_TEST_COMPANY_ID` / `AOA_TEST_THREAD_ID` | Seed IDs for the bridge stdout-purity test |
+| `AOA_TEST_DATABASE_URL` | Postgres URL for tests that need a real DB connection |

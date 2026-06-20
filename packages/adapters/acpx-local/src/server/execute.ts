@@ -238,7 +238,7 @@ async function prepareManagedCodexHome(input: {
 
   await onLog(
     "stdout",
-    `[paperclip] Using Paperclip-managed ACPX Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+    `[aoa] Using Paperclip-managed ACPX Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
   );
   return targetHome;
 }
@@ -332,13 +332,13 @@ async function prepareClaudeSkillRuntime(input: {
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
-          `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          `[aoa] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
         );
       }
     } catch (err) {
       await input.onLog(
         "stderr",
-        `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[aoa] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
@@ -411,7 +411,7 @@ async function reconcileManagedCodexSkills(input: {
   for (const name of managed) {
     if (desired.has(name)) continue;
     if (await removeSkillTarget(path.join(input.skillsHome, name))) {
-      await input.onLog("stdout", `[paperclip] Revoked ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[aoa] Revoked ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
     }
   }
 
@@ -425,14 +425,14 @@ async function reconcileManagedCodexSkills(input: {
     const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
     if (resolvedLinkedPath !== path.resolve(entry.source)) continue;
     if (await removeSkillTarget(target)) {
-      await input.onLog("stdout", `[paperclip] Revoked legacy ACPX Codex skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[aoa] Revoked legacy ACPX Codex skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
     }
   }
 
   for (const name of managed) {
     if (desired.has(name) || availableByRuntimeName.has(name)) continue;
     if (await removeSkillTarget(path.join(input.skillsHome, name))) {
-      await input.onLog("stdout", `[paperclip] Revoked unavailable ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[aoa] Revoked unavailable ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
     }
   }
 }
@@ -478,13 +478,13 @@ async function prepareCodexSkillRuntime(input: {
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
-          `[paperclip] Materialized ACPX Codex skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          `[aoa] Materialized ACPX Codex skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
         );
       }
     } catch (err) {
       await input.onLog(
         "stderr",
-        `[paperclip] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[aoa] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
@@ -991,7 +991,7 @@ async function applySessionConfigOptions(input: {
   if (!input.runtime.setConfigOption) {
     const message =
       "ACPX runtime does not expose session config controls; upgrade ACPX or remove configured model, effort, and fast mode overrides.";
-    await input.onLog("stderr", `[paperclip] ${message}\n`);
+    await input.onLog("stderr", `[aoa] ${message}\n`);
     throw new Error(message);
   }
   for (const option of options) {
@@ -1002,7 +1002,7 @@ async function applySessionConfigOptions(input: {
     });
     await input.onLog(
       "stdout",
-      `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
+      `[aoa] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
     );
   }
 }
@@ -1033,7 +1033,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[aoa] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
       commandNotes.push(`Configured instructionsFilePath ${instructionsFilePath}, but file could not be read.`);
     }
@@ -1273,7 +1273,7 @@ async function emitAcpxFailure(input: {
   if (childStderrTail) {
     await ctx.onLog(
       "stderr",
-      `[paperclip] ACPX child stderr tail (${phase}):\n${childStderrTail}\n`,
+      `[aoa] ACPX child stderr tail (${phase}):\n${childStderrTail}\n`,
     );
   }
   await emitAcpxLog(ctx, {
@@ -1428,7 +1428,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
       await ctx.onLog(
         "stdout",
-        `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
+        `[aoa] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
       );
     }
 
@@ -1452,7 +1452,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           resumedSession = false;
           await ctx.onLog(
             "stdout",
-            `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+            `[aoa] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
           handle = await runtime.ensureSession({
             sessionKey: prepared.sessionKey,

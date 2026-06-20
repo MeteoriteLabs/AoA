@@ -142,6 +142,11 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "tp_company_id",
   },
   authUsers: { id: "auth_users_id", name: "auth_users_name", email: "auth_users_email" },
+  threadOrchestrationState: {
+    threadId: "tos_thread_id",
+    lastError: "tos_last_error",
+    consecutiveCommitFailures: "tos_consecutive_commit_failures",
+  },
 }));
 
 vi.mock("../errors.js", () => ({
