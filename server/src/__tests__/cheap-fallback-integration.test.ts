@@ -57,7 +57,7 @@ beforeAll(async () => {
       `INSERT INTO internal_agent_config
          (id, company_id, execution_mode, cheap_model)
        VALUES
-         ('ia000000-0000-0000-0000-000000000001',
+         ('1a000000-0000-0000-0000-000000000001',
           'c1000000-0000-0000-0000-000000000001',
           'cli',
           'claude-haiku-4-5')`,
@@ -66,7 +66,7 @@ beforeAll(async () => {
     // Seed: agent with budget_monthly_cents = 1000
     await db.execute(
       `INSERT INTO agents (id, company_id, name, adapter_type, budget_monthly_cents)
-       VALUES ('ag000000-0000-0000-0000-000000000001',
+       VALUES ('a9000000-0000-0000-0000-000000000001',
                'c1000000-0000-0000-0000-000000000001',
                'Test Agent', 'claude_local', 1000)`,
     );
@@ -96,7 +96,7 @@ describe.skipIf(process.platform === "win32")(
     const result = await resolveCheapFallbackModel(
       db,
       "c1000000-0000-0000-0000-000000000001",
-      "ag000000-0000-0000-0000-000000000001",
+      "a9000000-0000-0000-0000-000000000001",
       1000,
     );
     expect(result).toBeNull();
@@ -109,7 +109,7 @@ describe.skipIf(process.platform === "win32")(
        VALUES
          (gen_random_uuid(),
           'c1000000-0000-0000-0000-000000000001',
-          'ag000000-0000-0000-0000-000000000001',
+          'a9000000-0000-0000-0000-000000000001',
           799,
           NOW(),
           'anthropic',
@@ -119,13 +119,13 @@ describe.skipIf(process.platform === "win32")(
     const result = await resolveCheapFallbackModel(
       db,
       "c1000000-0000-0000-0000-000000000001",
-      "ag000000-0000-0000-0000-000000000001",
+      "a9000000-0000-0000-0000-000000000001",
       1000,
     );
     expect(result).toBeNull();
 
     await db.execute(
-      `DELETE FROM cost_events WHERE agent_id = 'ag000000-0000-0000-0000-000000000001'`,
+      `DELETE FROM cost_events WHERE agent_id = 'a9000000-0000-0000-0000-000000000001'`,
     );
   });
 
@@ -136,7 +136,7 @@ describe.skipIf(process.platform === "win32")(
        VALUES
          (gen_random_uuid(),
           'c1000000-0000-0000-0000-000000000001',
-          'ag000000-0000-0000-0000-000000000001',
+          'a9000000-0000-0000-0000-000000000001',
           800,
           NOW(),
           'anthropic',
@@ -146,13 +146,13 @@ describe.skipIf(process.platform === "win32")(
     const result = await resolveCheapFallbackModel(
       db,
       "c1000000-0000-0000-0000-000000000001",
-      "ag000000-0000-0000-0000-000000000001",
+      "a9000000-0000-0000-0000-000000000001",
       1000,
     );
     expect(result).toBe("claude-haiku-4-5");
 
     await db.execute(
-      `DELETE FROM cost_events WHERE agent_id = 'ag000000-0000-0000-0000-000000000001'`,
+      `DELETE FROM cost_events WHERE agent_id = 'a9000000-0000-0000-0000-000000000001'`,
     );
   });
 
@@ -160,7 +160,7 @@ describe.skipIf(process.platform === "win32")(
     const result = await resolveCheapFallbackModel(
       db,
       "c1000000-0000-0000-0000-000000000001",
-      "ag000000-0000-0000-0000-000000000001",
+      "a9000000-0000-0000-0000-000000000001",
       0,
     );
     expect(result).toBeNull();
@@ -177,7 +177,7 @@ describe.skipIf(process.platform === "win32")(
        VALUES
          (gen_random_uuid(),
           'c1000000-0000-0000-0000-000000000001',
-          'ag000000-0000-0000-0000-000000000001',
+          'a9000000-0000-0000-0000-000000000001',
           900,
           NOW(),
           'anthropic',
@@ -187,7 +187,7 @@ describe.skipIf(process.platform === "win32")(
     const result = await resolveCheapFallbackModel(
       db,
       "c1000000-0000-0000-0000-000000000001",
-      "ag000000-0000-0000-0000-000000000001",
+      "a9000000-0000-0000-0000-000000000001",
       1000,
     );
     expect(result).toBeNull();
@@ -198,7 +198,7 @@ describe.skipIf(process.platform === "win32")(
        WHERE company_id = 'c1000000-0000-0000-0000-000000000001'`,
     );
     await db.execute(
-      `DELETE FROM cost_events WHERE agent_id = 'ag000000-0000-0000-0000-000000000001'`,
+      `DELETE FROM cost_events WHERE agent_id = 'a9000000-0000-0000-0000-000000000001'`,
     );
   });
 },
