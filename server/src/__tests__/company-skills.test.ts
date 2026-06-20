@@ -25,6 +25,7 @@ import {
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  validatePackageFileKey,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -45,6 +46,22 @@ async function writeSkillDir(skillDir: string, name: string) {
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(path.join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`, "utf8");
 }
+
+describe("validatePackageFileKey (path-traversal guard used by readFile/updateFile)", () => {
+  const base = path.join(os.tmpdir(), "skills", "co1", "s1");
+
+  it("rejects parent-dir traversal", () => {
+    expect(() => validatePackageFileKey(base, "../../../etc/passwd")).toThrow(/path traversal/);
+    expect(() => validatePackageFileKey(base, "a/../../b")).toThrow(/path traversal/);
+  });
+
+  it("accepts safe in-dir paths and returns the normalized key", () => {
+    expect(validatePackageFileKey(base, "references/guide.md")).toBe("references/guide.md");
+    expect(validatePackageFileKey(base, "SKILL.md")).toBe("SKILL.md");
+    // backslashes are normalized to forward slashes
+    expect(validatePackageFileKey(base, "scripts\\run.sh")).toBe("scripts/run.sh");
+  });
+});
 
 describe("company skill import source parsing", () => {
   it("parses a skills.sh command without executing shell input", () => {

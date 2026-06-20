@@ -209,6 +209,20 @@ export const internalAgentChatLimiter: RequestHandler = createRateLimiter({
 });
 
 /**
+ * Semantic memory search / find-similar
+ * (`GET /companies/:cid/memory/{search,find-similar}`). Each request computes an
+ * embedding via a paid provider API, so without a cap an authenticated actor
+ * could drive unbounded embedding spend (cost-amplification / billing-drain
+ * DoS). 60 per minute per actor caps the per-account cost.
+ */
+export const embeddingSearchLimiter: RequestHandler = createRateLimiter({
+  windowMs: ONE_MINUTE,
+  max: 60,
+  keyBy: "actor",
+  message: "Memory search rate limit exceeded; try again shortly",
+});
+
+/**
  * Runtime preview proxy. Browser previews can be chatty (assets, HMR polling,
  * source maps) but are still scoped to the authenticated AoA actor.
  */
