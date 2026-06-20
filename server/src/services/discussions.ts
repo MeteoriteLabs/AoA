@@ -14,6 +14,7 @@ import {
   threadLinks,
   threadPlanSteps,
   threadParticipants,
+  threadOrchestrationState,
   authUsers,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
@@ -623,6 +624,18 @@ export function discussionService(db: Db) {
       const latestScopesByThread = await loadLatestScopeForThreadStages(db, companyId, [id]);
       const latestScope = latestScopesByThread.get(id) ?? null;
 
+      // PR-A2: surface the thread's coordination-level error so the founder sees when an agent
+      // action didn't go through. Set on commit failure / circuit-breaker / runner-throw and
+      // cleared on the next successful run, so the UI banner self-clears on recovery.
+      const [orch] = await db
+        .select({
+          lastError: threadOrchestrationState.lastError,
+          consecutiveCommitFailures: threadOrchestrationState.consecutiveCommitFailures,
+        })
+        .from(threadOrchestrationState)
+        .where(eq(threadOrchestrationState.threadId, id))
+        .limit(1);
+
       return {
         ...discussion,
         entries: enrichedEntries,
@@ -634,6 +647,8 @@ export function discussionService(db: Db) {
           entrySeq: discussion.entrySeq ?? 0,
           latest: latestScope,
         }),
+        lastError: orch?.lastError ?? null,
+        consecutiveCommitFailures: orch?.consecutiveCommitFailures ?? 0,
       };
     },
 

@@ -32,6 +32,7 @@ import { ThreadTab } from "../components/threads/ThreadTab";
 import { ThreadCollapsedTabStrip, ThreadViewer } from "../components/threads/ThreadViewer";
 import { ScopeTab } from "../components/threads/ScopeTab";
 import { BranchesTab } from "../components/threads/BranchesTab";
+import { ThreadErrorBanner } from "../components/threads/ThreadErrorBanner";
 import type { ScopeItem } from "../components/threads/scopeGrouping";
 import { autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
 import {
@@ -1100,6 +1101,13 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                 </button>
               </div>
             </div>
+
+            {/* PR-A2: thread-level coordination error (self-clears when the thread recovers) */}
+            {thread.lastError && (
+              <div className="px-4">
+                <ThreadErrorBanner error={thread.lastError} consecutiveFailures={thread.consecutiveCommitFailures} />
+              </div>
+            )}
 
             {/* Scope tag */}
             {thread.scopeName && (
