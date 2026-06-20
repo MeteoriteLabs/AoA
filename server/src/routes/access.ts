@@ -47,6 +47,11 @@ import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
 } from "../board-claim.js";
+import {
+  validateAndResolveFetchUrl,
+  executePinnedRequest,
+  type ValidatedFetchTarget,
+} from "../services/outbound-url-guard.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1442,29 +1447,33 @@ type InviteResolutionProbe = {
 };
 
 async function probeInviteResolutionTarget(
-  url: URL,
+  target: ValidatedFetchTarget,
   timeoutMs: number
 ): Promise<InviteResolutionProbe> {
   const startedAt = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
-      method: "HEAD",
-      redirect: "manual",
-      signal: controller.signal
-    });
+    // H7 (SSRF): pin the IP resolved by validateAndResolveFetchUrl and issue the
+    // HEAD via executePinnedRequest (node http(s).request, which does not follow
+    // redirects — same intent as the previous fetch's redirect:"manual"). This
+    // closes the DNS-rebind window between validation and probe.
+    const response = await executePinnedRequest(
+      target,
+      { method: "HEAD" },
+      controller.signal
+    );
     const durationMs = Date.now() - startedAt;
-    if (
-      response.ok ||
+    const reachable =
+      (response.status >= 200 && response.status < 300) ||
       response.status === 401 ||
       response.status === 403 ||
       response.status === 404 ||
       response.status === 405 ||
       response.status === 422 ||
       response.status === 500 ||
-      response.status === 501
-    ) {
+      response.status === 501;
+    if (reachable) {
       return {
         status: "reachable",
         method: "HEAD",
@@ -1852,6 +1861,26 @@ export function accessRoutes(
       throw badRequest("url must use http or https");
     }
 
+    // H7 (SSRF): this route is authorized solely by invite-token possession
+    // (pre-auth — no board session, no RBAC, GET passes boardMutationGuard).
+    // Without the central guard the user-supplied url is an unauthenticated
+    // blind-SSRF / internal-port-scan oracle (cloud metadata 169.254.169.254,
+    // RFC1918, loopback). Route the probe through validateAndResolveFetchUrl —
+    // the same guard the http adapter / plugin host / skills-import use — which
+    // rejects private/reserved IPs and disallowed protocols and returns a target
+    // whose IP the probe below pins (DNS-rebind safe). A blocked URL becomes a
+    // 400, never a probe.
+    let validatedTarget: ValidatedFetchTarget;
+    try {
+      validatedTarget = await validateAndResolveFetchUrl(target.toString());
+    } catch (err) {
+      throw badRequest(
+        err instanceof Error
+          ? `url failed SSRF validation: ${err.message}`
+          : "url failed SSRF validation"
+      );
+    }
+
     const parsedTimeoutMs =
       typeof req.query.timeoutMs === "string"
         ? Number(req.query.timeoutMs)
@@ -1859,11 +1888,11 @@ export function accessRoutes(
     const timeoutMs = Number.isFinite(parsedTimeoutMs)
       ? Math.max(1000, Math.min(15000, Math.floor(parsedTimeoutMs)))
       : 5000;
-    const probe = await probeInviteResolutionTarget(target, timeoutMs);
+    const probe = await probeInviteResolutionTarget(validatedTarget, timeoutMs);
     res.json({
       inviteId: invite.id,
       testResolutionPath: `/api/invites/${token}/test-resolution`,
-      requestedUrl: target.toString(),
+      requestedUrl: validatedTarget.parsedUrl.toString(),
       timeoutMs,
       ...probe
     });

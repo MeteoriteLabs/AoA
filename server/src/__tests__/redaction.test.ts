@@ -56,6 +56,29 @@ describe("redaction", () => {
     expect(result.normal).toBe("plain");
   });
 
+  it("H4: redacts secret VALUES bound to innocuous key names", () => {
+    const input = {
+      env: {
+        DATABASE_URL: "postgresql://user:s3cr3t@db.internal:5432/app",
+        STRIPE_LIVE: "sk_live_abcdEFGH12345678",
+        GITHUB_PAT: "ghp_abcdefghijklmnopqrstuvwxyz0123",
+        NODE_ENV: "production",
+        AOA_API_URL: "http://localhost:3100",
+      },
+    };
+
+    const result = sanitizeRecord(input) as { env: Record<string, string> };
+
+    // Secret-looking values are redacted even though the key names don't match
+    // the sensitive-key regex.
+    expect(result.env.DATABASE_URL).toBe(REDACTED_EVENT_VALUE);
+    expect(result.env.STRIPE_LIVE).toBe(REDACTED_EVENT_VALUE);
+    expect(result.env.GITHUB_PAT).toBe(REDACTED_EVENT_VALUE);
+    // Non-secret values (and the http:// API URL, which is not a DSN scheme) stay.
+    expect(result.env.NODE_ENV).toBe("production");
+    expect(result.env.AOA_API_URL).toBe("http://localhost:3100");
+  });
+
   it("redacts payload objects while preserving null", () => {
     expect(redactEventPayload(null)).toBeNull();
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({

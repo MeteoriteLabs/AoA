@@ -5,6 +5,7 @@ import {
   companyMemberships,
   instanceUserRoles,
   invites,
+  mcpApiKeys,
   principalPermissionGrants,
 } from "@armyofagents/db";
 import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
@@ -197,6 +198,29 @@ export function accessService(db: Db) {
           }
         }
         await tx.delete(companyMemberships).where(inArray(companyMemberships.id, toDelete.map((row) => row.id)));
+
+        // H8: cascade-revoke this user's MCP API keys for the companies they
+        // were just removed from. An mcp_api_keys row freezes companyId+userId
+        // at mint time and the auth middleware only filters on revokedAt, so
+        // without this a removed user keeps full programmatic MCP access via any
+        // key they generated while a member. (Company DELETE handles its own
+        // keys via the FK onDelete cascade; this is the per-user offboarding
+        // path.) userId-scoped since toDelete is all this user's memberships.
+        const removedUserCompanyIds = toDelete
+          .filter((row) => row.principalType === "user")
+          .map((row) => row.companyId);
+        if (removedUserCompanyIds.length > 0) {
+          await tx
+            .update(mcpApiKeys)
+            .set({ revokedAt: new Date() })
+            .where(
+              and(
+                inArray(mcpApiKeys.companyId, removedUserCompanyIds),
+                eq(mcpApiKeys.userId, userId),
+                isNull(mcpApiKeys.revokedAt),
+              ),
+            );
+        }
       }
 
       for (const companyId of target) {
