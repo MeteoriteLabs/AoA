@@ -1137,6 +1137,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }) {
   const warnings: string[] = [];
+  // True once we deliberately decline to remove a path that must be preserved
+  // (project-workspace containment refusal). Such a workspace must report
+  // cleaned=true so it is archived directly rather than marked `cleanup_failed`,
+  // which the retry sweeper would otherwise act on.
+  let preserve = false;
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
@@ -1235,6 +1240,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         )
       : false;
     if (containsProjectWorkspace) {
+      preserve = true;
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
@@ -1257,7 +1263,18 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // A workspace whose removal was deliberately skipped must report cleaned=true,
+  // otherwise it is marked `cleanup_failed` and the retry sweeper would later
+  // rm -rf a path we intentionally preserved. Two preserve cases:
+  //  - project-workspace containment refusal (`preserve` above), and
+  //  - a shared/external local_fs dir the runtime never created (the removal
+  //    branch is gated on createdByRuntime, so nothing was — or should be —
+  //    removed).
+  const preservedFromRemoval =
+    preserve ||
+    (input.workspace.providerType === "local_fs" && !createdByRuntime);
   const cleaned =
+    preservedFromRemoval ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 
