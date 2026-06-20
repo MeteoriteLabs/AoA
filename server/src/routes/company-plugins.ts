@@ -20,7 +20,7 @@ import {
   pluginCompanySettings,
   pluginVersionSnapshots,
 } from "@armyofagents/db";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess } from "./authz.js";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import type { PluginLoader } from "../services/plugin-loader.js";
 
@@ -98,6 +98,13 @@ export function companyPluginRoutes(
     assertBoard(req);
     const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
     assertCompanyAccess(req, companyId);
+    // H9: plugin config rewrite (incl. secret-ref bindings / devUiUrl) is a
+    // host-trust operation — gate it to instance admins, matching the
+    // instance-scoped plugin routes (plugins.ts). In authenticated mode any
+    // company member is a `board` actor and assertCompanyAccess passes for any
+    // member, so without this a team_member could rewrite plugin config.
+    // (local_implicit passes — loopback trust in local_trusted is unchanged.)
+    assertCanManageInstanceSettings(req);
 
     const { configJson } = req.body as { configJson: Record<string, unknown> };
     if (!configJson || typeof configJson !== "object") {
@@ -145,6 +152,9 @@ export function companyPluginRoutes(
     assertBoard(req);
     const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
     assertCompanyAccess(req, companyId);
+    // H9: drives host-side `npm install <version>` of the plugin package —
+    // instance-admin only, matching the instance-scoped routes.
+    assertCanManageInstanceSettings(req);
 
     const { version } = req.body as { version?: string };
 
@@ -208,6 +218,10 @@ export function companyPluginRoutes(
     assertBoard(req);
     const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
     assertCompanyAccess(req, companyId);
+    // H9: transitions upgrade_pending -> ready, approving NEWLY-ESCALATED plugin
+    // capabilities before the worker restarts with the more-powerful manifest.
+    // This is the human-in-the-loop operator gate — instance-admin only.
+    assertCanManageInstanceSettings(req);
 
     const [plugin] = await db
       .select()
@@ -233,6 +247,8 @@ export function companyPluginRoutes(
     assertBoard(req);
     const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
     assertCompanyAccess(req, companyId);
+    // H9: rolls the plugin back to a prior version (host-side) — instance-admin only.
+    assertCanManageInstanceSettings(req);
 
     const [plugin] = await db
       .select({ id: plugins.id })
@@ -288,6 +304,9 @@ export function companyPluginRoutes(
     assertBoard(req);
     const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
     assertCompanyAccess(req, companyId);
+    // H9: enabling/disabling a plugin for the company is an operator decision —
+    // instance-admin only, matching PUT /companies/:cid/plugin-settings/:pid.
+    assertCanManageInstanceSettings(req);
 
     const { enabled } = req.body as { enabled: boolean };
     if (typeof enabled !== "boolean") {

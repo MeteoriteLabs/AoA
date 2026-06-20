@@ -3,6 +3,7 @@ import supertest from "supertest";
 import { describe, it, expect, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { pluginRoutes } from "../routes/plugins.js";
+import { companyPluginRoutes } from "../routes/company-plugins.js";
 import { createMarketplaceRouter } from "../routes/marketplace.js";
 
 // ---------------------------------------------------------------------------
@@ -117,6 +118,70 @@ describe("plugin admin routes — non-admin board gets 403", () => {
       const req = agent[method](path);
       if (body !== undefined) req.send(body);
       const res = await req;
+      expect(res.status).not.toBe(403);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// H9: company-scoped plugin MUTATIONS require instance admin (parity with the
+// instance-scoped routes). Reads stay member-accessible. In authenticated mode
+// any company member is a `board` actor and assertCompanyAccess passes for any
+// member, so before the fix a plain team_member could approve plugin capability
+// escalation, drive host-side npm install, and rewrite plugin config.
+// ---------------------------------------------------------------------------
+describe("company plugin routes — mutations require instance admin (H9)", () => {
+  // A board member OF the company (passes assertCompanyAccess) who is NOT an
+  // instance admin — the exact actor the escalation hole relied on.
+  const NON_ADMIN_MEMBER = {
+    type: "board",
+    source: "session",
+    isInstanceAdmin: false,
+    userId: "user-test",
+    companyIds: ["co-1"],
+  };
+
+  function makeApp(actor: object) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = actor;
+      next();
+    });
+    // Empty stubs — the authz gate fires before any db/lifecycle/loader access.
+    const router = companyPluginRoutes({} as any, {} as any, {} as any);
+    app.use("/api/companies/:companyId/plugins", router);
+    app.use(errorHandler);
+    return supertest(app);
+  }
+
+  const mutating = [
+    { method: "post" as const, path: "/api/companies/co-1/plugins/plugin-1/config", body: {} },
+    { method: "post" as const, path: "/api/companies/co-1/plugins/plugin-1/upgrade", body: {} },
+    { method: "post" as const, path: "/api/companies/co-1/plugins/plugin-1/upgrade/approve", body: {} },
+    { method: "post" as const, path: "/api/companies/co-1/plugins/plugin-1/upgrade/rollback", body: {} },
+    { method: "patch" as const, path: "/api/companies/co-1/plugins/plugin-1/settings", body: {} },
+  ];
+
+  for (const { method, path, body } of mutating) {
+    it(`${method.toUpperCase()} ${path} → 403 for a non-admin company member`, async () => {
+      const res = await makeApp(NON_ADMIN_MEMBER)[method](path).send(body);
+      expect(res.status).toBe(403);
+    });
+
+    it(`${method.toUpperCase()} ${path} → NOT 403 for local_implicit`, async () => {
+      const res = await makeApp(LOCAL_IMPLICIT)[method](path).send(body);
+      expect(res.status).not.toBe(403);
+    });
+  }
+
+  // Reads must stay member-accessible — the gate must NOT be on the GETs.
+  for (const path of [
+    "/api/companies/co-1/plugins",
+    "/api/companies/co-1/plugins/plugin-1/config",
+  ]) {
+    it(`GET ${path} → NOT 403 for a non-admin company member`, async () => {
+      const res = await makeApp(NON_ADMIN_MEMBER).get(path);
       expect(res.status).not.toBe(403);
     });
   }
