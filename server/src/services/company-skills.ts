@@ -1511,7 +1511,16 @@ export function companySkillService(db: Db) {
 
     // For local_path source, try reading from filesystem
     if (skill.sourceType === "local_path" && skill.sourceLocator) {
-      const filePath = path.join(skill.sourceLocator, normalizedPath);
+      // SECURITY: reject path traversal — normalizedPath is joined to the skill
+      // directory on disk, and normalizePortablePath does NOT strip "../", so an
+      // unvalidated path escapes the skill dir (arbitrary file read).
+      let safeRelativePath: string;
+      try {
+        safeRelativePath = validatePackageFileKey(skill.sourceLocator, normalizedPath);
+      } catch {
+        return null;
+      }
+      const filePath = path.join(skill.sourceLocator, safeRelativePath);
       try {
         const content = await fs.readFile(filePath, "utf8");
         const ext = path.extname(normalizedPath).toLowerCase();
@@ -1564,6 +1573,14 @@ export function companySkillService(db: Db) {
     }
 
     const normalizedPath = normalizePortablePath(filePath) || "SKILL.md";
+    // SECURITY: reject path traversal — normalizedPath is joined to the skill
+    // directory on disk, and normalizePortablePath does NOT strip "../", so an
+    // unvalidated path escapes the skill dir (arbitrary file write).
+    try {
+      validatePackageFileKey(skill.sourceLocator ?? ".", normalizedPath);
+    } catch {
+      throw unprocessable(`Invalid file path "${filePath}": path traversal not allowed`);
+    }
     const { editable } = deriveSkillSourceInfo(skill);
     if (!editable) {
       throw unprocessable("GitHub-managed skills can only be edited via install-update");
