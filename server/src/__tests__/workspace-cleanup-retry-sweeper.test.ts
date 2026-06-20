@@ -68,7 +68,7 @@ describe("retryCleanupFailedWorkspaces — never rm -rf a preserved path", () =>
 
   it("does NOT remove a non-runtime-created workspace whose cwd is the project repo; archives it", async () => {
     const db = makeDb({
-      failed: [{ id: "w1", cwd: "/home/user/repo", providerRef: null, metadata: { createdByRuntime: false } }],
+      failed: [{ id: "w1", cwd: "/home/user/repo", providerRef: null, providerType: "local_fs", metadata: { createdByRuntime: false } }],
       projectCwds: ["/home/user/repo"],
     });
     const res = await retryCleanupFailedWorkspaces(db);
@@ -77,9 +77,20 @@ describe("retryCleanupFailedWorkspaces — never rm -rf a preserved path", () =>
     expect(db.__archived).toContain("w1");
   });
 
+  it("does NOT remove a non-runtime local_fs dir even when isolated (local_fs requires createdByRuntime)", async () => {
+    const db = makeDb({
+      failed: [{ id: "w1b", cwd: "/srv/shared/external-skill-dir", providerRef: null, providerType: "local_fs", metadata: { createdByRuntime: false } }],
+      projectCwds: ["/home/user/repo"],
+    });
+    const res = await retryCleanupFailedWorkspaces(db);
+    expect(rmMock).not.toHaveBeenCalled();
+    expect(res.preserved).toBe(1);
+    expect(db.__archived).toContain("w1b");
+  });
+
   it("does NOT remove a runtime workspace whose path equals/contains a project workspace", async () => {
     const db = makeDb({
-      failed: [{ id: "w2", cwd: "/home/user/repo", providerRef: null, metadata: { createdByRuntime: true } }],
+      failed: [{ id: "w2", cwd: "/home/user/repo", providerRef: null, providerType: "local_fs", metadata: { createdByRuntime: true } }],
       projectCwds: ["/home/user/repo"],
     });
     const res = await retryCleanupFailedWorkspaces(db);
@@ -90,7 +101,7 @@ describe("retryCleanupFailedWorkspaces — never rm -rf a preserved path", () =>
 
   it("DOES remove an isolated runtime workspace not matching any project workspace", async () => {
     const db = makeDb({
-      failed: [{ id: "w3", cwd: "/tmp/aoa-worktrees/abc", providerRef: null, metadata: { createdByRuntime: true } }],
+      failed: [{ id: "w3", cwd: "/tmp/aoa-worktrees/abc", providerRef: null, providerType: "local_fs", metadata: { createdByRuntime: true } }],
       projectCwds: ["/home/user/repo"],
     });
     const res = await retryCleanupFailedWorkspaces(db);
@@ -98,6 +109,29 @@ describe("retryCleanupFailedWorkspaces — never rm -rf a preserved path", () =>
     expect(rmMock).toHaveBeenCalledWith("/tmp/aoa-worktrees/abc", { recursive: true, force: true });
     expect(res.recovered).toBe(1);
     expect(res.preserved).toBe(0);
+  });
+
+  it("DOES remove an isolated git_worktree even when createdByRuntime is false (eager worktrees persist false)", async () => {
+    const db = makeDb({
+      failed: [{ id: "w5", cwd: null, providerRef: "/tmp/aoa-worktrees/wt-1", providerType: "git_worktree", metadata: { createdByRuntime: false } }],
+      projectCwds: ["/home/user/repo"],
+    });
+    const res = await retryCleanupFailedWorkspaces(db);
+    expect(rmMock).toHaveBeenCalledTimes(1);
+    expect(rmMock).toHaveBeenCalledWith("/tmp/aoa-worktrees/wt-1", { recursive: true, force: true });
+    expect(res.recovered).toBe(1);
+    expect(res.preserved).toBe(0);
+  });
+
+  it("does NOT remove a git_worktree whose path equals/contains a project workspace", async () => {
+    const db = makeDb({
+      failed: [{ id: "w6", cwd: null, providerRef: "/home/user/repo", providerType: "git_worktree", metadata: { createdByRuntime: false } }],
+      projectCwds: ["/home/user/repo"],
+    });
+    const res = await retryCleanupFailedWorkspaces(db);
+    expect(rmMock).not.toHaveBeenCalled();
+    expect(res.preserved).toBe(1);
+    expect(db.__archived).toContain("w6");
   });
 
   it("archives a row with no path without calling rm", async () => {

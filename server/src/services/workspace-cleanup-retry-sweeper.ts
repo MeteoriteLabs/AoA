@@ -35,6 +35,7 @@ export async function retryCleanupFailedWorkspaces(
       id: executionWorkspaces.id,
       cwd: executionWorkspaces.cwd,
       providerRef: executionWorkspaces.providerRef,
+      providerType: executionWorkspaces.providerType,
       metadata: executionWorkspaces.metadata,
     })
     .from(executionWorkspaces)
@@ -85,10 +86,29 @@ export async function retryCleanupFailedWorkspaces(
       (pc) => resolvedTarget === pc || pc.startsWith(`${resolvedTarget}${path.sep}`),
     );
 
-    if (!createdByRuntime || containsProjectWorkspace) {
+    // Mirror cleanupExecutionWorkspaceArtifacts' provider-specific gates:
+    //  - git_worktree: an isolated runtime worktree dir — always retried,
+    //    regardless of createdByRuntime (eager worktrees persist
+    //    createdByRuntime:false, providerRef=worktreePath), UNLESS it is/contains
+    //    a project workspace.
+    //  - local_fs: only the runtime-created directory is removed, never a
+    //    shared/external dir, and never one that is/contains a project workspace.
+    //  - any other provider: nothing to remove — preserve.
+    const removable =
+      !containsProjectWorkspace &&
+      (ws.providerType === "git_worktree" ||
+        (ws.providerType === "local_fs" && createdByRuntime));
+
+    if (!removable) {
       logger.warn(
-        { wsId: ws.id, path: target, createdByRuntime, containsProjectWorkspace },
-        "cleanup_failed retry skipped: preserved path (not runtime-created, or contains a project workspace); archiving without removal",
+        {
+          wsId: ws.id,
+          path: target,
+          providerType: ws.providerType,
+          createdByRuntime,
+          containsProjectWorkspace,
+        },
+        "cleanup_failed retry skipped: preserved path (not a removable runtime dir, or contains a project workspace); archiving without removal",
       );
       await markArchived(ws.id);
       preserved++;
