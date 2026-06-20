@@ -34,6 +34,8 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
 }));
 
 vi.mock("../services/internal-agent/commander-context.js", () => ({
+  // agent-loop.ts imports assembleAgentPersona (renamed from loadCommanderPersona).
+  assembleAgentPersona: async () => "COMMANDER_PERSONA_MARKER",
   loadCommanderPersona: async () => "COMMANDER_PERSONA_MARKER",
 }));
 
@@ -55,6 +57,22 @@ vi.mock("../services/memory.js", () => ({
   }),
 }));
 
+// agent-loop now routes Commander memory through commanderMemoryRecallService(db).recall
+// (not the old searchSemantic callback). Mock it directly so the injected item flows in.
+vi.mock("../services/internal-agent/memory-recall.js", () => ({
+  normalizeCommanderMemoryRecallPolicy: () => ({ enabled: true }),
+  commanderMemoryRecallService: () => ({
+    recall: async () => ({
+      status: "ok",
+      items: [
+        { id: "mem-1", title: "Approved Memory Item", content: "INJECTED_MEMORY_CONTENT", layer: "domain" },
+      ],
+      query: "refund policy",
+      elapsedMs: 1,
+    }),
+  }),
+}));
+
 vi.mock("../agent-instructions.js", () => ({
   agentInstructionsService: () => ({}),
 }));
@@ -72,13 +90,14 @@ vi.mock("../services/internal-agent/context-assembly.js", () => ({
     assembleContext: async (_companyId: string, opts: any) => {
       // Exercise the memorySearch callback so injected memory flows into the prompt
       let memoryBlock = "";
-      if (opts.memorySearch && opts.relevanceQuery) {
-        const items = await opts.memorySearch(opts.relevanceQuery);
-        const relevant = items.filter((m: any) => m.layer === "identity" || m.layer === "domain");
-        if (relevant.length > 0) {
-          memoryBlock = "\n\n## Relevant Company Memory\n" +
-            relevant.map((m: any) => `${m.title ?? "Memory"}: ${m.content ?? ""}`).join("\n");
-        }
+      // agent-loop passes the recalled memory as opts.memoryItems; fall back to
+      // the legacy memorySearch callback for any other caller.
+      const memItems = opts.memoryItems ??
+        (opts.memorySearch && opts.relevanceQuery ? await opts.memorySearch(opts.relevanceQuery) : []);
+      const relevant = (memItems ?? []).filter((m: any) => m.layer === "identity" || m.layer === "domain");
+      if (relevant.length > 0) {
+        memoryBlock = "\n\n## Relevant Company Memory\n" +
+          relevant.map((m: any) => `${m.title ?? "Memory"}: ${m.content ?? ""}`).join("\n");
       }
       const summary = opts.conversationSummary
         ? `\n\n## Conversation Summary\n${opts.conversationSummary}`

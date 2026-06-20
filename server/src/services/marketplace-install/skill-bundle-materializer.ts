@@ -195,6 +195,8 @@ async function copyDirectorySkippingSymlinks(sourceDir: string, destination: str
     recursive: true,
     dereference: false,
     filter: async (source) => {
+      // Exclude a nested .git (e.g. a repo-root bundle clone) at any depth.
+      if (path.basename(source) === ".git") return false;
       const info = await lstat(source);
       return !info.isSymbolicLink();
     },
@@ -217,6 +219,7 @@ async function walkFiles(dir: string, prefix = ""): Promise<string[]> {
   const files: string[] = [];
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
+    if (entry.name === ".git") continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       files.push(...await walkFiles(dir, relativePath));

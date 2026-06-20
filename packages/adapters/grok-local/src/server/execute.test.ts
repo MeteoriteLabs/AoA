@@ -131,13 +131,13 @@ describe("grok_local execute", () => {
       config: {
         cwd: root,
         instructionsFilePath: instructionsPath,
-        AoARuntimeSkills: [{
+        aoaRuntimeSkills: [{
           key: "AoA",
           runtimeName: "AoA",
           source: skillSource,
           required: false,
         }],
-        AoASkillSync: { desiredSkills: ["AoA"] },
+        aoaSkillSync: { desiredSkills: ["AoA"] },
       },
       context: {},
       authToken: "run-token",
@@ -188,13 +188,13 @@ describe("grok_local execute", () => {
       config: {
         cwd: root,
         instructionsFilePath: instructionsPath,
-        AoARuntimeSkills: [{
+        aoaRuntimeSkills: [{
           key: "AoA",
           runtimeName: "AoA",
           source: skillSource,
           required: false,
         }],
-        AoASkillSync: { desiredSkills: ["AoA"] },
+        aoaSkillSync: { desiredSkills: ["AoA"] },
       },
       context: {},
       authToken: "run-token",
@@ -260,13 +260,13 @@ describe("grok_local execute", () => {
       config: {
         cwd: root,
         instructionsFilePath: instructionsPath,
-        AoARuntimeSkills: [{
+        aoaRuntimeSkills: [{
           key: "AoA",
           runtimeName: "AoA",
           source: skillSource,
           required: false,
         }],
-        AoASkillSync: { desiredSkills: ["AoA"] },
+        aoaSkillSync: { desiredSkills: ["AoA"] },
       },
       context: {},
       executionTarget: {

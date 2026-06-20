@@ -1,8 +1,8 @@
 /**
  * A9.2 — Real-DB end-to-end proof of the AoA backend (Plan A): company
  * create eagerly seeds the Commander Team (Decision #100), and a pending
- * discussion entry is durably picked up by the AoA dispatcher, atomically
- * claimed, and attributed to the kind='aoa' "Discussion Extraction" agent.
+ * discussion entry is durably picked up by the AoA dispatcher and atomically
+ * claimed off 'pending' by the direct-provider extraction consumer.
  *
  * Boots embedded-postgres, applies all migrations, then:
  *   1. seeds a company via companyService.create → createCompanyWithUniquePrefix
@@ -16,21 +16,20 @@
  *   4. runs runAoaDispatch(db, { limiterMax: 2, staleMs: 600000 }),
  *   5. asserts the durable-outbox contract held.
  *
- * Deterministic-without-CLI note: ensureExtractionAgent seeds the extraction
- * agent with adapterType='process' and NO adapterConfig.command. In
- * runAoaAgent the run row + the M2/#99 atomic claim happen BEFORE
- * adapter.execute; the process adapter then throws "Process adapter missing
- * command" (process/execute.ts:16), which runAoaAgent catches (never
- * rethrows — its hard isolation boundary) and marks the run 'failed'. So the
- * two assertions below (run row exists with agentId + triggerType='sub_agent';
- * entry atomically claimed off 'pending') hold deterministically with NO
- * external CLI. The cost_events row (costCents=0) is emitted only on the
- * success path — costService.createEvent runs AFTER adapter.execute returns
- * and BEFORE the catch — so it does NOT fire on the no-command process throw
- * path; that assertion is documented (not faked) at the bottom and is
- * exercisable on Linux CI only by giving the seeded agent a trivially-
- * succeeding command (Plan D §17 covers real extracted content via
- * claude_local — explicitly out of scope here).
+ * Deterministic-without-LLM note: per Decision #100 (amended 2026-05-25, commit
+ * 5755aa5c9 "route discussion extraction through the direct-provider path"), the
+ * Phase-2 outbox drain calls runExtractionConsumer →
+ * extractionService.extractFromDiscussionEntry — the DIRECT-PROVIDER path, NOT
+ * the CLI-adapter agent runner. That path atomically claims the entry
+ * (pending→processing) and then, because this CI environment has no LLM key,
+ * resolveAvailableProvider throws and the entry is terminalized to 'skipped'
+ * with a "No LLM provider configured" extractionError — creating NO
+ * internal_agent_runs row. So the two assertions below (entry claimed off
+ * 'pending'; NO run row attributed to the Scribe agent) hold deterministically
+ * with NO external CLI and NO network. A provider-attributed run row
+ * (triggerType='event', triggerSource='discussion_entry', no agentId) is created
+ * only when a real key is present; asserting it would require seeding a key + a
+ * live call, so it is documented (not faked) at the bottom rather than asserted.
  *
  * Skipped on Windows (embedded-postgres / migration-chain issue — Issue #114);
  * Linux CI is the authoritative gate for this test.
@@ -156,7 +155,7 @@ describe.skipIf(process.platform === "win32")(
       // (seeded above via explicit ensureExtractionAgent call).
       const extraction = await db.execute<{ id: string }>(sql`
         SELECT id FROM agents
-        WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Discussion Extraction'
+        WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Scribe'
       `);
       const extractionId = firstId(extraction);
       expect(extractionId).toBeTruthy();
@@ -170,7 +169,7 @@ describe.skipIf(process.platform === "win32")(
       expect(trigRow.agent_id).toBe(extractionId);
     });
 
-    it("dispatch: a pending discussion entry is atomically claimed + attributed to the kind='aoa' extraction agent", async () => {
+    it("dispatch: a pending discussion entry is durably claimed off 'pending' by the direct-provider extraction consumer", async () => {
       if (setupError) throw new Error(String(setupError));
 
       const discussionId = firstId(await db.execute<{ id: string }>(sql`
@@ -191,29 +190,21 @@ describe.skipIf(process.platform === "win32")(
       `));
       expect(entryId).toBeTruthy();
 
-      // The durable-outbox dispatcher: gate passes (eager outbox trigger from
-      // setup), the extraction agent is resolved, runAoaAgent inserts the run
-      // + atomically claims the entry, then the no-command process adapter
-      // throws and the run is marked failed (never rethrown).
+      // The durable-outbox dispatcher: Phase-2 gate passes (enabled outbox
+      // trigger from setup + AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED), so the pending
+      // entry is drained through runExtractionConsumer →
+      // extractionService.extractFromDiscussionEntry. Per Decision #100 (amended
+      // 2026-05-25, commit 5755aa5c9), that consumer is the DIRECT-PROVIDER path,
+      // NOT runAoaAgent: it atomically claims the entry (pending→processing) and
+      // then terminalizes it. With no LLM key in CI, resolveAvailableProvider
+      // throws and the entry is terminalized to 'skipped' — no run row created.
       await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
 
-      // Assertion 1 — an internal_agent_runs row attributed to the kind='aoa'
-      // "Discussion Extraction" agent, triggerType='sub_agent'.
-      const extractionId = firstId(await db.execute<{ id: string }>(sql`
-        SELECT id FROM agents
-        WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Discussion Extraction'
-      `));
-      const runs = await db.execute<{ agent_id: string; trigger_type: string }>(sql`
-        SELECT agent_id, trigger_type FROM internal_agent_runs
-        WHERE company_id = ${companyId} AND agent_id = ${extractionId}
-      `);
-      const runRow = Array.isArray(runs) ? runs[0] : (runs as any).rows?.[0];
-      expect(runRow).toBeTruthy();
-      expect(runRow.agent_id).toBe(extractionId);
-      expect(runRow.trigger_type).toBe("sub_agent");
-
-      // Assertion 2 — the entry was atomically claimed off 'pending' (the M2
-      // /#99 claim flipped pending→processing before adapter.execute threw).
+      // Assertion 1 — the entry was atomically claimed off 'pending'. This is the
+      // core durable-outbox guarantee: the committed extraction_status='pending'
+      // row IS the work item, and the dispatcher + consumer must claim it. In CI
+      // (no key) the terminal state is 'skipped'; with a key it is
+      // 'completed'/'failed'. In every case it must no longer be 'pending'.
       const entry = await db.execute<{ extraction_status: string }>(sql`
         SELECT extraction_status FROM discussion_entries WHERE id = ${entryId}
       `);
@@ -221,26 +212,33 @@ describe.skipIf(process.platform === "win32")(
       expect(entryRow).toBeTruthy();
       expect(entryRow.extraction_status).not.toBe("pending");
 
-      // Assertion 3 (documented — NOT asserted here; honest Linux-CI note):
-      // A cost_events row for the extraction agent with cost_cents=0 is
-      // emitted by runAoaAgent ONLY on the success path
-      // (costService.createEvent runs AFTER adapter.execute returns and
-      // BEFORE the catch). The seeded extraction agent has adapterType=
-      // 'process' and NO adapterConfig.command, so adapter.execute throws
-      // "Process adapter missing command" and the cost event is never
-      // reached — the run is marked 'failed' instead. To exercise this
-      // assertion on Linux CI, give the seeded agent a trivially-succeeding
-      // command (e.g. UPDATE its adapter_config to {"command":"true"}) before
-      // dispatch, then assert:
-      //
-      //   const cost = await db.execute(sql`
-      //     SELECT cost_cents FROM cost_events
-      //     WHERE company_id = ${companyId} AND agent_id = ${extractionId}`);
-      //   expect(firstRow(cost)?.cost_cents).toBe(0);
-      //
-      // Faking this row (or asserting it on the throw path) would be a false
-      // green, so it is intentionally left as documentation. Real extracted
-      // *content* via claude_local is Plan D §17 — explicitly out of scope.
+      // Assertion 2 — Decision #100-amendment contract: extraction runs on the
+      // DIRECT-PROVIDER path, so NO internal_agent_runs row is ever attributed to
+      // the kind='aoa' "Scribe" agent (runExtractionConsumer's agentId arg is
+      // intentionally unused; any run row the provider path creates is
+      // triggerType='event' with a NULL agent_id). Pin that: zero run rows carry
+      // the Scribe agent_id.
+      const scribeId = firstId(await db.execute<{ id: string }>(sql`
+        SELECT id FROM agents
+        WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Scribe'
+      `));
+      expect(scribeId).toBeTruthy();
+      const agentRuns = await db.execute<{ id: string }>(sql`
+        SELECT id FROM internal_agent_runs
+        WHERE company_id = ${companyId} AND agent_id = ${scribeId}
+      `);
+      const agentRunRows = Array.isArray(agentRuns) ? agentRuns : (agentRuns as any).rows ?? [];
+      expect(agentRunRows.length).toBe(0);
+
+      // Assertion 3 (documented — honest no-key CI note): with a real LLM key,
+      // extractFromDiscussionEntry inserts exactly ONE internal_agent_runs row
+      // with triggerType='event', triggerSource='discussion_entry' (provider-
+      // attributed, NOT agent-attributed, NOT triggerType='sub_agent') and links
+      // it via discussion_entries.extraction_run_id. Without a key (CI)
+      // resolveAvailableProvider throws before any run row is created and the
+      // entry is 'skipped'. Asserting the provider run row would require seeding
+      // ANTHROPIC_API_KEY/OPENAI_API_KEY and a live network call, so it is left as
+      // documentation rather than a networked/flaky assertion.
     });
   },
 );
