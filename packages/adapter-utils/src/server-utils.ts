@@ -1102,6 +1102,14 @@ export async function readAoaRuntimeSkillEntries(
 export const readPaperclipRuntimeSkillEntries = readAoaRuntimeSkillEntries;
 
 export async function materializeAoaSkillCopy(source: string, target: string): Promise<{ skippedSymlinks: string[] }> {
+  // Codex P2: fs.cp's filter only skips copying matching SOURCE paths — it does
+  // NOT delete a same-named path already present in the TARGET. For a persistent
+  // runtime target reused across runs (e.g. ACPX Codex's CODEX_HOME/skills/
+  // <runtimeName>), a .git dir or symlink materialized by an earlier run/version
+  // would otherwise survive, defeating the exclude-VCS/symlink guarantee below.
+  // Remove the target up front so each materialization is a clean, filtered copy
+  // (the skill source is authoritative; nothing in target is worth preserving).
+  await fs.rm(target, { recursive: true, force: true });
   await fs.mkdir(path.dirname(target), { recursive: true });
   const resolvedSource = path.resolve(source);
   const skippedSymlinks: string[] = [];
