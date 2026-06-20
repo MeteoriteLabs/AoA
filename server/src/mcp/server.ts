@@ -485,7 +485,10 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
             return;
           }
           const row = await goalsSvc.getById(resource.id);
-          const filtered = row ? await filterGoalsForScope(db, scope, [row]) : [];
+          // Tenant isolation: getById is not company-scoped, and founder scope is a
+          // pass-through in filterGoalsForScope — reject cross-company ids here.
+          const filtered =
+            row && row.companyId === companyId ? await filterGoalsForScope(db, scope, [row]) : [];
           if (filtered.length === 0) {
             res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Goal not found"));
             return;
@@ -521,7 +524,10 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
             return;
           }
           const row = await artifactsSvc.getById(resource.id);
-          const filtered = row ? await filterArtifactsForScope(db, scope, [row]) : [];
+          // Tenant isolation: getById is not company-scoped, and founder scope is a
+          // pass-through in filterArtifactsForScope — reject cross-company ids here.
+          const filtered =
+            row && row.companyId === companyId ? await filterArtifactsForScope(db, scope, [row]) : [];
           if (filtered.length === 0) {
             res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Artifact not found"));
             return;
