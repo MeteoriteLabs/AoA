@@ -110,16 +110,16 @@ describe.skipIf(process.platform === "win32")(
       }
 
       const companyAResult = await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name)
-        VALUES (gen_random_uuid(), 'Env Test Co A')
+        INSERT INTO companies (id, name, issue_prefix)
+        VALUES (gen_random_uuid(), 'Env Test Co A', 'ENA')
         RETURNING id
       `);
       companyAId = firstId(companyAResult);
       expect(companyAId).toBeTruthy();
 
       const companyBResult = await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name)
-        VALUES (gen_random_uuid(), 'Env Test Co B')
+        INSERT INTO companies (id, name, issue_prefix)
+        VALUES (gen_random_uuid(), 'Env Test Co B', 'ENB')
         RETURNING id
       `);
       companyBId = firstId(companyBResult);

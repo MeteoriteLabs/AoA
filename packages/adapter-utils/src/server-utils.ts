@@ -1103,13 +1103,27 @@ export const readPaperclipRuntimeSkillEntries = readAoaRuntimeSkillEntries;
 
 export async function materializeAoaSkillCopy(source: string, target: string): Promise<{ skippedSymlinks: string[] }> {
   await fs.mkdir(path.dirname(target), { recursive: true });
+  const resolvedSource = path.resolve(source);
+  const skippedSymlinks: string[] = [];
   await fs.cp(source, target, {
     recursive: true,
     force: true,
     errorOnExist: false,
     dereference: false,
+    filter: async (src) => {
+      // Never materialize a nested VCS dir into the runtime skill tree, and
+      // never follow symlinked descendants out of the skill dir (security:
+      // a malicious skill could symlink to host files / dirs outside it).
+      if (path.basename(src) === ".git") return false;
+      const info = await fs.lstat(src);
+      if (info.isSymbolicLink()) {
+        skippedSymlinks.push(path.relative(resolvedSource, path.resolve(src)));
+        return false;
+      }
+      return true;
+    },
   });
-  return { skippedSymlinks: [] };
+  return { skippedSymlinks };
 }
 export const materializePaperclipSkillCopy = materializeAoaSkillCopy;
 

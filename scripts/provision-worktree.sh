@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Guarantee GNU bash. The provisioner can be invoked as `sh -c "bash <script>"`
+# (runWorkspaceCommand uses /bin/sh), where on minimal Linux images the `bash`
+# token may resolve to dash/busybox, which rejects `set -o pipefail` on line 2.
+if [ -z "${BASH_VERSION:-}" ]; then
+  if command -v bash >/dev/null 2>&1; then exec bash "$0" "$@"; fi
+  echo "provision-worktree.sh requires bash" >&2
+  exit 1
+fi
 set -euo pipefail
 
 base_cwd="${AOA_WORKSPACE_BASE_CWD:?AOA_WORKSPACE_BASE_CWD is required}"

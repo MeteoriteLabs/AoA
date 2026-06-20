@@ -327,7 +327,7 @@ describe("ProjectDetail — Workspaces tab", () => {
     expect(await screen.findByText("Status", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByText("Created", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
-    expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
     expect(await screen.findByText("Environment Variables")).toBeInTheDocument();
     expect(screen.queryByTestId("project-workspaces-list")).not.toBeInTheDocument();
   });

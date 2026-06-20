@@ -83,10 +83,10 @@ describe.skipIf(process.platform === "win32")(
         );
       }
       companyAId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name) VALUES (gen_random_uuid(), 'Kind Test Co A') RETURNING id
+        INSERT INTO companies (id, name, issue_prefix) VALUES (gen_random_uuid(), 'Kind Test Co A', 'KTA') RETURNING id
       `));
       companyBId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name) VALUES (gen_random_uuid(), 'Kind Test Co B') RETURNING id
+        INSERT INTO companies (id, name, issue_prefix) VALUES (gen_random_uuid(), 'Kind Test Co B', 'KTB') RETURNING id
       `));
       expect(companyAId).toBeTruthy();
       expect(companyBId).toBeTruthy();

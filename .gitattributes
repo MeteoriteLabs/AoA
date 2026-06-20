@@ -6,3 +6,7 @@
 # checkout machine's core.autocrlf.
 tests/e2e/fixtures/fake-claude/claude text eol=lf
 tests/e2e/fixtures/fake-claude/fake-claude.mjs text eol=lf
+
+# Same protection for the fake-codex POSIX shim (kernel-exec'd on Linux CI).
+tests/e2e/fixtures/fake-codex/codex text eol=lf
+tests/e2e/fixtures/fake-codex/fake-codex.mjs text eol=lf
