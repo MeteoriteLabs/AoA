@@ -207,7 +207,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "memory.retain",
     description:
-      "Persist an observation to memory. When called by an agent actor with scopeToSelf=true, the item is auto-approved into that agent's personal scope. All other writes create a pending item awaiting founder review (Critical Rule #6).",
+      "Persist an observation to memory. When called by an agent actor with scopeToSelf=true AND layer=\"working\", the item is auto-approved into that agent's personal working-memory bucket. Self-scoped retains targeting identity/domain/active_context — and all non-agent writes — instead create a pending item awaiting founder review (Critical Rule #6: only the founder approves identity/domain).",
     inputSchema: {
       type: "object",
       properties: {
