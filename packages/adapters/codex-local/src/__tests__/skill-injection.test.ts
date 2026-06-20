@@ -19,10 +19,13 @@ describe("codex skill injection", () => {
       copySkill,
     });
 
+    // The 3rd arg is the symlink type: "junction" on Windows, undefined elsewhere
+    // (execute.ts passes `process.platform === "win32" ? "junction" : undefined`).
+    // expect.anything() does NOT match undefined, so assert the exact value per platform.
     expect(linkSkill).toHaveBeenCalledWith(
       "C:/repo/skills/aoa",
       "C:/Users/TK/.codex/skills/aoa",
-      expect.anything(),
+      process.platform === "win32" ? "junction" : undefined,
     );
     expect(copySkill).toHaveBeenCalledWith(
       "C:/repo/skills/aoa",
