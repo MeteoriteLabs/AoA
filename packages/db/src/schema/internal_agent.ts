@@ -253,6 +253,17 @@ export const internalAgentRuns = pgTable(
     toolsCalled: jsonb("tools_called").default([]), // array of { name, input, output, durationMs, success }
     summary: text("summary"), // human-readable summary of what happened
 
+    // Outbox SEAL key-set (Decision #99 completion, Mechanism B'). The idempotency keys of the
+    // thread_agent_actions this run PROPOSED this turn. Appended by proposeThreadAction (which
+    // runs in the bridge subprocess) and read by the runner / controller on run SUCCESS to seal
+    // those actions proposed→ready (the producer-success gate). Durable here because the bridge
+    // and the seal site are different processes — an in-memory key-set cannot cross. A run that
+    // fails/crashes never seals → its proposed rows are never drained (the GC reaps them).
+    proposedActionKeys: jsonb("proposed_action_keys")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+
     // Cost tracking (DA-25: cents, not USD)
     tokenUsage: jsonb("token_usage"), // { inputTokens, outputTokens, cachedInputTokens }
     costCents: integer("cost_cents"),

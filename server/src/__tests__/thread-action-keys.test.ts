@@ -3,6 +3,7 @@ import {
   buildPostReplyIdempotencyKey,
   buildArtifactCandidateIdempotencyKey,
   buildConveneAgentIdempotencyKey,
+  buildConveneWakeupDedupKey,
   buildScopeDraftIdempotencyKey,
   buildAddScopeItemIdempotencyKey,
   buildAdvancePhaseIdempotencyKey,
@@ -72,6 +73,13 @@ describe("deferred-type idempotency keys (#198 PR-A)", () => {
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, reason: "other" }));
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, agentId: "a2" }));
     expect(buildConveneAgentIdempotencyKey(base)).not.toBe(buildConveneAgentIdempotencyKey({ ...base, turnAnchor: "6" }));
+  });
+  it("convene wakeup dedupKey discriminates by sourceActionId (distinct actions enqueue separately; same action collapses)", () => {
+    const k1 = buildConveneWakeupDedupKey({ targetAgentId: "t", threadId: "th", sourceActionId: "act-1" });
+    const k2 = buildConveneWakeupDedupKey({ targetAgentId: "t", threadId: "th", sourceActionId: "act-2" });
+    expect(k1).not.toBe(k2);
+    expect(k1.endsWith(":queued")).toBe(true);
+    expect(buildConveneWakeupDedupKey({ targetAgentId: "t", threadId: "th", sourceActionId: "act-1" })).toBe(k1);
   });
   it("create_scope_draft key hashes summary + tasks (no raw interpolation), turn-anchored", () => {
     const base = { threadId: "t1", agentId: "a1", summary: "Scope it", proposedTasks: [{ title: "X" }], turnAnchor: "5" };

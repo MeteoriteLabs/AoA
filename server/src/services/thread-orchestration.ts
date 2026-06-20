@@ -84,7 +84,13 @@ export type OnCommitFn = (result: AdjutantRunResult, cursorAdvancedTo: string | 
 
 /** The union of outcomes that runController can return. */
 export type RunControllerResult =
+  // The atomic claim was lost (another executor owns this thread's run right now) OR
+  // pendingRun was already false. THIS caller did NOT claim — it must NOT touch the
+  // thread's actions (the owner may have queued-but-uncommitted rows). (Codex P1)
   | { ran: false; reason: "no-pending" }
+  // THIS caller claimed the run but there were no entries after the cursor. It owns the
+  // thread for this tick (the claim serializes), so a backstop action-drain is safe here.
+  | { ran: false; reason: "no-entries" }
   | { ran: true; suppressed: true; startEpoch: number; endEpoch: number }
   | { ran: true; suppressed: false; startEpoch: number; cursorAdvancedTo: string | null }
   | { ran: true; suppressed: false; error: string; startEpoch: number; cursorAdvancedTo: null };
@@ -557,10 +563,12 @@ export function threadOrchestrationService(db: Db) {
       }
 
       // Short-circuit: no new entries to process. This is unexpected given the
-      // trigger fires on new human entries, but handle it gracefully.
+      // trigger fires on new human entries, but handle it gracefully. Distinct reason
+      // ("no-entries") so the sweep knows THIS caller claimed the run (and may safely
+      // run a backstop action-drain) vs the claim-lost "no-pending" above. (Codex P1)
       if (entries.length === 0) {
         log.debug({ threadId, startEpoch }, "thread orchestration: no unprocessed entries — skipping run");
-        return { ran: false, reason: "no-pending" };
+        return { ran: false, reason: "no-entries" };
       }
 
       const cursorTarget = entries[entries.length - 1].id;
@@ -613,7 +621,22 @@ export function threadOrchestrationService(db: Db) {
         return { ran: true, suppressed: true, startEpoch, endEpoch };
       }
 
-      if (threadRow && runResult.runId) {
+      // Set when a commit leaves retryable work uncommitted (mixed-batch failed rows, or
+      // rows that lost the fenced CAS this tick): the cursor still advances, but pendingRun
+      // re-drives the thread-scoped commit on the next sweep so leftovers aren't orphaned
+      // until an unrelated future trigger. (Codex P2)
+      // Controller commit gate (outbox seal, must-fix #1): only drain when the controller run
+      // SUCCEEDED. A failed/cancelled run never sealed its actions (the runner seals only on
+      // success), so its rows stay `proposed` — un-committable under the ready-only relay, and we
+      // additionally skip the commit here so the transient superset relay cannot drain them either,
+      // closing the controller-path variant of the failed-run leak (Codex P1). Read defensively:
+      // the run is "not failed" unless output.status==='failed' or an error was surfaced — the mock
+      // adjutantRunner returns output:"done"/no error and is treated as succeeded.
+      const runSucceeded =
+        (runResult.output as { status?: string } | undefined)?.status !== "failed" &&
+        runResult.error == null;
+      let rescheduleAfterCommit = false;
+      if (threadRow && runResult.runId && runSucceeded) {
         try {
           const { threadAgentActionService } = await import("./thread-agent-actions.js");
           const commitResult = await threadAgentActionService(db).commitThreadAgentActions({
@@ -621,16 +644,21 @@ export function threadOrchestrationService(db: Db) {
             threadId,
             runId: runResult.runId,
           });
+          rescheduleAfterCommit = commitResult.failed > 0 || commitResult.lostRace > 0;
 
           // A per-action commit failure is swallowed inside commitThreadAgentActions
           // (the row is set `failed` and the call returns normally). On a PURE failure
           // (nothing committed) we do NOT advance — the circuit-breaker reschedules so
           // a transient failure retries; after MAX consecutive failures it advances
-          // past the poison entry. NOTE: the commit selection is run-scoped (eq(runId)),
-          // so a fresh-runId re-run does NOT re-select the prior run's `failed` rows —
-          // the retry happens by re-running the agent, whose re-proposals dedup for the
-          // two stable-key action types (post_reply, create_artifact_candidate). Full
-          // thread-scoped retry of all action types is #198.
+          // past the poison entry. (#198 PR-B) The commit is now THREAD-scoped, so a
+          // later run's commit re-selects the prior run's retryable `failed` rows
+          // directly (bounded by attemptCount < maxAttempts) — the retry no longer
+          // depends on re-running the agent. Cross-run drain is safe because each row
+          // commits against its OWN stored freshness snapshot, and `runEpoch`
+          // (controller staleness) and `freshness.latestHumanSeq` advance on the SAME
+          // event (a new human entry via triggerOnHumanEntry), so the per-action
+          // freshness re-check subsumes the epoch gate for the runner self-flush path
+          // that does not read runEpoch.
           if (commitResult.failed > 0 && commitResult.committed === 0) {
             // PURE failure (nothing committed) → safe to reschedule/retry via the
             // circuit-breaker; a re-run cannot duplicate because nothing committed.
@@ -661,11 +689,11 @@ export function threadOrchestrationService(db: Db) {
             };
           }
           if (commitResult.failed > 0) {
-            // MIXED batch (committed>0 AND failed>0): re-running the agent would
-            // re-execute the already-committed actions. Do NOT reschedule — fall
-            // through to the Step-5 success commit, which advances the cursor and
-            // resets the failure counter. The failed action is dropped (no duplicate,
-            // no stall); thread-scoped retry of the failed row is tracked in #198.
+            // MIXED batch (committed>0 AND failed>0): advance the cursor (committed work
+            // is done) AND reschedule via pendingRun (rescheduleAfterCommit set above) so
+            // the retryable failed rows are re-driven on the next sweep instead of waiting
+            // for an unrelated future trigger. (Codex P2 — this path previously fell
+            // through to Step 5 with pendingRun=false, orphaning the failed rows.)
             log.warn(
               {
                 threadId,
@@ -674,7 +702,7 @@ export function threadOrchestrationService(db: Db) {
                 failed: commitResult.failed,
                 committed: commitResult.committed,
               },
-              "thread orchestration: mixed batch — failed actions dropped, advancing cursor (retry-safety #198)",
+              "thread orchestration: mixed batch — advancing cursor and rescheduling failed actions (retry-safety #198)",
             );
           }
         } catch (commitErr) {
@@ -705,6 +733,12 @@ export function threadOrchestrationService(db: Db) {
           lastProcessedEntryId: cursorTarget,
           lastError: null,
           consecutiveCommitFailures: 0,
+          // Re-drive on the next sweep if a mixed/contended commit left retryable rows
+          // uncommitted. Only WRITE pendingRun when rescheduling — leaving it untouched
+          // otherwise preserves the pre-existing "don't clobber pendingRun on commit"
+          // behavior, so a pendingRun that a concurrent human entry (triggerOnHumanEntry)
+          // set between the claim and here is not lost. (Codex P2)
+          ...(rescheduleAfterCommit ? { pendingRun: true } : {}),
           updatedAt: new Date(),
         })
         .where(eq(threadOrchestrationState.threadId, threadId));

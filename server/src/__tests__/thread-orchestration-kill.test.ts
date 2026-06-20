@@ -712,7 +712,7 @@ describe("runController — zero unprocessed entries", () => {
     const adjutantCalled = vi.fn(async () => ({ output: "should not be called" }));
     const result = await svc.runController(threadId, { adjutantRunner: adjutantCalled });
 
-    expect(result).toEqual({ ran: false, reason: "no-pending" });
+    expect(result).toEqual({ ran: false, reason: "no-entries" });
     // adjutantRunner must NOT have been called.
     expect(adjutantCalled).not.toHaveBeenCalled();
   });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentRuns, discussionEntries, issues } from "@armyofagents/db";
+import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrationState } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
@@ -524,10 +524,53 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const adapterUsage = runResult.usage;
     const costCents = runResult.costCents;
 
+    // Outbox SEAL (producer-gate, Decision #99 completion). On run SUCCESS, promote the actions
+    // THIS run proposed (proposed → ready) by the run's durable key-set (recorded by
+    // proposeThreadAction on internal_agent_runs.proposed_action_keys). Fires for ALL
+    // controller_action_gate runs — direct AND controller — and BEFORE the run-status write
+    // below, so a crash between seal and status leaves the rows `ready` (committable by the
+    // relay), never a `completed` run with orphaned `proposed` rows. A run that did NOT succeed
+    // never seals → its proposed rows stay un-committable and are reaped by the GC. The relay
+    // then commits only sealed `ready` rows — the failed-run-leak (Codex P1) is structurally gone.
+    if (
+      runResult.status === "succeeded" &&
+      runId &&
+      bridgeThreadId &&
+      discussionRunMode === "controller_action_gate"
+    ) {
+      // Best-effort: a transient seal read/write failure must NOT fail a run that already succeeded
+      // (the agent did its work). On failure the rows stay `proposed`; the sweep GC then RE-SEALS this
+      // completed run's key-set (gcOrphanedProposedActions Step 2, ~2-min cadence), so the actions are
+      // recovered and committed — NOT lost. Far better than flipping a succeeded run to `failed`.
+      // Mirrors the freshness-capture best-effort guard above.
+      try {
+        const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+        const [runRow] = await db
+          .select({ keys: internalAgentRuns.proposedActionKeys })
+          .from(internalAgentRuns)
+          .where(eq(internalAgentRuns.id, runId))
+          .limit(1);
+        const keys = (runRow?.keys ?? []) as string[];
+        if (keys.length > 0) {
+          await threadAgentActionService(db).sealRunActions({
+            companyId: payload.companyId,
+            threadId: bridgeThreadId,
+            idempotencyKeys: keys,
+          });
+        }
+      } catch (sealErr) {
+        log.warn(
+          { err: sealErr, runId, threadId: bridgeThreadId },
+          "aoa-runner: outbox seal failed — actions left unsealed; GC will re-seal this completed run on the next sweep",
+        );
+      }
+    }
+
     // Thread controller runs commit action-gated side effects in
     // thread-orchestration.ts after re-checking the controller epoch. Direct
     // participation / mention / delegated thread runs have no outer controller,
-    // so they must flush their own freshness-checked action queue here.
+    // so they must flush their own freshness-checked action queue here (the SEAL
+    // above has already promoted this run's rows to `ready`).
     if (
       runResult.status === "succeeded" &&
       runId &&
@@ -559,6 +602,19 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           { runId, threadId: bridgeThreadId, commitResult },
           "aoa-runner: committed direct discussion actions",
         );
+      }
+
+      // Re-arm the controller if this self-flush left retryable work (Codex round-8). Mirrors the
+      // controller commit (thread-orchestration Step 5 reschedule), the committing reaper, and the GC
+      // re-seal: EVERY commit path that leaves `failed`/lost-race rows must set pendingRun so the next
+      // sweep re-drives them — otherwise a mixed direct flush (one action commits, another hits a
+      // transient error or loses the CAS) strands retryable rows until an unrelated future human entry.
+      // Only ever writes pendingRun=true (safe vs the claim discriminator, which keys on pendingRun===false).
+      if (commitResult.failed > 0 || commitResult.lostRace > 0) {
+        await db
+          .update(threadOrchestrationState)
+          .set({ pendingRun: true, updatedAt: new Date() })
+          .where(eq(threadOrchestrationState.threadId, bridgeThreadId));
       }
     }
 

@@ -747,5 +747,24 @@ real UI/Inbox surface for `lastError`. Residuals until then (all failure/edge-pa
 mixed-batch failed-action drop, possible duplicate *draft* on the deferred draft types'
 retry path, and the agent-only-thread null-anchor content-dedup.
 
+**Addendum (2026-06-19) — the SEAL: a `proposed→ready` producer-gate completes the outbox; the
+relay drains `ready`, not raw `proposed`.** The #198 mechanism above shipped on PR [#203] and a
+review round (Codex P1) found it re-creates the leak it set out to fix. A thread-action `proposed`
+row is written MID-RUN (by a tool call in the mcp-bridge subprocess), **decoupled from run
+success** — unlike #99's `pending` row, which is written in the producer's transaction and so
+*means* "the producer committed." Because PR-B's thread-scoped drain selects every `proposed` row,
+it commits the side-effects (reply / artifact / scope change / convene) of runs that **failed,
+were cancelled, or crashed**. The fix supplies the missing producer-gate, completing the #99
+alignment: a producing run, **ON SUCCESS**, promotes the actions it proposed (`proposed → ready`)
+by its idempotency-key set — persisted on `internal_agent_runs.proposed_action_keys` (migration
+`0147`) because the bridge subprocess and the seal site (the runner) are different processes, so an
+in-memory key-set cannot cross. **The relay drains only sealed `ready` rows** (+ post-gate `failed`
+retries); an unsealed `proposed` row is never committable; failed/crashed runs never seal and their
+`proposed` rows are reaped by `gcOrphanedProposedActions`. This **amends** the #198 bullet: the
+durable sweep drains `ready` (sealed), not raw `proposed` — same #99 intent (the committed/sealed
+row IS the work item), corrected mechanism. Refs: PR [#203];
+`docs/aoa/plans/2026-06-19-prb-outbox-seal-{design,implementation}.md` (adversarial review wf_65e3511f).
+
 [#197]: https://github.com/MeteoriteLabs/AoA/pull/197
 [#198]: https://github.com/MeteoriteLabs/AoA/issues/198
+[#203]: https://github.com/MeteoriteLabs/AoA/pull/203

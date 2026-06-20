@@ -183,7 +183,7 @@ describe("runController — preflightCrewDispatch wiring (P1-T10)", () => {
     const result = await svc.runController(THREAD_ID, { adjutantRunner });
 
     // Run proceeded past preflight but short-circuited on empty entries.
-    expect(result).toEqual({ ran: false, reason: "no-pending" });
+    expect(result).toEqual({ ran: false, reason: "no-entries" });
 
     // Preflight was called.
     expect(preflightCrewDispatch).toHaveBeenCalledTimes(1);

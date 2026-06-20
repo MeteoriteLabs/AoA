@@ -15,18 +15,19 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock, bundleMock } = vi.hoisted(() => ({
+const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock, bundleMock, commitMock } = vi.hoisted(() => ({
   execMock: vi.fn().mockResolvedValue({ exitCode: 0 }),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   buildMcpMock: vi.fn(() => ({ mcpServers: {} })),
   buildBridgeSpecMock: vi.fn(() => ({ command: "node", args: ["/x/mcp-bridge.js"], env: {} })),
   bundleMock: vi.fn(),
+  commitMock: vi.fn().mockResolvedValue({ committed: 0, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 }),
 }));
 
 vi.mock("drizzle-orm", () => ({ and: (...a: unknown[]) => ({ and: a }), eq: (a: unknown, b: unknown) => ({ eq: [a, b] }) }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) => new Proxy({}, { get: (_x, p) => (typeof p === "string" ? Symbol(`${n}.${p}`) : undefined) });
-  return { agents: t("a"), internalAgentRuns: t("iar"), discussionEntries: t("de"), issues: t("i") };
+  return { agents: t("a"), internalAgentRuns: t("iar"), discussionEntries: t("de"), issues: t("i"), threadOrchestrationState: t("tos") };
 });
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));
@@ -37,7 +38,7 @@ vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefi
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
 vi.mock("../services/thread-agent-actions.js", () => ({
   threadAgentActionService: () => ({
-    commitThreadAgentActions: vi.fn().mockResolvedValue({ committed: 0, suppressed: 0, blocked: 0, failed: 0 }),
+    commitThreadAgentActions: commitMock,
   }),
 }));
 
@@ -47,6 +48,7 @@ vi.mock("../services/internal-agent/aoa-agents/crew-context-bundle.js", () => ({
 }));
 
 import { runAoaAgent } from "../services/internal-agent/aoa-agents/runner.js";
+import { threadOrchestrationState } from "@armyofagents/db";
 
 // Thenable chain stub (mirrors aoa-runner.test.ts).
 function ch(ret: unknown[]) {
@@ -163,5 +165,53 @@ describe("runAoaAgent — context bundle wiring (Task 4.3)", () => {
     const prompt = String(execArg.config.promptTemplate);
     expect(prompt).toContain("Thread: thread-88");
     expect(prompt).not.toContain("## Context");
+  });
+
+  // Codex round-8: the direct/mention self-flush must re-arm the controller when it leaves retryable
+  // rows, like every other commit path (controller reschedule / reaper / GC re-seal) — else a mixed
+  // flush strands `failed`/lost-race rows until an unrelated future human entry.
+  it("direct self-flush re-arms pendingRun when the flush leaves retryable rows", async () => {
+    bundleMock.mockResolvedValue("ctx");
+    // One action commits, another transiently fails (or loses the CAS) — retryable work is left behind.
+    commitMock.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
+
+    const updateTables: unknown[] = [];
+    const db: any = {
+      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } } }]),
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-rearm" }]) }) }),
+      update: (table: unknown) => { updateTables.push(table); return ch([{ id: "x" }]); },
+    };
+
+    await runAoaAgent(db, "scout-1", {
+      companyId: "co-1",
+      source: "thread.participation",
+      threadId: "thread-rearm",
+      mention: "@Scout",
+      effectiveAutonomy: 1,
+    });
+
+    expect(updateTables).toContain(threadOrchestrationState); // re-armed for the next sweep
+  });
+
+  it("direct self-flush does NOT re-arm when the flush left no retryable rows", async () => {
+    bundleMock.mockResolvedValue("ctx");
+    // Default commitMock returns failed:0, lostRace:0 — a clean flush, nothing to re-drive.
+
+    const updateTables: unknown[] = [];
+    const db: any = {
+      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } } }]),
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-clean" }]) }) }),
+      update: (table: unknown) => { updateTables.push(table); return ch([{ id: "x" }]); },
+    };
+
+    await runAoaAgent(db, "scout-1", {
+      companyId: "co-1",
+      source: "thread.participation",
+      threadId: "thread-clean",
+      mention: "@Scout",
+      effectiveAutonomy: 1,
+    });
+
+    expect(updateTables).not.toContain(threadOrchestrationState); // clean flush → no spurious re-arm
   });
 });
