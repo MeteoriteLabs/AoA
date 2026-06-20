@@ -54,6 +54,11 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "tp_co",
   },
   authUsers: { id: "au_id", name: "au_name", email: "au_email" },
+  threadOrchestrationState: {
+    threadId: "tos_thread_id",
+    lastError: "tos_last_error",
+    consecutiveCommitFailures: "tos_consecutive_commit_failures",
+  },
 }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
@@ -74,6 +79,7 @@ function seqDb(queue: any[][]) {
     innerJoin: vi.fn().mockReturnThis(),
     leftJoin: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
     then: vi.fn((f: any) => Promise.resolve(f(queue[i++] ?? []))),
   });
   return { select: vi.fn(sel) } as any;

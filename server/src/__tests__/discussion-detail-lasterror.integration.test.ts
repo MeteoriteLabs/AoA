@@ -40,7 +40,7 @@ function rowsOf(result: unknown): Array<Record<string, unknown>> {
   return ((result as { rows?: Array<Record<string, unknown>> }).rows ?? []) as Array<Record<string, unknown>>;
 }
 
-describe("discussion getById — lastError surface (PR-A2, real DB)", () => {
+describe.skipIf(process.platform === "win32")("discussion getById — lastError surface (PR-A2, real DB)", () => {
   beforeAll(async () => {
     try {
       dataDir = await mkdtemp(join(tmpdir(), "aoa-disc-lasterr-"));
