@@ -2,7 +2,7 @@
  * EntryComposer.test.tsx — Phase E1 composer tests.
  */
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { EntryComposer, type AgentRef, type UserRef } from "../EntryComposer";
@@ -93,10 +93,19 @@ describe("EntryComposer — submit", () => {
         onSubmit={onSubmit}
       />,
     );
-    const ta = screen.getByTestId("entry-composer-textarea");
+    const ta = screen.getByTestId("entry-composer-textarea") as HTMLTextAreaElement;
     await user.click(ta);
     await user.type(ta, "@Sco");
     await user.keyboard("{Enter}");
+    // The composer restores the caret via requestAnimationFrame, which userEvent
+    // does not flush. Wait for the mention to expand, flush the rAF so the caret
+    // restore can't fire mid-typing and scramble the text, then place the caret at
+    // the end before typing the rest. (This test was flaky on Linux CI.)
+    await screen.findByTestId("mention-chip-Scout");
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    ta.setSelectionRange(ta.value.length, ta.value.length);
     await user.type(ta, "ping the build");
 
     // Attach a file via the hidden file input
