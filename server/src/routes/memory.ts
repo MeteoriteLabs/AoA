@@ -18,6 +18,7 @@ import { forbidden } from "../errors.js";
 import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
+import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
 
 function resolveAgentRequestId(
   req: Parameters<typeof getActorInfo>[0],
@@ -60,7 +61,7 @@ export function memoryRoutes(db: Db) {
   const graphSvc = companyBrainGraphService(db);
 
   // Semantic search — must be before /:id route
-  router.get("/companies/:companyId/memory/search", async (req, res) => {
+  router.get("/companies/:companyId/memory/search", embeddingSearchLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const q = req.query.q as string | undefined;
@@ -78,7 +79,7 @@ export function memoryRoutes(db: Db) {
   });
 
   // Find similar items — must be before /:id route
-  router.get("/companies/:companyId/memory/find-similar", async (req, res) => {
+  router.get("/companies/:companyId/memory/find-similar", embeddingSearchLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const content = req.query.content as string | undefined;
