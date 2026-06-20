@@ -323,12 +323,23 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
     expect(settingsTab.className).toContain("border-foreground");
-    expect(await screen.findByRole("heading", { name: "Department details" })).toBeInTheDocument();
-    expect(await screen.findByText("Status", {}, { timeout: 5000 })).toBeInTheDocument();
-    expect(await screen.findByText("Created", {}, { timeout: 5000 })).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
-    expect(await screen.findByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
-    expect(await screen.findByText("Environment Variables")).toBeInTheDocument();
+
+    // Anchor on the WHOLE settings tree committing together rather than a
+    // sequential findByText chain. Under max parallel-suite CPU starvation the
+    // per-assertion 5 s budgets could trip mid-render (e.g. "Status" observed but
+    // "Created" not yet), failing nondeterministically at whichever assertion the
+    // poll happened to land on. One waitFor that requires every section at once —
+    // polled up to 10 s, well within the 30 s testTimeout — only passes once the
+    // full ProjectSettings + ProjectProperties tree has rendered, so it can never
+    // observe a partial commit.
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Department details" })).toBeInTheDocument();
+      expect(screen.getByText("Status")).toBeInTheDocument();
+      expect(screen.getByText("Created")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
+      expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
+      expect(screen.getByText("Environment Variables")).toBeInTheDocument();
+    }, { timeout: 10000 });
     expect(screen.queryByTestId("project-workspaces-list")).not.toBeInTheDocument();
   });
 
@@ -502,15 +513,23 @@ describe("ProjectDetail — Workspaces tab", () => {
   it("calls update with archived status when Archive is confirmed via dialog", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    fireEvent.click(await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 5000 }));
+    // Settle the executionWorkspaces list query BEFORE interacting: wait for
+    // BOTH archive buttons so the list's resolving re-render has fully flushed.
+    // Clicking ws-1 while the query is still resolving races a re-render that
+    // detaches the just-found node — the click then lands on a stale element,
+    // the AlertDialog never opens, and confirm-archive-workspace never appears
+    // (the 5 s "unable to find confirm-archive-workspace" flake seen only under
+    // parallel-suite CPU contention; same stale-node race already mitigated for
+    // workspace-row-ws-1 above). Re-query fresh and click in one sync tick.
+    await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 5000 });
+    await screen.findByTestId("archive-workspace-ws-2", {}, { timeout: 5000 });
+    fireEvent.click(screen.getByTestId("archive-workspace-ws-1"));
 
-    // Readiness loads via getCloseReadiness mock; wait for the action button
-    // to be enabled before confirming. The AlertDialog action starts disabled
-    // while readiness is loading. Re-query the button each waitFor tick so
-    // a React re-render between findByTestId and the assertion can't leave
-    // us holding a stale DOM node (this races under parallel-suite load).
-    // 5 s timeout matches the rest of the file — 1 s was too tight under
-    // heavy parallel-suite CPU contention on Windows CI.
+    // Readiness loads via getCloseReadiness mock; the AlertDialog action starts
+    // disabled while readiness is loading. Wait for the dialog to open, THEN for
+    // the action to enable. Re-query each waitFor tick so a React re-render
+    // between query and assertion can't leave us holding a stale DOM node.
+    await screen.findByTestId("confirm-archive-workspace", {}, { timeout: 5000 });
     await waitFor(() => {
       expect(screen.getByTestId("confirm-archive-workspace")).not.toBeDisabled();
     }, { timeout: 5000 });
