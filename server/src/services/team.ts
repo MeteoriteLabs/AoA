@@ -8,6 +8,7 @@ import {
   instanceUserRoles,
   invites,
   issues,
+  mcpApiKeys,
   principalPermissionGrants,
   projects,
   userRoles,
@@ -429,6 +430,17 @@ export function teamService(db: Db) {
       ));
       // Delete membership
       await tx.delete(companyMemberships).where(eq(companyMemberships.id, membership.id));
+      // H8: cascade-revoke the offboarded user's MCP API keys for this company.
+      // Auth only filters keys on revokedAt, so a removed member otherwise keeps
+      // programmatic MCP access via any key they minted while a member.
+      await tx
+        .update(mcpApiKeys)
+        .set({ revokedAt: new Date() })
+        .where(and(
+          eq(mcpApiKeys.companyId, companyId),
+          eq(mcpApiKeys.userId, userId),
+          isNull(mcpApiKeys.revokedAt),
+        ));
     });
   }
 
@@ -780,6 +792,16 @@ export function teamService(db: Db) {
           eq(companyMemberships.principalId, userId),
         ),
       );
+      // H8: cascade-revoke the offboarded user's MCP API keys for this company
+      // (auth only filters keys on revokedAt — otherwise a removed member keeps
+      // programmatic MCP access via any key minted while a member).
+      await tx.update(mcpApiKeys)
+        .set({ revokedAt: new Date() })
+        .where(and(
+          eq(mcpApiKeys.companyId, companyId),
+          eq(mcpApiKeys.userId, userId),
+          isNull(mcpApiKeys.revokedAt),
+        ));
     });
   }
 

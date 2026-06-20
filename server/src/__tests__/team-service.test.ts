@@ -22,6 +22,7 @@ vi.mock("@armyofagents/db", () => {
     companyMemberships: makeTable("company_memberships"),
     instanceUserRoles: makeTable("instance_user_roles"),
     invites: makeTable("invites"),
+    mcpApiKeys: makeTable("mcp_api_keys"),
     principalPermissionGrants: makeTable("principal_permission_grants"),
     projects: makeTable("projects"),
     userRoles: makeTable("user_roles"),
@@ -117,6 +118,47 @@ describe("teamService.removeMember", () => {
 
     const svc = teamService(db as any);
     await expect(svc.removeMember("c1", "user-2")).resolves.toBeUndefined();
+  });
+
+  it("H8: cascade-revokes the offboarded user's MCP API keys for the company", async () => {
+    // Record every db.update(table, set) so we can prove an mcp_api_keys revoke
+    // was issued inside removeMember's transaction (auth only filters keys on
+    // revokedAt, so without this a removed member keeps programmatic MCP access).
+    const updateCalls: Array<{ table: unknown; set: Record<string, unknown> | null }> = [];
+    const selects: MockRow[][] = [
+      [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-2", companyId: "c1" }],
+      [{ isSystemAdmin: false }],
+      [],
+      [{ role: "team_member", projectId: null }],
+    ];
+    let selIdx = 0;
+    function recChain(getResult: () => MockRow[], onSet?: (s: Record<string, unknown>) => void) {
+      const chain: Record<string, unknown> = {};
+      for (const m of ["from", "where", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+        chain[m] = () => chain;
+      }
+      chain.set = (s: Record<string, unknown>) => { onSet?.(s); return chain; };
+      chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
+      return chain;
+    }
+    const db: any = {
+      select: () => recChain(() => selects[selIdx++] ?? []),
+      update: (table: unknown) => {
+        const entry: { table: unknown; set: Record<string, unknown> | null } = { table, set: null };
+        updateCalls.push(entry);
+        return recChain(() => [], (s) => { entry.set = s; });
+      },
+      insert: () => recChain(() => []),
+      delete: () => recChain(() => []),
+      transaction: async (fn: (tx: any) => Promise<void>) => { await fn(db); },
+    };
+
+    const { mcpApiKeys } = await import("@armyofagents/db");
+    await teamService(db).removeMember("c1", "user-2");
+
+    const revoke = updateCalls.find((c) => c.table === mcpApiKeys);
+    expect(revoke, "expected an update against mcp_api_keys").toBeTruthy();
+    expect(revoke!.set).toMatchObject({ revokedAt: expect.any(Date) });
   });
 
   it("throws when member not found", async () => {
