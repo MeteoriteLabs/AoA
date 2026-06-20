@@ -139,6 +139,9 @@ export interface DiscussionDetail {
   crewPaused: boolean;
   autonomyLevel: number | null;
   derivedStage?: ThreadDerivedStage;
+  /** PR-A2: thread-level coordination error (commit failure / circuit-breaker / runner throw); null when healthy. */
+  lastError?: string | null;
+  consecutiveCommitFailures?: number;
 }
 
 export type ThreadScopeVersionStatus = "draft" | "accepted" | "superseded" | "completed" | "rejected";
