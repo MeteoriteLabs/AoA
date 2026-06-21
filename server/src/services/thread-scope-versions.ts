@@ -804,10 +804,17 @@ export function threadScopeVersionService(db: Db) {
           : await work(db);
       } catch (err) {
         // A concurrent createDraft can race past the latest?.status === "draft"
-        // check above and both attempt the insert. The one-draft partial unique
-        // index (thread_scope_versions_one_draft_uq) lets exactly one win; the
-        // loser gets a 23505. Convert that to the existing draft rather than a 500.
-        if (isUniqueViolation(err, "thread_scope_versions_one_draft_uq")) {
+        // check above and both attempt the insert. The loser violates BOTH unique
+        // indexes on thread_scope_versions:
+        //   - thread_scope_versions_thread_version_uq (threadId, versionNumber)
+        //   - thread_scope_versions_one_draft_uq       (threadId WHERE status='draft')
+        // The migration creates thread_version_uq FIRST, so Postgres reports that
+        // violation FIRST. Converge on EITHER index — reload and return the now-
+        // existing draft rather than re-throwing a 23505 as a 500. (A-M18)
+        if (
+          isUniqueViolation(err, "thread_scope_versions_one_draft_uq") ||
+          isUniqueViolation(err, "thread_scope_versions_thread_version_uq")
+        ) {
           const existing = await loadLatestScopeVersion(db, companyId, threadId);
           if (existing?.status === "draft") {
             return { status: "existing_draft" as const, version: existing };
