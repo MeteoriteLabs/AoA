@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { issues, taskDependencies } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
@@ -22,7 +22,30 @@ interface WakeTask {
  * same way a completed one does. (A-H9)
  */
 export const TERMINAL_STATUSES = ["done", "cancelled"];
+
+/**
+ * Statuses from which a task may be auto-blocked by a new dependency: every
+ * non-terminal status except `blocked` itself. Used both as the in-memory guard
+ * and as the conditional `WHERE … status IN (…)` on the auto-block UPDATE so a
+ * dependent that was concurrently completed / checked out / already blocked is
+ * never (re)blocked. (A-M12)
+ */
+export const BLOCKABLE_STATUSES = ["backlog", "todo", "in_progress", "in_review"];
 const MAX_CHAIN_DEPTH = 50;
+
+/**
+ * Normalize the result of a raw `db.execute(sql\`…\`)` into a plain row array.
+ * The postgres-js driver returns an array-like `RowList`; the pg/node driver
+ * (and the test mock) returns `{ rows }`. Handle both so the FOR UPDATE reads
+ * in `addDependencyTx` are driver-agnostic. (A-M12)
+ */
+function readRows(result: unknown): Array<{ id: string; status: string }> {
+  if (Array.isArray(result)) {
+    return result as Array<{ id: string; status: string }>;
+  }
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as Array<{ id: string; status: string }>) : [];
+}
 
 export function dependencyService(db: Db) {
   async function fireWakeups(tasks: WakeTask[]) {
@@ -38,32 +61,44 @@ export function dependencyService(db: Db) {
     }
   }
 
-  async function addDependency(
+  /**
+   * Core add-dependency logic. Runs every statement on the provided
+   * transaction connection `tx` so the dependency-status read, cycle check,
+   * edge insert, and auto-block UPDATE are one atomic unit. Returns the
+   * inserted edge plus any wakeups produced when the just-added dependency was
+   * already terminal (so a freshly-satisfied dependent can be dispatched after
+   * the tx commits). (A-M12)
+   */
+  async function addDependencyTx(
     companyId: string,
     dependentIssueId: string,
     dependencyIssueId: string,
-    outerTx?: Tx,
-  ) {
-    const conn = (outerTx ?? db) as Db;
+    tx: Tx,
+  ): Promise<{ row: typeof taskDependencies.$inferSelect; wakeups: WakeTask[] }> {
+    const conn = tx as unknown as Db;
 
     // No self-dependency
     if (dependentIssueId === dependencyIssueId) {
       throw unprocessable("A task cannot depend on itself");
     }
 
-    // Verify both issues exist and belong to company
-    const [dependent, dependency] = await Promise.all([
-      conn
-        .select({ id: issues.id, status: issues.status })
-        .from(issues)
-        .where(and(eq(issues.id, dependentIssueId), eq(issues.companyId, companyId)))
-        .then((r) => r[0] ?? null),
-      conn
-        .select({ id: issues.id, status: issues.status })
-        .from(issues)
-        .where(and(eq(issues.id, dependencyIssueId), eq(issues.companyId, companyId)))
-        .then((r) => r[0] ?? null),
-    ]);
+    // Lock BOTH sides FOR UPDATE so neither row's status can change in the
+    // read→write window. Locking the dependency prevents a concurrent
+    // completion from sneaking past the terminal check; locking the dependent
+    // prevents a concurrent checkout/completion from being clobbered by our
+    // auto-block. (A-M12) Order is fixed (dependent then dependency) to keep a
+    // stable lock-acquisition order across concurrent adds. The verification
+    // read is fused into the lock so we never read a stale row.
+    const [dependent] = readRows(
+      await conn.execute(
+        sql`select id, status from issues where id = ${dependentIssueId} and company_id = ${companyId} for update`,
+      ),
+    );
+    const [dependency] = readRows(
+      await conn.execute(
+        sql`select id, status from issues where id = ${dependencyIssueId} and company_id = ${companyId} for update`,
+      ),
+    );
 
     if (!dependent) throw notFound("Dependent task not found");
     if (!dependency) throw notFound("Dependency task not found");
@@ -83,20 +118,32 @@ export function dependencyService(db: Db) {
         throw err;
       });
 
-    // Auto-block only if:
-    // 1. The dependency task is NOT done (still needs to be completed)
-    // 2. The dependent task is in a non-terminal status (can be blocked)
-    if (
-      !TERMINAL_STATUSES.includes(dependency.status) &&
-      !TERMINAL_STATUSES.includes(dependent.status) &&
-      dependent.status !== "blocked"
-    ) {
+    let wakeups: WakeTask[] = [];
+
+    if (TERMINAL_STATUSES.includes(dependency.status)) {
+      // The dependency is already terminal (done/cancelled). Do NOT block, and
+      // re-evaluate the dependent: if this edge was its last unmet dependency it
+      // must be released immediately (it would otherwise sit unblockable). This
+      // is exactly the block-after-complete race the non-tx code could leave
+      // permanently `blocked`. maybeUnblockTx is a no-op unless the dependent is
+      // currently `blocked`. (A-M12)
+      wakeups = await maybeUnblockTx(companyId, dependentIssueId, conn);
+    } else {
+      // Dependency is non-terminal → block the dependent, but ONLY while it is
+      // still in a blockable status. The conditional WHERE (belt-and-suspenders
+      // alongside the FOR UPDATE above) makes the auto-block a no-op if the
+      // dependent was concurrently completed/checked out or already blocked, so
+      // we never resurrect a finished task into `blocked`. Capture the pre-block
+      // status so unblock restores it instead of hard-promoting to `todo`. (A-M10)
       await conn
         .update(issues)
-        // Capture the pre-block status so unblock can restore it instead of
-        // hard-promoting to `todo` (which would auto-dispatch a backlog task). (A-M10)
         .set({ status: "blocked", blockedFromStatus: dependent.status, updatedAt: new Date() })
-        .where(eq(issues.id, dependentIssueId));
+        .where(
+          and(
+            eq(issues.id, dependentIssueId),
+            inArray(issues.status, BLOCKABLE_STATUSES),
+          ),
+        );
     }
 
     await logActivity(conn, {
@@ -109,6 +156,32 @@ export function dependencyService(db: Db) {
       details: { dependencyIssueId },
     });
 
+    return { row, wakeups };
+  }
+
+  /**
+   * Public API: add a dependency edge and auto-block transactionally.
+   * When `outerTx` is provided, runs inside it and the caller is responsible for
+   * firing the returned wakeups after commit. Standalone, it wraps the whole
+   * existence-read + cycle-check + edge-insert + auto-block in a single
+   * transaction (so the dependency status can't change under us) and fires any
+   * wakeups after the commit. (A-M12)
+   */
+  async function addDependency(
+    companyId: string,
+    dependentIssueId: string,
+    dependencyIssueId: string,
+    outerTx?: Tx,
+  ) {
+    if (outerTx) {
+      const { row } = await addDependencyTx(companyId, dependentIssueId, dependencyIssueId, outerTx);
+      return row;
+    }
+
+    const { row, wakeups } = await db.transaction(async (tx) =>
+      addDependencyTx(companyId, dependentIssueId, dependencyIssueId, tx),
+    );
+    await fireWakeups(wakeups);
     return row;
   }
 

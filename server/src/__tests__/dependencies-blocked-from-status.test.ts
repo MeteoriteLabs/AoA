@@ -6,6 +6,8 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   inArray: vi.fn((col: unknown, vals: unknown) => ({ inArray: [col, vals] })),
+  // `sql` is a tagged template used by addDependency's FOR UPDATE lock reads.
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: { strings, values } })),
 }));
 
 vi.mock("@armyofagents/db", () => {
@@ -49,12 +51,16 @@ interface SequenceConfig {
   selects?: MockRow[][];
   inserts?: MockRow[][];
   updates?: MockRow[][];
+  // Raw `tx.execute(sql\`… for update\`)` results, returned as `{ rows }`.
+  // addDependency (A-M12) reads the locked dependent/dependency rows this way.
+  executes?: MockRow[][];
 }
 
 function createSequenceDb(config: SequenceConfig = {}) {
   let selectIdx = 0;
   let insertIdx = 0;
   let updateIdx = 0;
+  let executeIdx = 0;
   const updateCalls: unknown[][] = [];
 
   function makeChain(getResult: () => MockRow[], record?: (args: unknown[]) => void): Record<string, unknown> {
@@ -74,17 +80,21 @@ function createSequenceDb(config: SequenceConfig = {}) {
     return chain;
   }
 
-  return {
-    db: {
-      select: (_fields?: unknown) =>
-        makeChain(() => config.selects?.[selectIdx++] ?? []),
-      insert: (_table: unknown) =>
-        makeChain(() => config.inserts?.[insertIdx++] ?? []),
-      update: (_table: unknown) =>
-        makeChain(() => config.updates?.[updateIdx++] ?? [], (args) => updateCalls.push(args)),
-    },
-    updateCalls,
+  const db = {
+    select: (_fields?: unknown) =>
+      makeChain(() => config.selects?.[selectIdx++] ?? []),
+    insert: (_table: unknown) =>
+      makeChain(() => config.inserts?.[insertIdx++] ?? []),
+    update: (_table: unknown) =>
+      makeChain(() => config.updates?.[updateIdx++] ?? [], (args) => updateCalls.push(args)),
+    execute: (_query?: unknown) =>
+      Promise.resolve({ rows: config.executes?.[executeIdx++] ?? [] }),
+    // addDependency wraps standalone calls in db.transaction; run the callback
+    // against this same mock so the recorded sequences/updates are shared.
+    transaction: (fn: (tx: unknown) => unknown) => Promise.resolve(fn(db)),
   };
+
+  return { db, updateCalls };
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -103,10 +113,12 @@ beforeEach(() => {
 describe("A-M10 — preserve original status across auto-block via blockedFromStatus", () => {
   it("auto-blocking a backlog task captures blocked_from_status=backlog and status=blocked", async () => {
     const { db, updateCalls } = createSequenceDb({
-      selects: [
-        // addDependency: Promise.all → dependent (backlog), dependency (todo)
+      executes: [
+        // addDependency (A-M12): FOR UPDATE lock+read → dependent (backlog), dependency (todo)
         [{ id: issueD, status: "backlog" }],
         [{ id: issueP, status: "todo" }],
+      ],
+      selects: [
         // assertNoCycle: first upstream walk → no upstream
         [],
       ],
