@@ -8,12 +8,12 @@ Get AoA running locally in under 5 minutes.
 ## Quick Start (Recommended)
 
 ```sh
-npx aoa onboard --yes
+npx @armyofagents/cli onboard --yes
 ```
 
 This walks you through setup, configures your environment, and gets AoA running.
 
-> The `aoa` bin is provided by `@armyofagents/cli` (with a legacy `paperclipai` alias) once the package is npm-published. If you're running from a fresh clone before publishing, use `pnpm aoa` from the repo root instead — `npx aoa` only works against the published artifact.
+> The CLI is published as `@armyofagents/cli`, which provides the `aoa` bin (with a legacy `paperclipai` alias). Run it via `npx @armyofagents/cli ...` — there is no npm package named `aoa`, so `npx aoa` will not resolve. If you're running from a fresh clone before publishing, use `pnpm aoa` from the repo root instead.
 
 ## Local Development
 

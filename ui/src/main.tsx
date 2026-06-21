@@ -15,6 +15,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
 import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { runStorageMigrations } from "./lib/storage-migrations";
 import "@mdxeditor/editor/style.css";
@@ -55,7 +56,9 @@ createRoot(document.getElementById("root")!).render(
                     <SidebarProvider>
                       <DialogProvider>
                         <MarketplaceToastProvider>
-                          <App />
+                          <ErrorBoundary>
+                            <App />
+                          </ErrorBoundary>
                           <InstallToastSlot />
                           <Toaster />
                         </MarketplaceToastProvider>

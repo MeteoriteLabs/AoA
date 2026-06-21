@@ -28,12 +28,15 @@ AOA_PORT=3200 AOA_DATA_DIR=./data/pc \
 
 ## Manual Docker Build
 
+The image defaults to `AOA_DEPLOYMENT_MODE=authenticated` (see the `Dockerfile`), which **requires** `BETTER_AUTH_SECRET` — the server refuses to boot without it. Generate one with `openssl rand -base64 32`:
+
 ```sh
 docker build -t aoa-local .
 docker run --name aoa \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AOA_HOME=/paperclip \
+  -e BETTER_AUTH_SECRET="$(openssl rand -base64 32)" \
   -v "$(pwd)/data/docker-aoa:/paperclip" \
   aoa-local
 ```
@@ -63,10 +66,13 @@ docker run --name aoa \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AOA_HOME=/paperclip \
+  -e BETTER_AUTH_SECRET="$(openssl rand -base64 32)" \
   -e OPENAI_API_KEY=sk-... \
   -e ANTHROPIC_API_KEY=sk-... \
   -v "$(pwd)/data/docker-aoa:/paperclip" \
   aoa-local
 ```
+
+`BETTER_AUTH_SECRET` is required because the image defaults to authenticated deployment mode (generate with `openssl rand -base64 32`); the API keys are optional and only enable local adapter runs.
 
 Without API keys, the app runs normally — adapter environment checks will surface missing prerequisites.

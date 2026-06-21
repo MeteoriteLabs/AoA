@@ -11,9 +11,8 @@ AoA (Army of Agents) is a Hybrid Workforce Operating System for solo founders �
 Before making changes, read in this order:
 
 1. `CLAUDE.md` — architecture baseline, critical rules, naming map, all implemented tables
-2. `docs/aoa/reference/decisions.md` — 90 locked product and architectural decisions. **Do not relitigate.**
-3. `docs/aoa/specs/v2_5_changelog.md` — what shipped in V2.5 (Discussions, Internal Agent, Workflow Templates, Notifications)
-4. `docs/aoa/v2.5/REVIEW_REPORT.md` — cross-reference audit of V2.5 spec docs against codebase; known deviations
+2. `docs/architecture/decisions.md` — 90+ locked product and architectural decisions. **Do not relitigate.**
+3. `docs/roadmap.md` — planned features (NOT current behavior); `CLAUDE.md` is the source of truth for what shipped
 
 ## 3. Repo Map
 
@@ -27,14 +26,16 @@ docs/                 → All documentation
 ```
 
 Key doc paths:
-- `docs/aoa/reference/decisions.md` — locked decisions (#1–90 + DA series)
-- `docs/aoa/specs/v2_5_changelog.md` — V2.5 shipped features
-- `docs/aoa/v2.5/` — V2.5 architecture, API contracts, schema, flow docs
+- `docs/architecture/decisions.md` — locked decisions (90+)
+- `docs/architecture/` — design system, memory, wire-compat, workspace decisions
+- `docs/api/` — REST + MCP API contracts
 - `docs/superpowers/` — session plans and design specs
 
 ## 4. Dev Setup (Auto DB)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+Use the embedded PostgreSQL instance in dev by leaving `DATABASE_URL` unset. AoA
+bundles a real Postgres binary via [`embedded-postgres`](https://www.npmjs.com/package/embedded-postgres)
+— **not** WASM-based PGlite.
 
 ```sh
 pnpm install
@@ -52,10 +53,10 @@ curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
 
-Reset local dev DB:
+Reset local dev DB (default instance):
 
 ```sh
-rm -rf data/pglite
+rm -rf ~/.aoa/instances/default/db
 pnpm dev
 ```
 

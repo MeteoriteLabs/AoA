@@ -32,11 +32,15 @@ For a full PostgreSQL server locally:
 docker compose up -d
 ```
 
-This starts PostgreSQL 17 on `localhost:5432`. Set the connection string:
+This starts PostgreSQL 17 on `localhost:5432`. Set the connection string.
+
+> **The server does NOT auto-load a repo-root `.env`.** It only reads `.env` from the AoA config directory — the directory containing the active `config.json` (default `~/.aoa/instances/default/`, or the nearest `.aoa/config.json` found by walking up from the working directory; see `server/src/paths.ts` and `server/src/config.ts`). Copying `.env.example` to the repo root has no effect. Either set `DATABASE_URL` inline / export it in your shell, or place the `.env` in the config directory.
 
 ```sh
-cp .env.example .env
-# DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+# Either export it for the session:
+export DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+# …or write it into the AoA config dir's .env (NOT the repo root):
+#   ~/.aoa/instances/default/.env
 ```
 
 Push the schema:

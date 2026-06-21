@@ -453,6 +453,9 @@ function MeBubble({
           <div
             className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
             style={{
+              // Bubble has a self-contained dark background in BOTH themes, so its
+              // text stays light (not text-foreground, which would be dark-on-dark
+              // in light mode). DS-1 only flagged the AgentCard plain text below.
               color: "#eeeeee",
               background: "hsl(221 20% 27%)",
               border: "1px solid hsl(221 18% 34%)",
@@ -535,6 +538,8 @@ function HumanBubble({
         <div
           className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
           style={{
+            // Self-contained dark bubble background in both themes → keep light
+            // text (text-foreground would be unreadable dark-on-dark in light mode).
             color: "#eeeeee",
             background: "hsl(220 12% 21%)",
             border: "1px solid hsl(220 10% 27%)",
@@ -611,7 +616,7 @@ function AgentCard({
           className="flex items-center gap-2 flex-wrap agent-attribution"
           data-testid="entry-agent-attribution"
         >
-          <span className="text-sm font-semibold" style={{ color: "#eeeeee" }}>
+          <span className="text-sm font-semibold text-foreground">
             {agentName}
           </span>
           <span
@@ -627,10 +632,7 @@ function AgentCard({
         </div>
 
         {/* Body */}
-        <p
-          className="text-sm leading-relaxed break-words whitespace-pre-wrap"
-          style={{ color: "#eeeeee" }}
-        >
+        <p className="text-sm leading-relaxed break-words whitespace-pre-wrap text-foreground">
           {entry.rawContent}
         </p>
 

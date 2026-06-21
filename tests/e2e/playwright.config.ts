@@ -48,8 +48,9 @@ export default defineConfig({
   testMatch: WINDOWS_WITH_EMBEDDED_POSTGRES
     ? "**/windows-embedded-postgres-skip.spec.ts"
     : "**/*.spec.ts",
-  // Variant suites (multi-user auth) are deferred to Phase D.
-  testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
+  // NOTE: authenticated (multi-user) deployment mode has NO e2e coverage yet.
+  // The e2e suite boots only in local_trusted mode (see webServer env below).
+  // Multi-user authenticated-mode e2e is tracked for 1.1.
   timeout: 60_000,
   retries: 0,
   // Single worker: e2e specs share an embedded-postgres-backed instance

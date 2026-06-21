@@ -111,7 +111,7 @@ export function ThreadsWorkspace() {
     };
   }, [hasSelection, setBreadcrumbs, setEntityColor, setSubtitle]);
 
-  const { data } = useQuery({
+  const { data, isError, refetch } = useQuery({
     queryKey: ["threads", selectedCompanyId, "list", "active"],
     queryFn: () => threadsApi.list(selectedCompanyId!, { status: "active" }),
     enabled: !!selectedCompanyId,
@@ -339,13 +339,35 @@ export function ThreadsWorkspace() {
             className="min-w-0 flex-1 h-full overflow-hidden rounded-xl border border-border bg-background shadow-sm"
             data-testid="threads-browse-detail"
           >
-            <ThreadsHomeOverview
-              threads={filtered}
-              inboxItems={inboxItems}
-              onInboxUpdate={refreshInboxAndThreads}
-              companyId={selectedCompanyId}
-              canEditRouting={canEditRouting}
-            />
+            {isError ? (
+              <div
+                className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center"
+                data-testid="threads-browse-error"
+              >
+                <p className="text-sm font-medium text-destructive">
+                  Couldn&apos;t load discussions
+                </p>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Something went wrong fetching your discussions. Check your
+                  connection and try again.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void refetch()}
+                  className="inline-flex h-8 items-center justify-center rounded-md border border-border-strong bg-transparent px-3 text-sm font-semibold text-text transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <ThreadsHomeOverview
+                threads={filtered}
+                inboxItems={inboxItems}
+                onInboxUpdate={refreshInboxAndThreads}
+                companyId={selectedCompanyId}
+                canEditRouting={canEditRouting}
+              />
+            )}
           </main>
         )}
 
