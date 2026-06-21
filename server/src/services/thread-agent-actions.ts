@@ -175,6 +175,9 @@ type ThreadAgentActionDeps = {
     threadId: string,
     snapshot: ThreadFreshnessSnapshot,
     actionType: string,
+    // A-M7: scope-version id THIS batch already produced (see freshness service). Optional
+    // so existing dep overrides / callers remain signature-compatible.
+    batchProducedScopeVersionId?: string | null,
   ) => Promise<ThreadFreshnessComparison>;
   discussions?: DiscussionCommitService;
   scopeVersions?: ScopeVersionCommitService;
@@ -500,6 +503,17 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // no reliable same-run signal, and the artifact is still created, just unattached.
       const sameRunArtifacts = new Map<string, Array<{ artifactId: string; attachedEntryId: string | null }>>();
       const sameRunReplyEntryId = new Map<string, string>();
+
+      // A-M7: the scope-draft version id THIS batch has produced so far. The drain runs the
+      // per-action freshness re-check BEFORE each commit body, and the freshness snapshot is
+      // captured ONCE per run (shared across all of a run's proposed actions). So when an earlier
+      // scope-producing action in this batch (create_scope_draft / add_scope_item /
+      // create_artifact_candidate) mints a NEW draft, it advances the live latestScopeVersionId
+      // past every sibling's snapshot — falsely tripping `newer_scope_version` on a sibling whose
+      // own commit would REUSE that very draft (createDraftFromThread early-returns the existing
+      // draft). Threading the produced version id into compare() lets the freshness check treat
+      // "the live scope advanced, but only to the draft THIS batch made" as non-conflicting.
+      let batchProducedScopeVersionId: string | null = null;
       const attachArtifactToEntry = async (
         artifactId: string,
         entryId: string,
@@ -562,7 +576,13 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
           // hold the claim — no concurrent committer can be on this row. Claiming a stale action we then
           // suppress is free: claimActionForCommit does NOT bump attempt_count, and suppressed_stale is
           // terminal (the row is not re-selected).
-          const freshness = await compare(actionDb, input.threadId, action.freshness, action.actionType);
+          const freshness = await compare(
+            actionDb,
+            input.threadId,
+            action.freshness,
+            action.actionType,
+            batchProducedScopeVersionId,
+          );
           if (!freshness.fresh) {
             await updateActionStatus(actionDb, action.id, {
               status: "suppressed_stale",
@@ -691,6 +711,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 openQuestions: asArray(payload.openQuestions),
               },
             );
+            // A-M7: record the draft this batch just produced so a SUBSEQUENT scope-coupled
+            // sibling (which will reuse this exact draft) is not falsely suppressed as
+            // newer_scope_version against the shared, pre-batch snapshot.
+            if (draft.version?.id) batchProducedScopeVersionId = draft.version.id;
             await updateActionStatus(actionDb, action.id, {
               status: "committed",
               committedScopeVersionId: draft.version?.id ?? null,
@@ -727,6 +751,9 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               result.blocked += 1;
               continue;
             }
+            // A-M7: this draft is now the live latest scope version — record it so a later
+            // scope-coupled sibling reusing it is not falsely suppressed (see above).
+            batchProducedScopeVersionId = scopeVersionId;
 
             let item: { id?: string } | undefined;
             try {
@@ -999,6 +1026,9 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                       .orderBy(asc(threadScopeItems.createdAt))
                       .limit(1)) as Array<{ id: string; scopeVersionId: string }>)
                   : [];
+                // A-M7: a converged (idempotent re-commit) artifact still points at a live
+                // scope draft — record it for later scope-coupled siblings in this batch.
+                if (existingItem?.scopeVersionId) batchProducedScopeVersionId = existingItem.scopeVersionId;
                 await updateActionStatus(actionDb, action.id, {
                   status: "committed",
                   committedScopeVersionId: existingItem?.scopeVersionId ?? null,
@@ -1010,6 +1040,9 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               throw txError;
             }
 
+            // A-M7: the artifact candidate's tx produced/reused a scope draft; record it so a
+            // later scope-coupled sibling reusing it is not falsely suppressed (see above).
+            if (committed.scopeVersionId) batchProducedScopeVersionId = committed.scopeVersionId;
             await updateActionStatus(actionDb, action.id, {
               status: "committed",
               committedScopeVersionId: committed.scopeVersionId,

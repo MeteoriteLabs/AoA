@@ -1087,6 +1087,85 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     expect(res.committed).toBe(0);
   });
 
+  // A-M7 — a scope-coupled action must NOT be falsely suppressed by its OWN batch's draft.
+  // Two actions drain in ONE thread-scoped batch, both carrying the SAME pre-batch snapshot
+  // (latestScopeVersionId = null, no draft exists yet): create_scope_draft (ordered first) +
+  // add_scope_item. The first commit mints draft v1 → the live latestScopeVersionId advances
+  // past the shared snapshot. Before the A-M7 fix the sibling add_scope_item was suppressed as
+  // newer_scope_version even though its commit REUSES that very draft (createDraftFromThread
+  // early-returns the existing draft). With the batch-produced version id threaded into the
+  // freshness check, the sibling must commit (and reuse the same draft), not be suppressed.
+  it("A-M7: a sibling add_scope_item is NOT suppressed behind its OWN batch's create_scope_draft", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const svc = threadAgentActionService(db);
+
+    // Thread with one entry at seq=1 so createDraftFromThread has source rows to compile a draft.
+    const [tM7] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by, entry_seq)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 1)
+        RETURNING id
+      `),
+    );
+    const tM7Id = String(tM7.id);
+    await db.execute(sql`
+      INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, author_agent_id, created_by, seq)
+      VALUES (gen_random_uuid(), ${tM7Id}, 'write', 'we should ship X', NULL, 'human-user', 1)
+    `);
+
+    // Shared snapshot captured at run start: NO scope version exists yet → latestScopeVersionId = null.
+    const snap = await captureSnapshot(tM7Id);
+    const runId = await seedRun();
+
+    // create_scope_draft ordered FIRST (earlier created_at), add_scope_item SECOND, same batch + snapshot.
+    const draftActionId = randomUUID();
+    const itemActionId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness, created_at)
+      VALUES
+        (${draftActionId}, ${companyId}, ${tM7Id}, ${runId}, ${agentId}, 'create_scope_draft', 'ready',
+         ${JSON.stringify({ summary: "draft from batch" })}::jsonb,
+         ${`k:m7d:${draftActionId}`}, ${JSON.stringify(snap)}::jsonb, now() - interval '2 seconds'),
+        (${itemActionId}, ${companyId}, ${tM7Id}, ${runId}, ${agentId}, 'add_scope_item', 'ready',
+         ${JSON.stringify({ kind: "decision", title: "ship X" })}::jsonb,
+         ${`k:m7i:${itemActionId}`}, ${JSON.stringify(snap)}::jsonb, now() - interval '1 second')
+    `);
+
+    const res = await svc.commitThreadAgentActions({ companyId, threadId: tM7Id, runId });
+
+    const [draftRow] = rowsOf(
+      await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${draftActionId}`),
+    );
+    const [itemRow] = rowsOf(
+      await db.execute(
+        sql`SELECT status, blocked_reason, committed_scope_version_id FROM thread_agent_actions WHERE id = ${itemActionId}`,
+      ),
+    );
+
+    // The sibling add_scope_item must NOT be suppressed_stale — it commits, reusing the draft.
+    expect(String(draftRow.status)).toBe("committed");
+    expect(String(itemRow.status)).toBe("committed");
+    expect(itemRow.blocked_reason).toBeNull();
+    expect(res.committed).toBe(2);
+    expect(res.suppressed).toBe(0);
+
+    // Both committed against the SAME draft (createDraftFromThread early-returned the existing draft).
+    const [draftCommitted] = rowsOf(
+      await db.execute(sql`SELECT committed_scope_version_id FROM thread_agent_actions WHERE id = ${draftActionId}`),
+    );
+    expect(String(itemRow.committed_scope_version_id)).toBe(String(draftCommitted.committed_scope_version_id));
+
+    // Exactly ONE draft scope version exists for the thread (no duplicate draft was minted).
+    const draftCount = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM thread_scope_versions
+        WHERE thread_id = ${tM7Id} AND status = 'draft'
+      `),
+    );
+    expect(Number(draftCount[0].n)).toBe(1);
+  });
+
   // GUARD F2 — the phase guard does NOT break a legitimate advance: when the snapshot
   // phase matches the live phase (the normal same-run case), advance_phase still
   // commits and moves the thread forward (discuss→scope).
