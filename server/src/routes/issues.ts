@@ -403,7 +403,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       ? { attachmentCount: attachments.length, attachments: attachmentMetadata }
       : {};
 
-    if (assigneeId && (reopened || (!selfComment && !isClosed && shouldDispatchIssueWakeup(currentIssue)))) {
+    if (assigneeId && shouldDispatchIssueWakeup(currentIssue) && (reopened || (!selfComment && !isClosed))) {
       if (reopened) {
         wakeups.set(assigneeId, {
           source: "automation",

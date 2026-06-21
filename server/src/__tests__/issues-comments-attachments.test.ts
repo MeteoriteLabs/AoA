@@ -353,6 +353,28 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     );
   });
 
+  it("does NOT wake on reopen-via-comment when the task is in planning mode (D8 gate)", async () => {
+    // A-M11: reopening a planning-mode task via comment must honor the D8
+    // planning-mode dispatch gate. heartbeat.wakeup has no planning gate, so the
+    // route's shared helper must suppress the reopen wakeup for planning tasks.
+    const closedPlanningIssue = makeIssue({ status: "done", workMode: "planning" });
+    const reopenedPlanningIssue = makeIssue({ status: "todo", workMode: "planning" });
+    mockIssueService.getById.mockResolvedValue(closedPlanningIssue);
+    mockIssueService.update.mockResolvedValue(reopenedPlanningIssue);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Reopen this planning task")
+      .field("reopen", "true")
+      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockIssueService.enqueueAoaMentionWakeup).not.toHaveBeenCalled();
+  });
+
   it("honors interrupt=true for board attachment comments and includes interruptedRunId in wake context", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: "run-active" }));
     mockHeartbeatService.getRun.mockResolvedValue({
@@ -493,6 +515,49 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /issues/:id/comments (no attachments) — D8 reopen gate", () => {
+  // A-M11: the plain comment route funnels through the SAME shared
+  // enqueueIssueCommentWakeups helper as the attachments route, so the D8
+  // planning-mode gate on reopen must cover this path too.
+  it("does NOT wake on reopen-via-comment when the task is in planning mode", async () => {
+    const closedPlanningIssue = makeIssue({ status: "done", workMode: "planning" });
+    const reopenedPlanningIssue = makeIssue({ status: "todo", workMode: "planning" });
+    mockIssueService.getById.mockResolvedValue(closedPlanningIssue);
+    mockIssueService.update.mockResolvedValue(reopenedPlanningIssue);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Reopen this planning task", reopen: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockIssueService.enqueueAoaMentionWakeup).not.toHaveBeenCalled();
+  });
+
+  it("DOES wake on reopen-via-comment for a standard task (regression)", async () => {
+    const closedIssue = makeIssue({ status: "done", workMode: "standard" });
+    const reopenedIssue = makeIssue({ status: "todo", workMode: "standard" });
+    mockIssueService.getById.mockResolvedValue(closedIssue);
+    mockIssueService.update.mockResolvedValue(reopenedIssue);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Reopen this standard task", reopen: true });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({ issueId, reopenedFrom: "done" }),
+      }),
+    );
   });
 });
 
