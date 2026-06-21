@@ -188,7 +188,10 @@ describe("V2 Artifacts QA", () => {
       };
 
       const db = createTransactionDb({
-        selects: [[{ versionNumber: 2 }]],
+        // A-M8: parentVersionId now triggers a same-artifact ownership lookup
+        // BEFORE the max-version read. First select = parent lookup (ver-1 belongs
+        // to art-1 → accepted); second select = existing max version.
+        selects: [[{ artifactId: "art-1" }], [{ versionNumber: 2 }]],
         inserts: [[branchedVersion]],
         updates: [[]],
       });
