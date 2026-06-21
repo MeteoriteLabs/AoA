@@ -93,7 +93,9 @@ export function dependencyService(db: Db) {
     ) {
       await conn
         .update(issues)
-        .set({ status: "blocked", updatedAt: new Date() })
+        // Capture the pre-block status so unblock can restore it instead of
+        // hard-promoting to `todo` (which would auto-dispatch a backlog task). (A-M10)
+        .set({ status: "blocked", blockedFromStatus: dependent.status, updatedAt: new Date() })
         .where(eq(issues.id, dependentIssueId));
     }
 
@@ -172,6 +174,7 @@ export function dependencyService(db: Db) {
         dependentIssueId: taskDependencies.dependentIssueId,
         title: issues.title,
         status: issues.status,
+        blockedFromStatus: issues.blockedFromStatus,
         identifier: issues.identifier,
         createdAt: taskDependencies.createdAt,
       })
@@ -219,10 +222,13 @@ export function dependencyService(db: Db) {
       const allDone = remaining.every((r) => TERMINAL_STATUSES.includes(r.status));
       if (!allDone) continue;
 
-      // Unblock → todo
+      // Restore the pre-block status (A-M10): an auto-blocked `backlog` task
+      // must return to `backlog`, not be promoted to `todo`. Fall back to
+      // `todo` for legacy rows blocked before this column existed.
+      const restoredStatus = dep.blockedFromStatus ?? "todo";
       await (tx as Db)
         .update(issues)
-        .set({ status: "todo", updatedAt: new Date() })
+        .set({ status: restoredStatus, blockedFromStatus: null, updatedAt: new Date() })
         .where(eq(issues.id, dep.dependentIssueId));
 
       await logActivity(tx as Db, {
@@ -234,6 +240,10 @@ export function dependencyService(db: Db) {
         entityId: dep.dependentIssueId,
         details: { resolvedByIssueId: completedIssueId },
       });
+
+      // Only auto-dispatch tasks restored to an executable status. A task
+      // restored to `backlog` is not executable and must not be woken. (A-M10)
+      if (restoredStatus === "backlog") continue;
 
       // Collect agent for wakeup (after tx commits)
       const [task] = await (tx as Db)
@@ -280,7 +290,7 @@ export function dependencyService(db: Db) {
     tx: Tx | Db,
   ): Promise<WakeTask[]> {
     const [task] = await (tx as Db)
-      .select({ status: issues.status })
+      .select({ status: issues.status, blockedFromStatus: issues.blockedFromStatus })
       .from(issues)
       .where(and(eq(issues.id, dependentIssueId), eq(issues.companyId, companyId)));
 
@@ -299,9 +309,11 @@ export function dependencyService(db: Db) {
 
     // No remaining deps or all terminal (done OR cancelled) → unblock
     if (remaining.length === 0 || remaining.every((r) => TERMINAL_STATUSES.includes(r.status))) {
+      // Restore the pre-block status instead of hard-promoting to `todo`. (A-M10)
+      const restoredStatus = task.blockedFromStatus ?? "todo";
       await (tx as Db)
         .update(issues)
-        .set({ status: "todo", updatedAt: new Date() })
+        .set({ status: restoredStatus, blockedFromStatus: null, updatedAt: new Date() })
         .where(eq(issues.id, dependentIssueId));
 
       await logActivity(tx as Db, {
@@ -312,6 +324,9 @@ export function dependencyService(db: Db) {
         entityType: "issue",
         entityId: dependentIssueId,
       });
+
+      // A task restored to `backlog` is not executable → never auto-dispatch. (A-M10)
+      if (restoredStatus === "backlog") return [];
 
       const [unblocked] = await (tx as Db)
         .select({ assigneeAgentId: issues.assigneeAgentId, workMode: issues.workMode })

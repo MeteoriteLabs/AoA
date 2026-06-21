@@ -36,6 +36,11 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    // The status a task held immediately before it was auto-blocked by a
+    // dependency. Restored on unblock so an auto-blocked `backlog` task is not
+    // silently promoted to `todo` (and auto-dispatched). Nullable; only set
+    // while a task is in the `blocked` state, cleared when unblocked. (A-M10)
+    blockedFromStatus: text("blocked_from_status"),
     workMode: text("work_mode").notNull().default("standard"),
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, { onDelete: "set null" }),
