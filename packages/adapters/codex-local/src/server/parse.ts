@@ -194,6 +194,52 @@ export function extractCodexSessionId(chunk: string): string | null {
   return null;
 }
 
+/**
+ * Stateful carry-buffer wrapper around `extractCodexSessionId` for the live
+ * stdout chunk stream (Codex P2).
+ *
+ * `extractCodexSessionId` only sees COMPLETE lines within the chunk it is
+ * handed. The stdout pipe can split the head `thread.started` JSONL line across
+ * two `onLog` chunks (the first ends mid-line, the second completes it), and
+ * each half on its own is unparseable JSON — so the per-chunk extractor would
+ * lose the session id. This capture accumulates a carry buffer, scans only the
+ * complete lines (everything before the last newline) and retains the trailing
+ * partial line for the next chunk. Once captured it stops buffering and
+ * scanning entirely (the first session id wins; later thread.started events are
+ * ignored).
+ */
+export function createCodexSessionIdCapture() {
+  let carry = "";
+  let sessionId: string | null = null;
+
+  return {
+    /**
+     * Feed the next raw stdout chunk. Returns the captured session id once it
+     * has been seen (and on every subsequent call), or null until then.
+     */
+    feed(chunk: string): string | null {
+      if (sessionId) return sessionId;
+      carry += chunk;
+      const lines = carry.split("\n");
+      // The final element is the (possibly empty) partial line after the last
+      // newline — keep it as carry for the next chunk; scan the rest.
+      carry = lines.pop() ?? "";
+      for (const line of lines) {
+        const found = extractCodexSessionId(line);
+        if (found) {
+          sessionId = found;
+          carry = ""; // captured — stop buffering
+          return sessionId;
+        }
+      }
+      return null;
+    },
+    get sessionId(): string | null {
+      return sessionId;
+    },
+  };
+}
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];

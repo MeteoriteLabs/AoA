@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractCodexSessionId, parseCodexJsonl } from "./parse.js";
+import {
+  extractCodexSessionId,
+  parseCodexJsonl,
+  createCodexSessionIdCapture,
+} from "./parse.js";
 import { appendWithCap, MAX_CAPTURE_BYTES } from "@armyofagents/adapter-utils/server-utils";
 import { execute } from "./execute.js";
 
@@ -31,6 +35,61 @@ describe("extractCodexSessionId", () => {
   it("returns null for non-JSON / partial lines", () => {
     expect(extractCodexSessionId("{not json")).toBeNull();
     expect(extractCodexSessionId("")).toBeNull();
+  });
+});
+
+describe("createCodexSessionIdCapture — carry buffer across split chunks (A-M17 / Codex P2)", () => {
+  it("captures the session id when thread.started is split across two chunks", () => {
+    const headLine = JSON.stringify({ type: "thread.started", thread_id: THREAD_ID });
+    // Split the head line mid-way so neither chunk contains a complete line.
+    const mid = Math.floor(headLine.length / 2);
+    const first = headLine.slice(0, mid); // no newline yet → partial line
+    const second = headLine.slice(mid) + "\n"; // completes the line
+
+    const capture = createCodexSessionIdCapture();
+    expect(capture.feed(first)).toBeNull(); // partial — nothing yet
+    expect(capture.feed(second)).toBe(THREAD_ID); // completed line → captured
+    expect(capture.sessionId).toBe(THREAD_ID);
+  });
+
+  it("captures when the split also straddles surrounding lines", () => {
+    const before = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "x" } });
+    const headLine = JSON.stringify({ type: "thread.started", thread_id: THREAD_ID });
+    const after = JSON.stringify({ type: "turn.completed", usage: {} });
+
+    const full = `${before}\n${headLine}\n${after}\n`;
+    // Cut at a point inside the head line so it lands across the chunk boundary.
+    const cut = before.length + 1 + Math.floor(headLine.length / 2);
+
+    const capture = createCodexSessionIdCapture();
+    capture.feed(full.slice(0, cut)); // ...partial head line at the tail
+    capture.feed(full.slice(cut)); // completes head line + remaining
+    expect(capture.sessionId).toBe(THREAD_ID);
+  });
+
+  it("captures a complete line delivered in a single chunk (no regression)", () => {
+    const headLine = JSON.stringify({ type: "thread.started", thread_id: THREAD_ID }) + "\n";
+    const capture = createCodexSessionIdCapture();
+    expect(capture.feed(headLine)).toBe(THREAD_ID);
+    expect(capture.sessionId).toBe(THREAD_ID);
+  });
+
+  it("stops scanning once captured (later chunks are not re-parsed for a new id)", () => {
+    const headLine = JSON.stringify({ type: "thread.started", thread_id: THREAD_ID }) + "\n";
+    const otherStart = JSON.stringify({ type: "thread.started", thread_id: "second-thread" }) + "\n";
+    const capture = createCodexSessionIdCapture();
+    capture.feed(headLine);
+    capture.feed(otherStart);
+    // First id wins; the buffer is not still accumulating a competing session.
+    expect(capture.sessionId).toBe(THREAD_ID);
+  });
+
+  it("returns null when the final line is never terminated by a newline", () => {
+    const headLine = JSON.stringify({ type: "thread.started", thread_id: THREAD_ID });
+    const capture = createCodexSessionIdCapture();
+    // No trailing newline → the line stays in carry, never scanned.
+    expect(capture.feed(headLine)).toBeNull();
+    expect(capture.sessionId).toBeNull();
   });
 });
 
