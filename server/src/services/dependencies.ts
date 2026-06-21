@@ -86,19 +86,24 @@ export function dependencyService(db: Db) {
     // read→write window. Locking the dependency prevents a concurrent
     // completion from sneaking past the terminal check; locking the dependent
     // prevents a concurrent checkout/completion from being clobbered by our
-    // auto-block. (A-M12) Order is fixed (dependent then dependency) to keep a
-    // stable lock-acquisition order across concurrent adds. The verification
-    // read is fused into the lock so we never read a stale row.
-    const [dependent] = readRows(
+    // auto-block. (A-M12) The verification read is fused into the lock so we
+    // never read a stale row.
+    //
+    // Codex P2: lock BOTH rows in a SINGLE statement ordered by id. Two
+    // separate per-row locks (dependent-then-dependency) give no GLOBAL lock
+    // order across callers: inverse concurrent adds — addDependency(A→B) and
+    // addDependency(B→A) — would acquire the same two locks in opposite orders
+    // and can deadlock. Postgres takes row locks in the order the rows are
+    // emitted, so `WHERE id IN (…) ORDER BY id FOR UPDATE` makes every caller
+    // acquire the two locks in the same id order, breaking the cycle. We then
+    // map the returned rows back to dependent vs dependency by id.
+    const lockedRows = readRows(
       await conn.execute(
-        sql`select id, status from issues where id = ${dependentIssueId} and company_id = ${companyId} for update`,
+        sql`select id, status from issues where id in (${dependentIssueId}, ${dependencyIssueId}) and company_id = ${companyId} order by id for update`,
       ),
     );
-    const [dependency] = readRows(
-      await conn.execute(
-        sql`select id, status from issues where id = ${dependencyIssueId} and company_id = ${companyId} for update`,
-      ),
-    );
+    const dependent = lockedRows.find((r) => r.id === dependentIssueId);
+    const dependency = lockedRows.find((r) => r.id === dependencyIssueId);
 
     if (!dependent) throw notFound("Dependent task not found");
     if (!dependency) throw notFound("Dependency task not found");

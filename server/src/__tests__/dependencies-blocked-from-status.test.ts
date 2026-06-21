@@ -62,6 +62,9 @@ function createSequenceDb(config: SequenceConfig = {}) {
   let updateIdx = 0;
   let executeIdx = 0;
   const updateCalls: unknown[][] = [];
+  // Every raw tx.execute(sql`…`) call's query argument, in order. Used to
+  // assert the FOR UPDATE lock is a SINGLE sorted-id IN statement (Codex P2).
+  const executeCalls: unknown[] = [];
 
   function makeChain(getResult: () => MockRow[], record?: (args: unknown[]) => void): Record<string, unknown> {
     const chain: Record<string, unknown> = {};
@@ -87,14 +90,16 @@ function createSequenceDb(config: SequenceConfig = {}) {
       makeChain(() => config.inserts?.[insertIdx++] ?? []),
     update: (_table: unknown) =>
       makeChain(() => config.updates?.[updateIdx++] ?? [], (args) => updateCalls.push(args)),
-    execute: (_query?: unknown) =>
-      Promise.resolve({ rows: config.executes?.[executeIdx++] ?? [] }),
+    execute: (query?: unknown) => {
+      executeCalls.push(query);
+      return Promise.resolve({ rows: config.executes?.[executeIdx++] ?? [] });
+    },
     // addDependency wraps standalone calls in db.transaction; run the callback
     // against this same mock so the recorded sequences/updates are shared.
     transaction: (fn: (tx: unknown) => unknown) => Promise.resolve(fn(db)),
   };
 
-  return { db, updateCalls };
+  return { db, updateCalls, executeCalls };
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -114,9 +119,13 @@ describe("A-M10 — preserve original status across auto-block via blockedFromSt
   it("auto-blocking a backlog task captures blocked_from_status=backlog and status=blocked", async () => {
     const { db, updateCalls } = createSequenceDb({
       executes: [
-        // addDependency (A-M12): FOR UPDATE lock+read → dependent (backlog), dependency (todo)
-        [{ id: issueD, status: "backlog" }],
-        [{ id: issueP, status: "todo" }],
+        // addDependency (A-M12 + Codex P2): ONE sorted-id FOR UPDATE lock+read
+        // returning BOTH rows. The service maps them back to dependent/dependency
+        // by id, so order here is irrelevant — return both.
+        [
+          { id: issueD, status: "backlog" }, // dependent
+          { id: issueP, status: "todo" }, // dependency
+        ],
       ],
       selects: [
         // assertNoCycle: first upstream walk → no upstream
@@ -218,5 +227,45 @@ describe("A-M10 — preserve original status across auto-block via blockedFromSt
 
     // backlog restore must not be added to the returned wake list
     expect(wakes).toEqual([]);
+  });
+});
+
+describe("Codex P2 — addDependency locks both rows in one sorted-id statement (deadlock avoidance)", () => {
+  it("issues exactly ONE FOR UPDATE lock select covering both ids, ordered by id", async () => {
+    const { db, executeCalls } = createSequenceDb({
+      executes: [
+        // The single sorted-id lock returns both locked rows.
+        [
+          { id: issueD, status: "todo" }, // dependent
+          { id: issueP, status: "todo" }, // dependency
+        ],
+      ],
+      selects: [
+        // assertNoCycle: no upstream
+        [],
+      ],
+      inserts: [[{ id: "dep-row-1", companyId, dependentIssueId: issueD, dependencyIssueId: issueP }]],
+      updates: [[]],
+    });
+
+    const svc = dependencyService(db as never);
+    await svc.addDependency(companyId, issueD, issueP, db as never);
+
+    // Exactly one raw lock query — NOT two separate per-row locks. Two separate
+    // locks (dependent-then-dependency) give no global lock order, so inverse
+    // concurrent adds (A→B and B→A) can deadlock.
+    expect(executeCalls.length).toBe(1);
+
+    // Reconstruct the query text from the mocked `sql` tag ({ sql: { strings, values } }).
+    const q = executeCalls[0] as { sql: { strings: readonly string[]; values: unknown[] } };
+    const text = q.sql.strings.join("?").toLowerCase();
+
+    // A single statement that selects both ids and locks FOR UPDATE in id order.
+    expect(text).toContain("for update");
+    expect(text).toContain("in (");
+    expect(text).toContain("order by id");
+    // Both ids are bound as interpolated values.
+    expect(q.sql.values).toContain(issueD);
+    expect(q.sql.values).toContain(issueP);
   });
 });
