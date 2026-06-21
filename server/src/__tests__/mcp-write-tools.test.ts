@@ -409,6 +409,47 @@ describe("MCP write tools", () => {
       expect(res.status).toBe(404);
     });
 
+    it("rejects moving a task onto another company's project (404) and does not update", async () => {
+      const updateSpy = vi.fn(async (id: string, data: any) => ({
+        id,
+        companyId: "company-1",
+        projectId: data.projectId ?? "proj-mine",
+      }));
+      const { app } = buildApp({
+        // Task belongs to our company; the target project belongs to another.
+        tasks: [{ id: "t-1", companyId: "company-1", projectId: "proj-mine" }],
+        projects: [
+          { id: "proj-mine", companyId: "company-1", type: "department" },
+          { id: "proj-foreign", companyId: "other-company", type: "project" },
+        ],
+        updateImpl: updateSpy,
+      });
+      const res = await callTool(app, "update-task", {
+        taskId: "t-1",
+        projectId: "proj-foreign",
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error.message).toMatch(/not found/i);
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it("allows moving a task onto a same-company project", async () => {
+      const { app } = buildApp({
+        tasks: [{ id: "t-1", companyId: "company-1", projectId: "proj-mine" }],
+        projects: [
+          { id: "proj-mine", companyId: "company-1", type: "department" },
+          { id: "proj-target", companyId: "company-1", type: "project" },
+        ],
+      });
+      const res = await callTool(app, "update-task", {
+        taskId: "t-1",
+        projectId: "proj-target",
+      });
+      expect(res.status).toBe(200);
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload.projectId).toBe("proj-target");
+    });
+
     it("scoped user cannot update task outside their scope (404)", async () => {
       const { app } = buildApp({
         resolveScope: async (_c, actor) => ({

@@ -265,6 +265,10 @@ async function handleUpdateTask(
     return notFoundResult("Task not found");
   }
   if (parsed.projectId) {
+    const project = await ctx.services.projectsSvc.getById(parsed.projectId);
+    if (!project || project.companyId !== ctx.companyId) {
+      return notFoundResult("Project not found");
+    }
     assertScopedProjectAccess(ctx.scope, parsed.projectId, "Project");
   }
   const canUpdate = await ctx.services.permissionsSvc.canAccessEntity(
