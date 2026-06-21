@@ -114,15 +114,41 @@ async function collectDescendants(db: Db, rootId: string): Promise<Set<string>> 
 
 /**
  * D3: reject cycles + child-scope-not-⊆-parent before writing goal_parents.
+ * B-M3: also reject cross-tenant parent edges — every requested parent must
+ * EXIST and belong to the child's company. (`goal_parents` has no companyId
+ * column; a foreign company-wide goal otherwise passes the scope-subset check
+ * because parentProjectIds.length === 0 → isScopeWithinParent returns true.)
  * `goalId` is omitted for a not-yet-created goal (no descendants, cannot
  * self-parent) so the same check guards creation and re-parenting.
  */
 async function assertParentsValid(
   db: Db,
-  opts: { goalId?: string; parentIds: string[]; childProjectIds: string[] },
+  opts: {
+    goalId?: string;
+    parentIds: string[];
+    childProjectIds: string[];
+    childCompanyId: string;
+  },
 ): Promise<void> {
-  const { goalId, parentIds, childProjectIds } = opts;
+  const { goalId, parentIds, childProjectIds, childCompanyId } = opts;
   if (parentIds.length === 0) return;
+
+  // B-M3: tenant isolation. Load every requested parent and reject if any is
+  // missing or in a different company. The length check is required: a
+  // non-existent or foreign id returns no row, so "all returned rows are
+  // same-company" alone would let a missing/foreign id slip through.
+  const uniqueParentIds = [...new Set(parentIds)];
+  const parentRows = await db
+    .select({ id: goals.id, companyId: goals.companyId })
+    .from(goals)
+    .where(inArray(goals.id, uniqueParentIds));
+  if (
+    parentRows.length !== uniqueParentIds.length ||
+    parentRows.some((r) => r.companyId !== childCompanyId)
+  ) {
+    throw badRequest("Parent goals must belong to the same company");
+  }
+
   if (goalId) {
     const descendants = await collectDescendants(db, goalId);
     const cycle = findCycleParent(goalId, parentIds, descendants);
@@ -228,6 +254,7 @@ export function goalService(db: Db) {
         await assertParentsValid(db, {
           parentIds,
           childProjectIds: projectIds ?? [],
+          childCompanyId: companyId,
         });
       }
 
@@ -335,12 +362,26 @@ export function goalService(db: Db) {
       goalId?: string;
       parentIds: string[];
       childProjectIds: string[];
+      childCompanyId: string;
     }) => assertParentsValid(db, opts),
 
-    /** Replace this goal's parent edges (D3: cycle + scope enforced on write). */
+    /** Replace this goal's parent edges (D3: cycle + scope; B-M3: same-tenant). */
     setGoalParents: async (goalId: string, parentIds: string[]) => {
       const childProjectIds = await getGoalProjectIds(db, goalId);
-      await assertParentsValid(db, { goalId, parentIds, childProjectIds });
+      // B-M3: load the child's company so assertParentsValid can reject
+      // cross-tenant parent edges. goal_parents has no companyId column.
+      const childCompanyId = await db
+        .select({ companyId: goals.companyId })
+        .from(goals)
+        .where(eq(goals.id, goalId))
+        .then((rows) => rows[0]?.companyId ?? null);
+      if (!childCompanyId) throw badRequest("Goal not found");
+      await assertParentsValid(db, {
+        goalId,
+        parentIds,
+        childProjectIds,
+        childCompanyId,
+      });
       await db.delete(goalParents).where(eq(goalParents.goalId, goalId));
       if (parentIds.length > 0) {
         await db

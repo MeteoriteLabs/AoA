@@ -1061,6 +1061,7 @@ export function threadService(db: Db) {
       await gsvc.assertParentsValid({
         parentIds,
         childProjectIds: scope.projectIds,
+        childCompanyId: companyId,
       });
 
       const goal = await gsvc.create(companyId, {

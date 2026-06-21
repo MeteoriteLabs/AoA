@@ -25,10 +25,25 @@ import { goalService } from "../services/goals.js";
 describe("goalService.create — validate parents before insert (ISSUE-001)", () => {
   it("rejects an out-of-scope parent WITHOUT inserting the goal (no orphan)", async () => {
     let insertCalls = 0;
+    // Sequence-aware select: assertParentsValid now runs (1) a same-tenant
+    // existence check (parent rows) BEFORE (2) getGoalProjectIds(parent). The
+    // parent IS same-company (passes B-M3) but scoped to ['p-other'], so the
+    // scope-subset check is what must reject here.
+    let selectCall = 0;
     const db = {
-      // getGoalProjectIds(parent) → the parent is scoped to ['p-other'].
       select: () => ({
-        from: () => ({ where: () => Promise.resolve([{ projectId: "p-other" }]) }),
+        from: () => ({
+          where: () => {
+            const idx = selectCall;
+            selectCall += 1;
+            // 1. B-M3 parent existence/company check → same company.
+            if (idx === 0) {
+              return Promise.resolve([{ id: "parent-1", companyId: "co1" }]);
+            }
+            // 2. getGoalProjectIds(parent) → parent scoped to ['p-other'].
+            return Promise.resolve([{ projectId: "p-other" }]);
+          },
+        }),
       }),
       insert: () => {
         insertCalls += 1;
