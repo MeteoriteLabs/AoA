@@ -170,6 +170,30 @@ function parseActionConfirmation(item: Record<string, unknown>): CodexParsedChun
   }
 }
 
+/**
+ * Out-of-band session-id capture for the stdout chunk stream.
+ *
+ * `parseCodexJsonl` runs on the 4MB-capped stdout buffer, whose cap keeps the
+ * TAIL — so for a run whose stdout exceeds the cap the head `thread.started`
+ * line is dropped and the parsed sessionId is null (A-M17). Callers scan each
+ * raw stdout chunk through this helper BEFORE capping to capture the session id
+ * once, the first time it appears. Cheap: returns on the first matching line.
+ */
+export function extractCodexSessionId(chunk: string): string | null {
+  for (const rawLine of chunk.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // Cheap pre-filter so we only JSON.parse lines that could be the head event.
+    if (!line.includes("thread.started")) continue;
+    const event = parseJson(line);
+    if (!event) continue;
+    if (asString(event.type, "") !== "thread.started") continue;
+    const threadId = asString(event.thread_id, "");
+    if (threadId) return threadId;
+  }
+  return null;
+}
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
