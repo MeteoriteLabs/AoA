@@ -100,7 +100,10 @@ interface McpRouteDeps {
   projectsSvc?: ReturnType<typeof projectService>;
   approvalsSvc?: ReturnType<typeof approvalService>;
   issueApprovalsSvc?: ReturnType<typeof issueApprovalService>;
-  resolveScope?: (companyId: string, userId: string) => Promise<McpUserScope>;
+  resolveScope?: (
+    companyId: string,
+    actor: { source: string; userId: string },
+  ) => Promise<McpUserScope>;
   resolveRole?: (companyId: string, userId: string) => Promise<string>;
   resolveScopedAgentIds?: (companyId: string, scope: McpUserScope) => Promise<Set<string> | null>;
 }
@@ -402,9 +405,10 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
 
     try {
       const { actor: protocolActor, company } = await ensureProtocolAccess(req, companyId, companiesSvc);
+      const scopeActor = { source: protocolActor.source, userId: protocolActor.userId };
       const scope = await (deps.resolveScope
-        ? deps.resolveScope(companyId, protocolActor.userId)
-        : resolveUserScope(db, company.id, protocolActor.userId));
+        ? deps.resolveScope(companyId, scopeActor)
+        : resolveUserScope(db, company.id, scopeActor));
       const method = typeof requestBody.method === "string" ? requestBody.method : "";
       const clientInfo =
         initializeSchema.safeParse(requestBody.params).success

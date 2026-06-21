@@ -73,7 +73,10 @@ type Comment = {
 
 function buildApp(options?: {
   actor?: Record<string, unknown>;
-  resolveScope?: (companyId: string, userId: string) => Promise<any>;
+  resolveScope?: (
+    companyId: string,
+    actor: { source: string; userId: string },
+  ) => Promise<any>;
   resolveRole?: (companyId: string, userId: string) => Promise<string>;
   resolveScopedAgentIds?: (companyId: string, scope: any) => Promise<Set<string> | null>;
   agents?: Agent[];
@@ -122,7 +125,7 @@ function buildApp(options?: {
       } as any,
       resolveScope:
         options?.resolveScope ??
-        (async (_companyId, userId) => ({ kind: "founder", userId })),
+        (async (_companyId, actor) => ({ kind: "founder", userId: actor.userId })),
       resolveRole: options?.resolveRole ?? (async () => "founder"),
       resolveScopedAgentIds:
         options?.resolveScopedAgentIds ?? (async () => null),
@@ -249,9 +252,9 @@ describe("MCP read tools", () => {
 
     it("reports scoped role for non-founder users", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["project-1"]),
         }),
         resolveRole: async () => "team_member",
@@ -295,9 +298,9 @@ describe("MCP read tools", () => {
 
     it("scoped user sees only agents linked to their projects", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["project-1"]),
         }),
         resolveScopedAgentIds: async () => new Set(["agent-1"]),
@@ -354,9 +357,9 @@ describe("MCP read tools", () => {
 
     it("scoped user sees only projects in their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         projects: [
@@ -394,9 +397,9 @@ describe("MCP read tools", () => {
 
     it("returns 404 when scoped user queries a project outside their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         projects: [
@@ -456,9 +459,9 @@ describe("MCP read tools", () => {
 
     it("scoped user sees only tasks in their projects", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         tasks: [
@@ -505,9 +508,9 @@ describe("MCP read tools", () => {
 
     it("returns 404 when scoped user queries task outside their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         tasks: [{ id: "t-2", companyId: "company-1", projectId: "proj-2" }],
@@ -542,9 +545,9 @@ describe("MCP read tools", () => {
 
     it("returns 404 for scoped user when task is outside their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         tasks: [{ id: "t-2", companyId: "company-1", projectId: "proj-2" }],
@@ -577,9 +580,9 @@ describe("MCP read tools", () => {
 
     it("returns 404 when scoped user queries a comment outside their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_cid, userId) => ({
+        resolveScope: async (_cid, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         tasks: [{ id: "t-2", companyId: "company-1", projectId: "proj-2" }],

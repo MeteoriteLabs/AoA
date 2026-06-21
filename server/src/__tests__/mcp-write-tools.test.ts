@@ -64,7 +64,10 @@ type Comment = { id: string; companyId: string; issueId: string; body: string };
 
 function buildApp(options?: {
   actor?: Record<string, unknown>;
-  resolveScope?: (companyId: string, userId: string) => Promise<any>;
+  resolveScope?: (
+    companyId: string,
+    actor: { source: string; userId: string },
+  ) => Promise<any>;
   resolveRole?: (companyId: string, userId: string) => Promise<string>;
   projects?: Project[];
   tasks?: Task[];
@@ -148,7 +151,7 @@ function buildApp(options?: {
       } as any,
       resolveScope:
         options?.resolveScope ??
-        (async (_companyId, userId) => ({ kind: "founder", userId })),
+        (async (_companyId, actor) => ({ kind: "founder", userId: actor.userId })),
       resolveRole: options?.resolveRole ?? (async () => "founder"),
       resolveScopedAgentIds: async () => null,
       issuesSvc: {
@@ -267,7 +270,7 @@ describe("MCP write tools", () => {
             getById: vi.fn().mockResolvedValue({ id: "company-1", mcpEnabled: true }),
           } as any,
           mcpSvc: { touchClient: vi.fn().mockResolvedValue(null) } as any,
-          resolveScope: async (_c, userId) => ({ kind: "founder", userId }),
+          resolveScope: async (_c, actor) => ({ kind: "founder", userId: actor.userId }),
           resolveRole: async () => "founder",
           resolveScopedAgentIds: async () => null,
           issuesSvc: {
@@ -301,9 +304,9 @@ describe("MCP write tools", () => {
 
     it("team_lead can create a task in their department", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-lead"]),
         }),
         resolveRole: async () => "team_lead",
@@ -320,9 +323,9 @@ describe("MCP write tools", () => {
 
     it("team_member cannot create in a project outside their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-mine"]),
         }),
         resolveRole: async () => "team_member",
@@ -353,9 +356,9 @@ describe("MCP write tools", () => {
 
     it("returns 403 when role cannot create tasks (canAccessEntity=false)", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         resolveRole: async () => "team_member",
@@ -408,9 +411,9 @@ describe("MCP write tools", () => {
 
     it("scoped user cannot update task outside their scope (404)", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-mine"]),
         }),
         resolveRole: async () => "team_member",
@@ -425,9 +428,9 @@ describe("MCP write tools", () => {
 
     it("returns 403 when role cannot update task", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         resolveRole: async () => "team_member",
@@ -470,9 +473,9 @@ describe("MCP write tools", () => {
 
     it("scoped user cannot comment outside their scope (404)", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-mine"]),
         }),
         resolveRole: async () => "team_member",
@@ -487,9 +490,9 @@ describe("MCP write tools", () => {
 
     it("team_member CAN comment on a task in their scope (read access suffices)", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-1"]),
         }),
         resolveRole: async () => "team_member",
