@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,6 +110,17 @@ afterAll(async () => {
 describe.skipIf(process.platform === "win32")(
   "A-M14 — blockedTaskScan honors dependency completion + dedups",
   () => {
+    // Each case asserts a COMPANY-WIDE blocked count, so isolate them: clear
+    // issues + dependency edges between tests (shared company + shared pg).
+    // Without this, an earlier case's in-progress blocked dependent leaks into
+    // a later case's count (the count is correct; the leak is a test-isolation
+    // bug — caught by the real-DB run, invisible to the sequence-mock unit).
+    beforeEach(async () => {
+      if (setupError) return;
+      await db.execute(sql`DELETE FROM task_dependencies WHERE company_id = ${companyId}`);
+      await db.execute(sql`DELETE FROM issues WHERE company_id = ${companyId}`);
+    });
+
     it("returns 0 findings when the ONLY dependency is already done", async () => {
       if (setupError) {
         throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);

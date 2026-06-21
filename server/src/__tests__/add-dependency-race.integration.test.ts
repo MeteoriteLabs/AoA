@@ -151,12 +151,20 @@ describe.skipIf(process.platform === "win32")(
       const svc = dependencyService(db);
 
       // Interleave the add (which locks both rows + re-checks) with C completing.
-      // Whichever order the lock grants, the invariant below must hold: D is
-      // never left `blocked` while C is `done` with no other unmet deps.
-      const completeC = db
-        .update(issues)
-        .set({ status: "done", updatedAt: new Date() })
-        .where(eq(issues.id, taskC));
+      // Model a REAL completion: the status flip AND the resolveDependencies
+      // sweep that issueService.update runs on completion (issues.ts:1345) —
+      // that sweep is what unblocks dependents. A raw status update alone would
+      // skip the production unblock path; releasing an already-blocked dependent
+      // when its dep completes is the completion path's responsibility by
+      // design, not addDependency's. Whichever order the lock grants, the
+      // invariant below must hold: D is never left `blocked` on a `done` dep.
+      const completeC = (async () => {
+        await db
+          .update(issues)
+          .set({ status: "done", updatedAt: new Date() })
+          .where(eq(issues.id, taskC));
+        await svc.resolveDependencies(companyId, taskC);
+      })();
       const addDep = svc.addDependency(companyId, taskD, taskC);
 
       await Promise.allSettled([addDep, completeC]);
