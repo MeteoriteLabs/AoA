@@ -537,10 +537,10 @@ async function runWorkspaceCommand(input: {
     },
     "Running workspace shell command",
   );
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = shellInvocation(input.command);
   const proc = await executeProcess({
-    command: shell,
-    args: ["-c", input.command],
+    command: shell.command,
+    args: shell.args,
     cwd: input.cwd,
     env: input.env,
   });
