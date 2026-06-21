@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, index, unique } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 /**
@@ -39,11 +39,19 @@ export const providerQuotaWindows = pgTable(
       table.companyId,
       table.resetAt,
     ),
-    companyWindowUniqueIdx: uniqueIndex("provider_quota_windows_company_window_unique_idx").on(
-      table.companyId,
-      table.provider,
-      table.model,
-      table.windowKind,
-    ),
+    // `nullsNotDistinct()` is required because `model` is nullable and the
+    // primary writer (quota-windows.ts refreshWithAdapter) always upserts with
+    // `model = null`. Without it, Postgres treats NULL as DISTINCT, so the
+    // upsert's ON CONFLICT never matches an existing NULL-model row and every
+    // refresh inserts a duplicate. With NULLS NOT DISTINCT the NULL-model rows
+    // collide so the upsert UPDATEs in place. Requires PostgreSQL 15+.
+    companyWindowUniqueIdx: unique("provider_quota_windows_company_window_unique_idx")
+      .on(
+        table.companyId,
+        table.provider,
+        table.model,
+        table.windowKind,
+      )
+      .nullsNotDistinct(),
   }),
 );
