@@ -833,46 +833,61 @@ export function memoryService(db: Db) {
         throw conflict("Memory item must be approved before agents can suggest updates");
       }
 
-      const existingPending = await db
-        .select()
-        .from(memoryItemVersions)
-        .where(
-          and(
-            eq(memoryItemVersions.memoryItemId, memoryItemId),
-            eq(memoryItemVersions.status, "pending"),
-            eq(memoryItemVersions.createdBy, agentId),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
+      // A-M6 — version-number allocation must be conflict-safe. Two different
+      // agents both pass the per-agent pending dedup, both read the same max
+      // version, and both insert max+1 → the unique index
+      // (memory_item_id, version_number) raises 23505 (an unhandled 500).
+      // Serialize allocation: lock the PARENT memory_items row FOR UPDATE, then
+      // run the dedup check + max-version read + insert inside the same tx so a
+      // concurrent caller blocks until we commit and reads our committed state.
+      // The dedup MUST be inside the lock — locking only the max read would
+      // still let two callers act on stale pre-lock dedup decisions.
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from memory_items where id = ${memoryItemId} and company_id = ${companyId} for update`,
+        );
 
-      if (existingPending) {
-        return db
-          .update(memoryItemVersions)
-          .set({ content })
-          .where(eq(memoryItemVersions.id, existingPending.id))
+        const existingPending = await tx
+          .select()
+          .from(memoryItemVersions)
+          .where(
+            and(
+              eq(memoryItemVersions.memoryItemId, memoryItemId),
+              eq(memoryItemVersions.status, "pending"),
+              eq(memoryItemVersions.createdBy, agentId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (existingPending) {
+          return tx
+            .update(memoryItemVersions)
+            .set({ content })
+            .where(eq(memoryItemVersions.id, existingPending.id))
+            .returning()
+            .then((rows) => rows[0]);
+        }
+
+        const latest = await tx
+          .select({ versionNumber: memoryItemVersions.versionNumber })
+          .from(memoryItemVersions)
+          .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
+          .orderBy(desc(memoryItemVersions.versionNumber))
+          .limit(1)
+          .then((rows) => rows[0]?.versionNumber ?? 0);
+
+        return tx
+          .insert(memoryItemVersions)
+          .values({
+            memoryItemId,
+            versionNumber: latest + 1,
+            content,
+            status: "pending",
+            createdBy: agentId,
+          })
           .returning()
           .then((rows) => rows[0]);
-      }
-
-      const latest = await db
-        .select({ versionNumber: memoryItemVersions.versionNumber })
-        .from(memoryItemVersions)
-        .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
-        .orderBy(desc(memoryItemVersions.versionNumber))
-        .limit(1)
-        .then((rows) => rows[0]?.versionNumber ?? 0);
-
-      return db
-        .insert(memoryItemVersions)
-        .values({
-          memoryItemId,
-          versionNumber: latest + 1,
-          content,
-          status: "pending",
-          createdBy: agentId,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      });
     },
 
     approveSuggestedVersion: async (companyId: string, memoryItemId: string, versionId: string) => {
@@ -968,50 +983,64 @@ export function memoryService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!item) return null;
 
-      // Find the latest version number
-      const latest = await db
-        .select({ versionNumber: memoryItemVersions.versionNumber })
-        .from(memoryItemVersions)
-        .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
-        .orderBy(desc(memoryItemVersions.versionNumber))
-        .limit(1)
-        .then((rows) => rows[0]?.versionNumber ?? 0);
+      // A-M6 — serialize version-number allocation. Lock the PARENT
+      // memory_items row FOR UPDATE, then run the per-user draft dedup +
+      // max-version read + insert inside the same tx. Without the lock two
+      // different users both pass the per-user draft dedup and both insert
+      // max+1, colliding on the unique (memory_item_id, version_number) index
+      // → 23505 (an unhandled 500). The dedup MUST be inside the lock so a
+      // concurrent caller can't act on a stale pre-lock decision.
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from memory_items where id = ${memoryItemId} and company_id = ${companyId} for update`,
+        );
 
-      // Check for existing draft by this user
-      const existingDraft = await db
-        .select()
-        .from(memoryItemVersions)
-        .where(
-          and(
-            eq(memoryItemVersions.memoryItemId, memoryItemId),
-            eq(memoryItemVersions.status, "draft"),
-            eq(memoryItemVersions.createdBy, createdBy),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
+        // Check for existing draft by this user (against the now-locked state).
+        const existingDraft = await tx
+          .select()
+          .from(memoryItemVersions)
+          .where(
+            and(
+              eq(memoryItemVersions.memoryItemId, memoryItemId),
+              eq(memoryItemVersions.status, "draft"),
+              eq(memoryItemVersions.createdBy, createdBy),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
 
-      if (existingDraft) {
-        // Update existing draft
-        return db
-          .update(memoryItemVersions)
-          .set({ content })
-          .where(eq(memoryItemVersions.id, existingDraft.id))
+        if (existingDraft) {
+          // Update existing draft
+          return tx
+            .update(memoryItemVersions)
+            .set({ content })
+            .where(eq(memoryItemVersions.id, existingDraft.id))
+            .returning()
+            .then((rows) => rows[0]);
+        }
+
+        // Find the latest version number (inside the lock, so it reflects any
+        // version a concurrent caller just committed).
+        const latest = await tx
+          .select({ versionNumber: memoryItemVersions.versionNumber })
+          .from(memoryItemVersions)
+          .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
+          .orderBy(desc(memoryItemVersions.versionNumber))
+          .limit(1)
+          .then((rows) => rows[0]?.versionNumber ?? 0);
+
+        // Create new draft version
+        return tx
+          .insert(memoryItemVersions)
+          .values({
+            memoryItemId,
+            versionNumber: latest + 1,
+            content,
+            status: "draft",
+            createdBy,
+          })
           .returning()
           .then((rows) => rows[0]);
-      }
-
-      // Create new draft version
-      return db
-        .insert(memoryItemVersions)
-        .values({
-          memoryItemId,
-          versionNumber: latest + 1,
-          content,
-          status: "draft",
-          createdBy,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      });
     },
 
     publishDraft: async (companyId: string, memoryItemId: string, createdBy: string) => {
@@ -1547,6 +1576,16 @@ export function memoryService(db: Db) {
       // either fails, neither is persisted. Per Phase 6.2c follow-up review.
       const changelog = `layer changed: ${fromLayer} → ${toLayer}`;
       const updated = await db.transaction(async (tx) => {
+        // A-M6 — lock the PARENT memory_items row FOR UPDATE as the first
+        // statement so version-number allocation is serialized. The tx already
+        // wrapped the read+insert, but a bare max read at READ COMMITTED can
+        // still race a concurrent suggestUpdate/saveDraft/changeLayer that
+        // allocates the same max+1 → unique-index 23505. Locking the parent row
+        // forces concurrent allocators to block until we commit.
+        await tx.execute(
+          sql`select id from memory_items where id = ${id} and company_id = ${companyId} for update`,
+        );
+
         const [row] = await tx
           .update(memoryItems)
           .set(patch)

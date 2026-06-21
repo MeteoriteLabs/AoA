@@ -47,6 +47,8 @@ type ItemRow = {
 function createMockDb(items: ItemRow[] = []) {
   const versionsCreated: Array<Record<string, unknown>> = [];
   const updateCalls: Array<{ patch: Record<string, unknown>; id: string }> = [];
+  // A-M6: captures the FOR UPDATE parent-row lock executes inside changeLayer's tx.
+  const lockExecutes: unknown[] = [];
 
   const dbLike: Record<string, unknown> = {
     items,
@@ -84,6 +86,14 @@ function createMockDb(items: ItemRow[] = []) {
         }),
       }),
     }),
+  };
+  // A-M6: changeLayer now takes a FOR UPDATE parent-row lock as the first
+  // statement inside its transaction via tx.execute(sql`… for update`). The
+  // mock records the lock call and returns [] (the lock result is not read).
+  dbLike.lockExecutes = lockExecutes;
+  dbLike.execute = (...args: unknown[]) => {
+    lockExecutes.push(args[0]);
+    return Promise.resolve([]);
   };
   // Phase 6.2c follow-up: changeLayer now wraps the update + audit-row insert
   // in a db.transaction(...) call. The mock's transaction passes itself as the
@@ -284,5 +294,26 @@ describe("memoryService.changeLayer — Phase 6.2c", () => {
       departmentId: "d-eng",
     });
     expect(result).toBeNull();
+  });
+
+  it("A-M6: wraps allocation in a tx and takes a FOR UPDATE parent-row lock before inserting", async () => {
+    const item: ItemRow = {
+      id: "i-1",
+      companyId: "co-1",
+      layer: "domain",
+      goalId: null,
+      taskId: null,
+      expiresAt: null,
+      folderPath: "engineering/Decisions",
+      departmentId: "d-eng",
+      title: "T",
+      content: "C",
+    };
+    const db = createMockDb([item]);
+    const svc = memoryService(db as never);
+    await svc.changeLayer("i-1", "co-1", { newLayer: "identity" });
+    // The parent-row lock fired (exactly once) before the version row was written.
+    expect(db.lockExecutes.length).toBe(1);
+    expect(db.versionsCreated.length).toBeGreaterThan(0);
   });
 });

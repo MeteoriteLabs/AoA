@@ -58,6 +58,12 @@ function createSequenceDb(config: {
   selects?: MockRow[][];
   updates?: MockRow[][];
   inserts?: MockRow[][];
+  // A-M6 — when true, db.execute() is treated as a FOR UPDATE parent-row lock:
+  // it records the call and returns [] WITHOUT draining the insert queue (the
+  // real version insert goes through .insert().values()). The default (false)
+  // preserves the create() path, where buildMemoryInsert calls db.execute() to
+  // perform the raw INSERT and expects the next insert row back.
+  lockMode?: boolean;
 } = {}) {
   let selectIdx = 0;
   let updateIdx = 0;
@@ -65,6 +71,9 @@ function createSequenceDb(config: {
   const captured = {
     insertValues: [] as unknown[],
     updateSets: [] as unknown[],
+    // A-M6 — track FOR UPDATE parent-row locks + whether allocation ran in a tx.
+    lockExecutes: [] as unknown[],
+    transactionCalls: 0,
   };
 
   const selects = config.selects ?? [];
@@ -90,10 +99,21 @@ function createSequenceDb(config: {
     insert: () => buildChain("insert", () => inserts[insertIdx++] ?? []),
     // buildMemoryInsert in memory-projection.ts calls db.execute() for raw SQL inserts.
     // Return the next insert result (same queue as insert, since execute replaces it).
-    execute: () => Promise.resolve(inserts[insertIdx++] ?? []),
+    // A-M6: in lockMode, db.execute() is the FOR UPDATE parent-row lock — record
+    // it and return [] without draining the insert queue.
+    execute: (...args: unknown[]) => {
+      if (config.lockMode) {
+        captured.lockExecutes.push(args[0]);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(inserts[insertIdx++] ?? []);
+    },
   };
 
-  db.transaction = async (fn: (tx: typeof db) => Promise<unknown>) => fn(db as any);
+  db.transaction = async (fn: (tx: typeof db) => Promise<unknown>) => {
+    captured.transactionCalls++;
+    return fn(db as any);
+  };
 
   return { db: db as any, captured };
 }
@@ -151,6 +171,7 @@ describe("memoryService agent suggestions", () => {
 
   it("creates a pending update suggestion without changing currentVersionId", async () => {
     const { db, captured } = createSequenceDb({
+      lockMode: true,
       selects: [
         [{ id: "mem-1", companyId: "co-1", status: "approved", currentVersionId: "ver-1" }],
         [],
@@ -174,10 +195,14 @@ describe("memoryService agent suggestions", () => {
       createdBy: "agent-1",
     }));
     expect(captured.updateSets).toEqual([]);
+    // A-M6: allocation ran inside a tx and took a FOR UPDATE parent-row lock.
+    expect(captured.transactionCalls).toBe(1);
+    expect(captured.lockExecutes).toHaveLength(1);
   });
 
   it("updates an existing pending version by the same agent instead of duplicating it", async () => {
     const { db, captured } = createSequenceDb({
+      lockMode: true,
       selects: [
         [{ id: "mem-1", companyId: "co-1", status: "approved" }],
         [{ id: "ver-pending", memoryItemId: "mem-1", versionNumber: 2, status: "pending", createdBy: "agent-1" }],
@@ -197,6 +222,80 @@ describe("memoryService agent suggestions", () => {
     expect(version.id).toBe("ver-pending");
     expect(captured.insertValues).toHaveLength(0);
     expect(captured.updateSets[0]).toEqual({ content: "Refined content" });
+    // A-M6: the dedup that early-returns the existing pending row ran INSIDE the
+    // locked tx (after the FOR UPDATE), not before it.
+    expect(captured.transactionCalls).toBe(1);
+    expect(captured.lockExecutes).toHaveLength(1);
+  });
+
+  it("saveDraft: allocates a new draft version inside a tx behind a FOR UPDATE parent lock", async () => {
+    const { db, captured } = createSequenceDb({
+      lockMode: true,
+      selects: [
+        // item-fetch (outside tx)
+        [{ id: "mem-1", companyId: "co-1", status: "approved" }],
+        // existing-draft dedup (inside tx) — none
+        [],
+        // max-version read (inside tx)
+        [{ versionNumber: 4 }],
+      ],
+      inserts: [[{ id: "draft-5", memoryItemId: "mem-1", versionNumber: 5, status: "draft", createdBy: "user-1" }]],
+    });
+    const svc = memoryService(db);
+
+    const version = await svc.saveDraft("co-1", "mem-1", "Draft body", "user-1");
+
+    expect(version).toEqual(expect.objectContaining({
+      id: "draft-5",
+      status: "draft",
+      versionNumber: 5,
+    }));
+    // A-M6: allocation ran inside a tx and took a FOR UPDATE parent-row lock.
+    expect(captured.transactionCalls).toBe(1);
+    expect(captured.lockExecutes).toHaveLength(1);
+    expect(captured.insertValues[0]).toEqual(expect.objectContaining({
+      memoryItemId: "mem-1",
+      versionNumber: 5,
+      status: "draft",
+      createdBy: "user-1",
+    }));
+  });
+
+  it("saveDraft: updates the caller's existing draft (dedup runs inside the locked tx)", async () => {
+    const { db, captured } = createSequenceDb({
+      lockMode: true,
+      selects: [
+        [{ id: "mem-1", companyId: "co-1", status: "approved" }],
+        // existing draft by this user → early-return update, no max read/insert
+        [{ id: "draft-2", memoryItemId: "mem-1", versionNumber: 2, status: "draft", createdBy: "user-1" }],
+      ],
+      updates: [[{ id: "draft-2", memoryItemId: "mem-1", versionNumber: 2, status: "draft", content: "Updated body", createdBy: "user-1" }]],
+    });
+    const svc = memoryService(db);
+
+    const version = await svc.saveDraft("co-1", "mem-1", "Updated body", "user-1");
+
+    expect(version.id).toBe("draft-2");
+    expect(captured.insertValues).toHaveLength(0);
+    expect(captured.updateSets[0]).toEqual({ content: "Updated body" });
+    // Dedup ran inside the locked tx (after the FOR UPDATE), not before it.
+    expect(captured.transactionCalls).toBe(1);
+    expect(captured.lockExecutes).toHaveLength(1);
+  });
+
+  it("saveDraft: returns null for a missing item without opening a tx", async () => {
+    const { db, captured } = createSequenceDb({
+      lockMode: true,
+      selects: [[]],
+    });
+    const svc = memoryService(db);
+
+    const result = await svc.saveDraft("co-1", "missing", "Body", "user-1");
+
+    expect(result).toBeNull();
+    // The not-found short-circuit happens before any lock/tx work.
+    expect(captured.transactionCalls).toBe(0);
+    expect(captured.lockExecutes).toHaveLength(0);
   });
 
   it("rejects update suggestions for archived items", async () => {
