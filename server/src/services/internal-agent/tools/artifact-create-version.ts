@@ -83,6 +83,26 @@ export const createArtifactVersionTool: AgentTool = {
 
     try {
       const result = await ctx.db.transaction(async (tx: any) => {
+        // SECURITY (branching scope): a supplied parentVersionId MUST belong to
+        // THIS artifact. The FK only constrains it to *some* artifact_versions
+        // row, so without this check a prompt-injected crew agent could branch a
+        // new version on a valid same-company artifact off a parent owned by
+        // ANOTHER artifact (and another company). This tool inserts the version
+        // row directly here, bypassing artifactService.addVersion's identical
+        // guard — so it must re-validate the parent inside the tx, BEFORE the
+        // insert. A foreign or missing parent is rejected as NOT_FOUND (same as
+        // artifacts.ts addVersion) and nothing is written. Returning here aborts
+        // the transaction before any insert/update runs.
+        if (parentVersionId) {
+          const [parent] = await tx
+            .select({ artifactId: artifactVersions.artifactId })
+            .from(artifactVersions)
+            .where(eq(artifactVersions.id, parentVersionId));
+          if (!parent || parent.artifactId !== artifactId) {
+            return { invalidParent: true as const };
+          }
+        }
+
         const latestRows = await tx
           .select({
             max: sql<number>`coalesce(max(${artifactVersions.versionNumber}), 0)::int`,
@@ -115,6 +135,15 @@ export const createArtifactVersionTool: AgentTool = {
 
         return { versionId: newVersion.id, versionNumber: nextVersion };
       });
+
+      if ("invalidParent" in result) {
+        return {
+          success: false,
+          data: null,
+          summary: "Artifact version parent invalid",
+          error: "NOT_FOUND",
+        };
+      }
 
       return {
         success: true,
