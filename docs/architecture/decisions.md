@@ -765,6 +765,34 @@ durable sweep drains `ready` (sealed), not raw `proposed` — same #99 intent (t
 row IS the work item), corrected mechanism. Refs: PR [#203];
 `docs/aoa/plans/2026-06-19-prb-outbox-seal-{design,implementation}.md` (adversarial review wf_65e3511f).
 
+## Decision #103 — Plugin sandbox: scoped fs-read, but NO network-egress boundary at any trust tier (2026-06-21)
+
+The plugin worker sandbox (`server/src/services/plugin-sandbox.ts`,
+`buildSandboxExecArgv`) uses Node's `--permission` model for non-`core` trust tiers
+(`untrusted` / `verified`). Two boundaries it does and does not provide:
+
+- **Filesystem read — scoped (B-M4).** Previously `--allow-fs-read=*` granted full host
+  read. It is now scoped to the plugin's package directory, its scratch dir, and the
+  instance plugins root (`~/.aoa/plugins`). The plugins root is included because Node
+  resolves a plugin's runtime dependencies from the hoisted
+  `~/.aoa/plugins/node_modules` tree, so scoping reads to the package dir alone breaks
+  module loading for npm-installed plugins. The plugins root is a strict subset of the
+  host filesystem — it does not expose the host source tree, secrets, or the rest of the
+  user's home directory. When the package dir cannot be resolved, fs-read falls back to
+  the plugins root — never to `*`. `--allow-fs-write` stays scoped to scratch + tmp.
+
+- **Network egress — NO boundary exists, at any trust tier.** Node's `--permission`
+  model has **no** `--allow-net` flag (that is Deno). Network access from a plugin worker
+  is therefore **unrestricted**: raw `node:https` / `node:net` / global `fetch` bypass the
+  `http.outbound` capability check **and** the SSRF guard entirely. Those in-process
+  controls only constrain the SDK `ctx.http.fetch` helper — a cooperative plugin's
+  convenience path, not a security boundary. **A malicious or compromised plugin can make
+  arbitrary outbound network calls regardless of its declared capabilities or trust tier.**
+  Real egress control requires **OS-level isolation** (a network namespace, a seccomp /
+  container sandbox, or a mandatory egress proxy) — it is not fixable with an in-process
+  patch and is explicitly **out of scope** for the in-process sandbox. Tracked as separate
+  infra work.
+
 [#197]: https://github.com/MeteoriteLabs/AoA/pull/197
 [#198]: https://github.com/MeteoriteLabs/AoA/issues/198
 [#203]: https://github.com/MeteoriteLabs/AoA/pull/203

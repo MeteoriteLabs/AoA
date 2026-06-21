@@ -662,4 +662,79 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
     expect(result).toEqual({ status: "existing_draft", version: winningDraft });
     expect(latestReloads).toBeGreaterThan(0);
   });
+
+  it("returns the existing draft when a concurrent insert hits the thread-version unique index", async () => {
+    // A-M18: two racers that both clear the latest-draft guard insert
+    // versionNumber = latest+1 with status = "draft", violating BOTH
+    // thread_scope_versions_thread_version_uq (threadId, versionNumber) AND
+    // thread_scope_versions_one_draft_uq (threadId WHERE status='draft').
+    // The migration creates thread_version_uq first, so Postgres reports it
+    // FIRST. The catch must converge on EITHER index, not re-throw a 500.
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const winningDraft = {
+      id: "scope-winner",
+      threadId: "thread1",
+      versionNumber: 1,
+      sourceEndSeq: 1,
+      status: "draft",
+    };
+
+    let latestReloads = 0;
+    const selectQueue: any[][] = [
+      [thread], // thread lookup
+      [], // loadLatestScopeVersion (first call) — no existing version
+      [{ id: "entry-1", discussionId: "thread1", seq: 1, inputType: "write", rawContent: "Scope this." }],
+      [], // extracted items
+      [], // attachments
+    ];
+    let idx = 0;
+
+    function makeSelectChain() {
+      const chain: any = {
+        from: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
+        where: vi.fn(() => chain),
+        orderBy: vi.fn(() => chain),
+        limit: vi.fn(() => chain),
+        then: (resolve: (rows: any[]) => any) => {
+          // After the queue is exhausted, the post-violation loadLatestScopeVersion
+          // returns the winning draft.
+          if (idx >= selectQueue.length) {
+            latestReloads += 1;
+            return Promise.resolve(selectQueue[idx] ?? []).then(() => resolve([winningDraft]));
+          }
+          return Promise.resolve(selectQueue[idx++] ?? []).then(resolve);
+        },
+      };
+      return chain;
+    }
+
+    // Postgres reports the FIRST-created index (thread_version_uq) on conflict.
+    const uniqueErr = Object.assign(new Error("duplicate key value violates unique constraint"), {
+      code: "23505",
+      constraint: "thread_scope_versions_thread_version_uq",
+    });
+
+    const db: any = {
+      select: vi.fn(() => makeSelectChain()),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(async () => {
+            throw uniqueErr;
+          }),
+        })),
+      })),
+      transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => fn(db)),
+    };
+
+    const result = await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "thread1",
+      { userId: "u1", isHuman: true },
+      { summary: "Draft v1" },
+    );
+
+    expect(result).toEqual({ status: "existing_draft", version: winningDraft });
+    expect(latestReloads).toBeGreaterThan(0);
+  });
 });

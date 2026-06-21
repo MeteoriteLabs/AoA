@@ -1,4 +1,4 @@
-import { and, eq, lt, isNotNull, inArray, sql } from "drizzle-orm";
+import { and, eq, lt, isNotNull, isNull, or, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryItems, issues, taskDependencies, suggestions } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
@@ -292,7 +292,14 @@ export function memoryLifecycleService(db: Db) {
             eq(memoryItems.companyId, companyId),
             eq(memoryItems.status, "approved"),
             inArray(memoryItems.layer, ["identity", "domain"]),
-            lt(memoryItems.accessedAt, cutoff),
+            // Stale if last accessed before the cutoff, OR never accessed
+            // (accessedAt IS NULL) but created before the cutoff. The plain
+            // `accessedAt < cutoff` form silently drops never-accessed rows
+            // because NULL < cutoff evaluates to NULL (not TRUE). (A-M4)
+            or(
+              lt(memoryItems.accessedAt, cutoff),
+              and(isNull(memoryItems.accessedAt), lt(memoryItems.createdAt, cutoff)),
+            ),
           ),
         );
 
@@ -321,16 +328,29 @@ export function memoryLifecycleService(db: Db) {
       if (itemsToFlag.length === 0) return 0;
 
       for (const item of itemsToFlag) {
-        const daysSinceAccess = Math.floor(
-          (Date.now() - (item.accessedAt?.getTime() ?? 0)) / (24 * 60 * 60 * 1000),
-        );
+        // For never-accessed items, `accessedAt` is null — measuring age from
+        // the epoch (getTime() ?? 0) yields a nonsense ~20000-day count. Fall
+        // back to `createdAt` so the age reflects how long the item has
+        // existed unused. (A-M4 / Codex P2)
+        const neverAccessed = !item.accessedAt;
+        const ageAnchor = item.accessedAt ?? item.createdAt;
+        const daysUnused = ageAnchor
+          ? Math.floor((Date.now() - ageAnchor.getTime()) / (24 * 60 * 60 * 1000))
+          : 0;
+
+        const title = neverAccessed
+          ? `Memory item "${item.title}" has never been accessed (created ${daysUnused} days ago). Still relevant?`
+          : `Memory item "${item.title}" hasn't been used in ${daysUnused} days. Still relevant?`;
+        const evidence = neverAccessed
+          ? `Never accessed since creation ${item.createdAt?.toISOString() ?? "unknown"}. Layer: ${item.layer}.`
+          : `Last accessed: ${item.accessedAt!.toISOString()}. Layer: ${item.layer}.`;
 
         await db.insert(suggestions).values({
           companyId,
           category: "memory_gap",
           actionType: "archive_memory",
-          title: `Memory item "${item.title}" hasn't been used in ${daysSinceAccess} days. Still relevant?`,
-          evidence: `Last accessed: ${item.accessedAt?.toISOString() ?? "never"}. Layer: ${item.layer}.`,
+          title,
+          evidence,
           status: "pending",
           relatedMemoryItemId: item.id,
           actionPayload: { memoryItemId: item.id },

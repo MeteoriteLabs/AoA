@@ -1682,6 +1682,17 @@ export function discussionService(db: Db) {
         throw badRequest("Entry already belongs to this discussion");
       }
 
+      // A-H7 (Codex P2): moving a reply would leave its parentEntryId pointing at
+      // an entry that stays in the OLD thread — a cross-thread parent pointer that
+      // breaks the same-discussion-parent invariant addEntry enforces and corrupts
+      // reply nesting in the target. REJECT rather than clear: clearing would
+      // silently promote the reply to a root entry and lose the conversation
+      // structure the founder presumably wants to preserve. The founder can move
+      // (or unlink) the parent first, then move the reply.
+      if (entry.parentEntryId) {
+        throw badRequest("Cannot move a reply; move or unlink its parent");
+      }
+
       // Verify both discussions belong to company
       const [sourceDisc, targetDisc] = await Promise.all([
         db
@@ -1722,13 +1733,34 @@ export function discussionService(db: Db) {
           );
         const pendingCount = pendingItems.length;
 
-        // Move entry
+        const now = new Date();
+
+        // A-H7: the moved entry's `seq` is meaningless in the target's
+        // independent seq space — keeping the source seq either collides with an
+        // existing target entry (partial UNIQUE (discussion_id, seq) WHERE seq<>0
+        // → Postgres 23505) or silently shadows the target's next addEntry seq.
+        // Allocate a FRESH target seq atomically, exactly like addEntry: bump the
+        // target's entry_seq counter with UPDATE ... RETURNING (atomic per row, so
+        // concurrent moves/inserts serialize on the discussions row) and carry the
+        // denormalized count/lastEntryAt bumps in the same statement.
+        const [{ entrySeq: targetSeq }] = await tx
+          .update(discussions)
+          .set({
+            entrySeq: sql`${discussions.entrySeq} + 1`,
+            entryCount: sql`${discussions.entryCount} + 1`,
+            pendingItemCount: sql`${discussions.pendingItemCount} + ${pendingCount}`,
+            lastEntryAt: now,
+            updatedAt: now,
+          })
+          .where(eq(discussions.id, targetDiscussionId))
+          .returning({ entrySeq: discussions.entrySeq });
+
+        // Move entry into the target thread AND reassign its seq to the freshly
+        // allocated target seq, in the same statement.
         await tx
           .update(discussionEntries)
-          .set({ discussionId: targetDiscussionId })
+          .set({ discussionId: targetDiscussionId, seq: targetSeq })
           .where(eq(discussionEntries.id, entryId));
-
-        const now = new Date();
 
         // Update source discussion counts
         await tx
@@ -1739,17 +1771,6 @@ export function discussionService(db: Db) {
             updatedAt: now,
           })
           .where(eq(discussions.id, sourceDiscussionId));
-
-        // Update target discussion counts
-        await tx
-          .update(discussions)
-          .set({
-            entryCount: sql`${discussions.entryCount} + 1`,
-            pendingItemCount: sql`${discussions.pendingItemCount} + ${pendingCount}`,
-            lastEntryAt: now,
-            updatedAt: now,
-          })
-          .where(eq(discussions.id, targetDiscussionId));
 
         return { entryId, sourceDiscussionId, targetDiscussionId };
       });

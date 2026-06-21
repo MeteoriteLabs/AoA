@@ -32,7 +32,7 @@ import type {
 } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { dependencyService } from "./dependencies.js";
+import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
 import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
@@ -482,7 +482,9 @@ export function issueService(db: Db) {
         ),
       );
     if (upstream.length === 0) return false;
-    return upstream.some((r) => r.status !== "done");
+    // A dependency only counts as "unmet" if it is not yet terminal. Both `done`
+    // and `cancelled` satisfy the dependency (A-H9).
+    return upstream.some((r) => !TERMINAL_STATUSES.includes(r.status));
   }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
@@ -1343,7 +1345,10 @@ export function issueService(db: Db) {
             const resolved = await deps.resolveDependencies(existing.companyId, id, tx);
             wake = resolved.tasksToWake;
           } else if (issueData.status === "cancelled") {
-            await deps.handleCancelledDependency(existing.companyId, id, tx);
+            // A cancelled dependency is terminal too — it releases its dependents
+            // and we must propagate the resulting wakeups so they get dispatched
+            // (symmetric with the `done` branch). (A-H9)
+            wake = await deps.handleCancelledDependency(existing.companyId, id, tx);
           }
         }
 

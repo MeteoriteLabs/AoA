@@ -361,8 +361,16 @@ export async function runChildProcess(
     }
 
     if (opts.stdin != null && child.stdin) {
-      child.stdin.write(opts.stdin);
-      child.stdin.end();
+      // EPIPE / ERR_STREAM_DESTROYED here is benign: the child exited before we
+      // finished writing stdin. The close handler still resolves with the captured
+      // exit code. Swallow it — an unhandled 'error' on a writable crashes the process.
+      child.stdin.on("error", () => {});
+      try {
+        child.stdin.write(opts.stdin);
+        child.stdin.end();
+      } catch {
+        // synchronous throw (e.g. write-after-end / destroyed) — also benign here
+      }
     }
 
     let timedOut = false;

@@ -20,6 +20,8 @@ vi.mock("drizzle-orm", () => ({
     eqCalls.push([a, b]);
     return { eq: [a, b] };
   }),
+  isNull: vi.fn((arg: unknown) => ({ isNull: arg })),
+  gt: vi.fn((...args: unknown[]) => ({ gt: args })),
   ilike: vi.fn((...args: unknown[]) => ({ ilike: args })),
   desc: vi.fn((arg: unknown) => ({ desc: arg })),
   sql: vi.fn(() => ({ as: vi.fn(() => "sql") })),

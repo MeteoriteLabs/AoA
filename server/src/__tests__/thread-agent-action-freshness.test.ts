@@ -130,6 +130,89 @@ describe("thread agent action freshness", () => {
     expect(result).toEqual({ fresh: false, reason: "thread_done" });
   });
 
+  it("does NOT suppress a scope-coupled action whose only scope advance is its OWN batch's draft", async () => {
+    // A-M7: in one thread-scoped batch, a sibling create_scope_draft commits FIRST,
+    // minting a new draft (scope-v2) → that becomes the live latestScopeVersionId.
+    // A scope-coupled add_scope_item snapshotted at scope-v1 would otherwise be
+    // suppressed as `newer_scope_version`, even though its commit will REUSE that very
+    // draft (createDraftFromThread early-returns the existing draft). Threading the
+    // batch-produced version id (scope-v2) must mark it FRESH, not stale.
+    const snapshot = await captureFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [baseScope]]) as never,
+      "thread-1",
+    );
+    const newerScope = {
+      id: "scope-v2",
+      versionNumber: 2,
+      status: "draft",
+      sourceEndSeq: 6,
+      createdAt: new Date("2026-06-15T10:04:00Z"),
+    };
+
+    const result = await compareFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [newerScope]]) as never,
+      "thread-1",
+      snapshot,
+      "add_scope_item",
+      "scope-v2", // batchProducedScopeVersionId — the draft a sibling action just produced
+    );
+
+    expect(result).toEqual({ fresh: true });
+  });
+
+  it("STILL suppresses a scope-coupled action when the scope advanced and no batch draft was produced", async () => {
+    // A-M7 guard: with no batch-produced draft id (undefined), the genuine
+    // cross-actor scope advance still suppresses — behavior unchanged.
+    const snapshot = await captureFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [baseScope]]) as never,
+      "thread-1",
+    );
+    const newerScope = {
+      id: "scope-v2",
+      versionNumber: 2,
+      status: "draft",
+      sourceEndSeq: 6,
+      createdAt: new Date("2026-06-15T10:04:00Z"),
+    };
+
+    const result = await compareFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [newerScope]]) as never,
+      "thread-1",
+      snapshot,
+      "add_scope_item",
+      undefined,
+    );
+
+    expect(result).toEqual({ fresh: false, reason: "newer_scope_version" });
+  });
+
+  it("STILL suppresses a scope-coupled action when the live scope is a DIFFERENT version than the batch draft", async () => {
+    // A-M7 guard: a genuine cross-actor advance to scope-v2 while THIS batch only
+    // produced scope-v3 must NOT be excused — the batch draft id does not match the
+    // live latestScopeVersionId, so the suppression still fires.
+    const snapshot = await captureFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [baseScope]]) as never,
+      "thread-1",
+    );
+    const newerScope = {
+      id: "scope-v2",
+      versionNumber: 2,
+      status: "draft",
+      sourceEndSeq: 6,
+      createdAt: new Date("2026-06-15T10:04:00Z"),
+    };
+
+    const result = await compareFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [newerScope]]) as never,
+      "thread-1",
+      snapshot,
+      "add_scope_item",
+      "scope-v3", // batch produced a different draft than the live one
+    );
+
+    expect(result).toEqual({ fresh: false, reason: "newer_scope_version" });
+  });
+
   it("reports snapshot_unavailable (not newer_human_entry) for an empty snapshot", async () => {
     // When captureFreshnessSnapshot threw at run start, the stored snapshot is
     // empty `{}`. The live thread has a human entry, so the legacy code reported

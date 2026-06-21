@@ -24,7 +24,7 @@ import {
   renderTemplate,
   applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { parseCodexJsonl, createCodexSessionIdCapture, isCodexUnknownSessionError } from "./parse.js";
 import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
 import { writeCodexMcpConfigToml } from "./codex-config-toml.js";
@@ -430,6 +430,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
+    // A-M17: capture the codex session id out-of-band from the FULL stdout chunk
+    // stream, before runChildProcess's 4MB cap (which keeps the tail) can drop
+    // the head `thread.started` line and leave parseCodexJsonl with a null
+    // sessionId for an oversized run.
+    //
+    // Codex P2: use a carry-buffered capture so a `thread.started` line that the
+    // stdout pipe splits across two chunks is still recognised — each half is
+    // unparseable JSON on its own, so a per-chunk extract would lose the id.
+    const sessionIdCapture = createCodexSessionIdCapture();
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
@@ -460,6 +469,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
+          sessionIdCapture.feed(chunk);
           await onLog(stream, chunk);
           return;
         }
@@ -477,11 +487,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       rawStderr: proc.stderr,
       parsed: parseCodexJsonl(proc.stdout),
+      liveSessionId: sessionIdCapture.sessionId,
     };
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl>; liveSessionId: string | null },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -495,7 +506,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const resolvedSessionId = attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const resolvedSessionId =
+      attempt.parsed.sessionId ?? attempt.liveSessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,

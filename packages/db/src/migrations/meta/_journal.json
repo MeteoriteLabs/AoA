@@ -1037,6 +1037,20 @@
       "when": 1781871488854,
       "tag": "0147_lovely_gateway",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1782034705923,
+      "tag": "0148_skinny_dazzler",
+      "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1782046965724,
+      "tag": "0149_fresh_warlock",
+      "breakpoints": true
     }
   ]
 }

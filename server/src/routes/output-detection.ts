@@ -10,13 +10,294 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
 // ---------------------------------------------------------------------------
+// Transactional core (A-M9)
+//
+// The confirm/dismiss flow is a read-modify-write over the entire
+// heartbeat_runs.detectedOutputs JSONB array. Without serialization, two
+// concurrent confirms/dismisses on different indices both read the same
+// snapshot and the last write-back clobbers the other's mutation (lost
+// update). A re-confirm of an already-confirmed index can also create a
+// duplicate artifact version because the `status !== 'pending'` guard was read
+// from a stale, unlocked snapshot.
+//
+// These cores wrap the whole read-modify-write in db.transaction and take a
+// `FOR NO KEY UPDATE` row lock on the heartbeat_runs row first, so concurrent
+// confirms/dismisses on the same run serialize. The pending-guard is re-checked
+// against the FRESH (locked) read, and every service write inside the tx is
+// performed through a tx-scoped service instance (artifactService(tx),
+// taskOutputService(tx), logActivity(tx, ...)) so the whole unit commits or
+// rolls back atomically.
+// ---------------------------------------------------------------------------
+
+type ActorInfo = ReturnType<typeof getActorInfo>;
+
+interface ConfirmInput {
+  runId: string;
+  index: number;
+  actor: ActorInfo;
+  body: { artifactId?: string; title?: string; type?: string; changelog?: string };
+  /** Authorization gate, invoked with the company that owns the run (under lock). */
+  assertAccess: (companyId: string) => void;
+}
+
+interface DismissInput {
+  runId: string;
+  index: number;
+  /** Authorization gate, invoked with the company that owns the run (under lock). */
+  assertAccess: (companyId: string) => void;
+}
+
+type CoreResult<TOk> = { ok: true; value: TOk } | { ok: false; status: number; error: string };
+
+export interface ConfirmDetectedOutputResult {
+  artifactId: string;
+  versionId: string;
+  status: "confirmed";
+}
+
+/**
+ * Lock the heartbeat_runs row with `FOR NO KEY UPDATE` and return the fresh
+ * (post-lock) run row, or null when the run does not exist. NO KEY UPDATE is
+ * sufficient to serialize writers to this row without blocking unrelated FK
+ * references to heartbeat_runs.
+ */
+async function lockAndReadRun(tx: Db, runId: string) {
+  await tx.execute(
+    sql`select id from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for no key update`,
+  );
+  return tx
+    .select({
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      detectedOutputs: heartbeatRuns.detectedOutputs,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+}
+
+/**
+ * Confirm a detected output → create artifact/version, upsert the task output,
+ * and flip the JSONB entry to `confirmed`. All under a single transaction with
+ * the run row locked FOR NO KEY UPDATE.
+ */
+export async function confirmDetectedOutputCore(
+  db: Db,
+  input: ConfirmInput,
+): Promise<CoreResult<ConfirmDetectedOutputResult>> {
+  const { runId, index, actor, body, assertAccess } = input;
+
+  return db.transaction(async (txRaw) => {
+    const tx = txRaw as unknown as Db;
+
+    const run = await lockAndReadRun(tx, runId);
+    if (!run) {
+      return { ok: false, status: 404, error: "Heartbeat run not found" };
+    }
+    assertAccess(run.companyId);
+
+    const outputs = run.detectedOutputs as unknown as DetectedOutput[] | null;
+    if (!outputs || index >= outputs.length) {
+      return { ok: false, status: 404, error: "Detected output not found at index" };
+    }
+
+    // Re-check the pending guard against the FRESH, locked read. A concurrent
+    // confirm/dismiss that committed first will have flipped this away from
+    // "pending", and we must NOT create a second artifact version.
+    const output = outputs[index];
+    if (output.status !== "pending") {
+      return { ok: false, status: 409, error: `Output already ${output.status}` };
+    }
+
+    if (!output.assetId) {
+      return { ok: false, status: 422, error: "Output has no stored asset" };
+    }
+
+    // Tx-scoped service instances: every downstream write commits/rolls back
+    // with this transaction.
+    const artifactSvc = artifactService(tx);
+    const taskOutputSvc = taskOutputService(tx);
+
+    const fileUrl = `/api/assets/${output.assetId}/content`;
+    const { artifactId, title, type, changelog } = body;
+    const issueId = (run.contextSnapshot as Record<string, unknown> | null)?.issueId as
+      | string
+      | undefined;
+
+    let confirmedArtifactId: string;
+    let confirmedVersionId: string;
+    let issueForOutput: { artifactId: string | null; projectId: string | null } | null = null;
+
+    if (issueId) {
+      issueForOutput = await tx
+        .select({ artifactId: issues.artifactId, projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+    }
+
+    if (artifactId) {
+      const existingArtifact = await artifactSvc.getById(artifactId);
+      if (!existingArtifact) {
+        return { ok: false, status: 404, error: "Artifact not found" };
+      }
+      if (existingArtifact.companyId !== run.companyId) {
+        return { ok: false, status: 403, error: "Artifact does not belong to this company" };
+      }
+
+      // Add version to existing artifact
+      const version = await artifactSvc.addVersion(artifactId, {
+        source: "agent",
+        sourceDetail: run.agentId,
+        changelog: changelog ?? `Captured from agent output: ${output.filename}`,
+        fileUrl,
+      });
+      confirmedArtifactId = artifactId;
+      confirmedVersionId = version.id;
+    } else {
+      // Create new artifact with initial version
+      const artifact = await artifactSvc.create(run.companyId, actor.actorId, {
+        title: title ?? output.filename,
+        type: type ?? inferArtifactType(output),
+        source: "agent",
+        sourceDetail: run.agentId,
+        changelog: changelog ?? `Captured from agent output: ${output.filename}`,
+        fileUrl,
+      });
+      confirmedArtifactId = artifact.id;
+      confirmedVersionId = artifact.versions[0]?.id ?? artifact.id;
+
+      // Link to task if issue has no artifact yet
+      if (issueId && issueForOutput && !issueForOutput.artifactId) {
+        await tx
+          .update(issues)
+          .set({ artifactId: confirmedArtifactId, updatedAt: new Date() })
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+      }
+    }
+
+    if (issueId && issueForOutput) {
+      await taskOutputSvc.upsertForIssue(run.companyId, issueId, {
+        type: artifactId ? "artifact_version" : "artifact",
+        provider: "aoa",
+        externalId: `detected-output:${runId}:${index}`,
+        artifactId: confirmedArtifactId,
+        artifactVersionId: confirmedVersionId,
+        assetId: output.assetId,
+        title: output.filename,
+        status: "active",
+        reviewState: "needs_review",
+        isPrimary: !artifactId && !issueForOutput.artifactId,
+        healthStatus: "unknown",
+        summary: output.label ?? null,
+        metadata: {
+          path: output.path,
+          contentType: output.contentType,
+          byteSize: output.byteSize,
+          sha256: output.sha256,
+          source: output.source,
+        },
+        createdByRunId: runId,
+        createdByAgentId: run.agentId,
+      });
+    }
+
+    // Update the JSONB array item (write-back on tx)
+    const updatedOutputs = [...outputs];
+    updatedOutputs[index] = {
+      ...output,
+      status: "confirmed",
+      confirmedArtifactId,
+      confirmedVersionId,
+    };
+
+    await tx
+      .update(heartbeatRuns)
+      .set({
+        detectedOutputs: updatedOutputs as unknown as Array<Record<string, unknown>>,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await logActivity(tx, {
+      companyId: run.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "artifact.output_confirmed",
+      entityType: "artifact",
+      entityId: confirmedArtifactId,
+      details: {
+        runId,
+        filename: output.filename,
+        versionId: confirmedVersionId,
+      },
+    });
+
+    return {
+      ok: true,
+      value: {
+        artifactId: confirmedArtifactId,
+        versionId: confirmedVersionId,
+        status: "confirmed" as const,
+      },
+    };
+  });
+}
+
+/**
+ * Dismiss a detected output → flip the JSONB entry to `dismissed`. Under a
+ * single transaction with the run row locked FOR NO KEY UPDATE so it cannot
+ * clobber a concurrent confirm/dismiss on a sibling index.
+ */
+export async function dismissDetectedOutputCore(
+  db: Db,
+  input: DismissInput,
+): Promise<CoreResult<{ status: "dismissed" }>> {
+  const { runId, index, assertAccess } = input;
+
+  return db.transaction(async (txRaw) => {
+    const tx = txRaw as unknown as Db;
+
+    const run = await lockAndReadRun(tx, runId);
+    if (!run) {
+      return { ok: false, status: 404, error: "Heartbeat run not found" };
+    }
+    assertAccess(run.companyId);
+
+    const outputs = run.detectedOutputs as unknown as DetectedOutput[] | null;
+    if (!outputs || index >= outputs.length) {
+      return { ok: false, status: 404, error: "Detected output not found at index" };
+    }
+
+    const output = outputs[index];
+    if (output.status !== "pending") {
+      return { ok: false, status: 409, error: `Output already ${output.status}` };
+    }
+
+    const updatedOutputs = [...outputs];
+    updatedOutputs[index] = { ...output, status: "dismissed" };
+
+    await tx
+      .update(heartbeatRuns)
+      .set({
+        detectedOutputs: updatedOutputs as unknown as Array<Record<string, unknown>>,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    return { ok: true, value: { status: "dismissed" as const } };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
 export function outputDetectionRoutes(db: Db) {
   const router = Router();
-  const artifactSvc = artifactService(db);
-  const taskOutputSvc = taskOutputService(db);
   registerIssueParamNormalizer(router, db, ["issueId"]);
 
   // ── List detected outputs for a task (aggregated from all runs) ──────
@@ -114,165 +395,21 @@ export function outputDetectionRoutes(db: Db) {
         return;
       }
 
-      const run = await db
-        .select({
-          companyId: heartbeatRuns.companyId,
-          agentId: heartbeatRuns.agentId,
-          detectedOutputs: heartbeatRuns.detectedOutputs,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
-        })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!run) {
-        res.status(404).json({ error: "Heartbeat run not found" });
-        return;
-      }
-      assertCompanyAccess(req, run.companyId);
-
-      const outputs = run.detectedOutputs as unknown as DetectedOutput[] | null;
-      if (!outputs || index >= outputs.length) {
-        res.status(404).json({ error: "Detected output not found at index" });
-        return;
-      }
-
-      const output = outputs[index];
-      if (output.status !== "pending") {
-        res.status(409).json({ error: `Output already ${output.status}` });
-        return;
-      }
-
-      if (!output.assetId) {
-        res.status(422).json({ error: "Output has no stored asset" });
-        return;
-      }
-
       const actor = getActorInfo(req);
-      const fileUrl = `/api/assets/${output.assetId}/content`;
-      const { artifactId, title, type, changelog } = req.body;
-      const issueId = (run.contextSnapshot as Record<string, unknown> | null)?.issueId as
-        | string
-        | undefined;
-
-      let confirmedArtifactId: string;
-      let confirmedVersionId: string;
-      let issueForOutput: { artifactId: string | null; projectId: string | null } | null = null;
-
-      if (issueId) {
-        issueForOutput = await db
-          .select({ artifactId: issues.artifactId, projectId: issues.projectId })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-          .then((rows) => rows[0] ?? null);
-      }
-
-      if (artifactId) {
-        const existingArtifact = await artifactSvc.getById(artifactId);
-        if (!existingArtifact) {
-          res.status(404).json({ error: "Artifact not found" });
-          return;
-        }
-        if (existingArtifact.companyId !== run.companyId) {
-          res.status(403).json({ error: "Artifact does not belong to this company" });
-          return;
-        }
-
-        // Add version to existing artifact
-        const version = await artifactSvc.addVersion(artifactId, {
-          source: "agent",
-          sourceDetail: run.agentId,
-          changelog: changelog ?? `Captured from agent output: ${output.filename}`,
-          fileUrl,
-        });
-        confirmedArtifactId = artifactId;
-        confirmedVersionId = version.id;
-      } else {
-        // Create new artifact with initial version
-        const artifact = await artifactSvc.create(run.companyId, actor.actorId, {
-          title: title ?? output.filename,
-          type: type ?? inferArtifactType(output),
-          source: "agent",
-          sourceDetail: run.agentId,
-          changelog: changelog ?? `Captured from agent output: ${output.filename}`,
-          fileUrl,
-        });
-        confirmedArtifactId = artifact.id;
-        confirmedVersionId = artifact.versions[0]?.id ?? artifact.id;
-
-        // Link to task if issue has no artifact yet
-        if (issueId && issueForOutput && !issueForOutput.artifactId) {
-          await db
-            .update(issues)
-            .set({ artifactId: confirmedArtifactId, updatedAt: new Date() })
-            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
-        }
-      }
-
-      if (issueId && issueForOutput) {
-        await taskOutputSvc.upsertForIssue(run.companyId, issueId, {
-          type: artifactId ? "artifact_version" : "artifact",
-          provider: "aoa",
-          externalId: `detected-output:${runId}:${index}`,
-          artifactId: confirmedArtifactId,
-          artifactVersionId: confirmedVersionId,
-          assetId: output.assetId,
-          title: output.filename,
-          status: "active",
-          reviewState: "needs_review",
-          isPrimary: !artifactId && !issueForOutput.artifactId,
-          healthStatus: "unknown",
-          summary: output.label ?? null,
-          metadata: {
-            path: output.path,
-            contentType: output.contentType,
-            byteSize: output.byteSize,
-            sha256: output.sha256,
-            source: output.source,
-          },
-          createdByRunId: runId,
-          createdByAgentId: run.agentId,
-        });
-      }
-
-      // Update the JSONB array item
-      const updatedOutputs = [...outputs];
-      updatedOutputs[index] = {
-        ...output,
-        status: "confirmed",
-        confirmedArtifactId,
-        confirmedVersionId,
-      };
-
-      await db
-        .update(heartbeatRuns)
-        .set({
-          detectedOutputs: updatedOutputs as unknown as Array<Record<string, unknown>>,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, runId));
-
-      await logActivity(db, {
-        companyId: run.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "artifact.output_confirmed",
-        entityType: "artifact",
-        entityId: confirmedArtifactId,
-        details: {
-          runId,
-          filename: output.filename,
-          versionId: confirmedVersionId,
-        },
+      const result = await confirmDetectedOutputCore(db, {
+        runId,
+        index,
+        actor,
+        body: req.body,
+        assertAccess: (companyId) => assertCompanyAccess(req, companyId),
       });
 
-      res.status(200).json({
-        artifactId: confirmedArtifactId,
-        versionId: confirmedVersionId,
-        status: "confirmed",
-      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+
+      res.status(200).json(result.value);
     },
   );
 
@@ -286,45 +423,18 @@ export function outputDetectionRoutes(db: Db) {
       return;
     }
 
-    const run = await db
-      .select({
-        companyId: heartbeatRuns.companyId,
-        detectedOutputs: heartbeatRuns.detectedOutputs,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    const result = await dismissDetectedOutputCore(db, {
+      runId,
+      index,
+      assertAccess: (companyId) => assertCompanyAccess(req, companyId),
+    });
 
-    if (!run) {
-      res.status(404).json({ error: "Heartbeat run not found" });
-      return;
-    }
-    assertCompanyAccess(req, run.companyId);
-
-    const outputs = run.detectedOutputs as unknown as DetectedOutput[] | null;
-    if (!outputs || index >= outputs.length) {
-      res.status(404).json({ error: "Detected output not found at index" });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
       return;
     }
 
-    const output = outputs[index];
-    if (output.status !== "pending") {
-      res.status(409).json({ error: `Output already ${output.status}` });
-      return;
-    }
-
-    const updatedOutputs = [...outputs];
-    updatedOutputs[index] = { ...output, status: "dismissed" };
-
-    await db
-      .update(heartbeatRuns)
-      .set({
-        detectedOutputs: updatedOutputs as unknown as Array<Record<string, unknown>>,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, runId));
-
-    res.status(200).json({ status: "dismissed" });
+    res.status(200).json(result.value);
   });
 
   return router;

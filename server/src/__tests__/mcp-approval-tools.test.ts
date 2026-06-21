@@ -195,10 +195,10 @@ function buildApp(options?: {
         revokeKey: vi.fn(),
         listClients: vi.fn(),
       } as any,
-      resolveScope: async (_c, userId) =>
+      resolveScope: async (_c, actor) =>
         role === "founder"
-          ? { kind: "founder", userId }
-          : { kind: "scoped", userId, projectIds },
+          ? { kind: "founder", userId: actor.userId }
+          : { kind: "scoped", userId: actor.userId, projectIds },
       resolveRole: async () => role,
       resolveScopedAgentIds: async () => null,
       issuesSvc: {

@@ -146,6 +146,16 @@ export async function compareFreshnessSnapshot(
   threadId: string,
   snapshot: ThreadFreshnessSnapshot,
   actionType: string,
+  // A-M7: the scope-version id THIS commit batch has already produced for the thread
+  // (a sibling create_scope_draft / add_scope_item / create_artifact_candidate minted
+  // it earlier in the same drain). The freshness snapshot is captured ONCE per run and
+  // shared across all of a run's proposed actions, so it predates that sibling draft.
+  // When the ONLY thing that advanced the live scope is this batch's own draft, the
+  // scope-coupled action's commit will REUSE that draft (createDraftFromThread
+  // early-returns the existing draft), so it is NOT genuinely stale and must not be
+  // suppressed as `newer_scope_version`. A genuine cross-actor advance (live scope id
+  // != this id) still suppresses. Optional + defaulted so other callers are unaffected.
+  batchProducedScopeVersionId?: string | null,
 ): Promise<ThreadFreshnessComparison> {
   // An empty/absent baseline snapshot means freshness capture threw at run start
   // (runner.ts stores `{}` in that case). We have no recorded baseline to compare
@@ -188,8 +198,19 @@ export async function compareFreshnessSnapshot(
   // convene_agent does not depend on the live scope version, so a concurrent scope bump
   // between snapshot and commit must not terminally drop it. Scope-coupled actions
   // (add_scope_item, create_scope_draft, create_artifact_candidate) keep the check.
+  //
+  // A-M7: but a scope-coupled action must ALSO not be suppressed when the ONLY thing
+  // that advanced the live scope is a draft THIS batch just produced — its commit will
+  // reuse that same draft, so it is not stale. We detect that by the live scope id
+  // matching `batchProducedScopeVersionId`; a genuine cross-actor advance (live id is
+  // something else) still trips the check. The match short-circuits BOTH sub-conditions
+  // (id change AND version-number bump), since a fresh draft advances both.
+  const scopeAdvancedByThisBatchOnly =
+    batchProducedScopeVersionId != null &&
+    current.latestScopeVersionId === batchProducedScopeVersionId;
   if (
     !SCOPE_INDEPENDENT_ACTIONS.has(actionType) &&
+    !scopeAdvancedByThisBatchOnly &&
     (current.latestScopeVersionId !== snapshot.latestScopeVersionId ||
       (current.latestScopeVersionNumber ?? 0) > (snapshot.latestScopeVersionNumber ?? 0))
   ) {

@@ -34,7 +34,7 @@
  * @see ./cron.ts — Cron parsing utilities
  */
 
-import { and, eq, lte, or } from "drizzle-orm";
+import { and, eq, inArray, lte, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { pluginJobs, pluginJobRuns } from "@armyofagents/db";
 import type { PluginJobStore } from "./plugin-job-store.js";
@@ -451,48 +451,69 @@ export function createPluginJobScheduler(
       );
     }
 
-    // Overlap prevention
+    // Overlap prevention — claim synchronously (check + add with NO await
+    // between them) so that two concurrent `triggerJob` calls in the same tick
+    // cannot both pass this gate. The scheduled path (`dispatchJob`) already
+    // claims `activeJobs` synchronously before `createRun`; the manual path
+    // previously deferred the claim into the fire-and-forget `dispatchManualRun`
+    // (which only ran after several awaits), leaving a TOCTOU window where the
+    // second caller saw an empty `activeJobs` set and a DB guard that could not
+    // yet see the just-created `queued` run → double-dispatch (A-M16).
     if (activeJobs.has(jobId)) {
       throw new Error(
         `Job "${job.jobKey}" is already running — cannot trigger while in progress`,
       );
     }
+    activeJobs.add(jobId);
 
-    // Also check DB for running runs (defensive — covers multi-instance)
-    const existingRuns = await db
-      .select()
-      .from(pluginJobRuns)
-      .where(
-        and(
-          eq(pluginJobRuns.jobId, jobId),
-          eq(pluginJobRuns.status, "running"),
-        ),
-      );
+    // From here on, every rejection path must release the synchronous claim.
+    try {
+      // Also check DB for in-flight runs (defensive — covers multi-instance).
+      // Include `queued` as well as `running`: a just-created run is inserted
+      // with status `queued` (see plugin-job-store.createRun) and is only
+      // promoted to `running` inside the fire-and-forget dispatch, so a guard
+      // that only sees `running` would miss a concurrent trigger's queued run.
+      const existingRuns = await db
+        .select()
+        .from(pluginJobRuns)
+        .where(
+          and(
+            eq(pluginJobRuns.jobId, jobId),
+            inArray(pluginJobRuns.status, ["running", "queued"]),
+          ),
+        );
 
-    if (existingRuns.length > 0) {
-      throw new Error(
-        `Job "${job.jobKey}" already has a running execution — cannot trigger while in progress`,
-      );
+      if (existingRuns.length > 0) {
+        throw new Error(
+          `Job "${job.jobKey}" already has a running execution — cannot trigger while in progress`,
+        );
+      }
+
+      // Check worker availability
+      if (!workerManager.isRunning(job.pluginId)) {
+        throw new Error(
+          `Worker for plugin "${job.pluginId}" is not running — cannot trigger job`,
+        );
+      }
+
+      // Create the run and dispatch (non-blocking).
+      const run = await jobStore.createRun({
+        jobId,
+        pluginId: job.pluginId,
+        trigger,
+      });
+
+      // Hand off the lifecycle: `dispatchManualRun` owns the matching
+      // `activeJobs.delete(jobId)` in its finally (add-once / delete-once).
+      void dispatchManualRun(job, run.id, trigger);
+
+      return { runId: run.id, jobId };
+    } catch (err) {
+      // Rejected (or createRun failed) before `dispatchManualRun` took over the
+      // claim — release it here so the job isn't stuck "active" forever.
+      activeJobs.delete(jobId);
+      throw err;
     }
-
-    // Check worker availability
-    if (!workerManager.isRunning(job.pluginId)) {
-      throw new Error(
-        `Worker for plugin "${job.pluginId}" is not running — cannot trigger job`,
-      );
-    }
-
-    // Create the run and dispatch (non-blocking)
-    const run = await jobStore.createRun({
-      jobId,
-      pluginId: job.pluginId,
-      trigger,
-    });
-
-    // Dispatch in background — don't block the caller
-    void dispatchManualRun(job, run.id, trigger);
-
-    return { runId: run.id, jobId };
   }
 
   /**
@@ -506,7 +527,11 @@ export function createPluginJobScheduler(
     const { id: jobId, pluginId, jobKey } = job;
     const jobLog = log.child({ jobId, pluginId, jobKey, runId, trigger });
 
-    activeJobs.add(jobId);
+    // NOTE: `activeJobs.add(jobId)` is performed synchronously by the caller
+    // (`triggerJob`) BEFORE this fire-and-forget dispatch is scheduled, to
+    // close the overlap TOCTOU (A-M16). We do NOT re-add here — but we DO own
+    // the matching `activeJobs.delete(jobId)` in the finally below, keeping the
+    // lifecycle add-once / delete-once.
     const startedAt = Date.now();
 
     try {

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agentProjects, agents, memoryItems } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
@@ -90,6 +90,9 @@ export async function buildPinnedMemorySkillEntries(
           eq(memoryItems.companyId, companyId),
           eq(memoryItems.status, "approved"),
           eq(memoryItems.pinnedToSkill, true),
+          // A-M5: never pin expired active_context into the agent skill bundle.
+          // Only active_context sets expiresAt; isNull keeps all other layers.
+          or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
           scopeClause!,
         ),
       );
@@ -113,6 +116,8 @@ export async function buildPinnedMemorySkillEntries(
         and(
           eq(memoryItems.companyId, companyId),
           eq(memoryItems.status, "approved"),
+          // A-M5: an expired active_context item added by id must not leak either.
+          or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
           inArray(memoryItems.id, profile.additions),
         ),
       );

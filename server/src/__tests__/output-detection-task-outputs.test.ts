@@ -89,10 +89,17 @@ function makeUpdateChain() {
 
 function makeDb(selectRows: unknown[][]) {
   let selectIndex = 0;
-  return {
+  const db: Record<string, unknown> = {
     select: vi.fn(() => makeSelectChain(selectRows[selectIndex++] ?? [])),
     update: vi.fn(() => makeUpdateChain()),
+    // A-M9: the confirm/dismiss cores now wrap their read-modify-write in
+    // db.transaction and take a `FOR NO KEY UPDATE` lock via execute(). The
+    // mock runs the callback against the same db so the select-sequence
+    // ordering is preserved, and execute() is a no-op resolving the lock.
+    execute: vi.fn(() => Promise.resolve([])),
   };
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => Promise.resolve(cb(db)));
+  return db;
 }
 
 function makeApp(db: unknown) {

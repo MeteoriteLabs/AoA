@@ -132,7 +132,11 @@ function makeDb(
   insertQueue: any[] = [],
 ) {
   return {
+    // `select` and `selectDistinct` share the same FIFO queue so result-set
+    // ordering is independent of which API a query uses (blockedTaskScan now
+    // uses `selectDistinct` — A-M14).
     select: vi.fn(() => makeSelectChain(selectQueue)),
+    selectDistinct: vi.fn(() => makeSelectChain(selectQueue)),
     insert: vi.fn(() => makeInsertChain(insertQueue)),
     update: vi.fn(() => makeUpdateChain()),
   };
@@ -297,7 +301,7 @@ describe("proactive checks", () => {
 
   // ── dependencyChainGaps ──────────────────────────────────────────────────
   describe("dependencyChainGaps", () => {
-    it("finds gaps when dependency tasks are cancelled", async () => {
+    it("flags a still-blocked dependent whose only dependency is cancelled (release failed to fire)", async () => {
       const db = makeDb(
         [
           [{ notificationPreference: "realtime" }],
@@ -306,8 +310,14 @@ describe("proactive checks", () => {
             { dependentId: "task-1", dependencyId: "task-2" },
             { dependentId: "task-3", dependencyId: "task-4" },
           ],
-          // Cancelled dependency tasks
-          [{ id: "task-2" }],
+          // Issue statuses: task-1 still blocked, task-2 cancelled (terminal);
+          // task-3 blocked, task-4 in_progress (normal blocking → not a gap)
+          [
+            { id: "task-1", status: "blocked" },
+            { id: "task-2", status: "cancelled" },
+            { id: "task-3", status: "blocked" },
+            { id: "task-4", status: "in_progress" },
+          ],
         ],
         [
           [{ id: "run-1" }],
@@ -317,9 +327,32 @@ describe("proactive checks", () => {
 
       const result = await dependencyChainGaps(db as any, "company-1", "user-1");
 
-      // task-2 is cancelled, so task-1's dependency is a gap
+      // Only task-1 is a gap: blocked with all deps terminal. task-3 is
+      // correctly blocked by a non-terminal dep.
       expect(result.findings).toHaveLength(1);
       expect(result.runCreated).toBe(true);
+    });
+
+    it("does NOT flag a cancelled dependency once its dependent has been released (A-H9)", async () => {
+      const db = makeDb(
+        [
+          [{ notificationPreference: "realtime" }],
+          [{ dependentId: "task-1", dependencyId: "task-2" }],
+          // task-2 cancelled, but task-1 was released → now todo, not blocked
+          [
+            { id: "task-1", status: "todo" },
+            { id: "task-2", status: "cancelled" },
+          ],
+        ],
+        [
+          [{ id: "run-1" }],
+        ],
+      );
+
+      const result = await dependencyChainGaps(db as any, "company-1", "user-1");
+
+      // Cancelled = satisfied (A-H9), released dependent is not blocked → no gap
+      expect(result.findings).toHaveLength(0);
     });
 
     it("returns empty when no dependencies exist", async () => {

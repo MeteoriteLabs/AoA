@@ -57,8 +57,52 @@ export const createArtifactVersionTool: AgentTool = {
       };
     }
 
+    // SECURITY (company scoping): this is a crew-agent tool (Engineer/Planner)
+    // driven by an LLM over untrusted task/discussion content — a prompt-injection
+    // surface. artifactId is an arbitrary tool param; nothing below filters by
+    // company, so without this gate a crew agent could add a version to, and
+    // repoint current_version_id on, ANOTHER company's artifact. We verify
+    // ownership on ctx.db BEFORE the transaction and treat a cross-company hit
+    // exactly like a miss (same NOT_FOUND, nothing created) so the tool never
+    // writes onto, or leaks the existence of, another company's artifact. This
+    // MUST run before ctx.db.transaction(...): returning a failure from inside
+    // the tx callback would be lost — the outer handler reads result.versionNumber
+    // and would report success with bogus data.
+    const [art] = await ctx.db
+      .select({ companyId: artifacts.companyId })
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId));
+    if (!art || art.companyId !== ctx.companyId) {
+      return {
+        success: false,
+        data: null,
+        summary: "Artifact not found",
+        error: "NOT_FOUND",
+      };
+    }
+
     try {
       const result = await ctx.db.transaction(async (tx: any) => {
+        // SECURITY (branching scope): a supplied parentVersionId MUST belong to
+        // THIS artifact. The FK only constrains it to *some* artifact_versions
+        // row, so without this check a prompt-injected crew agent could branch a
+        // new version on a valid same-company artifact off a parent owned by
+        // ANOTHER artifact (and another company). This tool inserts the version
+        // row directly here, bypassing artifactService.addVersion's identical
+        // guard — so it must re-validate the parent inside the tx, BEFORE the
+        // insert. A foreign or missing parent is rejected as NOT_FOUND (same as
+        // artifacts.ts addVersion) and nothing is written. Returning here aborts
+        // the transaction before any insert/update runs.
+        if (parentVersionId) {
+          const [parent] = await tx
+            .select({ artifactId: artifactVersions.artifactId })
+            .from(artifactVersions)
+            .where(eq(artifactVersions.id, parentVersionId));
+          if (!parent || parent.artifactId !== artifactId) {
+            return { invalidParent: true as const };
+          }
+        }
+
         const latestRows = await tx
           .select({
             max: sql<number>`coalesce(max(${artifactVersions.versionNumber}), 0)::int`,
@@ -91,6 +135,15 @@ export const createArtifactVersionTool: AgentTool = {
 
         return { versionId: newVersion.id, versionNumber: nextVersion };
       });
+
+      if ("invalidParent" in result) {
+        return {
+          success: false,
+          data: null,
+          summary: "Artifact version parent invalid",
+          error: "NOT_FOUND",
+        };
+      }
 
       return {
         success: true,
