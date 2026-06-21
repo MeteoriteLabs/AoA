@@ -82,10 +82,16 @@ function makeUpdateChain() {
 
 function makeDb(selectRows: unknown[][]) {
   let selectIndex = 0;
-  return {
+  const db: Record<string, unknown> = {
     select: vi.fn(() => makeSelectChain(selectRows[selectIndex++] ?? [])),
     update: vi.fn(() => makeUpdateChain()),
+    // A-M9: confirm/dismiss now run inside db.transaction with a FOR NO KEY
+    // UPDATE lock via execute(). Run the callback against the same db so the
+    // select-sequence ordering is preserved; execute() resolves the lock.
+    execute: vi.fn(() => Promise.resolve([])),
   };
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => Promise.resolve(cb(db)));
+  return db;
 }
 
 function makeApp(db: unknown) {
