@@ -464,6 +464,39 @@ async function handleMemoryRetain(
     callerAgentId !== null &&
     parsed.layer === "working";
 
+  // SECURITY (A-M2): validate that every caller-supplied linked entity
+  // belongs to THIS company before persisting. This guard runs for BOTH the
+  // personal/working-scope and org/department/project paths — it must never be
+  // skipped by the isPersonalScope branch, otherwise a worker agent could plant
+  // a working-memory item cross-linked to another tenant's task/goal/project.
+  // departmentId is a row in the projects table, so it is validated the same
+  // way as projectId via projectsSvc.getById. (Sibling handleSuggestMemory does
+  // the same companyId check for taskId.)
+  if (parsed.taskId) {
+    const task = await ctx.services.issuesSvc.getById(parsed.taskId);
+    if (!task || task.companyId !== ctx.companyId) {
+      return notFoundResult("Task not found");
+    }
+  }
+  if (parsed.goalId) {
+    const goal = await ctx.services.goalsSvc.getById(parsed.goalId);
+    if (!goal || goal.companyId !== ctx.companyId) {
+      return notFoundResult("Goal not found");
+    }
+  }
+  if (parsed.projectId) {
+    const project = await ctx.services.projectsSvc.getById(parsed.projectId);
+    if (!project || project.companyId !== ctx.companyId) {
+      return notFoundResult("Project not found");
+    }
+  }
+  if (parsed.departmentId) {
+    const department = await ctx.services.projectsSvc.getById(parsed.departmentId);
+    if (!department || department.companyId !== ctx.companyId) {
+      return notFoundResult("Department not found");
+    }
+  }
+
   // Org/department/project scope path — re-check RBAC even though the
   // route already gates company access; the founder's permissionsSvc
   // can deny per-layer or per-department writes.

@@ -60,6 +60,7 @@ type Task = {
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
 };
+type Goal = { id: string; companyId: string; title?: string };
 type Comment = { id: string; companyId: string; issueId: string; body: string };
 
 function buildApp(options?: {
@@ -71,6 +72,7 @@ function buildApp(options?: {
   resolveRole?: (companyId: string, userId: string) => Promise<string>;
   projects?: Project[];
   tasks?: Task[];
+  goals?: Goal[];
   canAccessEntity?: (
     companyId: string,
     userId: string,
@@ -85,6 +87,7 @@ function buildApp(options?: {
     body: string,
     actor: { agentId?: string; userId?: string },
   ) => Promise<any>;
+  memoryCreate?: ReturnType<typeof vi.fn>;
 }) {
   const app = express();
   app.use(express.json());
@@ -103,6 +106,18 @@ function buildApp(options?: {
 
   const projectList = options?.projects ?? [];
   const taskList = options?.tasks ?? [];
+  const goalList = options?.goals ?? [];
+
+  const memoryCreate =
+    options?.memoryCreate ??
+    vi.fn().mockImplementation(async (companyId: string, data: any) => ({
+      id: "new-memory-id",
+      companyId,
+      status: "pending",
+      title: data.title,
+      layer: data.layer,
+      agentId: data.agentId ?? null,
+    }));
 
   const createImpl =
     options?.createImpl ??
@@ -165,11 +180,22 @@ function buildApp(options?: {
         listComments: vi.fn().mockResolvedValue([]),
         getComment: vi.fn().mockResolvedValue(null),
       } as any,
-      goalsSvc: { list: vi.fn().mockResolvedValue([]), getById: vi.fn().mockResolvedValue(null) } as any,
+      goalsSvc: {
+        list: vi.fn().mockResolvedValue([]),
+        getById: vi
+          .fn()
+          .mockImplementation(async (id: string) => goalList.find((g) => g.id === id) ?? null),
+      } as any,
       memorySvc: {
         list: vi.fn().mockResolvedValue([]),
         getById: vi.fn().mockResolvedValue(null),
-        create: vi.fn(),
+        create: memoryCreate,
+        approve: vi
+          .fn()
+          .mockImplementation(async (_companyId: string, id: string) => ({
+            id,
+            status: "approved",
+          })),
       } as any,
       artifactsSvc: {
         list: vi.fn().mockResolvedValue([]),
@@ -197,7 +223,7 @@ function buildApp(options?: {
     }),
   );
 
-  return { app };
+  return { app, memoryCreate };
 }
 
 async function callTool(
@@ -544,6 +570,138 @@ describe("MCP write tools", () => {
         body: "I can comment",
       });
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe("memory.retain — linked-entity company ownership", () => {
+    // memory.retain's zod schema requires UUIDs for the FK fields, so these
+    // ids must be syntactically valid UUIDs to reach the handler logic.
+    const UUID = {
+      taskForeign: "00000000-0000-4000-8000-000000000001",
+      taskMine: "00000000-0000-4000-8000-000000000002",
+      goalForeign: "00000000-0000-4000-8000-000000000003",
+      goalMine: "00000000-0000-4000-8000-000000000004",
+      projForeign: "00000000-0000-4000-8000-000000000005",
+      projMine: "00000000-0000-4000-8000-000000000006",
+      deptForeign: "00000000-0000-4000-8000-000000000007",
+    };
+
+    const agentActor = {
+      type: "agent",
+      source: "agent",
+      userId: "agent-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    } as const;
+
+    it("rejects a foreign taskId on the org-scope path (404) and does NOT create memory", async () => {
+      const { app, memoryCreate } = buildApp({
+        tasks: [{ id: UUID.taskForeign, companyId: "other-company", projectId: UUID.projForeign }],
+      });
+      const res = await callTool(app, "memory.retain", {
+        title: "Sneaky",
+        content: "Cross-tenant link",
+        category: "context",
+        layer: "domain",
+        sourceContext: "test",
+        taskId: UUID.taskForeign,
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error.message).toMatch(/not found/i);
+      expect(memoryCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects a foreign taskId on the personal/working-scope path (404) and does NOT create memory", async () => {
+      const { app, memoryCreate } = buildApp({
+        actor: agentActor,
+        tasks: [{ id: UUID.taskForeign, companyId: "other-company", projectId: UUID.projForeign }],
+      });
+      const res = await callTool(app, "memory.retain", {
+        title: "Sneaky",
+        content: "Cross-tenant link",
+        category: "context",
+        layer: "working",
+        sourceContext: "test",
+        scopeToSelf: true,
+        taskId: UUID.taskForeign,
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error.message).toMatch(/not found/i);
+      expect(memoryCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects a foreign goalId (404) and does NOT create memory", async () => {
+      const { app, memoryCreate } = buildApp({
+        goals: [{ id: UUID.goalForeign, companyId: "other-company" }],
+      });
+      const res = await callTool(app, "memory.retain", {
+        title: "Sneaky goal",
+        content: "Cross-tenant goal link",
+        category: "context",
+        layer: "domain",
+        sourceContext: "test",
+        goalId: UUID.goalForeign,
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error.message).toMatch(/not found/i);
+      expect(memoryCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects a foreign projectId (404) and does NOT create memory", async () => {
+      const { app, memoryCreate } = buildApp({
+        projects: [{ id: UUID.projForeign, companyId: "other-company", type: "project" }],
+      });
+      const res = await callTool(app, "memory.retain", {
+        title: "Sneaky project",
+        content: "Cross-tenant project link",
+        category: "context",
+        layer: "domain",
+        sourceContext: "test",
+        projectId: UUID.projForeign,
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error.message).toMatch(/not found/i);
+      expect(memoryCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects a foreign departmentId (404) and does NOT create memory", async () => {
+      const { app, memoryCreate } = buildApp({
+        projects: [{ id: UUID.deptForeign, companyId: "other-company", type: "department" }],
+      });
+      const res = await callTool(app, "memory.retain", {
+        title: "Sneaky dept",
+        content: "Cross-tenant department link",
+        category: "context",
+        layer: "domain",
+        sourceContext: "test",
+        departmentId: UUID.deptForeign,
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error.message).toMatch(/not found/i);
+      expect(memoryCreate).not.toHaveBeenCalled();
+    });
+
+    it("allows same-company linked entities and creates the memory item", async () => {
+      const { app, memoryCreate } = buildApp({
+        tasks: [{ id: UUID.taskMine, companyId: "company-1", projectId: UUID.projMine }],
+        goals: [{ id: UUID.goalMine, companyId: "company-1" }],
+        projects: [{ id: UUID.projMine, companyId: "company-1", type: "project" }],
+      });
+      const res = await callTool(app, "memory.retain", {
+        title: "Valid",
+        content: "All same-company links",
+        category: "context",
+        layer: "domain",
+        sourceContext: "test",
+        taskId: UUID.taskMine,
+        goalId: UUID.goalMine,
+        projectId: UUID.projMine,
+      });
+      expect(res.status).toBe(200);
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload.id).toBeTruthy();
+      expect(memoryCreate).toHaveBeenCalledTimes(1);
     });
   });
 });
