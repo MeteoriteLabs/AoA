@@ -13,6 +13,13 @@ import {
 } from "@armyofagents/db";
 import { createNotification } from "../notifications.js";
 
+// Mirror of dependencies.ts TERMINAL_STATUSES (A-H9). Kept as a local literal
+// rather than imported to avoid dragging the issues/heartbeat/memory module
+// graph into this proactive-checks module. Both `done` and `cancelled` are
+// terminal: a cancelled dependency now releases its dependents, so neither
+// should be flagged as a dependency-chain gap.
+const TERMINAL_DEPENDENCY_STATUSES = ["done", "cancelled"];
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ProactiveCheckResult {
@@ -251,9 +258,15 @@ export async function dependencyChainGaps(
   const preference = await getNotificationPreference(db, companyId);
 
   // Alias: "dependent" is the task waiting, "dependency" is the task it waits on.
-  // A gap exists when the dependency task is cancelled — the dependent is stuck.
-  // We join task_dependencies → issues (as dependent) → issues (as dependency via subquery).
-  // For simplicity we do two queries: get all deps for company, then filter in-memory.
+  // Both `done` and `cancelled` are terminal (A-H9): a cancelled dependency now
+  // *releases* its dependents (moving them off `blocked`) instead of stranding
+  // them, so a cancelled (or done) dependency must NOT be flagged as a gap —
+  // otherwise this check emits a false positive for every released chain.
+  //
+  // The genuine residual gap is a dependent that is STILL `blocked` even though
+  // EVERY one of its dependencies is terminal — the auto-release should have
+  // fired but the task is stuck. A dependent that is correctly blocked by a
+  // still-running (non-terminal) dependency is normal and never a gap.
   const allDeps = await db
     .select({
       dependentId: taskDependencies.dependentIssueId,
@@ -267,20 +280,42 @@ export async function dependencyChainGaps(
     return { findings: [], runCreated: true };
   }
 
-  // Get all dependency task IDs and check which are cancelled
-  const depTaskIds = [...new Set(allDeps.map((d) => d.dependencyId))];
-  const cancelledDeps = await db
-    .select({ id: issues.id })
+  // Resolve the status of every task involved in a dependency edge.
+  const statusRows = await db
+    .select({ id: issues.id, status: issues.status })
     .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, companyId),
-        eq(issues.status, "cancelled"),
-      ),
-    );
+    .where(eq(issues.companyId, companyId));
 
-  const cancelledSet = new Set(cancelledDeps.map((t) => t.id));
-  const gaps = allDeps.filter((d) => cancelledSet.has(d.dependencyId));
+  const statusById = new Map<string, string>();
+  for (const row of statusRows) {
+    statusById.set(row.id, row.status);
+  }
+
+  // Group dependencies by dependent so we can require ALL of them to be terminal.
+  const depsByDependent = new Map<string, string[]>();
+  for (const d of allDeps) {
+    const list = depsByDependent.get(d.dependentId) ?? [];
+    list.push(d.dependencyId);
+    depsByDependent.set(d.dependentId, list);
+  }
+
+  const gaps = allDeps.filter((d) => {
+    const dependentStatus = statusById.get(d.dependentId);
+    // Only a still-blocked dependent can be a gap.
+    if (dependentStatus !== "blocked") return false;
+    const dependencyStatus = statusById.get(d.dependencyId);
+    if (dependencyStatus === undefined) return false;
+    // Non-terminal dependency → normal in-flight blocking, not a gap.
+    if (!TERMINAL_DEPENDENCY_STATUSES.includes(dependencyStatus)) return false;
+    // Anomaly only if EVERY dependency of this dependent is terminal (so the
+    // release should have fired). If a sibling dependency is still running, the
+    // dependent is correctly blocked — not a gap.
+    const siblings = depsByDependent.get(d.dependentId) ?? [];
+    return siblings.every((depId) => {
+      const s = statusById.get(depId);
+      return s !== undefined && TERMINAL_DEPENDENCY_STATUSES.includes(s);
+    });
+  });
 
   const summary =
     gaps.length > 0

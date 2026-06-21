@@ -431,21 +431,30 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(result.findings.map((f: any) => f.id)).toEqual(["p-1", "p-2", "p-3", "p-4", "p-5"]);
   });
 
-  // ── 10. Dependency chain gap: cancelled task blocks 3 downstream tasks ──
-  it("dependency chain gap: cancelled task blocks 3 downstream tasks, all gaps detected", async () => {
-    // task-cancelled is depended on by task-1, task-2, task-3
+  // ── 10. Dependency chain gap: cancelled task with STILL-blocked dependents ──
+  // A-H9: a cancelled dependency now releases its dependents. The residual gap
+  // is a dependent that is STILL `blocked` even though its (only) dependency is
+  // terminal — the auto-release should have fired but the task is stuck.
+  it("dependency chain gap: still-blocked dependents of a cancelled task are all flagged", async () => {
+    // task-cancelled is depended on by task-1, task-2, task-3 — all still blocked
     const allDeps = [
       { dependentId: "task-1", dependencyId: "task-cancelled" },
       { dependentId: "task-2", dependencyId: "task-cancelled" },
       { dependentId: "task-3", dependencyId: "task-cancelled" },
     ];
-    const cancelledTasks = [{ id: "task-cancelled" }];
+    // New query shape: statuses of every task in a dependency edge.
+    const issueStatuses = [
+      { id: "task-1", status: "blocked" },
+      { id: "task-2", status: "blocked" },
+      { id: "task-3", status: "blocked" },
+      { id: "task-cancelled", status: "cancelled" },
+    ];
 
     const db = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }],
         allDeps,        // all dependencies for company
-        cancelledTasks,  // cancelled dependency tasks
+        issueStatuses,  // statuses for every involved task
       ],
       [
         [{ id: "run-1" }],
@@ -457,10 +466,40 @@ describe("v2.5 Proactive Agent QA", () => {
 
     expect(result.findings).toHaveLength(3);
     expect(result.runCreated).toBe(true);
-    // All 3 dependents are blocked by the cancelled task
+    // All 3 dependents are stuck blocked behind the terminal (cancelled) task
     for (const gap of result.findings as any[]) {
       expect(gap.dependencyId).toBe("task-cancelled");
     }
+  });
+
+  // ── 10b. A-H9: released dependents of a cancelled task are NOT gaps ─────────
+  it("dependency chain gap: released dependents of a cancelled task produce no gaps", async () => {
+    const allDeps = [
+      { dependentId: "task-1", dependencyId: "task-cancelled" },
+      { dependentId: "task-2", dependencyId: "task-cancelled" },
+    ];
+    // Dependents were released (todo), cancelled dep is satisfied → no gap.
+    const issueStatuses = [
+      { id: "task-1", status: "todo" },
+      { id: "task-2", status: "in_progress" },
+      { id: "task-cancelled", status: "cancelled" },
+    ];
+
+    const db = createProactiveDb(
+      [
+        [{ notificationPreference: "realtime" }],
+        allDeps,
+        issueStatuses,
+      ],
+      [
+        [{ id: "run-1" }],
+      ],
+    );
+
+    const result = await dependencyChainGaps(db as any, "company-1", "user-1");
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.runCreated).toBe(true);
   });
 
   // ── 11. Stale work: 5 tasks stale for 7+ days all flagged ──────────────

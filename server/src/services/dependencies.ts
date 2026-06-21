@@ -15,7 +15,13 @@ interface WakeTask {
   workMode: string | null;
 }
 
-const TERMINAL_STATUSES = ["done", "cancelled"];
+/**
+ * A dependency in any of these statuses no longer blocks its dependents.
+ * Both `done` and `cancelled` are terminal: a cancelled upstream task is
+ * resolved (it won't ever complete), so it must release downstream tasks the
+ * same way a completed one does. (A-H9)
+ */
+export const TERMINAL_STATUSES = ["done", "cancelled"];
 const MAX_CHAIN_DEPTH = 50;
 
 export function dependencyService(db: Db) {
@@ -210,7 +216,7 @@ export function dependencyService(db: Db) {
           ),
         );
 
-      const allDone = remaining.every((r) => r.status === "done");
+      const allDone = remaining.every((r) => TERMINAL_STATUSES.includes(r.status));
       if (!allDone) continue;
 
       // Unblock → todo
@@ -291,8 +297,8 @@ export function dependencyService(db: Db) {
         ),
       );
 
-    // No remaining deps or all done → unblock
-    if (remaining.length === 0 || remaining.every((r) => r.status === "done")) {
+    // No remaining deps or all terminal (done OR cancelled) → unblock
+    if (remaining.length === 0 || remaining.every((r) => TERMINAL_STATUSES.includes(r.status))) {
       await (tx as Db)
         .update(issues)
         .set({ status: "todo", updatedAt: new Date() })
@@ -320,13 +326,22 @@ export function dependencyService(db: Db) {
     return [];
   }
 
+  /**
+   * A cancelled dependency is terminal — it satisfies (releases) its dependents
+   * exactly like a `done` one would. For each dependent we run the same
+   * maybeUnblock logic and RETURN the resulting wakeups so the caller can fire
+   * heartbeat wakeups after the transaction commits (symmetric with the `done`
+   * path through resolveDependencies). Without propagating these wakes, an
+   * unblocked dependent would never get dispatched. (A-H9)
+   */
   async function handleCancelledDependency(
     companyId: string,
     cancelledIssueId: string,
     outerTx?: Tx,
-  ) {
+  ): Promise<WakeTask[]> {
     const tx = outerTx ?? db;
     const dependents = await getDependentsTx(companyId, cancelledIssueId, tx);
+    const wakeups: WakeTask[] = [];
 
     for (const dep of dependents) {
       await logActivity(tx as Db, {
@@ -338,10 +353,17 @@ export function dependencyService(db: Db) {
         entityId: dep.dependentIssueId,
         details: {
           cancelledDependencyIssueId: cancelledIssueId,
-          message: "A dependency task was cancelled. Manual resolution required.",
+          message: "A dependency task was cancelled; releasing the dependent (all remaining dependencies terminal).",
         },
       });
+
+      // Release the dependent if all of its remaining dependencies are now
+      // terminal (the just-cancelled one plus any already-done ones).
+      const unblockWakes = await maybeUnblockTx(companyId, dep.dependentIssueId, tx);
+      wakeups.push(...unblockWakes);
     }
+
+    return wakeups;
   }
 
   // --- Internal helpers ---
