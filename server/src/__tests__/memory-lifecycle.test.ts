@@ -30,6 +30,7 @@ vi.mock("@armyofagents/db", () => {
 // Mock drizzle-orm operators to no-op
 vi.mock("drizzle-orm", () => ({
   and: (..._args: unknown[]) => "and",
+  or: (..._args: unknown[]) => "or",
   eq: (..._args: unknown[]) => "eq",
   lt: (..._args: unknown[]) => "lt",
   isNotNull: (..._args: unknown[]) => "isNotNull",
@@ -308,6 +309,116 @@ describe("Memory Lifecycle Service", () => {
       const count = await svc.flagStaleItems("co-1");
 
       expect(count).toBe(0);
+    });
+
+    it("flags never-accessed items (accessedAt = null) that are old by createdAt", async () => {
+      // The DB predicate would normally exclude these (NULL < cutoff → NULL),
+      // but the widened predicate also catches them via createdAt. The mock DB
+      // ignores the SQL, so we model the rows the predicate is expected to
+      // return: a never-accessed item with an ancient createdAt.
+      const oldCreatedAt = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000);
+      const staleItems = [
+        {
+          id: "stale-null",
+          title: "Never accessed knowledge",
+          layer: "identity",
+          status: "approved",
+          accessedAt: null,
+          createdAt: oldCreatedAt,
+          companyId: "co-1",
+        },
+      ];
+
+      let insertedValues: Record<string, unknown> | undefined;
+      const db = createSequenceDb({
+        selects: [staleItems, []], // stale items, no existing suggestions
+        inserts: [[]],
+      });
+      // Capture the values passed to insert(...).values(...)
+      const origInsert = db.insert;
+      db.insert = (...args: unknown[]) => {
+        const chain = origInsert(...args) as Record<string, any>;
+        const origValues = chain.values;
+        chain.values = (v: Record<string, unknown>) => {
+          insertedValues = v;
+          return origValues(v);
+        };
+        return chain;
+      };
+
+      const svc = memoryLifecycleService(db as any);
+      const count = await svc.flagStaleItems("co-1");
+
+      expect(count).toBe(1);
+
+      // Age must be derived from createdAt (~120 days) — NOT a nonsense epoch
+      // age (~20000 days) from `accessedAt?.getTime() ?? 0`.
+      expect(insertedValues).toBeDefined();
+      const title = String(insertedValues!.title);
+      const evidence = String(insertedValues!.evidence);
+
+      // Sanity: the title carries a day count that is plausible (around 120),
+      // certainly not the epoch-derived ~20000.
+      const dayMatch = title.match(/(\d+)\s+days/);
+      if (dayMatch) {
+        const days = Number(dayMatch[1]);
+        expect(days).toBeLessThan(1000);
+        expect(days).toBeGreaterThanOrEqual(119);
+      }
+      // Evidence should say it was never accessed, not echo an epoch date.
+      expect(evidence).toMatch(/never/i);
+      expect(evidence).not.toContain("1970");
+      expect(title).not.toMatch(/\b2\d{4}\s+days/); // no ~20000-day nonsense
+    });
+
+    it("does not flag items with a recent accessedAt", async () => {
+      // Predicate excludes recently-accessed items → mock returns none.
+      const db = createSequenceDb({ selects: [[]] });
+
+      const svc = memoryLifecycleService(db as any);
+      const count = await svc.flagStaleItems("co-1");
+
+      expect(count).toBe(0);
+    });
+
+    it("flags items with an old accessedAt (regression of existing behavior)", async () => {
+      const longAgo = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000);
+      const staleItems = [
+        {
+          id: "stale-old",
+          title: "Old by access",
+          layer: "domain",
+          status: "approved",
+          accessedAt: longAgo,
+          createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000),
+          companyId: "co-1",
+        },
+      ];
+
+      let insertedValues: Record<string, unknown> | undefined;
+      const db = createSequenceDb({
+        selects: [staleItems, []],
+        inserts: [[]],
+      });
+      const origInsert = db.insert;
+      db.insert = (...args: unknown[]) => {
+        const chain = origInsert(...args) as Record<string, any>;
+        const origValues = chain.values;
+        chain.values = (v: Record<string, unknown>) => {
+          insertedValues = v;
+          return origValues(v);
+        };
+        return chain;
+      };
+
+      const svc = memoryLifecycleService(db as any);
+      const count = await svc.flagStaleItems("co-1");
+
+      expect(count).toBe(1);
+      // Age derived from accessedAt (~100 days), evidence echoes the ISO date.
+      expect(insertedValues).toBeDefined();
+      expect(String(insertedValues!.title)).toContain("100 days");
+      expect(String(insertedValues!.evidence)).not.toMatch(/never/i);
     });
   });
 
