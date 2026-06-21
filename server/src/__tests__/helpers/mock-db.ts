@@ -142,21 +142,26 @@ export function createAgentDb(config: {
 // Used by: proactive-qa, edge-cases-qa (proactive tests)
 
 export function createProactiveDb(selectQueue: any[][], insertQueue: any[] = []) {
+  // Both `select` and `selectDistinct` draw from the same FIFO queue so callers
+  // keep a single ordered list of expected result sets regardless of which API
+  // each query uses (blockedTaskScan now uses `selectDistinct` — A-M14).
+  const makeSelectChain = () => ({
+    from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    leftJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnThis(),
+    groupBy: vi.fn().mockReturnThis(),
+    having: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    offset: vi.fn().mockReturnThis(),
+    then: vi.fn((fn: (rows: any[]) => any) =>
+      Promise.resolve(fn(selectQueue.shift() ?? [])),
+    ),
+  });
   return {
-    select: vi.fn(() => ({
-      from: vi.fn().mockReturnThis(),
-      innerJoin: vi.fn().mockReturnThis(),
-      leftJoin: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      groupBy: vi.fn().mockReturnThis(),
-      having: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-      offset: vi.fn().mockReturnThis(),
-      then: vi.fn((fn: (rows: any[]) => any) =>
-        Promise.resolve(fn(selectQueue.shift() ?? [])),
-      ),
-    })),
+    select: vi.fn(() => makeSelectChain()),
+    selectDistinct: vi.fn(() => makeSelectChain()),
     insert: vi.fn(() => ({
       values: vi.fn().mockReturnThis(),
       returning: vi

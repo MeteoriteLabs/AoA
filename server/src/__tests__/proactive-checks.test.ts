@@ -132,7 +132,11 @@ function makeDb(
   insertQueue: any[] = [],
 ) {
   return {
+    // `select` and `selectDistinct` share the same FIFO queue so result-set
+    // ordering is independent of which API a query uses (blockedTaskScan now
+    // uses `selectDistinct` — A-M14).
     select: vi.fn(() => makeSelectChain(selectQueue)),
+    selectDistinct: vi.fn(() => makeSelectChain(selectQueue)),
     insert: vi.fn(() => makeInsertChain(insertQueue)),
     update: vi.fn(() => makeUpdateChain()),
   };

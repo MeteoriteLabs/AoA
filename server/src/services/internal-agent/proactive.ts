@@ -1,6 +1,7 @@
 // server/src/services/internal-agent/proactive.ts
 // Proactive checks for the internal agent — T11
-import { and, eq, lt, lte, gte, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, eq, lt, lte, gte, isNull, isNotNull, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@armyofagents/db";
 import {
   issues,
@@ -124,19 +125,31 @@ export async function blockedTaskScan(
 ): Promise<ProactiveCheckResult> {
   const preference = await getNotificationPreference(db, companyId);
 
-  // A task is "blocked" if it appears as dependentIssueId in task_dependencies
-  // and the dependency task (dependencyIssueId) is not yet completed.
+  // A task is genuinely "blocked" only if it is `in_progress` AND at least one
+  // of its dependencies (the `dependencyIssueId` side of the edge) is itself
+  // NOT terminal. `task_dependencies` has no status column, so completion is
+  // knowable only via the dependency issue's own status — hence the second
+  // `issues` alias join. Both `done` and `cancelled` are terminal (A-M14,
+  // matching the A-H9 sibling check above): a completed or cancelled dependency
+  // no longer blocks, so it must not inflate the count.
+  //
+  // `selectDistinct({ id })` collapses the row fan-out: a task with N incomplete
+  // dependencies produces N join rows, which would otherwise be counted N times
+  // in `blockedTasks.length` (the value reported in the summary + notification).
+  const depIssue = alias(issues, "dep_issue");
   const blockedTasks = await db
-    .select()
+    .selectDistinct({ id: issues.id })
     .from(issues)
     .innerJoin(
       taskDependencies,
       eq(taskDependencies.dependentIssueId, issues.id),
     )
+    .innerJoin(depIssue, eq(depIssue.id, taskDependencies.dependencyIssueId))
     .where(
       and(
         eq(issues.companyId, companyId),
         eq(issues.status, "in_progress"),
+        notInArray(depIssue.status, TERMINAL_DEPENDENCY_STATUSES),
       ),
     );
 
