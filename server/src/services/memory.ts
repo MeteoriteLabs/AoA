@@ -1,4 +1,4 @@
-import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
+import { and, eq, ilike, or, sql, desc, isNull, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
@@ -304,6 +304,8 @@ export function memoryService(db: Db) {
             eq(memoryItems.companyId, companyId),
             eq(memoryItems.status, "approved"),
             sql`${memoryItems.embedding} IS NOT NULL`,
+            // A-M5: drop expired active_context (other layers leave expiresAt null).
+            or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
           ];
 
           if (filters.layer) {
@@ -346,6 +348,8 @@ export function memoryService(db: Db) {
       const conditions = [
         eq(memoryItems.companyId, companyId),
         eq(memoryItems.status, "approved"),
+        // A-M5: drop expired active_context (other layers leave expiresAt null).
+        or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
         or(
           ilike(memoryItems.title, `%${query}%`),
           ilike(memoryItems.content, `%${query}%`),
@@ -422,6 +426,10 @@ export function memoryService(db: Db) {
         const conds = [
           eq(memoryItems.companyId, companyId),
           eq(memoryItems.status, "approved"),
+          // A-M5: never serve expired active_context memory. Only active_context
+          // sets expiresAt; other layers leave it null and isNull keeps those.
+          // Use the DB clock (sql`now()`) so server/db time skew can't leak rows.
+          or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
         ];
         if (filters.layer) conds.push(eq(memoryItems.layer, filters.layer));
         if (filters.category) conds.push(eq(memoryItems.category, filters.category));
