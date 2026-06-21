@@ -68,14 +68,31 @@ function makeTxTracker(opts: {
   return { insert, update, select: selectFn, insertCalls, updateCalls };
 }
 
-function makeCtx(transactionFn: any): ToolContext {
+// db.select({companyId}).from(artifacts).where(eq(artifacts.id, id)) — the
+// company-scope pre-check that runs BEFORE the transaction. `rows` is what the
+// `.where()` resolves to (the company-ownership lookup result).
+function makeDbSelect(rows: any[]) {
+  const where = vi.fn().mockResolvedValue(rows);
+  const from = vi.fn().mockReturnValue({ where });
+  const select = vi.fn().mockReturnValue({ from });
+  return { select, from, where };
+}
+
+function makeCtx(
+  transactionFn: any,
+  opts: { companyId?: string; selectFn?: any } = {},
+): ToolContext {
+  // Default ownership lookup returns a same-company artifact so existing
+  // success-path tests pass unchanged.
+  const dbSelect =
+    opts.selectFn ?? makeDbSelect([{ companyId: opts.companyId ?? "co-1" }]).select;
   return {
-    companyId: "co-1",
+    companyId: opts.companyId ?? "co-1",
     userId: "u-1",
     userRole: "team_member",
     enabledCapabilities: ["system_actions"],
     agentId: "agent-eng",
-    db: { transaction: transactionFn },
+    db: { transaction: transactionFn, select: dbSelect },
     services: {} as any,
   } as unknown as ToolContext;
 }
@@ -207,5 +224,91 @@ describe("create_artifact_version tool (C2 batch 2)", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe("INVALID_PARAMS");
     expect(transactionFn).not.toHaveBeenCalled();
+  });
+
+  it("cross-company artifactId → NOT_FOUND and writes NOTHING (no transaction)", async () => {
+    // The artifact row resolves to a DIFFERENT company. A crew agent (Engineer/
+    // Planner, prompt-injection surface) must not be able to add a version to,
+    // or repoint, another company's artifact. The company check must run BEFORE
+    // ctx.db.transaction — returning failure from inside the tx callback would be
+    // lost (the outer handler reads result.versionNumber and reports success).
+    const tracker = makeTxTracker({ currentMax: 3, versionId: "v-4" });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({
+        select: tracker.select,
+        insert: tracker.insert,
+        update: tracker.update,
+      }),
+    );
+    const foreignSelect = makeDbSelect([{ companyId: "other-co" }]);
+    const ctx = makeCtx(transactionFn, {
+      companyId: "co-1",
+      selectFn: foreignSelect.select,
+    });
+
+    const result = await createArtifactVersionTool.execute(
+      { artifactId: "art-foreign", content: "leak" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("NOT_FOUND");
+    // The transaction must never run — nothing inserted, no pointer bump.
+    expect(transactionFn).not.toHaveBeenCalled();
+    expect(tracker.insertCalls.length).toBe(0);
+    expect(tracker.updateCalls.length).toBe(0);
+  });
+
+  it("missing artifact (lookup returns no row) → NOT_FOUND and no transaction", async () => {
+    const tracker = makeTxTracker({ currentMax: 0, versionId: "v-1" });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({
+        select: tracker.select,
+        insert: tracker.insert,
+        update: tracker.update,
+      }),
+    );
+    const emptySelect = makeDbSelect([]); // no artifact row
+    const ctx = makeCtx(transactionFn, { selectFn: emptySelect.select });
+
+    const result = await createArtifactVersionTool.execute(
+      { artifactId: "ghost", content: "x" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("NOT_FOUND");
+    expect(transactionFn).not.toHaveBeenCalled();
+    expect(tracker.insertCalls.length).toBe(0);
+  });
+
+  it("regression: same-company artifactId still creates the version", async () => {
+    const tracker = makeTxTracker({ currentMax: 1, versionId: "v-2" });
+    const transactionFn = vi.fn(async (cb: any) =>
+      cb({
+        select: tracker.select,
+        insert: tracker.insert,
+        update: tracker.update,
+      }),
+    );
+    // Ownership lookup returns the caller's company → success path.
+    const ownSelect = makeDbSelect([{ companyId: "co-1" }]);
+    const ctx = makeCtx(transactionFn, {
+      companyId: "co-1",
+      selectFn: ownSelect.select,
+    });
+
+    const result = await createArtifactVersionTool.execute(
+      { artifactId: "art-own", content: "ok" },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).versionNumber).toBe(2);
+    expect(transactionFn).toHaveBeenCalledTimes(1);
+    expect(tracker.insertCalls[0].values).toMatchObject({
+      artifactId: "art-own",
+      versionNumber: 2,
+    });
   });
 });

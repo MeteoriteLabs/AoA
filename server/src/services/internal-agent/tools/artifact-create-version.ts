@@ -57,6 +57,30 @@ export const createArtifactVersionTool: AgentTool = {
       };
     }
 
+    // SECURITY (company scoping): this is a crew-agent tool (Engineer/Planner)
+    // driven by an LLM over untrusted task/discussion content — a prompt-injection
+    // surface. artifactId is an arbitrary tool param; nothing below filters by
+    // company, so without this gate a crew agent could add a version to, and
+    // repoint current_version_id on, ANOTHER company's artifact. We verify
+    // ownership on ctx.db BEFORE the transaction and treat a cross-company hit
+    // exactly like a miss (same NOT_FOUND, nothing created) so the tool never
+    // writes onto, or leaks the existence of, another company's artifact. This
+    // MUST run before ctx.db.transaction(...): returning a failure from inside
+    // the tx callback would be lost — the outer handler reads result.versionNumber
+    // and would report success with bogus data.
+    const [art] = await ctx.db
+      .select({ companyId: artifacts.companyId })
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId));
+    if (!art || art.companyId !== ctx.companyId) {
+      return {
+        success: false,
+        data: null,
+        summary: "Artifact not found",
+        error: "NOT_FOUND",
+      };
+    }
+
     try {
       const result = await ctx.db.transaction(async (tx: any) => {
         const latestRows = await tx
