@@ -1879,6 +1879,15 @@ export function heartbeatService(db: Db) {
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
 
+      // A-H6: In the periodic path, never reap a "queued" run. A queued run has
+      // no child process to lose — it is legitimately waiting behind the
+      // per-agent concurrency clamp (HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1),
+      // so its absence from runningProcesses is expected, not an orphan. The
+      // startup reap path (staleThresholdMs === 0) must still fail queued rows,
+      // because after a restart the map is genuinely empty and a queued row may
+      // be a crash remnant.
+      if (staleThresholdMs > 0 && run.status === "queued") continue;
+
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
