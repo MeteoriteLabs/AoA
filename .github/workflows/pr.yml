@@ -411,7 +411,19 @@ jobs:
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright
-        run: npx playwright install --with-deps chromium
+        run: |
+          # OS libraries for chromium (apt). Always works on the runner.
+          npx playwright install-deps chromium
+          # Browser binaries. cdn.playwright.dev intermittently stalls on the
+          # Chrome-for-Testing archives (multi-minute hangs that exhaust this
+          # job's timeout before any test runs). Try the normal install with a
+          # bounded timeout; if it stalls, fall back to Google's Chrome-for-
+          # Testing storage, which serves the byte-identical binaries. The
+          # normal path self-heals once the CDN recovers. (CI-4 hardening.)
+          if ! timeout 150 npx playwright install chromium; then
+            echo "::warning::playwright browser install via cdn.playwright.dev stalled or failed; falling back to Google Chrome-for-Testing storage"
+            bash tests/e2e/scripts/install-chromium-from-google.sh
+          fi
 
       - name: Generate Paperclip config
         run: |
