@@ -70,7 +70,13 @@ export function startEmbeddingWorker(
     );
   }
 
-  const openai = new OpenAI(apiKey ? { apiKey } : {});
+  // The OpenAI SDK constructor THROWS on a missing key ("Missing credentials.
+  // Please pass an `apiKey`…"), which would crash server boot since this worker
+  // starts unconditionally (index.ts). The worker is intentionally registered
+  // even without a key (see header) so enqueued rows surface auth errors at
+  // tick time — pass a placeholder so construction succeeds and the auth
+  // failure lands inside the guarded tick instead of taking down the process.
+  const openai = new OpenAI({ apiKey: apiKey ?? "missing-openai-api-key" });
   const model = config.model ?? DEFAULT_MODEL;
   const batchSize = config.batchSize ?? DEFAULT_BATCH_SIZE;
   const initialDelayMs = config.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
