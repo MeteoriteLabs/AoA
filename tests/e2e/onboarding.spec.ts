@@ -40,7 +40,7 @@ test.describe("Onboarding wizard", () => {
     for (const c of companies) {
       // Only delete obvious test artifacts. Be defensive: a dev who runs e2e
       // against a real DB shouldn't lose their work.
-      if (!/^E2E-(Test|MCP)-/.test(c.name)) continue;
+      if (!/^E2E-/.test(c.name)) continue;
       await request.delete(`/api/companies/${c.id}`);
     }
   });

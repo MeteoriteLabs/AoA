@@ -30,7 +30,7 @@ const SKIP_LLM = process.env.AOA_E2E_SKIP_LLM !== "false";
 
 test.describe("Onboarding → first thread → entry", () => {
   test.beforeEach(async ({ request }) => {
-    await cleanupTestCompanies(request, /^E2E-Onboard-/);
+    await cleanupTestCompanies(request, /^E2E-/);
   });
 
   test("drives onboarding through Step 4 and lands the company", async ({
