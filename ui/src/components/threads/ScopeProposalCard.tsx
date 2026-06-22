@@ -18,6 +18,17 @@ interface ScopeProposalCardProps {
   onReject: () => void;
   /** Optional auto-advance hint (ISO date string from proposal.autoAdvanceAt). */
   autoAdvanceAt?: string | null;
+  /**
+   * When true, a scope-version draft exists for this thread. The card enters
+   * a "Scoped" done-state: the "Scoped" badge replaces "Active Proposal" and
+   * the approve/reject/edit action row is hidden. The summary and task list
+   * remain visible as an audit trail.
+   *
+   * NOTE: this is a thread-level signal — it cannot distinguish WHICH proposal
+   * was scoped. In practice the e2e has at most one proposal per thread, so
+   * this is acceptable.
+   */
+  scoped?: boolean;
 }
 
 export function ScopeProposalCard({
@@ -26,6 +37,7 @@ export function ScopeProposalCard({
   onApprove,
   onReject,
   autoAdvanceAt,
+  scoped = false,
 }: ScopeProposalCardProps) {
   const [editMode, setEditMode] = useState(false);
   const [editedTasks, setEditedTasks] = useState(
@@ -44,14 +56,22 @@ export function ScopeProposalCard({
       <div className="flex items-center gap-2">
         <Sparkles className="h-4 w-4 text-amber-400" />
         <span className="text-sm font-semibold text-foreground">Scope Proposal</span>
-        {isActive && (
+        {scoped ? (
+          <span
+            className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400"
+            data-testid="scope-proposal-scoped-badge"
+          >
+            <CheckCircle2 className="h-3 w-3" />
+            Scoped
+          </span>
+        ) : isActive ? (
           <span
             className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
             data-testid="scope-proposal-active-badge"
           >
             Active Proposal
           </span>
-        )}
+        ) : null}
       </div>
 
       <p className="text-sm leading-relaxed text-foreground/90">{proposal.summary}</p>
@@ -121,35 +141,37 @@ export function ScopeProposalCard({
         </p>
       )}
 
-      <div className="flex items-center gap-2 pt-1">
-        <button
-          type="button"
-          onClick={() => onApprove(editMode ? editedTasks.map(t => ({ title: t.title })) : undefined)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-300 hover:bg-emerald-500/25 transition-colors"
-          data-testid="scope-proposal-approve"
-        >
-          <CheckCircle2 className="h-3.5 w-3.5" />
-          Start Scoping
-        </button>
-        <button
-          type="button"
-          onClick={onReject}
-          className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          data-testid="scope-proposal-reject"
-        >
-          <XCircle className="h-3.5 w-3.5" />
-          Reject
-        </button>
-        <button
-          type="button"
-          onClick={() => setEditMode(m => !m)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
-          data-testid="scope-proposal-edit"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          {editMode ? "Done editing" : "Edit tasks"}
-        </button>
-      </div>
+      {!scoped && (
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => onApprove(editMode ? editedTasks.map(t => ({ title: t.title })) : undefined)}
+            className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-3 py-1.5 text-sm font-medium text-emerald-300 hover:bg-emerald-500/25 transition-colors"
+            data-testid="scope-proposal-approve"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Start Scoping
+          </button>
+          <button
+            type="button"
+            onClick={onReject}
+            className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            data-testid="scope-proposal-reject"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            Reject
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditMode(m => !m)}
+            className="inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
+            data-testid="scope-proposal-edit"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            {editMode ? "Done editing" : "Edit tasks"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

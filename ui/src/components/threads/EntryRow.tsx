@@ -256,6 +256,12 @@ export interface EntryRowProps {
   onCrewFailureRetry?: (issueId: string) => void;
   onCrewFailureReassign?: (issueId: string) => void;
   onCrewFailureSkip?: (issueId: string) => void;
+  /**
+   * When true, a scope-version draft exists for this thread. Forwarded to
+   * ScopeProposalCard as `scoped` to show the "Scoped" done-state and hide
+   * the approve/reject/edit actions.
+   */
+  hasScopeDraft?: boolean;
 }
 
 export function EntryRow({
@@ -272,6 +278,7 @@ export function EntryRow({
   onCrewFailureRetry,
   onCrewFailureReassign,
   onCrewFailureSkip,
+  hasScopeDraft = false,
 }: EntryRowProps) {
   // ── Phase E3: scope_proposal entries get the dedicated card ──
   if (entry.inputType === "scope_proposal") {
@@ -285,6 +292,7 @@ export function EntryRow({
             onApprove={() => onScopeProposalApprove?.(entry)}
             onReject={() => onScopeProposalReject?.(entry)}
             autoAdvanceAt={proposal.autoAdvanceAt}
+            scoped={hasScopeDraft}
           />
         </div>
       );

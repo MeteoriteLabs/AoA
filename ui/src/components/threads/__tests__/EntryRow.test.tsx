@@ -374,4 +374,57 @@ describe("EntryRow — Phase E3 entry cards", () => {
     await user.click(screen.getByTestId("scope-proposal-approve"));
     expect(onApprove).toHaveBeenCalledWith(entry);
   });
+
+  it("shows 'Scoped' badge and hides action buttons when hasScopeDraft=true", () => {
+    const payload = {
+      summary: "Ship onboarding redesign",
+      proposedTasks: [
+        { title: "Wireframe", description: null, suggestedAssigneeAgentId: null, suggestedDepartmentId: null },
+      ],
+      autoAdvanceAt: null,
+    };
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({
+          inputType: "scope_proposal",
+          rawContent: JSON.stringify(payload),
+        })}
+        scopeProposalActive
+        hasScopeDraft
+        onReprocess={vi.fn()}
+      />,
+    );
+    // The "Scoped" badge must be visible
+    expect(screen.getByTestId("scope-proposal-scoped-badge")).toBeInTheDocument();
+    // Action buttons must be hidden when scoped
+    expect(screen.queryByTestId("scope-proposal-approve")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("scope-proposal-reject")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("scope-proposal-edit")).not.toBeInTheDocument();
+    // Task list and summary must remain visible (audit trail)
+    expect(screen.getByText("Ship onboarding redesign")).toBeInTheDocument();
+    expect(screen.getByTestId("scope-proposal-tasks")).toBeInTheDocument();
+  });
+
+  it("still shows action buttons when hasScopeDraft=false", () => {
+    const payload = {
+      summary: "Ship onboarding redesign",
+      proposedTasks: [
+        { title: "Wireframe", description: null, suggestedAssigneeAgentId: null, suggestedDepartmentId: null },
+      ],
+      autoAdvanceAt: null,
+    };
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({
+          inputType: "scope_proposal",
+          rawContent: JSON.stringify(payload),
+        })}
+        scopeProposalActive
+        hasScopeDraft={false}
+        onReprocess={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("scope-proposal-scoped-badge")).not.toBeInTheDocument();
+    expect(screen.getByTestId("scope-proposal-approve")).toBeInTheDocument();
+  });
 });

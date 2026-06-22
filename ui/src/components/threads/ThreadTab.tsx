@@ -42,6 +42,11 @@ export interface ThreadTabProps {
   isError: boolean;
   onRetry: () => void;
   onOpenAttachment?: (attachment: DiscussionEntryAttachment, entryId: string) => void;
+  /**
+   * When true, a scope-version draft exists for this thread. Forwarded to
+   * each EntryRow so ScopeProposalCard can show the "Scoped" done-state.
+   */
+  hasScopeDraft?: boolean;
 }
 
 export function ThreadTab({
@@ -52,6 +57,7 @@ export function ThreadTab({
   isError,
   onRetry,
   onOpenAttachment,
+  hasScopeDraft = false,
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -510,6 +516,7 @@ export function ThreadTab({
                 onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                 onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                 onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, entry.id)}
+                hasScopeDraft={hasScopeDraft}
               />
               {replies.map((reply) => (
                 <div key={reply.id} className="pl-10">
@@ -524,6 +531,7 @@ export function ThreadTab({
                     onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                     onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                     onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, reply.id)}
+                    hasScopeDraft={hasScopeDraft}
                   />
                 </div>
               ))}

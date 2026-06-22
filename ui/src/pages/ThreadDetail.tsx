@@ -1298,6 +1298,7 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                 isError={isError}
                 onRetry={refetch}
                 onOpenAttachment={openAttachmentInViewer}
+                hasScopeDraft={!!thread.derivedStage?.scopeVersionId}
               />
             </div>
 

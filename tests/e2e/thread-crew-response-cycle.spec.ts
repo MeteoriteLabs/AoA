@@ -101,6 +101,10 @@ test.describe("thread crew response cycle", () => {
     });
     await expect(page.getByTestId("scope-version-package")).toContainText("Task proposals");
     await expect(page.getByTestId("scope-version-package")).toContainText("Memory candidates");
-    await expect(page.getByTestId("scope-proposal-card")).toHaveCount(0);
+    // The scope-proposal card persists as an audit trail; the "Scoped" badge
+    // confirms the proposal has been acted on (scope draft created).
+    await page.getByTestId("center-tab-thread").click();
+    await expect(page.getByTestId("scope-proposal-card")).toHaveCount(1);
+    await expect(page.getByTestId("scope-proposal-scoped-badge")).toBeVisible();
   });
 });
