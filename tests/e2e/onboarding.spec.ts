@@ -72,16 +72,12 @@ test.describe("Onboarding wizard", () => {
       page.locator("h3", { hasText: "Set up workspace root" }),
     ).toBeVisible({ timeout: 10_000 });
 
-    // API round-trip: the company should now exist.
-    const baseUrl = page.url().split("/").slice(0, 3).join("/");
-    const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
-    expect(companiesRes.ok()).toBe(true);
-    const companies = await companiesRes.json();
-    const company = companies.find(
-      (c: { name: string }) => c.name === COMPANY_NAME,
-    );
-    expect(company).toBeTruthy();
-    expect(company.issuePrefix).toBeTruthy();
+    // NOTE: the company is NOT persisted yet here. As of Phase E batch 2 (T20),
+    // OnboardingWizard defers the POST /companies to Step 4 (Crew pick) — see
+    // OnboardingWizard.handleStep4Next(). This test's contract is "opens on
+    // first run and advances past step 1", which reaching the Step 2 heading
+    // above proves. The full create-and-land-the-company round-trip is covered
+    // by onboarding-thread-pipeline.spec.ts (which drives through Step 4).
   });
 
   test("health endpoint responds", async ({ request }) => {
