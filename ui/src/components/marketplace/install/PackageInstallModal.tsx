@@ -40,10 +40,11 @@ export function PackageInstallModal({
   );
 
   useEffect(() => {
-    if (!companyId && activeCompanies.length === 1) {
-      setCompanyId(activeCompanies[0].id);
+    if (!companyId) {
+      const fallback = selectedCompanyId ?? activeCompanies[0]?.id ?? null;
+      if (fallback) setCompanyId(fallback);
     }
-  }, [companyId, activeCompanies]);
+  }, [companyId, selectedCompanyId, activeCompanies]);
 
   const skillCount = useMemo(
     () => memberItems.filter((item) => item.type === "skill").length,

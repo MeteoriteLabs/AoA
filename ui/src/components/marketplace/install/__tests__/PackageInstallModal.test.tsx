@@ -133,4 +133,20 @@ describe("PackageInstallModal", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Install all/ })).toBeDisabled();
   });
+
+  it("enables Install when selectedCompanyId is null but 2+ active companies exist (defaults to first active)", async () => {
+    vi.mocked(useCompany).mockReturnValue({
+      selectedCompanyId: null,
+      companies: [
+        { id: "c1", name: "Acme", status: "active" },
+        { id: "c2", name: "Beta", status: "active" },
+      ],
+    } as any);
+
+    wrap(<PackageInstallModal pkg={pkg as any} memberItems={memberItems} open onOpenChange={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Install all/i })).not.toBeDisabled();
+    });
+  });
 });

@@ -52,9 +52,10 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
   useEffect(() => {
     if (!companyId) {
       const active = companies.filter((c) => c.status !== "archived");
-      if (active.length === 1) setCompanyId(active[0].id);
+      const fallback = selectedCompanyId ?? active[0]?.id ?? null;
+      if (fallback) setCompanyId(fallback);
     }
-  }, [companyId, companies]);
+  }, [companyId, selectedCompanyId, companies]);
 
   useEffect(() => {
     setDeptId(null);
