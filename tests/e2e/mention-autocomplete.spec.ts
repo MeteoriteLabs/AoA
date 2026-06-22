@@ -23,32 +23,6 @@ import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 
 const SKIP_LLM = process.env.AOA_E2E_SKIP_LLM !== "false";
 
-async function seedAoaAgent(
-  request: APIRequestContext,
-  companyId: string,
-  name: string,
-): Promise<{ id: string }> {
-  // Mirrors the helper in commander-team-tab.spec.ts. The role and adapter
-  // type don't matter for the autocomplete + dispatch path — we only need the
-  // agent row to exist with kind="aoa" so it shows up in agentsApi.listAoa
-  // (which the composer queries to populate suggestions).
-  const res = await request.post(`/api/companies/${companyId}/agents`, {
-    data: {
-      name,
-      role: "general",
-      title: name,
-      kind: "aoa",
-      adapterType: "process",
-      runtimeConfig: { aoa: { role: "lead" } },
-    },
-  });
-  if (!res.ok()) {
-    const body = await res.text().catch(() => "(no body)");
-    throw new Error(`seedAoaAgent failed: ${res.status()} ${body}`);
-  }
-  return (await res.json()) as { id: string };
-}
-
 async function seedThread(
   request: APIRequestContext,
   companyId: string,
@@ -73,7 +47,8 @@ test.describe("@mention autocomplete dispatches Scout", () => {
     request,
   }) => {
     const company = await seedCompany(request, `E2E-Mention-${Date.now()}`);
-    await seedAoaAgent(request, company.id, "Scout");
+    // Scout is auto-provisioned by ensureScout() on every company create —
+    // re-seeding it triggers the duplicate-shortname guard and returns 409.
     const thread = await seedThread(request, company.id);
 
     await page.goto(`/${company.issuePrefix}/discussions/${thread.id}`);
