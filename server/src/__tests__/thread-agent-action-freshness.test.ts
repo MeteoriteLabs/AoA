@@ -44,6 +44,26 @@ const baseScope = {
 };
 
 describe("thread agent action freshness", () => {
+  it("returns null (no-op) when the thread is missing — background sweep teardown", async () => {
+    // captureFreshnessSnapshot must never throw when the thread row is absent;
+    // background sweeps encounter this when a company/thread is torn down (e.g.
+    // test cleanup). The caller (runner.ts try/catch, compareFreshnessSnapshot
+    // null-check) handles null as a silent no-op.
+    const db = createSequenceDb([[], [], []]);
+    await expect(captureFreshnessSnapshot(db as never, "ghost-thread")).resolves.toBeNull();
+  });
+
+  it("reports thread_missing (not throws) from compareFreshnessSnapshot when thread is absent", async () => {
+    const snapshot = await captureFreshnessSnapshot(
+      createSequenceDb([[baseThread], [baseHuman], [baseScope]]) as never,
+      "thread-1",
+    );
+    // compareFreshnessSnapshot inner call to captureFreshnessSnapshot returns null for a missing thread.
+    const db = createSequenceDb([[], [], []]);
+    const result = await compareFreshnessSnapshot(db as never, "ghost-thread", snapshot!);
+    expect(result).toEqual({ fresh: false, reason: "thread_missing" });
+  });
+
   it("captures the thread freshness snapshot", async () => {
     const db = createSequenceDb([[baseThread], [baseHuman], [baseScope]]);
 

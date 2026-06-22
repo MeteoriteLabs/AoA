@@ -50,7 +50,7 @@ export type ThreadFreshnessComparison =
 export async function captureFreshnessSnapshot(
   db: DbLike,
   threadId: string,
-): Promise<ThreadFreshnessSnapshot> {
+): Promise<ThreadFreshnessSnapshot | null> {
   const [thread] = (await db
     .select({
       id: discussions.id,
@@ -63,7 +63,9 @@ export async function captureFreshnessSnapshot(
     .limit(1)) as Array<{ id: string; status: string; phase: string; entrySeq: number }>;
 
   if (!thread) {
-    throw new Error(`Thread not found: ${threadId}`);
+    // Background sweep: thread was torn down (e.g. test cleanup or company delete).
+    // Return null so the caller can treat it as a no-op rather than an error.
+    return null;
   }
 
   const [latestHuman] = (await db
@@ -171,7 +173,11 @@ export async function compareFreshnessSnapshot(
 
   let current: ThreadFreshnessSnapshot;
   try {
-    current = await captureFreshnessSnapshot(db, threadId);
+    const snapshot = await captureFreshnessSnapshot(db, threadId);
+    if (!snapshot) {
+      return { fresh: false, reason: "thread_missing" };
+    }
+    current = snapshot;
   } catch {
     return { fresh: false, reason: "thread_missing" };
   }

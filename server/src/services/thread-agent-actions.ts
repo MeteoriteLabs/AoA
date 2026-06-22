@@ -314,7 +314,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
         .limit(1);
 
       if (!thread) {
-        throw new Error("Thread not found");
+        // Background sweep / agent tool: thread was torn down (e.g. test cleanup or company delete).
+        // Return a no-op sentinel so callers treat this as a silent skip rather than a tool error.
+        log.debug({ threadId: input.threadId }, "thread-agent-actions: thread gone — skipping action proposal");
+        return {} as unknown as ThreadActionRow;
       }
 
       // Outbox SEAL key-set (Mechanism B'): record that THIS run proposed this idempotency key,
