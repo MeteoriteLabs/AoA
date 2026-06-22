@@ -442,6 +442,7 @@ jobs:
 
       - name: Run e2e tests
         env:
+          # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
@@ -524,6 +525,7 @@ jobs:
         # container approach lands.
         if: matrix.os != 'windows-latest'
         env:
+          # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
