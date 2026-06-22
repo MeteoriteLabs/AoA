@@ -62,8 +62,12 @@ test.describe("Commander inline reasoning", () => {
     const reasoningBlock = page.getByTestId("commander-reasoning");
     await expect(reasoningBlock).toBeVisible({ timeout: 30_000 });
 
+    // The block collapses on settle (intentional; unit-tested in
+    // CommanderReasoningBlock.test.tsx). Click the toggle to expand it so the
+    // text is in the DOM before asserting — mirrors the reload branch below.
+    await reasoningBlock.getByRole("button").first().click();
     // The thinking text accumulated from the thinking_delta is visible in the
-    // block (either during streaming as expanded, or after settling).
+    // block (after expanding).
     await expect(page.getByText(THINKING_TEXT)).toBeVisible({
       timeout: 10_000,
     });
