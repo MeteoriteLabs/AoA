@@ -272,7 +272,7 @@ function KanbanColumn({
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   return (
-    <div className="flex flex-col min-w-[260px] w-[260px] shrink-0">
+    <div data-testid={`kanban-column-${status}`} className="flex flex-col min-w-[260px] w-[260px] shrink-0">
       <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -501,6 +501,7 @@ function KanbanCard({
     <div
       ref={setNodeRef}
       style={style}
+      data-testid={`kanban-card-${issue.id}`}
       {...attributes}
       {...listeners}
       className={`kanban-card-hover rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-all duration-150 ${
