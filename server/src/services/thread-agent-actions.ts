@@ -314,10 +314,13 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
         .limit(1);
 
       if (!thread) {
-        // Background sweep / agent tool: thread was torn down (e.g. test cleanup or company delete).
-        // Return a no-op sentinel so callers treat this as a silent skip rather than a tool error.
-        log.debug({ threadId: input.threadId }, "thread-agent-actions: thread gone — skipping action proposal");
-        return {} as unknown as ThreadActionRow;
+        // No row matched (id AND companyId). This fires for a genuinely-deleted
+        // thread AND for a cross-company access attempt — both must be rejected
+        // (the latter is a tenant-isolation boundary). proposeThreadAction is
+        // only ever called from live internal-agent tools, never a background
+        // sweep, so throwing here is correct; the runner's best-effort try/catch
+        // swallows the deleted-thread case without surfacing a tool error.
+        throw new Error("Thread not found");
       }
 
       // Outbox SEAL key-set (Mechanism B'): record that THIS run proposed this idempotency key,
