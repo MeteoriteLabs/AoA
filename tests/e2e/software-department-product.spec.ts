@@ -19,6 +19,8 @@ type RuntimeService = {
   serviceName: string;
   status: string;
   url: string | null;
+  previewUrl: string | null;
+  localTargetUrl: string | null;
   provider?: string | null;
   command?: string | null;
 };
@@ -110,7 +112,8 @@ test.describe("software department product workspace journey", () => {
       artifactTitle: "workspace-summary.md",
       outputToken,
       serviceName: service.serviceName,
-      serviceUrl: service.url!,
+      // UI shows the AoA-origin proxy path, not the raw loopback URL.
+      serviceUrl: service.previewUrl!,
     });
 
     const stopServiceRes = await request.post(`/api/execution-workspaces/${workspace.id}/runtime-services/stop`, {
@@ -571,8 +574,11 @@ async function assertPreviewOnlyServiceOpensBrowser(
 
   await page.getByTestId(`service-open-${service.id}`).click();
   await expect(page.getByTestId("workspace-preview-tabs")).toBeVisible();
-  await expect(page.getByTestId("preview-browser-url-input")).toHaveValue(previewUrl);
-  await expect(page.getByTestId("preview-browser-iframe")).toHaveAttribute("src", previewUrl);
+  // Previews route through an AoA-origin proxy; the UI shows service.previewUrl
+  // (/preview/services/<id>/), not the raw loopback URL.
+  const uiPreviewUrl = service.previewUrl!;
+  await expect(page.getByTestId("preview-browser-url-input")).toHaveValue(uiPreviewUrl);
+  await expect(page.getByTestId("preview-browser-iframe")).toHaveAttribute("src", uiPreviewUrl);
 }
 
 async function waitForGitStatus(
@@ -638,7 +644,14 @@ async function assertWorkspaceSidebar(
       viewport: read('[data-slot="scroll-area-viewport"]'),
       sections: read('[data-testid="workspace-right-sections"]'),
       cards: Array.from(document.querySelectorAll<HTMLElement>('[data-testid^="cockpit-section-"]'))
-        .filter((element) => !element.dataset.testid?.includes("trigger"))
+        .filter((element) => {
+          const id = element.dataset.testid ?? "";
+          // Skip trigger buttons (structural, not layout containers).
+          // Skip summary spans — they carry the `truncate` class
+          // (text-overflow:ellipsis) so scrollWidth > clientWidth is by design,
+          // not a layout break.
+          return !id.includes("trigger") && !id.includes("summary");
+        })
         .map((element) => ({
           id: element.dataset.testid,
           clientWidth: element.clientWidth,
