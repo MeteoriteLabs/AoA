@@ -274,6 +274,8 @@ Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR
 
 Windows e2e skip is implemented at playwright config level (`tests/e2e/playwright.config.ts`).
 
+**CDN fallback:** The required Linux `e2e` job uses a Google Chrome-for-Testing download when `cdn.playwright.dev` stalls (configured in `.github/workflows/pr.yml`). The advisory `e2e-cross-platform` macOS/Windows lanes do NOT use that fallback — they still rely on the default Playwright CDN and time out at 12 min if the CDN stalls. Generalizing the Google-storage fallback to mac/win lanes is tracked for 1.1.
+
 ---
 
 ## Database Schema
