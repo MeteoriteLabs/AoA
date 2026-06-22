@@ -278,7 +278,7 @@ function useCockpitSummaries({
   const outputsSummary = (() => {
     if (!taskOutputs || taskOutputs.length === 0) return null;
     const primary = taskOutputs.find((output) => output.isPrimary);
-    if (primary) return `${plural(taskOutputs.length, "output")} Â· ${primary.title}`;
+    if (primary) return `${plural(taskOutputs.length, "output")} · ${primary.title}`;
     return plural(taskOutputs.length, "output");
   })();
 
