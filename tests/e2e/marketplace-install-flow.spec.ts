@@ -241,7 +241,8 @@ test.describe("Marketplace install flow", () => {
     page,
     request,
   }) => {
-    const company = await seedCompany(request, `E2E-INSTALL-${Date.now()}`);
+    const companyName = `E2E-INSTALL-${Date.now()}`;
+    const company = await seedCompany(request, companyName);
     const catalogItems = [
       {
         id: "skill:gstack/office-hours",
@@ -360,6 +361,16 @@ test.describe("Marketplace install flow", () => {
     const cardModal = page.getByRole("dialog");
     await expect(cardModal).toBeVisible();
     await expect(cardModal.getByLabel("Garry Tan logo fallback")).toBeVisible();
+    // Multi-company shared e2e instance: the modal defaults to the first active
+    // company, not this test's freshly-seeded one. Pick it explicitly in the
+    // CompanyPicker so the install POSTs to company.id — the URL the route
+    // interception above is scoped to. (Guarded: the picker auto-hides at 1
+    // company, in which case the modal already auto-selected it.)
+    const cardPicker = cardModal.getByLabel("Install to company");
+    if (await cardPicker.isVisible().catch(() => false)) {
+      await cardPicker.click();
+      await page.getByRole("option", { name: companyName, exact: true }).click();
+    }
     await cardModal.getByRole("button", { name: "Install all 2 skills" }).click();
     await expect
       .poll(() => submittedPayloads.length, { timeout: 5_000 })
@@ -374,6 +385,11 @@ test.describe("Marketplace install flow", () => {
     await page.getByRole("button", { name: /install all 2 items/i }).click();
     const detailModal = page.getByRole("dialog");
     await expect(detailModal).toBeVisible();
+    const detailPicker = detailModal.getByLabel("Install to company");
+    if (await detailPicker.isVisible().catch(() => false)) {
+      await detailPicker.click();
+      await page.getByRole("option", { name: companyName, exact: true }).click();
+    }
     await detailModal.getByRole("button", { name: "Install all 2 skills" }).click();
     await expect
       .poll(() => submittedPayloads.length, { timeout: 5_000 })
