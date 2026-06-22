@@ -1,8 +1,7 @@
 /**
  * Render a byte count as a human-readable size string.
  *
- * Lifted from `components/memory/viewers/GenericFileViewer.tsx` so multiple
- * memory components can share it (drawer + viewers).
+ * Shared by memory components that render uploaded file sizes.
  *
  * Note: `components/workspace/workspace-utils.tsx` has a separate `formatBytes`
  * with different formatting (stops at MB, no GB tier). The two are deliberately

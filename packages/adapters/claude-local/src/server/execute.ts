@@ -2,7 +2,20 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterBillingType, AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
+  prepareAdapterExecutionTargetRuntime,
+  runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetDirectory,
+  syncAdapterExecutionTargetFile,
+  type AdapterBillingType,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@armyofagents/adapter-utils";
 import type { RunProcessResult } from "@armyofagents/adapter-utils/server-utils";
 import {
   asString,
@@ -18,6 +31,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -91,6 +105,7 @@ interface ClaudeExecutionInput {
   config: Record<string, unknown>;
   context: Record<string, unknown>;
   authToken?: string;
+  executionTarget?: AdapterExecutionContext["executionTarget"];
 }
 
 interface ClaudeRuntimeConfig {
@@ -138,6 +153,7 @@ export function resolveClaudeBillingType(env: Record<string, string>): AdapterBi
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, authToken } = input;
+  const executionTarget = input.executionTarget ?? { type: "local" as const };
 
   const command = asString(config.command, "claude");
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -205,21 +221,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (linkedIssueIds.length > 0) {
     env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
-  if (effectiveWorkspaceCwd) {
-    env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceId) {
-    env.AOA_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: asString(workspaceContext.agentHome, "") || null,
+  });
   if (workspaceHints.length > 0) {
     env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -233,7 +245,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -295,6 +309,8 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -307,11 +323,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  const commandNotes = instructionsFilePath
-    ? [
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
-      ]
-    : [];
+  const commandNotes = [
+    ...(instructionsFilePath
+      ? [
+          `Configured agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended for local target)`,
+        ]
+      : []),
+    `Execution target: ${executionTarget.type}`,
+  ];
 
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
@@ -319,6 +338,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config,
     context,
     authToken,
+    executionTarget,
   });
   const {
     command,
@@ -334,6 +354,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(env);
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
+  const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+    target: executionTarget,
+    workspaceLocalDir: cwd,
+    adapterKey: "claude",
+    runId,
+    timeoutSec,
+    installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
+    detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
+  });
+  const runtimeRootDir = preparedRuntime.runtimeRootDir;
+  if (runtimeRootDir && adapterExecutionTargetUsesManagedHome(executionTarget)) {
+    env.HOME = runtimeRootDir;
+  }
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
@@ -346,18 +380,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
     effectiveInstructionsFilePath = combinedPath;
   }
+  let effectiveRemoteInstructionsFilePath: string | null = null;
+  let effectiveRemoteSkillsDir: string | null = null;
+  if (isRemoteExecutionTarget && runtimeRootDir) {
+    effectiveRemoteSkillsDir = `${runtimeRootDir}/.claude/skills`;
+    await syncAdapterExecutionTargetDirectory({
+      runId: `${runId}-claude-skills`,
+      target: executionTarget,
+      localDir: path.join(skillsDir, ".claude", "skills"),
+      remoteDir: effectiveRemoteSkillsDir,
+      cwd: executionCwd,
+      env,
+      timeoutSec,
+      graceSec,
+      followSymlinks: true,
+      onLog,
+    });
+    if (effectiveInstructionsFilePath) {
+      effectiveRemoteInstructionsFilePath = `${runtimeRootDir}/agent-instructions.md`;
+      await syncAdapterExecutionTargetFile({
+        runId: `${runId}-claude-instructions`,
+        target: executionTarget,
+        localPath: effectiveInstructionsFilePath,
+        remotePath: effectiveRemoteInstructionsFilePath,
+        cwd: executionCwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onLog,
+      });
+    }
+  }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwdMatches = runtimeSessionCwd.length === 0 || (
+    isRemoteExecutionTarget
+      ? runtimeSessionCwd === executionCwd
+      : path.resolve(runtimeSessionCwd) === path.resolve(executionCwd)
+  );
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    sessionCwdMatches &&
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${executionCwd}".\n`,
     );
   }
   const prompt = renderTemplate(promptTemplate, {
@@ -378,10 +450,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && !isBedrockAuth(env)) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
-      args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
+    const instructionsArg = isRemoteExecutionTarget
+      ? effectiveRemoteInstructionsFilePath
+      : effectiveInstructionsFilePath;
+    const skillsArg = isRemoteExecutionTarget ? effectiveRemoteSkillsDir : skillsDir;
+    if (instructionsArg) {
+      args.push("--append-system-prompt-file", instructionsArg);
     }
-    args.push("--add-dir", skillsDir);
+    if (skillsArg) {
+      args.push("--add-dir", skillsArg);
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -408,7 +486,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({
         adapterType: "claude_local",
         command,
-        cwd,
+        cwd: executionCwd,
         commandArgs: args,
         commandNotes,
         env: redactEnvForLogs(env),
@@ -417,10 +495,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
-      cwd,
+    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+      runId,
+      command,
+      args,
+      cwd: executionCwd,
       env,
       stdin: prompt,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
+      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,
       graceSec,
       onLog,
@@ -462,6 +546,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
+        executionCwd,
       };
     }
 
@@ -478,6 +563,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: proc.stderr,
         },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
+        executionCwd,
       };
     }
 
@@ -498,10 +584,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: executionCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(isRemoteExecutionTarget
+          ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+          : {}),
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
@@ -514,7 +603,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: clearSessionForMaxTurns
+        ? "max_turns_exhausted"
+        : loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -524,6 +617,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      executionCwd,
       resultJson: parsed,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),

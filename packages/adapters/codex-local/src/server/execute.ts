@@ -2,7 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  runAdapterExecutionTargetProcess,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+  type AdapterRuntimeCommandSpec,
+} from "@armyofagents/adapter-utils";
 import {
   asString,
   asNumber,
@@ -15,10 +22,12 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
-  runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { parseCodexJsonl, createCodexSessionIdCapture, isCodexUnknownSessionError } from "./parse.js";
 import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
+import { prepareManagedCodexHome } from "./codex-home.js";
+import { writeCodexMcpConfigToml } from "./codex-config-toml.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -27,6 +36,7 @@ const AOA_SKILLS_CANDIDATES = [
 ];
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const REMOTE_CODEX_HOME_DIR_NAME = ".aoa-codex-home";
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -68,6 +78,70 @@ function codexHomeDir(): string {
   return path.join(os.homedir(), ".codex");
 }
 
+function isAlreadyExistsError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
+  return code === "EEXIST" || code === "ERR_FS_CP_EEXIST" || /\bEEXIST\b|already exists/i.test(err.message);
+}
+
+export async function linkOrCopyCodexSkill({
+  source,
+  target,
+  entryName,
+  skillsHome,
+  onLog,
+  linkSkill = (linkSource, linkTarget, type) => fs.symlink(linkSource, linkTarget, type),
+  copySkill = (copySource, copyTarget, options) => fs.cp(copySource, copyTarget, options),
+}: {
+  source: string;
+  target: string;
+  entryName: string;
+  skillsHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+  linkSkill?: (
+    source: string,
+    target: string,
+    type?: "dir" | "file" | "junction",
+  ) => Promise<void>;
+  copySkill?: (
+    source: string,
+    target: string,
+    options: { recursive: true },
+  ) => Promise<void>;
+}) {
+  try {
+    await linkSkill(source, target, process.platform === "win32" ? "junction" : undefined);
+    await onLog(
+      "stderr",
+      `[aoa] Injected Codex skill "${entryName}" into ${skillsHome}\n`,
+    );
+  } catch (err) {
+    if (isAlreadyExistsError(err)) {
+      await onLog(
+        "stderr",
+        `[aoa] Codex skill "${entryName}" already exists in ${skillsHome}; skipping injection\n`,
+      );
+      return;
+    }
+    try {
+      await copySkill(source, target, { recursive: true });
+      await onLog(
+        "stderr",
+        `[aoa] Copied Codex skill "${entryName}" into ${skillsHome} after link failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    } catch (copyErr) {
+      if (isAlreadyExistsError(copyErr)) {
+        await onLog(
+          "stderr",
+          `[aoa] Codex skill "${entryName}" already exists in ${skillsHome}; skipping injection\n`,
+        );
+        return;
+      }
+      throw copyErr;
+    }
+  }
+}
+
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
   for (const candidate of AOA_SKILLS_CANDIDATES) {
     const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
@@ -90,27 +164,20 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
     const existing = await fs.lstat(target).catch(() => null);
     if (existing) continue;
 
-    try {
-      await fs.symlink(source, target);
-      await onLog(
-        "stderr",
-        `[aoa] Injected Codex skill "${entry.name}" into ${skillsHome}\n`,
-      );
-    } catch (err) {
-      await onLog(
-        "stderr",
-        `[aoa] Failed to inject Codex skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    }
+    await linkOrCopyCodexSkill({ source, target, entryName: entry.name, skillsHome, onLog });
   }
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.",
+    [
+      "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.",
+      "{{context.currentTaskMarkdown}}",
+    ].join("\n\n"),
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
@@ -189,21 +256,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (linkedIssueIds.length > 0) {
     env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
-  if (effectiveWorkspaceCwd) {
-    env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceId) {
-    env.AOA_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: asString(workspaceContext.agentHome, "") || null,
+  });
   if (workspaceHints.length > 0) {
     env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -213,9 +276,63 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.AOA_API_KEY = authToken;
   }
+
+  const configuredOpenAiApiKey =
+    typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
+      ? env.OPENAI_API_KEY.trim()
+      : null;
+
+  const managedCodexHome = await prepareManagedCodexHome(
+    process.env,
+    (msg) => onLog("stderr", `${msg}\n`),
+    agent.companyId,
+    { apiKey: configuredOpenAiApiKey },
+  );
+  const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
+  const remoteCodexHome = `${adapterExecutionTargetRemoteCwd(executionTarget, cwd).replace(/\/+$/, "")}/${REMOTE_CODEX_HOME_DIR_NAME}`;
+  env.CODEX_HOME = isRemoteExecutionTarget ? remoteCodexHome : managedCodexHome;
+  const runtimeCommandSpec: AdapterRuntimeCommandSpec | null | undefined = isRemoteExecutionTarget
+    ? {
+        command: ctx.runtimeCommandSpec?.command ?? command,
+        detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? null,
+        installCommand: [
+          `mkdir -p "${remoteCodexHome.replace(/"/g, '\\"')}"`,
+          ctx.runtimeCommandSpec?.installCommand,
+          `if [ -n "$OPENAI_API_KEY" ]; then printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key; fi`,
+        ].filter(Boolean).join("\n"),
+      }
+    : ctx.runtimeCommandSpec;
+
+  // MX3: deliver the internal-agent MCP bridge to codex via its native
+  // discovery mechanism — a [mcp_servers.aoa] (+ .env) table in the
+  // adapter-managed CODEX_HOME/config.toml that `codex exec` already runs
+  // against. codex does NOT accept a --mcp-config flag, so this is the only
+  // path. The managed home is adapter-owned (only holds auth.json + this
+  // file); writeCodexMcpConfigToml preserves any unrelated content and is
+  // idempotent. auth.json is untouched; CODEX_HOME's value is unchanged.
+  if (ctx.mcpBridge) {
+    if (executionTarget.type === "sandbox-docker") {
+      // MX3: sandbox-docker codex MCP wiring is a follow-up — CODEX_HOME there
+      // is the container path "/tmp/aoa-codex-home" which is not writable from
+      // the host at this point. The §17 acceptance path is type:"local".
+      await onLog(
+        "stderr",
+        `[aoa] codex MCP bridge config.toml is not yet wired for sandbox-docker execution targets; skipping (MX3 follow-up).\n`,
+      );
+    } else {
+      await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge);
+      await onLog(
+        "stderr",
+        `[aoa] Wrote managed Codex config.toml [mcp_servers.aoa] for company ${agent.companyId}\n`,
+      );
+    }
+  }
+
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -261,14 +378,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    if (!instructionsFilePath) return [] as string[];
+    const notes = [`Execution target: ${executionTarget.type}`];
+    if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       return [
+        ...notes,
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
       ];
     }
     return [
+      ...notes,
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
     ];
   })();
@@ -310,6 +430,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
+    // A-M17: capture the codex session id out-of-band from the FULL stdout chunk
+    // stream, before runChildProcess's 4MB cap (which keeps the tail) can drop
+    // the head `thread.started` line and leave parseCodexJsonl with a null
+    // sessionId for an oversized run.
+    //
+    // Codex P2: use a carry-buffered capture so a `thread.started` line that the
+    // stdout pipe splits across two chunks is still recognised — each half is
+    // unparseable JSON on its own, so a per-chunk extract would lose the id.
+    const sessionIdCapture = createCodexSessionIdCapture();
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
@@ -326,14 +455,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+      runId,
+      command,
+      args,
       cwd,
       env,
       stdin: prompt,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
+      runtimeCommandSpec,
       timeoutSec,
       graceSec,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
+          sessionIdCapture.feed(chunk);
           await onLog(stream, chunk);
           return;
         }
@@ -351,11 +487,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       rawStderr: proc.stderr,
       parsed: parseCodexJsonl(proc.stdout),
+      liveSessionId: sessionIdCapture.sessionId,
     };
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl>; liveSessionId: string | null },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -365,10 +502,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
+        executionCwd: cwd,
       };
     }
 
-    const resolvedSessionId = attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const resolvedSessionId =
+      attempt.parsed.sessionId ?? attempt.liveSessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
@@ -401,6 +540,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: null,
+      executionCwd: cwd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

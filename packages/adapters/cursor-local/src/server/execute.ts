@@ -3,7 +3,19 @@ import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
+  prepareWorkspaceForExecutionTarget,
+  prepareAdapterExecutionTargetRuntime,
+  runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetDirectory,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@armyofagents/adapter-utils";
 import {
   asString,
   asNumber,
@@ -15,7 +27,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
-  runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -197,6 +209,8 @@ async function cleanupDbSkillDirs(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -221,9 +235,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
-  const injectedDbDirs = await ensureCursorSkillsInjected(onLog, { dbSkills: dbSkills.length > 0 ? dbSkills : undefined });
+  let injectedDbDirs: string[] = [];
+  let remoteSkillsTempRoot: string | null = null;
+  let remoteRuntimeRootDir: string | null = null;
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -271,21 +288,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (linkedIssueIds.length > 0) {
     env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
-  if (effectiveWorkspaceCwd) {
-    env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceId) {
-    env.AOA_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: asString(workspaceContext.agentHome, "") || null,
+  });
   if (workspaceHints.length > 0) {
     env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -295,9 +308,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.AOA_API_KEY = authToken;
   }
+
+  if (executionTargetIsRemote) {
+    const preparedRemoteRuntime = await prepareAdapterExecutionTargetRuntime({
+      runId,
+      target: executionTarget,
+      adapterKey: "cursor",
+      workspaceLocalDir: cwd,
+      timeoutSec: asNumber(config.timeoutSec, 0),
+      installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
+      detectCommand: command,
+    });
+    remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
+    if (adapterExecutionTargetUsesManagedHome(executionTarget) && remoteRuntimeRootDir) {
+      env.HOME = remoteRuntimeRootDir;
+    }
+
+    if (remoteRuntimeRootDir) {
+      remoteSkillsTempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-cursor-remote-skills-"));
+      const localSkillsHome = path.join(remoteSkillsTempRoot, "skills");
+      await ensureCursorSkillsInjected(onLog, {
+        dbSkills: dbSkills.length > 0 ? dbSkills : undefined,
+        skillsHome: localSkillsHome,
+        linkSkill: async (source, target) => {
+          await fs.cp(source, target, { recursive: true, force: true });
+        },
+      });
+      if (await fs.stat(localSkillsHome).then((stat) => stat.isDirectory()).catch(() => false)) {
+        await syncAdapterExecutionTargetDirectory({
+          runId,
+          target: executionTarget,
+          localDir: localSkillsHome,
+          remoteDir: `${remoteRuntimeRootDir}/.cursor/skills`,
+          cwd: prepareWorkspaceForExecutionTarget(executionTarget, cwd).executionCwd,
+          env,
+          timeoutSec: 30,
+          graceSec: 5,
+          followSymlinks: true,
+          onLog,
+        });
+      }
+    }
+  } else {
+    injectedDbDirs = await ensureCursorSkillsInjected(onLog, { dbSkills: dbSkills.length > 0 ? dbSkills : undefined });
+  }
+
   const billingType = resolveCursorBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -311,14 +371,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || (
+      executionTargetIsRemote
+        ? runtimeSessionCwd === sessionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(sessionCwd)
+    )) &&
+    sessionTargetMatches;
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] Cursor session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] Cursor session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${sessionCwd}".\n`,
     );
   }
 
@@ -345,7 +413,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = [];
+    const notes: string[] = [`Execution target: ${executionTarget.type}`];
     if (autoTrustEnabled) {
       notes.push("Auto-added --yolo to bypass interactive prompts.");
     }
@@ -377,7 +445,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = `${instructionsPrefix}${aoaEnvNote}${renderedPrompt}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["-p", "--output-format", "stream-json", "--workspace", cwd];
+    const executionWorkspace = prepareWorkspaceForExecutionTarget(executionTarget, cwd).executionCwd;
+    const args = ["-p", "--output-format", "stream-json", "--workspace", executionWorkspace];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model) args.push("--model", model);
     if (mode) args.push("--mode", mode);
@@ -425,12 +494,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+      runId,
+      command,
+      args,
       cwd,
       env,
       timeoutSec,
       graceSec,
       stdin: prompt,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
+      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
           await onLog(stream, chunk);
@@ -470,6 +545,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
+        executionCwd: sessionCwd,
       };
     }
 
@@ -477,10 +553,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
-          cwd,
+          cwd: sessionCwd,
           ...(workspaceId ? { workspaceId } : {}),
           ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(executionTargetIsRemote
+            ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+            : {}),
         } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
@@ -506,6 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
+      executionCwd: sessionCwd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -535,6 +615,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } finally {
     if (injectedDbDirs.length > 0) {
       await cleanupDbSkillDirs(injectedDbDirs, onLog);
+    }
+    if (remoteSkillsTempRoot) {
+      await fs.rm(remoteSkillsTempRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 }

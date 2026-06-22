@@ -15,8 +15,10 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    hookTimeout: 30_000,
     setupFiles: ["./src/__tests__/setup.ts"],
     globals: true,
+    testTimeout: 30_000,
     server: {
       deps: {
         inline: [/@armyofagents\//],

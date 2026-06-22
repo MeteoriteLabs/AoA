@@ -8,6 +8,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 export const artifacts = pgTable(
@@ -21,12 +22,19 @@ export const artifacts = pgTable(
     status: text("status").notNull().default("draft"),
     currentVersionId: uuid("current_version_id").references((): AnyPgColumn => artifactVersions.id, { onDelete: "set null" }),
     createdById: text("created_by_id").notNull(),
+    // #197: idempotency anchor for action-gated artifact commits (thread-agent-actions).
+    sourceActionId: uuid("source_action_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyIdx: index("artifacts_company_idx").on(table.companyId),
     companyStatusIdx: index("artifacts_company_status_idx").on(table.companyId, table.status),
+    // #197: idempotent action-gated artifact commit. At most one artifact per
+    // (company, source_action_id); partial so non-gated artifacts (NULL) are exempt.
+    sourceActionUniq: uniqueIndex("artifacts_source_action_uq")
+      .on(table.companyId, table.sourceActionId)
+      .where(sql`source_action_id IS NOT NULL`),
   }),
 );
 

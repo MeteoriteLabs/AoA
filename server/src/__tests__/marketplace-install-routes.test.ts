@@ -36,11 +36,17 @@ import { createMarketplaceInstallRouter } from "../routes/marketplace-installs.j
 
 const SKILL = {
   id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+  source: { adapter: "aoa-curated", url: "https://github.com/aoa-curated/package", locator: "...", commitSha: "abc" },
   resourceUrl: "https://.../SKILL.md",
   content: { inline: "# Code Review" },
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
+};
+
+const SKILL_B = {
+  ...SKILL,
+  id: "skill:aoa-curated/code-review-b",
+  name: "Code Review B",
 };
 
 // Agent items require a targetDepartmentId; skills do not.
@@ -53,9 +59,28 @@ const AGENT = {
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
 };
 
-const CATALOG = { schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 2, items: [SKILL, AGENT] };
+const MIXED_SKILL = {
+  ...SKILL,
+  id: "skill:aoa-curated/mixed-skill",
+  packageId: "mixed/package",
+};
 
-function buildApp() {
+const MIXED_TEAM = {
+  ...SKILL,
+  id: "team:aoa-curated/mixed-team",
+  type: "team",
+  name: "Mixed Team",
+  packageId: "mixed/package",
+};
+
+const CATALOG = {
+  schemaVersion: "1.0.0",
+  generatedAt: "2026-04-30T00:00:00Z",
+  itemCount: 5,
+  items: [SKILL, SKILL_B, AGENT, MIXED_SKILL, MIXED_TEAM],
+};
+
+function buildApp(catalog = CATALOG) {
   const app = express();
   app.use(express.json());
 
@@ -76,8 +101,8 @@ function buildApp() {
       transaction: async (cb: any) => cb({ insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "skill-1" }]) }) }) }),
     } as any,
     catalogService: {
-      readCache: async () => CATALOG,
-      sync: async () => CATALOG,
+      readCache: async () => catalog,
+      sync: async () => catalog,
       getStatus: async () => null,
       startSyncLoop: () => {}, stopSyncLoop: () => {},
     } as any,
@@ -138,6 +163,42 @@ describe("POST /api/companies/:companyId/marketplace/install", () => {
     expect(res.status).toBe(400);
     expect(res.body.details).toBeDefined();
   });
+
+  it("returns 202 for package install requests", async () => {
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({
+        packageId: "aoa-curated/package",
+        catalogItemIds: [SKILL.id, SKILL_B.id],
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body.operationId).toBe("op-1");
+  });
+
+  it("returns 400 when requested package members do not match", async () => {
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({
+        packageId: "aoa-curated/package",
+        catalogItemIds: [SKILL.id],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/package member mismatch/i);
+  });
+
+  it("returns 400 for mixed packages in v1", async () => {
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({
+        packageId: "mixed/package",
+        catalogItemIds: [MIXED_SKILL.id, MIXED_TEAM.id],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/skill-only packages/i);
+  });
 });
 
 describe("GET /api/companies/:companyId/marketplace/resolve/:catalogItemId", () => {
@@ -147,5 +208,38 @@ describe("GET /api/companies/:companyId/marketplace/resolve/:catalogItemId", () 
     expect(res.status).toBe(200);
     expect(res.body.rootItem.id).toBe(SKILL.id);
     expect(res.body.steps).toBeInstanceOf(Array);
+  });
+
+  it("returns 404 only when the requested catalog item is missing", async () => {
+    const res = await request(buildApp())
+      .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent("skill:missing")}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/catalog item not found/i);
+  });
+
+  it("returns non-404 when agent preview resolution fails after the item is found", async () => {
+    const badAgent = {
+      ...AGENT,
+      resourceUrl: "data:application/json,%7Bnot-json",
+    };
+    const res = await request(buildApp({ ...CATALOG, items: [badAgent] }))
+      .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent(AGENT.id)}`);
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/failed to parse agent template json/i);
+  });
+
+  it("returns 502 when agent template preview fetch rejects before an HTTP response", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new Error("fetch failed");
+    }) as any;
+
+    const res = await request(buildApp({ ...CATALOG, items: [AGENT] }))
+      .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent(AGENT.id)}`);
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/failed to fetch agent template/i);
+    expect(res.body.error).toMatch(/fetch failed/i);
   });
 });

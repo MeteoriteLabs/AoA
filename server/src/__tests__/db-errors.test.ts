@@ -54,4 +54,24 @@ describe("isUniqueViolation", () => {
     expect(isUniqueViolation(err)).toBe(true);
     expect(isUniqueViolation(err, undefined)).toBe(true);
   });
+
+  it("matches a specific constraint via `constraint_name` (postgres-js shape)", () => {
+    // postgres-js emits `constraint_name`, NOT `constraint`. This is the REAL
+    // production shape; without it the #197 action-gate convergence is dead code.
+    const err = Object.assign(new Error("dup"), {
+      code: "23505",
+      constraint_name: "discussion_entries_source_action_uq",
+    });
+    expect(isUniqueViolation(err, "discussion_entries_source_action_uq")).toBe(true);
+    expect(isUniqueViolation(err, "other_uq")).toBe(false);
+  });
+
+  it("matches `constraint_name` on err.cause (drizzle-wrapped postgres-js shape)", () => {
+    const inner = Object.assign(new Error("dup"), {
+      code: "23505",
+      constraint_name: "artifacts_source_action_uq",
+    });
+    const wrapped = Object.assign(new Error("wrapped"), { cause: inner });
+    expect(isUniqueViolation(wrapped, "artifacts_source_action_uq")).toBe(true);
+  });
 });

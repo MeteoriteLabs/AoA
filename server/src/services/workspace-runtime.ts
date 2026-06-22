@@ -1,9 +1,10 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { Db } from "@armyofagents/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
@@ -19,6 +20,8 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { probePreviewUrl } from "./runtime-service-preview-detection.js";
+import { emitRuntimeServiceTaskOutput } from "./task-output-emitters.js";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -90,6 +93,7 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
+const execFileAsync = promisify(execFile);
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -100,6 +104,22 @@ function stableStringify(value: unknown): string {
     return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function shellInvocation(command: string): { command: string; args: string[] } {
+  const configuredShell = process.env.SHELL?.trim();
+  if (process.platform === "win32") {
+    const shellName = configuredShell ? path.basename(configuredShell).toLowerCase() : "";
+    if (configuredShell && (shellName.includes("bash") || shellName === "sh.exe")) {
+      return { command: configuredShell, args: ["-lc", command] };
+    }
+    return {
+      command: configuredShell || "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", command],
+    };
+  }
+
+  return { command: configuredShell || "/bin/sh", args: ["-lc", command] };
 }
 
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -119,14 +139,20 @@ function stableRuntimeServiceId(input: {
   scopeType: RuntimeServiceRef["scopeType"];
   scopeId: string | null;
   serviceName: string;
+  urlKey: string | null;
   reportId: string | null;
   providerRef: string | null;
   reuseKey: string | null;
 }) {
   if (input.reportId) return input.reportId;
-  const digest = createHash("sha256")
-    .update(
-      stableStringify({
+  const identity = input.urlKey
+    ? {
+        adapterType: input.adapterType,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId,
+        urlKey: input.urlKey,
+      }
+    : {
         adapterType: input.adapterType,
         runId: input.runId,
         scopeType: input.scopeType,
@@ -134,11 +160,28 @@ function stableRuntimeServiceId(input: {
         serviceName: input.serviceName,
         providerRef: input.providerRef,
         reuseKey: input.reuseKey,
-      }),
-    )
+      };
+  const digest = createHash("sha256")
+    .update(stableStringify(identity))
     .digest("hex")
     .slice(0, 32);
-  return `${input.adapterType}-${digest}`;
+  return [
+    digest.slice(0, 8),
+    digest.slice(8, 12),
+    digest.slice(12, 16),
+    digest.slice(16, 20),
+    digest.slice(20, 32),
+  ].join("-");
+}
+
+function normalizeRuntimeServiceUrlKey(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value);
+    return url.toString();
+  } catch {
+    return value.trim().replace(/\/+$/, "");
+  }
 }
 
 function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<RuntimeServiceRef>): RuntimeServiceRef {
@@ -404,8 +447,29 @@ async function validateLinkedGitWorktree(input: {
   return { valid: true };
 }
 
-function terminateChildProcess(child: ChildProcess) {
+export function buildRuntimeServiceProcessTreeKillCommand(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } | null {
+  if (platform !== "win32") return null;
+  return { command: "taskkill.exe", args: ["/PID", String(pid), "/T", "/F"] };
+}
+
+async function terminateChildProcess(child: ChildProcess) {
   if (!child.pid) return;
+  const windowsTreeKill = buildRuntimeServiceProcessTreeKillCommand(child.pid);
+  if (windowsTreeKill) {
+    try {
+      await execFileAsync(windowsTreeKill.command, windowsTreeKill.args, {
+        timeout: 5000,
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      // Fall through to the direct child kill when taskkill is unavailable or
+      // the wrapper process exited before we could terminate its tree.
+    }
+  }
   if (process.platform !== "win32") {
     try {
       process.kill(-child.pid, "SIGTERM");
@@ -473,10 +537,10 @@ async function runWorkspaceCommand(input: {
     },
     "Running workspace shell command",
   );
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = shellInvocation(input.command);
   const proc = await executeProcess({
-    command: shell,
-    args: ["-c", input.command],
+    command: shell.command,
+    args: shell.args,
     cwd: input.cwd,
     env: input.env,
   });
@@ -493,7 +557,7 @@ async function runWorkspaceCommand(input: {
 async function recordGitOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "worktree_prepare" | "worktree_cleanup";
+    phase: "worktree_prepare" | "worktree_cleanup" | "user_git_operation";
     args: string[];
     cwd: string;
     metadata?: Record<string, unknown> | null;
@@ -569,10 +633,10 @@ async function recordWorkspaceCommandOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const shell = process.env.SHELL?.trim() || "/bin/sh";
+      const shell = shellInvocation(input.command);
       const result = await executeProcess({
-        command: shell,
-        args: ["-c", input.command],
+        command: shell.command,
+        args: shell.args,
         cwd: input.cwd,
         env: input.env,
       });
@@ -787,6 +851,42 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
+  async function reuseConcurrentWorktreeIfValid(): Promise<RealizedExecutionWorkspace | null> {
+    if (await directoryExists(worktreePath)) {
+      const validation = await validateLinkedGitWorktree({
+        repoRoot,
+        worktreePath,
+        expectedBranchName: branchName,
+      });
+      if (validation.valid) {
+        return await reuseExistingWorktreeAt(worktreePath);
+      }
+
+      const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
+      if (existingGitDir) {
+        throw new Error(
+          `Configured worktree path "${worktreePath}" is not reusable: ${validation.reason}.`,
+        );
+      }
+    }
+
+    const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+    if (!registeredBranchWorktree) {
+      return null;
+    }
+    const validation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: registeredBranchWorktree,
+      expectedBranchName: branchName,
+    });
+    if (validation.valid) {
+      return await reuseExistingWorktreeAt(registeredBranchWorktree);
+    }
+    throw new Error(
+      `Configured worktree branch "${branchName}" is registered but not reusable: ${validation.reason}.`,
+    );
+  }
+
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
     const validation = await validateLinkedGitWorktree({
@@ -838,6 +938,10 @@ export async function realizeExecutionWorkspace(input: {
   } catch (error) {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
+    }
+    const concurrentlyCreated = await reuseConcurrentWorktreeIfValid();
+    if (concurrentlyCreated) {
+      return concurrentlyCreated;
     }
     try {
       await recordGitOperation(input.recorder, {
@@ -1033,6 +1137,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }) {
   const warnings: string[] = [];
+  // True once we deliberately decline to remove a path that must be preserved
+  // (project-workspace containment refusal). Such a workspace must report
+  // cleaned=true so it is archived directly rather than marked `cleanup_failed`,
+  // which the retry sweeper would otherwise act on.
+  let preserve = false;
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
@@ -1131,6 +1240,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         )
       : false;
     if (containsProjectWorkspace) {
+      preserve = true;
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
@@ -1153,7 +1263,18 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // A workspace whose removal was deliberately skipped must report cleaned=true,
+  // otherwise it is marked `cleanup_failed` and the retry sweeper would later
+  // rm -rf a path we intentionally preserved. Two preserve cases:
+  //  - project-workspace containment refusal (`preserve` above), and
+  //  - a shared/external local_fs dir the runtime never created (the removal
+  //    branch is gated on createdByRuntime, so nothing was — or should be —
+  //    removed).
+  const preservedFromRemoval =
+    preserve ||
+    (input.workspace.providerType === "local_fs" && !createdByRuntime);
   const cleaned =
+    preservedFromRemoval ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 
@@ -1244,12 +1365,9 @@ async function waitForReadiness(input: {
   service: Record<string, unknown>;
   url: string | null;
 }) {
-  const readiness = parseObject(input.service.readiness);
-  const readinessType = asString(readiness.type, "");
-  if (readinessType !== "http" || !input.url) return;
-  const timeoutSec = Math.max(1, asNumber(readiness.timeoutSec, 30));
-  const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
-  const deadline = Date.now() + timeoutSec * 1000;
+  const options = resolveRuntimeServiceReadinessOptions({ service: input.service });
+  if (options.type !== "http" || !input.url) return;
+  const deadline = Date.now() + options.timeoutSec * 1000;
   let lastError = "service did not become ready";
   while (Date.now() < deadline) {
     try {
@@ -1259,7 +1377,7 @@ async function waitForReadiness(input: {
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
-    await delay(intervalMs);
+    await delay(options.intervalMs);
   }
   throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
 }
@@ -1330,6 +1448,7 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
         updatedAt: values.updatedAt,
       },
     });
+  await emitRuntimeServiceTaskOutput(db, values);
 }
 
 function clearIdleTimer(record: RuntimeServiceRecord) {
@@ -1349,7 +1468,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
   now?: Date;
 }): RuntimeServiceRef[] {
   const nowIso = (input.now ?? new Date()).toISOString();
-  return input.reports.map((report) => {
+  const refs: RuntimeServiceRef[] = input.reports.map((report) => {
     const scopeType = report.scopeType ?? "run";
     const scopeId =
       report.scopeId ??
@@ -1364,6 +1483,10 @@ export function normalizeAdapterManagedRuntimeServices(input: {
     const serviceName = asString(report.serviceName, "").trim() || "service";
     const status = report.status ?? "running";
     const lifecycle = report.lifecycle ?? "ephemeral";
+    const previewUrlKey =
+      scopeType === "execution_workspace" && !report.command && !report.providerRef
+        ? normalizeRuntimeServiceUrlKey(report.url ?? null)
+        : null;
     const healthStatus =
       report.healthStatus ??
       (status === "running" ? "healthy" : status === "failed" ? "unhealthy" : "unknown");
@@ -1374,6 +1497,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
         scopeType,
         scopeId,
         serviceName,
+        urlKey: previewUrlKey,
         reportId: report.id ?? null,
         providerRef: report.providerRef ?? null,
         reuseKey: report.reuseKey ?? null,
@@ -1405,11 +1529,293 @@ export function normalizeAdapterManagedRuntimeServices(input: {
       reused: false,
     };
   });
+  return Array.from(new Map(refs.map((ref) => [ref.id, ref])).values());
+}
+
+type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+
+type PreviewRuntimeServiceUpdate = {
+  id: string;
+  status: string;
+  healthStatus: string;
+  stoppedAt: Date | null;
+  healthCheckedAt: Date;
+  updatedAt: Date;
+};
+
+const DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS = 30_000;
+const DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY = 5;
+const previewProbeInFlight = new Map<string, Promise<boolean>>();
+
+function isAdapterManagedPreviewRuntimeServiceRow(row: WorkspaceRuntimeServiceRow): boolean {
+  return row.provider === "adapter_managed" && !row.command && !row.providerRef && Boolean(row.url);
+}
+
+function dateTime(value: Date | string | null | undefined): number | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isPreviewHealthCheckStale(
+  row: WorkspaceRuntimeServiceRow,
+  now: Date,
+  ttlMs: number,
+): boolean {
+  const checkedAt = dateTime(row.healthCheckedAt);
+  if (checkedAt === null) return true;
+  return now.getTime() - checkedAt >= ttlMs;
+}
+
+function isRuntimeServiceHealthRefreshActive(row: WorkspaceRuntimeServiceRow): boolean {
+  return row.status === "starting" || row.status === "running";
+}
+
+function nextRuntimeServiceHealthState(
+  row: WorkspaceRuntimeServiceRow,
+  reachable: boolean,
+  now: Date,
+): Pick<PreviewRuntimeServiceUpdate, "status" | "healthStatus" | "stoppedAt"> {
+  if (reachable) {
+    return {
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+    };
+  }
+
+  if (row.healthStatus === "unhealthy") {
+    return {
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+    };
+  }
+
+  return {
+    status: row.status,
+    healthStatus: "unhealthy",
+    stoppedAt: row.stoppedAt ?? null,
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await fn(items[currentIndex]!, currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function probePreviewUrlDeduped(input: {
+  key: string;
+  url: string;
+  probeUrl: (url: string) => Promise<boolean>;
+}): Promise<boolean> {
+  const existing = previewProbeInFlight.get(input.key);
+  if (existing) return existing;
+  const promise = input.probeUrl(input.url).finally(() => {
+    previewProbeInFlight.delete(input.key);
+  });
+  previewProbeInFlight.set(input.key, promise);
+  return promise;
+}
+
+export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
+  rows: WorkspaceRuntimeServiceRow[];
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<{ rows: WorkspaceRuntimeServiceRow[]; updates: PreviewRuntimeServiceUpdate[] }> {
+  const now = input.now ?? new Date();
+  const ttlMs = input.ttlMs ?? DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS;
+  const maxConcurrency = input.maxConcurrency ?? DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY;
+  const probeUrl = input.probeUrl ?? ((url: string) => probePreviewUrl(url, { timeoutMs: 750 }));
+  const updates: PreviewRuntimeServiceUpdate[] = [];
+
+  const rows = await mapWithConcurrency(
+    input.rows,
+    maxConcurrency,
+    async (row) => {
+      if (!isAdapterManagedPreviewRuntimeServiceRow(row) || !row.url) return row;
+      if (!isRuntimeServiceHealthRefreshActive(row)) return row;
+      if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
+
+      const reachable = await probePreviewUrlDeduped({
+        key: row.id,
+        url: row.url,
+        probeUrl,
+      });
+      const nextHealth = nextRuntimeServiceHealthState(row, reachable, now);
+      const changed =
+        row.status !== nextHealth.status ||
+        row.healthStatus !== nextHealth.healthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextHealth.stoppedAt) ||
+        dateTime(row.healthCheckedAt) !== dateTime(now);
+
+      if (!changed) return row;
+
+      const update = {
+        id: row.id,
+        status: nextHealth.status,
+        healthStatus: nextHealth.healthStatus,
+        stoppedAt: nextHealth.stoppedAt,
+        healthCheckedAt: now,
+        updatedAt: now,
+      };
+      updates.push(update);
+      return {
+        ...row,
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
+        updatedAt: update.updatedAt,
+      };
+    },
+  );
+
+  return { rows, updates };
+}
+
+export async function refreshLocalProcessRuntimeServiceRows(input: {
+  rows: WorkspaceRuntimeServiceRow[];
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<{ rows: WorkspaceRuntimeServiceRow[]; updates: PreviewRuntimeServiceUpdate[] }> {
+  const now = input.now ?? new Date();
+  const ttlMs = input.ttlMs ?? DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS;
+  const maxConcurrency = input.maxConcurrency ?? DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY;
+  const probeUrl = input.probeUrl ?? ((url: string) => probePreviewUrl(url, { timeoutMs: 750 }));
+  const updates: PreviewRuntimeServiceUpdate[] = [];
+
+  const rows = await mapWithConcurrency(
+    input.rows,
+    maxConcurrency,
+    async (row) => {
+      if (row.provider !== "local_process" || !row.url) return row;
+      if (!isRuntimeServiceHealthRefreshActive(row)) return row;
+      if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
+
+      const reachable = await probePreviewUrlDeduped({
+        key: row.id,
+        url: row.url,
+        probeUrl,
+      });
+      const nextHealth = nextRuntimeServiceHealthState(row, reachable, now);
+      const changed =
+        row.status !== nextHealth.status ||
+        row.healthStatus !== nextHealth.healthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextHealth.stoppedAt) ||
+        dateTime(row.healthCheckedAt) !== dateTime(now);
+
+      if (!changed) return row;
+
+      const update = {
+        id: row.id,
+        status: nextHealth.status,
+        healthStatus: nextHealth.healthStatus,
+        stoppedAt: nextHealth.stoppedAt,
+        healthCheckedAt: now,
+        updatedAt: now,
+      };
+      updates.push(update);
+      return {
+        ...row,
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
+        updatedAt: update.updatedAt,
+      };
+    },
+  );
+
+  return { rows, updates };
+}
+
+async function persistRuntimeServiceHealthUpdates(
+  db: Db,
+  updates: PreviewRuntimeServiceUpdate[],
+) {
+  for (const update of updates) {
+    await db
+      .update(workspaceRuntimeServices)
+      .set({
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
+        updatedAt: update.updatedAt,
+      })
+      .where(eq(workspaceRuntimeServices.id, update.id));
+  }
+}
+
+export async function refreshPersistedRuntimeServiceRows(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+  now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const adapterRows = await refreshAdapterManagedPreviewRuntimeServiceRows(input);
+  const localRows = await refreshLocalProcessRuntimeServiceRows({
+    ...input,
+    rows: adapterRows.rows,
+  });
+  await persistRuntimeServiceHealthUpdates(input.db, [
+    ...adapterRows.updates,
+    ...localRows.updates,
+  ]);
+  const changedIds = new Set([
+    ...adapterRows.updates.map((update) => update.id),
+    ...localRows.updates.map((update) => update.id),
+  ]);
+  for (const row of localRows.rows) {
+    if (changedIds.has(row.id)) {
+      await emitRuntimeServiceTaskOutput(input.db, row);
+    }
+  }
+  return localRows.rows;
+}
+
+export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
+  await persistRuntimeServiceHealthUpdates(input.db, refreshed.updates);
+  const changedIds = new Set(refreshed.updates.map((update) => update.id));
+  for (const row of refreshed.rows) {
+    if (changedIds.has(row.id)) {
+      await emitRuntimeServiceTaskOutput(input.db, row);
+    }
+  }
+  return refreshed.rows;
 }
 
 async function startLocalRuntimeService(input: {
   db?: Db;
   runId: string;
+  startedByRunId?: string | null;
+  leaseRunId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
@@ -1450,8 +1856,8 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || (process.platform === "win32" ? "bash" : "/bin/sh");
-  const child = spawn(shell, ["-lc", command], {
+  const shell = shellInvocation(command);
+  const child = spawn(shell.command, shell.args, {
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",
@@ -1480,13 +1886,15 @@ async function startLocalRuntimeService(input: {
   try {
     await waitForReadiness({ service: input.service, url });
   } catch (err) {
-    terminateChildProcess(child);
+    await terminateChildProcess(child);
     throw new Error(
       `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
     );
   }
 
   const envFingerprint = createHash("sha256").update(stableStringify(envConfig)).digest("hex");
+  const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
+  const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   return {
     id: randomUUID(),
     companyId: input.agent.companyId,
@@ -1507,7 +1915,7 @@ async function startLocalRuntimeService(input: {
     provider: "local_process",
     providerRef: child.pid ? String(child.pid) : null,
     ownerAgentId: input.agent.id,
-    startedByRunId: input.runId,
+    startedByRunId,
     lastUsedAt: new Date().toISOString(),
     startedAt: new Date().toISOString(),
     stoppedAt: null,
@@ -1516,7 +1924,7 @@ async function startLocalRuntimeService(input: {
     reused: false,
     db: input.db,
     child,
-    leaseRunIds: new Set([input.runId]),
+    leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
     idleTimer: null,
     envFingerprint,
   };
@@ -1540,7 +1948,7 @@ async function stopRuntimeService(serviceId: string) {
   record.lastUsedAt = new Date().toISOString();
   record.stoppedAt = new Date().toISOString();
   if (record.child && record.child.pid) {
-    terminateChildProcess(record.child);
+    await terminateChildProcess(record.child);
   }
   runtimeServicesById.delete(serviceId);
   if (record.reuseKey) {
@@ -1650,6 +2058,8 @@ export async function ensureRuntimeServicesForRun(input: {
       const record = await startLocalRuntimeService({
         db: input.db,
         runId: input.runId,
+        startedByRunId: input.runId,
+        leaseRunId: input.runId,
         agent: input.agent,
         issue: input.issue,
         workspace: input.workspace,
@@ -1883,6 +2293,24 @@ export async function persistAdapterManagedRuntimeServices(input: {
           updatedAt: new Date(),
         },
       });
+    await emitRuntimeServiceTaskOutput(input.db, {
+      id: ref.id,
+      companyId: ref.companyId,
+      projectId: ref.projectId,
+      issueId: ref.issueId,
+      executionWorkspaceId: ref.executionWorkspaceId,
+      serviceName: ref.serviceName,
+      provider: ref.provider,
+      status: ref.status,
+      healthStatus: ref.healthStatus,
+      url: ref.url,
+      port: ref.port,
+      lifecycle: ref.lifecycle,
+      scopeType: ref.scopeType,
+      providerRef: ref.providerRef,
+      startedByRunId: ref.startedByRunId,
+      ownerAgentId: ref.ownerAgentId,
+    });
   }
 
   return refs;
@@ -1928,6 +2356,45 @@ export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<strin
     return Math.max(1, explicitTimeoutSec);
   }
   return looksLikeWorkspaceDevServerCommand(asString(service.command, "")) ? 90 : 30;
+}
+
+export function resolveRuntimeServiceReadinessOptions(input: {
+  service: Record<string, unknown>;
+}): { timeoutSec: number; intervalMs: number; type: string } {
+  const readiness = parseObject(input.service.readiness);
+  return {
+    type: asString(readiness.type, ""),
+    timeoutSec: resolveWorkspaceRuntimeReadinessTimeoutSec(input.service),
+    intervalMs: Math.max(100, asNumber(readiness.intervalMs, 500)),
+  };
+}
+
+export function resolveConfiguredRuntimeServiceIndexForRow(input: {
+  services: Record<string, unknown>[];
+  row: {
+    serviceName: string;
+    command: string | null;
+    cwd: string | null;
+  };
+  workspaceCwd: string | null;
+}): number | null {
+  const normalizedRowCwd = input.row.cwd ? path.resolve(input.row.cwd) : null;
+  let matchIndex: number | null = null;
+  for (let index = 0; index < input.services.length; index += 1) {
+    const service = input.services[index]!;
+    const name = asString(service.name, "service");
+    const command = asString(service.command, "");
+    const serviceCwd = asString(service.cwd, ".");
+    const resolvedServiceCwd = input.workspaceCwd
+      ? path.resolve(input.workspaceCwd, serviceCwd)
+      : null;
+    if (name !== input.row.serviceName) continue;
+    if (input.row.command && command && input.row.command !== command) continue;
+    if (normalizedRowCwd && resolvedServiceCwd && normalizedRowCwd !== resolvedServiceCwd) continue;
+    if (matchIndex !== null) return null;
+    matchIndex = index;
+  }
+  return matchIndex;
 }
 
 function readRuntimeServiceEntries(config: Record<string, unknown>): Record<string, unknown>[] {
@@ -2083,6 +2550,8 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
     const record = await startLocalRuntimeService({
       db: input.db,
       runId: invocationId,
+      startedByRunId: null,
+      leaseRunId: null,
       agent: input.actor,
       issue: input.issue,
       workspace: input.workspace,
@@ -2373,4 +2842,145 @@ export function buildWorkspaceReadyComment(input: {
     lines.push(`- Service: ${detail}${suffix}`);
   }
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// resetWorkspaceToCleanState
+// ---------------------------------------------------------------------------
+//
+// Clears leftover junk from a prior/failed run in a REUSED thread workspace
+// WITHOUT destroying committed work.
+//
+// SAFETY CONTRACT — WHY WE RESET TO HEAD ONLY:
+//   In thread-workspace reuse, each task in the thread may commit work to the
+//   shared worktree branch.  Resetting to a base ref (e.g. origin/main, the
+//   thread-workspace base branch, or any ref other than the current HEAD) would
+//   WIPE those prior-task commits.  That is permanent, unrecoverable data loss.
+//
+//   Therefore this function ONLY runs:
+//     git reset --hard HEAD     ← discards uncommitted changes to tracked files;
+//                                  HEAD (the current branch tip) is unchanged
+//     git clean -fd             ← removes untracked files + directories
+//
+//   There is NO parameter that lets a caller supply a different ref.  If you
+//   need to reset to a base ref, that is a completely different (destructive)
+//   operation and must be a separately-reviewed, separately-named function.
+//
+// PATH GUARD:
+//   The function refuses to operate on obviously wrong paths (empty, root "/",
+//   or a directory that does not look like a git worktree) to prevent
+//   accidentally running `reset --hard` on the wrong directory.
+
+export type GitRunner = (
+  args: string[],
+  cwd: string,
+) => Promise<{ stdout: string; stderr: string; code: number }>;
+
+export interface ResetWorkspaceToCleanStateOpts {
+  /**
+   * Inject a fake git runner in tests.  Defaults to the module-private runGit
+   * wrapper (which uses `spawn` via executeProcess).  Production code should
+   * never pass this.
+   */
+  gitRunner?: GitRunner;
+}
+
+async function defaultGitRunner(
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  // Thin bridge to the module-private executeProcess so the injection seam
+  // shares the same underlying spawn logic used everywhere else in this file.
+  const proc = await executeProcess({ command: "git", args, cwd });
+  return { stdout: proc.stdout, stderr: proc.stderr, code: proc.code ?? -1 };
+}
+
+/**
+ * Safely clears the working tree of a git worktree back to a clean state.
+ *
+ * Runs, in order:
+ *   1. git reset --hard HEAD
+ *   2. git clean -fd
+ *
+ * NEVER resets to anything other than HEAD — see the block comment above for
+ * the full safety rationale.
+ *
+ * @param worktreePath  Absolute path to the git worktree directory.
+ * @param opts          Optional injection seam for testing (gitRunner).
+ * @returns             `{ ok: true }` on success; throws on any failure.
+ */
+export async function resetWorkspaceToCleanState(
+  worktreePath: string,
+  opts?: ResetWorkspaceToCleanStateOpts,
+): Promise<{ ok: true }> {
+  // -------------------------------------------------------------------------
+  // PATH GUARD
+  // -------------------------------------------------------------------------
+  if (!worktreePath || worktreePath.trim() === "") {
+    throw new Error("resetWorkspaceToCleanState: worktreePath must not be empty");
+  }
+
+  const resolved = path.resolve(worktreePath);
+
+  // Refuse to operate on the filesystem root (e.g. "/" on POSIX or "C:\" on Windows).
+  const parsed = path.parse(resolved);
+  if (parsed.root === resolved || parsed.dir === resolved) {
+    throw new Error(
+      `resetWorkspaceToCleanState: refusing to operate on filesystem root "${resolved}"`,
+    );
+  }
+
+  // Verify the path is a directory that contains a ".git" entry (file or
+  // directory).  A linked worktree has a ".git" *file*; the main worktree
+  // has a ".git" *directory*.  Either is acceptable.
+  let hasGitEntry = false;
+  try {
+    await fs.stat(path.join(resolved, ".git"));
+    hasGitEntry = true;
+  } catch {
+    hasGitEntry = false;
+  }
+
+  if (!hasGitEntry) {
+    throw new Error(
+      `resetWorkspaceToCleanState: "${resolved}" does not appear to be a git worktree (no .git entry found)`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // GIT OPERATIONS
+  // -------------------------------------------------------------------------
+  const run = opts?.gitRunner ?? defaultGitRunner;
+
+  logger.info({ worktreePath: resolved }, "resetWorkspaceToCleanState: starting clean-state reset");
+
+  // Step 1: discard uncommitted changes to tracked files.
+  // CRITICAL: the ref is ALWAYS "HEAD" — never a branch name, never an origin
+  // ref.  Resetting to a base ref would destroy prior-task commits. See safety
+  // rationale in the block comment above.
+  const resetResult = await run(["reset", "--hard", "HEAD"], resolved);
+  if (resetResult.code !== 0) {
+    const detail = [resetResult.stderr.trim(), resetResult.stdout.trim()].filter(Boolean).join("\n");
+    throw new Error(
+      `resetWorkspaceToCleanState: git reset --hard HEAD failed at "${resolved}"` +
+        (detail ? `: ${detail}` : ` with exit code ${resetResult.code}`),
+    );
+  }
+
+  // Step 2: remove untracked files and directories.
+  const cleanResult = await run(["clean", "-fd"], resolved);
+  if (cleanResult.code !== 0) {
+    const detail = [cleanResult.stderr.trim(), cleanResult.stdout.trim()].filter(Boolean).join("\n");
+    throw new Error(
+      `resetWorkspaceToCleanState: git clean -fd failed at "${resolved}"` +
+        (detail ? `: ${detail}` : ` with exit code ${cleanResult.code}`),
+    );
+  }
+
+  logger.info(
+    { worktreePath: resolved },
+    "resetWorkspaceToCleanState: clean-state reset complete",
+  );
+
+  return { ok: true };
 }

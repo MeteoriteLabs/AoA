@@ -32,7 +32,9 @@ export const createRoutineSchema = z.object({
   variables: z.array(routineVariableSchema).optional(),
 });
 
-export const updateRoutineSchema = createRoutineSchema.partial();
+export const updateRoutineSchema = createRoutineSchema.partial().extend({
+  baseRevisionId: z.string().uuid().optional(),
+});
 
 const scheduleCreateSchema = z.object({
   kind: z.literal("schedule"),
@@ -81,6 +83,11 @@ export const runRoutineSchema = z.object({
 });
 
 export const rotateRoutineTriggerSecretSchema = z.object({});
+
+export const restoreRoutineRevisionSchema = z.object({
+  revisionId: z.string().uuid(),
+});
+export type RestoreRoutineRevision = z.infer<typeof restoreRoutineRevisionSchema>;
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;

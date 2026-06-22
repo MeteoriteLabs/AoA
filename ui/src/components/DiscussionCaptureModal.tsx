@@ -102,6 +102,8 @@ export function DiscussionCaptureModal() {
       discussionsApi.create(selectedCompanyId!, data as any),
     onSuccess: (discussion) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId!] });
       resetAndClose();
       pushToast({
         title: "Discussion created",
@@ -121,8 +123,13 @@ export function DiscussionCaptureModal() {
       discussionsApi.addEntry(selectedCompanyId!, data.discussionId, data.entry as any),
     onSuccess: (_, vars) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: ["threads", selectedCompanyId!] });
       queryClient.invalidateQueries({
         queryKey: queryKeys.discussions.detail(selectedCompanyId!, vars.discussionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.threads.detail(selectedCompanyId!, vars.discussionId),
       });
       resetAndClose();
       pushToast({

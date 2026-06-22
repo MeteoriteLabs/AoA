@@ -33,6 +33,35 @@ interface MarketplaceCatalogServiceDeps {
   bundledSnapshotProvider: () => Promise<MarketplaceCatalogFile | null>;
 }
 
+/**
+ * Read the catalog from the DB cache without needing a service instance.
+ * Used by the company bootstrap path (companies.ts) which runs before the
+ * full MarketplaceCatalogService is wired. Returns null if no catalog has
+ * been cached yet (caller should skip marketplace-install and fall back to
+ * legacy seeders).
+ */
+export async function loadCachedCatalog(db: Db): Promise<MarketplaceCatalogFile | null> {
+  const rows = await db
+    .select()
+    .from(marketplaceCatalogCache)
+    .where(eq(marketplaceCatalogCache.id, 1))
+    .limit(1);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  const candidate = {
+    schemaVersion: row.schemaVersion,
+    generatedAt: row.generatedAt.toISOString(),
+    itemCount: row.itemCount,
+    items: (row.catalogJson as { items?: unknown }).items ?? [],
+  };
+  const parsed = MarketplaceCatalogFileSchema.safeParse(candidate);
+  if (!parsed.success) {
+    logger.warn({ err: parsed.error }, "marketplace: cached catalog failed schema validation (loadCachedCatalog)");
+    return null;
+  }
+  return parsed.data;
+}
+
 export class MarketplaceCatalogService {
   private readonly db: Db;
   private readonly cdnUrl: string;

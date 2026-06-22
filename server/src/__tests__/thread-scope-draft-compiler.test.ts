@@ -1,0 +1,335 @@
+import { describe, expect, it } from "vitest";
+import { compileThreadScopeDraft } from "../services/thread-scope-draft-compiler.js";
+
+describe("compileThreadScopeDraft", () => {
+  it("synthesizes one scope package from the full entry range", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Scope cycle test",
+      summaryText: "Scope extraction requirements discussion.",
+      entries: [
+        {
+          id: "entry-1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "Scope should be deliberate, not automatic per message.",
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          inputType: "write",
+          rawContent:
+            "After accepted scope v1, new discussion should produce v2 unless we explicitly rescope old decisions.",
+        },
+        {
+          id: "entry-3",
+          seq: 3,
+          inputType: "write",
+          rawContent:
+            "Memory must be retrievable by agents during task execution, with department, artifact, and evidence links.",
+        },
+      ],
+      extractedItems: [],
+    });
+
+    expect(result.summary).toContain("deliberate");
+    expect(result.summary).toContain("v2");
+    expect(result.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: expect.stringMatching(/versioned scope/i),
+          sourceEntryIds: expect.arrayContaining(["entry-2"]),
+        }),
+      ]),
+    );
+    expect(result.openQuestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: expect.stringMatching(/memory retrieval/i),
+          sourceEntryIds: expect.arrayContaining(["entry-3"]),
+        }),
+      ]),
+    );
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_proposal",
+          title: expect.stringMatching(/scope generation/i),
+          sourceEntryIds: ["entry-1", "entry-2", "entry-3"],
+        }),
+        expect.objectContaining({
+          kind: "memory_candidate",
+          title: expect.stringMatching(/accepted scope/i),
+          sourceEntryIds: expect.arrayContaining(["entry-2"]),
+        }),
+      ]),
+    );
+  });
+
+  it("maps existing extracted items into scope items with evidence", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Existing extraction",
+      summaryText: null,
+      entries: [
+        { id: "entry-1", seq: 1, inputType: "write", rawContent: "Build the scope viewer." },
+      ],
+      extractedItems: [
+        {
+          id: "extracted-task",
+          discussionEntryId: "entry-1",
+          type: "task",
+          title: "Build scope viewer",
+          description: "Render versioned scope items.",
+          suggestedPriority: "high",
+          suggestedAssigneeId: "agent-eng",
+          suggestedProjectId: "project-1",
+          suggestedGoalId: "goal-1",
+          status: "pending",
+        },
+      ],
+    });
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_proposal",
+          title: "Build scope viewer",
+          extractedItemId: "extracted-task",
+          sourceEntryIds: ["entry-1"],
+          payload: expect.objectContaining({
+            priority: "high",
+            assigneeAgentId: "agent-eng",
+            projectId: "project-1",
+            goalId: "goal-1",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("emits artifact links, asset source signals, and URL source signals from the scoped range", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Checkout redesign",
+      summaryText: null,
+      entries: [
+        {
+          id: "entry-1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "We need a checkout redesign. See https://example.com/current-flow for the rough path.",
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          inputType: "write",
+          rawContent: "Use the attached mockup as the requirement source.",
+        },
+      ],
+      extractedItems: [
+        {
+          id: "extracted-artifact",
+          discussionEntryId: "entry-2",
+          type: "artifact",
+          title: "Legacy extraction artifact",
+          description: "An artifact-like extracted item without a concrete artifact ID.",
+        },
+      ],
+      attachments: [
+        {
+          entryId: "entry-2",
+          artifactId: "artifact-1",
+          artifactVersionId: "artifact-version-1",
+          assetId: null,
+          title: "Checkout mockup",
+          contentType: "text/html",
+          kind: "artifact",
+        },
+        {
+          entryId: "entry-2",
+          artifactId: null,
+          artifactVersionId: null,
+          assetId: "asset-1",
+          title: "User interview notes",
+          contentType: "text/plain",
+          kind: "asset",
+        },
+      ],
+    });
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "artifact_link",
+          title: "Checkout mockup",
+          artifactId: "artifact-1",
+          artifactVersionId: "artifact-version-1",
+          sourceEntryIds: ["entry-2"],
+          payload: expect.objectContaining({ role: "reference" }),
+        }),
+        expect.objectContaining({
+          kind: "source_signal",
+          title: expect.stringContaining("User interview notes"),
+          sourceEntryIds: ["entry-2"],
+          payload: expect.objectContaining({
+            assetId: "asset-1",
+            contentType: "text/plain",
+            role: "evidence",
+          }),
+        }),
+        expect.objectContaining({
+          kind: "source_signal",
+          title: expect.stringContaining("https://example.com/current-flow"),
+          sourceEntryIds: ["entry-1"],
+          payload: expect.objectContaining({
+            url: "https://example.com/current-flow",
+            role: "evidence",
+          }),
+        }),
+        expect.objectContaining({
+          kind: "source_signal",
+          title: "Legacy extraction artifact",
+          extractedItemId: "extracted-artifact",
+          sourceEntryIds: ["entry-2"],
+        }),
+      ]),
+    );
+    expect(result.items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_proposal",
+          extractedItemId: "extracted-artifact",
+        }),
+      ]),
+    );
+  });
+
+  it("normalizes and deduplicates URL source signals across entries", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "URL evidence cleanup",
+      summaryText: null,
+      entries: [
+        {
+          id: "entry-1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "Look at https://example.com/foo. It shows the current path.",
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          inputType: "write",
+          rawContent: "Same reference again: https://example.com/foo, plus more notes.",
+        },
+      ],
+      extractedItems: [],
+    });
+
+    const urlSignals = result.items.filter(
+      (item) => item.kind === "source_signal" && item.payload.url === "https://example.com/foo",
+    );
+
+    expect(urlSignals).toHaveLength(1);
+    expect(urlSignals[0]).toEqual(
+      expect.objectContaining({
+        title: "Source: https://example.com/foo",
+        payload: expect.objectContaining({
+          role: "evidence",
+          url: "https://example.com/foo",
+        }),
+        sourceEntryIds: ["entry-1", "entry-2"],
+      }),
+    );
+  });
+
+  it("keeps generated summaries concise while preserving the full evidence range", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Long discussion",
+      summaryText: "Founder wants a scope model that turns messy discussion into executable work.",
+      entries: [
+        {
+          id: "entry-1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "First, the scope should be deliberate and should consider the whole conversation. ".repeat(8),
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          inputType: "write",
+          rawContent: "Second, accepted versions should become the source of truth for tasks. ".repeat(8),
+        },
+        {
+          id: "entry-3",
+          seq: 3,
+          inputType: "write",
+          rawContent: "Third, memory should be useful to agents later and include evidence links. ".repeat(8),
+        },
+      ],
+      extractedItems: [],
+    });
+
+    expect(result.summary.length).toBeLessThanOrEqual(520);
+    expect(result.summary).toContain("Founder wants");
+    expect(result.items[0]?.sourceEntryIds).toEqual(["entry-1", "entry-2", "entry-3"]);
+  });
+
+  it("synthesizes a memory candidate from explicit whole-thread durable memory intent", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Real crew scoping",
+      summaryText:
+        "The founder wants one implementation task and one durable memory about the decision rule.",
+      entries: [
+        {
+          id: "entry-1",
+          seq: 1,
+          inputType: "write",
+          rawContent:
+            "Collect messy discussion, produce one implementation task, and save one durable memory about the decision rule.",
+        },
+        {
+          id: "entry-2",
+          seq: 2,
+          inputType: "write",
+          rawContent:
+            "Now please scope this discussion into exactly one task proposal and one memory candidate. Use all messages above.",
+        },
+      ],
+      extractedItems: [],
+    });
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "task_proposal",
+          sourceEntryIds: ["entry-1", "entry-2"],
+        }),
+        expect.objectContaining({
+          kind: "memory_candidate",
+          title: expect.stringMatching(/decision rule|durable memory/i),
+          payload: expect.objectContaining({
+            layer: "domain",
+            category: "decision",
+          }),
+          sourceEntryIds: ["entry-1", "entry-2"],
+        }),
+      ]),
+    );
+  });
+
+  it("does not synthesize memory candidates from casual memory mentions without save or scope intent", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Casual discussion",
+      summaryText: null,
+      entries: [
+        {
+          id: "entry-1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "I do not remember where the button is, but let us keep discussing the UI.",
+        },
+      ],
+      extractedItems: [],
+    });
+
+    expect(result.items.some((item) => item.kind === "memory_candidate")).toBe(false);
+  });
+});

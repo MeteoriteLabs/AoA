@@ -1,6 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetFile,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@armyofagents/adapter-utils";
 import {
   asBoolean,
   asNumber,
@@ -13,7 +22,7 @@ import {
   parseObject,
   redactEnvForLogs,
   renderTemplate,
-  runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -24,6 +33,7 @@ import {
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+import { writeGeminiMcpSettingsJson } from "./gemini-settings-json.js";
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -58,7 +68,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $AOA_API_KEY\\" \\"$AOA_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $AOA_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $AOA_RUN_ID\\" -d '{...}' \\"$AOA_API_URL/api/issues/{id}/checkout\\"" })`,
+    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $AOA_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Aoa-Run-Id: $AOA_RUN_ID\\" -d '{...}' \\"$AOA_API_URL/api/issues/{id}/checkout\\"" })`,
     "",
     "",
   ].join("\n");
@@ -70,6 +80,8 @@ function joinPromptSections(sections: string[]): string {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -95,7 +107,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  // T2.2: deliver the internal-agent MCP bridge to gemini via its native
+  // discovery mechanism — a `mcpServers.aoa` block in .gemini/settings.json
+  // inside the workspace cwd. Pre-T2.2, gemini crew agents spawned with no
+  // MCP tools (same failure mode codex had pre-MX2 and opencode had
+  // pre-T2.1): the LLM ran 30s, exited without calling any tool, wakeup
+  // logged "succeeded" while having done nothing. Writing to the WORKSPACE-
+  // scope `.gemini/` (not user-global `~/.gemini/`) bounds the pollution
+  // radius to the adapter-controlled workspace. Idempotent, preserves
+  // unrelated keys, strips prior aoa block before splicing — see
+  // gemini-settings-json.ts header.
+  if (ctx.mcpBridge) {
+    await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge);
+    if (executionTargetIsRemote) {
+      await syncAdapterExecutionTargetFile({
+        runId,
+        target: executionTarget,
+        localPath: path.join(cwd, ".gemini", "settings.json"),
+        remotePath: `${effectiveExecutionCwd}/.gemini/settings.json`,
+        cwd: effectiveExecutionCwd,
+        env: {},
+        timeoutSec: 30,
+        graceSec: 5,
+        onLog,
+      });
+    }
+    await onLog("stdout", "[aoa] Wired gemini MCP bridge via .gemini/settings.json\n");
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -131,12 +172,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalId) env.AOA_APPROVAL_ID = approvalId;
   if (approvalStatus) env.AOA_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (effectiveWorkspaceCwd) env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.AOA_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: agentHome || null,
+  });
   if (workspaceHints.length > 0) env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
   for (const [key, value] of Object.entries(envConfig)) {
@@ -152,7 +198,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveGeminiBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -165,14 +213,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || (
+      executionTargetIsRemote
+        ? runtimeSessionCwd === sessionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(sessionCwd)
+    )) &&
+    sessionTargetMatches;
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
-      `[aoa] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${sessionCwd}".\n`,
     );
   }
 
@@ -195,6 +251,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+  commandNotes.push(`Execution target: ${executionTarget.type}`);
   commandNotes.push("Added --approval-mode yolo for unattended execution.");
   if (instructionsFilePath && instructionsPrefix.length > 0) {
     commandNotes.push(
@@ -273,9 +330,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+      runId,
+      command,
+      args,
       cwd,
       env,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
+      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,
       graceSec,
       onLog,
@@ -315,6 +378,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
         clearSession: clearSessionOnMissingSession,
+        executionCwd: sessionCwd,
       };
     }
 
@@ -326,10 +390,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: sessionCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(executionTargetIsRemote
+          ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+          : {}),
       } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
@@ -348,7 +415,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorCode: clearSessionForTurnLimit
+        ? "max_turns_exhausted"
+        : (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -357,6 +428,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
+      executionCwd: sessionCwd,
       resultJson: attempt.parsed.resultEvent ?? {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

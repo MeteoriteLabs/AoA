@@ -1,13 +1,31 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const agentGetByIdMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/agents.js", () => ({
+  agentService: () => ({
+    getById: agentGetByIdMock,
+    list: vi.fn().mockResolvedValue([]),
+  }),
+}));
+vi.mock("../services/projects.js", () => ({
+  projectService: () => ({}),
+}));
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => ({}),
+}));
+
 import {
+  companySkillService,
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  validatePackageFileKey,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -15,6 +33,7 @@ const cleanupDirs = new Set<string>();
 afterEach(async () => {
   await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
   cleanupDirs.clear();
+  vi.clearAllMocks();
 });
 
 async function makeTempDir(prefix: string) {
@@ -27,6 +46,22 @@ async function writeSkillDir(skillDir: string, name: string) {
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(path.join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`, "utf8");
 }
+
+describe("validatePackageFileKey (path-traversal guard used by readFile/updateFile)", () => {
+  const base = path.join(os.tmpdir(), "skills", "co1", "s1");
+
+  it("rejects parent-dir traversal", () => {
+    expect(() => validatePackageFileKey(base, "../../../etc/passwd")).toThrow(/path traversal/);
+    expect(() => validatePackageFileKey(base, "a/../../b")).toThrow(/path traversal/);
+  });
+
+  it("accepts safe in-dir paths and returns the normalized key", () => {
+    expect(validatePackageFileKey(base, "references/guide.md")).toBe("references/guide.md");
+    expect(validatePackageFileKey(base, "SKILL.md")).toBe("SKILL.md");
+    // backslashes are normalized to forward slashes
+    expect(validatePackageFileKey(base, "scripts\\run.sh")).toBe("scripts/run.sh");
+  });
+});
 
 describe("company skill import source parsing", () => {
   it("parses a skills.sh command without executing shell input", () => {
@@ -223,3 +258,107 @@ describe("missing local skill reconciliation", () => {
     expect(missingIds).toEqual(["skill-1"]);
   });
 });
+
+describe("runtime catalog bundle injection", () => {
+  it("injects ancillary files from catalog bundle install path", async () => {
+    const bundleDir = await makeTempDir("paperclip-catalog-bundle-runtime-");
+    await fs.mkdir(path.join(bundleDir, "references"), { recursive: true });
+    await fs.mkdir(path.join(bundleDir, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(bundleDir, "SKILL.md"), "# OpenAI Docs\n", "utf8");
+    await fs.writeFile(path.join(bundleDir, "references", "guide.md"), "guide", "utf8");
+    await fs.writeFile(path.join(bundleDir, "scripts", "run.js"), "console.log('run')", "utf8");
+    agentGetByIdMock.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      skillKeys: ["skill:github-skills/openai/skills/openai-docs"],
+    });
+    const row = makeSkillRow({
+      key: "skill:github-skills/openai/skills/openai-docs",
+      sourceType: "catalog",
+      sourceLocator: "skill:github-skills/openai/skills/openai-docs",
+      metadata: { catalogBundleInstallPath: bundleDir },
+      fileInventory: [
+        { path: "SKILL.md", kind: "skill" },
+        { path: "references/guide.md", kind: "reference" },
+        { path: "scripts/run.js", kind: "script" },
+      ],
+    });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    const entries = await service.listRuntimeSkillEntries("company-1", "agent-1");
+
+    expect(entries).toEqual([
+      {
+        key: "skill:github-skills/openai/skills/openai-docs",
+        name: "OpenAI Docs",
+        markdown: "# OpenAI Docs",
+        trustLevel: "scripts_executables",
+        files: [
+          { path: "references/guide.md", content: "guide" },
+          { path: "scripts/run.js", content: "console.log('run')" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("catalog skill source metadata", () => {
+  it("labels catalog skills with provider name when catalogProvider metadata exists", async () => {
+    const row = makeSkillRow({
+      sourceType: "catalog",
+      metadata: {
+        catalogProvider: {
+          id: "anthropic",
+          name: "Anthropic",
+          fallbackInitials: "A",
+          logoUrl: "https://github.com/anthropics.png",
+        },
+      },
+    });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    const list = await service.list("company-1");
+
+    expect(list[0]?.sourceBadge).toBe("catalog");
+    expect(list[0]?.sourceLabel).toBe("Anthropic");
+  });
+});
+
+function makeSkillRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-05-14T00:00:00Z");
+  return {
+    id: "skill-row-1",
+    companyId: "company-1",
+    key: "skill:key",
+    slug: "openai-docs",
+    name: "OpenAI Docs",
+    description: "Docs",
+    markdown: "# OpenAI Docs",
+    sourceType: "catalog",
+    sourceLocator: null,
+    sourceRef: "1.0.0",
+    trustLevel: "scripts_executables",
+    compatibility: "compatible",
+    fileInventory: [],
+    metadata: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function makeDbReturning(rows: any[]) {
+  const queryResult = {
+    orderBy: vi.fn().mockResolvedValue(rows),
+    then: (resolve: (value: any[]) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject),
+  };
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => queryResult),
+      })),
+    })),
+    delete: vi.fn(() => ({ where: vi.fn() })),
+  };
+}

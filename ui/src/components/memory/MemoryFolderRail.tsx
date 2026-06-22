@@ -1,6 +1,6 @@
 import {
   Home, Pin, Inbox, Clock, Archive,
-  IdCard, Building2, Target, Zap,
+  IdCard, Building2, Target, Zap, PanelLeftOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +24,7 @@ interface Props {
   counts: MemoryFolderRailCounts;
   activeKind: ActiveRailKind;
   onSelect: (kind: Exclude<ActiveRailKind, null>) => void;
+  onExpand?: () => void;
 }
 
 const SHORTCUTS = [
@@ -69,9 +70,26 @@ function RailBtn({
   );
 }
 
-export function MemoryFolderRail({ counts, activeKind, onSelect }: Props) {
+export function MemoryFolderRail({ counts, activeKind, onSelect, onExpand }: Props) {
   return (
-    <aside className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2">
+    <aside className="flex h-full w-12 shrink-0 flex-col items-center bg-card">
+      <div
+        className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border"
+        data-testid="memory-tree-collapsed-header"
+      >
+        {onExpand && (
+          <button
+            type="button"
+            title="Expand folders"
+            aria-label="Expand folders"
+            onClick={onExpand}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          >
+            <PanelLeftOpen className="size-3.5" aria-hidden />
+          </button>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col items-center gap-1 py-2">
       {SHORTCUTS.map(({ kind, title, Icon, countKey, brand }) => {
         const count = countKey ? counts[countKey] : 0;
         const label = count > 0 ? `${title} (${count})` : title;
@@ -101,6 +119,7 @@ export function MemoryFolderRail({ counts, activeKind, onSelect }: Props) {
           <Icon className="size-4" />
         </RailBtn>
       ))}
+      </div>
     </aside>
   );
 }

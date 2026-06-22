@@ -96,6 +96,7 @@ type RoutineRow = {
     required: boolean;
     options: string[];
   }>;
+  latestRevisionId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -260,6 +261,7 @@ function makeRoutine(overrides: Partial<RoutineRow> & { id: string; title: strin
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    latestRevisionId: null,
     createdAt: "2026-04-21T00:00:00.000Z",
     updatedAt: "2026-04-21T00:00:00.000Z",
     ...overrides,
@@ -398,7 +400,7 @@ describe("company-portability previewExport (route)", () => {
       };
       next();
     });
-    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any));
+    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any, { deploymentMode: "local_trusted" }));
     app.use(errorHandler);
     return app;
   }
@@ -469,9 +471,10 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
   });
   app.use(
     "/api/companies",
-    companyRoutes({
-      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
-    } as any),
+    companyRoutes(
+      { select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any,
+      { deploymentMode: "local_trusted" },
+    ),
   );
   app.use(errorHandler);
   return app;

@@ -12,6 +12,7 @@ export const companySkills = pgTable(
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     description: text("description"),
+    triggerPhrases: jsonb("trigger_phrases").$type<string[]>().default([]),
     markdown: text("markdown").notNull(),
     sourceType: text("source_type").notNull().default("local_path"),
     sourceLocator: text("source_locator"),

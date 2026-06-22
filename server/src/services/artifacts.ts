@@ -1,6 +1,7 @@
 import { eq, desc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { artifacts, artifactVersions, issues } from "@armyofagents/db";
+import { badRequest } from "../errors.js";
 
 /** Fetch artifact row + its versions (newest first) */
 async function fetchWithVersions(db: Db, artifactId: string) {
@@ -46,14 +47,16 @@ export function artifactService(db: Db) {
         changelog?: string | null;
         content?: string | null;
         fileUrl?: string | null;
+        sourceActionId?: string | null;
       },
     ) => {
-      const { source, sourceDetail, changelog, content, fileUrl, ...artifactData } = data;
+      const { source, sourceDetail, changelog, content, fileUrl, sourceActionId, ...artifactData } =
+        data;
 
       return db.transaction(async (tx) => {
         const [artifact] = await tx
           .insert(artifacts)
-          .values({ ...artifactData, companyId, createdById })
+          .values({ ...artifactData, companyId, createdById, sourceActionId: sourceActionId ?? null })
           .returning();
 
         if (source) {
@@ -112,6 +115,22 @@ export function artifactService(db: Db) {
       },
     ) => {
       return db.transaction(async (tx) => {
+        // Branching guard: a supplied parentVersionId MUST belong to THIS
+        // artifact. The FK only constrains it to *some* artifact_versions row,
+        // so without this check a caller could branch off (and re-point
+        // currentVersionId at) a version owned by another artifact — or another
+        // company. Same-artifact enforces same-company transitively because the
+        // route scopes the artifact by company before reaching here.
+        if (data.parentVersionId) {
+          const [parent] = await tx
+            .select({ artifactId: artifactVersions.artifactId })
+            .from(artifactVersions)
+            .where(eq(artifactVersions.id, data.parentVersionId));
+          if (!parent || parent.artifactId !== artifactId) {
+            throw badRequest("parentVersionId does not belong to this artifact");
+          }
+        }
+
         // Read max version inside transaction for atomicity
         const existing = await tx
           .select({ versionNumber: artifactVersions.versionNumber })

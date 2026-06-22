@@ -6,6 +6,7 @@ import {
   EXTRACTION_ITEM_TYPES,
   MEMORY_ITEM_LAYERS,
   BRIEF_DEDUP_ACTIONS,
+  THREAD_VISIBILITIES,
 } from "../constants.js";
 
 export const createDiscussionEntrySchema = z.object({
@@ -16,6 +17,19 @@ export const createDiscussionEntrySchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   sourceInfo: z.record(z.unknown()).optional().nullable(),
+  parentEntryId: z.string().uuid().optional().nullable(),
+  authorAgentId: z.string().uuid().optional().nullable(),
+  // Phase E1: composer can attach assets (file uploads) and artifacts
+  // (e.g. an existing plan or document) when posting an entry. Server links
+  // each via discussion_entry_attachments after the entry is inserted.
+  attachments: z
+    .array(
+      z.object({
+        assetId: z.string().uuid().optional().nullable(),
+        artifactId: z.string().uuid().optional().nullable(),
+      }),
+    )
+    .optional(),
 });
 
 export type CreateDiscussionEntry = z.infer<typeof createDiscussionEntrySchema>;
@@ -34,6 +48,15 @@ export const updateDiscussionSchema = z.object({
   title: z.string().optional().nullable(),
   status: z.enum(DISCUSSION_STATUSES).optional(),
   tags: z.array(z.string()).optional(),
+  autonomyLevel: z.number().int().min(0).max(2).nullable().optional(),
+  // Phase 1 Phase E batch 2 (T22): OriginCard's 3-option visibility selector
+  // patches via this endpoint. The service `update()` already passes the
+  // field through to the discussions UPDATE.
+  visibility: z.enum(THREAD_VISIBILITIES).optional(),
+  // Phase G3 (T5, D6): per-thread Memory Keeper opt-out. When false,
+  // memory.propose tool refuses with MEMORY_EXTRACTION_DISABLED for entries
+  // in this thread. UI toggle lives in OriginCard advanced settings.
+  allowMemoryExtraction: z.boolean().optional(),
 });
 
 export type UpdateDiscussion = z.infer<typeof updateDiscussionSchema>;

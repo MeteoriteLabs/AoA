@@ -3,6 +3,7 @@ import type {
   Routine,
   RoutineDetail,
   RoutineListItem,
+  RoutineRevisionListItem,
   RoutineRun,
   RoutineRunSummary,
   RoutineTrigger,
@@ -37,6 +38,10 @@ export const routinesApi = {
     api.post<RotateRoutineTriggerResponse>(`/routine-triggers/${id}/rotate-secret`, {}),
   run: (id: string, data?: Record<string, unknown>) =>
     api.post<RoutineRun>(`/routines/${id}/run`, data ?? {}),
+  listRevisions: (id: string) =>
+    api.get<RoutineRevisionListItem[]>(`/routines/${id}/revisions`),
+  restoreRevision: (id: string, revisionId: string) =>
+    api.post<Routine>(`/routines/${id}/revisions/restore`, { revisionId }),
   activity: async (
     companyId: string,
     routineId: string,

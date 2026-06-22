@@ -19,6 +19,10 @@ vi.mock("@armyofagents/db", () => ({
   memoryItems: makeTableProxy("memory_items"),
   agentWakeupRequests: makeTableProxy("agent_wakeup_requests"),
   costEvents: makeTableProxy("cost_events"),
+  // Required by services/embeddings.ts (B1: createEmbeddingService target map)
+  discussions: makeTableProxy("discussions"),
+  discussionExtractedItems: makeTableProxy("discussion_extracted_items"),
+  embeddingQueue: makeTableProxy("embedding_queue"),
 }));
 
 // ── Service mocks injected via deps ──────────────────────────────────────────

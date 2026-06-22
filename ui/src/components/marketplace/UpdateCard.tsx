@@ -40,12 +40,24 @@ export function UpdateCard({
             </Badge>
           )}
           {isPlugin && onApply && (
-            <Button size="sm" variant="outline" onClick={onApply} disabled={isPending}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onApply}
+              disabled={isPending}
+              aria-label={`Update ${update.catalogItemName}`}
+            >
               Update
             </Button>
           )}
           {!isPlugin && onReview && (
-            <Button size="sm" variant="outline" onClick={onReview} disabled={isPending}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onReview}
+              disabled={isPending}
+              aria-label={`Review ${update.catalogItemName}`}
+            >
               Review
             </Button>
           )}
@@ -55,6 +67,7 @@ export function UpdateCard({
             className="h-7 w-7"
             onClick={onDismiss}
             disabled={isPending}
+            aria-label={`Dismiss ${update.catalogItemName} update`}
           >
             <X className="h-3.5 w-3.5" />
           </Button>

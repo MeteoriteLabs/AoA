@@ -20,7 +20,8 @@ export interface CascadeStepResult {
     | "plugin-precondition"
     | "team-body-txn"
     | "skill-install"
-    | "agent-install";
+    | "agent-install"
+    | "package-member-skill-install";
   itemId: string;          // catalog item ID being processed in this step
   status: "success" | "failure" | "skipped";
   resultEntityId?: string; // ID of the created plugin/skill/agent/team row
@@ -34,7 +35,7 @@ export const marketplaceInstallOperations = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     catalogItemId: text("catalog_item_id").notNull(),
-    itemType: text("item_type").$type<"plugin" | "skill" | "agent" | "team">().notNull(),
+    itemType: text("item_type").$type<"plugin" | "skill" | "agent" | "team" | "package">().notNull(),
     targetDepartmentId: uuid("target_department_id"),  // null for plugins (instance-scoped)
     status: text("status").$type<"pending" | "running" | "success" | "failure" | "requested">().notNull().default("pending"),
     resultEntityId: text("result_entity_id"),

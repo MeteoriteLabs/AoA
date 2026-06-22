@@ -143,6 +143,18 @@ describe("MemoryTree (Phase 6.2a)", () => {
     expect(screen.getByText("Working")).toBeInTheDocument();
   });
 
+  it("renders Local after the memory layers", async () => {
+    renderTree();
+    await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
+
+    const labels = Array.from(document.querySelectorAll("[data-memory-tree-row='top']"))
+      .map((node) => node.textContent ?? "");
+
+    expect(labels.join(" > ")).toMatch(
+      /Home.*Pinned.*Pending Review.*Recent.*Archived.*Identity.*Domain.*Active context.*Working.*Local/,
+    );
+  });
+
   it("auto-expands Identity + Domain by default; Active and Working collapsed", async () => {
     renderTree();
     await waitFor(() => expect(screen.getByText("Engineering")).toBeInTheDocument());

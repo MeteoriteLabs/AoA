@@ -3,6 +3,11 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  describeAdapterExecutionTarget,
+  readAdapterExecutionTarget,
+} from "@armyofagents/adapter-utils";
 import { asString, parseObject } from "@armyofagents/adapter-utils/server-utils";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -117,6 +122,24 @@ export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+  });
+  if (adapterExecutionTargetIsRemote(executionTarget)) {
+    checks.push({
+      code: "openclaw_external_execution_target_unsupported",
+      level: "error",
+      message: `openclaw cannot execute inside ${describeAdapterExecutionTarget(executionTarget)}.`,
+      hint: "OpenClaw sends HTTP/SSE/webhook requests from the AoA server; configure a reachable endpoint or use a local CLI adapter for sandbox execution.",
+    });
+    return {
+      adapterType: ctx.adapterType,
+      status: summarizeStatus(checks),
+      checks,
+      testedAt: new Date().toISOString(),
+    };
+  }
+
   const config = parseObject(ctx.config);
   const urlValue = asString(config.url, "");
   const streamTransportValue = config.streamTransport ?? config.transport;

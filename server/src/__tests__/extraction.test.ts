@@ -10,6 +10,21 @@ vi.mock("@armyofagents/db", () => ({
   briefs: {},
   briefItems: {},
   projects: { id: "project_id", name: "project_name", type: "project_type", companyId: "project_company_id" },
+  discussions: { id: "disc_id", companyId: "disc_company_id" },
+  discussionEntries: {
+    id: "entry_id",
+    discussionId: "entry_disc_id",
+    inputType: "entry_input_type",
+    extractionStatus: "entry_extraction_status",
+    rawContent: "entry_raw_content",
+  },
+  discussionExtractedItems: {},
+  internalAgentConfig: {},
+  internalAgentRuns: {},
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: vi.fn(),
 }));
 
 vi.mock("../middleware/logger.js", () => ({
@@ -99,5 +114,42 @@ describe("extractionService", () => {
         layer: "identity",
       }),
     );
+  });
+
+  // ── P1-T7 (#3): extractFromDiscussionEntry must REFUSE scope_proposal ──────────
+  // A scope_proposal entry carries structured proposal JSON in rawContent and
+  // its approval lifecycle in proposalStatus. If the extractor ever claimed it,
+  // it would flip extractionStatus (pending → processing → completed) and break
+  // the Approve handler's idempotency read. The guard must short-circuit BEFORE
+  // the atomic claim, so db.update is never called.
+  it("skips a scope_proposal entry without claiming/updating it", async () => {
+    const selectQueue = [
+      // 1st select: the entry (a scope_proposal)
+      [
+        {
+          id: "entry-sp",
+          discussionId: "disc-1",
+          inputType: "scope_proposal",
+          extractionStatus: "pending",
+          rawContent: JSON.stringify({ summary: "Plan", proposedTasks: [{ title: "T1" }] }),
+        },
+      ],
+    ];
+    const updateSpy = vi.fn();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const db = {
+      select: vi.fn(() => makeSelectChain(selectQueue)),
+      update: updateSpy,
+      insert: vi.fn(),
+      transaction: vi.fn(),
+    } as any;
+
+    await extractionService(db).extractFromDiscussionEntry("company-1", "entry-sp");
+
+    // The guard returned before the atomic claim → no status mutation, no LLM call.
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

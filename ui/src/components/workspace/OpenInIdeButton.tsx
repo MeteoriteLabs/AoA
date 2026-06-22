@@ -15,6 +15,7 @@ type Editor = "vscode" | "cursor" | "zed";
 
 interface Props {
   cwd: string;
+  compact?: boolean;
 }
 
 function uriFor(editor: Editor, cwd: string): string {
@@ -30,7 +31,7 @@ function readPreferred(): Editor {
   return stored === "cursor" || stored === "zed" ? stored : "vscode";
 }
 
-export function OpenInIdeButton({ cwd }: Props) {
+export function OpenInIdeButton({ cwd, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [preferred, setPreferred] = useState<Editor>(readPreferred);
 
@@ -64,12 +65,14 @@ export function OpenInIdeButton({ cwd }: Props) {
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="sm"
-          className="gap-1.5"
+          size={compact ? "icon-xs" : "sm"}
+          className={compact ? "border-border/70 bg-background/60 hover:bg-muted/70" : "gap-1.5"}
           data-testid="open-in-ide-trigger"
+          aria-label={compact ? "Open workspace in editor" : undefined}
+          title={compact ? "Open workspace in editor" : undefined}
         >
           <ExternalLink className="h-4 w-4" />
-          Open in IDE
+          {!compact && "Open in IDE"}
         </Button>
       </DropdownMenuTrigger>
       {open && (

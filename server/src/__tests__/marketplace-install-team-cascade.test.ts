@@ -118,6 +118,10 @@ describe("installTeam — Saga cascade", () => {
             },
           }),
         }),
+        // T3.0.5: createMarketplaceAgent calls db.transaction() from inside the outer
+        // transaction. Pass the same tx so the inner savepoint path stays in scope and
+        // agent inserts still flow through the same insert tracker above.
+        transaction: async (cb: (innerTx: any) => Promise<any>) => cb(tx),
       };
       return cb(tx);
     },
@@ -137,9 +141,22 @@ describe("installTeam — Saga cascade", () => {
         return { ok: true, status: 200, text: async () => TEAM_JSON_BODY };
       }
       if (String(url).includes("agent.json")) {
+        // T3.0.5: team-installer now routes through normalizeMarketplaceAgentTemplate,
+        // which requires valid agent.v1 JSON (legacy format requires promptTemplate).
         return {
           ok: true, status: 200,
-          text: async () => JSON.stringify({ role: "engineer", adapterType: "claude_local", skillKeys: [SKILL.id] }),
+          text: async () => JSON.stringify({
+            schemaVersion: "agent.v1",
+            id: "aoa-curated/engineer",
+            name: "Engineer",
+            description: "Senior software engineer",
+            instructions: { type: "inline", content: "Build carefully." },
+            aoa: {
+              adapterType: "claude_local",
+              install: { defaultRole: "engineer" },
+              skillKeys: [SKILL.id],
+            },
+          }),
         };
       }
       return { ok: false, status: 404 };
@@ -262,6 +279,8 @@ describe("installTeam — Saga cascade", () => {
                 }),
             }),
           }),
+          // T3.0.5: createMarketplaceAgent calls db.transaction() inside the outer txn
+          transaction: async (cb2: (innerTx: any) => Promise<any>) => cb2(tx),
         };
         return cb(tx);
       },

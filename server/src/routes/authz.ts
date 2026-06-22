@@ -2,6 +2,12 @@ import type { Request } from "express";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertBoard(req: Request) {
+  // R9a: an unauthenticated request gets 401 (not the 403 below), mirroring
+  // assertCompanyAccess. Routes that ran assertCompanyAccess first purely to
+  // surface 401-for-`none` (e.g. cockpit.ts) no longer need that ordering.
+  if (req.actor.type === "none") {
+    throw unauthorized();
+  }
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
   }

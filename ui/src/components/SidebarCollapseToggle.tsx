@@ -12,8 +12,8 @@ interface SidebarCollapseToggleProps {
    */
   sidebarWidth: number;
   /**
-   * Top offset — defaults to 15px so the button vertically centers in the
-   * sidebar's 56px header row, aligned with the AoA. wordmark.
+   * Top offset — defaults to 9px so the button vertically centers in the
+   * sidebar's 44px header row, aligned with the page header.
    */
   top?: number;
   className?: string;
@@ -30,7 +30,7 @@ export function SidebarCollapseToggle({
   collapsed,
   onToggle,
   sidebarWidth,
-  top = 15,
+  top = 9,
   className,
   ariaLabel,
 }: SidebarCollapseToggleProps) {

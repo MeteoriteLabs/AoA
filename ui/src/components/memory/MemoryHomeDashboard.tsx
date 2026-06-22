@@ -5,6 +5,8 @@ import { MemoryRecentsStrip } from "./MemoryRecentsStrip";
 interface MemoryHomeDashboardProps {
   companyId: string;
   showQuickJump?: boolean;
+  variant?: "page" | "viewer";
+  onOpenTab?: (tab: { id: string; kind: "memory_item" | "asset"; title: string }) => void;
 }
 
 /**
@@ -18,10 +20,18 @@ interface MemoryHomeDashboardProps {
  * The right pane (handled by MemoryExplorer) shows the future graph viz
  * placeholder when this dashboard is rendered.
  */
-export function MemoryHomeDashboard({ companyId, showQuickJump = true }: MemoryHomeDashboardProps) {
+export function MemoryHomeDashboard({
+  companyId,
+  showQuickJump = true,
+  variant = "page",
+  onOpenTab,
+}: MemoryHomeDashboardProps) {
   return (
     <div className="h-full overflow-auto">
-      <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-5 sm:space-y-6">
+      <div className={variant === "viewer"
+        ? "w-full px-4 py-4 space-y-5"
+        : "w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-5 sm:space-y-6"}
+      >
         {showQuickJump && <button
           type="button"
           onClick={() =>
@@ -40,7 +50,7 @@ export function MemoryHomeDashboard({ companyId, showQuickJump = true }: MemoryH
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-3">
             Recent
           </div>
-          <MemoryRecentsStrip companyId={companyId} />
+          <MemoryRecentsStrip companyId={companyId} onOpenTab={onOpenTab} />
         </div>
       </div>
     </div>

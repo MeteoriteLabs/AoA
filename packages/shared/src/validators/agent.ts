@@ -26,6 +26,7 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),
+  kind: z.enum(["org", "aoa"]).optional().default("org"),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
@@ -59,6 +60,7 @@ export const updateAgentSchema = createAgentSchema
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     skillKeys: z.array(z.string()).optional(),
+    defaultEnvironmentId: z.string().uuid().optional().nullable(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -111,6 +113,7 @@ export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
   adapterConfig: adapterConfigSchema.optional().default({}),
+  environmentId: z.string().uuid().optional().nullable(),
 });
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;

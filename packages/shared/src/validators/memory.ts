@@ -30,6 +30,7 @@ export const createMemoryItemSchema = z.object({
   priority: z.number().int().optional().default(0),
   visibility: z.enum(MEMORY_ITEM_VISIBILITY).optional().default("scoped"),
   expiresAt: z.string().datetime().optional().nullable(),
+  conversationId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   taskId: z.string().uuid().optional().nullable(),
   sourceArtifactId: z.string().uuid().optional().nullable(),

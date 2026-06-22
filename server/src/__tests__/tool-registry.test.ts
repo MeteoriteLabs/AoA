@@ -23,9 +23,35 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 29 tools", () => {
+    it("returns all 71 tools", () => {
+      // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
+      // thread.listEntries, thread.setIntent, thread.postScopeProposal,
+      // thread.updateSummary, thread.createLink, get_thread_summary,
+      // find_similar_threads.
+      // Task C2 batch 2 (T15) added 5 navigator+artifact+workspace tools:
+      // attach_to_thread, spin_off_thread, create_artifact_version,
+      // query_artifacts, request_thread_workspace.
+      // Task C2 batch 3 (T15) added 7 memory tools:
+      // extract_memory_candidates, extract_decisions, extract_insights,
+      // extract_references, find_similar_memory_hnsw,
+      // propose_memory_from_thread, archive_stale_memory.
+      // Task C2 batch 4 (T15) added 1 coordination tool:
+      // agent.dispatch (lower-level sibling to delegate_to_subagent).
+      // Task 2.4 (crew work-as-tasks) added 1 action tool:
+      // propose_crew_work.
+      // Routing-card redesign (T8/T9) added 3 Navigator tools:
+      // list_thread_cards, promote_inbox_to_thread, defer_inbox_to_human.
+      // Spec B Task 2 added 1 query tool: get_task (company-scoped task read).
+      // Spec B Task 3 added 2 coordination tools: post_task_comment +
+      // attach_task_artifact (crew result-write; coordination confers no capability).
+      // Spec B Task 4 added 1 coordination tool: set_task_status (crew own-task
+      // transition, dial-gated via the A4 guard; coordination confers no capability).
+      // Commander working memory added 3 temporary context tools:
+      // remember_working_context, update_working_context, forget_working_context.
+      // Task 10 (Commander Viewer P1) added 1 query tool:
+      // query_company_artifacts (company-wide artifact listing, ctx.companyId-scoped).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(29);
+      expect(tools).toHaveLength(72);
     });
 
     it("every tool has required fields", () => {

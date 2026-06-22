@@ -2,7 +2,7 @@ import { unprocessable } from "../errors.js";
 import type { SecretProviderModule } from "./types.js";
 
 function unavailableProvider(
-  id: "aws_secrets_manager" | "gcp_secret_manager" | "vault",
+  id: "gcp_secret_manager" | "vault",
   label: string,
 ): SecretProviderModule {
   return {
@@ -11,7 +11,14 @@ function unavailableProvider(
       id,
       label,
       requiresExternalRef: true,
+      supportsManagedValues: false,
+      supportsExternalReferences: false,
+      configured: false,
+      status: "coming_soon",
     },
+    configured: false,
+    supportsManagedValues: false,
+    supportsExternalReferences: false,
     async createVersion() {
       throw unprocessable(`${id} provider is not configured in this deployment`);
     },
@@ -21,10 +28,6 @@ function unavailableProvider(
   };
 }
 
-export const awsSecretsManagerProvider = unavailableProvider(
-  "aws_secrets_manager",
-  "AWS Secrets Manager",
-);
 export const gcpSecretManagerProvider = unavailableProvider(
   "gcp_secret_manager",
   "GCP Secret Manager",

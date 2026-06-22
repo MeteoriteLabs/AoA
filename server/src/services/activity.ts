@@ -70,9 +70,15 @@ export function activityService(db: Db) {
           finishedAt: heartbeatRuns.finishedAt,
           createdAt: heartbeatRuns.createdAt,
           invocationSource: heartbeatRuns.invocationSource,
+          logStore: heartbeatRuns.logStore,
+          logRef: heartbeatRuns.logRef,
+          processPid: heartbeatRuns.processPid,
+          processStartedAt: heartbeatRuns.processStartedAt,
+          lastOutputAt: heartbeatRuns.lastOutputAt,
           usageJson: heartbeatRuns.usageJson,
           resultJson: heartbeatRuns.resultJson,
           detectedOutputs: heartbeatRuns.detectedOutputs,
+          promptSnapshot: heartbeatRuns.promptSnapshot,
         })
         .from(heartbeatRuns)
         .where(

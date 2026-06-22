@@ -16,8 +16,12 @@ vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
 }));
+vi.mock("../services/marketplace-install/fetch-resource.js", () => ({
+  fetchCatalogResource: vi.fn(),
+}));
 
 import { classifyAction, resolveInstallPlan } from "../services/marketplace-install/resolver.js";
+import { fetchCatalogResource } from "../services/marketplace-install/fetch-resource.js";
 import {
   SLACK_PLUGIN,
   ENGINEER_TEAM,
@@ -81,6 +85,58 @@ describe("resolveInstallPlan", () => {
         companyId: "c1",
       }),
     ).rejects.toThrow(/not found/i);
+  });
+
+  it("includes agent install preview for direct agent installs", async () => {
+    vi.mocked(fetchCatalogResource).mockResolvedValueOnce(JSON.stringify({
+      schemaVersion: "agent.v1",
+      id: "engineer",
+      name: "Engineer",
+      description: "Senior engineer agent",
+      instructions: { type: "inline", content: "You are a senior engineer." },
+      aoa: {
+        adapterCompatibility: {
+          recommended: "codex",
+          supported: ["codex", "claude"],
+        },
+        install: {
+          defaultRole: "lead",
+          defaultStatus: "active",
+        },
+        setup: {
+          secrets: [{
+            key: "GITHUB_TOKEN",
+            label: "GitHub token",
+            required: true,
+            reason: "Needed to inspect private repositories.",
+            usedBy: "github",
+          }],
+        },
+      },
+    }));
+
+    const plan = await resolveInstallPlan({
+      catalogItemId: REQUIRED_AGENT.id,
+      catalog: FULL_CATALOG,
+      db: mockEmptyDb() as any,
+      companyId: "c1",
+      availableAdapterTypes: ["codex"],
+    });
+
+    expect(plan.agentInstall).toMatchObject({
+      suggestedRole: "lead",
+      supportedRoles: ["cxo", "lead", "general"],
+      suggestedAdapterType: "codex",
+      supportedAdapterTypes: ["codex", "claude"],
+      availableAdapterTypes: ["codex"],
+      setupRequired: true,
+    });
+    expect(plan.agentInstall?.setupRequirements).toHaveLength(1);
+    expect(plan.agentInstall?.setupRequirements[0]).toMatchObject({
+      kind: "secret",
+      key: "GITHUB_TOKEN",
+      required: true,
+    });
   });
 });
 

@@ -10,6 +10,9 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { FeedbackThumbs } from "./FeedbackThumbs";
+import { IssueRunLedger, type IssueRunLedgerItem } from "./IssueRunLedger";
+import { SystemNotice } from "./SystemNotice";
+import { isSystemNoticeComment } from "../lib/system-notice-comment";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -17,7 +20,7 @@ interface CommentWithRunMeta extends IssueComment {
   runAgentId?: string | null;
 }
 
-interface LinkedRunItem {
+interface LinkedRunItem extends Omit<IssueRunLedgerItem, "finishedAt" | "invocationSource" | "usageJson" | "resultJson" | "detectedOutputs"> {
   runId: string;
   status: string;
   agentId: string;
@@ -130,34 +133,26 @@ const TimelineList = memo(function TimelineList({
         if (item.kind === "run") {
           const run = item.run;
           return (
-            <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
-              <div className="flex items-center justify-between mb-2">
+            <div key={`run:${run.runId}`} className="space-y-2">
+              <div className="flex items-center justify-between">
                 <Link to={`/agents/${run.agentId}`} className="hover:underline">
                   <Identity
                     name={agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8)}
                     size="sm"
                   />
                 </Link>
-                <span className="text-xs text-muted-foreground">
-                  {formatDateTime(run.startedAt ?? run.createdAt)}
-                </span>
               </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">Run</span>
-                <Link
-                  to={`/agents/${run.agentId}/runs/${run.runId}`}
-                  className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
-                >
-                  {run.runId.slice(0, 8)}
-                </Link>
-                <StatusBadge status={run.status} />
-              </div>
+              <IssueRunLedger runs={[run]} />
             </div>
           );
         }
 
         const comment = item.comment;
         const isHighlighted = highlightCommentId === comment.id;
+        if (isSystemNoticeComment(comment)) {
+          return <SystemNotice key={comment.id} comment={comment} />;
+        }
+
         return (
           <div
             key={comment.id}
@@ -172,8 +167,10 @@ const TimelineList = memo(function TimelineList({
                     size="sm"
                   />
                 </Link>
-              ) : (
+              ) : comment.authorUserId ? (
                 <Identity name="You" size="sm" />
+              ) : (
+                <span className="text-xs text-muted-foreground italic">System</span>
               )}
               <a
                 href={`#comment-${comment.id}`}

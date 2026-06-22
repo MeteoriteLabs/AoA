@@ -4,6 +4,7 @@ import { MemoryCollapsedTabStrip } from "../MemoryCollapsedTabStrip";
 import type { MemoryTab, TabKey } from "../../../lib/memoryTabs";
 
 const tabs: MemoryTab[] = [
+  { id: "memory-home", kind: "home", title: "Memory Home" },
   { id: "a", kind: "memory_item", title: "README.md" },
   { id: "b", kind: "asset", title: "logo.png" },
 ];
@@ -14,12 +15,25 @@ const baseProps = {
   tabs,
   activeKey,
   onActivate: () => {},
+  onExpand: () => {},
 };
 
 describe("MemoryCollapsedTabStrip", () => {
   it("renders one icon per open tab", () => {
     const { container } = render(<MemoryCollapsedTabStrip {...baseProps} />);
-    expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(3);
+  });
+
+  it("activates and expands the Memory Home tab from the collapsed rail", () => {
+    const onActivate = vi.fn();
+    const { container } = render(
+      <MemoryCollapsedTabStrip {...baseProps} onActivate={onActivate} />,
+    );
+    const homeBtn = container.querySelector(
+      "[data-tab-id='memory-home'][data-tab-kind='home']",
+    ) as HTMLElement;
+    fireEvent.click(homeBtn);
+    expect(onActivate).toHaveBeenCalledWith("memory-home", "home");
   });
 
   it("marks the active tab with data-active and brand wash", () => {
@@ -64,5 +78,15 @@ describe("MemoryCollapsedTabStrip", () => {
       <MemoryCollapsedTabStrip {...baseProps} tabs={[]} activeKey={null} />,
     );
     expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(0);
+  });
+
+  it("renders an internal expand button in a 42px header", () => {
+    const onExpand = vi.fn();
+    const { getByTestId, getByLabelText } = render(
+      <MemoryCollapsedTabStrip {...baseProps} onExpand={onExpand} />,
+    );
+    expect(getByTestId("memory-viewer-collapsed-header").className).toContain("h-[42px]");
+    fireEvent.click(getByLabelText("Open viewer"));
+    expect(onExpand).toHaveBeenCalledTimes(1);
   });
 });

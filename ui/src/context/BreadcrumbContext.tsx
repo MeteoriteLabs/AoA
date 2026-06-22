@@ -1,8 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { useCompany } from "./CompanyContext.js";
 
 export interface Breadcrumb {
   label: string;
   href?: string;
+  departmentId?: string | null;
+  projectId?: string | null;
+  goalId?: string | null;
+  taskId?: string | null;
+  memoryFolderPath?: string | null;
 }
 
 interface BreadcrumbContextValue {
@@ -16,7 +22,15 @@ interface BreadcrumbContextValue {
 
 const BreadcrumbContext = createContext<BreadcrumbContextValue | null>(null);
 
-export function BreadcrumbProvider({ children }: { children: ReactNode }) {
+export function buildDocumentTitle(breadcrumbs: Breadcrumb[], companyName: string | null | undefined): string {
+  const parts = [...breadcrumbs].reverse().map((b) => b.label).filter(Boolean);
+  if (parts.length === 0 && !companyName) return "AoA";
+  if (parts.length === 0) return `${companyName} · AoA`;
+  if (!companyName) return `${parts.join(" · ")} · AoA`;
+  return `${parts.join(" · ")} · ${companyName} · AoA`;
+}
+
+export function BreadcrumbProvider({ children, companyName }: { children: ReactNode; companyName?: string | null }) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
   const [subtitle, setSubtitleState] = useState<string | null>(null);
   const [entityColor, setEntityColorState] = useState<string | null>(null);
@@ -34,19 +48,19 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (breadcrumbs.length === 0) {
-      document.title = "AoA";
-    } else {
-      const parts = [...breadcrumbs].reverse().map((b) => b.label);
-      document.title = `${parts.join(" · ")} · AoA`;
-    }
-  }, [breadcrumbs]);
+    document.title = buildDocumentTitle(breadcrumbs, companyName ?? null);
+  }, [breadcrumbs, companyName]);
 
   return (
     <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs, subtitle, setSubtitle, entityColor, setEntityColor }}>
       {children}
     </BreadcrumbContext.Provider>
   );
+}
+
+export function BreadcrumbProviderWithCompany({ children }: { children: ReactNode }) {
+  const { selectedCompany } = useCompany();
+  return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
 }
 
 export function useBreadcrumbs() {

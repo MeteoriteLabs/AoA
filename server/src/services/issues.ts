@@ -1,18 +1,21 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   assets,
   authUsers,
   companies,
   companyMemberships,
+  discussions,
   executionWorkspaces,
   goals,
   heartbeatRuns,
   issueAttachments,
   issueLabels,
   issueComments,
+  issueMonitors,
   issueReadStates,
   issues,
   labels,
@@ -22,16 +25,63 @@ import {
   userRoles,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
+import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+} from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { dependencyService } from "./dependencies.js";
-import { heartbeatService } from "./heartbeat.js";
+import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
+import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
-import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
+import {
+  enforceIssueExecutionWorkspaceOverridePolicy,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+} from "./execution-workspace-policy.js";
 import { notificationService } from "./notifications.js";
+import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
+import {
+  buildInitialIssueMonitorFields,
+  buildIssueMonitorClearedPatch,
+  normalizeIssueMonitorPolicy,
+} from "./issue-execution-policy.js";
+import {
+  createIssueContextBundle,
+  type CreateIssueContextBundleItemInput,
+} from "./issue-context-bundles.js";
+import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
+import { publishIssueStatusChanged } from "./live-events.js";
+import {
+  crewAssigneeExists,
+  notCrewAssigned,
+  resolveTaskScope,
+  scopeUsesCrewJoin,
+  type TaskScope,
+} from "./issue-crew-scope.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+function monitorClearReasonForIssue(input: {
+  status: string;
+  assigneeAgentId: string | null;
+  previousAssigneeAgentId?: string | null;
+}) {
+  if (input.status === "done") return "done";
+  if (input.status === "cancelled") return "cancelled";
+  if (!["in_progress", "in_review"].includes(input.status)) return "invalid_status";
+  if (!input.assigneeAgentId) return "invalid_assignee";
+  if (
+    input.previousAssigneeAgentId !== undefined &&
+    input.assigneeAgentId !== input.previousAssigneeAgentId
+  ) {
+    return "invalid_assignee";
+  }
+  return null;
+}
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -73,6 +123,33 @@ export interface IssueFilters {
    * Omit to include all tasks regardless of parentage.
    */
   parentId?: string | null;
+  /**
+   * Board-surface scope (2026-06-02 unified crew/org separation, T-A). The ONE
+   * dial that decides whether a list query shows crew-agent tasks, org/human
+   * tasks, or both. Resolved by `resolveTaskScope()` with a **fail-safe default
+   * of `'org'`** when undefined.
+   *  - `'org'`  (default): org agents + humans + unassigned. Pushes
+   *    `notCrewAssigned`. Every generic `list(companyId)` caller is org/human-only
+   *    with zero per-call changes; a forgotten filter now HIDES crew (safe).
+   *  - `'crew'` : active-crew-assigned tasks only. The Crew Board. Pushes
+   *    `crewAssigneeExists` AND opts into the `sourceThreadTitle` LEFT JOIN.
+   *  - `'all'`  : no scope predicate. The task GRAPH (deps, goal rollups, search,
+   *    delete-safety, portability) and explicit admin/debug/Commander paths.
+   */
+  taskScope?: TaskScope;
+  /**
+   * @deprecated Back-compat alias for `taskScope: 'crew'`. `crewBoard === true`
+   * resolves to the crew scope (keeps the existing CrewBoard UI param working).
+   * If both are passed, `taskScope` wins. Prefer `taskScope` in new code.
+   *
+   * Unified Crew Board (2026-06-02): the crew scope is the flat tracker for ALL
+   * crew-agent work — tasks from discussions, goals, routines, MCP, and direct
+   * capture. The crew predicate is "assignee is an active `kind='aoa'` agent that
+   * is not terminated", and it enables the LEFT JOIN that populates the
+   * `sourceThreadTitle` denormalization so discussion-sourced cards keep their
+   * source-thread label.
+   */
+  crewBoard?: boolean;
 }
 
 export function pickWorkspaceInheritanceSourceIssueId(input: {
@@ -87,15 +164,30 @@ export interface WorkspaceInheritanceSource {
   executionWorkspaceSettings: Record<string, unknown> | null;
 }
 
+export interface WorkspaceInheritanceWorkspace {
+  mode: string | null;
+  companyId: string;
+  projectId: string | null;
+  status: string;
+}
+
 export interface ResolvedWorkspaceInheritance {
   executionWorkspaceId: string;
   executionWorkspacePreference: "reuse_existing";
   executionWorkspaceSettings: Record<string, unknown>;
 }
 
+type IssueWorkspaceFields = {
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: string | null;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
+};
+
 export function resolveExecutionWorkspaceInheritance(input: {
   sourceIssue: WorkspaceInheritanceSource | null;
-  sourceWorkspaceMode: string | null | undefined;
+  sourceWorkspace: WorkspaceInheritanceWorkspace | null;
+  targetCompanyId: string;
+  targetProjectId: string | null;
   isolatedWorkspacesEnabled: boolean;
   hasExplicitOverride: boolean;
 }): ResolvedWorkspaceInheritance | null {
@@ -103,17 +195,85 @@ export function resolveExecutionWorkspaceInheritance(input: {
   if (!input.isolatedWorkspacesEnabled) return null;
   if (input.hasExplicitOverride) return null;
   if (!input.sourceIssue.executionWorkspaceId) return null;
+  if (!input.sourceWorkspace) return null;
+  if (input.sourceWorkspace.companyId !== input.targetCompanyId) return null;
+  if (input.sourceWorkspace.projectId !== input.targetProjectId) return null;
+  if (input.sourceWorkspace.status === "archived") return null;
   return {
     executionWorkspaceId: input.sourceIssue.executionWorkspaceId,
     executionWorkspacePreference: "reuse_existing",
     executionWorkspaceSettings: {
       ...((input.sourceIssue.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
-      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspaceMode),
+      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspace.mode),
     },
   };
 }
 
-type IssueRow = typeof issues.$inferSelect;
+export function shouldClearExecutionWorkspaceForProjectChange(input: {
+  projectChanged: boolean;
+  companyId: string;
+  nextProjectId: string | null;
+  workspace: {
+    companyId: string;
+    projectId: string | null;
+    status: string;
+  } | null;
+}): boolean {
+  if (!input.projectChanged) return false;
+  if (!input.workspace) return true;
+  if (input.workspace.companyId !== input.companyId) return true;
+  if (input.workspace.projectId !== input.nextProjectId) return true;
+  return input.workspace.status === "archived";
+}
+
+export function resolveCreateIssueExecutionWorkspaceFields(input: {
+  explicitPatch: IssueWorkspaceFields;
+  inherited: ResolvedWorkspaceInheritance | null;
+  existingIssue: {
+    companyId: string;
+    projectId: string | null;
+  };
+  isolatedWorkspacesEnabled: boolean;
+  projectPolicy: ReturnType<typeof parseProjectExecutionWorkspacePolicy>;
+  reuseWorkspace: {
+    id: string;
+    companyId: string;
+    projectId: string;
+    status: string;
+  } | null;
+}): IssueWorkspaceFields {
+  const hasExplicitOverride =
+    input.explicitPatch.executionWorkspaceId !== undefined ||
+    input.explicitPatch.executionWorkspacePreference !== undefined ||
+    input.explicitPatch.executionWorkspaceSettings !== undefined;
+
+  if (hasExplicitOverride) {
+    return enforceIssueExecutionWorkspaceOverridePolicy({
+      existingIssue: input.existingIssue,
+      isolatedWorkspacesEnabled: input.isolatedWorkspacesEnabled,
+      projectPolicy: input.projectPolicy,
+      patch: input.explicitPatch,
+      reuseWorkspace: input.reuseWorkspace,
+    });
+  }
+
+  if (!input.inherited) return {};
+  return {
+    executionWorkspaceId: input.inherited.executionWorkspaceId,
+    executionWorkspacePreference: input.inherited.executionWorkspacePreference,
+    executionWorkspaceSettings: input.inherited.executionWorkspaceSettings,
+  };
+}
+
+type IssueRow = typeof issues.$inferSelect & {
+  /**
+   * Phase 1 Phase E batch 3 (T21): denormalized title of the source discussion
+   * thread. Populated only when the issues list endpoint is called with the
+   * `crewBoard=true` filter (which opts the query into a LEFT JOIN against
+   * `discussions`). Absent or `null` otherwise.
+   */
+  sourceThreadTitle?: string | null;
+};
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssueActiveRunRow = {
   id: string;
@@ -309,7 +469,6 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const deps = dependencyService(db);
-  const heartbeat = heartbeatService(db);
 
   async function hasUnmetDependencies(companyId: string, issueId: string): Promise<boolean> {
     const upstream = await db
@@ -323,7 +482,9 @@ export function issueService(db: Db) {
         ),
       );
     if (upstream.length === 0) return false;
-    return upstream.some((r) => r.status !== "done");
+    // A dependency only counts as "unmet" if it is not yet terminal. Both `done`
+    // and `cancelled` satisfy the dependency (A-H9).
+    return upstream.some((r) => !TERMINAL_STATUSES.includes(r.status));
   }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
@@ -512,6 +673,25 @@ export function issueService(db: Db) {
           )!,
         );
       }
+      // Crew/org task scope (2026-06-02 unified separation, T-A). The ONE place
+      // the crew predicate is applied to the list surface — resolved via the
+      // shared `resolveTaskScope` with a fail-safe default of 'org':
+      //   'org'  → push notCrewAssigned  (org agents + humans + unassigned)
+      //   'crew' → push crewAssigneeExists + opt into the sourceThreadTitle JOIN
+      //   'all'  → push nothing (the task GRAPH + admin/debug escape hatch)
+      // `taskScope` wins over the legacy `crewBoard` boolean. The crew board is
+      // the flat tracker for ALL crew-agent work (tasks from discussions, goals,
+      // routines, MCP, direct capture) — the discriminator is the assignee's
+      // agent kind, not the task's origin. The assigneeAgentId filter (line ~610)
+      // is still pushed unconditionally above and composes with any scope.
+      const taskScope: TaskScope = resolveTaskScope(filters);
+      if (taskScope === "org") {
+        conditions.push(notCrewAssigned(companyId));
+      } else if (taskScope === "crew") {
+        conditions.push(crewAssigneeExists(companyId));
+      }
+      // taskScope === "all": no scope predicate.
+      const usesCrewJoin = scopeUsesCrewJoin(taskScope);
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
@@ -526,11 +706,43 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const rows = await db
-        .select()
-        .from(issues)
-        .where(and(...conditions))
-        .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
+      const orderClause = [
+        hasSearch ? asc(searchOrder) : asc(priorityOrder),
+        asc(priorityOrder),
+        desc(issues.updatedAt),
+      ];
+
+      // Two query shapes: with-JOIN (when grouping by source thread) and the
+      // legacy select-all shape (preserved to keep callers and downstream tests
+      // identical). The JOIN variant projects every issue column explicitly
+      // because mixing `select()` with a LEFT JOIN in Drizzle returns nested
+      // rows ({ issues: {...}, discussions: {...} }) which would break every
+      // downstream consumer.
+      let rows: IssueRow[];
+      if (usesCrewJoin) {
+        const joinedRows = await db
+          .select({
+            // Spread issues columns via Drizzle's column reference. We rely on
+            // PostgreSQL preserving column ordering — the returned shape mirrors
+            // the bare `select().from(issues)` call.
+            issue: issues,
+            sourceThreadTitle: discussions.title,
+          })
+          .from(issues)
+          .leftJoin(discussions, eq(discussions.id, issues.sourceDiscussionId))
+          .where(and(...conditions))
+          .orderBy(...orderClause);
+        rows = joinedRows.map((row) => ({
+          ...(row.issue as IssueRow),
+          sourceThreadTitle: row.sourceThreadTitle,
+        } as IssueRow));
+      } else {
+        rows = await db
+          .select()
+          .from(issues)
+          .where(and(...conditions))
+          .orderBy(...orderClause);
+      }
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
@@ -589,9 +801,13 @@ export function issueService(db: Db) {
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
+      // Org-workload count (sidebar unread badge). Crew-agent tasks live only on
+      // the Crew Board and must NOT inflate this badge — push notCrewAssigned
+      // (2026-06-02 unified crew/org separation, T-B).
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
+        notCrewAssigned(companyId),
         unreadForUserCondition(companyId, userId),
       ];
       if (status) {
@@ -658,10 +874,24 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
+        contextBundle?: {
+          sourceIssueId?: string | null;
+          sourceDiscussionId?: string | null;
+          sourceScopeVersionId?: string | null;
+          sourceScopeItemId?: string | null;
+          sourceKind?: "issue" | "discussion_scope";
+          brief?: string | null;
+          items?: CreateIssueContextBundleItemInput[];
+        };
       },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
-      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
+      const {
+        labelIds: inputLabelIds,
+        inheritExecutionWorkspaceFromIssueId,
+        contextBundle,
+        ...issueData
+      } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -684,13 +914,11 @@ export function issueService(db: Db) {
           (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
           (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
 
-        let inheritedExecutionWorkspaceId: string | null = null;
-        let inheritedExecutionWorkspacePreference: string | null = null;
-        let inheritedExecutionWorkspaceSettings: Record<string, unknown> | null = null;
+        const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
+          .enableIsolatedWorkspaces;
+        let inheritedExecutionWorkspace: ResolvedWorkspaceInheritance | null = null;
 
         if (workspaceInheritanceIssueId) {
-          const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
-            .enableIsolatedWorkspaces;
           const sourceIssue = await tx
             .select({
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -702,27 +930,85 @@ export function issueService(db: Db) {
           if (sourceIssue == null && inheritExecutionWorkspaceFromIssueId) {
             throw notFound("Workspace inheritance issue not found");
           }
-          let sourceWorkspaceMode: string | null = null;
+          let sourceWorkspace: WorkspaceInheritanceWorkspace | null = null;
           if (sourceIssue?.executionWorkspaceId) {
-            const sourceWorkspace = await tx
-              .select({ mode: executionWorkspaces.mode })
+            sourceWorkspace = await tx
+              .select({
+                mode: executionWorkspaces.mode,
+                companyId: executionWorkspaces.companyId,
+                projectId: executionWorkspaces.projectId,
+                status: executionWorkspaces.status,
+              })
               .from(executionWorkspaces)
               .where(eq(executionWorkspaces.id, sourceIssue.executionWorkspaceId))
               .then((rows) => rows[0] ?? null);
-            sourceWorkspaceMode = sourceWorkspace?.mode ?? null;
           }
           const resolved = resolveExecutionWorkspaceInheritance({
             sourceIssue,
-            sourceWorkspaceMode,
+            sourceWorkspace,
+            targetCompanyId: companyId,
+            targetProjectId: (issueData as { projectId?: string | null }).projectId ?? null,
             isolatedWorkspacesEnabled,
             hasExplicitOverride: hasExplicitExecutionWorkspaceOverride,
           });
-          if (resolved) {
-            inheritedExecutionWorkspaceId = resolved.executionWorkspaceId;
-            inheritedExecutionWorkspacePreference = resolved.executionWorkspacePreference;
-            inheritedExecutionWorkspaceSettings = resolved.executionWorkspaceSettings;
-          }
+          inheritedExecutionWorkspace = resolved;
         }
+
+        const explicitWorkspacePatch: IssueWorkspaceFields = {
+          ...((issueData as Record<string, unknown>).executionWorkspaceId !== undefined
+            ? { executionWorkspaceId: (issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId }
+            : {}),
+          ...((issueData as Record<string, unknown>).executionWorkspacePreference !== undefined
+            ? {
+              executionWorkspacePreference: (issueData as { executionWorkspacePreference?: string | null })
+                .executionWorkspacePreference,
+            }
+            : {}),
+          ...((issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined
+            ? {
+              executionWorkspaceSettings: (issueData as { executionWorkspaceSettings?: Record<string, unknown> | null })
+                .executionWorkspaceSettings,
+            }
+            : {}),
+        };
+        const projectId = (issueData as { projectId?: string | null }).projectId ?? null;
+        const projectPolicy = projectId
+          ? await tx
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy ?? null))
+          : null;
+        const parsedIssueSettings = parseIssueExecutionWorkspaceSettings(explicitWorkspacePatch.executionWorkspaceSettings);
+        const reuseWorkspaceId =
+          parsedIssueSettings?.reuseWorkspaceId ?? explicitWorkspacePatch.executionWorkspaceId ?? null;
+        const reuseWorkspace = reuseWorkspaceId
+          ? await tx
+            .select({
+              id: executionWorkspaces.id,
+              companyId: executionWorkspaces.companyId,
+              projectId: executionWorkspaces.projectId,
+              status: executionWorkspaces.status,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, reuseWorkspaceId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        const executionWorkspaceFields = resolveCreateIssueExecutionWorkspaceFields({
+          explicitPatch: explicitWorkspacePatch,
+          inherited: inheritedExecutionWorkspace,
+          existingIssue: {
+            companyId,
+            projectId,
+          },
+          isolatedWorkspacesEnabled,
+          projectPolicy,
+          reuseWorkspace,
+        });
+        const issueInsertData = { ...issueData } as Record<string, unknown>;
+        delete issueInsertData.executionWorkspaceId;
+        delete issueInsertData.executionWorkspacePreference;
+        delete issueInsertData.executionWorkspaceSettings;
 
         const [company] = await tx
           .update(companies)
@@ -734,14 +1020,8 @@ export function issueService(db: Db) {
         const identifier = `${company.issuePrefix}-${issueNumber}`;
 
         const values = {
-          ...issueData,
-          ...(inheritedExecutionWorkspaceId ? { executionWorkspaceId: inheritedExecutionWorkspaceId } : {}),
-          ...(inheritedExecutionWorkspacePreference
-            ? { executionWorkspacePreference: inheritedExecutionWorkspacePreference }
-            : {}),
-          ...(inheritedExecutionWorkspaceSettings
-            ? { executionWorkspaceSettings: inheritedExecutionWorkspaceSettings }
-            : {}),
+          ...issueInsertData,
+          ...executionWorkspaceFields,
           companyId,
           issueNumber,
           identifier,
@@ -760,13 +1040,32 @@ export function issueService(db: Db) {
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
+        if (contextBundle) {
+          await createIssueContextBundle(tx, {
+            companyId,
+            sourceIssueId: contextBundle.sourceIssueId ?? null,
+            sourceDiscussionId: contextBundle.sourceDiscussionId ?? null,
+            sourceScopeVersionId: contextBundle.sourceScopeVersionId ?? null,
+            sourceScopeItemId: contextBundle.sourceScopeItemId ?? null,
+            sourceKind: contextBundle.sourceKind ?? "issue",
+            targetIssueId: issue.id,
+            brief: contextBundle.brief ?? null,
+            items: contextBundle.items ?? [],
+            createdByAgentId: issue.createdByAgentId ?? null,
+            createdByUserId: issue.createdByUserId ?? null,
+          });
+        }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       };
       return outerTx ? run(outerTx) : db.transaction(run);
     },
 
-    update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
+    update: async (
+      id: string,
+      data: Partial<typeof issues.$inferInsert> & { labelIds?: string[]; monitorPolicy?: unknown },
+      actor?: { actorType?: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number },
+    ) => {
       const existing = await db
         .select()
         .from(issues)
@@ -774,13 +1073,104 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
-      const { labelIds: nextLabelIds, ...issueData } = data;
+      const { labelIds: nextLabelIds, monitorPolicy: rawMonitorPolicy, ...issueData } = data;
+      const monitorPolicy = rawMonitorPolicy === undefined ? undefined : normalizeIssueMonitorPolicy(rawMonitorPolicy);
 
       const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete (issueData as Record<string, unknown>).executionWorkspaceId;
         delete (issueData as Record<string, unknown>).executionWorkspacePreference;
         delete (issueData as Record<string, unknown>).executionWorkspaceSettings;
+      } else {
+        const hasWorkspaceOverride =
+          (issueData as Record<string, unknown>).executionWorkspaceId !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
+        if (hasWorkspaceOverride) {
+          const nextProjectId =
+            (issueData as { projectId?: string | null }).projectId !== undefined
+              ? ((issueData as { projectId?: string | null }).projectId ?? null)
+              : existing.projectId;
+          const projectPolicy = nextProjectId
+            ? await db
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
+              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy ?? null))
+            : null;
+          const parsedIssueSettings = parseIssueExecutionWorkspaceSettings(
+            (issueData as Record<string, unknown>).executionWorkspaceSettings,
+          );
+          const reuseWorkspaceId =
+            parsedIssueSettings?.reuseWorkspaceId ??
+            ((issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId ?? null);
+          const reuseWorkspace = reuseWorkspaceId
+            ? await db
+              .select({
+                id: executionWorkspaces.id,
+                companyId: executionWorkspaces.companyId,
+                projectId: executionWorkspaces.projectId,
+                status: executionWorkspaces.status,
+              })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, reuseWorkspaceId))
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const normalizedWorkspacePatch = enforceIssueExecutionWorkspaceOverridePolicy({
+            existingIssue: {
+              companyId: existing.companyId,
+              projectId: nextProjectId,
+            },
+            isolatedWorkspacesEnabled,
+            projectPolicy,
+            patch: {
+              executionWorkspaceId: (issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId,
+              executionWorkspacePreference: (issueData as { executionWorkspacePreference?: string | null }).executionWorkspacePreference,
+              executionWorkspaceSettings: (issueData as { executionWorkspaceSettings?: Record<string, unknown> | null }).executionWorkspaceSettings,
+            },
+            reuseWorkspace,
+          });
+          if ((issueData as Record<string, unknown>).executionWorkspaceId !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = normalizedWorkspacePatch.executionWorkspaceId;
+          } else if (normalizedWorkspacePatch.executionWorkspaceId !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = normalizedWorkspacePatch.executionWorkspaceId;
+          }
+          if ((issueData as Record<string, unknown>).executionWorkspacePreference !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspacePreference = normalizedWorkspacePatch.executionWorkspacePreference;
+          } else if (normalizedWorkspacePatch.executionWorkspacePreference !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspacePreference = normalizedWorkspacePatch.executionWorkspacePreference;
+          }
+          if ((issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceSettings = normalizedWorkspacePatch.executionWorkspaceSettings;
+          }
+        } else if (
+          (issueData as { projectId?: string | null }).projectId !== undefined &&
+          (issueData as { projectId?: string | null }).projectId !== existing.projectId &&
+          existing.executionWorkspaceId
+        ) {
+          const nextProjectId = (issueData as { projectId?: string | null }).projectId ?? null;
+          const existingWorkspace = await db
+            .select({
+              companyId: executionWorkspaces.companyId,
+              projectId: executionWorkspaces.projectId,
+              status: executionWorkspaces.status,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, existing.executionWorkspaceId))
+            .then((rows) => rows[0] ?? null);
+          if (
+            shouldClearExecutionWorkspaceForProjectChange({
+              projectChanged: true,
+              companyId: existing.companyId,
+              nextProjectId,
+              workspace: existingWorkspace,
+            })
+          ) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = null;
+            (issueData as Record<string, unknown>).executionWorkspacePreference = null;
+            (issueData as Record<string, unknown>).executionWorkspaceSettings = null;
+          }
+        }
       }
 
       if (issueData.status) {
@@ -810,6 +1200,21 @@ export function issueService(db: Db) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
 
+      // Service-level agent status-transition guard (A4). Runs an approval-lookup
+      // read, so it lives here alongside the assignable-agent asserts and BEFORE
+      // the transaction opens. Non-agent callers (default actorType "system") are
+      // unaffected — see issue-agent-status-guard.ts. The autonomy dial is
+      // resolved by the caller (e.g. the set_task_status tool) and forwarded as
+      // actor.effectiveDial; this service never reads internalAgentConfig.
+      await assertAgentStatusTransition(
+        {
+          existing: { id: existing.id, status: existing.status, assigneeAgentId: existing.assigneeAgentId },
+          updateFields: issueData,
+          actor: { actorType: actor?.actorType ?? "system", agentId: actor?.agentId ?? null, effectiveDial: actor?.effectiveDial },
+        },
+        db,
+      );
+
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
@@ -834,33 +1239,145 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string }[] };
+        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[] };
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
+        }
+        if (rawMonitorPolicy !== undefined) {
+          const now = new Date();
+          if (monitorPolicy === null) {
+            await tx
+              .update(issueMonitors)
+              .set(buildIssueMonitorClearedPatch({ now, clearReason: "manual_clear" }))
+              .where(and(eq(issueMonitors.companyId, existing.companyId), eq(issueMonitors.issueId, updated.id), inArray(issueMonitors.status, ["scheduled", "triggered"])));
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: "system",
+              actorId: "recovery",
+              action: "issue.monitor_cleared",
+              entityType: "issue",
+              entityId: updated.id,
+              details: { reason: "manual_clear" },
+            });
+          } else {
+            const fields = buildInitialIssueMonitorFields({
+              companyId: existing.companyId,
+              issue: updated,
+              policy: monitorPolicy ?? null,
+            });
+            if (!fields) throw unprocessable("Monitor requires an agent-assigned in-progress or in-review issue");
+            const existingMonitor = await tx
+              .select()
+              .from(issueMonitors)
+              .where(
+                and(
+                  eq(issueMonitors.companyId, existing.companyId),
+                  eq(issueMonitors.issueId, updated.id),
+                  eq(issueMonitors.kind, fields.kind),
+                  inArray(issueMonitors.status, ["scheduled", "triggered"]),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            if (existingMonitor) {
+              await tx
+                .update(issueMonitors)
+                .set({
+                  ...fields,
+                  attemptCount: existingMonitor.attemptCount,
+                  clearedAt: null,
+                  clearReason: null,
+                  updatedAt: now,
+                })
+                .where(eq(issueMonitors.id, existingMonitor.id));
+            } else {
+              await tx.insert(issueMonitors).values(fields);
+            }
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: "system",
+              actorId: "recovery",
+              action: "issue.monitor_scheduled",
+              entityType: "issue",
+              entityId: updated.id,
+              details: { kind: fields.kind, nextCheckAt: fields.nextCheckAt.toISOString() },
+            });
+          }
+        } else if (
+          issueData.status !== undefined ||
+          issueData.assigneeAgentId !== undefined ||
+          issueData.assigneeUserId !== undefined
+        ) {
+          const clearReason = monitorClearReasonForIssue({
+            status: updated.status,
+            assigneeAgentId: updated.assigneeAgentId,
+            previousAssigneeAgentId: existing.assigneeAgentId,
+          });
+          if (clearReason) {
+            const now = new Date();
+            await tx
+              .update(issueMonitors)
+              .set(buildIssueMonitorClearedPatch({ now, clearReason }))
+              .where(
+                and(
+                  eq(issueMonitors.companyId, existing.companyId),
+                  eq(issueMonitors.issueId, updated.id),
+                  inArray(issueMonitors.status, ["scheduled", "triggered"]),
+                ),
+              );
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: "system",
+              actorId: "recovery",
+              action: "issue.monitor_cleared",
+              entityType: "issue",
+              entityId: updated.id,
+              agentId: existing.assigneeAgentId,
+              details: { reason: clearReason },
+            });
+          }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
 
         // Dependency side effects — inside transaction for atomicity
-        let wake: { agentId: string; issueId: string }[] = [];
+        let wake: { agentId: string; issueId: string; workMode: string | null }[] = [];
         if (enriched && issueData.status && issueData.status !== existing.status) {
           if (issueData.status === "done") {
             const resolved = await deps.resolveDependencies(existing.companyId, id, tx);
             wake = resolved.tasksToWake;
           } else if (issueData.status === "cancelled") {
-            await deps.handleCancelledDependency(existing.companyId, id, tx);
+            // A cancelled dependency is terminal too — it releases its dependents
+            // and we must propagate the resulting wakeups so they get dispatched
+            // (symmetric with the `done` branch). (A-H9)
+            wake = await deps.handleCancelledDependency(existing.companyId, id, tx);
           }
         }
 
         return { result: enriched, tasksToWake: wake };
       });
 
+      // Task 5.6: publish issue.status_changed when the status ACTUALLY changed
+      // (the canonical crew-move chokepoint that goes through update — incl.
+      // set_task_status). Company-broadcast (R3) so the kanban/Crew Board move
+      // the card live. Best-effort — a publish failure must never fail the
+      // write. Gated on a real status delta so a non-status update (or a
+      // same-status no-op) is silent.
+      if (result && issueData.status && issueData.status !== existing.status) {
+        try {
+          publishIssueStatusChanged(existing.companyId, id, issueData.status);
+        } catch (publishErr) {
+          logger.warn({ err: publishErr, issueId: id }, "issue.status_changed publish failed (best-effort, ignored)");
+        }
+      }
+
       // Fire wakeups after transaction commits (side effects)
       for (const wake of tasksToWake) {
-        await heartbeat.wakeup(wake.agentId, {
+        if (!shouldDispatchIssueWakeup({ workMode: wake.workMode ?? null })) continue;
+        await enqueueIssueAssigneeWakeup(db, {
+          companyId: existing.companyId,
+          agentId: wake.agentId,
+          issueId: wake.issueId,
           source: "automation",
-          triggerDetail: "system",
           reason: "dependency_unblocked",
-          payload: { issueId: wake.issueId },
         });
       }
 
@@ -1009,6 +1526,15 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        // Task 5.6: checkout is a CREW status-MOVE that bypasses
+        // issueService.update (raw atomic write → in_progress). Publish
+        // issue.status_changed (company-broadcast, R3) so the board reflects
+        // the card going in_progress live. Best-effort — never break checkout.
+        try {
+          publishIssueStatusChanged(updated.companyId, updated.id, "in_progress");
+        } catch (publishErr) {
+          logger.warn({ err: publishErr, issueId: updated.id }, "issue.status_changed publish failed on checkout (best-effort, ignored)");
+        }
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -1234,7 +1760,17 @@ export function issueService(db: Db) {
         .where(eq(issueComments.id, commentId))
         .then((rows) => rows[0] ?? null),
 
-    addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
+    addComment: async (
+      issueId: string,
+      body: string,
+      actor: {
+        agentId?: string;
+        userId?: string;
+        authorType?: IssueCommentAuthorType;
+        presentation?: IssueCommentPresentation | null;
+        metadata?: IssueCommentMetadata | null;
+      },
+    ) => {
       const issue = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -1250,6 +1786,9 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          authorType: actor.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+          presentation: actor.presentation ?? null,
+          metadata: actor.metadata ?? null,
           body,
         })
         .returning();
@@ -1425,9 +1964,41 @@ export function issueService(db: Db) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
       if (tokens.size === 0) return [];
+      // @mention resolution resolves org + aoa (Commander-team) agents;
+      // platform stays excluded — platform agents are not mentionable by users.
       const rows = await db.select({ id: agents.id, name: agents.name })
-        .from(agents).where(eq(agents.companyId, companyId));
+        .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+    },
+
+    resolveAgentKinds: async (ids: string[]): Promise<Map<string, string>> => {
+      const unique = [...new Set(ids)].filter(Boolean);
+      if (unique.length === 0) return new Map();
+      const rows = await db
+        .select({ id: agents.id, kind: agents.kind })
+        .from(agents)
+        .where(inArray(agents.id, unique));
+      return new Map(rows.map((r) => [r.id, r.kind]));
+    },
+
+    // F1: AoA agents are dispatched by the AoA dispatcher Phase-3, which drains
+    // agent_wakeup_requests {status:'queued', kind:'aoa'} with NO source filter.
+    // Calling heartbeat.wakeup for an aoa agent ALSO enqueues a heartbeat_run
+    // (dual execution). Mirror delegate-to-subagent.ts: insert the wakeup row
+    // directly and let Phase-3 own the single execution.
+    enqueueAoaMentionWakeup: async (
+      companyId: string,
+      agentId: string,
+      opts: { source?: string | null; reason?: string | null; payload?: unknown },
+    ): Promise<void> => {
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: opts.source ?? "automation",
+        reason: opts.reason ?? "issue_comment_mentioned",
+        payload: (opts.payload ?? null) as Record<string, unknown> | null,
+        status: "queued",
+      });
     },
 
     /**
@@ -1792,6 +2363,10 @@ export function issueService(db: Db) {
             eq(issues.status, "in_progress"),
             isNull(issues.hiddenAt),
             sql`${issues.startedAt} < ${cutoff.toISOString()}`,
+            // Org-workload count (review #5): a stale crew (kind='aoa') task
+            // lives on the Crew Board and must NOT inflate the founder's org
+            // sidebar Inbox badge. Mirrors countUnreadTouchedByUser / dashboard.
+            notCrewAssigned(companyId),
           ),
         )
         .then((rows) => rows[0]);

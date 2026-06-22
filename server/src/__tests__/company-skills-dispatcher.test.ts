@@ -127,7 +127,16 @@ describe("companySkillService.usage dispatcher", () => {
       desired: true,
       actualState: "configured",
     });
-    expect(resolveAdapterConfigMock).toHaveBeenCalledWith("co-1", {});
+    expect(resolveAdapterConfigMock).toHaveBeenCalledWith(
+      "co-1",
+      {},
+      expect.objectContaining({
+        actorId: "company-skills",
+        actorType: "system",
+        consumerId: "agent-1",
+        consumerType: "agent",
+      }),
+    );
     expect(listSkills).toHaveBeenCalledWith({
       agentId: "agent-1",
       companyId: "co-1",

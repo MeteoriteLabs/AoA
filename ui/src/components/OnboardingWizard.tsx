@@ -52,7 +52,57 @@ import {
   ArrowRightLeft,
 } from "lucide-react";
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6;
+/**
+ * Phase 1 Phase E batch 2 (T20): wizard step count grew from 6 to 8 — the
+ * Commander pick and Crew pick are inserted between root-folder (step 2)
+ * and first-agent (was step 3, now step 5). Step numbers below correspond to:
+ *   1 = company
+ *   2 = root folder
+ *   3 = Commander pick (NEW)
+ *   4 = Crew pick (NEW)
+ *   5 = first agent (was 3)
+ *   6 = task (was 4)
+ *   7 = discussions intro (was 5)
+ *   8 = ready (was 6)
+ */
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+const TOTAL_STEPS = 8;
+const STEP_AGENT = 5;
+const STEP_TASK = 6;
+
+/**
+ * Phase 1 Phase E batch 2 (T20): provider → adapter mapping used to translate
+ * the wizard's user-facing "Anthropic / OpenAI / Google / OpenCode" picks
+ * into the canonical adapterType strings the server writes to
+ * companies.commanderAdapterConfig + companies.crewAdapterConfig.
+ */
+type Provider = "anthropic" | "openai" | "google" | "opencode";
+const PROVIDER_OPTIONS: Provider[] = ["anthropic", "openai", "google", "opencode"];
+const PROVIDER_LABELS: Record<Provider, string> = {
+  anthropic: "Anthropic (Claude)",
+  openai: "OpenAI (Codex)",
+  google: "Google (Gemini)",
+  opencode: "OpenCode (multi-provider)",
+};
+export function providerToAdapter(provider: Provider): string {
+  switch (provider) {
+    case "anthropic":
+      return "claude_local";
+    case "openai":
+      return "codex_local";
+    case "google":
+      return "gemini_local";
+    case "opencode":
+      return "opencode_local";
+    default: {
+      // Exhaustiveness guard — surfaces a compile error if a Provider is
+      // added without a mapping. Throws at runtime as a safety net.
+      const _exhaustive: never = provider;
+      throw new Error(`Unknown provider: ${_exhaustive as string}`);
+    }
+  }
+}
+
 type AdapterType =
   | "claude_local"
   | "codex_local"
@@ -94,9 +144,17 @@ export function OnboardingWizard() {
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
   const [suggestedRootFolder, setSuggestedRootFolder] = useState("");
 
-  // Step 3 (agent — was step 2)
+  // Step 3 (Commander pick — NEW in Phase E batch 2 T20)
+  const [commanderProvider, setCommanderProvider] = useState<Provider | "">("");
+  const [commanderModel, setCommanderModel] = useState("");
+
+  // Step 4 (Crew pick — NEW in Phase E batch 2 T20)
+  const [crewProvider, setCrewProvider] = useState<Provider | "">("");
+  const [crewModel, setCrewModel] = useState("");
+
+  // Step 5 (first agent — was step 3)
   const [agentName, setAgentName] = useState("Director");
-  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>("codex_local");
   const [cwd, setCwd] = useState("");
   const [cwdManuallyEdited, setCwdManuallyEdited] = useState(false);
   const [model, setModel] = useState("");
@@ -111,7 +169,7 @@ export function OnboardingWizard() {
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
 
-  // Step 3
+  // Step 6 (task — was step 4)
   const [taskTitle, setTaskTitle] = useState("Review your Director playbook");
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
@@ -158,9 +216,9 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [onboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
-  // Auto-suggest agent cwd from rootFolder when entering agent step
+  // Auto-suggest agent cwd from rootFolder when entering agent step (step 5)
   useEffect(() => {
-    if (step !== 3 || !rootFolder || cwdManuallyEdited || cwd) return;
+    if (step !== STEP_AGENT || !rootFolder || cwdManuallyEdited || cwd) return;
     const isLocal = ["claude_local", "codex_local", "opencode_local", "cursor", "hermes_local", "gemini_local"].includes(adapterType);
     if (!isLocal) return;
     const sep = rootFolder.includes("\\") ? "\\" : "/";
@@ -168,9 +226,9 @@ export function OnboardingWizard() {
     setCwd(`${rootFolder}${sep}agents${sep}${slug}`);
   }, [step, rootFolder, agentName, adapterType, cwdManuallyEdited, cwd]);
 
-  // Resize textarea when step 4 (task) is shown or description changes
+  // Resize textarea when step 6 (task) is shown or description changes
   useEffect(() => {
-    if (step === 4) autoResizeTextarea();
+    if (step === STEP_TASK) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
   const {
@@ -184,7 +242,7 @@ export function OnboardingWizard() {
         ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
         : ["agents", "none", "adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
-    enabled: Boolean(createdCompanyId) && onboardingOpen && step === 3
+    enabled: Boolean(createdCompanyId) && onboardingOpen && step === STEP_AGENT
   });
   const isLocalAdapter =
     adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
@@ -199,7 +257,7 @@ export function OnboardingWizard() {
           : "claude");
 
   useEffect(() => {
-    if (step !== 3) return;
+    if (step !== STEP_AGENT) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
   }, [step, adapterType, cwd, model, command, args, url]);
@@ -256,6 +314,10 @@ export function OnboardingWizard() {
     setError(null);
     setCompanyName("");
     setCompanyGoal("");
+    setCommanderProvider("");
+    setCommanderModel("");
+    setCrewProvider("");
+    setCrewModel("");
     setAgentName("Director");
     setAdapterType("claude_local");
     setCwd("");
@@ -351,10 +413,64 @@ export function OnboardingWizard() {
   }
 
   async function handleStep1Next() {
+    // Phase E batch 2 (T20): company creation deferred until Step 4 (Crew)
+    // so that the POST can include both commanderAdapterConfig and
+    // crewAdapterConfig in the same request. Step 1 just suggests a root
+    // folder and advances locally — no server round-trips.
+    setError(null);
+    try {
+      const { homePath } = await filesystemApi.home();
+      const slug = companyName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const sep = homePath.includes("\\") ? "\\" : "/";
+      const suggested = `${homePath}${sep}AoA${sep}${slug}`;
+      setSuggestedRootFolder(suggested);
+      setRootFolder(suggested);
+    } catch {
+      // Fallback if filesystem API fails — user can type a path manually.
+      setSuggestedRootFolder("");
+    }
+    setStep(2);
+  }
+
+  async function handleStep2Next() {
+    // Phase E batch 2 (T20): no server-side write yet. Root folder is held
+    // locally and saved alongside company create + commander/crew configs in
+    // the Step 4 Next handler. Advance directly to the Commander pick.
+    if (!rootFolder.trim()) return;
+    setError(null);
+    setStep(3);
+  }
+
+  function handleStep3Next() {
+    // Phase E batch 2 (T20): Commander pick. No server-side write — just
+    // advance to the Crew pick step. Disabled-until-valid in the footer.
+    if (!commanderProvider || !commanderModel) return;
+    setError(null);
+    setStep(4);
+  }
+
+  async function handleStep4Next() {
+    // Phase E batch 2 (T20): Crew pick + final company creation. This is the
+    // single POST /companies that carries name + description + commander +
+    // crew configs. We then PATCH rootFolder and (optionally) create the
+    // company goal, mirroring the legacy Step 1/2 behavior in one flush.
+    if (!crewProvider || !crewModel) return;
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company = await companiesApi.create({
+        name: companyName.trim(),
+        commanderAdapterConfig: {
+          adapter: providerToAdapter(commanderProvider as Provider),
+          model: commanderModel.trim(),
+        },
+        crewAdapterConfig: {
+          default: {
+            adapter: providerToAdapter(crewProvider as Provider),
+            model: crewModel.trim(),
+          },
+        },
+      });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -364,27 +480,23 @@ export function OnboardingWizard() {
         await goalsApi.create(company.id, {
           title: companyGoal.trim(),
           level: "company",
-          status: "active"
+          status: "active",
         });
         queryClient.invalidateQueries({
-          queryKey: queryKeys.goals.list(company.id)
+          queryKey: queryKeys.goals.list(company.id),
         });
       }
 
-      // Suggest a root folder path
+      // Materialize the root folder and persist it on the company row.
       try {
-        const { homePath } = await filesystemApi.home();
-        const slug = companyName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        const sep = homePath.includes("\\") ? "\\" : "/";
-        const suggested = `${homePath}${sep}AoA${sep}${slug}`;
-        setSuggestedRootFolder(suggested);
-        setRootFolder(suggested);
+        await filesystemApi.mkdir(rootFolder.trim());
       } catch {
-        // Fallback if API fails
-        setSuggestedRootFolder("");
+        // Non-fatal — server will retry on agent create.
       }
+      await companiesApi.update(company.id, { rootFolder: rootFolder.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
-      setStep(2);
+      setStep(STEP_AGENT);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
     } finally {
@@ -392,24 +504,7 @@ export function OnboardingWizard() {
     }
   }
 
-  async function handleStep2Next() {
-    if (!createdCompanyId || !rootFolder.trim()) return;
-    setLoading(true);
-    setError(null);
-    try {
-      // Create folder and save to company
-      await filesystemApi.mkdir(rootFolder.trim());
-      await companiesApi.update(createdCompanyId, { rootFolder: rootFolder.trim() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      setStep(3);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to set root folder");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleStep3Next() {
+  async function handleStep5Next() {
     if (!createdCompanyId) return;
     setLoading(true);
     setError(null);
@@ -478,7 +573,7 @@ export function OnboardingWizard() {
         filesystemApi.mkdir(agentCwd).catch(() => {});
       }
 
-      setStep(4);
+      setStep(STEP_TASK);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
@@ -535,7 +630,7 @@ export function OnboardingWizard() {
     }
   }
 
-  async function handleStep4Next() {
+  async function handleStep6Next() {
     if (!createdCompanyId || !createdAgentId) return;
     setLoading(true);
     setError(null);
@@ -552,7 +647,7 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.list(createdCompanyId)
       });
-      setStep(5);
+      setStep(7);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create task");
     } finally {
@@ -583,10 +678,13 @@ export function OnboardingWizard() {
       e.preventDefault();
       if (step === 1 && companyName.trim()) handleStep1Next();
       else if (step === 2 && rootFolder.trim()) handleStep2Next();
-      else if (step === 3 && agentName.trim()) handleStep3Next();
-      else if (step === 4 && taskTitle.trim()) handleStep4Next();
-      else if (step === 5) setStep(6);
-      else if (step === 6) handleLaunch();
+      else if (step === 3 && commanderProvider && commanderModel)
+        handleStep3Next();
+      else if (step === 4 && crewProvider && crewModel) handleStep4Next();
+      else if (step === STEP_AGENT && agentName.trim()) handleStep5Next();
+      else if (step === STEP_TASK && taskTitle.trim()) handleStep6Next();
+      else if (step === 7) setStep(8);
+      else if (step === 8) handleLaunch();
     }
   }
 
@@ -622,14 +720,14 @@ export function OnboardingWizard() {
                 <Sparkles className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm font-medium">Get Started</span>
                 <span className="text-sm text-muted-foreground/60">
-                  Step {step} of 6
+                  Step {step} of {TOTAL_STEPS}
                 </span>
                 <div className="flex items-center gap-1.5 ml-auto">
-                  {[1, 2, 3, 4, 5, 6].map((s) => (
+                  {Array.from({ length: TOTAL_STEPS }, (_, i) => i + 1).map((s) => (
                     <div
                       key={s}
                       className={cn(
-                        "h-1.5 w-6 rounded-full transition-colors",
+                        "h-1.5 w-4 rounded-full transition-colors",
                         s < step
                           ? "bg-green-500"
                           : s === step
@@ -756,7 +854,135 @@ export function OnboardingWizard() {
                 </div>
               )}
 
+              {/* Phase E batch 2 (T20): Step 3 — Commander pick.
+                  Drives companies.commanderAdapterConfig at create time.
+                  Free-form model text input — the agent-step model dropdown
+                  (which needs a live `adapterModels` query) cannot run here
+                  because the company doesn't exist yet. */}
               {step === 3 && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <Sparkles className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Choose your Commander</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Commander is your personal AI assistant. Used for chat
+                        and orchestration.
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs text-muted-foreground mb-1 block"
+                      htmlFor="commander-provider"
+                    >
+                      Provider
+                    </label>
+                    <select
+                      id="commander-provider"
+                      data-testid="commander-provider"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                      value={commanderProvider}
+                      onChange={(e) =>
+                        setCommanderProvider(e.target.value as Provider | "")
+                      }
+                    >
+                      <option value="">Select a provider…</option>
+                      {PROVIDER_OPTIONS.map((p) => (
+                        <option key={p} value={p}>
+                          {PROVIDER_LABELS[p]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs text-muted-foreground mb-1 block"
+                      htmlFor="commander-model"
+                    >
+                      Model
+                    </label>
+                    <input
+                      id="commander-model"
+                      data-testid="commander-model"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      placeholder="e.g. claude-sonnet-4-6"
+                      value={commanderModel}
+                      onChange={(e) => setCommanderModel(e.target.value)}
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1.5">
+                      You can change the model later in Settings → Commander.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Phase E batch 2 (T20): Step 4 — Crew pick.
+                  Drives companies.crewAdapterConfig.default at create time.
+                  Applies to all 7 crew agents; per-agent overrides live in
+                  Settings → Agents after onboarding. */}
+              {step === 4 && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <Bot className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Choose your Crew</h3>
+                      <p className="text-xs text-muted-foreground">
+                        This adapter+model applies to all 7 crew agents
+                        (Adjutant, Scout, Engineer, Navigator, Planner,
+                        Dispatcher, Memory Keeper). You can override per-agent
+                        in Settings → Agents later.
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs text-muted-foreground mb-1 block"
+                      htmlFor="crew-provider"
+                    >
+                      Provider
+                    </label>
+                    <select
+                      id="crew-provider"
+                      data-testid="crew-provider"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                      value={crewProvider}
+                      onChange={(e) =>
+                        setCrewProvider(e.target.value as Provider | "")
+                      }
+                    >
+                      <option value="">Select a provider…</option>
+                      {PROVIDER_OPTIONS.map((p) => (
+                        <option key={p} value={p}>
+                          {PROVIDER_LABELS[p]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs text-muted-foreground mb-1 block"
+                      htmlFor="crew-model"
+                    >
+                      Model
+                    </label>
+                    <input
+                      id="crew-model"
+                      data-testid="crew-model"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      placeholder="e.g. gpt-5.3-codex"
+                      value={crewModel}
+                      onChange={(e) => setCrewModel(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {step === STEP_AGENT && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1133,7 +1359,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 4 && (
+              {step === STEP_TASK && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1174,7 +1400,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 5 && (
+              {step === 7 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1233,7 +1459,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 6 && (
+              {step === 8 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1310,6 +1536,7 @@ export function OnboardingWizard() {
                   {step === 1 && (
                     <Button
                       size="sm"
+                      data-testid="step1-next"
                       disabled={!companyName.trim() || loading}
                       onClick={handleStep1Next}
                     >
@@ -1324,6 +1551,7 @@ export function OnboardingWizard() {
                   {step === 2 && (
                     <Button
                       size="sm"
+                      data-testid="step2-next"
                       disabled={!rootFolder.trim() || loading}
                       onClick={handleStep2Next}
                     >
@@ -1335,26 +1563,28 @@ export function OnboardingWizard() {
                       {loading ? "Setting up..." : "Next"}
                     </Button>
                   )}
+                  {/* Phase E batch 2 (T20): step 3 = Commander pick. */}
                   {step === 3 && (
                     <Button
                       size="sm"
-                      disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
-                      }
+                      data-testid="step3-next"
+                      disabled={!commanderProvider || !commanderModel.trim() || loading}
                       onClick={handleStep3Next}
                     >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Next"}
+                      <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      Next
                     </Button>
                   )}
+                  {/* Phase E batch 2 (T20): step 4 = Crew pick.
+                      This is the step that actually POSTs /companies — the
+                      "Creating..." spinner sits here, not step 1, since
+                      company creation was deferred to carry both adapter
+                      configs in a single request. */}
                   {step === 4 && (
                     <Button
                       size="sm"
-                      disabled={!taskTitle.trim() || loading}
+                      data-testid="step4-next"
+                      disabled={!crewProvider || !crewModel.trim() || loading}
                       onClick={handleStep4Next}
                     >
                       {loading ? (
@@ -1362,17 +1592,54 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
+                      {loading ? "Creating company..." : "Next"}
+                    </Button>
+                  )}
+                  {step === STEP_AGENT && (
+                    <Button
+                      size="sm"
+                      data-testid="step5-next"
+                      disabled={
+                        !agentName.trim() || loading || adapterEnvLoading
+                      }
+                      onClick={handleStep5Next}
+                    >
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : (
+                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      )}
                       {loading ? "Creating..." : "Next"}
                     </Button>
                   )}
-                  {step === 5 && (
-                    <Button size="sm" onClick={() => setStep(6)}>
+                  {step === STEP_TASK && (
+                    <Button
+                      size="sm"
+                      data-testid="step6-next"
+                      disabled={!taskTitle.trim() || loading}
+                      onClick={handleStep6Next}
+                    >
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : (
+                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      )}
+                      {loading ? "Creating..." : "Next"}
+                    </Button>
+                  )}
+                  {step === 7 && (
+                    <Button size="sm" data-testid="step7-next" onClick={() => setStep(8)}>
                       <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       Next
                     </Button>
                   )}
-                  {step === 6 && (
-                    <Button size="sm" disabled={loading} onClick={handleLaunch}>
+                  {step === 8 && (
+                    <Button
+                      size="sm"
+                      data-testid="step8-launch"
+                      disabled={loading}
+                      onClick={handleLaunch}
+                    >
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (

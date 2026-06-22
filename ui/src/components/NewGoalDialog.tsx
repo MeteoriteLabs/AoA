@@ -1,10 +1,8 @@
-import { useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { GOAL_STATUSES, GOAL_LEVELS } from "@armyofagents/shared";
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { goalsApi } from "../api/goals";
-import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -14,30 +12,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Maximize2,
-  Minimize2,
-  Target,
-  Layers,
-  FolderOpen,
-  Square,
-  CheckSquare,
-} from "lucide-react";
+import { Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
-import { StatusBadge } from "./StatusBadge";
-
-const levelLabels: Record<string, string> = {
-  company: "Company",
-  team: "Team",
-  agent: "Agent",
-  task: "Task",
-};
+import { GoalFields, type GoalScope } from "./goals/GoalFields";
 
 export function NewGoalDialog() {
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
@@ -46,34 +24,23 @@ export function NewGoalDialog() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
-  const [level, setLevel] = useState("task");
-  const [parentId, setParentId] = useState("");
+  const [scope, setScope] = useState<GoalScope>({ mode: "company", projectIds: [] });
+  const [parentIds, setParentIds] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(false);
-  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
-
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [levelOpen, setLevelOpen] = useState(false);
-  const [parentOpen, setParentOpen] = useState(false);
-  const [projectsOpen, setProjectsOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
 
-  // Apply defaults when dialog opens
-  const appliedParentId = parentId || newGoalDefaults.parentId || "";
-  const appliedProjectIds = selectedProjectIds.length > 0
-    ? selectedProjectIds
-    : newGoalDefaults.projectIds ?? [];
-
-  const { data: goals } = useQuery({
-    queryKey: queryKeys.goals.list(selectedCompanyId!),
-    queryFn: () => goalsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && newGoalOpen,
-  });
-
-  const { data: allProjects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && newGoalOpen,
-  });
+  // Seed scope/parents from defaults whenever the dialog opens (e.g. "New
+  // sub-goal" pre-selects a parent; a project page pre-scopes the goal).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!newGoalOpen) return;
+    setScope(
+      (newGoalDefaults.projectIds?.length ?? 0) > 0
+        ? { mode: "specific", projectIds: newGoalDefaults.projectIds ?? [] }
+        : { mode: "company", projectIds: [] },
+    );
+    setParentIds(newGoalDefaults.parentId ? [newGoalDefaults.parentId] : []);
+  }, [newGoalOpen]);
 
   const createGoal = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -96,28 +63,22 @@ export function NewGoalDialog() {
     setTitle("");
     setDescription("");
     setStatus("planned");
-    setLevel("task");
-    setParentId("");
-    setSelectedProjectIds([]);
+    setScope({ mode: "company", projectIds: [] });
+    setParentIds([]);
     setExpanded(false);
   }
 
-  function toggleProjectId(id: string) {
-    setSelectedProjectIds((prev) => {
-      const base = prev.length > 0 ? prev : (newGoalDefaults.projectIds ?? []);
-      return base.includes(id) ? base.filter((p) => p !== id) : [...base, id];
-    });
-  }
+  const specificButEmpty =
+    scope.mode === "specific" && scope.projectIds.length === 0;
 
   function handleSubmit() {
-    if (!selectedCompanyId || !title.trim() || appliedProjectIds.length === 0) return;
+    if (!selectedCompanyId || !title.trim() || specificButEmpty) return;
     createGoal.mutate({
       title: title.trim(),
       description: description.trim() || undefined,
       status,
-      level,
-      projectIds: appliedProjectIds,
-      ...(appliedParentId ? { parentId: appliedParentId } : {}),
+      projectIds: scope.projectIds,
+      parentIds,
     });
   }
 
@@ -127,8 +88,6 @@ export function NewGoalDialog() {
       handleSubmit();
     }
   }
-
-  const currentParent = (goals ?? []).find((g) => g.id === appliedParentId);
 
   return (
     <Dialog
@@ -142,13 +101,19 @@ export function NewGoalDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
+        className={cn(
+          "p-0 gap-0 max-h-[85dvh] overflow-y-auto",
+          expanded ? "sm:max-w-2xl" : "sm:max-w-lg",
+        )}
         onKeyDown={handleKeyDown}
       >
         <DialogTitle className="sr-only">
           {newGoalDefaults.parentId ? "New sub-goal" : "New goal"}
         </DialogTitle>
-        <DialogDescription className="sr-only">Define a goal for the team to achieve</DialogDescription>
+        <DialogDescription className="sr-only">
+          Define a goal for the team to achieve
+        </DialogDescription>
+
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -168,13 +133,20 @@ export function NewGoalDialog() {
               onClick={() => setExpanded(!expanded)}
               aria-label={expanded ? "Collapse dialog" : "Expand dialog"}
             >
-              {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+              {expanded ? (
+                <Minimize2 className="h-3.5 w-3.5" />
+              ) : (
+                <Maximize2 className="h-3.5 w-3.5" />
+              )}
             </Button>
             <Button
               variant="ghost"
               size="icon-xs"
               className="text-muted-foreground"
-              onClick={() => { reset(); closeNewGoal(); }}
+              onClick={() => {
+                reset();
+                closeNewGoal();
+              }}
               aria-label="Close new goal dialog"
             >
               <span className="text-lg leading-none">&times;</span>
@@ -207,7 +179,10 @@ export function NewGoalDialog() {
             onChange={setDescription}
             placeholder="Add description..."
             bordered={false}
-            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+            contentClassName={cn(
+              "text-sm text-muted-foreground",
+              expanded ? "min-h-[220px]" : "min-h-[120px]",
+            )}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
               return asset.contentPath;
@@ -215,158 +190,33 @@ export function NewGoalDialog() {
           />
         </div>
 
-        {/* Property chips */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
-          {/* Status */}
-          <Popover open={statusOpen} onOpenChange={setStatusOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                <StatusBadge status={status} />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-40 p-1" align="start">
-              {GOAL_STATUSES.map((s) => (
-                <button
-                  key={s}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 capitalize",
-                    s === status && "bg-accent"
-                  )}
-                  onClick={() => { setStatus(s); setStatusOpen(false); }}
-                >
-                  {s}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Level */}
-          <Popover open={levelOpen} onOpenChange={setLevelOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                <Layers className="h-3 w-3 text-muted-foreground" />
-                {levelLabels[level] ?? level}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-40 p-1" align="start">
-              {GOAL_LEVELS.map((l) => (
-                <button
-                  key={l}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    l === level && "bg-accent"
-                  )}
-                  onClick={() => { setLevel(l); setLevelOpen(false); }}
-                >
-                  {levelLabels[l] ?? l}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Parent goal */}
-          <Popover open={parentOpen} onOpenChange={setParentOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                <Target className="h-3 w-3 text-muted-foreground" />
-                {currentParent ? currentParent.title : "Parent goal"}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-48 p-1" align="start">
-              <button
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                  !appliedParentId && "bg-accent"
-                )}
-                onClick={() => { setParentId(""); setParentOpen(false); }}
-              >
-                No parent
-              </button>
-              {(goals ?? []).map((g) => (
-                <button
-                  key={g.id}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
-                    g.id === appliedParentId && "bg-accent"
-                  )}
-                  onClick={() => { setParentId(g.id); setParentOpen(false); }}
-                >
-                  {g.title}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Department / Project (required, multi-select) */}
-          <Popover open={projectsOpen} onOpenChange={setProjectsOpen}>
-            <PopoverTrigger asChild>
-              <button
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  appliedProjectIds.length === 0
-                    ? "border-destructive text-destructive"
-                    : "border-border",
-                )}
-              >
-                <FolderOpen className="h-3 w-3 text-muted-foreground" />
-                {appliedProjectIds.length === 0
-                  ? "Depts / Projects (one or more) *"
-                  : `${appliedProjectIds.length} selected`}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-56 p-1" align="start">
-              {(allProjects ?? []).length === 0 ? (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                  No departments or projects found.
-                </p>
-              ) : (
-                <>
-                  {/* Departments first, then projects */}
-                  {(allProjects ?? [])
-                    .slice()
-                    .sort((a, b) => {
-                      if (a.type === b.type) return a.name.localeCompare(b.name);
-                      return a.type === "department" ? -1 : 1;
-                    })
-                    .map((p) => {
-                      const selected = appliedProjectIds.includes(p.id);
-                      return (
-                        <button
-                          key={p.id}
-                          role="checkbox"
-                          aria-checked={selected}
-                          className={cn(
-                            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                            selected && "bg-accent",
-                          )}
-                          onClick={() => toggleProjectId(p.id)}
-                        >
-                          {selected ? (
-                            <CheckSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
-                          ) : (
-                            <Square className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          )}
-                          <span className="truncate">{p.name}</span>
-                          <span className="ml-auto text-[10px] text-muted-foreground capitalize">
-                            {p.type}
-                          </span>
-                        </button>
-                      );
-                    })}
-                </>
-              )}
-            </PopoverContent>
-          </Popover>
-        </div>
+        {/* Goal fields (status + scope + parents) */}
+        {selectedCompanyId && (
+          <div className="px-4 py-3 border-t border-border">
+            <GoalFields
+              companyId={selectedCompanyId}
+              status={status}
+              onStatusChange={setStatus}
+              scope={scope}
+              onScopeChange={setScope}
+              parentIds={parentIds}
+              onParentsChange={setParentIds}
+            />
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
           <Button
             size="sm"
-            disabled={!title.trim() || appliedProjectIds.length === 0 || createGoal.isPending}
+            disabled={!title.trim() || specificButEmpty || createGoal.isPending}
             onClick={handleSubmit}
           >
-            {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
+            {createGoal.isPending
+              ? "Creating…"
+              : newGoalDefaults.parentId
+                ? "Create sub-goal"
+                : "Create goal"}
           </Button>
         </div>
       </DialogContent>

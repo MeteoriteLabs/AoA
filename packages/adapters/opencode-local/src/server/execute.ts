@@ -2,7 +2,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetFile,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@armyofagents/adapter-utils";
 import {
   asString,
   asNumber,
@@ -14,10 +23,12 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
-  runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { writeOpenCodeMcpConfigJson } from "./opencode-config-json.js";
+import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -84,6 +95,8 @@ async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLo
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -108,8 +121,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   await ensureOpenCodeSkillsInjected(onLog);
+
+  // T2.1: deliver the internal-agent MCP bridge to opencode via its native
+  // discovery mechanism — a `mcp.aoa` block in opencode.json in the CWD.
+  // Pre-T2.1, opencode crew agents spawned with no MCP tools (same failure
+  // mode codex had pre-MX2): the LLM ran 30s, exited without calling any
+  // tool, and the wakeup logged "succeeded" while having done nothing.
+  // writeOpenCodeMcpConfigJson is idempotent and preserves any unrelated
+  // top-level config (theme, model, other mcp servers) — see its header.
+  if (ctx.mcpBridge) {
+    await writeOpenCodeMcpConfigJson(cwd, ctx.mcpBridge);
+    if (executionTargetIsRemote) {
+      await syncAdapterExecutionTargetFile({
+        runId,
+        target: executionTarget,
+        localPath: path.join(cwd, "opencode.json"),
+        remotePath: `${effectiveExecutionCwd}/opencode.json`,
+        cwd: effectiveExecutionCwd,
+        env: {},
+        timeoutSec: 30,
+        graceSec: 5,
+        onLog,
+      });
+    }
+    await onLog("stderr", "[aoa] Wired opencode MCP bridge via opencode.json\n");
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -145,11 +184,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalId) env.AOA_APPROVAL_ID = approvalId;
   if (approvalStatus) env.AOA_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (effectiveWorkspaceCwd) env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.AOA_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: asString(workspaceContext.agentHome, "") || null,
+  });
   if (workspaceHints.length > 0) env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
   for (const [key, value] of Object.entries(envConfig)) {
@@ -163,14 +208,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
-
-  await ensureOpenCodeModelConfiguredAndAvailable({
-    model,
-    command,
-    cwd,
-    env: runtimeEnv,
+  const baseExecutionEnv = executionTarget.type === "local" ? runtimeEnv : env;
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env: baseExecutionEnv,
+    config,
+    targetIsRemote: executionTarget.type !== "local",
   });
+  const preparedRuntimeEnv = preparedRuntimeConfig.env;
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, preparedRuntimeEnv);
+    await ensureOpenCodeModelConfiguredAndAvailable({
+      model,
+      command,
+      cwd,
+      env: preparedRuntimeEnv,
+    });
+  } else if (!model) {
+    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -183,14 +238,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || (
+      executionTargetIsRemote
+        ? runtimeSessionCwd === sessionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(sessionCwd)
+    )) &&
+    sessionTargetMatches;
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[aoa] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${sessionCwd}".\n`,
     );
   }
 
@@ -221,14 +284,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const commandNotes = (() => {
-    if (!resolvedInstructionsFilePath) return [] as string[];
+    const notes = [`Execution target: ${executionTarget.type}`, ...preparedRuntimeConfig.notes];
+    if (!resolvedInstructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       return [
+        ...notes,
         `Loaded agent instructions from ${resolvedInstructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
       ];
     }
     return [
+      ...notes,
       `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
     ];
   })();
@@ -262,16 +328,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd,
         commandNotes,
         commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
-        env: redactEnvForLogs(env),
+        env: redactEnvForLogs(preparedRuntimeEnv),
         prompt,
         context,
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+      runId,
+      command,
+      args,
       cwd,
-      env: runtimeEnv,
+      env: preparedRuntimeEnv,
       stdin: prompt,
+      authToken: preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: preparedRuntimeEnv.AOA_API_URL ?? null,
+      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,
       graceSec,
       onLog,
@@ -299,6 +371,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
+        executionCwd: sessionCwd,
       };
     }
 
@@ -308,10 +381,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
-          cwd,
+          cwd: sessionCwd,
           ...(workspaceId ? { workspaceId } : {}),
           ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(executionTargetIsRemote
+            ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+            : {}),
         } as Record<string, unknown>)
       : null;
 
@@ -342,6 +418,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: modelId,
       billingType: "unknown",
       costUsd: attempt.parsed.costUsd,
+      executionCwd: sessionCwd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -351,21 +428,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  const initialFailed =
-    !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-  if (
-    sessionId &&
-    initialFailed &&
-    isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-  ) {
-    await onLog(
-      "stderr",
-      `[aoa] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true);
-  }
+  try {
+    const initial = await runAttempt(sessionId);
+    const initialFailed =
+      !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+    if (
+      sessionId &&
+      initialFailed &&
+      isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+    ) {
+      await onLog(
+        "stderr",
+        `[aoa] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial);
+  } finally {
+    await preparedRuntimeConfig.cleanup();
+  }
 }

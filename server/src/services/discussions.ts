@@ -1,18 +1,39 @@
-import { and, eq, desc, sql, inArray } from "drizzle-orm";
+import { and, eq, desc, sql, inArray, asc, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   discussions,
   discussionEntries,
   discussionExtractedItems,
   discussionAnnotations,
+  discussionEntryAttachments,
+  artifacts,
+  assets,
+  agents,
   projects,
   goals,
+  threadLinks,
+  threadPlanSteps,
+  threadParticipants,
+  threadOrchestrationState,
+  authUsers,
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
+import { getThreadEventListener } from "./thread-events.js";
+import { threadOrchestrationService } from "./thread-orchestration.js";
+// parseMentions is a pure regex helper (no DB). threads.ts is already in the
+// module graph via live-events.ts → threads.ts, so this static import adds no
+// new load-time cost or cycle (discussions → threads is one-directional;
+// threads.ts does not import discussions.ts).
+import { parseMentions } from "./threads.js";
+import { deriveThreadStage, loadLatestScopeForThreadStages } from "./thread-scope-versions.js";
+// NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
+// the top-level import graph free of execution-workspaces → git → child_process.
+// Several test suites (notably cli-mode.test.ts) partially mock node:child_process
+// and the eager import causes their indirect resolution chain to fail.
 
 export interface DiscussionFilters {
   status?: string;
@@ -28,6 +49,7 @@ export interface DiscussionFilters {
  */
 async function validateScope(
   db: Db,
+  companyId: string,
   scopeType: string | null | undefined,
   scopeId: string | null | undefined,
 ) {
@@ -41,9 +63,9 @@ async function validateScope(
 
   if (scopeType === "department" || scopeType === "project") {
     const row = await db
-      .select({ id: projects.id, type: projects.type })
-      .from(projects)
-      .where(eq(projects.id, scopeId!))
+        .select({ id: projects.id, type: projects.type })
+        .from(projects)
+      .where(and(eq(projects.id, scopeId!), eq(projects.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!row) {
       throw badRequest(`${scopeType} with id '${scopeId}' not found`);
@@ -56,9 +78,9 @@ async function validateScope(
     }
   } else if (scopeType === "goal") {
     const row = await db
-      .select({ id: goals.id })
-      .from(goals)
-      .where(eq(goals.id, scopeId!))
+        .select({ id: goals.id })
+        .from(goals)
+      .where(and(eq(goals.id, scopeId!), eq(goals.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!row) {
       throw badRequest(`Goal with id '${scopeId}' not found`);
@@ -68,12 +90,301 @@ async function validateScope(
   }
 }
 
+async function validateEntryAttachments(
+  db: Db,
+  companyId: string,
+  attachments: Array<{ assetId?: string | null; artifactId?: string | null }> | undefined,
+) {
+  const normalized = (attachments ?? []).filter((attachment) => attachment.assetId || attachment.artifactId);
+  if (normalized.length === 0) return;
+
+  const assetIds = [...new Set(normalized.map((attachment) => attachment.assetId).filter(Boolean) as string[])];
+  const artifactIds = [...new Set(normalized.map((attachment) => attachment.artifactId).filter(Boolean) as string[])];
+
+  if (assetIds.length > 0) {
+    const ownedAssets = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(and(inArray(assets.id, assetIds), eq(assets.companyId, companyId)));
+    if (ownedAssets.length !== assetIds.length) {
+      throw badRequest("Attachment asset not found");
+    }
+  }
+
+  if (artifactIds.length > 0) {
+    const ownedArtifacts = await db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(and(inArray(artifacts.id, artifactIds), eq(artifacts.companyId, companyId)));
+    if (ownedArtifacts.length !== artifactIds.length) {
+      throw badRequest("Attachment artifact not found");
+    }
+  }
+}
+
 function isMemoryType(
   type: string,
 ): type is "decision" | "insight" | "context" | "reference" | "preference" {
   return ["decision", "insight", "context", "reference", "preference"].includes(
     type,
   );
+}
+
+/**
+ * Minimal entry shape consumed by `emitEntryCreatedSideEffects`. Mirrors the
+ * fields read off a freshly-inserted `discussion_entries` row — both `addEntry`'s
+ * `entry` and `create()`'s `result.entry` satisfy this.
+ */
+interface EmittableEntry {
+  id: string;
+  discussionId: string;
+  authorAgentId: string | null;
+  inputType: string;
+  createdBy: string;
+  seq: number;
+  rawContent: string;
+}
+
+type DiscussionRow = typeof discussions.$inferSelect;
+
+async function enrichDiscussionListRows(
+  db: Db,
+  companyId: string,
+  rows: DiscussionRow[],
+) {
+  const ids = rows.map((row) => row.id);
+  if (ids.length === 0) return [];
+
+  const projectScopeIds = [
+    ...new Set(
+      rows
+        .filter(
+          (row) =>
+            row.scopeId &&
+            (row.scopeType === "department" || row.scopeType === "project"),
+        )
+        .map((row) => row.scopeId!),
+    ),
+  ];
+  const goalScopeIds = [
+    ...new Set(
+      rows
+        .filter((row) => row.scopeId && row.scopeType === "goal")
+        .map((row) => row.scopeId!),
+    ),
+  ];
+
+  const projectScopes = projectScopeIds.length
+    ? await db
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(and(inArray(projects.id, projectScopeIds), eq(projects.companyId, companyId)))
+    : [];
+  const goalScopes = goalScopeIds.length
+    ? await db
+        .select({ id: goals.id, title: goals.title })
+        .from(goals)
+        .where(and(inArray(goals.id, goalScopeIds), eq(goals.companyId, companyId)))
+    : [];
+
+  const scopeNames = new Map<string, string>();
+  for (const scope of projectScopes) scopeNames.set(scope.id, scope.name);
+  for (const scope of goalScopes) scopeNames.set(scope.id, scope.title);
+
+  const participantRows = await db
+    .select({
+      threadId: threadParticipants.threadId,
+      principalType: threadParticipants.principalType,
+      principalId: threadParticipants.principalId,
+      role: threadParticipants.role,
+      addedAt: threadParticipants.addedAt,
+      userName: authUsers.name,
+      userEmail: authUsers.email,
+      agentName: agents.name,
+    })
+    .from(threadParticipants)
+    .leftJoin(authUsers, eq(threadParticipants.principalId, authUsers.id))
+    .leftJoin(
+      agents,
+      and(
+        eq(threadParticipants.principalId, sql`${agents.id}::text`),
+        eq(agents.companyId, companyId),
+      ),
+    )
+    .where(and(inArray(threadParticipants.threadId, ids), eq(threadParticipants.companyId, companyId)))
+    .orderBy(asc(threadParticipants.addedAt));
+
+  const participantsByThread = new Map<
+    string,
+    Array<{ principalType: "user" | "agent"; principalId: string; name: string; role: string }>
+  >();
+  for (const participant of participantRows) {
+    const name =
+      participant.principalType === "agent"
+        ? participant.agentName ?? "Agent"
+        : participant.userName ??
+          (participant.userEmail ? participant.userEmail.split("@")[0] : participant.principalId);
+    const list = participantsByThread.get(participant.threadId) ?? [];
+    list.push({
+      principalType: participant.principalType as "user" | "agent",
+      principalId: participant.principalId,
+      name,
+      role: participant.role,
+    });
+    participantsByThread.set(participant.threadId, list);
+  }
+
+  const linkRows = await db
+    .select({
+      fromThreadId: threadLinks.fromThreadId,
+      toThreadId: threadLinks.toThreadId,
+    })
+    .from(threadLinks)
+    .where(
+      and(
+        eq(threadLinks.companyId, companyId),
+        or(inArray(threadLinks.fromThreadId, ids), inArray(threadLinks.toThreadId, ids)),
+      ),
+    );
+
+  const linkCountByThread = new Map<string, number>();
+  for (const link of linkRows) {
+    linkCountByThread.set(
+      link.fromThreadId,
+      (linkCountByThread.get(link.fromThreadId) ?? 0) + 1,
+    );
+    linkCountByThread.set(
+      link.toThreadId,
+      (linkCountByThread.get(link.toThreadId) ?? 0) + 1,
+    );
+  }
+
+  const latestScopesByThread = await loadLatestScopeForThreadStages(db, companyId, ids);
+
+  return rows.map((row) => {
+    const participants = participantsByThread.get(row.id) ?? [];
+    const latestScope = latestScopesByThread.get(row.id) ?? null;
+    return {
+      ...row,
+      scopeName: row.scopeId ? scopeNames.get(row.scopeId) ?? null : null,
+      participantPreview: participants.slice(0, 3),
+      participantCount: participants.length,
+      linkCount: linkCountByThread.get(row.id) ?? 0,
+      derivedStage: deriveThreadStage({
+        subtype: row.subtype,
+        status: row.status,
+        entrySeq: row.entrySeq ?? 0,
+        latest: latestScope,
+      }),
+    };
+  });
+}
+
+/**
+ * Post-entry side effects shared by `addEntry` and `create()` (live-QA BUG-1).
+ *
+ * After a discussion entry is committed, both the add-entry path AND the
+ * create-with-first-entry path must:
+ *   1. publish the thread-scoped `thread.entry.created` poke (Plan 7) so live
+ *      thread viewers refetch (RBAC-scoped fan-out keyed by `threadId`); and
+ *   2. resolve whether the entry directly @mentions a kind='aoa' crew agent
+ *      (Task 1.3 de-dup), then notify the thread-event listener's
+ *      `onEntryCreated` so it can arm the 30s human-silence Adjutant debounce
+ *      (skipping when `hasCrewMention` — the mentioned agent answers directly).
+ *
+ * Extracted DRY from `addEntry` so `create()` arms proactive crew engagement on
+ * the FIRST message of a thread. Behavior-preserving for `addEntry`: same calls,
+ * same order. The crew lookup runs only when `rawContent` actually contains an
+ * @mention (no extra round-trip for plain chatter). Fire-and-forget: the
+ * `onEntryCreated` promise is not awaited and its rejection is swallowed so the
+ * caller's happy path is never blocked by listener failures.
+ *
+ * NOTE: the legacy company-scoped `discussion.entry.created` publish is NOT part
+ * of this helper — both callers publish it inline (before invoking this helper)
+ * so existing consumers of that event are unaffected and no double-publish occurs.
+ */
+async function emitEntryCreatedSideEffects(
+  db: Db,
+  companyId: string,
+  entry: EmittableEntry,
+): Promise<void> {
+  // Plan 7: thread-scoped poke for the live thread view. Carries threadId so
+  // the WS envelope-RBAC fan-out only delivers it to viewers who can see the
+  // thread. The frontend refetches the thread (refetch-on-poke) using seq.
+  publishLiveEvent({
+    companyId,
+    type: "thread.entry.created",
+    payload: {
+      threadId: entry.discussionId,
+      entryId: entry.id,
+      seq: entry.seq,
+    },
+  });
+
+  // Task 1.3 — de-dup the double-drive. Resolve whether this entry directly
+  // @mentions a kind='aoa' crew agent BEFORE notifying the listener. If it
+  // does, that agent answers directly via the controller participation path
+  // (processMentions → requestParticipation, Task 1.2), so the proactive
+  // Adjutant debounce must NOT also arm on the same entry. We stamp
+  // `hasCrewMention` onto the event and let onEntryCreated skip arming when
+  // true. The lookup is a single lightweight `name IN (...)` query and only
+  // runs when the text actually contains an @mention (no extra round-trip
+  // for the common case of plain chatter).
+  //
+  // L5: short-circuit for non-human entries (agent self-posts, system, and
+  // scope_proposal). `onEntryCreated` already rejects these via isHumanEntry
+  // (thread-events.ts) — and `hasCrewMention` is only ever consumed to GATE that
+  // human-entry debounce — so computing it for a non-human entry is wasted work
+  // (parseMentions + the agents query). Mirror the isHumanEntry predicate here:
+  // skip when an agent authored the entry or its inputType is a non-human signal.
+  const isHuman =
+    entry.authorAgentId === null &&
+    entry.inputType !== "agent" &&
+    entry.inputType !== "system" &&
+    entry.inputType !== "scope_proposal";
+
+  let hasCrewMention = false;
+  const mentionNames = isHuman
+    ? parseMentions(entry.rawContent).map((m) => m.name)
+    : [];
+  if (mentionNames.length > 0) {
+    const crewRows = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          eq(agents.kind, "aoa"),
+          inArray(agents.name, mentionNames),
+        ),
+      )
+      .limit(1);
+    hasCrewMention = crewRows.length > 0;
+  }
+
+  // Task B2: notify the thread-event listener so it can debounce and wake
+  // Adjutant 30s after the last *human* entry. The listener filters out
+  // agent/system/scope_proposal entries internally — we pass everything and
+  // let it decide. Fire-and-forget: any failure inside the listener is its
+  // own concern (logged there) and must not block the caller's response.
+  // getThreadEventListener() returns null in test/bootstrap contexts where
+  // the singleton isn't initialized — that's expected, treat as no-op.
+  const threadListener = getThreadEventListener();
+  if (threadListener) {
+    void threadListener
+      .onEntryCreated({
+        id: entry.id,
+        discussionId: entry.discussionId,
+        authorAgentId: entry.authorAgentId,
+        inputType: entry.inputType,
+        createdBy: entry.createdBy,
+        hasCrewMention,
+      })
+      .catch(() => {
+        // Listener already logs its own errors; we swallow here so the
+        // caller's happy path is unaffected by listener failures.
+      });
+  }
 }
 
 export function discussionService(db: Db) {
@@ -103,9 +414,11 @@ export function discussionService(db: Db) {
         conditions.push(sql`${discussions.pendingItemCount} = 0`);
       }
 
+      let rows: DiscussionRow[];
+
       // If inputType filter is set, join with entries to filter
       if (filters.inputType) {
-        const rows = await db
+        const joinedRows = await db
           .selectDistinctOn([discussions.id])
           .from(discussions)
           .innerJoin(
@@ -120,14 +433,16 @@ export function discussionService(db: Db) {
           )
           .orderBy(discussions.id, desc(discussions.lastEntryAt));
 
-        return rows.map((r) => r.discussions);
+        rows = joinedRows.map((r) => r.discussions);
+      } else {
+        rows = await db
+          .select()
+          .from(discussions)
+          .where(and(...conditions))
+          .orderBy(desc(discussions.lastEntryAt));
       }
 
-      return db
-        .select()
-        .from(discussions)
-        .where(and(...conditions))
-        .orderBy(desc(discussions.lastEntryAt));
+      return enrichDiscussionListRows(db, companyId, rows);
     },
 
     /**
@@ -142,16 +457,40 @@ export function discussionService(db: Db) {
 
       if (!discussion) return null;
 
-      const entries = await db
-        .select()
+      const entryRows = await db
+        .select({
+          entry: discussionEntries,
+          authorAgentName: agents.name,
+          authorAgentAvatar: agents.icon,
+        })
         .from(discussionEntries)
+        .leftJoin(agents, eq(discussionEntries.authorAgentId, agents.id))
         .where(eq(discussionEntries.discussionId, id))
         .orderBy(discussionEntries.createdAt);
+
+      const entries = entryRows.map((r: { entry: typeof discussionEntries.$inferSelect; authorAgentName: string | null; authorAgentAvatar: string | null }) => ({
+        ...r.entry,
+        authorAgentName: r.authorAgentName ?? null,
+        authorAgentAvatar: r.authorAgentAvatar ?? null,
+      }));
 
       const entryIds = entries.map((e) => e.id);
 
       let items: (typeof discussionExtractedItems.$inferSelect)[] = [];
       let annotations: (typeof discussionAnnotations.$inferSelect)[] = [];
+      // Phase E2: attachments joined via artifacts so the FE can render
+      // inline artifact cards (title + type) without a second round-trip.
+      let attachmentRows: Array<{
+        id: string;
+        discussionEntryId: string;
+        assetId: string | null;
+        artifactId: string | null;
+        artifactType: string | null;
+        artifactTitle: string | null;
+        assetContentType: string | null;
+        assetOriginalFilename: string | null;
+        assetByteSize: number | null;
+      }> = [];
 
       if (entryIds.length > 0) {
         items = await db
@@ -163,6 +502,35 @@ export function discussionService(db: Db) {
           .select()
           .from(discussionAnnotations)
           .where(inArray(discussionAnnotations.discussionEntryId, entryIds));
+
+        attachmentRows = await db
+          .select({
+            id: discussionEntryAttachments.id,
+            discussionEntryId: discussionEntryAttachments.discussionEntryId,
+            assetId: discussionEntryAttachments.assetId,
+            artifactId: discussionEntryAttachments.artifactId,
+            artifactType: artifacts.type,
+            artifactTitle: artifacts.title,
+            assetContentType: assets.contentType,
+            assetOriginalFilename: assets.originalFilename,
+            assetByteSize: assets.byteSize,
+          })
+          .from(discussionEntryAttachments)
+          .leftJoin(
+            artifacts,
+            and(
+              eq(discussionEntryAttachments.artifactId, artifacts.id),
+              eq(artifacts.companyId, companyId),
+            ),
+          )
+          .leftJoin(
+            assets,
+            and(
+              eq(discussionEntryAttachments.assetId, assets.id),
+              eq(assets.companyId, companyId),
+            ),
+          )
+          .where(inArray(discussionEntryAttachments.discussionEntryId, entryIds));
       }
 
       // Group items and annotations by entry for the frontend
@@ -180,13 +548,108 @@ export function discussionService(db: Db) {
         annotationsByEntry.set(ann.discussionEntryId, list);
       }
 
+      const attachmentsByEntry = new Map<string, typeof attachmentRows>();
+      for (const att of attachmentRows) {
+        const list = attachmentsByEntry.get(att.discussionEntryId) ?? [];
+        list.push(att);
+        attachmentsByEntry.set(att.discussionEntryId, list);
+      }
+
       const enrichedEntries = entries.map((e) => ({
         ...e,
         extractedItems: itemsByEntry.get(e.id) ?? [],
         annotations: annotationsByEntry.get(e.id) ?? [],
+        attachments: (attachmentsByEntry.get(e.id) ?? []).map((a) => ({
+          id: a.id,
+          assetId: a.assetId,
+          artifactId: a.artifactId,
+          artifactType: a.artifactType,
+          artifactTitle: a.artifactTitle,
+          assetContentType: a.assetContentType,
+          assetOriginalFilename: a.assetOriginalFilename,
+          assetByteSize: a.assetByteSize,
+        })),
       }));
 
-      return { ...discussion, entries: enrichedEntries };
+      const planSteps = await db
+        .select()
+        .from(threadPlanSteps)
+        .where(eq(threadPlanSteps.threadId, id))
+        .orderBy(asc(threadPlanSteps.stepOrder))
+        .then((rows: typeof threadPlanSteps.$inferSelect[]) => rows);
+
+      // Phase 1 Phase E batch 2 (T22): static roster of thread_participants
+      // with name resolution. principalType branches to authUsers (text id) or
+      // agents (uuid stored as text). Both joins are LEFT so a stale row with
+      // a deleted principal still surfaces with a fallback name.
+      const participantRows = await db
+        .select({
+          principalType: threadParticipants.principalType,
+          principalId: threadParticipants.principalId,
+          role: threadParticipants.role,
+          addedAt: threadParticipants.addedAt,
+          userName: authUsers.name,
+          userEmail: authUsers.email,
+          agentName: agents.name,
+        })
+        .from(threadParticipants)
+        .leftJoin(authUsers, eq(threadParticipants.principalId, authUsers.id))
+        .leftJoin(
+          agents,
+          and(
+            eq(threadParticipants.principalId, sql`${agents.id}::text`),
+            eq(agents.companyId, companyId),
+          ),
+        )
+        .where(and(eq(threadParticipants.threadId, id), eq(threadParticipants.companyId, companyId)))
+        .orderBy(asc(threadParticipants.addedAt));
+
+      const participants = participantRows.map((p) => {
+        const fallback =
+          p.principalType === "agent"
+            ? p.agentName ?? "Agent"
+            : p.userName ?? (p.userEmail ? p.userEmail.split("@")[0] : p.principalId);
+        return {
+          principalType: p.principalType as "user" | "agent",
+          principalId: p.principalId,
+          name: fallback,
+          role: p.role,
+          addedAt:
+            p.addedAt instanceof Date
+              ? p.addedAt.toISOString()
+              : (p.addedAt as unknown as string),
+        };
+      });
+
+      const latestScopesByThread = await loadLatestScopeForThreadStages(db, companyId, [id]);
+      const latestScope = latestScopesByThread.get(id) ?? null;
+
+      // PR-A2: surface the thread's coordination-level error so the founder sees when an agent
+      // action didn't go through. Set on commit failure / circuit-breaker / runner-throw and
+      // cleared on the next successful run, so the UI banner self-clears on recovery.
+      const [orch] = await db
+        .select({
+          lastError: threadOrchestrationState.lastError,
+          consecutiveCommitFailures: threadOrchestrationState.consecutiveCommitFailures,
+        })
+        .from(threadOrchestrationState)
+        .where(eq(threadOrchestrationState.threadId, id))
+        .limit(1);
+
+      return {
+        ...discussion,
+        entries: enrichedEntries,
+        planSteps,
+        participants,
+        derivedStage: deriveThreadStage({
+          subtype: discussion.subtype,
+          status: discussion.status,
+          entrySeq: discussion.entrySeq ?? 0,
+          latest: latestScope,
+        }),
+        lastError: orch?.lastError ?? null,
+        consecutiveCommitFailures: orch?.consecutiveCommitFailures ?? 0,
+      };
     },
 
     /**
@@ -213,7 +676,7 @@ export function discussionService(db: Db) {
       },
       actorId: string,
     ) => {
-      await validateScope(db, data.scopeType, data.scopeId);
+      await validateScope(db, companyId, data.scopeType, data.scopeId);
 
       const now = new Date();
       const hasEntry = !!data.entry;
@@ -229,8 +692,16 @@ export function discussionService(db: Db) {
             scopeId: data.scopeId ?? null,
             tags: data.tags ?? [],
             entryCount: hasEntry ? 1 : 0,
+            // L8: when we seed a first entry, advance entrySeq to 1 so it stays
+            // consistent with addEntry (which bumps entrySeq before each insert).
+            // Without this the counter would stay at 0 while the first entry also
+            // carried seq 0, and the NEXT addEntry would bump 0→1 and re-issue
+            // seq 1 — a duplicate seq. Seeding entrySeq=1 here reserves seq 1 for
+            // the first entry below.
+            entrySeq: hasEntry ? 1 : 0,
             lastEntryAt: hasEntry ? now : null,
             createdBy: actorId,
+            useControllerPath: true,   // P1-T11: new threads use orchestration controller path
           })
           .returning();
 
@@ -248,7 +719,14 @@ export function discussionService(db: Db) {
               projectId: data.entry.projectId ?? null,
               goalId: data.entry.goalId ?? null,
               sourceInfo: data.entry.sourceInfo ?? null,
-              extractionStatus: "pending",
+              // QA-BUG-015: see addEntry — discuss-phase entries are not
+              // auto-extracted; extraction is a deliberate done-phase /
+              // Adjutant-judgment activity.
+              extractionStatus: "skipped",
+              // L8: first entry gets seq 1 (matches addEntry's first-entry seq),
+              // so the BUG-1 proactive poke carries seq:1 and a catch-up
+              // entriesSince(gt(seq, 0)) includes it instead of skipping it.
+              seq: 1,
               createdBy: actorId,
             })
             .returning();
@@ -256,6 +734,20 @@ export function discussionService(db: Db) {
 
         return { ...discussion, entry };
       });
+
+      // P1-T3: ensure a thread orchestration controller row exists for every
+      // newly created thread. Best-effort — failure must not block thread
+      // creation. The ensureController call uses onConflictDoNothing so it is
+      // always safe to call; any error here is a monitoring concern only.
+      void threadOrchestrationService(db)
+        .ensureController(result.id)
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[discussions.create] ensureController failed — thread created without controller",
+            { threadId: result.id, err },
+          );
+        });
 
       // Side effects outside transaction
       await logActivity(db, {
@@ -278,6 +770,23 @@ export function discussionService(db: Db) {
             inputType: data.entry.inputType,
           },
         });
+
+        // Live-QA BUG-1: a thread opened WITH a first message must arm proactive
+        // crew engagement (and resolve @mentions) exactly like a follow-up entry
+        // does. Run the same post-entry side effects addEntry runs — the
+        // thread-scoped poke + crew-mention resolution + onEntryCreated debounce
+        // arm. Without this the first message never wakes the Adjutant (until a
+        // 2nd message) and an @mention in it is dropped. result.entry carries
+        // rawContent + seq off the inserted row.
+        await emitEntryCreatedSideEffects(db, companyId, {
+          id: result.entry.id,
+          discussionId: result.id,
+          authorAgentId: result.entry.authorAgentId,
+          inputType: result.entry.inputType,
+          createdBy: result.entry.createdBy,
+          seq: result.entry.seq,
+          rawContent: result.entry.rawContent,
+        });
       }
 
       return result;
@@ -296,6 +805,12 @@ export function discussionService(db: Db) {
         scopeType?: string | null;
         scopeId?: string | null;
         tags?: string[];
+        autonomyLevel?: number | null;
+        // Phase 1 Phase E batch 2 (T22): visibility patch from OriginCard's
+        // 3-option dropdown (private | department | company).
+        visibility?: "private" | "department" | "company";
+        // Phase G3 (T5, D6): per-thread Memory Keeper opt-out. Default true.
+        allowMemoryExtraction?: boolean;
       },
     ) => {
       // Validate scope if being changed
@@ -316,7 +831,7 @@ export function discussionService(db: Db) {
 
         const newScopeType = data.scopeType !== undefined ? data.scopeType : existing.scopeType;
         const newScopeId = data.scopeId !== undefined ? data.scopeId : existing.scopeId;
-        await validateScope(db, newScopeType, newScopeId);
+        await validateScope(db, companyId, newScopeType, newScopeId);
       }
 
       const [updated] = await db
@@ -325,12 +840,54 @@ export function discussionService(db: Db) {
         .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
         .returning();
 
+      // Phase G1 (T7/D8): if this update archived the thread, mark any
+      // thread-scoped workspaces eligible for cleanup immediately. The
+      // generic PATCH /discussions/:id endpoint is the primary archive path
+      // (merge has its own hook in threads.ts:merge). Best-effort —
+      // workspace cleanup must never block the discussion update. Dynamic
+      // import avoids the execution-workspaces → git → child_process chain
+      // at module load time (see note above).
+      if (updated && data.status === "archived") {
+        try {
+          const { markThreadWorkspacesForCleanup } = await import(
+            "./workspace-ttl-sweeper.js"
+          );
+          await markThreadWorkspacesForCleanup(db, id);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[discussions.update] markThreadWorkspacesForCleanup failed",
+            { id, err },
+          );
+        }
+
+        // P3-T1: capture the closing thread's durable knowledge as Memory Keeper
+        // proposals (founder-gated, status: pending) before it goes dormant.
+        // Best-effort + idempotent — separate try/catch so a failure here never
+        // blocks the archive or the workspace-cleanup hook above. Dynamic import
+        // keeps the dispatcher/agent subtree off the discussions module-load path.
+        try {
+          const { enqueueMemoryExtractionOnClose } = await import(
+            "./internal-agent/aoa-agents/memory-extraction-on-close.js"
+          );
+          await enqueueMemoryExtractionOnClose(db, companyId, id);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[discussions.update] enqueueMemoryExtractionOnClose failed",
+            { id, err },
+          );
+        }
+      }
+
       return updated ?? null;
     },
 
     /**
      * Add an entry to an existing discussion.
-     * Extraction is manual-only — user clicks Reprocess on the detail page.
+     * Entry is created with extractionStatus='pending'. The durable extraction sweeper
+     * (server/src/index.ts, 45 s tick, M2 atomic claim) picks it up automatically.
+     * "Reprocess" in the UI is a manual fast-path that bypasses the sweeper interval.
      * Updates lastEntryAt, publishes discussion.entry.created LiveEvent.
      * Gotcha 1.2: increments entryCount in same operation.
      */
@@ -345,9 +902,20 @@ export function discussionService(db: Db) {
         projectId?: string | null;
         goalId?: string | null;
         sourceInfo?: Record<string, unknown> | null;
+        parentEntryId?: string | null;
+        authorAgentId?: string | null;
+        sourceActionId?: string | null;
+        attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
       },
       actorId: string,
     ) => {
+      if (data.authorAgentId && data.inputType !== "agent") {
+        throw badRequest(
+          "inputType must be 'agent' when authorAgentId is set",
+        );
+      }
+      await validateEntryAttachments(db, companyId, data.attachments);
+
       // Verify discussion exists and belongs to company
       const discussion = await db
         .select()
@@ -364,33 +932,86 @@ export function discussionService(db: Db) {
         throw notFound("Discussion not found");
       }
 
+      if (data.parentEntryId) {
+        const parent = await db
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.id, data.parentEntryId),
+              eq(discussionEntries.discussionId, discussionId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!parent) {
+          throw badRequest(
+            "parentEntryId must reference an entry in the same discussion",
+          );
+        }
+      }
+
       const now = new Date();
 
-      const [entry] = await db
-        .insert(discussionEntries)
-        .values({
-          discussionId,
-          inputType: data.inputType,
-          rawContent: data.rawContent,
-          title: data.title ?? null,
-          departmentId: data.departmentId ?? null,
-          projectId: data.projectId ?? null,
-          goalId: data.goalId ?? null,
-          sourceInfo: data.sourceInfo ?? null,
-          extractionStatus: "pending",
-          createdBy: actorId,
-        })
-        .returning();
+      // Plan 7 (D1): assign a per-thread monotonic seq for catch-up. We bump the
+      // atomic discussions.entrySeq counter with UPDATE ... RETURNING (atomic per
+      // row, so concurrent inserts serialize on the discussions row) instead of
+      // max(seq)+1, which races. The counter bump also carries the denormalized
+      // count update (Gotcha 1.2) so both land in one statement.
+      const entry = await db.transaction(async (tx) => {
+        const [{ entrySeq }] = await tx
+          .update(discussions)
+          .set({
+            entrySeq: sql`${discussions.entrySeq} + 1`,
+            entryCount: sql`${discussions.entryCount} + 1`,
+            lastEntryAt: now,
+            updatedAt: now,
+          })
+          .where(eq(discussions.id, discussionId))
+          .returning({ entrySeq: discussions.entrySeq });
 
-      // Gotcha 1.2: update denormalized counts in same operation
-      await db
-        .update(discussions)
-        .set({
-          entryCount: sql`${discussions.entryCount} + 1`,
-          lastEntryAt: now,
-          updatedAt: now,
-        })
-        .where(eq(discussions.id, discussionId));
+        const [inserted] = await tx
+          .insert(discussionEntries)
+          .values({
+            discussionId,
+            inputType: data.inputType,
+            rawContent: data.rawContent,
+            title: data.title ?? null,
+            departmentId: data.departmentId ?? null,
+            projectId: data.projectId ?? null,
+            goalId: data.goalId ?? null,
+            sourceInfo: data.sourceInfo ?? null,
+            parentEntryId: data.parentEntryId ?? null,
+            authorAgentId: data.authorAgentId ?? null,
+            // #197: idempotency anchor for action-gated commits; null for normal entries.
+            sourceActionId: data.sourceActionId ?? null,
+            // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
+            // 'skipped' so the (gated-off) durable drain never picks them up
+            // and the UI doesn't show a misleading "pending extraction"
+            // state. Extraction happens later, deliberately, via Memory
+            // Keeper at phase=done or Adjutant's extract_memory_candidates.
+            extractionStatus: "skipped",
+            seq: entrySeq,
+            createdBy: actorId,
+          })
+          .returning();
+
+        // Phase E1: link attachments (assets or artifacts) to the entry in the
+        // same transaction so the entry+attachments commit atomically.
+        if (data.attachments && data.attachments.length > 0) {
+          const rows = data.attachments
+            .filter((a) => a.assetId || a.artifactId)
+            .map((a) => ({
+              discussionEntryId: inserted.id,
+              assetId: a.assetId ?? null,
+              artifactId: a.artifactId ?? null,
+            }));
+          if (rows.length > 0) {
+            await tx.insert(discussionEntryAttachments).values(rows);
+          }
+        }
+
+        return inserted;
+      });
 
       publishLiveEvent({
         companyId,
@@ -402,7 +1023,36 @@ export function discussionService(db: Db) {
         },
       });
 
-      // Extraction is manual-only — user clicks "Reprocess" to trigger extraction
+      // Plan 7 + Task 1.3 + Task B2 — thread-scoped poke, crew-mention
+      // resolution, and the proactive Adjutant debounce arm. DRY-extracted into
+      // emitEntryCreatedSideEffects so create()'s first-entry path runs the
+      // identical wiring (live-QA BUG-1). Behavior-preserving for addEntry:
+      // same publish, same crew lookup, same fire-and-forget onEntryCreated.
+      await emitEntryCreatedSideEffects(db, companyId, {
+        id: entry.id,
+        discussionId: entry.discussionId,
+        authorAgentId: entry.authorAgentId,
+        inputType: entry.inputType,
+        createdBy: entry.createdBy,
+        seq: entry.seq,
+        rawContent: data.rawContent,
+      });
+
+      // Design §4.9 + §5 (locked): the `discuss` phase is a pure conversation
+      // between humans and the crew (Adjutant facilitating, delegating to
+      // Scout / Engineer / Navigator). Structured extraction is NOT a
+      // fire-on-every-entry behaviour — "Scribe is ELIMINATED" and the
+      // extraction logic now runs only as deliberate tool calls:
+      //   - Memory Keeper at `phase=done` (extract_decisions / _insights /
+      //     _references → propose_memory), the canonical path; and
+      //   - Adjutant mid-`discuss` IF it judges something was decided, via
+      //     extract_memory_candidates (its own call, not automatic).
+      // The previous unconditional extractFromDiscussionEntry call here made
+      // Scribe run on every message and dumped decision/task/insight cards
+      // into the Scope tab while humans were still talking — premature and
+      // against the design (QA-BUG-015). Removed. The thread-event listener
+      // above still wakes Adjutant after the 30s human-silence debounce so
+      // the conversation moves forward; extraction waits for the right phase.
 
       await logActivity(db, {
         companyId,
@@ -761,6 +1411,14 @@ export function discussionService(db: Db) {
         throw notFound("Entry not found");
       }
 
+      // P1-T7: a scope_proposal is not an extractable prose entry. Reprocessing
+      // it would reset its extractionStatus and feed the proposal JSON to the
+      // LLM extractor. Refuse — proposals are approved via the proposals/approve
+      // route, not the extraction pipeline.
+      if (entry.inputType === "scope_proposal") {
+        throw badRequest("Scope proposals cannot be reprocessed for extraction.");
+      }
+
       // Check for approved items that would be orphaned
       const approvedItems = await db
         .select({ id: discussionExtractedItems.id })
@@ -852,7 +1510,17 @@ export function discussionService(db: Db) {
         .where(eq(discussionEntries.discussionId, discussionId));
 
       const reprocessable = entries.filter(
-        (e) => e.extractionStatus === "failed" || e.extractionStatus === "pending" || e.extractionStatus === "skipped",
+        (e) =>
+          // P1-T7: never re-extract a scope_proposal. Proposals are stored with
+          // extractionStatus="skipped" (so they don't auto-extract) and carry
+          // their approval lifecycle in proposalStatus. Without this guard,
+          // reprocessAllEntries would reset a pending/rejected proposal's
+          // extractionStatus to "pending" and feed the proposal JSON to the
+          // LLM extractor — corrupting state and burning budget.
+          e.inputType !== "scope_proposal" &&
+          (e.extractionStatus === "failed" ||
+            e.extractionStatus === "pending" ||
+            e.extractionStatus === "skipped"),
       );
 
       let reprocessedCount = 0;
@@ -1014,6 +1682,17 @@ export function discussionService(db: Db) {
         throw badRequest("Entry already belongs to this discussion");
       }
 
+      // A-H7 (Codex P2): moving a reply would leave its parentEntryId pointing at
+      // an entry that stays in the OLD thread — a cross-thread parent pointer that
+      // breaks the same-discussion-parent invariant addEntry enforces and corrupts
+      // reply nesting in the target. REJECT rather than clear: clearing would
+      // silently promote the reply to a root entry and lose the conversation
+      // structure the founder presumably wants to preserve. The founder can move
+      // (or unlink) the parent first, then move the reply.
+      if (entry.parentEntryId) {
+        throw badRequest("Cannot move a reply; move or unlink its parent");
+      }
+
       // Verify both discussions belong to company
       const [sourceDisc, targetDisc] = await Promise.all([
         db
@@ -1054,13 +1733,34 @@ export function discussionService(db: Db) {
           );
         const pendingCount = pendingItems.length;
 
-        // Move entry
+        const now = new Date();
+
+        // A-H7: the moved entry's `seq` is meaningless in the target's
+        // independent seq space — keeping the source seq either collides with an
+        // existing target entry (partial UNIQUE (discussion_id, seq) WHERE seq<>0
+        // → Postgres 23505) or silently shadows the target's next addEntry seq.
+        // Allocate a FRESH target seq atomically, exactly like addEntry: bump the
+        // target's entry_seq counter with UPDATE ... RETURNING (atomic per row, so
+        // concurrent moves/inserts serialize on the discussions row) and carry the
+        // denormalized count/lastEntryAt bumps in the same statement.
+        const [{ entrySeq: targetSeq }] = await tx
+          .update(discussions)
+          .set({
+            entrySeq: sql`${discussions.entrySeq} + 1`,
+            entryCount: sql`${discussions.entryCount} + 1`,
+            pendingItemCount: sql`${discussions.pendingItemCount} + ${pendingCount}`,
+            lastEntryAt: now,
+            updatedAt: now,
+          })
+          .where(eq(discussions.id, targetDiscussionId))
+          .returning({ entrySeq: discussions.entrySeq });
+
+        // Move entry into the target thread AND reassign its seq to the freshly
+        // allocated target seq, in the same statement.
         await tx
           .update(discussionEntries)
-          .set({ discussionId: targetDiscussionId })
+          .set({ discussionId: targetDiscussionId, seq: targetSeq })
           .where(eq(discussionEntries.id, entryId));
-
-        const now = new Date();
 
         // Update source discussion counts
         await tx
@@ -1071,17 +1771,6 @@ export function discussionService(db: Db) {
             updatedAt: now,
           })
           .where(eq(discussions.id, sourceDiscussionId));
-
-        // Update target discussion counts
-        await tx
-          .update(discussions)
-          .set({
-            entryCount: sql`${discussions.entryCount} + 1`,
-            pendingItemCount: sql`${discussions.pendingItemCount} + ${pendingCount}`,
-            lastEntryAt: now,
-            updatedAt: now,
-          })
-          .where(eq(discussions.id, targetDiscussionId));
 
         return { entryId, sourceDiscussionId, targetDiscussionId };
       });

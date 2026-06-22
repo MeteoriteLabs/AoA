@@ -17,20 +17,30 @@
 
 import type { Db } from "@armyofagents/db";
 import type { CascadeStepResult } from "@armyofagents/db";
-import type { CatalogItem, MarketplaceCatalogFile, LiveEventType } from "@armyofagents/shared";
+import type {
+  CatalogItem,
+  MarketplaceCatalogFile,
+  MarketplaceCatalogItem,
+  MarketplacePackage,
+  LiveEventType,
+} from "@armyofagents/shared";
 import { logger } from "../../middleware/logger.js";
 import {
+  createPackageOperation,
   createOperation,
   findExistingByIdempotencyKey,
   updateOperation as defaultUpdateOperation,
   type OperationRow,
 } from "./operation-store.js";
-import type { InstallRequest } from "./types.js";
+import type { AgentInstallOverrides, InstallRequest, PackageInstallRequest } from "./types.js";
+import { installSkill as defaultInstallSkill } from "./skill-installer.js";
 import type { InstallSkillOpts, InstallSkillResult } from "./skill-installer.js";
 import type { InstallAgentOpts, InstallAgentResult } from "./agent-installer.js";
 import type { InstallTeamOpts, InstallTeamResult } from "./team-installer.js";
 import { resolveAgentNameConflict } from "./conflict-resolver.js";
 import { marketplaceNotifications } from "../marketplace-notifications.js";
+import { PackageInstallError } from "./package-installer.js";
+import type { installSkillPackage as defaultInstallSkillPackage } from "./package-installer.js";
 
 export interface Installers {
   installSkill: (opts: InstallSkillOpts) => Promise<InstallSkillResult>;
@@ -77,12 +87,36 @@ export async function startInstallOperation(opts: StartInstallOpts): Promise<Ope
   });
 }
 
+export interface StartPackageInstallOpts {
+  request: PackageInstallRequest;
+  companyId: string;
+  requestedByUserId: string;
+  db: Db;
+}
+
+export async function startPackageInstallOperation(opts: StartPackageInstallOpts): Promise<OperationRow> {
+  const { request, companyId, requestedByUserId, db } = opts;
+
+  if (request.idempotencyKey) {
+    const existing = await findExistingByIdempotencyKey(db, companyId, request.idempotencyKey);
+    if (existing) return existing;
+  }
+
+  return await createPackageOperation(db, {
+    companyId,
+    packageId: request.packageId,
+    idempotencyKey: request.idempotencyKey,
+    requestedByUserId,
+  });
+}
+
 export interface DispatchInstallOpts {
   operation: OperationRow;
   catalogItem: CatalogItem;
   catalog: MarketplaceCatalogFile;
   db: Db;
   installers: Installers;
+  installOverrides?: AgentInstallOverrides;
   /**
    * Override hook for tests. Production callers omit this and the orchestrator
    * uses `defaultUpdateOperation(db, ...)` from operation-store.
@@ -92,6 +126,61 @@ export interface DispatchInstallOpts {
     patch: Parameters<typeof defaultUpdateOperation>[2],
   ) => Promise<void>;
   publishLiveEvent: PublishLiveEventFn;
+}
+
+async function installDependenciesForItem(opts: {
+  root: CatalogItem;
+  catalog: MarketplaceCatalogFile;
+  companyId: string;
+  db: Db;
+  installers: Installers;
+}): Promise<CascadeStepResult[]> {
+  const itemsById = new Map(opts.catalog.items.map((item) => [item.id, item]));
+  const results: CascadeStepResult[] = [];
+
+  for (const requirement of opts.root.requires ?? []) {
+    const item = itemsById.get(requirement.id);
+    if (!item) {
+      throw new Error(`Required catalog item not found: ${requirement.id}`);
+    }
+
+    const started = Date.now();
+    if (item.type === "skill") {
+      const result = await opts.installers.installSkill({
+        catalogItem: item,
+        companyId: opts.companyId,
+        db: opts.db,
+      });
+      results.push({
+        step: "skill-install",
+        itemId: item.id,
+        status: result.alreadyInstalled ? "skipped" : "success",
+        resultEntityId: result.skillId,
+        durationMs: Date.now() - started,
+      });
+      continue;
+    }
+
+    if (item.type === "plugin") {
+      const result = await opts.installers.installPlugin({
+        catalogItem: item,
+        companyId: opts.companyId,
+        db: opts.db,
+      });
+      results.push({
+        step: "plugin-precondition",
+        itemId: item.id,
+        status: result.alreadyInstalled ? "skipped" : "success",
+        resultEntityId: result.pluginId,
+        durationMs: Date.now() - started,
+      });
+      continue;
+    }
+
+    throw new Error(`Direct agent dependency ${item.id} has unsupported type ${item.type}`);
+  }
+
+  return results;
 }
 
 /**
@@ -123,15 +212,33 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
       const r = await installers.installSkill({ catalogItem, companyId: operation.companyId, db });
       resultEntityId = r.skillId;
     } else if (catalogItem.type === "agent") {
+      cascadeResults = await installDependenciesForItem({
+        root: catalogItem,
+        catalog,
+        companyId: operation.companyId,
+        db,
+        installers,
+      });
       const resolvedName = await resolveAgentNameConflict({
         db,
         companyId: operation.companyId,
         desiredName: catalogItem.name,
       });
       const r = await installers.installAgent({
-        catalogItem, companyId: operation.companyId, db, desiredName: resolvedName,
+        catalogItem,
+        companyId: operation.companyId,
+        db,
+        desiredName: resolvedName,
+        overrides: opts.installOverrides,
       });
       resultEntityId = r.agentId;
+      cascadeResults.push({
+        step: "agent-install",
+        itemId: catalogItem.id,
+        status: "success",
+        resultEntityId: r.agentId,
+        durationMs: 0,
+      });
     } else if (catalogItem.type === "team") {
       if (!operation.targetDepartmentId) {
         throw new Error("Team install requires targetDepartmentId");
@@ -183,5 +290,80 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
     void marketplaceNotifications
       .installFailed(db, operation.companyId, catalogItem.name, message)
       .catch((err) => logger.error({ err }, "marketplace notification failed"));
+  }
+}
+
+export interface DispatchPackageInstallOpts {
+  operation: OperationRow;
+  pkg: MarketplacePackage;
+  memberItems: MarketplaceCatalogItem[];
+  db: Db;
+  installSkillPackage: typeof defaultInstallSkillPackage;
+  updateOperation?: (
+    id: string,
+    patch: Parameters<typeof defaultUpdateOperation>[2],
+  ) => Promise<void>;
+  publishLiveEvent: PublishLiveEventFn;
+}
+
+export async function dispatchPackageInstall(opts: DispatchPackageInstallOpts): Promise<void> {
+  const { operation, pkg, memberItems, db, installSkillPackage, publishLiveEvent } = opts;
+  const updateFn = opts.updateOperation ?? ((id, patch) => defaultUpdateOperation(db, id, patch));
+
+  try {
+    await updateFn(operation.id, { status: "running" });
+
+    publishLiveEvent({
+      companyId: operation.companyId,
+      type: "marketplace.install.started",
+      payload: { operationId: operation.id, catalogItemId: pkg.id },
+    });
+
+    const result = await installSkillPackage({
+      pkg,
+      memberItems,
+      companyId: operation.companyId,
+      db,
+      installSkill: defaultInstallSkill,
+    });
+
+    await updateFn(operation.id, {
+      status: "success",
+      resultEntityId: pkg.id,
+      cascadeResults: result.cascadeResults,
+      completedAt: new Date(),
+    });
+
+    publishLiveEvent({
+      companyId: operation.companyId,
+      type: "marketplace.install.completed",
+      payload: { operationId: operation.id, catalogItemId: pkg.id, resultEntityId: pkg.id },
+    });
+
+    void marketplaceNotifications
+      .installCompleted(db, operation.companyId, pkg.name, operation.id)
+      .catch((err) => logger.error({ err }, "marketplace package notification failed"));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const cascadeResults = err instanceof PackageInstallError ? err.cascadeResults : null;
+    logger.error(
+      { operationId: operation.id, packageId: pkg.id, err: message },
+      "marketplace package install dispatch failed",
+    );
+    await updateFn(operation.id, {
+      status: "failure",
+      errorMessage: message,
+      cascadeResults,
+      completedAt: new Date(),
+    });
+    publishLiveEvent({
+      companyId: operation.companyId,
+      type: "marketplace.install.failed",
+      payload: { operationId: operation.id, catalogItemId: pkg.id, error: message },
+    });
+
+    void marketplaceNotifications
+      .installFailed(db, operation.companyId, pkg.name, message)
+      .catch((err) => logger.error({ err }, "marketplace package notification failed"));
   }
 }

@@ -1,9 +1,8 @@
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
-import { OnboardingWizard } from "./components/OnboardingWizard";
 import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
@@ -12,14 +11,9 @@ import { InstanceSettingsPage } from "./pages/InstanceSettingsPage";
 import { InstanceAccessPage } from "./pages/InstanceAccessPage";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
-import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
-import { ProjectDetail } from "./pages/ProjectDetail";
-import { Issues } from "./pages/Issues";
 import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
-import { Memory } from "./pages/Memory";
-import { MemoryExplorer } from "./pages/MemoryExplorer";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
@@ -27,20 +21,16 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
 import { Commander } from "./pages/Commander";
-import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
 import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
+import { NewThreadDialog } from "./components/NewThreadDialog";
 import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
-import { DiscussionDetail } from "./pages/DiscussionDetail";
-import { Skills } from "./pages/Skills";
-import { WorkspaceView } from "./pages/WorkspaceView";
+import { ThreadsWorkspace } from "./pages/ThreadsWorkspace";
 import { WorkspacesList } from "./pages/WorkspacesList";
-import { Routines } from "./pages/Routines";
-import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
 import { Me } from "./pages/Me";
 import { CompanyExport } from "./pages/CompanyExport";
@@ -59,6 +49,25 @@ import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
+
+const AgentDetail = lazy(() => import("./pages/AgentDetail").then((m) => ({ default: m.AgentDetail })));
+const AoaAgentDetail = lazy(() => import("./pages/AoaAgentDetail").then((m) => ({ default: m.AoaAgentDetail })));
+const DesignGuide = lazy(() => import("./pages/DesignGuide").then((m) => ({ default: m.DesignGuide })));
+const Issues = lazy(() => import("./pages/Issues").then((m) => ({ default: m.Issues })));
+const Memory = lazy(() => import("./pages/Memory").then((m) => ({ default: m.Memory })));
+const MemoryExplorer = lazy(() => import("./pages/MemoryExplorer").then((m) => ({ default: m.MemoryExplorer })));
+const OnboardingWizard = lazy(() =>
+  import("./components/OnboardingWizard").then((m) => ({ default: m.OnboardingWizard })),
+);
+const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((m) => ({ default: m.ProjectDetail })));
+const RoutineDetail = lazy(() => import("./pages/RoutineDetail").then((m) => ({ default: m.RoutineDetail })));
+const Routines = lazy(() => import("./pages/Routines").then((m) => ({ default: m.Routines })));
+const Skills = lazy(() => import("./pages/Skills").then((m) => ({ default: m.Skills })));
+const WorkspaceView = lazy(() => import("./pages/WorkspaceView").then((m) => ({ default: m.WorkspaceView })));
+
+function RouteFallback() {
+  return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+}
 
 function BootstrapPendingPage() {
   return (
@@ -127,12 +136,15 @@ function boardRoutes() {
       <Route path="objectives" element={<Objectives />} />
       <Route path="commander" element={<Commander />} />
       <Route path="settings" element={<SettingsPage />} />
+      <Route path="secrets" element={<Navigate to="../settings?tab=secrets" replace />} />
       <Route path="settings/commander" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="settings/internal-agent" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="team" element={<TeamPage />} />
       <Route path="org" element={<Navigate to="../team" replace />} />
       <Route path="team/teams/:slug" element={<TeamDetail />} />
+      <Route path="team/aoa/:agentId" element={<AoaAgentDetail />} />
+      <Route path="team/aoa/:agentId/:tab" element={<AoaAgentDetail />} />
       <Route path="team/:userId" element={<HumanDetail />} />
       <Route path="team/:userId/:tab" element={<HumanDetail />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
@@ -153,6 +165,7 @@ function boardRoutes() {
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
       <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
       <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/settings" element={<ProjectDetail />} />
       <Route path="issues" element={<Issues />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -165,8 +178,13 @@ function boardRoutes() {
       <Route path="skills/*" element={<Skills />} />
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
-      <Route path="discussions" element={<Discussions />} />
-      <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
+      {/* Discussions continuum: Home/board/list index and selected-thread detail share one surface. */}
+      <Route path="discussions" element={<ThreadsWorkspace />} />
+      <Route path="discussions/legacy" element={<Discussions />} />
+      {/* Codex #1: individual items use ThreadDetail (Plan 4). */}
+      <Route path="discussions/:discussionId" element={<ThreadsWorkspace />} />
+      {/* Canonical thread route — same ThreadDetail component, different param name */}
+      <Route path="threads/:threadId" element={<ThreadsWorkspace />} />
       <Route path="briefs" element={<Navigate to="/discussions" replace />} />
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
@@ -268,66 +286,90 @@ function MarketplaceTypeRedirect() {
   return <RawNavigate to={`/marketplace${type ? `?type=${type}` : ""}`} replace />;
 }
 
+/** Self-consuming mount shim — mirrors the DiscussionCaptureModal pattern */
+function NewThreadDialogMount() {
+  const { newThreadOpen, newThreadDefaults, closeNewThread } = useDialog();
+  return (
+    <NewThreadDialog
+      open={newThreadOpen}
+      onClose={closeNewThread}
+      defaults={newThreadDefaults}
+    />
+  );
+}
+
+function OnboardingWizardMount() {
+  const { onboardingOpen } = useDialog();
+  return onboardingOpen ? <OnboardingWizard /> : null;
+}
+
 export function App() {
   return (
     <>
-      <Routes>
-        <Route path="auth" element={<AuthPage />} />
-        <Route path="board-claim/:token" element={<BoardClaimPage />} />
-        <Route path="cli-auth/:id" element={<CliAuthPage />} />
-        <Route path="invite/:token" element={<InviteLandingPage />} />
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="auth" element={<AuthPage />} />
+          <Route path="board-claim/:token" element={<BoardClaimPage />} />
+          <Route path="cli-auth/:id" element={<CliAuthPage />} />
+          <Route path="invite/:token" element={<InviteLandingPage />} />
 
-        <Route element={<CloudAccessGate />}>
-          <Route index element={<Lobby />} />
-          <Route path="me" element={<Me />} />
-          <Route path="export" element={<Layout />}>
-            <Route index element={<CompanyExport />} />
+          <Route element={<CloudAccessGate />}>
+            <Route index element={<Lobby />} />
+            <Route path="me" element={<Me />} />
+            <Route path="export" element={<Layout />}>
+              <Route index element={<CompanyExport />} />
+            </Route>
+            <Route path="import" element={<Layout />}>
+              <Route index element={<CompanyImport />} />
+            </Route>
+            <Route path="instance/settings" element={<InstanceSettingsPage />} />
+            <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
+            <Route path="instance/access" element={<InstanceAccessPage />} />
+            <Route path="marketplace" element={<Marketplace />} />
+            <Route path="marketplace/search" element={<MarketplaceSearch />} />
+            <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
+            <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
+            <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+            <Route path="companies" element={<UnprefixedBoardRedirect />} />
+            <Route path="issues" element={<UnprefixedBoardRedirect />} />
+            <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
+            <Route path="discussions" element={<UnprefixedBoardRedirect />} />
+            <Route path="discussions/:discussionId" element={<UnprefixedBoardRedirect />} />
+            <Route path="briefs" element={<Navigate to="/discussions" replace />} />
+            <Route path="briefs/*" element={<Navigate to="/discussions" replace />} />
+            <Route path="vision" element={<UnprefixedBoardRedirect />} />
+            <Route path="objectives" element={<UnprefixedBoardRedirect />} />
+            <Route path="commander" element={<UnprefixedBoardRedirect />} />
+            <Route path="memory" element={<UnprefixedBoardRedirect />} />
+            <Route path="budget" element={<UnprefixedBoardRedirect />} />
+            <Route path="secrets" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
+            <Route path="team/teams/:slug" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/goals" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/settings" element={<UnprefixedBoardRedirect />} />
+            <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
+            <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
+            <Route path=":companyPrefix" element={<Layout />}>
+              {boardRoutes()}
+            </Route>
           </Route>
-          <Route path="import" element={<Layout />}>
-            <Route index element={<CompanyImport />} />
-          </Route>
-          <Route path="instance/settings" element={<InstanceSettingsPage />} />
-          <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
-          <Route path="instance/access" element={<InstanceAccessPage />} />
-          <Route path="marketplace" element={<Marketplace />} />
-          <Route path="marketplace/search" element={<MarketplaceSearch />} />
-          <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
-          <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
-          <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
-          <Route path="companies" element={<UnprefixedBoardRedirect />} />
-          <Route path="issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
-          <Route path="discussions" element={<UnprefixedBoardRedirect />} />
-          <Route path="discussions/:discussionId" element={<UnprefixedBoardRedirect />} />
-          <Route path="briefs" element={<Navigate to="/discussions" replace />} />
-          <Route path="briefs/*" element={<Navigate to="/discussions" replace />} />
-          <Route path="vision" element={<UnprefixedBoardRedirect />} />
-          <Route path="objectives" element={<UnprefixedBoardRedirect />} />
-          <Route path="commander" element={<UnprefixedBoardRedirect />} />
-          <Route path="memory" element={<UnprefixedBoardRedirect />} />
-          <Route path="budget" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
-          <Route path="team/teams/:slug" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/goals" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
-          <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
-          <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
-          <Route path=":companyPrefix" element={<Layout />}>
-            {boardRoutes()}
-          </Route>
-        </Route>
-      </Routes>
-      <OnboardingWizard />
+        </Routes>
+      </Suspense>
+      <Suspense fallback={null}>
+        <OnboardingWizardMount />
+      </Suspense>
       <DiscussionCaptureModal />
+      <NewThreadDialogMount />
       <MemoryQuickSwitcher />
     </>
   );

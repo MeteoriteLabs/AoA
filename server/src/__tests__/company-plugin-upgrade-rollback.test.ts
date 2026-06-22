@@ -17,6 +17,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../routes/authz.js", () => ({
   assertBoard: vi.fn(),
   assertCompanyAccess: vi.fn(),
+  assertCanManageInstanceSettings: vi.fn(),
 }));
 
 import { companyPluginRoutes } from "../routes/company-plugins.js";

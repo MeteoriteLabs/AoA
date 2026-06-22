@@ -144,6 +144,15 @@ describe("migration idempotency", () => {
     }
   });
 
+  it("migration 0137 guards the conversation foreign key for replay", () => {
+    const sql = readFileSync(
+      join(MIGRATIONS_DIR, "0137_worthless_baron_strucker.sql"),
+      "utf8",
+    );
+    expect(sql).toMatch(/DO\s+\$\$\s+BEGIN\s+ALTER TABLE "memory_items" ADD CONSTRAINT "memory_items_conversation_id_internal_agent_conversations_id_fk"/i);
+    expect(sql).toMatch(/EXCEPTION WHEN duplicate_object THEN NULL;\s+END\s+\$\$/i);
+  });
+
   it("grandfather list does not retroactively grow", () => {
     // If a grandfathered migration ever gets an IF NOT EXISTS sweep, it
     // should be REMOVED from the list (not stay there silently). This

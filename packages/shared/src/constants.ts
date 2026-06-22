@@ -25,10 +25,15 @@ export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
   "claude_local",
+  "acpx_local",
   "codex_local",
   "opencode_local",
   "cursor",
+  "cursor_cloud",
+  "grok_local",
+  "pi_local",
   "openclaw",
+  "openclaw_gateway",
   "hermes_local",
   "gemini_local",
 ] as const;
@@ -118,6 +123,9 @@ export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
+export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
+export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+
 export const ISSUE_SOURCES = ["manual", "brief", "agent_proposal", "mcp"] as const;
 export type IssueSource = (typeof ISSUE_SOURCES)[number];
 
@@ -172,6 +180,54 @@ export const SECRET_PROVIDERS = [
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
+export const SECRET_PROVIDER_CONFIG_STATUSES = [
+  "ready",
+  "warning",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigStatus = (typeof SECRET_PROVIDER_CONFIG_STATUSES)[number];
+
+export const SECRET_PROVIDER_CONFIG_HEALTH_STATUSES = [
+  "ready",
+  "warning",
+  "error",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigHealthStatus =
+  (typeof SECRET_PROVIDER_CONFIG_HEALTH_STATUSES)[number];
+
+export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
+export type SecretStatus = (typeof SECRET_STATUSES)[number];
+
+export const SECRET_MANAGED_MODES = ["aoa_managed", "external_reference"] as const;
+export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
+
+export const SECRET_VERSION_STATUSES = ["current", "previous", "disabled", "destroyed"] as const;
+export type SecretVersionStatus = (typeof SECRET_VERSION_STATUSES)[number];
+
+export const SECRET_BINDING_TARGET_TYPES = [
+  "agent",
+  "project",
+  "environment",
+  "routine",
+  "system",
+  "plugin",
+  "issue",
+  "run",
+] as const;
+export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
+
+export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
+export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
+
+export const RUNTIME_PROVIDER_KEY_PROVIDERS = ["e2b"] as const;
+export type RuntimeProviderKeyProvider = (typeof RUNTIME_PROVIDER_KEY_PROVIDERS)[number];
+
+export const RUNTIME_PROVIDER_KEY_STATUSES = ["active", "disabled"] as const;
+export type RuntimeProviderKeyStatus = (typeof RUNTIME_PROVIDER_KEY_STATUSES)[number];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
@@ -188,6 +244,7 @@ export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 
 export const WAKEUP_REQUEST_STATUSES = [
   "queued",
+  "scheduled_retry",
   "deferred_issue_execution",
   "claimed",
   "coalesced",
@@ -200,6 +257,7 @@ export type WakeupRequestStatus = (typeof WAKEUP_REQUEST_STATUSES)[number];
 
 export const HEARTBEAT_RUN_STATUSES = [
   "queued",
+  "scheduled_retry",
   "running",
   "succeeded",
   "failed",
@@ -216,6 +274,10 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.outputs_detected",
   "agent.status",
   "activity.logged",
+  // Thread chat experience Phase 5 (Task 5.6): a task's status changed —
+  // company-broadcast (NOT a thread.* envelope event) so the kanban/Crew Board
+  // can move the card live when a crew agent (or the founder) moves it.
+  "issue.status_changed",
   // V2.5: Discussions
   "discussion.entry.created",
   "discussion.extraction.completed",
@@ -252,6 +314,15 @@ export const LIVE_EVENT_TYPES = [
   // Marketplace update (M.4)
   "marketplace.update.completed",
   "marketplace.update.failed",
+  // V2.5: Threads lifecycle
+  "thread.phase.changed",
+  "thread.summary.updated",
+  "thread.participant.changed",
+  "thread.scope.changed",
+  // Threads v1 Plan 7: real-time foundations
+  "thread.entry.created",
+  "thread.link.created",
+  "thread.presence",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -276,6 +347,25 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
+export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
+export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
+
+export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
+export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained"] as const;
+export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_POLICIES = [
+  "ephemeral",
+  "reuse_by_workspace",
+  "reuse_by_environment",
+] as const;
+export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
+
+export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
+export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
+
 export const MEMORY_ITEM_CATEGORIES = [
   "decision",
   "reference",
@@ -297,6 +387,111 @@ export const MEMORY_RELATION_KINDS = [
 ] as const;
 export type MemoryRelationKind = (typeof MEMORY_RELATION_KINDS)[number];
 
+export const COMPANY_BRAIN_NODE_TYPES = [
+  "company",
+  "department",
+  "project",
+  "team",
+  "human",
+  "agent",
+  "goal",
+  "task",
+  "discussion",
+  "discussion_entry",
+  "memory_item",
+  "memory_folder",
+  "memory_asset",
+  "artifact",
+] as const;
+export type CompanyBrainNodeType = (typeof COMPANY_BRAIN_NODE_TYPES)[number];
+
+export const COMPANY_BRAIN_EDGE_KINDS = [
+  "belongs_to",
+  "member_of",
+  "participates_in",
+  "owns",
+  "owned_by",
+  "created_by",
+  "assigned_to",
+  "blocks",
+  "mentioned_in",
+  "extracted_from",
+  "derived_from",
+  "retrieved_by",
+  "used_by",
+  "applies_to",
+  "related_to",
+  "supports",
+  "conflicts_with",
+  "supersedes",
+  "duplicate_of",
+] as const;
+export type CompanyBrainEdgeKind = (typeof COMPANY_BRAIN_EDGE_KINDS)[number];
+
+export const COMPANY_BRAIN_EDGE_SOURCE_CLASSES = [
+  "derived",
+  "aggregated",
+  "semantic",
+] as const;
+export type CompanyBrainEdgeSourceClass = (typeof COMPANY_BRAIN_EDGE_SOURCE_CLASSES)[number];
+
+export const COMPANY_BRAIN_EDGE_EDITABILITY = [
+  "source_row_only",
+  "append_only",
+  "editable",
+] as const;
+export type CompanyBrainEdgeEditability = (typeof COMPANY_BRAIN_EDGE_EDITABILITY)[number];
+
+export const COMPANY_BRAIN_DERIVED_EDGE_KINDS = [
+  "belongs_to",
+  "member_of",
+  "participates_in",
+  "owns",
+  "owned_by",
+  "created_by",
+  "assigned_to",
+  "blocks",
+] as const satisfies readonly CompanyBrainEdgeKind[];
+
+export const COMPANY_BRAIN_APPEND_ONLY_EDGE_KINDS = [
+  "mentioned_in",
+  "extracted_from",
+  "derived_from",
+  "retrieved_by",
+  "used_by",
+] as const satisfies readonly CompanyBrainEdgeKind[];
+
+export const COMPANY_BRAIN_EDITABLE_EDGE_KINDS = [
+  "applies_to",
+  "related_to",
+  "supports",
+  "conflicts_with",
+  "supersedes",
+  "duplicate_of",
+] as const satisfies readonly CompanyBrainEdgeKind[];
+
+export const COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND = {
+  belongs_to: "source_row_only",
+  member_of: "source_row_only",
+  participates_in: "source_row_only",
+  owns: "source_row_only",
+  owned_by: "source_row_only",
+  created_by: "source_row_only",
+  assigned_to: "source_row_only",
+  blocks: "source_row_only",
+  mentioned_in: "append_only",
+  extracted_from: "append_only",
+  derived_from: "append_only",
+  retrieved_by: "append_only",
+  used_by: "append_only",
+  applies_to: "editable",
+  related_to: "editable",
+  supports: "editable",
+  conflicts_with: "editable",
+  supersedes: "editable",
+  duplicate_of: "editable",
+} as const satisfies Record<CompanyBrainEdgeKind, CompanyBrainEdgeEditability>;
+
 // V2.6: per-call retrieval audit triggers.
 export const MEMORY_RETRIEVAL_TRIGGERS = [
   "auto",                  // pre-run injection at heartbeat start
@@ -304,6 +499,7 @@ export const MEMORY_RETRIEVAL_TRIGGERS = [
   "agent_get",             // worker agent called memory.get
   "skill_materialize",     // pinned-item skill synthesis
   "commander_query",       // commander tool query
+  "commander_context",     // automatic Commander prompt recall
 ] as const;
 export type MemoryRetrievalTrigger = (typeof MEMORY_RETRIEVAL_TRIGGERS)[number];
 
@@ -368,6 +564,7 @@ export const MEMORY_ITEM_SOURCES = [
   "brief",
   "founder",
   "agent",
+  "commander",
   "mcp",
   "document",
 ] as const;
@@ -421,6 +618,8 @@ export const BRIEF_ITEM_TYPES = [
   "context",
   "reference",
   "preference",
+  "artifact",
+  "spin_off_thread",
 ] as const;
 export type BriefItemType = (typeof BRIEF_ITEM_TYPES)[number];
 
@@ -448,6 +647,18 @@ export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
 export const USER_ROLES = ["founder", "team_lead", "team_member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
+
+// Single source of truth for role rank comparisons.
+// founder > team_lead > team_member. Unknown roles map to 0 (below team_member).
+export const ROLE_RANK: Record<string, number> = {
+  founder: 3,
+  team_lead: 2,
+  team_member: 1,
+};
+
+export function roleAtLeast(userRole: string, required: string): boolean {
+  return (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[required] ?? 0);
+}
 
 // ── V2: Artifacts ──────────────────────────────────────────────────────
 
@@ -563,18 +774,138 @@ export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
 export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
-// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write
-export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp"] as const;
+// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write.
+// Phase 1 (Task A3): added "scope_proposal" (Adjutant posts a structured proposal
+// entry with a JSON payload of summary + proposedTasks; UI renders a special
+// card with CTAs) and "system" (used for crew/agent failure messages with retry
+// affordances; UI renders with a warning icon). The previously aliased
+// DISCUSSION_ENTRY_INPUT_TYPES_V2 export in packages/shared/src/api/threads-contract.ts
+// was dropped in this task — consumers should import this canonical constant.
+export const DISCUSSION_ENTRY_INPUT_TYPES = [
+  "paste",
+  "write",
+  "voice",
+  "mcp",
+  "transcript",
+  "document",
+  "routine",
+  "webhook",
+  "integration",
+  "agent",
+  // Phase 1 additions:
+  "scope_proposal",
+  "system",
+] as const;
 export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
 
 export const EXTRACTION_STATUSES = ["pending", "processing", "completed", "failed", "skipped"] as const;
 export type ExtractionStatus = (typeof EXTRACTION_STATUSES)[number];
 
-export const EXTRACTION_ITEM_TYPES = ["decision", "task", "insight", "context", "reference", "preference"] as const;
+export const EXTRACTION_ITEM_TYPES = ["decision", "task", "insight", "context", "reference", "preference", "artifact", "spin_off_thread"] as const;
 export type ExtractionItemType = (typeof EXTRACTION_ITEM_TYPES)[number];
 
 export const EXTRACTION_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
 export type ExtractionItemStatus = (typeof EXTRACTION_ITEM_STATUSES)[number];
+
+// ── V2.5: Threads (extends Discussions) ───────────────────────────────────────
+
+export const THREAD_ORIGIN_SOURCES = ["human", "agent", "external", "system"] as const;
+export type ThreadOriginSource = (typeof THREAD_ORIGIN_SOURCES)[number];
+
+export const THREAD_ORIGIN_MEDIA = ["text", "voice", "transcription", "file", "api", "scheduled", "integration"] as const;
+export type ThreadOriginMedium = (typeof THREAD_ORIGIN_MEDIA)[number];
+
+export const THREAD_INTENTS = ["planning", "review", "decision", "research", "problem", "alignment", "feedback", "retrospective"] as const;
+export type ThreadIntent = (typeof THREAD_INTENTS)[number];
+
+export const THREAD_PHASES = ["discuss", "scope", "assign", "done"] as const;
+export type ThreadPhase = (typeof THREAD_PHASES)[number];
+
+export const THREAD_SCOPE_VERSION_STATUSES = [
+  "draft",
+  "accepted",
+  "superseded",
+  "completed",
+  "rejected",
+] as const;
+export type ThreadScopeVersionStatus = (typeof THREAD_SCOPE_VERSION_STATUSES)[number];
+
+export const THREAD_SCOPE_ITEM_KINDS = [
+  "task_proposal",
+  "task_change",
+  "memory_candidate",
+  "artifact_link",
+  "decision",
+  "assumption",
+  "open_question",
+  "source_signal",
+] as const;
+export type ThreadScopeItemKind = (typeof THREAD_SCOPE_ITEM_KINDS)[number];
+
+export const THREAD_SCOPE_ITEM_STATUSES = ["draft", "accepted", "applied", "rejected"] as const;
+export type ThreadScopeItemStatus = (typeof THREAD_SCOPE_ITEM_STATUSES)[number];
+
+export const THREAD_AGENT_ACTION_TYPES = [
+  "post_reply",
+  "create_scope_draft",
+  "update_scope_draft",
+  "add_scope_item",
+  "create_scope_output",
+  "convene_agent",
+  "create_artifact_candidate",
+  "advance_phase",
+  "request_thread_workspace",
+] as const;
+export type ThreadAgentActionType = (typeof THREAD_AGENT_ACTION_TYPES)[number];
+
+export const THREAD_AGENT_ACTION_STATUSES = [
+  "proposed", // produced mid-run, NOT yet committable (Decision #99 producer gate)
+  "ready", // sealed: the producing run SUCCEEDED — the relay drains only this status
+  "committing", // a committer won the fenced CAS claim and is applying the side-effect
+  "committed", // side-effect applied
+  "suppressed_stale", // the world moved between propose and commit (freshness gate)
+  "blocked_policy", // terminal: a failed/orphaned producer's row can never commit
+  "failed", // post-gate retryable failure (bounded by attempt_count)
+] as const;
+export type ThreadAgentActionStatus = (typeof THREAD_AGENT_ACTION_STATUSES)[number];
+
+export const THREAD_DERIVED_STAGES = [
+  "live",
+  "discussing",
+  "scoping",
+  "scoped",
+  "assigned",
+  "complete",
+  "archived",
+] as const;
+export type ThreadDerivedStage = (typeof THREAD_DERIVED_STAGES)[number];
+
+// Phase 1 (Task A2): canonicalized from legacy ["open", "private"] to the
+// 3-tier model used across the new thread coordination contract. Existing
+// rows defaulting to "open" are migrated to "company" (open ≈ everyone with
+// scope access, which is what the new "company" tier expresses). The
+// previously aliased THREAD_VISIBILITIES_V2 / ThreadVisibilityV2 exports in
+// packages/shared/src/api/threads-contract.ts were dropped as redundant.
+export const THREAD_VISIBILITIES = ["private", "department", "company"] as const;
+export type ThreadVisibility = (typeof THREAD_VISIBILITIES)[number];
+
+export const THREAD_SUBTYPES = ["normal", "live"] as const;
+export type ThreadSubtype = (typeof THREAD_SUBTYPES)[number];
+
+export const THREAD_PARTICIPANT_PRINCIPAL_TYPES = ["user", "agent"] as const;
+export type ThreadParticipantPrincipalType = (typeof THREAD_PARTICIPANT_PRINCIPAL_TYPES)[number];
+
+export const THREAD_PARTICIPANT_ROLES = ["owner", "co_owner", "collaborator", "viewer", "worker"] as const;
+export type ThreadParticipantRole = (typeof THREAD_PARTICIPANT_ROLES)[number];
+
+export const THREAD_LINK_KINDS = ["link", "spinoff", "fork", "merge", "goal_cluster", "spawned_from_task"] as const;
+export type ThreadLinkKind = (typeof THREAD_LINK_KINDS)[number];
+
+export const THREAD_ROUTER_DECISIONS = ["auto_attach", "suggest", "human"] as const;
+export type ThreadRouterDecision = (typeof THREAD_ROUTER_DECISIONS)[number];
+
+export const THREAD_INBOX_STATUSES = ["pending", "attached", "dismissed"] as const;
+export type ThreadInboxStatus = (typeof THREAD_INBOX_STATUSES)[number];
 
 // ── V2.5: Internal Agent ──────────────────────────────────────────────
 
@@ -649,6 +980,45 @@ export type IaConversationStatus = (typeof IA_CONVERSATION_STATUSES)[number];
 export const REMINDER_STATUSES = ["pending", "fired", "cancelled"] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
 
+// ── V2.5: Commander Tool Permissions ─────────────────────────────────────
+
+export interface CommanderToolPermission {
+  enabled: boolean;            // whether the tool is available to Commander at all
+  requireConfirmation: boolean; // force confirmation even if tool.requiresConfirmation is false
+  minimumRole: "founder" | "team_lead" | "team_member"; // minimum human role needed to trigger via Commander
+}
+
+export type CommanderToolPermissions = Record<string, CommanderToolPermission>;
+
+export const COMMANDER_TOOL_PERMISSION_DEFAULT: CommanderToolPermission = {
+  enabled: true,
+  requireConfirmation: false,
+  minimumRole: "team_member",
+};
+
+export const COMMANDER_RUNTIME_APPROVAL_STATUSES = [
+  "pending",
+  "executing",
+  "approved",
+  "denied",
+  "expired",
+  "failed",
+  "cancelled",
+] as const;
+export type CommanderRuntimeApprovalStatus =
+  (typeof COMMANDER_RUNTIME_APPROVAL_STATUSES)[number];
+
+export const COMMANDER_RUNTIME_APPROVAL_DECISIONS = [
+  "allow_once",
+  "allow_always",
+  "deny",
+] as const;
+export type CommanderRuntimeApprovalDecision =
+  (typeof COMMANDER_RUNTIME_APPROVAL_DECISIONS)[number];
+
+export const COMMANDER_TOOL_TRUST_SCOPES = ["exact_params"] as const;
+export type CommanderToolTrustScope = (typeof COMMANDER_TOOL_TRUST_SCOPES)[number];
+
 export const NOTIFICATION_TYPES = [
   "discussion.extraction_complete",
   "discussion.extraction_failed",
@@ -661,13 +1031,50 @@ export const NOTIFICATION_TYPES = [
   "marketplace.update_available",
   "marketplace.update_completed",
   "marketplace.update_failed",
+  "thread.mention",
+  // Phase 1 Phase E batch 3 (T23): new thread-coordination notifications
+  // surfaced in Inbox. Backing payload still lives on the existing
+  // notifications row shape (title/message/relatedEntityType/relatedEntityId).
+  "thread.scope_proposal_posted",
+  "thread.artifact_needs_review",
+  "thread.crew_failed",
+  "thread.spinoff_suggested",
+  "thread.human_input_needed",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
 // ── Routines ──────────────────────────────────────────────────────────
 
-export const ISSUE_ORIGIN_KINDS = ["routine_execution"] as const;
+export const RUN_LIVENESS_STATES = ["unknown", "advanced", "completed", "blocked", "needs_followup", "stalled"] as const;
+export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
+
+export const ISSUE_MONITOR_STATUSES = ["scheduled", "triggered", "cleared", "cancelled"] as const;
+export type IssueMonitorStatus = (typeof ISSUE_MONITOR_STATUSES)[number];
+
+export const ISSUE_MONITOR_CLEAR_REASONS = [
+  "manual",
+  "done",
+  "cancelled",
+  "invalid_status",
+  "invalid_assignee",
+  "timeout_exceeded",
+  "max_attempts_exhausted",
+] as const;
+export type IssueMonitorClearReason = (typeof ISSUE_MONITOR_CLEAR_REASONS)[number];
+
+export const ISSUE_ORIGIN_KINDS = [
+  "routine_execution",
+  "issue_productivity_review",
+  "issue_continuation",
+  "successful_run_handoff",
+] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
+
+export const RECOVERY_ORIGIN_KINDS = {
+  issueProductivityReview: "issue_productivity_review",
+  issueContinuation: "issue_continuation",
+  successfulRunHandoff: "successful_run_handoff",
+} as const satisfies Record<string, IssueOriginKind>;
 
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];

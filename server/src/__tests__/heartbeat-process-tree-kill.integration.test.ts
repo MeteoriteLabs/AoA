@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -99,9 +100,22 @@ describe("signalRunningProcess (integration)", () => {
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
+  }
+  // process.kill(pid, 0) ALSO succeeds for a ZOMBIE (a dead process awaiting
+  // reaping). When the group SIGTERM kills the bash parent before it reaps its
+  // `sleep` grandchild, the grandchild zombies until init reaps it. A zombie is
+  // effectively dead, so on Linux inspect /proc and treat state 'Z' as dead;
+  // otherwise trust the kill(0) result.
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = stat.slice(stat.lastIndexOf(")") + 2)[0];
+    return state !== "Z";
+  } catch {
+    // On Linux a failed /proc read after a successful kill(0) means the pid was
+    // just reaped (dead). Other platforms have no /proc; trust kill(0) (alive).
+    return process.platform !== "linux";
   }
 }
 

@@ -1,9 +1,33 @@
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getProviderApiKey, createProvider } from "./internal-agent/providers/index.js";
+import { getProviderApiKey, createProvider, resolveAvailableProvider } from "./internal-agent/providers/index.js";
+
+/**
+ * Item types the extractor can produce. Mirrors the six legacy types used by
+ * the autonomous Scribe flow plus the two thread-specific types introduced for
+ * Phase 1 (`artifact`, `spin_off_thread`). The DB column comment on
+ * `discussion_extracted_items.type` already documents all eight.
+ *
+ * NOTE: `parseExtractedItems` below currently accepts only the six legacy
+ * types — that is intentional. The legacy autonomous flow never asks the LLM
+ * to emit `artifact` / `spin_off_thread`; the tool-callable extractors (Task
+ * C1 named exports) inherit the same prompt and so only ever yield the six.
+ * If Phase-1 thread tools later need the new types they can broaden
+ * `VALID_EXTRACTED_TYPES` and the prompt together — keeping the type union
+ * exhaustive here avoids a second source of truth.
+ */
+export type ExtractedItemType =
+  | "decision"
+  | "task"
+  | "insight"
+  | "context"
+  | "reference"
+  | "preference"
+  | "artifact"
+  | "spin_off_thread";
 
 export interface ExtractedItem {
   type: "decision" | "task" | "insight" | "context" | "reference" | "preference";
@@ -280,7 +304,7 @@ export function extractionService(db: Db) {
 
         // 3. Call LLM
         log.info("Starting LLM extraction");
-        const extractedItems = await callLLM(prompt, debrief.rawContent);
+        const extractedItems = await callLLM(prompt, debrief.rawContent, db, companyId);
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
         // 4-6. Create Brief + BriefItems + update debrief atomically
@@ -380,9 +404,38 @@ export function extractionService(db: Db) {
 
         discussionId = entry.discussionId;
 
-        // Guard: skip if already processing or completed (prevents double extraction)
-        if (entry.extractionStatus !== "pending") {
-          log.info({ currentStatus: entry.extractionStatus }, "Entry not in pending status — skipping");
+        // P1-T7: scope_proposal entries are NOT prose for the extractor — their
+        // rawContent is a structured proposal JSON and their lifecycle lives in
+        // proposalStatus. Never claim/extract them: doing so would flip their
+        // extractionStatus (pending -> processing -> completed) and corrupt the
+        // Approve handler's idempotency read. Last line of defense behind the
+        // dispatcher sweep filter + the "skipped" insert default.
+        if (entry.inputType === "scope_proposal") {
+          log.info("Entry is a scope_proposal — skipping extraction (not extractable prose)");
+          return;
+        }
+
+        // Atomic claim: flip pending -> processing in a single statement.
+        // Only the writer that gets a row back proceeds. This replaces the
+        // prior non-atomic read-then-check, fixing a pre-existing race
+        // (concurrent reprocess / reprocess-all) AND making the durable
+        // sweeper (sub-agent #1) safe to run alongside the untouched
+        // reprocess direct-call path.
+        const claimed = await db
+          .update(discussionEntries)
+          .set({ extractionStatus: "processing" })
+          .where(
+            and(
+              eq(discussionEntries.id, entryId),
+              eq(discussionEntries.extractionStatus, "pending"),
+            ),
+          )
+          .returning();
+        if (claimed.length === 0) {
+          log.info(
+            { currentStatus: entry.extractionStatus },
+            "Entry not claimable (already processing/terminal) — skipping",
+          );
           return;
         }
 
@@ -416,56 +469,30 @@ export function extractionService(db: Db) {
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId));
 
-        const hasEnvKey = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
-
-        if (preCheckConfig?.provider) {
-          try {
-            await getProviderApiKey(db, companyId, preCheckConfig.provider);
-          } catch {
-            if (!hasEnvKey) {
-              const msg = `No API key configured for provider "${preCheckConfig.provider}". Set it in Settings → LLM Providers or as an environment variable.`;
-              log.warn(msg);
-              await db
-                .update(discussionEntries)
-                .set({
-                  extractionStatus: "skipped",
-                  sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
-                })
-                .where(eq(discussionEntries.id, entryId));
-              return;
-            }
-          }
-        } else if (!hasEnvKey) {
-          // No agent config and no env key — try DB-stored provider keys as fallback
-          let foundDbKey = false;
-          for (const provider of ["openai", "anthropic", "google"] as const) {
-            try {
-              await getProviderApiKey(db, companyId, provider);
-              foundDbKey = true;
-              break;
-            } catch {
-              // Key not found for this provider, try next
-            }
-          }
-          if (!foundDbKey) {
-            const msg = "No LLM provider configured. Set up a provider in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
-            log.warn(msg);
-            await db
-              .update(discussionEntries)
-              .set({
-                extractionStatus: "skipped",
-                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
-              })
-              .where(eq(discussionEntries.id, entryId));
-            return;
-          }
+        // Resolve a usable provider: the configured one, or any provider that
+        // actually has a key (DB secret or env var). Adding any one key works.
+        let resolvedProvider: { provider: string; apiKey: string; model: string };
+        try {
+          resolvedProvider = await resolveAvailableProvider(
+            db,
+            companyId,
+            preCheckConfig?.provider ?? undefined,
+          );
+        } catch {
+          const msg =
+            "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
+          log.warn(msg);
+          await db
+            .update(discussionEntries)
+            .set({
+              extractionStatus: "skipped",
+              sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
+            })
+            .where(eq(discussionEntries.id, entryId));
+          return;
         }
 
-        // 5. Set extraction status to processing
-        await db
-          .update(discussionEntries)
-          .set({ extractionStatus: "processing" })
-          .where(eq(discussionEntries.id, entryId));
+        // (status was already set to 'processing' by the atomic claim above)
 
         // 6. Get thread context (most recent 10 entries, excluding current)
         const previousEntries = await db
@@ -495,9 +522,9 @@ export function extractionService(db: Db) {
 
         let extractedItems: ExtractedItem[];
 
-        if (agentConfig?.provider) {
+        if (resolvedProvider) {
           // ── Agent-based extraction ────────────────────────────────────
-          log.info("Using agent provider for extraction");
+          log.info(`Using ${resolvedProvider.provider} provider for extraction`);
 
           const [run] = await db
             .insert(internalAgentRuns)
@@ -510,9 +537,11 @@ export function extractionService(db: Db) {
             .returning();
 
           try {
-            const apiKey = await getProviderApiKey(db, companyId, agentConfig.provider);
-            const provider = createProvider(agentConfig.provider, apiKey);
-            const model = agentConfig.model ?? "claude-sonnet-4-6";
+            const provider = createProvider(resolvedProvider.provider, resolvedProvider.apiKey);
+            const model =
+              agentConfig?.provider === resolvedProvider.provider && agentConfig?.model
+                ? agentConfig.model
+                : resolvedProvider.model;
 
             const userContent = threadContext
               ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
@@ -671,4 +700,259 @@ export function extractionService(db: Db) {
       }
     },
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 1 (Task C1) — Tool-callable extraction surface.
+//
+// The Phase 1 design eliminates Scribe as an *autonomous* agent. Extraction is
+// instead exposed as a small set of named functions that other crew agents
+// (Memory Keeper at phase=done, Adjutant optionally mid-discussion) invoke
+// through their tool wrappers (built in Task C2 batch 3).
+//
+// Implementation notes:
+//   • These exports REUSE every internal helper above — same prompt template,
+//     same departments lookup, same JSON parser, same provider fallback chain.
+//     There is no second extraction prompt to maintain. The only divergence
+//     from the legacy `extractFromDiscussionEntry` path is that NOTHING is
+//     written to the database here: the caller (tool wrapper) decides what to
+//     persist (e.g. `submit_extracted_items`-style approval queue inserts).
+//   • `extractDecisions`, `extractInsights`, `extractReferences` are thin
+//     filters over `extractMemoryCandidates` — DRY win. If a future tool
+//     needs `extractTasks` or `extractPreferences` add another one-liner.
+//   • The `ExtractionLlm` interface is intentionally narrower than the full
+//     `LLMProvider` so tool wrappers and tests can supply a minimal stub. The
+//     real provider used by the autonomous flow (Anthropic/OpenAI/Gemini) is
+//     selected via `resolveAvailableProvider` when `llm === undefined`, so a
+//     caller that doesn't want to inject one can pass `null`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal LLM surface the tool-callable extractors depend on. The autonomous
+ * Scribe path uses `internal-agent/providers` directly; the tool path lets
+ * callers pass any object with a single `generate(prompt, content)` method —
+ * useful for unit tests and for future thin wrappers around different SDKs.
+ *
+ * Pass `null` to fall back to the same provider resolution used by the
+ * legacy autonomous path (`resolveAvailableProvider` → first provider with a
+ * usable API key — DB secret or env var).
+ */
+export interface ExtractionLlm {
+  /**
+   * Generate a completion. Implementations must return the raw text response;
+   * `parseExtractedItems` will strip any markdown fences and parse the JSON.
+   */
+  generate(prompt: string, content: string): Promise<string>;
+}
+
+/**
+ * Structured extraction candidate returned by the tool-callable extractors.
+ *
+ * Mirrors the writable columns on `discussion_extracted_items`, but the
+ * extractor does NOT persist — the tool wrapper decides what to insert. The
+ * shape is a superset of the legacy `ExtractedItem` (which has `priority` /
+ * `department` / `layer`), renamed to match the schema column names that
+ * actually land downstream:
+ *   • `suggestedPriority`   ← legacy `priority`
+ *   • `suggestedDepartment` ← legacy `department` (still a NAME, not an ID;
+ *                              the caller resolves to `suggestedDepartmentId`
+ *                              when persisting)
+ *   • `suggestedLayer`      ← legacy `layer`
+ *
+ * Fields default to `null` rather than `undefined` so the candidate is a flat
+ * shape suitable for JSON-RPC tool responses.
+ */
+export interface MemoryCandidate {
+  type: ExtractedItemType;
+  title: string;
+  description: string | null;
+  suggestedLayer: "identity" | "domain" | "active_context" | "working" | null;
+  suggestedPriority: "urgent" | "high" | "medium" | "low" | null;
+  suggestedDepartment: string | null;
+}
+
+/**
+ * Translate a parsed `ExtractedItem` (legacy shape) into a `MemoryCandidate`
+ * (tool-call shape). Pure function — same input always yields the same shape.
+ */
+function toMemoryCandidate(item: ExtractedItem): MemoryCandidate {
+  return {
+    // ExtractedItem.type is the six-tuple legacy enum; widen to
+    // ExtractedItemType (an eight-tuple superset) by direct assignment. The
+    // legacy types are a strict subset so this is type-safe.
+    type: item.type as ExtractedItemType,
+    title: item.title,
+    description: item.description && item.description.length > 0 ? item.description : null,
+    suggestedLayer: item.layer ?? null,
+    suggestedPriority: item.priority ?? null,
+    suggestedDepartment: item.department ?? null,
+  };
+}
+
+/**
+ * Run an LLM extraction over a thread's entries and return structured
+ * candidates. Does NOT persist — the caller decides what to do with the
+ * results (typically: queue them in `discussion_extracted_items` for founder
+ * approval, or surface them inline in an Adjutant response).
+ *
+ * If `sinceEntryId` is provided, only entries created strictly after that
+ * entry are considered (cursor-based incremental extraction). When omitted
+ * the entire thread's entries are used as input.
+ *
+ * If `llm` is `null` the function falls back to `resolveAvailableProvider`
+ * (same provider chain used by the autonomous Scribe path). If `llm` is
+ * supplied it is called with the prompt + concatenated entry content; the
+ * raw response is fed through `parseExtractedItems`.
+ *
+ * Errors are surfaced (the function rejects) so the tool wrapper can return
+ * a structured `{ ok: false }` to the calling agent. An empty thread returns
+ * `{ candidates: [] }` without invoking the LLM at all.
+ */
+export async function extractMemoryCandidates(
+  db: Db,
+  llm: ExtractionLlm | null,
+  params: { companyId: string; threadId: string; sinceEntryId?: string },
+): Promise<{ candidates: MemoryCandidate[] }> {
+  const log = logger.child({
+    service: "extraction.extractMemoryCandidates",
+    companyId: params.companyId,
+    threadId: params.threadId,
+  });
+
+  // ── 0. Per-thread privacy gate (G4 wiring-gap fix, G3 contract).
+  //       Threads with allowMemoryExtraction=false MUST short-circuit at
+  //       the top of the chain: we don't even fetch entries, much less
+  //       burn LLM tokens. The propose_memory_from_thread tool also
+  //       enforces this downstream, but extracting candidates that will
+  //       immediately be rejected wastes time and budget.
+  const threadRows = await db
+    .select({ allowMemoryExtraction: discussions.allowMemoryExtraction })
+    .from(discussions)
+    .where(eq(discussions.id, params.threadId));
+  const allowExtraction = threadRows[0]?.allowMemoryExtraction;
+  if (allowExtraction === false) {
+    log.info(
+      "thread has allowMemoryExtraction=false — returning empty candidate set",
+    );
+    return { candidates: [] };
+  }
+
+  // ── 1. Resolve the cursor: when sinceEntryId is given, look up its
+  //       createdAt so we can express "strictly after this entry" with a
+  //       single index-friendly `createdAt > cursor` predicate. Falling back
+  //       to the discussionId-only filter when no cursor is given.
+  let cursorCreatedAt: Date | null = null;
+  if (params.sinceEntryId) {
+    const cursorRows = await db
+      .select({ createdAt: discussionEntries.createdAt })
+      .from(discussionEntries)
+      .where(eq(discussionEntries.id, params.sinceEntryId));
+    const cursorRow = cursorRows[0];
+    if (cursorRow?.createdAt) {
+      cursorCreatedAt = cursorRow.createdAt as Date;
+    } else {
+      // Cursor referenced an entry that does not exist — treat as "no
+      // cursor" rather than an error so a stale tool argument can't break
+      // an otherwise valid sweep. The agent likely picked an old/deleted
+      // entry id; better to extract from the full thread than fail.
+      log.info({ sinceEntryId: params.sinceEntryId }, "sinceEntryId not found — falling back to full thread");
+    }
+  }
+
+  // ── 2. Fetch entries (ordered ascending so the LLM reads the thread
+  //       chronologically). Cursor-aware predicate when applicable.
+  const entryPredicate = cursorCreatedAt
+    ? and(
+        eq(discussionEntries.discussionId, params.threadId),
+        gt(discussionEntries.createdAt, cursorCreatedAt),
+      )
+    : eq(discussionEntries.discussionId, params.threadId);
+
+  const entries = await db
+    .select({ id: discussionEntries.id, rawContent: discussionEntries.rawContent, createdAt: discussionEntries.createdAt })
+    .from(discussionEntries)
+    .where(entryPredicate)
+    .orderBy(discussionEntries.createdAt);
+
+  if (entries.length === 0) {
+    log.info("no entries to extract from — returning empty candidate set");
+    return { candidates: [] };
+  }
+
+  // Concatenate entry content using the same `---` separator the legacy
+  // discussion-entry path uses for thread context. Skip empty entries
+  // (defensive; should not happen in practice).
+  const userContent = entries
+    .map((e) => (e.rawContent ?? "").trim())
+    .filter((s) => s.length > 0)
+    .join("\n---\n");
+
+  if (userContent.length < 10) {
+    log.info({ length: userContent.length }, "thread content too short — returning empty candidate set");
+    return { candidates: [] };
+  }
+
+  // ── 3. Build the same prompt the autonomous path uses.
+  const { text: deptList } = await buildDepartmentsList(db, params.companyId);
+  const systemPrompt = EXTRACTION_PROMPT_TEMPLATE.replace(
+    "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
+    deptList,
+  );
+
+  // ── 4. Run the LLM. Caller-supplied `llm` takes precedence; otherwise
+  //       resolve a provider exactly the way the autonomous path does.
+  let items: ExtractedItem[];
+  if (llm) {
+    const raw = await llm.generate(systemPrompt, userContent);
+    items = parseExtractedItems(raw);
+  } else {
+    items = await callLLM(systemPrompt, userContent, db, params.companyId);
+  }
+
+  log.info({ candidateCount: items.length, entries: entries.length }, "extraction complete");
+  return { candidates: items.map(toMemoryCandidate) };
+}
+
+/**
+ * Extract candidates and filter to type='decision'. Thin convenience wrapper
+ * around `extractMemoryCandidates` — same arguments minus `companyId`, which
+ * the tool wrapper resolves from the thread.
+ *
+ * NOTE: these three filtered helpers (`extractDecisions`, `extractInsights`,
+ * `extractReferences`) require the `companyId` to resolve via the thread.
+ * The tool wrapper layer that calls these always has the thread in hand and
+ * can look it up; for unit tests, callers pass it via the `companyId`
+ * parameter on the underlying `extractMemoryCandidates` call.
+ */
+export async function extractDecisions(
+  db: Db,
+  llm: ExtractionLlm | null,
+  params: { companyId: string; threadId: string; sinceEntryId?: string },
+): Promise<MemoryCandidate[]> {
+  const { candidates } = await extractMemoryCandidates(db, llm, params);
+  return candidates.filter((c) => c.type === "decision");
+}
+
+/**
+ * Extract candidates and filter to type='insight'. See `extractDecisions`.
+ */
+export async function extractInsights(
+  db: Db,
+  llm: ExtractionLlm | null,
+  params: { companyId: string; threadId: string; sinceEntryId?: string },
+): Promise<MemoryCandidate[]> {
+  const { candidates } = await extractMemoryCandidates(db, llm, params);
+  return candidates.filter((c) => c.type === "insight");
+}
+
+/**
+ * Extract candidates and filter to type='reference'. See `extractDecisions`.
+ */
+export async function extractReferences(
+  db: Db,
+  llm: ExtractionLlm | null,
+  params: { companyId: string; threadId: string; sinceEntryId?: string },
+): Promise<MemoryCandidate[]> {
+  const { candidates } = await extractMemoryCandidates(db, llm, params);
+  return candidates.filter((c) => c.type === "reference");
 }

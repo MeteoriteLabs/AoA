@@ -86,7 +86,13 @@ function makeRow(overrides: Partial<Row> = {}): Row {
     tags: [],
     departmentId: null,
     projectId: null,
+    goalId: null,
+    taskId: null,
+    conversationId: null,
+    createdBy: "founder-1",
     layer: "domain",
+    visibility: "scoped",
+    expiresAt: null,
     priority: 0,
     validationCount: 1,
     agentId: null,
@@ -120,6 +126,11 @@ describe("memoryService.searchMultiPath", () => {
     const results = await svc.searchMultiPath("co-1", "brand", { limit: 10 });
 
     expect(results).toHaveLength(2);
+    expect(results[0]).toHaveProperty("conversationId");
+    expect(results[0]).toHaveProperty("status");
+    expect(results[0]).toHaveProperty("visibility");
+    expect(results[0]).toHaveProperty("expiresAt");
+    expect(results[0]).toHaveProperty("createdBy");
     // Both items appear in both pathways → both get RRF contributions from
     // both. Their final ordering depends on RRF + trust. Trust is equal
     // (validationCount=1 for both, no accessedAt/lastValidatedAt).
@@ -249,6 +260,38 @@ describe("memoryService.searchMultiPath", () => {
     expect(results[0].temporalRank).toBe(1);
     expect(results[0].semanticRank).toBeNull();
     expect(results[0].similarity).toBeNull(); // semantic didn't run
+  });
+
+  it("preserves goal and task scope fields in results", async () => {
+    const item = makeRow({ id: "item-1", goalId: "goal-1", taskId: "task-1" });
+    const { db } = makeMockDb({
+      selects: [[item]],
+    });
+
+    const svc = memoryService(db);
+    const results = await svc.searchMultiPath("co-1", "", { limit: 10 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      goalId: "goal-1",
+      taskId: "task-1",
+    });
+  });
+
+  it("searchAuditCandidates includes non-approved keyword candidates for retrieval audit", async () => {
+    const pending = makeRow({ id: "pending", status: "pending" });
+    const rejected = makeRow({ id: "rejected", status: "rejected" });
+    const { db } = makeMockDb({
+      selects: [[pending, rejected]],
+    });
+
+    const svc = memoryService(db);
+    const results = await svc.searchAuditCandidates("co-1", "test", { limit: 10 });
+
+    expect(results).toEqual([
+      expect.objectContaining({ id: "pending", status: "pending" }),
+      expect.objectContaining({ id: "rejected", status: "rejected" }),
+    ]);
   });
 });
 

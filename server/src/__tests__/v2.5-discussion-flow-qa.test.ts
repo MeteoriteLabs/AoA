@@ -22,9 +22,11 @@ import { createDiscussionDb } from "./helpers/mock-db.js";
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  asc: vi.fn((col: any) => ({ asc: col })),
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({ sql: true, strings, values })),
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
+  or: vi.fn((...args: any[]) => ({ or: args })),
 }));
 
 // ── Mock DB tables ──────────────────────────────────────────────────────────
@@ -100,7 +102,65 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "projects_company_id",
     name: "projects_name",
   },
-  goals: { id: "goals_id" },
+  goals: { id: "goals_id", title: "goals_title" },
+  agents: { id: "agents_id", name: "agents_name", icon: "agents_icon" },
+  threadPlanSteps: {
+    id: "tps_id",
+    threadId: "tps_thread_id",
+    stepOrder: "tps_step_order",
+  },
+  threadScopeVersions: {
+    id: "tsv_id",
+    companyId: "tsv_company_id",
+    threadId: "tsv_thread_id",
+    versionNumber: "tsv_version_number",
+    status: "tsv_status",
+    sourceEndSeq: "tsv_source_end_seq",
+    createdAt: "tsv_created_at",
+  },
+  threadScopeItems: {
+    id: "tsi_id",
+    scopeVersionId: "tsi_scope_version_id",
+    status: "tsi_status",
+  },
+  // Phase E2: discussion-entry attachments + artifacts (joined in getById)
+  discussionEntryAttachments: {
+    id: "dea_id",
+    discussionEntryId: "dea_discussion_entry_id",
+    assetId: "dea_asset_id",
+    artifactId: "dea_artifact_id",
+  },
+  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
+  assets: {
+    id: "assets_id",
+    contentType: "assets_content_type",
+    originalFilename: "assets_original_filename",
+    byteSize: "assets_byte_size",
+  },
+  // Phase E batch 2 (T22): thread_participants + auth users (joined in getById
+  // for the OriginCard static roster).
+  threadParticipants: {
+    id: "tp_id",
+    threadId: "tp_thread_id",
+    principalType: "tp_principal_type",
+    principalId: "tp_principal_id",
+    role: "tp_role",
+    addedAt: "tp_added_at",
+    companyId: "tp_company_id",
+  },
+  threadLinks: {
+    id: "thread_links_id",
+    companyId: "thread_links_company_id",
+    fromThreadId: "thread_links_from_thread_id",
+    toThreadId: "thread_links_to_thread_id",
+    kind: "thread_links_kind",
+  },
+  authUsers: { id: "auth_users_id", name: "auth_users_name", email: "auth_users_email" },
+  threadOrchestrationState: {
+    threadId: "tos_thread_id",
+    lastError: "tos_last_error",
+    consecutiveCommitFailures: "tos_consecutive_commit_failures",
+  },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -135,6 +195,14 @@ vi.mock("../services/memory.js", () => ({
     create: vi.fn().mockResolvedValue({ id: "mem-1" }),
     findSimilarItems: vi.fn().mockResolvedValue([]),
   })),
+}));
+
+// P3-T1: discussions.update dynamically imports this on archive. Stub it so the
+// archive test doesn't exercise the real Memory Keeper enqueue (its db mock
+// doesn't model the wakeup select/insert chain). vi.mock intercepts the dynamic
+// import; the real helper has its own unit tests (memory-on-close.test.ts).
+vi.mock("../services/internal-agent/aoa-agents/memory-extraction-on-close.js", () => ({
+  enqueueMemoryExtractionOnClose: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { discussionService } from "../services/discussions.js";
@@ -292,10 +360,10 @@ describe("v2.5 Discussion Flow QA", () => {
         const db = createDiscussionDb([
           // select discussion exists
           [existingDiscussion],
+          // UPDATE discussions SET entrySeq+1 RETURNING (Plan 7 D1 atomic counter)
+          [{ ...existingDiscussion, entrySeq: i }],
           // insert entry returning
           [entryRow],
-          // update entryCount (returns updated row, consumed by mock)
-          [{ ...existingDiscussion, entryCount: i }],
         ]);
 
         const svc = discussionService(db);
@@ -358,8 +426,9 @@ describe("v2.5 Discussion Flow QA", () => {
 
         const db = createDiscussionDb([
           [disc],
+          // UPDATE discussions SET entrySeq+1 RETURNING (Plan 7 D1 atomic counter)
+          [{ ...disc, entrySeq: i + 1 }],
           [entryRow],
-          [{ ...disc, entryCount: i + 1 }],
         ]);
 
         const svc = discussionService(db);
@@ -1276,6 +1345,62 @@ describe("v2.5 Discussion Flow QA", () => {
 
       expect(result).toHaveLength(0);
     });
+
+    it("enriches list rows with scope, participant preview, and linked thread count", async () => {
+      const discRows = [
+        {
+          id: "disc-1",
+          title: "Pricing objections",
+          scopeType: "department",
+          scopeId: "dept-1",
+          pendingItemCount: 2,
+        },
+      ];
+
+      const db = createDiscussionDb([
+        discRows,
+        [{ id: "dept-1", name: "Engineering" }],
+        [
+          {
+            threadId: "disc-1",
+            principalType: "user",
+            principalId: "user-1",
+            role: "owner",
+            addedAt: new Date("2026-01-01T00:00:00Z"),
+            userName: "TK",
+            userEmail: "tk@example.com",
+            agentName: null,
+          },
+          {
+            threadId: "disc-1",
+            principalType: "agent",
+            principalId: "agent-1",
+            role: "worker",
+            addedAt: new Date("2026-01-01T00:01:00Z"),
+            userName: null,
+            userEmail: null,
+            agentName: "Revenue Agent",
+          },
+        ],
+        [{ fromThreadId: "disc-1", toThreadId: "disc-2", kind: "spinoff" }],
+      ]);
+
+      const svc = discussionService(db);
+      const result = await svc.list(COMPANY, { status: "active" });
+
+      expect(result[0]).toMatchObject({
+        id: "disc-1",
+        scopeType: "department",
+        scopeId: "dept-1",
+        scopeName: "Engineering",
+        participantPreview: [
+          { principalType: "user", principalId: "user-1", name: "TK", role: "owner" },
+          { principalType: "agent", principalId: "agent-1", name: "Revenue Agent", role: "worker" },
+        ],
+        participantCount: 2,
+        linkCount: 1,
+      });
+    });
   });
 
   // ── Additional: getById ───────────────────────────────────────────────────
@@ -1289,7 +1414,11 @@ describe("v2.5 Discussion Flow QA", () => {
         status: "active",
       };
       const entries = [
-        { id: "entry-g1", discussionId: "disc-get", inputType: "paste" },
+        {
+          entry: { id: "entry-g1", discussionId: "disc-get", inputType: "paste" },
+          authorAgentName: null,
+          authorAgentAvatar: null,
+        },
       ];
       const items = [
         { id: "item-g1", discussionEntryId: "entry-g1", type: "task", title: "A task" },
@@ -1307,6 +1436,12 @@ describe("v2.5 Discussion Flow QA", () => {
         items,
         // select annotations (inArray entryIds)
         annotations,
+        // Phase E2: select attachments (inArray entryIds)
+        [],
+        // select plan steps (P5.2)
+        [],
+        // Phase E batch 2 (T22): select thread_participants (LEFT JOINs)
+        [],
       ]);
 
       const svc = discussionService(db);
@@ -1339,6 +1474,10 @@ describe("v2.5 Discussion Flow QA", () => {
       const db = createDiscussionDb([
         [disc],
         // entries → empty
+        [],
+        // plan steps → empty (P5.2)
+        [],
+        // Phase E batch 2 (T22): participants → empty
         [],
       ]);
 

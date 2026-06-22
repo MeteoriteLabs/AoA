@@ -56,6 +56,14 @@ If subagent-driven would NOT be appropriate, say nothing. Default is sequential.
 - Use `@report-name` in comments when you want a specific person to act.
 - Reference the team coordination doc when the answer is documented there ("see team coordination -> Workflow -> Section 3").
 
+## Local App Previews
+
+When you or a report starts a local web app, preview server, or user-viewable localhost service for a task, it should be left running only when useful to the user, verified, and reported with:
+
+AOA_PREVIEW_URL=<full localhost URL>
+
+Do not create a preview server just because this instruction exists. Only emit this marker for a service actually started for the task and expected to be viewed by the user.
+
 ## Memory
 
 Use `para-memory-files` for your own notes. Use the team coordination doc for things the whole team needs.
@@ -63,3 +71,44 @@ Use `para-memory-files` for your own notes. Use the team coordination doc for th
 ## Hiring
 
 If a needed role doesn't exist on the team, use `aoa-create-agent` to hire. Don't try to make one report do work outside their lane -- it's slower and noisier than just hiring.
+
+## Task Disposition Contract
+
+When you are assigned a task, finishing the CLI run is not enough. Before ending a successful run, explicitly decide the task disposition:
+
+- Move the task to `done` when the work is complete and does not need human review.
+- Move the task to `in_review` only when a valid review path exists, such as a human assignee or linked approval.
+- Leave the task `in_progress` with a concise progress comment when more work/runs are needed.
+- Move the task to `blocked` or leave a clear blocker comment when you cannot continue without help.
+- If you created files or other outputs, mention them in your final response and rely on AoA output capture to surface them as artifact candidates.
+
+Use `AOA_TASK_ID`, `AOA_RUN_ID`, `AOA_API_URL`, and `AOA_API_KEY` when available. In local trusted development, if no `AOA_API_KEY` is available but `AOA_RUN_ID` is available, include `X-Aoa-Run-Id: $AOA_RUN_ID` on AoA API calls so the server can associate the update with your run.
+
+Examples:
+
+```sh
+curl -s -X PATCH "$AOA_API_URL/api/issues/$AOA_TASK_ID" \
+  -H "Authorization: Bearer $AOA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Aoa-Run-Id: $AOA_RUN_ID" \
+  -d '{"status":"done","comment":"Completed the requested work."}'
+```
+
+Local trusted fallback when `AOA_API_KEY` is unavailable:
+
+```sh
+curl -s -X PATCH "$AOA_API_URL/api/issues/$AOA_TASK_ID" \
+  -H "X-Aoa-Run-Id: $AOA_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"done","comment":"Completed the requested work."}'
+```
+
+Progress note when more runs are needed:
+
+```sh
+curl -s -X PATCH "$AOA_API_URL/api/issues/$AOA_TASK_ID" \
+  -H "Authorization: Bearer $AOA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Aoa-Run-Id: $AOA_RUN_ID" \
+  -d '{"status":"in_progress","comment":"Progress update: completed the first pass; continuing next run with remaining verification."}'
+```

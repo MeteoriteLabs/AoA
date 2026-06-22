@@ -13,6 +13,7 @@ import {
   Shield,
   Puzzle,
   FolderGit2,
+  LayoutList,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -60,10 +61,10 @@ export function Sidebar() {
           collapsed ? "w-[56px]" : "w-[220px]",
         )}
       >
-        {/* Header — h-14, logo + company-name (click → lobby). No internal collapse toggle. */}
+        {/* Header — h-11, logo + company-name (click → lobby). No internal collapse toggle. */}
         <div
           className={cn(
-            "flex items-center shrink-0 h-14 border-b border-border",
+            "flex items-center shrink-0 h-11 border-b border-border",
             collapsed ? "justify-center px-0" : "gap-2 px-3",
           )}
         >
@@ -136,6 +137,7 @@ export function Sidebar() {
           <SidebarSection label="Work" collapsed={collapsed}>
             <SidebarNavItem to="/discussions" label="Discussions" icon={MessageSquare} badge={sidebarBadges?.pendingDiscussions} collapsed={collapsed} />
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} collapsed={collapsed} />
+            <SidebarNavItem to="/team?tab=aoa&aoaTab=tasks" label="Crew Board" icon={LayoutList} collapsed={collapsed} />
             <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} collapsed={collapsed} />
             <SidebarNavItem to="/routines" label="Routines" icon={Repeat} collapsed={collapsed} />
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={FolderGit2} collapsed={collapsed} />

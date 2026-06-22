@@ -364,7 +364,10 @@ export function MemoryFileList({
 
   return (
     <div className="h-full flex flex-col bg-card/30">
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-3">
+      <div
+        className="flex h-[42px] shrink-0 items-center gap-3 border-b border-border bg-card px-3"
+        data-testid="memory-list-header"
+      >
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{title}</div>
           <div className="truncate text-[11px] text-muted-foreground">{countLabel}</div>

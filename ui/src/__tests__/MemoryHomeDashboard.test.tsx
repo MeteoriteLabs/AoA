@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
@@ -24,6 +24,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
+import { MemoryViewerHome } from "../components/memory/MemoryViewerHome";
 
 function renderHome() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -31,6 +32,17 @@ function renderHome() {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <MemoryHomeDashboard companyId="co-1" />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderViewerHome(onOpenTab?: (tab: { id: string; kind: "home" | "memory_item" | "asset" | "graph"; title: string }) => void) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <MemoryViewerHome companyId="co-1" onOpenTab={onOpenTab} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -57,5 +69,42 @@ describe("MemoryHomeDashboard (Phase 6.2a)", () => {
     // The 2 items mock above sorted by updatedAt — Item two newer, Item one older
     await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
     expect(screen.getByText("Item one")).toBeInTheDocument();
+  });
+
+  it("renders viewer home content with a graph tab launcher", async () => {
+    renderViewerHome();
+
+    expect(screen.getByTestId("memory-viewer-home")).toBeInTheDocument();
+    expect(screen.getByText(/Quick-jump to a memory item or file/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
+    expect(screen.getByTestId("memory-home-graph-launcher")).toHaveTextContent(/Map/i);
+  });
+
+  it("opens the company graph as a viewer tab", async () => {
+    const onOpenTab = vi.fn();
+    renderViewerHome(onOpenTab);
+
+    fireEvent.click(screen.getByRole("button", { name: /open company graph/i }));
+
+    expect(onOpenTab).toHaveBeenCalledWith({
+      id: "company-graph",
+      kind: "graph",
+      title: "Map",
+    });
+  });
+
+  it("opens viewer home recents as tabs when a tab opener is provided", async () => {
+    const onOpenTab = vi.fn();
+    renderViewerHome(onOpenTab);
+
+    await waitFor(() => expect(screen.getByText("Item two")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Item two"));
+
+    expect(onOpenTab).toHaveBeenCalledWith({
+      id: "i-2",
+      kind: "memory_item",
+      title: "Item two",
+    });
   });
 });

@@ -18,6 +18,7 @@ import {
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
+import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -28,6 +29,7 @@ import { teamImportsRoutes } from "./routes/team-imports.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { githubRoutes } from "./routes/github.js";
+import { projectGitRoutes } from "./routes/project-git.js";
 import { costRoutes } from "./routes/costs.js";
 import { financeRoutes } from "./routes/finance.js";
 import { quotaRoutes } from "./routes/quotas.js";
@@ -36,6 +38,8 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
+import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
+import { cockpitRoutes } from "./routes/cockpit.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
@@ -46,6 +50,7 @@ import { briefRoutes } from "./routes/briefs.js";
 import { routineRoutes } from "./routes/routines.js";
 import { dependencyRoutes } from "./routes/dependencies.js";
 import { artifactRoutes } from "./routes/artifacts.js";
+import { taskOutputRoutes } from "./routes/task-outputs.js";
 import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { trustScoreRoutes } from "./routes/trust-scores.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
@@ -66,13 +71,17 @@ import { teamRoutes } from "./routes/team.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { internalAgentRoutes } from "./routes/internal-agent.js";
+import { internalSweepsDevRoutes } from "./routes/internal-sweeps-dev.js";
 import { workflowTemplateRoutes } from "./routes/workflow-templates.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { authProfileRoutes } from "./routes/auth-profile.js";
+import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
+import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { createPreviewRouter } from "./routes/preview.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
@@ -82,6 +91,7 @@ import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
+import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -183,7 +193,6 @@ export async function createApp(
     ["/api/companies/import", "/api/companies/import/preview"],
     express.json({ limit: "20mb", verify: captureRawBody }),
   );
-  app.use(express.json({ verify: captureRawBody }));
   app.use(httpLogger);
   // Strict CSP + tightened cross-origin policies in production deployment
   // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
@@ -213,6 +222,10 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // Runtime previews are a streaming proxy, not JSON API routes. Mount before
+  // the global body parser so POST/PUT/uploads reach the upstream unchanged.
+  app.use("/preview", createPreviewRouter(db));
+  app.use(express.json({ verify: captureRawBody }));
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
@@ -241,7 +254,17 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
-  api.use("/companies", companyRoutes(db));
+  api.use(
+    operationsHealthRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      authReady: opts.authReady,
+      companyDeletionEnabled: opts.companyDeletionEnabled,
+      bindHost: opts.bindHost,
+      allowedHostnames: opts.allowedHostnames,
+    }),
+  );
+  api.use("/companies", companyRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
@@ -263,6 +286,7 @@ export async function createApp(
   api.use(debriefRoutes(db));
   api.use(briefRoutes(db));
   api.use(artifactRoutes(db));
+  api.use(taskOutputRoutes(db));
   api.use(outputDetectionRoutes(db));
   api.use(trustScoreRoutes(db));
   api.use(transcriptionRoutes(db));
@@ -279,10 +303,19 @@ export async function createApp(
   api.use(notificationRoutes(db));
   api.use(workflowTemplateRoutes(db));
   api.use(internalAgentRoutes(db));
+  // Dev-only manual sweep triggers (Adjutant 15-min, Memory Keeper 4-hr).
+  // Mounted ONLY when uiMode='vite-dev' (i.e. AOA_UI_DEV_MIDDLEWARE=true).
+  // Production never sets this env var, so the routes never load there.
+  // Used by UAT to avoid waiting for the natural sweep cadence — see
+  // routes/internal-sweeps-dev.ts header for the full rationale.
+  if (opts.uiMode === "vite-dev") {
+    api.use(internalSweepsDevRoutes(db));
+  }
   api.use(mcpServerRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(githubRoutes(db));
+  api.use(projectGitRoutes(db));
   api.use(costRoutes(db));
   api.use(financeRoutes(db));
   api.use(quotaRoutes(db));
@@ -290,14 +323,18 @@ export async function createApp(
   api.use(routineRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
+  api.use(environmentRoutes({ db }));
   api.use(executionWorkspaceRoutes(db));
+  api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());
   api.use(adapterRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(cockpitRoutes(db));
   api.use(sidebarPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
+  api.use(userEntityPinRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -378,6 +415,7 @@ export async function createApp(
   // Marketplace catalog service + routes
   const marketplaceCatalogService = new MarketplaceCatalogService({
     db,
+    cdnUrl: process.env.AOA_MARKETPLACE_CDN_URL || undefined,
     bundledSnapshotProvider: async () => {
       // Lazy import to avoid bundling issues.
       // The snapshot file is gitignored — fetched at build time by
@@ -448,6 +486,13 @@ export async function createApp(
     createMarketplaceCompanyRouter({
       db,
       catalogService: marketplaceCatalogService,
+      pluginLifecycle: lifecycleMgr,
+      pluginLoader: {
+        installPlugin: async (opts) => {
+          await loaderInst.installPlugin(opts);
+        },
+      },
+      pluginRollback: pluginRollbackService(db),
     }),
   );
 
@@ -498,11 +543,13 @@ export async function createApp(
   if (opts.uiMode === "vite-dev") {
     const uiRoot = path.resolve(__dirname, "../../ui");
     const { createServer: createViteServer } = await import("vite");
+    const viteHmrPort = Number(process.env.AOA_VITE_HMR_PORT);
     const vite = await createViteServer({
       root: uiRoot,
       appType: "spa",
       server: {
         middlewareMode: true,
+        hmr: Number.isFinite(viteHmrPort) && viteHmrPort > 0 ? { port: viteHmrPort } : undefined,
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });

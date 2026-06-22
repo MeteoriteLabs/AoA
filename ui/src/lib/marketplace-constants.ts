@@ -65,6 +65,7 @@ export const CATEGORY_ICONS: Record<string, string> = {
   analytics: "BarChart3",
   design: "Palette",
   operations: "Settings",
+  commander: "Compass",
   general: "Box",
 };
 

@@ -73,7 +73,7 @@ export function Discussions() {
   // for server-side filtering + pagination when discussion volumes grow.
   // The API client already supports DiscussionListFilters — currently filtering client-side.
   // Also: add inline search input (API supports `search` param) and pagination (limit/offset).
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: queryKeys.discussions.list(selectedCompanyId!),
     queryFn: () => discussionsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -181,6 +181,28 @@ export function Discussions() {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center gap-3 py-20 text-center"
+        data-testid="discussions-error"
+      >
+        <AlertCircle className="h-6 w-6 text-destructive" />
+        <div>
+          <p className="text-sm font-medium text-destructive">
+            Couldn&apos;t load discussions
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Something went wrong fetching your discussions. Try again.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void refetch()}>
+          Retry
+        </Button>
       </div>
     );
   }

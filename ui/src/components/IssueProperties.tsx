@@ -14,7 +14,7 @@ import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
-import { formatDate, cn, projectUrl } from "../lib/utils";
+import { formatDateTime, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -25,6 +25,7 @@ interface IssuePropertiesProps {
   issue: Issue;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
+  hideStatus?: boolean;
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -98,7 +99,7 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -203,10 +204,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       : null;
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const selectedLabels =
+    issue.labels ??
+    (labels ?? []).filter((label) => (issue.labelIds ?? []).includes(label.id));
 
-  const labelsTrigger = (issue.labels ?? []).length > 0 ? (
+  const labelsTrigger = selectedLabels.length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
-      {(issue.labels ?? []).slice(0, 3).map((label) => (
+      {selectedLabels.slice(0, 3).map((label) => (
         <span
           key={label.id}
           className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
@@ -219,8 +223,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {label.name}
         </span>
       ))}
-      {(issue.labels ?? []).length > 3 && (
-        <span className="text-xs text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+      {selectedLabels.length > 3 && (
+        <span className="text-xs text-muted-foreground">+{selectedLabels.length - 3}</span>
       )}
     </div>
   ) : (
@@ -437,13 +441,15 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
-          <StatusIcon
-            status={issue.status}
-            onChange={(status) => onUpdate({ status })}
-            showLabel
-          />
-        </PropertyRow>
+        {!hideStatus && (
+          <PropertyRow label="Status">
+            <StatusIcon
+              status={issue.status}
+              onChange={(status) => onUpdate({ status })}
+              showLabel
+            />
+          </PropertyRow>
+        )}
 
         <PropertyRow label="Priority">
           <PriorityIcon
@@ -535,16 +541,16 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       <div className="space-y-1">
         {issue.startedAt && (
           <PropertyRow label="Started">
-            <span className="text-sm">{formatDate(issue.startedAt)}</span>
+            <span className="text-sm">{formatDateTime(issue.startedAt)}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
           <PropertyRow label="Completed">
-            <span className="text-sm">{formatDate(issue.completedAt)}</span>
+            <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
         <PropertyRow label="Created">
-          <span className="text-sm">{formatDate(issue.createdAt)}</span>
+          <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>

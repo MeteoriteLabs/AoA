@@ -124,6 +124,7 @@ export interface ProjectExecutionWorkspacePolicy {
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
+  reuseWorkspaceId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
 }
@@ -199,6 +200,9 @@ export interface WorkspaceRuntimeService {
   cwd: string | null;
   port: number | null;
   url: string | null;
+  previewUrl: string | null;
+  previewAccess: "local" | "company" | "external" | null;
+  localTargetUrl: string | null;
   provider: "local_process" | "adapter_managed";
   providerRef: string | null;
   ownerAgentId: string | null;
@@ -208,6 +212,7 @@ export interface WorkspaceRuntimeService {
   stoppedAt: Date | null;
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
+  healthCheckedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

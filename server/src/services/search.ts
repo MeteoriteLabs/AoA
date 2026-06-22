@@ -141,10 +141,18 @@ function toFiniteScore(value: number | string | null | undefined) {
 }
 
 async function resolveScope(db: Db, companyId: string, actor: Actor): Promise<SearchScope> {
-  if (actor.type === "agent") {
-    return { role: "founder", userId: null, scopedProjectIds: new Set() };
+  // Non-board bearer tokens (mcp / agent) are NEVER founder-equivalent for search.
+  // A founder-created MCP key replays the founder's userId, which would otherwise
+  // resolve to "founder" via the userRoles lookup and bypass ALL per-entity
+  // visibility filtering (read-anyone). Confine them to team_member, owner-scoped
+  // by the (possibly null) replayed userId; agents carry no userId and so see only
+  // unscoped/shared entities (the null-safe checks in isVisibleToScope). Interactive
+  // founder/role reach is via board sessions only. (Same board-gate pattern as the
+  // sibling PR #194 / #195 authz fixes; intentionally stricter for mcp.)
+  if (actor.type !== "board") {
+    return { role: "team_member", userId: actor.userId ?? null, scopedProjectIds: new Set() };
   }
-  if ((actor.type !== "board" && actor.type !== "mcp") || actor.source === "local_implicit" || !actor.userId) {
+  if (actor.source === "local_implicit" || !actor.userId) {
     return { role: "founder", userId: actor.userId ?? null, scopedProjectIds: new Set() };
   }
 
@@ -195,8 +203,8 @@ function isVisibleToScope(
       return scope.role === "team_lead"
         ? isUnscoped(result.projectId as string | null | undefined)
           || scope.scopedProjectIds.has((result.projectId as string | null) ?? "")
-        : (result.assigneeUserId as string | null) === scope.userId
-          || isUnscoped(result.projectId as string | null | undefined);
+        : ((scope.userId != null && (result.assigneeUserId as string | null) === scope.userId)
+          || isUnscoped(result.projectId as string | null | undefined));
     case "goal": {
       const projectIds = ((result.projectIds as string[] | null | undefined) ?? []).filter(Boolean);
       return scope.role === "team_lead"
@@ -221,13 +229,13 @@ function isVisibleToScope(
         return scope.scopedProjectIds.has((result.departmentId as string | null) ?? "")
           || scope.scopedProjectIds.has((result.projectId as string | null) ?? "");
       }
-      return (result.taskAssigneeUserId as string | null) === scope.userId;
+      return scope.userId != null && (result.taskAssigneeUserId as string | null) === scope.userId;
     case "artifact":
       return scope.role === "team_lead"
         ? isUnscoped(result.linkedIssueProjectId as string | null | undefined)
           || scope.scopedProjectIds.has((result.linkedIssueProjectId as string | null) ?? "")
-        : (result.linkedIssueAssigneeUserId as string | null) === scope.userId
-          || isUnscoped(result.linkedIssueProjectId as string | null | undefined);
+        : ((scope.userId != null && (result.linkedIssueAssigneeUserId as string | null) === scope.userId)
+          || isUnscoped(result.linkedIssueProjectId as string | null | undefined));
     case "suggestion":
       if (!result.relatedMemoryItemId) return true;
       if ((result.relatedMemoryVisibility as string | null) === "shared") return true;
@@ -235,7 +243,7 @@ function isVisibleToScope(
         return scope.scopedProjectIds.has((result.relatedMemoryDepartmentId as string | null) ?? "")
           || scope.scopedProjectIds.has((result.relatedMemoryProjectId as string | null) ?? "");
       }
-      return (result.relatedMemoryTaskAssigneeUserId as string | null) === scope.userId;
+      return scope.userId != null && (result.relatedMemoryTaskAssigneeUserId as string | null) === scope.userId;
     default:
       return false;
   }
@@ -250,6 +258,21 @@ export function searchService(db: Db) {
         actor: Actor;
         includeArchived?: boolean;
         limitPerType?: number;
+        /**
+         * Phase 1 Phase E batch 3 (T24): when set, the brief/thread group is
+         * pulled from `discussions` (instead of legacy `briefs+debriefs`) and
+         * filtered by intent. The brief source is replaced — not augmented —
+         * because the new producers all write to `discussions`.
+         */
+        intent?: string;
+        /** Thread phase: `discuss | scope | assign | done`. See `THREAD_PHASES`. */
+        phase?: string;
+        /**
+         * Participant filter formatted as `agent:<uuid>` or `user:<id>`.
+         * Anything that doesn't parse cleanly is dropped silently — the
+         * route validates URL shape; this is the service-level safety net.
+         */
+        participant?: string;
       },
     ): Promise<GlobalSearchResponse> => {
       const query = input.query.trim();
@@ -263,6 +286,22 @@ export function searchService(db: Db) {
       const fetchLimit = Math.max(limitPerType * 3, 24);
       const likePattern = `%${query}%`;
       const tsQuery = sql`websearch_to_tsquery('simple', ${query})`;
+
+      // Phase 1 Phase E batch 3 (T24): parse participant once so both the
+      // SQL EXISTS clause and the test contract see the same value.
+      const participantParts = input.participant?.includes(":")
+        ? input.participant.split(":", 2)
+        : null;
+      const participantType =
+        participantParts?.[0] === "agent" || participantParts?.[0] === "user"
+          ? participantParts[0]
+          : null;
+      const participantId = participantType ? participantParts![1] : null;
+      // Trigger the discussions source whenever any thread-only filter is set.
+      const useDiscussionsForBriefs =
+        Boolean(input.intent) ||
+        Boolean(input.phase) ||
+        Boolean(participantId);
 
       const [
         taskRows,
@@ -361,62 +400,122 @@ export function searchService(db: Db) {
           order by score desc, a.updated_at desc
           limit ${fetchLimit}
         `),
-        db.execute(sql`
-          select
-            b.id,
-            coalesce(d.title, 'Brief') as title,
-            b.status,
-            b.department_id as "departmentId",
-            b.project_id as "projectId",
-            p.name as "departmentName",
-            left(coalesce(d.raw_content, ''), 160) as subtitle,
-            greatest(
-              ts_rank_cd(
-                to_tsvector(
-                  'simple',
-                  concat_ws(
-                    ' ',
-                    coalesce(d.title, ''),
-                    coalesce(d.raw_content, ''),
-                    coalesce((
-                      select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
-                      from brief_items bi
-                      where bi.brief_id = b.id
-                    ), '')
-                  )
-                ),
-                ${tsQuery}
-              ),
-              case
-                when coalesce(d.title, '') ilike ${likePattern} then 0.6
-                when coalesce(d.raw_content, '') ilike ${likePattern} then 0.3
-                else 0
-              end
-            ) as score
-          from briefs b
-          inner join debriefs d on d.id = b.debrief_id
-          left join projects p on p.id = b.department_id
-          where b.company_id = ${companyId}
-            and (
-              to_tsvector(
-                'simple',
-                concat_ws(
-                  ' ',
-                  coalesce(d.title, ''),
-                  coalesce(d.raw_content, ''),
-                  coalesce((
-                    select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
-                    from brief_items bi
-                    where bi.brief_id = b.id
-                  ), '')
+        // Phase 1 Phase E batch 3 (T24): if any thread-only filter is active
+        // (intent/phase/participant), source the brief/thread group from
+        // `discussions` so the filters can apply. Otherwise we preserve the
+        // existing briefs+debriefs source to keep older tests + back-compat.
+        useDiscussionsForBriefs
+          ? db.execute(sql`
+              select
+                d.id,
+                coalesce(d.title, 'Thread') as title,
+                d.status,
+                d.scope_id as "departmentId",
+                null::uuid as "projectId",
+                p.name as "departmentName",
+                left(coalesce(d.summary_text, ''), 160) as subtitle,
+                greatest(
+                  ts_rank_cd(
+                    to_tsvector(
+                      'simple',
+                      concat_ws(
+                        ' ',
+                        coalesce(d.title, ''),
+                        coalesce(d.summary_text, '')
+                      )
+                    ),
+                    ${tsQuery}
+                  ),
+                  case
+                    when coalesce(d.title, '') ilike ${likePattern} then 0.6
+                    when coalesce(d.summary_text, '') ilike ${likePattern} then 0.3
+                    else 0
+                  end
+                ) as score
+              from discussions d
+              left join projects p on p.id = d.scope_id
+              where d.company_id = ${companyId}
+                and (
+                  to_tsvector(
+                    'simple',
+                    concat_ws(
+                      ' ',
+                      coalesce(d.title, ''),
+                      coalesce(d.summary_text, '')
+                    )
+                  ) @@ ${tsQuery}
+                  or coalesce(d.title, '') ilike ${likePattern}
+                  or coalesce(d.summary_text, '') ilike ${likePattern}
                 )
-              ) @@ ${tsQuery}
-              or coalesce(d.title, '') ilike ${likePattern}
-              or coalesce(d.raw_content, '') ilike ${likePattern}
-            )
-          order by score desc, b.updated_at desc
-          limit ${fetchLimit}
-        `),
+                ${input.intent ? sql`and d.intent @> ${JSON.stringify([input.intent])}::jsonb` : sql``}
+                ${input.phase ? sql`and d.phase = ${input.phase}` : sql``}
+                ${participantType && participantId ? sql`
+                  and exists (
+                    select 1 from thread_participants tp
+                    where tp.thread_id = d.id
+                      and tp.principal_type = ${participantType}
+                      and tp.principal_id = ${participantId}
+                  )
+                ` : sql``}
+              order by score desc, d.updated_at desc
+              limit ${fetchLimit}
+            `)
+          : db.execute(sql`
+              select
+                b.id,
+                coalesce(d.title, 'Brief') as title,
+                b.status,
+                b.department_id as "departmentId",
+                b.project_id as "projectId",
+                p.name as "departmentName",
+                left(coalesce(d.raw_content, ''), 160) as subtitle,
+                greatest(
+                  ts_rank_cd(
+                    to_tsvector(
+                      'simple',
+                      concat_ws(
+                        ' ',
+                        coalesce(d.title, ''),
+                        coalesce(d.raw_content, ''),
+                        coalesce((
+                          select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
+                          from brief_items bi
+                          where bi.brief_id = b.id
+                        ), '')
+                      )
+                    ),
+                    ${tsQuery}
+                  ),
+                  case
+                    when coalesce(d.title, '') ilike ${likePattern} then 0.6
+                    when coalesce(d.raw_content, '') ilike ${likePattern} then 0.3
+                    else 0
+                  end
+                ) as score
+              from briefs b
+              inner join debriefs d on d.id = b.debrief_id
+              left join projects p on p.id = b.department_id
+              where b.company_id = ${companyId}
+                and (
+                  to_tsvector(
+                    'simple',
+                    concat_ws(
+                      ' ',
+                      coalesce(d.title, ''),
+                      coalesce(d.raw_content, ''),
+                      coalesce((
+                        select string_agg(concat_ws(' ', bi.title, coalesce(bi.description, '')), ' ')
+                        from brief_items bi
+                        where bi.brief_id = b.id
+                      ), '')
+                    )
+                  ) @@ ${tsQuery}
+                  or coalesce(d.title, '') ilike ${likePattern}
+                  or coalesce(d.raw_content, '') ilike ${likePattern}
+                )
+              order by score desc, b.updated_at desc
+              limit ${fetchLimit}
+            `),
         db.execute(sql`
           select
             m.id,
@@ -567,7 +666,7 @@ export function searchService(db: Db) {
           type: "brief" as const,
           title: row.title,
           subtitle: excerpt(row.subtitle),
-          href: `/briefs/${row.id}`,
+          href: `/discussions/${row.id}`,
           score: toFiniteScore(row.score),
           status: row.status,
           departmentName: row.departmentName,

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockCompanyContext, mockDialogContext } from "./test-utils";
@@ -112,15 +113,37 @@ describe("MarketplacePackageDetail", () => {
     expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders the package name + verified check + N items pill", () => {
+  it("renders the package name + verified check + top-right item badge", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
     const { container } = wrap("/marketplace/package/garrytan/gstack");
     expect(screen.getByRole("heading", { level: 1, name: /gstack/i })).toBeInTheDocument();
     expect(container.querySelector('[data-testid="package-hero-verified"]')).toBeTruthy();
     // Both the pill and the install button contain "2 items" — assert at least one occurrence
-    expect(screen.getAllByText(/2 items/i).length).toBeGreaterThanOrEqual(1);
-    // Install button renders with spec text
+    const badge = screen.getByTestId("package-hero-badge");
+    expect(badge).toHaveTextContent(/package/i);
+    expect(screen.getByLabelText(/2 items/i)).toHaveTextContent("2");
     expect(screen.getByRole("button", { name: /install all 2 items/i })).toBeInTheDocument();
+  });
+
+  it("renders provider logo and provider byline in the package hero", () => {
+    setupHooks({
+      catalog: SAMPLE_CATALOG,
+      packages: [
+        {
+          ...SAMPLE_PACKAGE,
+          provider: {
+            id: "garrytan",
+            name: "Garry Tan",
+            logoUrl: "https://example.com/garrytan.png",
+            fallbackInitials: "GT",
+          },
+        },
+      ],
+    });
+    wrap("/marketplace/package/garrytan/gstack");
+
+    expect(screen.getByRole("img", { name: "Garry Tan logo" })).toHaveClass("size-20");
+    expect(screen.getByText("by Garry Tan")).toBeInTheDocument();
   });
 
   it("renders the chevron-back link to /marketplace", () => {
@@ -142,6 +165,16 @@ describe("MarketplacePackageDetail", () => {
     expect(officeLink).toBeTruthy();
   });
 
+  it("renders included items with marketplace skill card chrome", () => {
+    setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
+    wrap("/marketplace/package/garrytan/gstack");
+
+    expect(screen.getAllByText("SKILL")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /^install$/i })).toHaveLength(2);
+    expect(screen.getByText("YC interrogation")).toBeInTheDocument();
+    expect(screen.getByText("QA the site")).toBeInTheDocument();
+  });
+
   it("shows a not-found state when the package id does not exist", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [] });
     wrap("/marketplace/package/does-not-exist");
@@ -152,5 +185,14 @@ describe("MarketplacePackageDetail", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: undefined, packagesLoading: true });
     wrap("/marketplace/package/garrytan/gstack");
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
+  });
+
+  it("opens package install modal from detail Install all", async () => {
+    setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
+    wrap("/marketplace/package/garrytan/gstack");
+
+    await userEvent.click(screen.getByRole("button", { name: /install all 2 items/i }));
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Install skills");
   });
 });

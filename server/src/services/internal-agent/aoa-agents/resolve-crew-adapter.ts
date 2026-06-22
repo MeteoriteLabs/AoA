@@ -1,0 +1,147 @@
+import { eq } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import { internalAgentConfig } from "@armyofagents/db";
+
+/**
+ * Resolves the right CLI adapter for AoA crew agents based on the company's
+ * configured provider. Earlier, every ensure-*.ts file hardcoded
+ * `adapterType: "process"` with no `command`, which made the crew unrunnable
+ * (the process adapter throws "Process adapter missing command" — see
+ * server/src/adapters/process/execute.ts:16). Scribe worked only because its
+ * row was later mutated to `codex_local` (the only crew row ever fixed).
+ *
+ * Surfaced during the threads-crew E2E UAT:
+ *   .gstack/qa-reports/uat-threads-crew-v1-findings.md (P1-B).
+ *
+ * Decision #91 removed api-mode adapters, so the choice is which CLI to invoke.
+ * Mapping mirrors what each CLI's adapter expects (model + bypass-approvals so
+ * the crew can run headless without prompting).
+ *
+ * Returns `{adapterType, adapterConfig}`. Caller merges into the agents row.
+ * Backfill callers should preserve any existing `instructions*` fields in
+ * adapter_config — those are seeded separately by seedRoleInstructionBundle.
+ */
+export interface CrewAdapter {
+  adapterType: "codex_local" | "claude_local" | "gemini_local" | "opencode_local";
+  adapterConfig: Record<string, unknown>;
+}
+
+export function resolveCrewAdapterFor(provider: string | null | undefined): CrewAdapter {
+  switch (provider) {
+    case "anthropic":
+      return {
+        adapterType: "claude_local",
+        adapterConfig: {
+          model: "claude-sonnet-4-5-20250929",
+          // UAT iteration-2 root cause (P0): claude_local CLI in --print
+          // (non-interactive) mode hits a permission gate on every MCP tool
+          // call. With no TTY to answer the prompt, claude silently skips
+          // the tool call and completes the run "successfully" — producing
+          // a clean wakeup row but ZERO actual work (no post_entry, no
+          // create_artifact, etc.). codex_local has the equivalent
+          // `dangerouslyBypassApprovalsAndSandbox: true` (line ~63) and
+          // works correctly; claude_local needs the matching flag for
+          // crew runs. The bridge's D2 default-deny allowlist remains the
+          // real security gate — this flag only bypasses the local CLI's
+          // interactive prompt, not AoA's authz.
+          dangerouslySkipPermissions: true,
+        },
+      };
+    case "google":
+      return {
+        adapterType: "gemini_local",
+        adapterConfig: {
+          model: "gemini-2.5-pro",
+        },
+      };
+    // T2.0: opencode is its own first-class CLI (uses OpenAI under the hood
+    // but with its own subprocess + MCP wiring via opencode.json, NOT codex's
+    // config.toml — see Task 2.1 for the MCP writer). Pre-T2.0 a company
+    // configured with provider='opencode' silently fell through to
+    // codex_local — wrong CLI, wrong MCP delivery path, broken crew runs.
+    case "opencode":
+      return {
+        adapterType: "opencode_local",
+        adapterConfig: {
+          model: "gpt-5.3-codex",
+        },
+      };
+    case "openai":
+    default:
+      return {
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.3-codex",
+          dangerouslyBypassApprovalsAndSandbox: true,
+        },
+      };
+  }
+}
+
+/**
+ * Look up the company's internalAgentConfig.provider and resolve the crew
+ * adapter for it. Falls back to the openai/codex default if the config row
+ * is missing or has no provider set.
+ */
+export async function resolveCrewAdapterForCompany(db: Db, companyId: string): Promise<CrewAdapter> {
+  const rows = await db
+    .select({ provider: internalAgentConfig.provider })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .limit(1);
+  return resolveCrewAdapterFor(rows[0]?.provider);
+}
+
+/**
+ * Decide whether an existing agent row needs an adapter backfill.
+ *
+ * Returns true in two cases:
+ *
+ * 1) **Legacy unrunnable `process` rows** (the original P1-B trigger):
+ *    `adapter_type='process'` with no `command`. The legacy ensure-*.ts
+ *    seeds wrote this exact shape; the process adapter throws on dispatch.
+ *    Genuine process-with-command agents (generic shell processes) are
+ *    left alone.
+ *
+ * 2) **claude_local crew agents missing `dangerouslySkipPermissions`**
+ *    (UAT iteration-2 fix): the pre-fix resolveCrewAdapterFor for
+ *    provider='anthropic' didn't set this flag, so claude crew runs
+ *    silently no-op on every MCP tool call (permission gate hangs in
+ *    --print mode). Backfill upgrades existing rows on startup so we
+ *    don't need to manually edit every agent's adapterConfig.
+ */
+export function needsAdapterBackfill(
+  adapterType: string | null | undefined,
+  adapterConfig: Record<string, unknown> | null | undefined,
+): boolean {
+  // Case 1: legacy process rows without a command.
+  if (adapterType === "process") {
+    const cmd = adapterConfig?.command;
+    if (typeof cmd === "string" && cmd.trim().length > 0) return false;
+    return true;
+  }
+  // Case 2: claude_local crew rows missing the permission-skip flag.
+  if (adapterType === "claude_local") {
+    return adapterConfig?.dangerouslySkipPermissions !== true;
+  }
+  return false;
+}
+
+/**
+ * Merge a resolved crew adapter into an existing adapter_config, preserving
+ * any `instructions*` fields (those are managed by seedRoleInstructionBundle
+ * and re-running this would clobber them).
+ */
+export function mergeAdapterConfig(
+  existing: Record<string, unknown> | null | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = existing ?? {};
+  return {
+    ...next,
+    ...(base.instructionsFilePath ? { instructionsFilePath: base.instructionsFilePath } : {}),
+    ...(base.instructionsRootPath ? { instructionsRootPath: base.instructionsRootPath } : {}),
+    ...(base.instructionsEntryFile ? { instructionsEntryFile: base.instructionsEntryFile } : {}),
+    ...(base.instructionsBundleMode ? { instructionsBundleMode: base.instructionsBundleMode } : {}),
+  };
+}

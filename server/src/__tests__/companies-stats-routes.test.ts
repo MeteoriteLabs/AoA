@@ -38,7 +38,7 @@ describe("GET /api/companies/stats", () => {
       (req as { actor: Record<string, unknown> }).actor = actor;
       next();
     });
-    app.use("/api/companies", companyRoutes({} as never));
+    app.use("/api/companies", companyRoutes({} as never, { deploymentMode: "local_trusted" }));
     return app;
   }
 

@@ -17,7 +17,9 @@ interface NewGoalDefaults {
 }
 
 interface OnboardingOptions {
-  initialStep?: 1 | 2 | 3 | 4;
+  // Phase 1 Phase E batch 2 (T20): step count grew from 6 to 8 (Commander
+  // + Crew picks inserted between root-folder and first-agent steps).
+  initialStep?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   companyId?: string;
 }
 
@@ -29,6 +31,13 @@ export interface DiscussionCaptureDefaults {
   scopeType?: string;
   scopeId?: string;
   existingDiscussionId?: string;
+}
+
+export interface NewThreadDefaults {
+  title?: string;
+  scopeType?: string;
+  scopeId?: string;
+  initialType?: "idea" | "discussion" | "goal" | "transcript" | "document";
 }
 
 interface DialogContextValue {
@@ -55,6 +64,10 @@ interface DialogContextValue {
   discussionCaptureDefaults: DiscussionCaptureDefaults;
   openDiscussionCapture: (defaults?: DiscussionCaptureDefaults) => void;
   closeDiscussionCapture: () => void;
+  newThreadOpen: boolean;
+  newThreadDefaults: NewThreadDefaults;
+  openNewThread: (defaults?: NewThreadDefaults) => void;
+  closeNewThread: () => void;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -71,6 +84,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
   const [discussionCaptureOpen, setDiscussionCaptureOpen] = useState(false);
   const [discussionCaptureDefaults, setDiscussionCaptureDefaults] = useState<DiscussionCaptureDefaults>({});
+  const [newThreadOpen, setNewThreadOpen] = useState(false);
+  const [newThreadDefaults, setNewThreadDefaults] = useState<NewThreadDefaults>({});
 
   const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
     setNewIssueDefaults(defaults);
@@ -130,6 +145,16 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setDiscussionCaptureDefaults({});
   }, []);
 
+  const openNewThread = useCallback((defaults: NewThreadDefaults = {}) => {
+    setNewThreadDefaults(defaults);
+    setNewThreadOpen(true);
+  }, []);
+
+  const closeNewThread = useCallback(() => {
+    setNewThreadOpen(false);
+    setNewThreadDefaults({});
+  }, []);
+
   return (
     <DialogContext.Provider
       value={{
@@ -156,6 +181,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         discussionCaptureDefaults,
         openDiscussionCapture,
         closeDiscussionCapture,
+        newThreadOpen,
+        newThreadDefaults,
+        openNewThread,
+        closeNewThread,
       }}
     >
       {children}

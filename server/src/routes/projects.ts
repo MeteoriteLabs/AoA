@@ -12,10 +12,11 @@ import {
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
-import { projectService, logActivity, instanceSettingsService } from "../services/index.js";
+import { projectService, logActivity, instanceSettingsService, secretService } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import { assertCanControlWorkspace } from "../services/workspace-authz.js";
 
 /**
  * Detects whether a request body's executionWorkspacePolicy carries any of the
@@ -28,14 +29,21 @@ export function sniffsShellCommandFields(policy: unknown): boolean {
   if (!policy || typeof policy !== "object") return false;
   const p = policy as Record<string, unknown>;
   const ws = (p.workspaceStrategy ?? {}) as Record<string, unknown>;
+  const workspaceRuntime = (p.workspaceRuntime ?? {}) as Record<string, unknown>;
+  const services = Array.isArray(workspaceRuntime.services) ? workspaceRuntime.services : [];
+  const hasRuntimeServiceCommand = services.some(
+    (service) => typeof service === "object" && service !== null && typeof (service as Record<string, unknown>).command === "string",
+  );
   return typeof ws.provisionCommand === "string"
       || typeof ws.teardownCommand === "string"
-      || typeof ws.cleanupCommand === "string";
+      || typeof ws.cleanupCommand === "string"
+      || hasRuntimeServiceCommand;
 }
 
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const secretsSvc = secretService(db);
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -111,6 +119,8 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertRole(db, req, companyId, "founder");
+    } else if (req.body.executionWorkspacePolicy !== undefined) {
+      await assertCanControlWorkspace(db, req, { companyId, projectId: null });
     }
 
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
@@ -188,6 +198,8 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertRole(db, req, existing.companyId, "founder");
+    } else if (req.body.executionWorkspacePolicy !== undefined) {
+      await assertCanControlWorkspace(db, req, { companyId: existing.companyId, projectId: existing.id });
     }
 
     const project = await svc.update(id, req.body);
@@ -376,6 +388,11 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    await secretsSvc.syncEnvBindingsForTarget(project.companyId, {
+      targetType: "project",
+      targetId: project.id,
+      pathPrefix: "env",
+    }, updated.env ?? {});
     res.json({ env: updated.env ?? null });
   });
 

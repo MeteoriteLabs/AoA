@@ -1,5 +1,10 @@
 import type { Db } from "@armyofagents/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@armyofagents/db";
+import {
+  pluginLogs,
+  agentTaskSessions as agentTaskSessionsTable,
+  plugins as pluginsTable,
+  pluginCompanySettings,
+} from "@armyofagents/db";
 import { eq, and, like, desc } from "drizzle-orm";
 import type {
   HostServices,
@@ -288,11 +293,52 @@ export function buildHostServices(
   };
 
   /**
-   * Plugins are instance-wide in the current runtime. Company IDs are still
-   * required for company-scoped data access, but there is no per-company
-   * availability gate to enforce here.
+   * Per-company availability gate (B-M5).
+   *
+   * The plugin WORKER supplies the `companyId` on every host-service call, so
+   * without this gate one installed plugin could read/write any company's data
+   * — including companies that toggled it `disabled`, or companies it does not
+   * belong to at all.
+   *
+   * Enforcement:
+   *
+   * 1. Ownership / existence — the `plugins` table is per-company
+   *    (`companyId` NOT NULL). We load the plugin row filtered by
+   *    `(id = pluginId, companyId = companyId)`. If no row matches, the plugin
+   *    either does not exist or belongs to a DIFFERENT company → reject.
+   *
+   * 2. Explicit disable — `plugin_company_settings` is **default-ENABLED**:
+   *    no row => enabled, `enabled = false` => disabled, `enabled = true` =>
+   *    enabled. We therefore honor ONLY an explicit disable. We must NOT
+   *    fail-closed on a missing row, or every plugin without a settings row
+   *    would be wrongly blocked.
    */
-  const ensurePluginAvailableForCompany = async (_companyId: string) => {};
+  const ensurePluginAvailableForCompany = async (companyId: string) => {
+    // 1. Ownership / existence (plugins is per-company).
+    const pluginRow = await db
+      .select()
+      .from(pluginsTable)
+      .where(and(eq(pluginsTable.id, pluginId), eq(pluginsTable.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!pluginRow) {
+      throw new Error("Plugin is not available for this company");
+    }
+
+    // 2. Honor an explicit disable; default-enabled when no row / enabled=true.
+    const settingsRow = await db
+      .select()
+      .from(pluginCompanySettings)
+      .where(
+        and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (settingsRow && settingsRow.enabled === false) {
+      throw new Error("Plugin is disabled for this company");
+    }
+  };
 
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,

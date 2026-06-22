@@ -38,6 +38,10 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     spentMonthlyCents: 1234,
     proactiveIntervalMinutes: 240,
     lastProactiveRunAt: null,
+    cheapModel: null,
+    runtimeApprovalsEnabled: true,
+    runtimeAllowAlwaysEnabled: true,
+    vendorCliBypassEnabled: true,
     ...overrides,
   };
 }
@@ -67,11 +71,34 @@ const apiMock = {
   getRuns: vi.fn().mockResolvedValue(makeRunsResponse()),
   testConnection: vi.fn().mockResolvedValue({ success: true }),
 };
+const toolPermissionsMock = {
+  get: vi.fn().mockResolvedValue({
+    permissions: {},
+    default: {
+      enabled: true,
+      requireConfirmation: false,
+      minimumRole: "team_member",
+    },
+  }),
+  update: vi.fn().mockResolvedValue({ success: true }),
+};
+const trustRulesMock = {
+  list: vi.fn().mockResolvedValue({ rules: [] }),
+  revoke: vi.fn().mockResolvedValue({ success: true }),
+};
 
 vi.mock("@/api/internal-agent", () => ({
   internalAgentApi: new Proxy(
     {},
     { get: (_t, prop) => (apiMock as any)[prop] },
+  ),
+  toolPermissionsApi: new Proxy(
+    {},
+    { get: (_t, prop) => (toolPermissionsMock as any)[prop] },
+  ),
+  commanderTrustRulesApi: new Proxy(
+    {},
+    { get: (_t, prop) => (trustRulesMock as any)[prop] },
   ),
 }));
 
@@ -89,6 +116,8 @@ vi.mock("@/components/settings/sections/CommanderSubTabs", async () => {
     { id: "capabilities", label: "Capabilities" },
     { id: "budget", label: "Budget & Spend" },
     { id: "history", label: "Run History" },
+    { id: "permissions", label: "Permissions" },
+    { id: "trusted-actions", label: "Trusted Actions" },
   ];
 
   function useCommanderSubTab() {
@@ -135,6 +164,8 @@ describe("CommanderSection", () => {
     mockCompanyContext.companies = [makeCompany()];
     apiMock.getConfig.mockResolvedValue(makeAgentConfig());
     apiMock.getRuns.mockResolvedValue(makeRunsResponse());
+    trustRulesMock.list.mockResolvedValue({ rules: [] });
+    trustRulesMock.revoke.mockResolvedValue({ success: true });
   });
 
   it("renders tab bar with all tabs", async () => {
@@ -146,6 +177,8 @@ describe("CommanderSection", () => {
     expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
     expect(screen.getByTestId("tab-history")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-permissions")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-trusted-actions")).toBeInTheDocument();
   });
 
   // Sprint 2A (Decision #91) — Commander is CLI-only. The page no longer
@@ -155,6 +188,73 @@ describe("CommanderSection", () => {
     renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("CLI Tool")).toBeInTheDocument();
+    });
+  });
+
+  it("renders runtime approval toggles on execution tab", async () => {
+    renderWithProviders(<CommanderSection />);
+    await waitFor(() => {
+      expect(screen.getByLabelText("Require AoA runtime approvals")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("Allow always for exact repeated actions")).toBeInTheDocument();
+    expect(screen.getByLabelText("Bypass vendor CLI approval prompts")).toBeInTheDocument();
+  });
+
+  it("saves runtime approval toggles with execution settings", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<CommanderSection />);
+    await waitFor(() => {
+      expect(screen.getByLabelText("Require AoA runtime approvals")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText("Require AoA runtime approvals"));
+    await user.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(apiMock.updateConfig).toHaveBeenCalledWith(
+        "comp-1",
+        expect.objectContaining({
+          executionMode: "cli",
+          runtimeApprovalsEnabled: false,
+          runtimeAllowAlwaysEnabled: true,
+          vendorCliBypassEnabled: true,
+        }),
+      );
+    });
+  });
+
+  it("renders and revokes trusted Commander actions", async () => {
+    trustRulesMock.list.mockResolvedValue({
+      rules: [
+        {
+          id: "trust-1",
+          toolName: "create_task",
+          scope: "exact_params",
+          paramsHashPrefix: "abcdef12",
+          paramsHashVersion: "v1",
+          lastUsedAt: null,
+          expiresAt: null,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<CommanderSection />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-trusted-actions")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-trusted-actions"));
+
+    await waitFor(() => {
+      expect(screen.getByText("create_task")).toBeInTheDocument();
+    });
+    expect(screen.getByText("v1:abcdef12")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Revoke"));
+
+    await waitFor(() => {
+      expect(trustRulesMock.revoke).toHaveBeenCalledWith("comp-1", "trust-1");
     });
   });
 
@@ -295,7 +395,7 @@ describe("CommanderSection", () => {
     });
   });
 
-  it("execution tab save calls updateConfig with CLI-only fields (Sprint 2A)", async () => {
+  it("execution tab save calls updateConfig with CLI and runtime approval fields", async () => {
     const user = userEvent.setup();
     renderWithProviders(<CommanderSection />);
     await waitFor(() => {
@@ -303,10 +403,16 @@ describe("CommanderSection", () => {
     });
     await user.click(screen.getByText("Save"));
     await waitFor(() => {
-      expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
-        executionMode: "cli",
-        cliTool: "claude_cli",
-      });
+      expect(apiMock.updateConfig).toHaveBeenCalledWith(
+        "comp-1",
+        expect.objectContaining({
+          executionMode: "cli",
+          cliTool: "claude_cli",
+          runtimeApprovalsEnabled: true,
+          runtimeAllowAlwaysEnabled: true,
+          vendorCliBypassEnabled: true,
+        }),
+      );
     });
   });
 
@@ -556,7 +662,39 @@ describe("CommanderSection", () => {
     await waitFor(() => {
       expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
         budgetMonthlyCents: 5000,
+        cheapModel: null,
       });
+    });
+  });
+
+  describe("cost-saver cheap model field", () => {
+    it("renders the cheap model input in the budget tab", async () => {
+      apiMock.getConfig.mockResolvedValue(
+        makeAgentConfig({ cheapModel: "claude-haiku-4-5" }),
+      );
+      const user = userEvent.setup();
+      renderWithProviders(<CommanderSection />);
+      await waitFor(() => {
+        expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("tab-budget"));
+      const input = await screen.findByTestId("cheap-model-input");
+      expect(input).toBeInTheDocument();
+      expect((input as HTMLInputElement).value).toBe("claude-haiku-4-5");
+    });
+
+    it("renders empty cheap model input when cheapModel is null", async () => {
+      apiMock.getConfig.mockResolvedValue(
+        makeAgentConfig({ cheapModel: null }),
+      );
+      const user = userEvent.setup();
+      renderWithProviders(<CommanderSection />);
+      await waitFor(() => {
+        expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("tab-budget"));
+      const input = await screen.findByTestId("cheap-model-input");
+      expect((input as HTMLInputElement).value).toBe("");
     });
   });
 });

@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   executionWorkspaces,
@@ -28,12 +26,29 @@ import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
+import {
+  buildRuntimeServicePreviewUrl,
+  classifyRuntimeServiceTarget,
+  isAllowedPreviewUpstream,
+} from "./preview-url.js";
+import { runGit as runGitService } from "./git.js";
+import { isUniqueViolation } from "./db-errors.js";
+import { emitBranchTaskOutput } from "./task-output-emitters.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 
-const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+/**
+ * How long (in ms) a workspace lock is considered fresh.  After this interval
+ * a lock is "stale" and a new caller may reclaim it atomically, which handles
+ * the case where the process that acquired the lock crashed without releasing.
+ *
+ * Default: 30 minutes.  Callers may pass a custom staleMs to tryClaimWorkspaceRun
+ * (useful in tests and for workloads with known shorter/longer build times).
+ */
+export const WORKSPACE_RUN_LOCK_STALE_MS = 30 * 60 * 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -50,6 +65,21 @@ function cloneRecord(value: unknown): Record<string, unknown> | null {
   return { ...value };
 }
 
+export function mergeExecutionWorkspaceMetadataPatch(input: {
+  existingMetadata: unknown;
+  incomingMetadata: unknown;
+}): Record<string, unknown> | null {
+  const incoming = cloneRecord(input.incomingMetadata) ?? {};
+  delete incoming.config;
+
+  const existingConfig = cloneRecord(input.existingMetadata)?.config;
+  if (existingConfig !== undefined) {
+    incoming.config = existingConfig;
+  }
+
+  return Object.keys(incoming).length > 0 ? incoming : null;
+}
+
 async function pathExists(value: string | null | undefined) {
   if (!value) return false;
   try {
@@ -60,8 +90,13 @@ async function pathExists(value: string | null | undefined) {
   }
 }
 
-async function runGit(args: string[], cwd: string) {
-  return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+/**
+ * Thin adapter preserving the `{ stdout }` shape the close-readiness callers expect.
+ * Delegates to the consolidated git service which returns trimmed stdout directly.
+ */
+async function runGit(args: string[], cwd: string): Promise<{ stdout: string }> {
+  const stdout = await runGitService(args, cwd);
+  return { stdout };
 }
 
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
@@ -310,7 +345,15 @@ export function mergeExecutionWorkspaceConfig(
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
 }
 
-function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+export function toWorkspaceRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+  const target = classifyRuntimeServiceTarget(row.url ?? null);
+  const linkedToWorkspace = Boolean(row.executionWorkspaceId || row.projectWorkspaceId);
+  const canProxy =
+    linkedToWorkspace &&
+    row.status === "running" &&
+    row.healthStatus !== "unhealthy" &&
+    isAllowedPreviewUpstream(row.url ?? null);
+
   return {
     id: row.id,
     companyId: row.companyId,
@@ -328,6 +371,9 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     cwd: row.cwd ?? null,
     port: row.port ?? null,
     url: row.url ?? null,
+    previewUrl: canProxy ? buildRuntimeServicePreviewUrl(row.id) : null,
+    previewAccess: canProxy ? target.access : null,
+    localTargetUrl: target.localTargetUrl,
     provider: row.provider as WorkspaceRuntimeService["provider"],
     providerRef: row.providerRef ?? null,
     ownerAgentId: row.ownerAgentId ?? null,
@@ -337,6 +383,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    healthCheckedAt: row.healthCheckedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -409,6 +456,60 @@ export async function loadEffectiveRuntimeServicesByExecutionWorkspace(
 }
 
 export function executionWorkspaceService(db: Db) {
+  async function findActiveTaskOwned(companyId: string, issueId: string) {
+    const rows = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.companyId, companyId),
+          eq(executionWorkspaces.sourceIssueId, issueId),
+          ne(executionWorkspaces.status, "archived"),
+        ),
+      )
+      .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+    return rows[0] ? toExecutionWorkspace(rows[0]) : null;
+  }
+
+  async function create(data: typeof executionWorkspaces.$inferInsert) {
+    const row = await db
+      .insert(executionWorkspaces)
+      .values(data)
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const workspace = toExecutionWorkspace(row);
+    await emitBranchTaskOutput(db, workspace);
+    return workspace;
+  }
+
+  async function update(id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) {
+    const row = await db
+      .update(executionWorkspaces)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(executionWorkspaces.id, id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const workspace = toExecutionWorkspace(row);
+    await emitBranchTaskOutput(db, workspace);
+    return workspace;
+  }
+
+  async function createTaskOwnedIdempotent(data: typeof executionWorkspaces.$inferInsert) {
+    if (!data.sourceIssueId) return create(data);
+    const existing = await findActiveTaskOwned(data.companyId, data.sourceIssueId);
+    if (existing) return update(existing.id, data);
+    try {
+      return await create(data);
+    } catch (error) {
+      if (!isUniqueViolation(error, "execution_workspaces_active_task_workspace_uq")) throw error;
+      const raced = await findActiveTaskOwned(data.companyId, data.sourceIssueId);
+      if (!raced) throw error;
+      return update(raced.id, data);
+    }
+  }
+
   return {
     list: async (companyId: string, filters?: {
       projectId?: string;
@@ -505,7 +606,7 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!row) return [];
       const grouped = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
-      return (grouped.get(row.id) ?? []).map(toRuntimeService);
+      return (grouped.get(row.id) ?? []).map(toWorkspaceRuntimeService);
     },
 
     usesInheritedProjectRuntimeServices: async (id: string) => {
@@ -537,7 +638,7 @@ export function executionWorkspaceService(db: Db) {
             eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspace.id),
           ),
         );
-      const runtimeServices = runtimeServiceRows.map(toRuntimeService);
+      const runtimeServices = runtimeServiceRows.map(toWorkspaceRuntimeService);
 
       const linkedIssueRows = await db
         .select({
@@ -795,23 +896,95 @@ export function executionWorkspaceService(db: Db) {
       };
     },
 
-    create: async (data: typeof executionWorkspaces.$inferInsert) => {
-      const row = await db
-        .insert(executionWorkspaces)
-        .values(data)
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
+    findActiveTaskOwned,
+
+    create,
+
+    createTaskOwnedIdempotent,
+
+    update,
+
+    /**
+     * Atomically claim the per-workspace run lock for `runId`.
+     *
+     * The claim succeeds (returns the claimed workspace row) when either:
+     *   a) the workspace has no current lock  (active_run_id IS NULL), OR
+     *   b) the existing lock is stale         (locked_at < now - staleMs).
+     *
+     * SQL shape:
+     *   UPDATE execution_workspaces
+     *     SET active_run_id = <runId>, locked_at = now()
+     *   WHERE id = <workspaceId>
+     *     AND (active_run_id IS NULL OR locked_at < now() - <staleMs> interval)
+     *   RETURNING id, active_run_id, locked_at
+     *
+     * Returns the updated row when the lock was acquired, or `null` when the
+     * workspace is currently locked by another run.
+     */
+    tryClaimWorkspaceRun: async (
+      workspaceId: string,
+      runId: string,
+      opts?: { staleMs?: number },
+    ): Promise<{ id: string; activeRunId: string; lockedAt: Date } | null> => {
+      const staleMs = opts?.staleMs ?? WORKSPACE_RUN_LOCK_STALE_MS;
+      // Build the stale-interval literal.  We express it as `now() - interval
+      // '<N> milliseconds'` so it works on any PostgreSQL version without
+      // needing a cast.  Drizzle's `sql` template is used to keep this
+      // side-effect-free and injectable into the WHERE clause.
+      const staleThreshold = sql`now() - interval '${sql.raw(String(staleMs))} milliseconds'`;
+
+      const [row] = await db
+        .update(executionWorkspaces)
+        .set({
+          activeRunId: runId,
+          lockedAt: new Date(), // Drizzle serialises this to a timestamptz literal
+        })
+        .where(
+          and(
+            eq(executionWorkspaces.id, workspaceId),
+            sql`(${executionWorkspaces.activeRunId} IS NULL OR ${executionWorkspaces.lockedAt} < ${staleThreshold})`,
+          ),
+        )
+        .returning({
+          id: executionWorkspaces.id,
+          activeRunId: executionWorkspaces.activeRunId,
+          lockedAt: executionWorkspaces.lockedAt,
+        });
+
+      if (!row || !row.activeRunId || !row.lockedAt) return null;
+      return { id: row.id, activeRunId: row.activeRunId, lockedAt: row.lockedAt };
     },
 
-    update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
-      const row = await db
+    /**
+     * Release the per-workspace run lock.
+     *
+     * Clears active_run_id and locked_at ONLY when the workspace is currently
+     * locked by `runId`.  A lock held by a different run is never disturbed —
+     * this is intentional: if a stale-timeout reclaim happened while the
+     * original holder was still running, the original holder must not
+     * accidentally clear the new owner's lock on completion.
+     *
+     * SQL shape:
+     *   UPDATE execution_workspaces
+     *     SET active_run_id = NULL, locked_at = NULL
+     *   WHERE id = <workspaceId>
+     *     AND active_run_id = <runId>
+     */
+    releaseWorkspaceRun: async (
+      workspaceId: string,
+      runId: string,
+    ): Promise<boolean> => {
+      const [row] = await db
         .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
-        .where(eq(executionWorkspaces.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
+        .set({ activeRunId: null, lockedAt: null })
+        .where(
+          and(
+            eq(executionWorkspaces.id, workspaceId),
+            eq(executionWorkspaces.activeRunId, runId),
+          ),
+        )
+        .returning({ id: executionWorkspaces.id });
+      return Boolean(row);
     },
   };
 }

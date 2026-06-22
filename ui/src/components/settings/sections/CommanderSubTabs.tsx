@@ -6,6 +6,8 @@ const COMMANDER_SUB_TABS = [
   { id: "capabilities", label: "Capabilities" },
   { id: "budget", label: "Budget & Spend" },
   { id: "history", label: "Run History" },
+  { id: "permissions", label: "Permissions" },
+  { id: "trusted-actions", label: "Trusted Actions" },
 ] as const;
 
 export type CommanderSubTabId = (typeof COMMANDER_SUB_TABS)[number]["id"];

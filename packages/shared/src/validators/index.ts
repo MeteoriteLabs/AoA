@@ -127,6 +127,27 @@ export {
 } from "./memory.js";
 
 export {
+  companyBrainNodeRefSchema,
+  companyBrainNodeSchema,
+  companyBrainEdgeSchema,
+  companyBrainNeighborQuerySchema,
+  companyBrainNeighborsResponseSchema,
+  companyBrainOverviewQuerySchema,
+  companyBrainOverviewResponseSchema,
+  createCompanyBrainSemanticEdgeSchema,
+  updateCompanyBrainSemanticEdgeSchema,
+  type CompanyBrainNodeRefInput,
+  type CompanyBrainNodeInput,
+  type CompanyBrainEdgeInput,
+  type CompanyBrainNeighborQuery,
+  type CompanyBrainNeighborsResponseInput,
+  type CompanyBrainOverviewQuery,
+  type CompanyBrainOverviewResponseInput,
+  type CreateCompanyBrainSemanticEdge,
+  type UpdateCompanyBrainSemanticEdge,
+} from "./company-brain-graph.js";
+
+export {
   memoryFolderCreateSchema,
   memoryFolderUpdateSchema,
   normalizeMemoryFolderPath,
@@ -178,9 +199,24 @@ export {
   createSecretSchema,
   rotateSecretSchema,
   updateSecretSchema,
+  secretProviderConfigPayloadSchema,
+  createSecretProviderConfigSchema,
+  updateSecretProviderConfigSchema,
+  createSecretBindingSchema,
+  createRuntimeProviderKeySchema,
+  remoteSecretImportPreviewSchema,
+  remoteSecretImportCommitSchema,
+  updateRuntimeProviderKeySchema,
   type CreateSecret,
   type RotateSecret,
   type UpdateSecret,
+  type CreateSecretProviderConfig,
+  type UpdateSecretProviderConfig,
+  type CreateSecretBinding,
+  type RemoteSecretImportPreview,
+  type RemoteSecretImportCommit,
+  type CreateRuntimeProviderKey,
+  type UpdateRuntimeProviderKey,
 } from "./secret.js";
 
 export {
@@ -216,6 +252,16 @@ export {
   type CreateArtifactVersion,
   type McpArtifactVersion,
 } from "./artifact.js";
+
+export {
+  taskOutputTypeSchema,
+  taskOutputStatusSchema,
+  taskOutputReviewStateSchema,
+  upsertTaskOutputSchema,
+  mutableTaskOutputSchema,
+  type UpsertTaskOutput,
+  type MutableTaskOutput,
+} from "./task-output.js";
 
 export {
   createMcpApiKeySchema,
@@ -291,8 +337,11 @@ export {
 
 export {
   updateInternalAgentConfigSchema,
+  commanderContextScopeSchema,
+  commanderContextSurfaceSchema,
   chatMessageSchema,
   type UpdateInternalAgentConfig,
+  type CommanderContextScope,
   type ChatMessage,
 } from "./internal-agent.js";
 
@@ -337,11 +386,13 @@ export {
   updateRoutineTriggerSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
+  restoreRoutineRevisionSchema,
   type CreateRoutine,
   type UpdateRoutine,
   type CreateRoutineTrigger,
   type UpdateRoutineTrigger,
   type RunRoutine,
+  type RestoreRoutineRevision,
 } from "./routine.js";
 
 export {
@@ -396,3 +447,24 @@ export {
   type InboxDismissal,
   type CreateInboxDismissal,
 } from "./inbox-dismissals.js";
+
+export {
+  createEnvironmentSchema,
+  e2bEnvironmentConfigSchema,
+  environmentDriverSchema,
+  environmentLeaseCleanupStatusSchema,
+  environmentLeasePolicySchema,
+  environmentLeaseStatusSchema,
+  environmentStatusSchema,
+  probeEnvironmentSchema,
+  updateEnvironmentSchema,
+  type CreateEnvironmentInput,
+  type E2bEnvironmentConfig,
+  type ProbeEnvironmentInput,
+  type UpdateEnvironmentInput,
+} from "./environment.js";
+
+export {
+  createUserEntityPinSchema,
+  type CreateUserEntityPin,
+} from "./user-entity-pins.js";

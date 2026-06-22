@@ -10,10 +10,12 @@ import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
+import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
 export function artifactRoutes(db: Db) {
   const router = Router();
   const svc = artifactService(db);
+  registerIssueParamNormalizer(router, db, ["issueId"]);
 
   // List artifacts for a company
   router.get("/companies/:companyId/artifacts", async (req, res) => {

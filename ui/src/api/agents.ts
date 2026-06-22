@@ -55,6 +55,16 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 
 export const agentsApi = {
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
+  listAoa: (companyId: string) =>
+    api.get<Agent[]>(`/companies/${companyId}/agents?kind=aoa`),
+  getAoaRuns: (agentId: string, companyId: string) =>
+    api.get<unknown[]>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/aoa-runs`),
+  listTriggers: (agentId: string, companyId: string) =>
+    api.get<unknown[]>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/triggers`),
+  createTrigger: (agentId: string, companyId: string, data: { kind: string; config?: Record<string, unknown>; enabled?: boolean }) =>
+    api.post<unknown>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/triggers`, data),
+  patchTrigger: (agentId: string, triggerId: string, companyId: string, data: { enabled?: boolean; config?: Record<string, unknown> }) =>
+    api.patch<unknown>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/triggers/${encodeURIComponent(triggerId)}`, data),
   org: (companyId: string) => api.get<UnifiedOrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
@@ -122,7 +132,7 @@ export const agentsApi = {
   testEnvironment: (
     companyId: string,
     type: string,
-    data: { adapterConfig: Record<string, unknown> },
+    data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,

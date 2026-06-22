@@ -4,24 +4,61 @@ import { agentProjects, issues, projectGoals, userRoles } from "@armyofagents/db
 import { forbidden } from "../../errors.js";
 import type { McpUserScope } from "./types.js";
 
+/**
+ * Resolve the MCP visibility scope for a caller.
+ *
+ * B-H1: founder escalation is BOARD-GATED. Only a `board` actor (a real
+ * browser session, or the synthetic `local-board` actor in local_trusted mode)
+ * may ever resolve to `{ kind: "founder" }`. The previous signature took only
+ * `userId` and queried `user_roles`; for an `agent` actor `userId` is an
+ * `agentId` (FK to `agents`, never `authUsers`), so `user_roles` returned zero
+ * rows and the "no rows → founder" fallback handed every agent/mcp caller
+ * founder-level cross-department visibility. We now branch on `actor.source`:
+ *
+ *   - "board"  → query user_roles; zero rows OR a founder row → founder;
+ *                else scoped to the caller's role projects.
+ *   - "agent"  → NEVER founder. Scoped to the agent's `agent_projects`.
+ *   - other    → ("mcp" / "commander" / unknown) least privilege: scoped, no
+ *                projects. These callers carry their own tool-level gating.
+ */
 export async function resolveUserScope(
   db: Db,
   companyId: string,
-  userId: string,
+  actor: { source: string; userId: string },
 ): Promise<McpUserScope> {
-  const roles = await db
-    .select()
-    .from(userRoles)
-    .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
+  const { source, userId } = actor;
 
-  if (roles.length === 0 || roles.some((role) => role.role === "founder")) {
-    return { kind: "founder", userId };
+  if (source === "board") {
+    const roles = await db
+      .select()
+      .from(userRoles)
+      .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
+
+    if (roles.length === 0 || roles.some((role) => role.role === "founder")) {
+      return { kind: "founder", userId };
+    }
+
+    const projectIds = new Set(
+      roles.map((role) => role.projectId).filter((id): id is string => Boolean(id)),
+    );
+    return { kind: "scoped", userId, projectIds };
   }
 
-  const projectIds = new Set(
-    roles.map((role) => role.projectId).filter((id): id is string => Boolean(id)),
-  );
-  return { kind: "scoped", userId, projectIds };
+  if (source === "agent") {
+    const rows = await db
+      .select({ projectId: agentProjects.projectId })
+      .from(agentProjects)
+      .where(
+        and(eq(agentProjects.companyId, companyId), eq(agentProjects.agentId, userId)),
+      );
+    const projectIds = new Set(
+      rows.map((row) => row.projectId).filter((id): id is string => Boolean(id)),
+    );
+    return { kind: "scoped", userId, projectIds };
+  }
+
+  // mcp / commander / unknown — least privilege.
+  return { kind: "scoped", userId, projectIds: new Set<string>() };
 }
 
 export async function resolveUserRole(

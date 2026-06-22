@@ -1,9 +1,10 @@
 // ui/src/components/skills/SkillLibrary.tsx
 import { useMemo } from "react";
 import { Link } from "@/lib/router";
-import { LayoutGrid, Sparkles } from "lucide-react";
+import { Home, LayoutGrid } from "lucide-react";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { derivePackagesForLibrary, type SkillPackage } from "@/lib/skillPackages";
 import { SkillPackageRow } from "./SkillPackageRow";
 import { SkillLibraryRow } from "./SkillLibraryRow";
@@ -13,6 +14,7 @@ interface Props {
   filter: string;
   selectedSkillId: string | null;
   selectedPackageId: string | null;
+  homeActive: boolean;
   expandedPackageIds: Set<string>;
   packagesWithUpdate: Set<string>;
   onTogglePackage: (packageId: string) => void;
@@ -36,6 +38,7 @@ export function SkillLibrary({
   filter,
   selectedSkillId,
   selectedPackageId,
+  homeActive,
   expandedPackageIds,
   packagesWithUpdate,
   onTogglePackage,
@@ -97,10 +100,26 @@ export function SkillLibrary({
 
   return (
     <div className="py-1">
+      <Link
+        to="/skills"
+        aria-current={homeActive ? "page" : undefined}
+        className={cn(
+          "relative flex min-h-8 items-center gap-2 px-3 py-1.5 text-[12.5px] no-underline transition-colors",
+          "text-foreground/85 hover:bg-accent hover:text-accent-foreground",
+          homeActive && "bg-accent text-accent-foreground",
+        )}
+      >
+        <Home className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">Home</span>
+        {homeActive && (
+          <span className="absolute left-0 top-1.5 h-5 w-0.5 rounded-full bg-brand" aria-hidden />
+        )}
+      </Link>
+
       {filteredPackages.length > 0 && (
         <>
-          <div className="flex items-center gap-2 px-3 py-2 text-[10px] uppercase tracking-[0.08em] text-dim">
-            <Sparkles className="size-3" />
+          <div className="my-2 border-t border-border" aria-hidden />
+          <div className="px-3 py-2 text-[10px] uppercase tracking-[0.08em] text-dim">
             <span>{`Packages · ${filteredPackages.length}`}</span>
           </div>
           {filteredPackages.map((pkg) => {
@@ -111,6 +130,7 @@ export function SkillLibrary({
                   packageId={pkg.id}
                   name={pkg.name}
                   count={pkg.count}
+                  provider={pkg.provider}
                   expanded={expanded}
                   hasUpdate={packagesWithUpdate.has(pkg.id)}
                   active={selectedPackageId === pkg.id}

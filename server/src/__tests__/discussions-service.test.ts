@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
+  or: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  asc: vi.fn((col: any) => ({ asc: col })),
   desc: vi.fn((col: any) => ({ desc: col })),
   sql: vi.fn((strings: any, ...values: any[]) => ({
     sql: true,
@@ -24,6 +26,7 @@ vi.mock("@armyofagents/db", () => ({
     scopeId: "discussions_scope_id",
     tags: "discussions_tags",
     entryCount: "discussions_entry_count",
+    entrySeq: "discussions_entry_seq",
     pendingItemCount: "discussions_pending_item_count",
     lastEntryAt: "discussions_last_entry_at",
     createdBy: "discussions_created_by",
@@ -42,6 +45,7 @@ vi.mock("@armyofagents/db", () => ({
     sourceInfo: "entries_source_info",
     extractionStatus: "entries_extraction_status",
     extractionRunId: "entries_extraction_run_id",
+    seq: "entries_seq",
     createdBy: "entries_created_by",
     createdAt: "entries_created_at",
   },
@@ -87,6 +91,42 @@ vi.mock("@armyofagents/db", () => ({
   },
   goals: {
     id: "goals_id",
+    title: "goals_title",
+  },
+  agents: {
+    id: "agents_id",
+    name: "agents_name",
+  },
+  threadScopeVersions: {
+    id: "tsv_id",
+    companyId: "tsv_company_id",
+    threadId: "tsv_thread_id",
+    versionNumber: "tsv_version_number",
+    status: "tsv_status",
+    sourceEndSeq: "tsv_source_end_seq",
+    createdAt: "tsv_created_at",
+  },
+  threadScopeItems: {
+    id: "tsi_id",
+    scopeVersionId: "tsi_scope_version_id",
+    status: "tsi_status",
+  },
+  authUsers: {
+    id: "auth_users_id",
+    name: "auth_users_name",
+    email: "auth_users_email",
+  },
+  threadParticipants: {
+    threadId: "thread_participants_thread_id",
+    principalType: "thread_participants_principal_type",
+    principalId: "thread_participants_principal_id",
+    role: "thread_participants_role",
+    addedAt: "thread_participants_added_at",
+  },
+  threadLinks: {
+    companyId: "thread_links_company_id",
+    fromThreadId: "thread_links_from_thread_id",
+    toThreadId: "thread_links_to_thread_id",
   },
 }));
 
@@ -138,6 +178,7 @@ function createSequenceDb(selectQueue: any[][]) {
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
       innerJoin: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
@@ -214,13 +255,29 @@ describe("discussionService", () => {
       const discussions = [
         { id: "d1", companyId: "co-1", status: "active", title: "Test" },
       ];
-      const db = createSequenceDb([discussions]);
+      const db = createSequenceDb([discussions, [], []]);
 
       const result = await discussionService(db).list("co-1", {
         status: "active",
       });
 
-      expect(result).toEqual(discussions);
+      expect(result).toEqual([
+        {
+          ...discussions[0],
+          scopeName: null,
+          participantPreview: [],
+          participantCount: 0,
+          linkCount: 0,
+          derivedStage: {
+            stage: "discussing",
+            label: "Discussing v1",
+            versionNumber: 1,
+            scopeVersionId: null,
+            hasNewEntries: false,
+            newEntryCount: 0,
+          },
+        },
+      ]);
       expect(db.select).toHaveBeenCalled();
     });
 
@@ -228,13 +285,30 @@ describe("discussionService", () => {
       const joinedRows = [
         { discussions: { id: "d1", title: "Voice discussion" } },
       ];
-      const db = createSequenceDb([joinedRows]);
+      const db = createSequenceDb([joinedRows, [], []]);
 
       const result = await discussionService(db).list("co-1", {
         inputType: "voice",
       });
 
-      expect(result).toEqual([{ id: "d1", title: "Voice discussion" }]);
+      expect(result).toEqual([
+        {
+          id: "d1",
+          title: "Voice discussion",
+          scopeName: null,
+          participantPreview: [],
+          participantCount: 0,
+          linkCount: 0,
+          derivedStage: {
+            stage: "discussing",
+            label: "Discussing v1",
+            versionNumber: 1,
+            scopeVersionId: null,
+            hasNewEntries: false,
+            newEntryCount: 0,
+          },
+        },
+      ]);
       expect(db.selectDistinctOn).toHaveBeenCalled();
     });
 
@@ -242,13 +316,29 @@ describe("discussionService", () => {
       const discussions = [
         { id: "d1", pendingItemCount: 3 },
       ];
-      const db = createSequenceDb([discussions]);
+      const db = createSequenceDb([discussions, [], []]);
 
       const result = await discussionService(db).list("co-1", {
         hasPendingItems: true,
       });
 
-      expect(result).toEqual(discussions);
+      expect(result).toEqual([
+        {
+          ...discussions[0],
+          scopeName: null,
+          participantPreview: [],
+          participantCount: 0,
+          linkCount: 0,
+          derivedStage: {
+            stage: "discussing",
+            label: "Discussing v1",
+            versionNumber: 1,
+            scopeVersionId: null,
+            hasNewEntries: false,
+            newEntryCount: 0,
+          },
+        },
+      ]);
     });
   });
 
@@ -499,13 +589,14 @@ describe("discussionService", () => {
   });
 
   describe("addEntry()", () => {
-    it("increments entryCount and publishes LiveEvent", async () => {
+    it("increments entryCount, assigns seq, and publishes LiveEvents", async () => {
       const db = createSequenceDb([
         // select discussion
         [{ id: "disc-1", companyId: "co-1" }],
-        // insert entry
-        [{ id: "entry-2", discussionId: "disc-1", inputType: "write" }],
-        // update discussion counts (no return)
+        // Plan 7: tx update discussions.entrySeq counter -> returns new seq
+        [{ entrySeq: 1 }],
+        // tx insert entry (now carries seq)
+        [{ id: "entry-2", discussionId: "disc-1", inputType: "write", seq: 1 }],
       ]);
 
       const result = await discussionService(db).addEntry(
@@ -516,13 +607,21 @@ describe("discussionService", () => {
       );
 
       expect(result.id).toBe("entry-2");
+      expect(result.seq).toBe(1);
+      // Legacy company-wide poke for the Discussions list
       expect(publishLiveEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "discussion.entry.created",
           payload: expect.objectContaining({ entryId: "entry-2" }),
         }),
       );
-      expect(db.update).toHaveBeenCalled();
+      // Plan 7: thread-scoped poke carrying threadId + seq
+      expect(publishLiveEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "thread.entry.created",
+          payload: expect.objectContaining({ threadId: "disc-1", seq: 1 }),
+        }),
+      );
     });
 
     it("throws when discussion not found", async () => {
@@ -539,6 +638,49 @@ describe("discussionService", () => {
           "user-1",
         ),
       ).rejects.toThrow("Discussion not found");
+    });
+  });
+
+  // ── P1-T7 (#3): reprocess guards — scope_proposal must never re-extract ───────
+  describe("reprocess guards for scope_proposal", () => {
+    it("reprocessEntry refuses a scope_proposal entry (badRequest, no update)", async () => {
+      const db = createSequenceDb([
+        // 1st select: the entry (a scope_proposal)
+        [{ id: "entry-sp", discussionId: "disc-1", inputType: "scope_proposal" }],
+        // 2nd select: parent discussion (company match)
+        [{ companyId: "co-1" }],
+      ]);
+
+      await expect(
+        discussionService(db).reprocessEntry("co-1", "entry-sp"),
+      ).rejects.toThrow(/scope proposal/i);
+
+      // The guard throws before any status reset.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("reprocessAllEntries excludes scope_proposal entries from reprocessing", async () => {
+      const db = createSequenceDb([
+        // 1st select: discussion exists for company
+        [{ id: "disc-1", companyId: "co-1" }],
+        // 2nd select: all entries in the discussion — a normal pending entry AND
+        // a scope_proposal stored extractionStatus="skipped".
+        [
+          { id: "entry-normal", inputType: "paste", extractionStatus: "pending" },
+          { id: "entry-sp", inputType: "scope_proposal", extractionStatus: "skipped" },
+          // approved-items check for entry-normal:
+        ],
+        // 3rd select: approved items for entry-normal → none
+        [],
+        // 4th select: pending items for entry-normal → none
+        [],
+      ]);
+
+      const result = await discussionService(db).reprocessAllEntries("co-1", "disc-1");
+
+      // Only the normal entry is reprocessed; the scope_proposal is skipped
+      // entirely (NOT counted, NOT reset). reprocessedCount reflects 1 entry.
+      expect(result.reprocessedCount).toBe(1);
     });
   });
 });

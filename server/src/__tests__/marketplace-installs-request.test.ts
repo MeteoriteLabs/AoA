@@ -103,6 +103,12 @@ vi.mock("../services/marketplace-install/index.js", () => ({
   resolveInstallPlan: vi.fn(),
   updateOperation: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("../services/agent-instructions.js", () => ({
+  agentInstructionsService: vi.fn(() => ({ materializeManagedBundle: vi.fn() })),
+}));
+vi.mock("../adapters/index.js", () => ({
+  listServerAdapters: vi.fn(() => [{ type: "codex" }, { type: "claude" }]),
+}));
 vi.mock("../services/marketplace-notifications.js", () => ({
   marketplaceNotifications: {
     installRequested: vi.fn().mockResolvedValue(undefined),
@@ -148,6 +154,20 @@ const MOCK_CATALOG_ITEM = {
   tags: [],
 };
 
+const MOCK_AGENT_ITEM = {
+  id: "agent:aoa-curated/senior-engineer",
+  type: "agent" as const,
+  name: "Senior Engineer",
+  description: "...",
+  version: "1.0.0",
+  source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+  trust: { tier: "verified", source: "aoa-curated" },
+  status: "active",
+  addedAt: "2026-04-30T00:00:00Z",
+  category: "engineering",
+  tags: [],
+};
+
 const MOCK_CATALOG = {
   schemaVersion: "1.0.0",
   generatedAt: "2026-04-30T00:00:00Z",
@@ -155,9 +175,12 @@ const MOCK_CATALOG = {
   items: [MOCK_CATALOG_ITEM],
 };
 
-function buildApp() {
+function buildApp(opts: {
+  catalog?: typeof MOCK_CATALOG;
+  actor?: Record<string, unknown>;
+} = {}) {
   const mockDb = {} as any;
-  const mockCatalogService = { readCache: vi.fn().mockResolvedValue(MOCK_CATALOG) };
+  const mockCatalogService = { readCache: vi.fn().mockResolvedValue(opts.catalog ?? MOCK_CATALOG) };
   const mockPluginLoader = {} as any;
 
   const app = express();
@@ -165,7 +188,7 @@ function buildApp() {
 
   // Attach a fake actor that satisfies assertBoard (mocked to no-op but actor still read directly)
   app.use("/api/companies/:companyId/marketplace", (req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = opts.actor ?? {
       type: "board",
       source: "cloud_auth",
       isInstanceAdmin: false,
@@ -255,5 +278,37 @@ describe("POST /install — decision=request path", () => {
     const [, , patch] = vi.mocked(updateOperation).mock.calls[0];
     expect(patch.status).toBe("requested");
     expect(patch.completedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("POST /install - agent overrides", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes selected role and adapter type into dispatchInstall for agent installs", async () => {
+    const app = buildApp({
+      catalog: { ...MOCK_CATALOG, itemCount: 1, items: [MOCK_AGENT_ITEM] },
+      actor: {
+        type: "board",
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        userId: "user-founder",
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/install")
+      .send({
+        catalogItemId: "agent:aoa-curated/senior-engineer",
+        targetDepartmentId: "11111111-1111-4111-8111-111111111111",
+        role: "lead",
+        adapterType: "claude",
+      });
+
+    expect(res.status).toBe(202);
+    expect(dispatchInstall).toHaveBeenCalledOnce();
+    const [dispatchOpts] = vi.mocked(dispatchInstall).mock.calls[0];
+    expect(dispatchOpts.installOverrides).toEqual({ role: "lead", adapterType: "claude" });
   });
 });

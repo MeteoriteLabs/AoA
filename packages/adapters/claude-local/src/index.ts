@@ -1,5 +1,6 @@
 export const type = "claude_local";
 export const label = "Claude Code (local)";
+export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code";
 
 export const models = [
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },

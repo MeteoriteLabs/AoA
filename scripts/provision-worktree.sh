@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Guarantee GNU bash. The provisioner can be invoked as `sh -c "bash <script>"`
+# (runWorkspaceCommand uses /bin/sh), where on minimal Linux images the `bash`
+# token may resolve to dash/busybox, which rejects `set -o pipefail` on line 2.
+if [ -z "${BASH_VERSION:-}" ]; then
+  if command -v bash >/dev/null 2>&1; then exec bash "$0" "$@"; fi
+  echo "provision-worktree.sh requires bash" >&2
+  exit 1
+fi
 set -euo pipefail
 
 base_cwd="${AOA_WORKSPACE_BASE_CWD:?AOA_WORKSPACE_BASE_CWD is required}"
@@ -137,21 +145,13 @@ async function findAvailablePort(preferredPort, reserved = new Set()) {
   });
 }
 
-function isLoopbackHost(hostname) {
-  const value = hostname.trim().toLowerCase();
-  return value === "127.0.0.1" || value === "localhost" || value === "::1";
-}
-
-function rewriteLocalUrlPort(rawUrl, port) {
-  if (!rawUrl) return undefined;
-  try {
-    const parsed = new URL(rawUrl);
-    if (!isLoopbackHost(parsed.hostname)) return rawUrl;
-    parsed.port = String(port);
-    return parsed.toString();
-  } catch {
-    return rawUrl;
-  }
+function rewriteLocalUrlPort(rawUrl, newPort) {
+  if (!rawUrl) return rawUrl;
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return rawUrl; }
+  if (!parsed.port) return rawUrl;
+  parsed.port = String(newPort);
+  return parsed.toString();
 }
 
 function resolveRuntimeLikePath(value, configPath) {

@@ -1,7 +1,7 @@
-import { Identity } from "../Identity";
-import { StatusBadge } from "../StatusBadge";
+import { useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { cn, relativeTime } from "@/lib/utils";
-import { formatDuration, RunStatusIcon, runStatusBorderColor, formatBytes, summarizeOutputs } from "./workspace-utils";
+import { formatDuration } from "./workspace-utils";
 import type { RunForIssue } from "../../api/activity";
 import { StructuredRunBlock } from "./transcript";
 import type { DepartmentType } from "./transcript/types";
@@ -13,6 +13,7 @@ interface TimelineAgentMessageProps {
   compact?: boolean;
   adapterType?: string;
   departmentType?: string;
+  onActivity?: () => void;
 }
 
 export function TimelineAgentMessage({
@@ -22,44 +23,41 @@ export function TimelineAgentMessage({
   compact = false,
   adapterType = "process",
   departmentType = "general",
+  onActivity,
 }: TimelineAgentMessageProps) {
   const isRunning = run.status === "running" || run.status === "in_progress";
-
-  const duration = formatDuration(run.startedAt, run.finishedAt);
-  const outputs = run.detectedOutputs ?? [];
-  const { fileCount, totalBytes } = summarizeOutputs(outputs);
-  const borderColor = runStatusBorderColor(run.status);
+  const nowMs = useTicker(isRunning);
+  const duration = formatDuration(run.startedAt, run.finishedAt, nowMs);
+  const hasLogMetadata = run.logStore !== undefined || run.logRef !== undefined;
+  const runLogAvailable = hasLogMetadata
+    ? Boolean(run.logStore && run.logRef)
+    : undefined;
+  const actionLabel = isRunning
+    ? "Working for"
+    : run.status === "failed"
+      ? "Failed after"
+      : "Worked for";
+  const boundaryLabel = duration ? `${actionLabel} ${duration}` : actionLabel;
 
   return (
     <div
-      className={cn(
-        "rounded-lg border border-border border-l-4 bg-card/50",
-        borderColor,
-      )}
+      className={cn("group/run min-w-0", compact && "text-sm")}
       data-testid={`timeline-agent-msg-${run.runId}`}
     >
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2">
-        <RunStatusIcon status={run.status} />
-        <Identity name={agentName} size="xs" />
-        <StatusBadge status={run.status} />
-        {duration && (
-          <span className="text-xs text-muted-foreground">{duration}</span>
-        )}
-        <span className="ml-auto text-xs text-muted-foreground">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-2 border-b border-border px-1 pb-2 pt-1 text-left text-sm text-muted-foreground"
+        aria-expanded="true"
+      >
+        <span className="truncate">{boundaryLabel}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+        <span className="sr-only">Run by {agentName}</span>
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground/70">
           {relativeTime(run.startedAt ?? run.createdAt)}
         </span>
-      </div>
+      </button>
 
-      {/* Summary line — file changes */}
-      {fileCount > 0 && (
-        <div className="px-3 pb-2 text-xs text-muted-foreground">
-          Changed {fileCount} file{fileCount !== 1 ? "s" : ""} ({formatBytes(totalBytes)})
-        </div>
-      )}
-
-      {/* Structured run output */}
-      <div className="border-t border-border">
+      <div className="py-3">
         <StructuredRunBlock
           runId={run.runId}
           adapterType={adapterType}
@@ -67,8 +65,22 @@ export function TimelineAgentMessage({
           isRunning={isRunning}
           isLatest={isLatest}
           compact={compact}
+          runLogAvailable={runLogAvailable}
+          onActivity={onActivity}
         />
       </div>
     </div>
   );
+}
+
+function useTicker(enabled: boolean): number {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [enabled]);
+
+  return nowMs;
 }

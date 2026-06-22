@@ -30,6 +30,14 @@ describe("getSafeServingHeaders — content type classification", () => {
     expect(getSafeServingHeaders("application/json", "a.json").contentDisposition).toMatch(/^inline;/);
   });
 
+  it("non-executable audio/video media → inline", () => {
+    expect(getSafeServingHeaders("video/mp4", "demo.mp4").contentDisposition).toMatch(/^inline;/);
+    expect(getSafeServingHeaders("video/webm", "demo.webm").contentDisposition).toMatch(/^inline;/);
+    expect(getSafeServingHeaders("video/quicktime", "demo.mov").contentDisposition).toMatch(/^inline;/);
+    expect(getSafeServingHeaders("audio/mpeg", "voice.mp3").contentDisposition).toMatch(/^inline;/);
+    expect(getSafeServingHeaders("audio/webm", "voice.webm").contentDisposition).toMatch(/^inline;/);
+  });
+
   it("text/html, application/javascript, text/css → attachment", () => {
     expect(getSafeServingHeaders("text/html", "a.html").contentDisposition).toMatch(/^attachment;/);
     expect(getSafeServingHeaders("application/javascript", "a.js").contentDisposition).toMatch(/^attachment;/);
@@ -132,8 +140,14 @@ describe("SAFE_INLINE_CONTENT_TYPES", () => {
     expect(SAFE_INLINE_CONTENT_TYPES.has("text/plain")).toBe(true);
     expect(SAFE_INLINE_CONTENT_TYPES.has("text/markdown")).toBe(true);
     expect(SAFE_INLINE_CONTENT_TYPES.has("application/json")).toBe(true);
+    expect(SAFE_INLINE_CONTENT_TYPES.has("video/mp4")).toBe(true);
+    expect(SAFE_INLINE_CONTENT_TYPES.has("video/webm")).toBe(true);
+    expect(SAFE_INLINE_CONTENT_TYPES.has("video/quicktime")).toBe(true);
+    expect(SAFE_INLINE_CONTENT_TYPES.has("audio/mpeg")).toBe(true);
+    expect(SAFE_INLINE_CONTENT_TYPES.has("audio/webm")).toBe(true);
     // Negative — SVG must NOT be in the allowlist.
     expect(SAFE_INLINE_CONTENT_TYPES.has("image/svg+xml")).toBe(false);
     expect(SAFE_INLINE_CONTENT_TYPES.has("text/html")).toBe(false);
+    expect(SAFE_INLINE_CONTENT_TYPES.has("application/javascript")).toBe(false);
   });
 });

@@ -69,7 +69,8 @@ export function resolveCommandContext(
     );
   }
 
-  const api = new AoaApiClient({ apiBase, apiKey });
+  const runId = process.env.AOA_RUN_ID?.trim() || undefined;
+  const api = new AoaApiClient({ apiBase, apiKey, runId });
   return {
     api,
     companyId,

@@ -14,6 +14,8 @@ export interface MemoryRetrievalRowApi {
   agentId: string | null;
   runId: string | null;
   taskId: string | null;
+  /** Phase 7: set for commander_query retrievals; null for agent/skill paths. */
+  conversationId: string | null;
   triggeredBy: MemoryRetrievalTrigger;
   query: string | null;
   itemId: string | null;
@@ -41,6 +43,20 @@ export const memoryRetrievalsApi = {
     const qs = params.toString();
     return api.get<MemoryRetrievalRowApi[]>(
       `/companies/${companyId}/issues/${issueId}/memory-retrievals${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  /** Phase 7: retrieve memory audit rows for a Commander conversation (Memory cockpit card). */
+  listForConversation: (
+    companyId: string,
+    conversationId: string,
+    opts: { limit?: number } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return api.get<MemoryRetrievalRowApi[]>(
+      `/companies/${companyId}/conversations/${conversationId}/memory-retrievals${qs ? `?${qs}` : ""}`,
     );
   },
 };

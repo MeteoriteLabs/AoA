@@ -2,17 +2,23 @@ import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import {
   createMemoryItemSchema,
+  companyBrainNeighborQuerySchema,
+  companyBrainOverviewQuerySchema,
+  createCompanyBrainSemanticEdgeSchema,
   memoryFolderUpdateSchema,
   suggestMemoryArchiveSchema,
   suggestMemoryUpdateSchema,
+  updateCompanyBrainSemanticEdgeSchema,
   updateMemoryItemSchema,
+  type CompanyBrainEdgeKind,
 } from "@armyofagents/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
-import { memoryService, logActivity } from "../services/index.js";
+import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
+import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
 
 function resolveAgentRequestId(
   req: Parameters<typeof getActorInfo>[0],
@@ -33,12 +39,29 @@ function resolveAgentRequestId(
   return authenticatedAgentId;
 }
 
+// Statuses whose assignment IS an approval decision. Setting one on create/update
+// requires the SAME authority as the dedicated approve/reject routes (canApproveMemory)
+// — otherwise a non-founder could POST/PATCH a `domain` item straight to "approved" and
+// bypass the founder-only gate this PR enforces (R5, #199). (Codex #201 P1.)
+const APPROVAL_DECISION_STATUSES = new Set(["approved", "rejected"]);
+
+// `working` memory is auto-created and explicitly NOT approval-gated — canApproveMemory
+// only gates identity/domain/active_context (permissions.ts), so a scoped lead manages
+// working memory directly. An approved/rejected write to a working-layer item must
+// therefore skip the founder/lead approval gate (it would wrongly 403); normal memory
+// access checks still apply. (Codex #201 P2.)
+const requiresApprovalGate = (
+  status: string | null | undefined,
+  layer: string | null | undefined,
+) => typeof status === "string" && APPROVAL_DECISION_STATUSES.has(status) && layer !== "working";
+
 export function memoryRoutes(db: Db) {
   const router = Router();
   const svc = memoryService(db);
+  const graphSvc = companyBrainGraphService(db);
 
   // Semantic search — must be before /:id route
-  router.get("/companies/:companyId/memory/search", async (req, res) => {
+  router.get("/companies/:companyId/memory/search", embeddingSearchLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const q = req.query.q as string | undefined;
@@ -56,7 +79,7 @@ export function memoryRoutes(db: Db) {
   });
 
   // Find similar items — must be before /:id route
-  router.get("/companies/:companyId/memory/find-similar", async (req, res) => {
+  router.get("/companies/:companyId/memory/find-similar", embeddingSearchLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const content = req.query.content as string | undefined;
@@ -99,6 +122,189 @@ export function memoryRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/memory/items/:id/neighbors", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
+
+    const parsed = companyBrainNeighborQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const principalId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? "unknown-agent"
+        : req.actor.type === "mcp"
+          ? req.actor.userId ?? "mcp-user"
+          : req.actor.userId ?? "local-board";
+
+    const graph = await graphSvc.getMemoryItemNeighbors(companyId, id, {
+      type: req.actor.type === "agent" ? "agent" : "user",
+      principalId,
+    });
+
+    const kinds = parsed.data.kinds as CompanyBrainEdgeKind[] | undefined;
+    if (!kinds || kinds.length === 0) {
+      res.json(graph);
+      return;
+    }
+
+    const visibleNodeKeys = new Set([
+      `${graph.center.type}:${graph.center.id}`,
+    ]);
+    const edges = graph.edges.filter((edge) => {
+      if (!kinds.includes(edge.kind)) return false;
+      visibleNodeKeys.add(`${edge.from.type}:${edge.from.id}`);
+      visibleNodeKeys.add(`${edge.to.type}:${edge.to.id}`);
+      return true;
+    });
+    const nodes = graph.nodes.filter((node) => visibleNodeKeys.has(`${node.type}:${node.id}`));
+
+    res.json({ ...graph, nodes, edges });
+  });
+
+  router.get("/companies/:companyId/memory/items/:id/usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
+
+    const principalId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? "unknown-agent"
+        : req.actor.type === "mcp"
+          ? req.actor.userId ?? "mcp-user"
+          : req.actor.userId ?? "local-board";
+
+    const usage = await graphSvc.getMemoryItemUsage(companyId, id, {
+      type: req.actor.type === "agent" ? "agent" : "user",
+      principalId,
+    });
+
+    res.json(usage);
+  });
+
+  router.post("/companies/:companyId/memory/graph/edges", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "update");
+
+    const parsed = createCompanyBrainSemanticEdgeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const edge = await graphSvc.createSemanticEdge(companyId, parsed.data, {
+      type: actor.actorType === "agent" ? "agent" : "user",
+      principalId: actor.actorId,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company_brain_edge.created",
+      entityType: "company_brain_edge",
+      entityId: edge.id,
+      details: {
+        kind: edge.kind,
+        fromType: edge.fromType,
+        fromId: edge.fromId,
+        toType: edge.toType,
+        toId: edge.toId,
+      },
+    });
+
+    res.status(201).json(edge);
+  });
+
+  router.patch("/companies/:companyId/memory/graph/edges/:edgeId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const edgeId = req.params.edgeId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "update");
+
+    const parsed = updateCompanyBrainSemanticEdgeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const edge = await graphSvc.updateSemanticEdge(companyId, edgeId, parsed.data);
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company_brain_edge.updated",
+      entityType: "company_brain_edge",
+      entityId: edge.id,
+      details: { kind: edge.kind },
+    });
+
+    res.json(edge);
+  });
+
+  router.delete("/companies/:companyId/memory/graph/edges/:edgeId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const edgeId = req.params.edgeId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "update");
+
+    const actor = getActorInfo(req);
+    const edge = await graphSvc.archiveSemanticEdge(companyId, edgeId);
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company_brain_edge.archived",
+      entityType: "company_brain_edge",
+      entityId: edge.id,
+      details: { kind: edge.kind },
+    });
+
+    res.json(edge);
+  });
+
+  router.get("/companies/:companyId/memory/graph", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
+
+    const parsed = companyBrainOverviewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const principalId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? "unknown-agent"
+        : req.actor.type === "mcp"
+          ? req.actor.userId ?? "mcp-user"
+          : req.actor.userId ?? "local-board";
+
+    const graph = await graphSvc.getCompanyGraphOverview(companyId, {
+      type: req.actor.type === "agent" ? "agent" : "user",
+      principalId,
+    }, parsed.data);
+
+    res.json(graph);
+  });
+
   router.get("/companies/:companyId/memory/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
@@ -119,8 +325,25 @@ export function memoryRoutes(db: Db) {
       layer: req.body.layer,
       departmentId: req.body.departmentId,
     });
-    const actor = getActorInfo(req);
+    // R5 (#199): a create that RESULTS in an approval-decision status (approved/
+    // rejected) requires approval authority for the target layer. This MUST use the
+    // EFFECTIVE status, not just an explicit `status` field: memoryService.create
+    // defaults founder-source items to "approved" even when the request omits
+    // `status`, so a non-founder posting source:"founder" would otherwise mint
+    // approved memory (Codex #201 P1). The computation mirrors memoryService.create.
+    // Founders pass for all layers; team leads only for active_context.
     const source = req.actor.type === "agent" ? "agent" : req.body.source;
+    const effectiveCreateStatus =
+      source === "agent"
+        ? "pending"
+        : (req.body.status ?? (source === "founder" ? "approved" : "pending"));
+    if (requiresApprovalGate(effectiveCreateStatus, req.body.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: req.body.layer,
+        departmentId: req.body.departmentId,
+      });
+    }
+    const actor = getActorInfo(req);
     const item = await svc.create(companyId, {
       ...req.body,
       source,
@@ -154,6 +377,30 @@ export function memoryRoutes(db: Db) {
       departmentId: existing.departmentId,
       visibility: existing.visibility,
     });
+    // R5 (#199): re-check approval authority when the patch ASSERTS or RELOCATES an
+    // approval decision, against the EFFECTIVE (post-patch) layer/dept. Fires when
+    // (a) the patch sets status to approved/rejected, or (b) the item is already
+    // approved/rejected and the patch moves its layer or department — otherwise a lead
+    // could PATCH only layer:"domain" on an approved active_context item and leave it
+    // approved in a layer they cannot approve (Codex #201 P1). A plain content edit of
+    // an already-approved item does not move the decision and is not gated here.
+    const effectiveLayer = req.body.layer !== undefined ? req.body.layer : existing.layer;
+    const effectiveDepartmentId =
+      req.body.departmentId !== undefined ? req.body.departmentId : existing.departmentId;
+    const effectiveStatus =
+      typeof req.body.status === "string" ? req.body.status : existing.status;
+    const settingDecisionStatus =
+      typeof req.body.status === "string" && APPROVAL_DECISION_STATUSES.has(req.body.status);
+    const relocatingDecisionItem =
+      APPROVAL_DECISION_STATUSES.has(effectiveStatus ?? "") &&
+      ((req.body.layer !== undefined && req.body.layer !== existing.layer) ||
+        (req.body.departmentId !== undefined && req.body.departmentId !== existing.departmentId));
+    if ((settingDecisionStatus || relocatingDecisionItem) && effectiveLayer !== "working") {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: effectiveLayer,
+        departmentId: effectiveDepartmentId,
+      });
+    }
     const item = await svc.update(companyId, id, req.body);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -217,10 +464,24 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory is auto-created and needs no approval, so the
+    // approve action is not founder/lead-gated for working items (a scoped lead can
+    // clear a pending working suggestion). identity/domain/active_context still gate.
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const item = await svc.approve(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -250,10 +511,23 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory needs no approval — reject is not founder/lead-gated
+    // for working items (parallels /approve). identity/domain/active_context still gate.
+    if (requiresApprovalGate("rejected", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const item = await svc.reject(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -418,6 +692,29 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    // R5 (#199): publishing a draft marks a version `approved` and swaps the item's
+    // current content — an approval decision on this memory item — so it needs the same
+    // authority as the version-approve route, for the item's layer/dept (Codex #201 P1).
+    const existing = await svc.getById(companyId, id);
+    if (!existing) {
+      res.status(404).json({ error: "Memory item or draft not found" });
+      return;
+    }
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const version = await svc.publishDraft(companyId, id, actor.actorId);
     if (!version) {
@@ -448,10 +745,24 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory needs no approval — version approve/reject of a
+    // working item (saveDraft has no layer guard) is not founder/lead-gated. Other
+    // layers gate as before.
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const version = await svc.approveSuggestedVersion(companyId, id, versionId);
     await logActivity(db, {
@@ -481,10 +792,23 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    await assertMemoryApproval(db, req, companyId, {
-      layer: existing.layer,
-      departmentId: existing.departmentId,
-    });
+    // Decision #52: working memory needs no approval — version reject of a working
+    // item is not founder/lead-gated (parallels version approve). Other layers gate.
+    if (requiresApprovalGate("rejected", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const actor = getActorInfo(req);
     const version = await svc.rejectSuggestedVersion(companyId, id, versionId);
     await logActivity(db, {
@@ -508,6 +832,31 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    // R5 (#199): restore sets the item's status → "approved", so it requires the same
+    // approval authority as the approve route, for the item's layer/dept. Without this
+    // a non-founder could write a domain item as `status:"archived"` (which the create
+    // gate does not treat as an approval decision) and then restore it to approved,
+    // bypassing the founder-only domain gate (Codex #201 P1).
+    const existing = await svc.getById(companyId, id);
+    if (!existing) {
+      res.status(404).json({ error: "Memory item not found" });
+      return;
+    }
+    if (requiresApprovalGate("approved", existing.layer)) {
+      await assertMemoryApproval(db, req, companyId, {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    } else {
+      // working is not approval-gated (Decision #52), but it must still be access-
+      // controlled — these routes have only assertCompanyAccess, so skipping the gate
+      // outright would let any company member/agent approve a working row. Require
+      // manage-access to the item instead. (Codex #201 P1.)
+      await assertMemoryAccess(db, req, companyId, "update", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+      });
+    }
     const item = await svc.restore(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found or not archived" });
@@ -629,13 +978,27 @@ export function memoryRoutes(db: Db) {
           res.status(404).json({ error: "Memory item not found" });
           return;
         }
-        await assertMemoryApproval(db, req, companyId, {
-          layer: parsed.data.newLayer,
-          departmentId:
-            parsed.data.departmentId !== undefined
-              ? parsed.data.departmentId
-              : existing.departmentId,
-        });
+        // Decision #52: a `working` DESTINATION needs no approval (working is
+        // auto-created/ungated), so a move TO working is gated by manage-access to the
+        // item rather than approval authority — consistent with the approve/reject/etc.
+        // working bypasses. Other destinations still require approval for that layer.
+        // (change-layer gates on DESTINATION by existing design; the source's prior
+        // governance is not re-checked here — same as the existing domain→active_context
+        // path, which a lead can already perform.)
+        if (parsed.data.newLayer !== "working") {
+          await assertMemoryApproval(db, req, companyId, {
+            layer: parsed.data.newLayer,
+            departmentId:
+              parsed.data.departmentId !== undefined
+                ? parsed.data.departmentId
+                : existing.departmentId,
+          });
+        } else {
+          await assertMemoryAccess(db, req, companyId, "update", {
+            layer: existing.layer,
+            departmentId: existing.departmentId,
+          });
+        }
         const actor = getActorInfo(req);
         const updated = await svc.changeLayer(id, companyId, {
           ...parsed.data,

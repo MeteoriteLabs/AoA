@@ -101,7 +101,7 @@ OpenClaw clients in the wild parse specific JSON field names that include the le
 | `paperclip_stream_transport` | `/v1/responses` metadata (webhook mode) | Signals webhook transport to the OpenClaw side |
 | `paperclipApiUrl` | Join request payload + adapter config | AoA base URL advertised to OpenClaw as `AOA_API_URL` |
 
-These names come from AoA's Paperclip lineage. The AoA adapter layer writes them exactly as OpenClaw expects. See [/aoa/reference/wire-compat](/aoa/reference/wire-compat) for the complete list.
+These names come from AoA's Paperclip lineage. The AoA adapter layer writes them exactly as OpenClaw expects. See [wire-compat.md](../architecture/wire-compat.md) for the complete list.
 
 ## Connectivity tips
 

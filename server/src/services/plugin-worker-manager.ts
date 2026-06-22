@@ -1003,7 +1003,7 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
   ): Promise<HostToWorkerMethods[M][1]> {
-    return new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+    const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
         reject(
           new Error(
@@ -1073,6 +1073,8 @@ export function createPluginWorkerHandle(
         );
       }
     });
+    void rpcPromise.catch(() => undefined);
+    return rpcPromise;
   }
 
   // -----------------------------------------------------------------------

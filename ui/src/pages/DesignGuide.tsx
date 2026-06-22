@@ -1,15 +1,18 @@
 import { useState } from "react";
 import {
+  Activity,
   BookOpen,
   Bot,
   Check,
   ChevronDown,
   CircleDot,
+  Cloud,
   Command as CommandIcon,
   DollarSign,
   Hexagon,
   History,
   Inbox,
+  KeyRound,
   LayoutDashboard,
   ListTodo,
   Mail,
@@ -129,6 +132,7 @@ import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
+import { SecretBindingPicker, type SecretBindingPickerValue } from "@/components/SecretBindingPicker";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
@@ -165,7 +169,7 @@ import type {
   FinanceEvent,
 } from "@/api/finance";
 import type { CostByModelRow } from "@/api/costs";
-import type { BudgetPolicySummary, BudgetIncident } from "@armyofagents/shared";
+import type { BudgetPolicySummary, BudgetIncident, CompanySecret } from "@armyofagents/shared";
 import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
 import { CompanyImport as CompanyImportPage } from "@/pages/CompanyImport";
 import { FeedbackThumbs } from "@/components/FeedbackThumbs";
@@ -230,10 +234,55 @@ export function DesignGuide() {
   const [inlineDesc, setInlineDesc] = useState(
     "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift."
   );
+  const [secretBinding, setSecretBinding] = useState<SecretBindingPickerValue>(null);
   const [filters, setFilters] = useState<FilterValue[]>([
     { key: "status", label: "Status", value: "Active" },
     { key: "priority", label: "Priority", value: "High" },
   ]);
+  const demoSecrets: CompanySecret[] = [
+    {
+      id: "11111111-1111-1111-1111-111111111111",
+      companyId: "demo-company",
+      name: "OpenAI API key",
+      key: "OPENAI_API_KEY",
+      status: "active",
+      managedMode: "aoa_managed",
+      provider: "local_encrypted",
+      providerConfigId: null,
+      providerMetadata: null,
+      externalRef: null,
+      latestVersion: 3,
+      description: "Primary LLM runtime credential",
+      lastResolvedAt: null,
+      lastRotatedAt: null,
+      deletedAt: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    {
+      id: "22222222-2222-2222-2222-222222222222",
+      companyId: "demo-company",
+      name: "Very long production database password used by routine workers",
+      key: "PRODUCTION_DATABASE_PASSWORD_WITH_LONG_NAME",
+      status: "active",
+      managedMode: "external_reference",
+      provider: "aws_secrets_manager",
+      providerConfigId: "33333333-3333-3333-3333-333333333333",
+      providerMetadata: null,
+      externalRef: "arn:aws:secretsmanager:us-east-1:111111111111:secret:aoa/prod/db",
+      latestVersion: 8,
+      description: null,
+      lastResolvedAt: null,
+      lastRotatedAt: null,
+      deletedAt: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ];
 
   return (
     <div className="space-y-10 max-w-4xl">
@@ -926,6 +975,95 @@ export function DesignGuide() {
             trailing={<StatusBadge status="blocked" />}
             selected
           />
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  SECRET BINDING PICKER                                        */}
+      {/* ============================================================ */}
+      <Section title="Secret Binding Picker">
+        <div className="grid gap-4 md:grid-cols-2">
+          <SubSection title="Empty and selected">
+            <div className="space-y-3 rounded-md border border-border p-3">
+              <SecretBindingPicker
+                companyId="demo-company"
+                value={secretBinding}
+                onChange={setSecretBinding}
+                configPath="env.OPENAI_API_KEY"
+                targetType="agent"
+                targetId="agent-demo"
+                secretsOverride={demoSecrets}
+              />
+              <SecretBindingPicker
+                companyId="demo-company"
+                value={{ type: "secret_ref", secretId: demoSecrets[0].id, version: "latest" }}
+                onChange={() => {}}
+                configPath="env.OPENAI_API_KEY"
+                targetType="agent"
+                targetId="agent-demo"
+                secretsOverride={demoSecrets}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Long name and disabled">
+            <div className="space-y-3 rounded-md border border-border p-3">
+              <SecretBindingPicker
+                companyId="demo-company"
+                value={{ type: "secret_ref", secretId: demoSecrets[1].id, version: "latest" }}
+                onChange={() => {}}
+                configPath="env.DATABASE_URL"
+                targetType="routine"
+                targetId="nightly-sync"
+                secretsOverride={demoSecrets}
+              />
+              <SecretBindingPicker
+                companyId="demo-company"
+                value={null}
+                onChange={() => {}}
+                configPath="env.DISABLED"
+                targetType="system"
+                targetId="demo"
+                disabled
+                secretsOverride={demoSecrets}
+              />
+            </div>
+          </SubSection>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  SECRETS PATTERNS                                             */}
+      {/* ============================================================ */}
+      <Section title="Secrets Patterns">
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="rounded-md border border-border px-3 py-2">
+            <div className="flex items-start gap-2">
+              <Cloud className="mt-0.5 size-4 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">Production AWS</div>
+                <div className="truncate text-xs text-muted-foreground">us-east-1 / aoa/prod</div>
+              </div>
+              <StatusBadge status="active" />
+            </div>
+          </div>
+          <div className="rounded-md border border-border px-3 py-2">
+            <div className="flex items-start gap-2">
+              <KeyRound className="mt-0.5 size-4 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">OpenAI API key</div>
+                <div className="truncate font-mono text-xs text-muted-foreground">OPENAI_API_KEY</div>
+              </div>
+              <Badge variant="outline">v3</Badge>
+            </div>
+          </div>
+          <div className="rounded-md border border-border px-3 py-2">
+            <div className="flex items-center gap-2">
+              <Activity className="size-4 text-muted-foreground" />
+              <StatusBadge status="succeeded" />
+              <span className="min-w-0 flex-1 truncate text-sm">agent:agent-demo</span>
+            </div>
+            <div className="mt-1 truncate text-xs text-muted-foreground">env.OPENAI_API_KEY / just now</div>
+          </div>
         </div>
       </Section>
 

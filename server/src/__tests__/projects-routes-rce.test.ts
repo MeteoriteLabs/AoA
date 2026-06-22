@@ -12,11 +12,20 @@ vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({
     getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
   }),
+  secretService: () => ({
+    normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+    syncEnvBindingsForTarget: vi.fn(),
+  }),
   logActivity: vi.fn(),
 }));
 
 vi.mock("../services/permissions.js", () => ({
   permissionService: () => ({
+    getUserRoles: vi.fn().mockImplementation(async (_c: string, userId: string) => {
+      if (userId === "user-fnd") return [{ role: "founder", projectId: null }];
+      if (userId === "user-lead") return [{ role: "team_lead", projectId: "p1" }];
+      return [{ role: "team_member", projectId: "p1" }];
+    }),
     getEffectiveRole: vi.fn().mockImplementation(async (_c: string, userId: string) => {
       if (userId === "user-fnd") return "founder";
       if (userId === "user-lead") return "team_lead";
@@ -100,5 +109,47 @@ describe("PATCH /projects/:id with provisionCommand", () => {
       .patch("/api/projects/p1")
       .send({ name: "renamed" });
     expect(res.status).toBe(200);
+  });
+
+  it("200 for team_lead changing non-command workspace policy", async () => {
+    const app = makeApp(baseActor("user-lead"));
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          allowIssueOverride: true,
+        },
+      });
+    expect(res.status).toBe(200);
+  });
+
+  it("403 for team_member changing non-command workspace policy", async () => {
+    const app = makeApp(baseActor("user-tm"));
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          allowIssueOverride: true,
+        },
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it("403 for agent actor changing non-command workspace policy", async () => {
+    const app = makeApp({ type: "agent", agentId: "a1", companyId: "company-A", source: "agent_key" });
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          allowIssueOverride: true,
+        },
+      });
+    expect(res.status).toBe(403);
   });
 });

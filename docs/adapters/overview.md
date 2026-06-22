@@ -18,15 +18,15 @@ When a heartbeat fires, AoA:
 
 | Adapter | Type Key | Description |
 |---------|----------|-------------|
-| [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
-| [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
-| OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
-| Cursor | `cursor` | Runs Cursor Agent CLI locally (detailed docs forthcoming) |
-| OpenClaw | `openclaw` | Sends wake payloads to an OpenClaw webhook |
-| [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
-| [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
-| Gemini Local | `gemini_local` | Runs Gemini CLI locally with session resume support (detailed docs forthcoming) |
-| Hermes Local | `hermes_local` | Runs Hermes Agent (Nous Research) locally via the `hermes` CLI (detailed docs forthcoming) |
+| [Claude Local](claude-local.md) | `claude_local` | Runs Claude Code CLI locally |
+| [Codex Local](codex-local.md) | `codex_local` | Runs OpenAI Codex CLI locally |
+| [OpenCode Local](opencode-local.md) | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
+| [Cursor](cursor.md) | `cursor` | Runs Cursor Agent CLI locally |
+| [OpenClaw](openclaw.md) | `openclaw` | Runs an OpenClaw agent remotely (SSE or webhook transport) |
+| [Process](process.md) | `process` | Executes arbitrary shell commands |
+| [HTTP](http.md) | `http` | Sends webhooks to external agents |
+| [Gemini Local](gemini-local.md) | `gemini_local` | Runs Gemini CLI locally with session resume support |
+| [Hermes Local](hermes-local.md) | `hermes_local` | Runs Hermes Agent (Nous Research) locally via the `hermes` CLI |
 
 ## Adapter Architecture
 
@@ -57,7 +57,8 @@ Three registries consume these modules:
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, `cursor`, `gemini_local`, or `hermes_local`
+- **Need a coding agent on the local machine?** Use `claude_local`, `codex_local`, `opencode_local`, `cursor`, `gemini_local`, or `hermes_local`
 - **Need to run a script or command?** Use `process`
-- **Need to call an external service?** Use `http`
-- **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)
+- **Need to call an HTTP endpoint or external service?** Use `http`
+- **Need to run a remote OpenClaw agent?** Use `openclaw`
+- **Need something custom?** See [creating-an-adapter.md](creating-an-adapter.md)

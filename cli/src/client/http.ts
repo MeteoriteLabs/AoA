@@ -73,7 +73,7 @@ export class AoaApiClient {
     }
 
     if (this.runId) {
-      headers["x-paperclip-run-id"] = this.runId;
+      headers["x-aoa-run-id"] = this.runId;
     }
 
     const response = await fetch(url, {

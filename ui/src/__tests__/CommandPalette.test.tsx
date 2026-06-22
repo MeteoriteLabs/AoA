@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "../components/CommandPalette";
+import { issuesApi } from "../api/issues";
 
 const navigate = vi.fn();
 
@@ -172,6 +173,30 @@ describe("CommandPalette", () => {
     vi.clearAllMocks();
   });
 
+  it("scopes its task queries to taskScope:'all' so crew tasks are findable", async () => {
+    const user = userEvent.setup();
+    renderPalette();
+
+    // Instant list fires on open.
+    await user.keyboard("{Control>}k{/Control}");
+    expect(issuesApi.list).toHaveBeenCalledWith("company-1", { taskScope: "all" });
+
+    // The {q} search list fires once a query is typed.
+    await user.type(screen.getByLabelText(/search tasks, goals, agents/i), "auth");
+    await vi.waitFor(() =>
+      expect(issuesApi.list).toHaveBeenCalledWith("company-1", {
+        q: "auth",
+        taskScope: "all",
+      }),
+    );
+
+    // Crucially, cmd+K never issues an org-scoped (scope-less) task list.
+    const calls = (issuesApi.list as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    for (const [, filters] of calls) {
+      expect((filters as { taskScope?: string } | undefined)?.taskScope).toBe("all");
+    }
+  });
+
   it("renders grouped global search results with memory and artifact badges", async () => {
     const user = userEvent.setup();
     renderPalette();
@@ -199,5 +224,48 @@ describe("CommandPalette", () => {
     await user.click(await screen.findByText("API Spec"));
 
     expect(navigate).toHaveBeenCalledWith("/issues/TASK-1");
+  });
+
+  it("renders Discussions/Threads search results and navigates to /discussions/:id (Plan 5)", async () => {
+    const user = userEvent.setup();
+
+    // Override globalSearchMock to return a brief/thread result
+    globalSearchMock.mockResolvedValue({
+      query: "auth",
+      tookMs: 5,
+      totalCount: 1,
+      groups: [
+        {
+          type: "brief",
+          label: "Discussions",
+          count: 1,
+          items: [
+            {
+              id: "disc-1",
+              type: "brief",
+              title: "Auth refactor thread",
+              subtitle: "Security improvement discussion",
+              href: "/discussions/disc-1",
+              score: 0.9,
+              status: "active",
+            },
+          ],
+        },
+      ],
+    });
+
+    renderPalette();
+
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(screen.getByLabelText(/search tasks, goals, agents/i), "auth");
+
+    // Thread title should appear in results
+    expect(await screen.findByText("Auth refactor thread")).toBeInTheDocument();
+    // Group header should say "Discussions (1)"
+    expect(screen.getByText("Discussions (1)")).toBeInTheDocument();
+
+    // Clicking the result should navigate to /discussions/:id
+    await user.click(screen.getByText("Auth refactor thread"));
+    expect(navigate).toHaveBeenCalledWith("/discussions/disc-1");
   });
 });

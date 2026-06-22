@@ -10,12 +10,19 @@ const executionWorkspacesApiMock = {
   runtimeServices: vi.fn(),
   controlRuntimeServices: vi.fn(),
 };
+let canControlRuntimeServices = true;
 
 vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: new Proxy(
     {},
     { get: (_t, prop) => (executionWorkspacesApiMock as Record<string, unknown>)[prop as string] },
   ),
+}));
+
+vi.mock("../hooks/useWorkspacePermissions", () => ({
+  useWorkspacePermissions: () => ({
+    canControlRuntimeServices,
+  }),
 }));
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -26,12 +33,46 @@ const runningService = {
   status: "running",
   port: 3000,
   url: "http://localhost:3000",
+  previewUrl: "/preview/services/svc-1/",
+  previewAccess: "local",
+  localTargetUrl: "http://localhost:3000/",
+  healthStatus: "healthy",
   command: "pnpm dev",
   cwd: "/home/agent/workspace",
   provider: "local_process",
   lifecycle: "shared",
   startedAt: new Date().toISOString(),
   stoppedAt: null,
+};
+
+const previewOnlyService = {
+  ...runningService,
+  id: "svc-preview",
+  serviceName: "localhost:4173",
+  port: 4173,
+  url: "http://127.0.0.1:4173/",
+  previewUrl: "/preview/services/svc-preview/",
+  localTargetUrl: "http://127.0.0.1:4173/",
+  command: null,
+  provider: "adapter_managed",
+  providerRef: null,
+  lifecycle: "ephemeral",
+  healthStatus: "healthy",
+};
+
+const unavailablePreviewService = {
+  ...previewOnlyService,
+  id: "svc-preview-stopped",
+  status: "stopped",
+  healthStatus: "unhealthy",
+  stoppedAt: new Date().toISOString(),
+};
+
+const unhealthyRunningPreviewService = {
+  ...previewOnlyService,
+  id: "svc-preview-unhealthy",
+  status: "running",
+  healthStatus: "unhealthy",
 };
 
 const stoppedService = {
@@ -91,7 +132,7 @@ const mockWorkspace = {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function renderSection() {
+function renderSection(options: { onOpenBrowser?: (service: any) => void } = {}) {
   const qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -103,7 +144,7 @@ function renderSection() {
     ...render(
       <QueryClientProvider client={qc}>
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <ServicesSection workspace={mockWorkspace as any} />
+        <ServicesSection workspace={mockWorkspace as any} onOpenBrowser={options.onOpenBrowser} />
       </QueryClientProvider>,
     ),
     queryClient: qc,
@@ -114,6 +155,7 @@ function renderSection() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  canControlRuntimeServices = true;
 });
 
 describe("ServicesSection", () => {
@@ -135,14 +177,15 @@ describe("ServicesSection", () => {
     renderSection();
 
     await waitFor(() => {
-      expect(screen.getByText("No services configured")).toBeInTheDocument();
+      expect(screen.getByText("No app previews")).toBeInTheDocument();
     });
     expect(
-      screen.getByText("Configure dev servers in workspace settings."),
+      screen.getByText("Agent-created localhost apps will appear here."),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("section-services-body").className).toContain("py-2");
   });
 
-  it("renders a running service row with name, port, and URL link", async () => {
+  it("renders a running service row with name, port, and host-local debug target", async () => {
     executionWorkspacesApiMock.runtimeServices.mockResolvedValue([runningService]);
 
     renderSection();
@@ -152,9 +195,10 @@ describe("ServicesSection", () => {
     });
     expect(screen.getByText("web-dev-server")).toBeInTheDocument();
     expect(screen.getByText(":3000")).toBeInTheDocument();
-    const link = screen.getByTestId("service-url-svc-1") as HTMLAnchorElement;
-    expect(link).toBeInTheDocument();
-    expect(link.getAttribute("href")).toBe("http://localhost:3000");
+    const localTarget = screen.getByTestId("service-local-target-svc-1");
+    expect(localTarget).toHaveTextContent("Local to AoA host");
+    expect(localTarget).toHaveTextContent("http://localhost:3000/");
+    expect(screen.queryByTestId("service-url-svc-1")).not.toBeInTheDocument();
   });
 
   it("running service shows Stop + Restart buttons (not Start)", async () => {
@@ -167,6 +211,95 @@ describe("ServicesSection", () => {
     });
     expect(screen.getByTestId("service-restart-svc-1")).toBeInTheDocument();
     expect(screen.queryByTestId("service-start-svc-1")).not.toBeInTheDocument();
+  });
+
+  it("hides local process controls when the current user cannot control runtime services", async () => {
+    canControlRuntimeServices = false;
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([runningService]);
+
+    renderSection();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("service-row-svc-1")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("service-open-svc-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-stop-svc-1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-restart-svc-1")).not.toBeInTheDocument();
+  });
+
+  it("preview-only adapter-managed service shows Open but no process controls", async () => {
+    const user = userEvent.setup();
+    const onOpenBrowser = vi.fn();
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([previewOnlyService]);
+
+    renderSection({ onOpenBrowser });
+
+    const row = await screen.findByTestId("service-row-svc-preview");
+    expect(row).toHaveTextContent("Preview");
+    expect(screen.getByTestId("service-open-svc-preview")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-stop-svc-preview")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-restart-svc-preview")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-start-svc-preview")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("service-open-svc-preview"));
+    expect(onOpenBrowser).toHaveBeenCalledWith(previewOnlyService);
+  });
+
+  it("does not offer Open when a service has no AoA preview URL", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([{
+      ...runningService,
+      id: "svc-local-only",
+      previewUrl: null,
+      localTargetUrl: "http://localhost:3000/",
+    }]);
+
+    renderSection();
+
+    await screen.findByTestId("service-row-svc-local-only");
+    expect(screen.queryByTestId("service-open-svc-local-only")).not.toBeInTheDocument();
+    expect(screen.getByTestId("service-local-target-svc-local-only")).toHaveTextContent("Local to AoA host");
+  });
+
+  it("keeps unavailable preview-only services out of the primary service rows", async () => {
+    const onOpenBrowser = vi.fn();
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([unavailablePreviewService]);
+
+    renderSection({ onOpenBrowser });
+
+    expect(await screen.findByText("No running app previews")).toBeInTheDocument();
+    expect(screen.getByTestId("service-stopped-preview-summary")).toHaveTextContent("1 stopped preview");
+    expect(screen.queryByTestId("service-row-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-open-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-stop-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-restart-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-start-svc-preview-stopped")).not.toBeInTheDocument();
+  });
+
+  it("keeps unhealthy preview-only services out of the primary service rows", async () => {
+    const onOpenBrowser = vi.fn();
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([unhealthyRunningPreviewService]);
+
+    renderSection({ onOpenBrowser });
+
+    expect(await screen.findByText("No running app previews")).toBeInTheDocument();
+    expect(screen.getByTestId("service-stopped-preview-summary")).toHaveTextContent("1 stopped preview");
+    expect(screen.queryByTestId("service-row-svc-preview-unhealthy")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-open-svc-preview-unhealthy")).not.toBeInTheDocument();
+  });
+
+  it("shows running services first and summarizes stopped detected previews quietly", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([
+      runningService,
+      { ...unavailablePreviewService, id: "svc-preview-stopped-a" },
+      { ...unavailablePreviewService, id: "svc-preview-stopped-b" },
+    ]);
+
+    renderSection();
+
+    expect(await screen.findByTestId("service-row-svc-1")).toBeInTheDocument();
+    expect(screen.getByTestId("service-stopped-preview-summary")).toHaveTextContent("2 stopped previews");
+    expect(screen.queryByTestId("service-row-svc-preview-stopped-a")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-row-svc-preview-stopped-b")).not.toBeInTheDocument();
   });
 
   it("stopped service shows Start button only (not Stop/Restart)", async () => {
@@ -310,15 +443,15 @@ describe("ServicesSection", () => {
     });
   });
 
-  it("URL renders as external link with target='_blank' and rel='noopener noreferrer'", async () => {
+  it("raw local target is displayed as debug text rather than an external link", async () => {
     executionWorkspacesApiMock.runtimeServices.mockResolvedValue([runningService]);
 
     renderSection();
 
-    const link = (await screen.findByTestId("service-url-svc-1")) as HTMLAnchorElement;
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(link.getAttribute("href")).toBe("http://localhost:3000");
+    const localTarget = await screen.findByTestId("service-local-target-svc-1");
+    expect(localTarget.tagName.toLowerCase()).toBe("div");
+    expect(localTarget).toHaveTextContent("Local to AoA host");
+    expect(screen.queryByTestId("service-url-svc-1")).not.toBeInTheDocument();
   });
 
   it("starting service shows disabled Stop button", async () => {

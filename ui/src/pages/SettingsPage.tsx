@@ -12,10 +12,13 @@ import { MarketplacePrefsSection } from "@/components/settings/sections/Marketpl
 import { CommanderSection } from "@/components/settings/sections/CommanderSection";
 import { GitHubSection } from "@/components/settings/sections/GitHubSection";
 import { ActivitySection } from "@/components/settings/sections/ActivitySection";
+import { HealthSection } from "@/components/settings/sections/HealthSection";
+import { EnvironmentsSectionWrapper } from "@/components/settings/sections/EnvironmentsSection";
+import { SecretsSectionWrapper } from "@/components/settings/sections/SecretsSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
-  "general", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
-  "activity",
+  "general", "health", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
+  "activity", "environments", "secrets",
 ];
 
 function isValidSection(s: string | null): s is SettingsSectionId {
@@ -26,6 +29,8 @@ function renderActiveSection(id: SettingsSectionId) {
   switch (id) {
     case "general":
       return <GeneralSection />;
+    case "health":
+      return <HealthSection />;
     case "commander":
       return <CommanderSection />;
     case "llm":
@@ -44,6 +49,10 @@ function renderActiveSection(id: SettingsSectionId) {
       return <ArchiveCompanySection />;
     case "activity":
       return <ActivitySection />;
+    case "environments":
+      return <EnvironmentsSectionWrapper />;
+    case "secrets":
+      return <SecretsSectionWrapper />;
     default: {
       const exhaustive: never = id;
       return (
@@ -77,6 +86,7 @@ export function SettingsPage() {
       next.set("tab", id);
       // Drop sub-tab param when switching sections
       next.delete("sub");
+      next.delete("section");
       return next;
     });
   };

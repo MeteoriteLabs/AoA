@@ -24,41 +24,82 @@ describe("memory-folder-seeds", () => {
   it("returns engineering seed folders for software_development", () => {
     const seeds = getSeedFoldersForFunctionType("software_development");
     expect(seeds.map((s) => s.displayName)).toEqual([
+      "Overview",
+      "Plans & Priorities",
       "Decisions",
       "Playbooks",
+      "Processes",
+      "Policies",
       "References",
-      "Architecture",
+      "Metrics",
+      "People & Responsibilities",
+      "Tools & Systems",
       "Files",
+      "Architecture",
+      "Codebase",
+      "Releases",
+      "Incidents",
+      "QA & Testing",
     ]);
   });
 
   it("returns marketing seed folders", () => {
     const seeds = getSeedFoldersForFunctionType("marketing");
     expect(seeds.map((s) => s.displayName)).toEqual([
+      "Overview",
+      "Plans & Priorities",
       "Decisions",
+      "Playbooks",
+      "Processes",
+      "Policies",
+      "References",
+      "Metrics",
+      "People & Responsibilities",
+      "Tools & Systems",
+      "Files",
       "Brand",
       "Campaigns",
-      "References",
-      "Files",
+      "Channels",
+      "Audience",
+      "Launches",
     ]);
   });
 
-  it("returns support seed folders", () => {
-    const seeds = getSeedFoldersForFunctionType("customer_support");
-    expect(seeds.map((s) => s.displayName)).toEqual([
-      "Playbooks",
-      "Macros",
-      "References",
-      "Files",
-    ]);
+  it("returns canonical support seed folders", () => {
+    const seeds = getSeedFoldersForFunctionType("support");
+    expect(seeds.map((s) => s.path)).toContain("Plans & Priorities");
+    expect(seeds.map((s) => s.path)).toContain("Macros");
+    expect(seeds.map((s) => s.path)).toContain("Escalations");
+    expect(seeds.map((s) => s.path)).toContain("Customer Issues");
+    expect(seeds.map((s) => s.path)).toContain("FAQs");
+  });
+
+  it("keeps old customer_support alias compatible", () => {
+    expect(getSeedFoldersForFunctionType("customer_support").map((s) => s.path)).toEqual(
+      getSeedFoldersForFunctionType("support").map((s) => s.path),
+    );
+  });
+
+  it("returns canonical hr and research seed folders", () => {
+    expect(getSeedFoldersForFunctionType("hr").map((s) => s.path)).toContain("Hiring");
+    expect(getSeedFoldersForFunctionType("hr").map((s) => s.path)).toContain("Onboarding");
+    expect(getSeedFoldersForFunctionType("research").map((s) => s.path)).toContain("Findings");
+    expect(getSeedFoldersForFunctionType("research").map((s) => s.path)).toContain("Experiments");
   });
 
   it("returns generic seed folders for unknown function type", () => {
     const seeds = getSeedFoldersForFunctionType("totally_unknown");
     expect(seeds.map((s) => s.displayName)).toEqual([
+      "Overview",
+      "Plans & Priorities",
       "Decisions",
+      "Playbooks",
+      "Processes",
       "Policies",
       "References",
+      "Metrics",
+      "People & Responsibilities",
+      "Tools & Systems",
       "Files",
     ]);
   });
@@ -66,9 +107,16 @@ describe("memory-folder-seeds", () => {
   it("returns generic seed folders when functionType is null", () => {
     const seeds = getSeedFoldersForFunctionType(null);
     expect(seeds.map((s) => s.displayName)).toEqual([
+      "Overview",
+      "Plans & Priorities",
       "Decisions",
+      "Playbooks",
+      "Processes",
       "Policies",
       "References",
+      "Metrics",
+      "People & Responsibilities",
+      "Tools & Systems",
       "Files",
     ]);
   });
@@ -80,10 +128,33 @@ describe("memory-folder-seeds", () => {
     );
   });
 
-  it("COMPANY_SEED_FOLDERS exposes the company-root folder", () => {
-    expect(COMPANY_SEED_FOLDERS).toEqual([
-      { path: "Company", displayName: "Company", seedKey: "company.root", icon: "🏛️" },
+  it("COMPANY_SEED_FOLDERS exposes the expanded company identity folders", () => {
+    expect(COMPANY_SEED_FOLDERS.map((s) => s.path)).toEqual([
+      "Company",
+      "Company/Profile",
+      "Company/Mission & Vision",
+      "Company/Strategy",
+      "Company/Operating Principles",
+      "Company/Brand & Voice",
+      "Company/Policies",
+      "Company/People",
+      "Company/People/Humans",
+      "Company/People/Teams",
+      "Company/People/Roles",
+      "Company/Agents",
+      "Company/Agents/Directory",
+      "Company/Agents/Responsibilities",
+      "Company/Agents/Agent Teams",
+      "Company/Decisions",
+      "Company/Processes",
+      "Company/References",
+      "Company/Files",
     ]);
+    expect(COMPANY_SEED_FOLDERS[0]).toMatchObject({
+      path: "Company",
+      displayName: "Company",
+      seedKey: "company.root",
+    });
   });
 });
 

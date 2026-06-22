@@ -1,10 +1,12 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { teams, teamMembers, agents, companySkills, projects } from "@armyofagents/db";
+import { teams, teamMembers, companySkills, projects } from "@armyofagents/db";
 import type { CascadeStepResult } from "@armyofagents/db";
 import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
 import { fetchCatalogResource } from "./fetch-resource.js";
-import type { AgentTemplateBody } from "./types.js";
+import type { NormalizedMarketplaceAgentTemplate } from "./types.js";
+import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from "./agent-runtime.js";
+import { createMarketplaceAgent } from "./agent-create.js";
 import { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
 
 export interface InstallTeamOpts {
@@ -93,15 +95,26 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
   // 1c: Fetch team.json
   const teamBody = JSON.parse(await fetchCatalogResource(catalogItem, "team template")) as TeamTemplateBody;
 
-  // 1d: Pre-fetch all agent.json bodies (fail fast)
+  // 1d: Pre-fetch + normalize all agent.json bodies (fail fast).
+  // Uses parseMarketplaceAgentTemplate + normalizeMarketplaceAgentTemplate so
+  // both legacy and agent.v1 formats are handled uniformly and createMarketplaceAgent
+  // in Phase 3 receives fully-normalized templates instead of raw JSON.
   const requiredAgentItems = requires
     .filter((r) => r.type === "agent")
     .map((r) => itemsById.get(r.id)!)
     .filter(Boolean);
-  const agentBodies = new Map<string, AgentTemplateBody>();
+  const normalizedAgentTemplates = new Map<string, NormalizedMarketplaceAgentTemplate>();
   for (const a of requiredAgentItems) {
     const text = await fetchCatalogResource(a, "agent template");
-    agentBodies.set(a.id, JSON.parse(text) as AgentTemplateBody);
+    const parsed = parseMarketplaceAgentTemplate(text, a);
+    // availableAdapterTypes=[] — team-installer has no adapter registry context;
+    // the check is skipped when the list is empty (see normalizeMarketplaceAgentTemplate).
+    const normalized = normalizeMarketplaceAgentTemplate({
+      parsed,
+      catalogItem: a,
+      availableAdapterTypes: [],
+    });
+    normalizedAgentTemplates.set(a.id, normalized);
   }
 
   // 1e: Pre-fetch skill content (uses inline if available, else helper)
@@ -211,11 +224,14 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       }
     }
 
-    // Insert agents (one per entry in team.json's agents array)
+    // Insert agents (one per entry in team.json's agents array).
+    // Routes through createMarketplaceAgent so kind, triggers, templateOrigin,
+    // and templateVersion are set via the canonical install path.
+    // Passing tx (cast to Db) creates a Drizzle savepoint inside the outer txn.
     const agentInsertResults: Array<{ id: string; templateOrigin: string }> = [];
     for (const teamAgent of teamBody.agents) {
-      const template = agentBodies.get(teamAgent.templateOrigin);
-      if (!template) {
+      const normalized = normalizedAgentTemplates.get(teamAgent.templateOrigin);
+      if (!normalized) {
         throw new Error(`team.json references unknown agent template: ${teamAgent.templateOrigin}`);
       }
       const agentItem = itemsById.get(teamAgent.templateOrigin);
@@ -227,38 +243,22 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
         companyId,
         desiredName: teamAgent.name,
       });
-      const inserted = await tx
-        .insert(agents)
-        .values({
-          companyId,
-          name: resolvedAgentName,
-          role: template.role ?? "general",
-          title: template.title,
-          icon: template.icon,
-          status: "idle",
-          capabilities: template.capabilities,
-          adapterType: template.adapterType ?? "process",
-          adapterConfig: template.adapterConfig ?? {},
-          runtimeConfig: template.runtimeConfig ?? {},
-          permissions: template.permissions ?? {},
-          budgetMonthlyCents: template.budgetMonthlyCents ?? 0,
-          skillKeys: template.skillKeys ?? [],
-          templateOrigin: teamAgent.templateOrigin,
-          templateVersion: agentItem.version,
-          metadata: {
-            catalogCategory: agentItem.category,
-            catalogTags: agentItem.tags,
-            catalogTrustTier: agentItem.trust.tier,
-            installedAt,
-          },
-        })
-        .returning();
-      agentInsertResults.push({ id: inserted[0].id, templateOrigin: teamAgent.templateOrigin });
+      // No instructionsService passed: team-installer does not materialize
+      // instruction bundles during install (they are materialized on first
+      // agent run via the adapter's lazy-load path, or via a follow-up update).
+      const { agentId } = await createMarketplaceAgent({
+        catalogItem: agentItem,
+        companyId,
+        db: tx as unknown as Db,
+        desiredName: resolvedAgentName,
+        template: normalized,
+      });
+      agentInsertResults.push({ id: agentId, templateOrigin: teamAgent.templateOrigin });
       cascadeResults.push({
         step: "agent-install",
         itemId: teamAgent.templateOrigin,
         status: "success",
-        resultEntityId: inserted[0].id,
+        resultEntityId: agentId,
         durationMs: 0,
       });
     }

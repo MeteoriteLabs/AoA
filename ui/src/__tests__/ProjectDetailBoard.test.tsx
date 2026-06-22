@@ -32,27 +32,36 @@ vi.mock("../components/TaskSlideOver", () => ({
 }));
 
 // --- Mock KanbanBoard (avoids dnd-kit in jsdom) ---
+// Capture the cardVariant prop so we can assert the project board renders the
+// STANDARD (un-enriched) card — IssuesList must not pass cardVariant, so the
+// board inherits the "standard" default.
+const lastKanbanProps: { cardVariant?: string } = {};
 
 vi.mock("../components/KanbanBoard", () => ({
   KanbanBoard: ({
     issues,
+    cardVariant,
     onSelectIssue,
   }: {
     issues: Array<{ id: string; identifier?: string; title: string }>;
+    cardVariant?: string;
     onSelectIssue?: (id: string) => void;
-  }) => (
-    <div data-testid="kanban-board">
-      {issues.map((issue) => (
-        <button
-          key={issue.id}
-          data-testid={`task-card-${issue.identifier ?? issue.id}`}
-          onClick={() => onSelectIssue?.(issue.identifier ?? issue.id)}
-        >
-          {issue.title}
-        </button>
-      ))}
-    </div>
-  ),
+  }) => {
+    lastKanbanProps.cardVariant = cardVariant;
+    return (
+      <div data-testid="kanban-board" data-card-variant={cardVariant ?? "(default)"}>
+        {issues.map((issue) => (
+          <button
+            key={issue.id}
+            data-testid={`task-card-${issue.identifier ?? issue.id}`}
+            onClick={() => onSelectIssue?.(issue.identifier ?? issue.id)}
+          >
+            {issue.title}
+          </button>
+        ))}
+      </div>
+    );
+  },
 }));
 
 // --- Mock data ---
@@ -206,6 +215,28 @@ afterEach(() => {
 });
 
 // --- Tests ---
+
+describe("ProjectDetail — Board tab task scope", () => {
+  it("loads the project board with the org default (no taskScope) so crew tasks stay off the project board", async () => {
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/issues");
+
+    await screen.findByTestId("kanban-board", {}, { timeout: 5000 });
+
+    // The project board's issue list is scoped by projectId and inherits the
+    // fail-safe 'org' default — it must NOT opt into taskScope:'crew'|'all'.
+    const projectListCall = issuesApiMock.list.mock.calls.find(
+      ([, filters]) => (filters as { projectId?: string } | undefined)?.projectId,
+    );
+    expect(projectListCall).toBeTruthy();
+    const filters = projectListCall![1] as { projectId?: string; taskScope?: string };
+    expect(filters.projectId).toBe("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d");
+    expect(filters.taskScope).toBeUndefined();
+
+    // IssuesList does not pass cardVariant → the board renders the STANDARD
+    // (un-enriched) card, not the crew variant.
+    expect(lastKanbanProps.cardVariant).toBeUndefined();
+  });
+});
 
 describe("ProjectDetail — Board tab TaskSlideOver", () => {
   it("TaskSlideOver is not visible before any task is clicked", async () => {

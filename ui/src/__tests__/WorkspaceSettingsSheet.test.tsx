@@ -19,10 +19,18 @@ vi.mock("../api/execution-workspaces", () => ({
 }));
 
 const mockIssuesList = vi.fn();
+let workspacePermissionState = {
+  canEditDepartmentWorkspaceSettings: true,
+  canConfigureRuntimeCommands: true,
+};
 vi.mock("../api/issues", () => ({
   issuesApi: {
     list: (...args: unknown[]) => mockIssuesList(...args),
   },
+}));
+
+vi.mock("../hooks/useWorkspacePermissions", () => ({
+  useWorkspacePermissions: () => workspacePermissionState,
 }));
 
 import { WorkspaceSettingsSheet } from "../components/workspace/WorkspaceSettingsSheet";
@@ -142,6 +150,10 @@ function renderSheet(props: Partial<{ open: boolean; onOpenChange: (v: boolean) 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  workspacePermissionState = {
+    canEditDepartmentWorkspaceSettings: true,
+    canConfigureRuntimeCommands: true,
+  };
   mockListOps.mockResolvedValue([]);
   mockIssuesList.mockResolvedValue([]);
 });
@@ -228,6 +240,33 @@ describe("WorkspaceSettingsSheet", () => {
     expect(
       (screen.getByTestId("workspace-settings-field-name") as HTMLInputElement).disabled,
     ).toBe(true);
+  });
+
+  it("shows read-only configuration when current user cannot edit workspace settings", async () => {
+    workspacePermissionState.canEditDepartmentWorkspaceSettings = false;
+    mockGet.mockResolvedValue(makeWorkspace({ name: "locked" }));
+
+    renderSheet();
+
+    const nameInput = (await screen.findByTestId("workspace-settings-field-name")) as HTMLInputElement;
+    expect(nameInput.disabled).toBe(true);
+    expect(screen.getByTestId("workspace-settings-forbidden-banner")).toHaveTextContent(
+      /don't have permission/i,
+    );
+    expect(screen.queryByTestId("workspace-settings-save")).not.toBeInTheDocument();
+  });
+
+  it("disables runtime command fields for non-founder users while allowing safe fields", async () => {
+    workspacePermissionState.canConfigureRuntimeCommands = false;
+    mockGet.mockResolvedValue(makeWorkspace({ name: "lead-editable" }));
+
+    renderSheet();
+
+    const nameInput = (await screen.findByTestId("workspace-settings-field-name")) as HTMLInputElement;
+    expect(nameInput.disabled).toBe(false);
+    expect((screen.getByTestId("workspace-settings-field-provisionCommand") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId("workspace-settings-field-teardownCommand") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId("workspace-settings-field-cleanupCommand") as HTMLInputElement).disabled).toBe(true);
   });
 
   it("invalid repo URL shows error banner and does not call mutation", async () => {

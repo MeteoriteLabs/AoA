@@ -8,14 +8,17 @@ import {
   companyPortabilityPreviewSchema,
   createCompanySchema,
   updateCompanySchema,
+  type DeploymentMode,
 } from "@armyofagents/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
+import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 
-export function companyRoutes(db: Db) {
+export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
@@ -126,8 +129,27 @@ export function companyRoutes(db: Db) {
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
-    const company = await svc.create(req.body);
+    // D6: local_trusted = single trust boundary (loopback); one-click approve is friction.
+    // authenticated = real multi-human board; approval is multi-person accountability.
+    const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
+    const company = await svc.create({ ...req.body, requireBoardApprovalForNewAgents });
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    await seedAoaNativeSkills(db, company.id).catch(() => {
+      // Never block company creation on skill seeding failure
+    });
+    // QA-BUG-007 fix: re-run Commander provisioning AFTER native skills are
+    // seeded so the Commander's skillKeys backfills from the now-populated
+    // company_skills table. The first ensureCommanderAgent call inside
+    // svc.create() runs BEFORE seedAoaNativeSkills, so installed.length is
+    // 0 and the gate in ensure-commander.ts:170-200 skips writing. This
+    // second call (combined with the relaxed gate in ensure-commander.ts
+    // that allows re-run when skillKeys is empty AND installed > 0)
+    // populates skillKeys with all 4 native skills. The function is
+    // idempotent — second call only updates skillKeys and is otherwise
+    // no-op against the agent row.
+    await ensureCommanderAgent(db, company.id).catch(() => {
+      // Never block company creation on Commander skill-init re-run failure
+    });
     await logActivity(db, {
       companyId: company.id,
       actorType: "user",

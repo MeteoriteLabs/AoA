@@ -82,6 +82,26 @@ describe("parseGeminiJsonl", () => {
     expect(result.summary).toBe("");
     expect(result.sessionId).toBeNull();
   });
+
+  it("parses {type:'message', role:'assistant'} events", () => {
+    const input = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      content: "Hello from Gemini v0.38",
+    });
+    const result = parseGeminiJsonl(input);
+    expect(result.summary).toContain("Hello from Gemini v0.38");
+  });
+
+  it("ignores {type:'message', role:'user'} events for assistant summary", () => {
+    const input = JSON.stringify({
+      type: "message",
+      role: "user",
+      content: "User typed this",
+    });
+    const result = parseGeminiJsonl(input);
+    expect(result.summary).not.toContain("User typed this");
+  });
 });
 
 describe("isGeminiUnknownSessionError", () => {
@@ -152,6 +172,21 @@ describe("isGeminiTurnLimitResult", () => {
 
   it("returns true for status max_turns", () => {
     expect(isGeminiTurnLimitResult({ status: "max_turns" }, 0)).toBe(true);
+  });
+
+  it("marks parsed turn-limit result payloads with canonical stop reason", () => {
+    const result = parseGeminiJsonl(
+      JSON.stringify({
+        type: "result",
+        status: "turn_limit",
+        error: "Reached the turn limit",
+      }),
+    );
+
+    expect(result.resultEvent).toMatchObject({
+      status: "turn_limit",
+      stopReason: "max_turns_exhausted",
+    });
   });
 
   it("returns false for normal result", () => {

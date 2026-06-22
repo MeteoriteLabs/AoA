@@ -3,6 +3,7 @@
 
 import type { TranscriptEntry } from "@armyofagents/adapter-utils";
 import type { TranscriptBlock } from "./types";
+import { classifyStderr } from "./stderr-classification";
 
 // ---------------------------------------------------------------------------
 // Helpers (private unless exported)
@@ -215,15 +216,9 @@ function parseSystemActivity(
   };
 }
 
-function shouldHideNiceModeStderr(text: string): boolean {
-  const normalized = compactWhitespace(text).toLowerCase();
-  // NOTE: "[paperclip]" here matches the *upstream Claude CLI binary's* stderr
-  // output — not an AoA-emitted log prefix. The CLI binary itself uses this
-  // prefix. This is intentionally left as-is so the filter keeps working even
-  // if the user has an older CLI version installed. Do not rename to "[aoa]"
-  // without confirming the upstream CLI has been updated.
-  // brand-check-ignore: external-tool-output
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+function parseAoaPreviewDetection(text: string): string | null {
+  const match = compactWhitespace(text).match(/^\[aoa\]\s+(app preview detection\b.*)$/i);
+  return match?.[1] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -460,16 +455,18 @@ export function normalizeTranscript(
     }
 
     if (entry.kind === "stderr") {
-      if (shouldHideNiceModeStderr(entry.text)) {
+      const severity = classifyStderr(entry.text);
+      if (severity === "hidden") {
         continue;
       }
+      const groupType = severity === "diagnostic" ? "diagnostic_group" : "stderr_group";
       const prev = blocks[blocks.length - 1];
-      if (prev && prev.type === "stderr_group") {
+      if (prev && prev.type === groupType) {
         prev.lines.push({ ts: entry.ts, text: entry.text });
         prev.endTs = entry.ts;
       } else {
         blocks.push({
-          type: "stderr_group",
+          type: groupType,
           ts: entry.ts,
           endTs: entry.ts,
           lines: [{ ts: entry.ts, text: entry.text }],
@@ -480,6 +477,17 @@ export function normalizeTranscript(
 
     if (entry.kind === "system") {
       if (compactWhitespace(entry.text).toLowerCase() === "turn started") {
+        continue;
+      }
+      const previewDetection = parseAoaPreviewDetection(entry.text);
+      if (previewDetection) {
+        blocks.push({
+          type: "event",
+          ts: entry.ts,
+          label: "preview",
+          tone: "info",
+          text: previewDetection,
+        });
         continue;
       }
       const activity = parseSystemActivity(entry.text);

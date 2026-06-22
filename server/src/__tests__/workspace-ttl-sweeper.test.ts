@@ -9,6 +9,8 @@ vi.mock("drizzle-orm", () => ({
   eq: (col: unknown, value: unknown) => ({ _type: "eq", col, value }),
   ne: (col: unknown, value: unknown) => ({ _type: "ne", col, value }),
   lt: (col: unknown, value: unknown) => ({ _type: "lt", col, value }),
+  isNotNull: (col: unknown) => ({ _type: "isNotNull", col }),
+  isNull: (col: unknown) => ({ _type: "isNull", col }),
   desc: (col: unknown) => ({ _type: "desc", col }),
   inArray: (col: unknown, values: unknown[]) => ({ _type: "inArray", col, values }),
 }));
@@ -55,7 +57,10 @@ vi.mock("../services/execution-workspaces.js", () => ({
 }));
 
 // Importing after mocks are registered
-import { sweepExpiredWorkspaces } from "../services/workspace-ttl-sweeper.js";
+import {
+  DEFAULT_THREAD_WORKSPACE_TTL_DAYS,
+  sweepExpiredWorkspaces,
+} from "../services/workspace-ttl-sweeper.js";
 
 // ── Mock DB helper (sequence-based) ──────────────────────────────────────────
 
@@ -134,6 +139,8 @@ describe("sweepExpiredWorkspaces", () => {
           { id: "proj-zero-ttl", executionWorkspacePolicy: { enabled: true, ttlDays: 0 } },
           { id: "proj-null-ttl", executionWorkspacePolicy: { enabled: true, ttlDays: null } },
         ],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
     });
 
@@ -157,6 +164,8 @@ describe("sweepExpiredWorkspaces", () => {
           { id: "ws-stale", cleanupEligibleAt: null },
           { id: "ws-stale-2", cleanupEligibleAt: null },
         ],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
       captureUpdates,
     });
@@ -182,6 +191,8 @@ describe("sweepExpiredWorkspaces", () => {
         [
           { id: "ws-already-marked", cleanupEligibleAt: new Date(now - 1000) },
         ],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
       captureUpdates,
     });
@@ -202,6 +213,8 @@ describe("sweepExpiredWorkspaces", () => {
       selects: [
         [{ id: "proj-1", executionWorkspacePolicy: { enabled: true, ttlDays: 30 } }],
         [{ id: "ws-blocked", cleanupEligibleAt: null }],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
       captureUpdates,
     });
@@ -220,6 +233,8 @@ describe("sweepExpiredWorkspaces", () => {
       selects: [
         [{ id: "proj-1", executionWorkspacePolicy: { enabled: true, ttlDays: 30 } }],
         [{ id: "ws-missing", cleanupEligibleAt: null }],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
     });
 
@@ -237,6 +252,8 @@ describe("sweepExpiredWorkspaces", () => {
       selects: [
         [{ id: "proj-1", executionWorkspacePolicy: { enabled: true, ttlDays: 30 } }],
         [{ id: "ws-throwing", cleanupEligibleAt: null }],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
       captureUpdates,
     });
@@ -269,6 +286,8 @@ describe("sweepExpiredWorkspaces", () => {
           { id: "ws-blocked", cleanupEligibleAt: null },
           { id: "ws-already", cleanupEligibleAt: recent },
         ],
+        // fallback-pass thread-workspace candidates (none)
+        [],
       ],
       captureUpdates,
     });
@@ -279,6 +298,99 @@ describe("sweepExpiredWorkspaces", () => {
     expect(result).toEqual({ scanned: 3, marked: 1, blocked: 1, skipped: 3 });
     expect(captureUpdates).toHaveLength(1);
     expect(captureUpdates[0]!.patch.cleanupReason).toBe("ttl_sweep:7d");
+  });
+
+  // ── Fallback pass: thread-workspaces in projects without ttlDays ───────────
+
+  it("fallback pass marks thread workspaces in projects without ttlDays", async () => {
+    getExperimentalMock.mockResolvedValue({ enableWorkspaceTtlSweeper: true });
+    getCloseReadinessMock.mockResolvedValue({ state: "ready", warnings: [] });
+
+    const captureUpdates: UpdateCapture[] = [];
+    const db = createDb({
+      selects: [
+        // projects list — none have ttlDays so the per-project loop skips all
+        [{ id: "proj-no-ttl", executionWorkspacePolicy: { enabled: true } }],
+        // fallback-pass thread-workspace candidates (one stale, unmarked)
+        [{ id: "ws-thread-stale", cleanupEligibleAt: null }],
+      ],
+      captureUpdates,
+    });
+
+    const result = await sweepExpiredWorkspaces(db);
+
+    // 1 project skipped (no ttlDays); fallback scans 1, marks 1.
+    expect(result).toEqual({ scanned: 1, marked: 1, blocked: 0, skipped: 1 });
+    expect(captureUpdates).toHaveLength(1);
+    expect(captureUpdates[0]!.patch.cleanupReason).toBe(
+      `thread_workspace_default:${DEFAULT_THREAD_WORKSPACE_TTL_DAYS}d`,
+    );
+    expect(captureUpdates[0]!.patch.cleanupEligibleAt).toBeInstanceOf(Date);
+  });
+
+  it("fallback pass skips already-marked thread workspaces (idempotent)", async () => {
+    getExperimentalMock.mockResolvedValue({ enableWorkspaceTtlSweeper: true });
+    getCloseReadinessMock.mockResolvedValue({ state: "ready" });
+
+    const captureUpdates: UpdateCapture[] = [];
+    const db = createDb({
+      selects: [
+        // no projects
+        [],
+        // fallback-pass candidate that's already marked
+        [{ id: "ws-thread-marked", cleanupEligibleAt: new Date(now - 1000) }],
+      ],
+      captureUpdates,
+    });
+
+    const result = await sweepExpiredWorkspaces(db);
+
+    expect(result).toEqual({ scanned: 1, marked: 0, blocked: 0, skipped: 1 });
+    expect(captureUpdates).toHaveLength(0);
+    // readiness check must be skipped when already-marked
+    expect(getCloseReadinessMock).not.toHaveBeenCalled();
+  });
+
+  it("fallback pass ignores issue-scoped workspaces (only threadId IS NOT NULL is selected)", async () => {
+    getExperimentalMock.mockResolvedValue({ enableWorkspaceTtlSweeper: true });
+    getCloseReadinessMock.mockResolvedValue({ state: "ready" });
+
+    const captureUpdates: UpdateCapture[] = [];
+    // The fallback SELECT filter (`isNotNull(threadId)`) is the actual guard;
+    // by simulating an empty result set we encode that the production WHERE
+    // would not pick up an issue-scoped workspace. We also assert no extra
+    // update happens.
+    const db = createDb({
+      selects: [
+        [], // no projects
+        [], // fallback pass: issue-scoped workspaces filtered out at the DB level
+      ],
+      captureUpdates,
+    });
+
+    const result = await sweepExpiredWorkspaces(db);
+
+    expect(result).toEqual({ scanned: 0, marked: 0, blocked: 0, skipped: 0 });
+    expect(captureUpdates).toHaveLength(0);
+  });
+
+  it("fallback pass respects close-readiness blocking", async () => {
+    getExperimentalMock.mockResolvedValue({ enableWorkspaceTtlSweeper: true });
+    getCloseReadinessMock.mockResolvedValue({ state: "blocked", blockingReasons: ["dirty"] });
+
+    const captureUpdates: UpdateCapture[] = [];
+    const db = createDb({
+      selects: [
+        [], // no projects
+        [{ id: "ws-thread-blocked", cleanupEligibleAt: null }],
+      ],
+      captureUpdates,
+    });
+
+    const result = await sweepExpiredWorkspaces(db);
+
+    expect(result).toEqual({ scanned: 1, marked: 0, blocked: 1, skipped: 0 });
+    expect(captureUpdates).toHaveLength(0);
   });
 });
 

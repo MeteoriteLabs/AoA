@@ -43,6 +43,10 @@ vi.mock("@armyofagents/db", () => {
     issueComments: makeTable(),
     assets: makeTable(),
     projects: makeTable(),
+    // Required by services/embeddings.ts (B1: createEmbeddingService target map)
+    discussions: makeTable(),
+    discussionExtractedItems: makeTable(),
+    embeddingQueue: makeTable(),
   };
 });
 

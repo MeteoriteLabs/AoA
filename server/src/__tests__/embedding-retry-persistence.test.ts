@@ -4,6 +4,12 @@ import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./help
 // Mock @armyofagents/db to avoid drizzle-orm ESM cycle
 vi.mock("@armyofagents/db", () => ({
   memoryItems: makeTableProxy("memory_items"),
+  // Added for Task B1: the embeddings module also imports these for the
+  // write-behind queue factory. These tests don't exercise that path,
+  // so proxy stubs are sufficient.
+  discussions: makeTableProxy("discussions"),
+  discussionExtractedItems: makeTableProxy("discussion_extracted_items"),
+  embeddingQueue: makeTableProxy("embedding_queue"),
 }));
 
 // Mock drizzle-orm operators

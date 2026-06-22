@@ -216,12 +216,14 @@ describe("ProjectDetail — Discussions tab", () => {
     await screen.findByText("Sprint Planning Notes", {}, { timeout: 5000 });
 
     fireEvent.click(await screen.findByText("New Discussion", {}, { timeout: 5000 }));
-    expect(mockDialogContext.openDiscussionCapture).toHaveBeenCalledWith(
-      expect.objectContaining({
-        scopeType: "department",
-        scopeId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-      }),
-    );
+    await waitFor(() => {
+      expect(mockDialogContext.openDiscussionCapture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopeType: "department",
+          scopeId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+        }),
+      );
+    });
   });
 
   it("shows pending badge count on discussions", async () => {

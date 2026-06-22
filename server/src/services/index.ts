@@ -17,6 +17,7 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferencesService } from "./sidebar-preferences.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
+export { userEntityPinService } from "./user-entity-pins.js";
 export { accessService } from "./access.js";
 export { teamService } from "./team.js";
 export { teamsService } from "./teams.js";
@@ -26,12 +27,16 @@ export { teamImportService } from "./team-import.js";
 export { teamExportService } from "./team-export.js";
 export { orgHierarchyService } from "./org-hierarchy.js";
 export { memoryService, type MemoryFilters, type SemanticSearchFilters, type FindSimilarScope } from "./memory.js";
+export { companyBrainGraphService } from "./company-brain-graph.js";
+export type { GraphActorScope, MemoryItemGraphRow } from "./company-brain-graph.js";
 export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding } from "./embeddings.js";
 export { debriefService, type DebriefFilters } from "./debriefs.js";
 export { briefService, type BriefFilters } from "./briefs.js";
 export { extractionService } from "./extraction.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { artifactService } from "./artifacts.js";
+export { taskOutputService } from "./task-outputs.js";
+export { taskOutputBackfillService } from "./task-output-backfill.js";
 export { outputDetectionService } from "./output-detection.js";
 export { trustScoreService } from "./trust-scores.js";
 export { memoryFeedbackService, type MemoryFeedbackFilters } from "./memory-feedback.js";
@@ -49,6 +54,18 @@ export { workflowTemplateService } from "./workflow-templates.js";
 export type { CreateWorkflowInput, UpdateWorkflowInput, InstantiateResult } from "./workflow-templates.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { discussionService, type DiscussionFilters } from "./discussions.js";
+export {
+  createThreadEventListener,
+  initThreadEventListener,
+  getThreadEventListener,
+  MAX_HOP_COUNT,
+  DEFAULT_DEBOUNCE_MS,
+  type ThreadEventListener,
+  type EntryCreatedEvent,
+  type DispatchMentionParams,
+  type DispatchMentionResult,
+  type ThreadEventListenerOpts,
+} from "./thread-events.js";
 export { notificationService } from "./notifications.js";
 export { companySkillService } from "./company-skills.js";
 export type { RuntimeSkillEntry } from "./company-skills.js";
@@ -56,6 +73,10 @@ export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } fr
 export { routineService } from "./routines.js";
 export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { environmentService } from "./environments.js";
+export { productivityReviewService } from "./productivity-review.js";
+export { issueMonitorSchedulerService } from "./issue-monitor-scheduler.js";
+export { recoveryService } from "./recovery/service.js";
 
 export { boardAuthService } from "./board-auth.js";
 export { userProfileService } from "./user-profile.js";
@@ -85,6 +106,7 @@ export {
   sanitizeRuntimeServiceBaseEnv,
   listWorkspaceRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime.js";
+export { createEagerWorkspaceForIssue } from "./eager-workspace.js";
 
 // Plugin system
 export { pluginRegistryService } from "./plugin-registry.js";

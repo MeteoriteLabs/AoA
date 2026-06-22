@@ -6,6 +6,7 @@ import {
   mcpDebriefSchema,
 } from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
+import { enqueueInboxItem } from "../../services/inbox-producer.js";
 import {
   type ToolContext,
   type ToolHandler,
@@ -50,6 +51,19 @@ async function handleDebriefPush(
     details: { title: debrief.title, inputType: "mcp" },
   });
   void ctx.services.extractionSvc.extractFromDebrief(ctx.companyId, debrief.id).catch(() => {});
+
+  // Decision #14 — dual-write to thread_inbox_items (best-effort).
+  // A failure here must never break the legacy debrief consumers: the debrief
+  // row is already committed above, so we silently swallow any error.
+  enqueueInboxItem(ctx.db, {
+    companyId: ctx.companyId,
+    originMedium: "mcp",
+    originSource: ctx.actorInfo.actorId,
+    rawContent: parsed.content,
+  }).catch((err: unknown) => {
+    console.error("[debrief-push] inbox enqueue failed (best-effort):", err);
+  });
+
   return ok({ debriefId: debrief.id, status: "processing" });
 }
 
@@ -251,6 +265,10 @@ async function handleUpdateTask(
     return notFoundResult("Task not found");
   }
   if (parsed.projectId) {
+    const project = await ctx.services.projectsSvc.getById(parsed.projectId);
+    if (!project || project.companyId !== ctx.companyId) {
+      return notFoundResult("Project not found");
+    }
     assertScopedProjectAccess(ctx.scope, parsed.projectId, "Project");
   }
   const canUpdate = await ctx.services.permissionsSvc.canAccessEntity(
@@ -333,7 +351,14 @@ async function handleAttachArtifactVersion(
     .parse(args);
 
   const artifact = await ctx.services.artifactsSvc.getById(parsed.artifactId);
-  const filtered = artifact ? await filterArtifactsForScope(ctx.db, ctx.scope, [artifact]) : [];
+  // Tenant isolation: getById is not company-scoped and founder scope is a
+  // pass-through in filterArtifactsForScope — an artifact owned by another
+  // company must never be writable through this tool. The companyId check is
+  // the real guard.
+  const filtered =
+    artifact && artifact.companyId === ctx.companyId
+      ? await filterArtifactsForScope(ctx.db, ctx.scope, [artifact])
+      : [];
   if (filtered.length === 0) {
     return notFoundResult("Artifact not found");
   }
@@ -425,7 +450,52 @@ async function handleMemoryRetain(
 
   const callerAgentId = ctx.actor.agentId ?? null;
   const isAgentActor = ctx.actor.source === "agent";
-  const isPersonalScope = parsed.scopeToSelf === true && isAgentActor && callerAgentId !== null;
+  // SECURITY (Critical Rule #6 / Decisions #15, #52): an agent may only
+  // auto-approve its OWN working-memory bucket. identity/domain/active_context
+  // are founder/lead-gated layers and must NEVER be agent-self-approved —
+  // otherwise a compromised/prompt-injected worker agent could plant permanent,
+  // company-wide, founder-attributed "Key Knowledge" that is injected into every
+  // other agent's run context (a stored cross-agent prompt-injection primitive).
+  // A scopeToSelf retain targeting a governed layer falls through to the RBAC +
+  // founder-approval (pending) path below.
+  const isPersonalScope =
+    parsed.scopeToSelf === true &&
+    isAgentActor &&
+    callerAgentId !== null &&
+    parsed.layer === "working";
+
+  // SECURITY (A-M2): validate that every caller-supplied linked entity
+  // belongs to THIS company before persisting. This guard runs for BOTH the
+  // personal/working-scope and org/department/project paths — it must never be
+  // skipped by the isPersonalScope branch, otherwise a worker agent could plant
+  // a working-memory item cross-linked to another tenant's task/goal/project.
+  // departmentId is a row in the projects table, so it is validated the same
+  // way as projectId via projectsSvc.getById. (Sibling handleSuggestMemory does
+  // the same companyId check for taskId.)
+  if (parsed.taskId) {
+    const task = await ctx.services.issuesSvc.getById(parsed.taskId);
+    if (!task || task.companyId !== ctx.companyId) {
+      return notFoundResult("Task not found");
+    }
+  }
+  if (parsed.goalId) {
+    const goal = await ctx.services.goalsSvc.getById(parsed.goalId);
+    if (!goal || goal.companyId !== ctx.companyId) {
+      return notFoundResult("Goal not found");
+    }
+  }
+  if (parsed.projectId) {
+    const project = await ctx.services.projectsSvc.getById(parsed.projectId);
+    if (!project || project.companyId !== ctx.companyId) {
+      return notFoundResult("Project not found");
+    }
+  }
+  if (parsed.departmentId) {
+    const department = await ctx.services.projectsSvc.getById(parsed.departmentId);
+    if (!department || department.companyId !== ctx.companyId) {
+      return notFoundResult("Department not found");
+    }
+  }
 
   // Org/department/project scope path — re-check RBAC even though the
   // route already gates company access; the founder's permissionsSvc

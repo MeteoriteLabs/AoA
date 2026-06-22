@@ -21,6 +21,7 @@ import {
   createFeedItem,
   parseStdoutChunk,
   parseStderrChunk,
+  parseSystemChunk,
   isRunActive,
   mergeFeedItems,
 } from "../lib/agent-feed";
@@ -50,10 +51,15 @@ export function ActiveAgents() {
 
   const runs = liveRuns ?? [];
 
-  // Fetch issues for task context on cards
+  // Fetch issues for task context on cards. The Live Agents page monitors BOTH
+  // org and crew runs (liveRunsForCompany unions heartbeat + internal_agent
+  // runs), so the task lookup must use taskScope:'all' — otherwise a live CREW
+  // run's issueId misses in issueById and the card shows a raw UUID instead of
+  // the task title (review #3). Distinct "scope-all" cache key so this never
+  // poisons the org board's cache (mirrors ActiveAgentsPanel).
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "scope-all"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { taskScope: "all" }),
     enabled: !!selectedCompanyId && runs.length > 0,
   });
 
@@ -88,7 +94,7 @@ export function ActiveAgents() {
 
           const lines = logData.content.split("\n").filter((l) => l.trim());
           const items: FeedItem[] = [];
-          const adapter = getUIAdapter(run.adapterType);
+          const adapter = getUIAdapter(run.adapterType ?? "process");
 
           for (const line of lines) {
             let record: { ts?: string; stream?: string; chunk?: string };
@@ -107,6 +113,11 @@ export function ActiveAgents() {
                 const item = createFeedItem(run, ts, errLine, "error", nextIdRef.current++);
                 if (item) items.push(item);
               }
+              continue;
+            }
+
+            if (record.stream === "system") {
+              items.push(...parseSystemChunk(run, chunk, ts, pendingByRunRef.current, nextIdRef));
               continue;
             }
 
@@ -150,6 +161,7 @@ export function ActiveAgents() {
     for (const runId of activeRunIds) {
       stillActive.add(`${runId}:stdout`);
       stillActive.add(`${runId}:stderr`);
+      stillActive.add(`${runId}:system`);
     }
     for (const key of pendingByRunRef.current.keys()) {
       if (!stillActive.has(key)) pendingByRunRef.current.delete(key);
@@ -219,12 +231,17 @@ export function ActiveAgents() {
         if (event.type === "heartbeat.run.log") {
           const chunk = readString(payload["chunk"]);
           if (!chunk) return;
-          const stream = readString(payload["stream"]) === "stderr" ? "stderr" : "stdout";
+          const streamRaw = readString(payload["stream"]);
+          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           if (stream === "stderr") {
             appendItems(run.id, parseStderrChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
-          } else {
-            appendItems(run.id, parseStdoutChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
+            return;
           }
+          if (stream === "system") {
+            appendItems(run.id, parseSystemChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
+            return;
+          }
+          appendItems(run.id, parseStdoutChunk(run, chunk, event.createdAt, pendingByRunRef.current, nextIdRef));
         }
       };
 

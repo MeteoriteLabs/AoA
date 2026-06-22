@@ -58,9 +58,45 @@ vi.mock("../services/live-events.js", () => ({
 // Mock providers
 const mockGetProviderApiKey = vi.fn();
 const mockCreateProvider = vi.fn();
+const mockResolveAvailableProvider = vi.fn();
+
+const PROVIDER_FALLBACK_MODELS: Record<string, string> = {
+  anthropic: "claude-sonnet-4-6",
+  openai: "gpt-4o",
+  google: "gemini-2.0-flash",
+};
+
+// Mirrors the real resolver: prefer the configured provider, else the first
+// with a key — driven by the mocked getProviderApiKey so per-test setups apply.
+async function resolveAvailableProviderImpl(
+  db: unknown,
+  companyId: string,
+  preferred?: string,
+) {
+  const order = [preferred, "anthropic", "openai", "google"].filter(
+    (v, i, a): v is string => Boolean(v) && a.indexOf(v) === i,
+  );
+  for (const provider of order) {
+    try {
+      const apiKey = await mockGetProviderApiKey(db, companyId, provider);
+      return {
+        provider,
+        apiKey,
+        model:
+          PROVIDER_FALLBACK_MODELS[provider] ?? PROVIDER_FALLBACK_MODELS.anthropic,
+      };
+    } catch {
+      // No key for this provider — try the next.
+    }
+  }
+  throw new Error("No LLM provider configured");
+}
+
 vi.mock("../services/internal-agent/providers/index.js", () => ({
   getProviderApiKey: (...args: unknown[]) => mockGetProviderApiKey(...args),
   createProvider: (...args: unknown[]) => mockCreateProvider(...args),
+  resolveAvailableProvider: (...args: [unknown, string, string?]) =>
+    mockResolveAvailableProvider(...args),
 }));
 
 import { extractionService } from "../services/extraction.js";
@@ -141,6 +177,12 @@ function createMockDb() {
         return {
           where: vi.fn().mockReturnThis(),
           catch: vi.fn().mockReturnThis(),
+          // Models `UPDATE ... WHERE status='pending' RETURNING` — returns the
+          // claimed row (entry was pending in these happy-path fixtures), which
+          // is the real Postgres behaviour the atomic claim relies on.
+          returning: vi.fn(() =>
+            Promise.resolve([{ id: "claimed", extractionStatus: "processing" }]),
+          ),
           then: vi.fn((fn?: (rows: any[]) => any) =>
             Promise.resolve(fn ? fn([]) : undefined),
           ),
@@ -161,6 +203,8 @@ describe("extractFromDiscussionEntry", () => {
     mockPublishLiveEvent.mockClear();
     mockGetProviderApiKey.mockClear();
     mockCreateProvider.mockClear();
+    // restoreAllMocks wipes vi.fn implementations — re-establish the resolver.
+    mockResolveAvailableProvider.mockImplementation(resolveAvailableProviderImpl);
   });
 
   it("extracts via agent provider when internalAgentConfig is configured", async () => {
@@ -212,7 +256,7 @@ describe("extractFromDiscussionEntry", () => {
     );
   });
 
-  it("falls back to legacy extraction when agent not configured", async () => {
+  it("uses a resolved provider even without an internalAgentConfig", async () => {
     const { db, selectQueue, capturedInserts, capturedUpdates } = createMockDb();
 
     const extractedJson = JSON.stringify([
@@ -228,37 +272,56 @@ describe("extractFromDiscussionEntry", () => {
       [],  // departments
     );
 
-    // Ensure callLLM falls through DB key lookup to env var fallback
-    mockGetProviderApiKey.mockRejectedValue(new Error("not found"));
-
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({
-        choices: [{ message: { content: extractedJson } }],
-      }),
-    });
-    vi.stubGlobal("fetch", mockFetch);
-    process.env.OPENAI_API_KEY = "test-legacy-key";
+    // No agent config, but any provider key resolves (DB secret or env var) →
+    // resolveAvailableProvider succeeds and extraction runs via that provider.
+    const mockProvider = {
+      name: "anthropic",
+      chat: vi.fn(() => createMockStream(extractedJson)),
+    };
+    mockGetProviderApiKey.mockResolvedValue("resolved-key");
+    mockCreateProvider.mockReturnValue(mockProvider);
 
     const service = extractionService(db as any);
     await service.extractFromDiscussionEntry("company-1", "entry-1");
 
-    expect(mockFetch).toHaveBeenCalled();
-    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCreateProvider).toHaveBeenCalled();
+    expect(mockProvider.chat).toHaveBeenCalledTimes(1);
 
     const itemInserts = capturedInserts.filter((i) => i.table === "discussion_extracted_items");
     expect(itemInserts.length).toBe(1);
-
-    const runInserts = capturedInserts.filter((i) => i.table === "internal_agent_runs");
-    expect(runInserts.length).toBe(0);
 
     const completedUpdate = capturedUpdates.find(
       (u) => u.table === "discussion_entries" && u.set.extractionStatus === "completed",
     );
     expect(completedUpdate).toBeDefined();
+  });
 
-    vi.unstubAllGlobals();
-    delete process.env.OPENAI_API_KEY;
+  it("skips extraction when no provider key is configured anywhere", async () => {
+    const { db, selectQueue, capturedInserts, capturedUpdates } = createMockDb();
+
+    selectQueue.push(
+      [createMockEntry()],
+      [createMockDiscussion()],
+      [],  // no internalAgentConfig
+      [],  // previous entries
+      [],  // departments
+    );
+
+    // No key in DB or env → resolveAvailableProvider throws → entry is skipped.
+    mockGetProviderApiKey.mockRejectedValue(new Error("not found"));
+
+    const service = extractionService(db as any);
+    await service.extractFromDiscussionEntry("company-1", "entry-1");
+
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+
+    const skippedUpdate = capturedUpdates.find(
+      (u) => u.table === "discussion_entries" && u.set.extractionStatus === "skipped",
+    );
+    expect(skippedUpdate).toBeDefined();
+
+    const itemInserts = capturedInserts.filter((i) => i.table === "discussion_extracted_items");
+    expect(itemInserts.length).toBe(0);
   });
 
   it("transitions status: pending → processing → completed", async () => {

@@ -203,7 +203,13 @@ export function memoryFoldersService(db: Db) {
       const existingKeys = new Set(
         existing.map((row: { seedKey: string | null }) => row.seedKey).filter(Boolean),
       );
-      const toCreate = seeds.filter((s) => !existingKeys.has(s.seedKey));
+      const existingPaths = new Set(
+        existing.map((row: { path: string }) => normalizeMemoryFolderPath(row.path)),
+      );
+      const toCreate = seeds.filter((s) => {
+        const path = normalizeMemoryFolderPath(`${input.departmentSlug}/${s.path}`);
+        return !existingKeys.has(s.seedKey) && !existingPaths.has(path);
+      });
       if (toCreate.length === 0) return [];
       const created = [];
       for (const seed of toCreate) {
@@ -256,7 +262,7 @@ export async function seedFoldersOnDepartmentCreate(
  * folder) are caught and ignored. The unique index on (companyId, path)
  * provides the idempotency guarantee at the DB level.
  */
-export async function seedCompanyRootFolder(
+async function seedCompanyRootFolderLegacy(
   svc: MemoryFoldersService,
   input: { companyId: string },
 ): Promise<void> {
@@ -278,5 +284,29 @@ export async function seedCompanyRootFolder(
       return;
     }
     throw err;
+  }
+}
+
+export async function seedCompanyRootFolder(
+  svc: MemoryFoldersService,
+  input: { companyId: string },
+): Promise<void> {
+  for (const seed of COMPANY_SEED_FOLDERS) {
+    try {
+      await svc.create({
+        companyId: input.companyId,
+        departmentId: null,
+        path: seed.path,
+        displayName: seed.displayName,
+        icon: seed.icon ?? null,
+        seedKey: seed.seedKey,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("memory_folders_unique_path_per_company")) {
+        continue;
+      }
+      throw err;
+    }
   }
 }

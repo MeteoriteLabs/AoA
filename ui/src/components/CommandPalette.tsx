@@ -2,6 +2,7 @@ import { useState, useEffect, useDeferredValue, useMemo } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { GlobalSearchEntityType, GlobalSearchResult } from "@armyofagents/shared";
+import { THREAD_INTENTS, THREAD_PHASES } from "@armyofagents/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -111,12 +112,18 @@ function SearchResultBadges({ result }: { result: GlobalSearchResult }) {
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  // Phase 1 Phase E batch 3 (T24): thread-only filters. Empty string = unset.
+  // Participant uses the `principalType:principalId` format the backend expects.
+  const [intentFilter, setIntentFilter] = useState<string>("");
+  const [phaseFilter, setPhaseFilter] = useState<string>("");
+  const [participantFilter, setParticipantFilter] = useState<string>("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent, openNewGoal, openDiscussionCapture } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const deferredQuery = useDeferredValue(query);
   const searchQuery = deferredQuery.trim();
+  const hasThreadFilter = Boolean(intentFilter || phaseFilter || participantFilter);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -131,24 +138,48 @@ export function CommandPalette() {
   }, [isMobile, setSidebarOpen]);
 
   useEffect(() => {
-    if (!open) setQuery("");
+    if (!open) {
+      setQuery("");
+      // Phase 1 Phase E batch 3 (T24): also clear filters when the palette
+      // closes so the next open starts fresh — otherwise stale filters silently
+      // narrow results without any UI hint.
+      setIntentFilter("");
+      setPhaseFilter("");
+      setParticipantFilter("");
+    }
   }, [open]);
 
   const { data: issues = [] } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    // cmd+K must surface crew tasks too, so this list is 'all'. Use a distinct
+    // cache key from the org-default board list to avoid cross-contaminating
+    // the main Tasks board (which shares queryKeys.issues.list).
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "scope-all"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { taskScope: "all" }),
     enabled: !!selectedCompanyId && open,
   });
 
   const { data: searchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, searchQuery),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery }),
+    // Distinct from IssuesList's org-scoped search (same search key shape) so
+    // the 'all' results stay isolated from the main board's search cache.
+    queryKey: [...queryKeys.issues.search(selectedCompanyId!, searchQuery), "scope-all"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery, taskScope: "all" }),
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
   });
 
   const { data: globalSearch } = useQuery({
-    queryKey: queryKeys.search.global(selectedCompanyId!, searchQuery),
-    queryFn: () => searchApi.global(selectedCompanyId!, searchQuery, { limitPerType: 8 }),
+    queryKey: [
+      ...queryKeys.search.global(selectedCompanyId!, searchQuery),
+      // Phase 1 Phase E batch 3 (T24): include filters in the cache key so
+      // toggling them re-fires the query rather than serving a stale result.
+      { intent: intentFilter, phase: phaseFilter, participant: participantFilter },
+    ],
+    queryFn: () =>
+      searchApi.global(selectedCompanyId!, searchQuery, {
+        limitPerType: 8,
+        ...(intentFilter ? { intent: intentFilter } : {}),
+        ...(phaseFilter ? { phase: phaseFilter } : {}),
+        ...(participantFilter ? { participant: participantFilter } : {}),
+      }),
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
   });
 
@@ -193,6 +224,74 @@ export function CommandPalette() {
         value={query}
         onValueChange={setQuery}
       />
+      {/* Phase 1 Phase E batch 3 (T24): thread-only filters. Render only when
+          the palette is open AND a query is being typed; otherwise they add
+          noise to the empty-state. The select wrappers use native HTML for
+          minimal weight inside cmdk's already-busy tree. */}
+      {searchQuery.length > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs"
+          data-testid="command-palette-thread-filters"
+        >
+          <span className="text-muted-foreground">Thread filters:</span>
+          <select
+            aria-label="Filter by thread intent"
+            data-testid="filter-intent"
+            value={intentFilter}
+            onChange={(e) => setIntentFilter(e.target.value)}
+            className="rounded border border-border bg-background px-1.5 py-0.5 text-xs"
+          >
+            <option value="">Any intent</option>
+            {THREAD_INTENTS.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by thread phase"
+            data-testid="filter-phase"
+            value={phaseFilter}
+            onChange={(e) => setPhaseFilter(e.target.value)}
+            className="rounded border border-border bg-background px-1.5 py-0.5 text-xs"
+          >
+            <option value="">Any phase</option>
+            {THREAD_PHASES.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by thread participant"
+            data-testid="filter-participant"
+            value={participantFilter}
+            onChange={(e) => setParticipantFilter(e.target.value)}
+            className="rounded border border-border bg-background px-1.5 py-0.5 text-xs"
+          >
+            <option value="">Any participant</option>
+            {agents.map((a) => (
+              <option key={a.id} value={`agent:${a.id}`}>
+                Agent: {a.name}
+              </option>
+            ))}
+          </select>
+          {hasThreadFilter && (
+            <button
+              type="button"
+              onClick={() => {
+                setIntentFilter("");
+                setPhaseFilter("");
+                setParticipantFilter("");
+              }}
+              className="text-muted-foreground underline hover:text-foreground"
+              data-testid="filter-clear"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 

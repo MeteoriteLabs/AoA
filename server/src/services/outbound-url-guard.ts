@@ -111,12 +111,27 @@ export async function validateAndResolveFetchUrl(urlString: string): Promise<Val
   // between DNS resolution here and the second resolution fetch() would do.
   const originalHostname = parsed.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   const hostHeader = parsed.host; // includes port if non-default
+  if (isIP(originalHostname) !== 0) {
+    if (isPrivateIP(originalHostname)) {
+      throw new Error(
+        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
+      );
+    }
+    return {
+      parsedUrl: parsed,
+      resolvedAddress: originalHostname,
+      hostHeader,
+      tlsServername: undefined,
+      useTls: parsed.protocol === "https:",
+    };
+  }
 
   // Race the DNS lookup against a timeout to prevent indefinite hangs
   // when DNS is misconfigured or unresponsive.
   const dnsPromise = dnsLookup(originalHostname, { all: true });
+  let timeoutHandle: NodeJS.Timeout | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(
+    timeoutHandle = setTimeout(
       () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
       DNS_LOOKUP_TIMEOUT_MS,
     );
@@ -156,6 +171,8 @@ export async function validateAndResolveFetchUrl(urlString: string): Promise<Val
       err.message.startsWith("DNS lookup timed out")
     )) throw err;
     throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 

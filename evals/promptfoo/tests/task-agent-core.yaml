@@ -77,7 +77,7 @@
     - type: contains
       value: "POST /api/issues"
     - type: contains
-      value: X-Paperclip-Run-Id
+      value: X-Aoa-Run-Id
       metric: run_id_header
 
 - description: "task-agent.core.conflict_handling - stops on 409, picks different task"

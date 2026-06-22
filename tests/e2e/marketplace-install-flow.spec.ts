@@ -236,4 +236,164 @@ test.describe("Marketplace install flow", () => {
       fullPage: false,
     });
   });
+
+  test("skill package Install all submits the package payload from card and detail flows", async ({
+    page,
+    request,
+  }) => {
+    const companyName = `E2E-INSTALL-${Date.now()}`;
+    const company = await seedCompany(request, companyName);
+    const catalogItems = [
+      {
+        id: "skill:gstack/office-hours",
+        type: "skill",
+        name: "office-hours",
+        description: "Run office hours",
+        version: "1.0.0",
+        source: {
+          adapter: "github-skills",
+          url: "https://github.com/garrytan/gstack/tree/main/skills/office-hours",
+          locator: "skills/office-hours",
+        },
+        trust: { tier: "verified", source: "e2e" },
+        status: "active",
+        addedAt: "2026-05-01T00:00:00Z",
+        category: "engineering",
+        tags: ["yc"],
+        provider: {
+          id: "garrytan",
+          name: "Garry Tan",
+          logoUrl: "https://example.test/garrytan.png",
+          fallbackInitials: "GT",
+        },
+      },
+      {
+        id: "skill:gstack/qa",
+        type: "skill",
+        name: "qa",
+        description: "Review product quality",
+        version: "1.0.0",
+        source: {
+          adapter: "github-skills",
+          url: "https://github.com/garrytan/gstack/tree/main/skills/qa",
+          locator: "skills/qa",
+        },
+        trust: { tier: "verified", source: "e2e" },
+        status: "active",
+        addedAt: "2026-05-01T00:00:00Z",
+        category: "engineering",
+        tags: ["qa"],
+        provider: {
+          id: "garrytan",
+          name: "Garry Tan",
+          logoUrl: "https://example.test/garrytan.png",
+          fallbackInitials: "GT",
+        },
+      },
+    ];
+    const pkg = {
+      id: "garrytan/gstack",
+      name: "gstack",
+      sourceUrl: "https://github.com/garrytan/gstack",
+      memberItemIds: catalogItems.map((item) => item.id),
+      count: 2,
+      verified: true,
+      explicit: false,
+      provider: {
+        id: "garrytan",
+        name: "Garry Tan",
+        logoUrl: "https://example.test/garrytan.png",
+        fallbackInitials: "GT",
+      },
+    };
+    const submittedPayloads: unknown[] = [];
+
+    await page.route("**/api/marketplace/catalog", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          schemaVersion: "1.0.0",
+          generatedAt: "2026-05-01T00:00:00Z",
+          itemCount: catalogItems.length,
+          items: catalogItems,
+        }),
+      });
+    });
+    await page.route("**/api/marketplace/packages", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ packages: [pkg] }),
+      });
+    });
+    await page.route(`**/api/companies/${company.id}/marketplace/install`, async (route) => {
+      submittedPayloads.push(route.request().postDataJSON());
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ operationId: `op-${submittedPayloads.length}`, status: "pending" }),
+      });
+    });
+    await page.route(`**/api/companies/${company.id}/marketplace/install/op-*`, async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "op-1",
+          companyId: company.id,
+          catalogItemId: pkg.id,
+          itemType: "package",
+          targetDepartmentId: null,
+          status: "success",
+          resultEntityId: pkg.id,
+          errorMessage: null,
+          cascadeResults: [],
+          createdAt: "2026-05-01T00:00:00Z",
+          updatedAt: "2026-05-01T00:00:00Z",
+          completedAt: "2026-05-01T00:00:01Z",
+        }),
+      });
+    });
+
+    await page.goto("/marketplace?type=skill");
+    await expect(page.getByRole("heading", { level: 1, name: /marketplace/i })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole("button", { name: /^install all$/i }).click();
+    const cardModal = page.getByRole("dialog");
+    await expect(cardModal).toBeVisible();
+    await expect(cardModal.getByLabel("Garry Tan logo fallback")).toBeVisible();
+    // Multi-company shared e2e instance: the modal defaults to the first active
+    // company, not this test's freshly-seeded one. Pick it explicitly in the
+    // CompanyPicker so the install POSTs to company.id — the URL the route
+    // interception above is scoped to. (Guarded: the picker auto-hides at 1
+    // company, in which case the modal already auto-selected it.)
+    const cardPicker = cardModal.getByLabel("Install to company");
+    if (await cardPicker.isVisible().catch(() => false)) {
+      await cardPicker.click();
+      await page.getByRole("option", { name: companyName, exact: true }).click();
+    }
+    await cardModal.getByRole("button", { name: "Install all 2 skills" }).click();
+    await expect
+      .poll(() => submittedPayloads.length, { timeout: 5_000 })
+      .toBe(1);
+    expect(submittedPayloads[0]).toEqual({
+      packageId: "garrytan/gstack",
+      catalogItemIds: ["skill:gstack/office-hours", "skill:gstack/qa"],
+    });
+
+    await page.goto("/marketplace/package/garrytan/gstack");
+    await expect(page.getByRole("heading", { level: 1, name: /gstack/i })).toBeVisible();
+    await page.getByRole("button", { name: /install all 2 items/i }).click();
+    const detailModal = page.getByRole("dialog");
+    await expect(detailModal).toBeVisible();
+    const detailPicker = detailModal.getByLabel("Install to company");
+    if (await detailPicker.isVisible().catch(() => false)) {
+      await detailPicker.click();
+      await page.getByRole("option", { name: companyName, exact: true }).click();
+    }
+    await detailModal.getByRole("button", { name: "Install all 2 skills" }).click();
+    await expect
+      .poll(() => submittedPayloads.length, { timeout: 5_000 })
+      .toBe(2);
+    expect(submittedPayloads[1]).toEqual(submittedPayloads[0]);
+  });
 });

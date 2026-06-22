@@ -29,6 +29,7 @@ const routine = {
   updatedByUserId: null,
   lastTriggeredAt: null,
   lastEnqueuedAt: null,
+  latestRevisionId: null,
   createdAt: new Date("2026-03-20T00:00:00.000Z"),
   updatedAt: new Date("2026-03-20T00:00:00.000Z"),
 };
@@ -282,6 +283,7 @@ describe("routine routes — authorization", () => {
     expect(mockRoutineService.runRoutine).toHaveBeenCalledWith(
       routineId,
       expect.objectContaining({ source: "manual" }),
+      expect.objectContaining({ agentId: null, userId: "board-user" }),
     );
   });
 

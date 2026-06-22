@@ -34,11 +34,25 @@ vi.mock("../components/workspace/WorkspacePreviewPanel", () => ({
 }));
 
 vi.mock("../components/workspace/WorkspaceRightPanel", () => ({
-  WorkspaceRightPanel: () => <div data-testid="mock-right-panel">RightPanel</div>,
+  WorkspaceRightPanel: (props: any) => (
+    <div data-testid="mock-right-panel">
+      <span data-testid="mock-ticket">{props.selectedIssueIdentifier}</span>
+      <button type="button" data-testid="mock-settings" onClick={props.onOpenSettings}>Settings</button>
+      <button type="button" data-testid="mock-archive" onClick={props.onOpenArchive}>Archive</button>
+    </div>
+  ),
 }));
 
 vi.mock("../components/workspace/DependencyChain", () => ({
   DependencyChain: () => null,
+}));
+
+vi.mock("../components/workspace/WorkspaceSettingsSheet", () => ({
+  WorkspaceSettingsSheet: () => <div data-testid="workspace-settings-sheet" />,
+}));
+
+vi.mock("../components/workspace/ExecutionWorkspaceCloseDialog", () => ({
+  ExecutionWorkspaceCloseDialog: () => <div data-testid="workspace-close-dialog" />,
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -77,7 +91,7 @@ const mockWorkspace = {
   updatedAt: new Date(),
 };
 
-function renderLayout() {
+function renderLayout(selectedIssueIdentifier?: string | null) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
@@ -89,6 +103,7 @@ function renderLayout() {
           workspace={mockWorkspace as any}
           project={null}
           selectedIssueId={"issue-1"}
+          selectedIssueIdentifier={selectedIssueIdentifier}
           onSelectIssue={vi.fn()}
           companyId="comp-1"
           companyPrefix="tc"
@@ -105,27 +120,28 @@ describe("WorkspaceLayout header", () => {
     mockSidebarValue.isMobile = false;
   });
 
-  it("renders workspace name and branch", () => {
+  it("removes the old top workspace strip", () => {
     renderLayout();
-    expect(screen.getByTestId("workspace-header-name")).toHaveTextContent("feature-login");
-    expect(screen.getByTestId("workspace-header-branch")).toHaveTextContent("on feature-login");
+    expect(screen.queryByTestId("workspace-header")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-header-name")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-header-branch")).not.toBeInTheDocument();
   });
 
-  it("renders kebab menu with Settings (enabled, Task 10) + Archive (enabled)", async () => {
+  it("delegates workspace actions to the right cockpit panel", async () => {
     const user = userEvent.setup();
     renderLayout();
 
-    await user.click(screen.getByTestId("workspace-header-menu-trigger"));
-
-    const settingsItem = await screen.findByRole("menuitem", { name: /settings/i });
-    const archiveItem = await screen.findByRole("menuitem", { name: /archive/i });
-
-    // Settings is now wired (Task 10). Archive is wired (Task 5).
-    expect(settingsItem).not.toHaveAttribute("aria-disabled", "true");
-    expect(archiveItem).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("mock-ticket")).toBeEmptyDOMElement();
+    await user.click(screen.getByTestId("mock-settings"));
+    expect(await screen.findByTestId("workspace-settings-sheet")).toBeInTheDocument();
   });
 
-  it("disables Archive kebab item when workspace is already archived", async () => {
+  it("passes the selected ticket identifier to the cockpit header", () => {
+    renderLayout("ENG-42");
+    expect(screen.getByTestId("mock-ticket")).toHaveTextContent("ENG-42");
+  });
+
+  it("opens archive flow through the cockpit panel callback", async () => {
     const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -138,6 +154,7 @@ describe("WorkspaceLayout header", () => {
             workspace={{ ...mockWorkspace, status: "archived" } as any}
             project={null}
             selectedIssueId={"issue-1"}
+            selectedIssueIdentifier="ENG-42"
             onSelectIssue={vi.fn()}
             companyId="comp-1"
             companyPrefix="tc"
@@ -147,9 +164,8 @@ describe("WorkspaceLayout header", () => {
       </QueryClientProvider>,
     );
 
-    await user.click(screen.getByTestId("workspace-header-menu-trigger"));
+    await user.click(screen.getByTestId("mock-archive"));
 
-    const archiveItem = await screen.findByRole("menuitem", { name: /archive/i });
-    expect(archiveItem).toHaveAttribute("aria-disabled", "true");
+    expect(await screen.findByTestId("workspace-close-dialog")).toBeInTheDocument();
   });
 });

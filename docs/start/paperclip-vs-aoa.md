@@ -15,7 +15,7 @@ The short version: **Paperclip is the execution primitive. AoA is what you build
 
 Everything a user or developer sees has been renamed to AoA: the CLI banner, log prefixes (`[aoa]`), CSS classes (`aoa-*`), localStorage keys (`aoa:*`), token prefixes (`aoa_invite_`, `aoa_mcp_`), environment variables (`AOA_*`), plugin example keys (`aoa.hello-world`), and all doc and UI prose.
 
-Wire-compat surfaces are **intentionally preserved** under the legacy `paperclip` name to avoid breaking existing data, plugins, and integrations. The canonical allow-list lives at [/aoa/reference/wire-compat](/aoa/reference/wire-compat). The ten current wire-compat surfaces are:
+Wire-compat surfaces are **intentionally preserved** under the legacy `paperclip` name to avoid breaking existing data, plugins, and integrations. The canonical allow-list lives at [wire-compat.md](../architecture/wire-compat.md). The ten current wire-compat surfaces are:
 
 1. `PAPERCLIP_*` environment variables — mirrored to `AOA_*` equivalents; both are accepted.
 2. `paperclipai` CLI binary alias — kept alongside the `aoa` bin so existing scripts don't break.

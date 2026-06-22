@@ -1,6 +1,7 @@
 // server/src/services/internal-agent/proactive.ts
 // Proactive checks for the internal agent — T11
-import { and, eq, lt, lte, gte, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, eq, lt, lte, gte, isNull, isNotNull, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@armyofagents/db";
 import {
   issues,
@@ -8,10 +9,17 @@ import {
   internalAgentConfig,
   internalAgentRuns,
   internalAgentReminders,
-  notifications,
   memoryFeedbackPatterns,
   activityLog,
 } from "@armyofagents/db";
+import { createNotification } from "../notifications.js";
+
+// Mirror of dependencies.ts TERMINAL_STATUSES (A-H9). Kept as a local literal
+// rather than imported to avoid dragging the issues/heartbeat/memory module
+// graph into this proactive-checks module. Both `done` and `cancelled` are
+// terminal: a cancelled dependency now releases its dependents, so neither
+// should be flagged as a dependency-chain gap.
+const TERMINAL_DEPENDENCY_STATUSES = ["done", "cancelled"];
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,17 +104,13 @@ async function createNotificationIfAllowed(
 
   // 'digest' and 'realtime' both create the notification record.
   // Digest batching is a consumer concern (the UI groups them).
-  const [notif] = await db
-    .insert(notifications)
-    .values({
-      companyId,
-      userId,
-      type: "internal_agent_proactive",
-      title,
-      message,
-    })
-    .returning();
-  return notif;
+  return createNotification(db, {
+    companyId,
+    userId,
+    type: "internal_agent_proactive",
+    title,
+    message,
+  });
 }
 
 // ── Checks ───────────────────────────────────────────────────────────────────
@@ -121,19 +125,31 @@ export async function blockedTaskScan(
 ): Promise<ProactiveCheckResult> {
   const preference = await getNotificationPreference(db, companyId);
 
-  // A task is "blocked" if it appears as dependentIssueId in task_dependencies
-  // and the dependency task (dependencyIssueId) is not yet completed.
+  // A task is genuinely "blocked" only if it is `in_progress` AND at least one
+  // of its dependencies (the `dependencyIssueId` side of the edge) is itself
+  // NOT terminal. `task_dependencies` has no status column, so completion is
+  // knowable only via the dependency issue's own status — hence the second
+  // `issues` alias join. Both `done` and `cancelled` are terminal (A-M14,
+  // matching the A-H9 sibling check above): a completed or cancelled dependency
+  // no longer blocks, so it must not inflate the count.
+  //
+  // `selectDistinct({ id })` collapses the row fan-out: a task with N incomplete
+  // dependencies produces N join rows, which would otherwise be counted N times
+  // in `blockedTasks.length` (the value reported in the summary + notification).
+  const depIssue = alias(issues, "dep_issue");
   const blockedTasks = await db
-    .select()
+    .selectDistinct({ id: issues.id })
     .from(issues)
     .innerJoin(
       taskDependencies,
       eq(taskDependencies.dependentIssueId, issues.id),
     )
+    .innerJoin(depIssue, eq(depIssue.id, taskDependencies.dependencyIssueId))
     .where(
       and(
         eq(issues.companyId, companyId),
         eq(issues.status, "in_progress"),
+        notInArray(depIssue.status, TERMINAL_DEPENDENCY_STATUSES),
       ),
     );
 
@@ -255,9 +271,15 @@ export async function dependencyChainGaps(
   const preference = await getNotificationPreference(db, companyId);
 
   // Alias: "dependent" is the task waiting, "dependency" is the task it waits on.
-  // A gap exists when the dependency task is cancelled — the dependent is stuck.
-  // We join task_dependencies → issues (as dependent) → issues (as dependency via subquery).
-  // For simplicity we do two queries: get all deps for company, then filter in-memory.
+  // Both `done` and `cancelled` are terminal (A-H9): a cancelled dependency now
+  // *releases* its dependents (moving them off `blocked`) instead of stranding
+  // them, so a cancelled (or done) dependency must NOT be flagged as a gap —
+  // otherwise this check emits a false positive for every released chain.
+  //
+  // The genuine residual gap is a dependent that is STILL `blocked` even though
+  // EVERY one of its dependencies is terminal — the auto-release should have
+  // fired but the task is stuck. A dependent that is correctly blocked by a
+  // still-running (non-terminal) dependency is normal and never a gap.
   const allDeps = await db
     .select({
       dependentId: taskDependencies.dependentIssueId,
@@ -271,20 +293,42 @@ export async function dependencyChainGaps(
     return { findings: [], runCreated: true };
   }
 
-  // Get all dependency task IDs and check which are cancelled
-  const depTaskIds = [...new Set(allDeps.map((d) => d.dependencyId))];
-  const cancelledDeps = await db
-    .select({ id: issues.id })
+  // Resolve the status of every task involved in a dependency edge.
+  const statusRows = await db
+    .select({ id: issues.id, status: issues.status })
     .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, companyId),
-        eq(issues.status, "cancelled"),
-      ),
-    );
+    .where(eq(issues.companyId, companyId));
 
-  const cancelledSet = new Set(cancelledDeps.map((t) => t.id));
-  const gaps = allDeps.filter((d) => cancelledSet.has(d.dependencyId));
+  const statusById = new Map<string, string>();
+  for (const row of statusRows) {
+    statusById.set(row.id, row.status);
+  }
+
+  // Group dependencies by dependent so we can require ALL of them to be terminal.
+  const depsByDependent = new Map<string, string[]>();
+  for (const d of allDeps) {
+    const list = depsByDependent.get(d.dependentId) ?? [];
+    list.push(d.dependencyId);
+    depsByDependent.set(d.dependentId, list);
+  }
+
+  const gaps = allDeps.filter((d) => {
+    const dependentStatus = statusById.get(d.dependentId);
+    // Only a still-blocked dependent can be a gap.
+    if (dependentStatus !== "blocked") return false;
+    const dependencyStatus = statusById.get(d.dependencyId);
+    if (dependencyStatus === undefined) return false;
+    // Non-terminal dependency → normal in-flight blocking, not a gap.
+    if (!TERMINAL_DEPENDENCY_STATUSES.includes(dependencyStatus)) return false;
+    // Anomaly only if EVERY dependency of this dependent is terminal (so the
+    // release should have fired). If a sibling dependency is still running, the
+    // dependent is correctly blocked — not a gap.
+    const siblings = depsByDependent.get(d.dependentId) ?? [];
+    return siblings.every((depId) => {
+      const s = statusById.get(depId);
+      return s !== undefined && TERMINAL_DEPENDENCY_STATUSES.includes(s);
+    });
+  });
 
   const summary =
     gaps.length > 0
@@ -505,16 +549,13 @@ export async function checkReminders(
       .where(eq(internalAgentReminders.id, reminder.id));
 
     // Reminders always notify regardless of preference
-    const [notif] = await db
-      .insert(notifications)
-      .values({
-        companyId,
-        userId: reminder.userId,
-        type: "internal_agent_reminder",
-        title: "Reminder",
-        message: reminder.content,
-      })
-      .returning();
+    await createNotification(db, {
+      companyId,
+      userId: reminder.userId,
+      type: "internal_agent_reminder",
+      title: "Reminder",
+      message: reminder.content,
+    });
   }
 
   return { firedCount: dueReminders.length, runCreated: true };

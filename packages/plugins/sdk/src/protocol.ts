@@ -589,6 +589,7 @@ export interface WorkerToHostMethods {
       title: string;
       description?: string;
       priority?: string;
+      workMode?: string;
       assigneeAgentId?: string;
     },
     result: Issue,

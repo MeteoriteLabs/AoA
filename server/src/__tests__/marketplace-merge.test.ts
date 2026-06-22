@@ -115,3 +115,33 @@ describe("applyMergeDecisions", () => {
     expect(result).not.toContain("my content");
   });
 });
+
+describe("applyMergeDecisions — section ordering (A-M15)", () => {
+  // Helper: extract the ## section headers from a merged markdown doc, in order.
+  const headerOrder = (md: string): string[] =>
+    md
+      .split("\n")
+      .filter((line) => line.startsWith("## "))
+      .map((line) => line.slice(3).trim());
+
+  it("preserves user section order when upstream drops a middle section (B removed)", () => {
+    // mine = [A, B, C]; theirs = [A, C] (B removed upstream).
+    // B is a user-retained section (defaults to 'mine'/kept) and must stay in its
+    // original slot — output must be A, B, C, NOT A, C, B.
+    const mine = "## A\nbody a\n## B\nbody b\n## C\nbody c";
+    const theirs = "## A\nbody a\n## C\nbody c";
+    const diff = computeSectionDiff(mine, theirs);
+    const merged = applyMergeDecisions(diff, {});
+    expect(headerOrder(merged)).toEqual(["A", "B", "C"]);
+  });
+
+  it("places an upstream-added section at its anchor relative to surviving neighbors", () => {
+    // mine = [A, C]; theirs = [A, D, C] (D added upstream between A and C).
+    // D should land between A and C → output A, D, C.
+    const mine = "## A\nbody a\n## C\nbody c";
+    const theirs = "## A\nbody a\n## D\nbody d\n## C\nbody c";
+    const diff = computeSectionDiff(mine, theirs);
+    const merged = applyMergeDecisions(diff, {});
+    expect(headerOrder(merged)).toEqual(["A", "D", "C"]);
+  });
+});

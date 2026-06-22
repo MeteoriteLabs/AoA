@@ -11,6 +11,11 @@ import { dashboardApi } from "../api/dashboard";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { notificationsApi } from "../api/notifications";
+import {
+  ThreadNotificationItem,
+  isThreadNotification,
+} from "../components/inbox/ThreadNotificationItem";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -69,6 +74,10 @@ type SectionKey =
   | "join_requests"
   | "approvals"
   | "discussions_pending_review"
+  // Phase 1 Phase E batch 3 (T23): thread.scope_proposal_posted,
+  // thread.artifact_needs_review, thread.crew_failed, thread.spinoff_suggested,
+  // thread.human_input_needed. All five new types render in this section.
+  | "thread_notifications"
   | "failed_runs"
   | "alerts"
   | "stale_work";
@@ -460,6 +469,22 @@ export function Inbox() {
     select: (res) => res.discussions,
   });
 
+  // Phase 1 Phase E batch 3 (T23): pull notifications so the five new
+  // thread.* types render in their own Inbox section. We filter client-side
+  // to the thread subset (`isThreadNotification`) so other notification types
+  // (marketplace install events, etc.) continue to surface via their existing
+  // paths and don't double-render here.
+  const { data: rawNotifications = [], isLoading: isNotificationsLoading } =
+    useQuery({
+      queryKey: ["notifications", selectedCompanyId!],
+      queryFn: () => notificationsApi.list(selectedCompanyId!),
+      enabled: !!selectedCompanyId,
+    });
+  const threadNotifications = useMemo(
+    () => rawNotifications.filter(isThreadNotification),
+    [rawNotifications],
+  );
+
   const staleIssuesAll = useMemo(
     () => (issues ? getStaleIssues(issues) : []),
     [issues],
@@ -629,11 +654,13 @@ export function Inbox() {
   const hasStaleAll = staleIssuesAll.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
   const hasDiscussions = pendingDiscussions.length > 0;
+  const hasThreadNotifications = threadNotifications.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
 
   const newItemCount =
     failedRuns.length +
     pendingDiscussions.length +
+    threadNotifications.length +
     staleIssues.length +
     (showAggregateAgentError ? 1 : 0) +
     (showBudgetAlert ? 1 : 0);
@@ -660,6 +687,13 @@ export function Inbox() {
       : showApprovalsCategory && filteredAllApprovals.length > 0;
   const showDiscussionsSection =
     tab === "new" ? hasDiscussions : showDiscussionsCategory && hasDiscussions;
+  // Phase 1 Phase E batch 3 (T23): always render under the everything filter;
+  // for the "new" tab, gate on hasThreadNotifications so the inbox doesn't show
+  // an empty heading when none exist.
+  const showThreadNotificationsSection =
+    tab === "new"
+      ? hasThreadNotifications
+      : allCategoryFilter === "everything" && hasThreadNotifications;
   const showFailedRunsSection =
     tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailuresAll;
   const showAlertsSection =
@@ -674,6 +708,7 @@ export function Inbox() {
 
   const visibleSections = [
     showDiscussionsSection ? "discussions_pending_review" : null,
+    showThreadNotificationsSection ? "thread_notifications" : null,
     showFailedRunsSection ? "failed_runs" : null,
     showAlertsSection ? "alerts" : null,
     showStaleSection ? "stale_work" : null,
@@ -686,6 +721,7 @@ export function Inbox() {
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDiscussionsLoading &&
+    !isNotificationsLoading &&
     !isDashboardLoading &&
     !isIssuesLoading &&
     !isTouchedIssuesLoading &&
@@ -831,6 +867,40 @@ export function Inbox() {
                     </div>
                   </div>
                 </Link>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showThreadNotificationsSection && (
+        <>
+          {showSeparatorBefore("thread_notifications") && <Separator />}
+          <div data-testid="inbox-thread-notifications">
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Thread Notifications
+            </h3>
+            <div className="divide-y divide-border border border-border">
+              {threadNotifications.map((n) => (
+                <ThreadNotificationItem
+                  key={n.id}
+                  notification={n}
+                  onClick={(notification) => {
+                    if (selectedCompanyId && !notification.readAt) {
+                      notificationsApi
+                        .markRead(selectedCompanyId, notification.id)
+                        .then(() =>
+                          queryClient.invalidateQueries({
+                            queryKey: ["notifications", selectedCompanyId],
+                          }),
+                        )
+                        .catch(() => {
+                          // Swallow — the link still navigates. Read state is
+                          // an opportunistic UX nicety, not a correctness gate.
+                        });
+                    }
+                  }}
+                />
               ))}
             </div>
           </div>

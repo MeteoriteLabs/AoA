@@ -193,14 +193,24 @@ describe("RBAC Middleware", () => {
       await expect(assertMemoryApproval(db, req, "c1", { layer: "identity" })).resolves.toBeUndefined();
     });
 
-    it("allows team_lead for their department (non-identity)", async () => {
+    it("allows team_lead for active_context in their department", async () => {
+      const db = createMockDb([
+        { id: "1", companyId: "c1", userId: "u1", role: "team_lead", projectId: "dept-1" },
+      ]);
+      const req = makeReq({ type: "board", userId: "u1", source: "session" });
+      await expect(assertMemoryApproval(db, req, "c1", {
+        layer: "active_context", departmentId: "dept-1",
+      })).resolves.toBeUndefined();
+    });
+
+    it("rejects team_lead for domain layer (R5 — founder-only)", async () => {
       const db = createMockDb([
         { id: "1", companyId: "c1", userId: "u1", role: "team_lead", projectId: "dept-1" },
       ]);
       const req = makeReq({ type: "board", userId: "u1", source: "session" });
       await expect(assertMemoryApproval(db, req, "c1", {
         layer: "domain", departmentId: "dept-1",
-      })).resolves.toBeUndefined();
+      })).rejects.toThrow(HttpError);
     });
 
     it("rejects team_lead for identity layer", async () => {

@@ -10,9 +10,11 @@ import { logActivity } from "../services/activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
 export function feedbackRoutes(db: Db) {
   const router = Router();
+  registerIssueParamNormalizer(router, db, ["id"]);
   const settings = instanceSettingsService(db);
   const votes = feedbackVotesService(db, {
     // F.4: gate bundle-build on the instance sharing preference. "allowed" →

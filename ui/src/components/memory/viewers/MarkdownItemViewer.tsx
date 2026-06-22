@@ -3,7 +3,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Pin, Eye, Pencil, ExternalLink } from "lucide-react";
-import type { MemoryItem } from "@armyofagents/shared";
+import {
+  COMPANY_BRAIN_EDITABLE_EDGE_KINDS,
+  type MemoryItem,
+} from "@armyofagents/shared";
 import { memoryApi } from "../../../api/memory";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,6 +16,7 @@ import { MemoryApprovalActions } from "../MemoryApprovalActions";
 import { MemoryItemActions } from "../MemoryItemActions";
 import { SourceTextDrawer } from "../SourceTextDrawer";
 import { MemoryChip } from "../MemoryChip";
+import { BacklinksPanel } from "../graph/BacklinksPanel";
 import {
   STATUS_TONE,
   LAYER_TONE,
@@ -31,6 +35,15 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
   const { data: item, isLoading, isError } = useQuery({
     queryKey: queryKeys.memory.detail(companyId, itemId),
     queryFn: () => memoryApi.get(companyId, itemId),
+    enabled: Boolean(companyId && itemId),
+  });
+
+  const backlinksQuery = useQuery({
+    queryKey: queryKeys.memory.neighbors(companyId, itemId),
+    queryFn: () => memoryApi.neighbors(companyId, itemId, {
+      depth: 1,
+      kinds: [...COMPANY_BRAIN_EDITABLE_EDGE_KINDS],
+    }),
     enabled: Boolean(companyId && itemId),
   });
 
@@ -171,6 +184,12 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
           }
         />
       )}
+
+      <BacklinksPanel
+        itemId={itemId}
+        graph={backlinksQuery.data}
+        isLoading={backlinksQuery.isLoading}
+      />
 
       {importJobId && (
         <div className="border-t border-border px-6 py-2 text-xs flex items-center gap-2 bg-card/30">

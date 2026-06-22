@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { FileCode, ListChecks } from "lucide-react";
+import { ListChecks } from "lucide-react";
 import { getAdapterInfo } from "./adapter-utils";
-import { formatBytes } from "./workspace-utils";
 import {
   Tooltip,
   TooltipContent,
@@ -18,10 +17,6 @@ import { TranscriptProgressBlock } from "./transcript/TranscriptProgressBlock";
 interface ChatbarStatusRowProps {
   agentName: string;
   adapterType: string;
-  /** Number of files changed in latest run */
-  fileCount: number;
-  /** Total bytes changed in latest run */
-  totalBytes: number;
   /** Tokens used so far (input + output) — null if unavailable */
   tokensUsed: number | null;
   /** Max context window tokens — null if unknown */
@@ -30,17 +25,19 @@ interface ChatbarStatusRowProps {
   todoProgress: { completed: number; total: number } | null;
   /** Full todo items for the popover — null if unavailable */
   todoItems: Array<{ content: string; status: "pending" | "in_progress" | "completed" }> | null;
+  runState?: "idle" | "running" | "done" | "blocked" | "failed";
+  runDurationLabel?: string | null;
 }
 
 export function ChatbarStatusRow({
   agentName,
   adapterType,
-  fileCount,
-  totalBytes,
   tokensUsed,
   contextLimit,
   todoProgress,
   todoItems,
+  runState = "idle",
+  runDurationLabel = null,
 }: ChatbarStatusRowProps) {
   const adapter = getAdapterInfo(adapterType);
   const AdapterIcon = adapter.icon;
@@ -62,17 +59,13 @@ export function ChatbarStatusRow({
         </span>
       </div>
 
-      {/* Center-left: diff stats */}
-      {fileCount > 0 && (
-        <div className="flex items-center gap-1 text-[10px] bg-muted/50 rounded px-1.5 py-0.5 shrink-0">
-          <FileCode className="h-3 w-3" />
-          <span>
-            {fileCount} file{fileCount !== 1 ? "s" : ""}
-          </span>
-          <span className="text-muted-foreground/60">·</span>
-          <span>{formatBytes(totalBytes)}</span>
-        </div>
-      )}
+      <span className="min-w-0 truncate text-muted-foreground">
+        {runState === "running"
+          ? `Working${runDurationLabel ? ` for ${runDurationLabel}` : ""}`
+          : runState === "idle"
+            ? "Idle"
+            : runState}
+      </span>
 
       {/* Spacer */}
       <div className="flex-1" />
@@ -83,9 +76,9 @@ export function ChatbarStatusRow({
         <TooltipProvider delayDuration={200}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="p-0.5 rounded inline-flex">
+              <button type="button" className="p-0.5 rounded inline-flex" aria-label="Context usage">
                 <ContextDonutIcon ratio={contextRatio ?? 0} className="h-4 w-4" empty={contextRatio == null} />
-              </span>
+              </button>
             </TooltipTrigger>
             <TooltipContent side="top" className="text-xs">
               {contextRatio != null

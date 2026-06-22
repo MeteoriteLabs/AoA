@@ -33,6 +33,54 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
   return text.slice(0, sliceLen) + "...";
 }
 
+function formatMemoryItemsForPrompt(
+  items: Array<{
+    title?: string;
+    content?: string;
+    layer?: string | null;
+    visibility?: string | null;
+    status?: string | null;
+    expiresAt?: Date | string | null;
+    departmentId?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    taskId?: string | null;
+    conversationId?: string | null;
+  }>,
+): string {
+  const now = new Date();
+  return items
+    .filter((m) => (m.status ?? "approved") === "approved")
+    .filter((m) => {
+      if (!m.expiresAt) return true;
+      const expiresAt = m.expiresAt instanceof Date ? m.expiresAt : new Date(m.expiresAt);
+      return !Number.isFinite(expiresAt.getTime()) || expiresAt > now;
+    })
+    .map((m) => {
+      const title = (m.title ?? "Memory").slice(0, 160);
+      const content = (m.content ?? "").slice(0, 1200);
+      const layer = m.layer ?? "memory";
+      const visibility = m.visibility ?? "scoped";
+      const status = m.status ?? "approved";
+      const scope =
+        m.taskId ? "task" :
+        m.goalId ? "goal" :
+        m.projectId ? "project" :
+        m.conversationId ? "conversation" :
+        m.departmentId ? "department" :
+        "company";
+      const expiry = m.expiresAt
+        ? `/expires ${(m.expiresAt instanceof Date ? m.expiresAt : new Date(m.expiresAt)).toISOString().slice(0, 10)}`
+        : "";
+      return `- [${layer}/${visibility}/${status}${expiry}/${scope}] ${title}: ${content}`;
+    })
+    .join("\n");
+}
+
+function isCommanderPromptMemoryLayer(layer: string | null | undefined): boolean {
+  return layer === "identity" || layer === "domain" || layer === "active_context" || layer === "working";
+}
+
 export function contextAssemblyService(db: Db) {
   return {
     async assembleContext(
@@ -42,6 +90,22 @@ export function contextAssemblyService(db: Db) {
         departmentContext?: string;
         conversationSummary?: string | null;
         contextTokenBudget?: number;
+        systemInstructions?: string;
+        relevanceQuery?: string;
+        memorySearch?: (query: string) => Promise<Array<{ title?: string; content?: string; layer?: string }>>;
+        memoryItems?: Array<{
+          title?: string;
+          content?: string;
+          layer?: string | null;
+          visibility?: string | null;
+          status?: string | null;
+          expiresAt?: Date | string | null;
+          departmentId?: string | null;
+          projectId?: string | null;
+          goalId?: string | null;
+          taskId?: string | null;
+          conversationId?: string | null;
+        }>;
       } = {},
     ): Promise<{ systemPrompt: string; estimatedTokens: number }> {
       const budget = options.contextTokenBudget ?? 8000;
@@ -64,7 +128,10 @@ export function contextAssemblyService(db: Db) {
       };
 
       // 1. System instructions (always included, highest priority)
-      addSection("Instructions", SYSTEM_INSTRUCTIONS);
+      const persona = options.systemInstructions && options.systemInstructions.trim().length > 0
+        ? options.systemInstructions
+        : SYSTEM_INSTRUCTIONS;
+      addSection("Instructions", persona);
 
       // 2. Company identity
       const company = await db
@@ -75,31 +142,99 @@ export function contextAssemblyService(db: Db) {
 
       if (company) {
         const parts: string[] = [];
+        if (company.name) parts.push(`Name: ${company.name}`);
         if (company.vision) parts.push(`Vision: ${company.vision}`);
         if (company.mission) parts.push(`Mission: ${company.mission}`);
-
-        const identityItems = await db
-          .select(memoryItemsSelection())
-          .from(memoryItems)
-          .where(
-            and(
-              eq(memoryItems.companyId, companyId),
-              eq(memoryItems.layer, "identity"),
-              eq(memoryItems.status, "approved"),
-            ),
-          );
-
-        for (const item of identityItems) {
-          parts.push(`${item.title}: ${item.content}`);
-        }
 
         if (parts.length > 0) {
           addSection("Company Identity", parts.join("\n"));
         }
       }
 
-      // 3. Department context (if set)
-      if (options.departmentContext) {
+      // Relevance-ranked approved memory (identity + department domain).
+      // Falls back to nothing on error — never hard-fail (DI hides the
+      // pgvector-or-keyword decision; memory.ts handles the no-API-key case).
+      if (options.memoryItems && options.memoryItems.length > 0) {
+        const promptMemoryItems = options.memoryItems.filter((item) =>
+          isCommanderPromptMemoryLayer(item.layer),
+        );
+        if (promptMemoryItems.length > 0) {
+          addSection(
+            "Relevant Company Memory",
+            formatMemoryItemsForPrompt(promptMemoryItems),
+          );
+        }
+      } else if (options.memorySearch && options.relevanceQuery) {
+        try {
+          const items = await options.memorySearch(options.relevanceQuery);
+          const scoped = items.filter((m) => isCommanderPromptMemoryLayer(m.layer));
+          if (scoped.length > 0) {
+            addSection(
+              "Relevant Company Memory",
+              formatMemoryItemsForPrompt(scoped),
+            );
+          }
+        } catch {
+          // omit the section; the rest of the prompt is unaffected
+        }
+      } else {
+        // Legacy path retained for non-Commander callers (byte-identical):
+        // company identity memory items + department domain items.
+        if (company) {
+          const identityItems = await db
+            .select(memoryItemsSelection())
+            .from(memoryItems)
+            .where(
+              and(
+                eq(memoryItems.companyId, companyId),
+                eq(memoryItems.layer, "identity"),
+                eq(memoryItems.status, "approved"),
+              ),
+            );
+
+          if (identityItems.length > 0) {
+            const parts: string[] = [];
+            for (const item of identityItems) {
+              parts.push(`${item.title}: ${item.content}`);
+            }
+            addSection("Company Identity Memory", parts.join("\n"));
+          }
+        }
+
+        if (options.departmentContext) {
+          const dept = await db
+            .select()
+            .from(projects)
+            .where(eq(projects.id, options.departmentContext))
+            .then((rows: any[]) => rows[0] ?? null);
+
+          if (dept) {
+            const parts: string[] = [`Department: ${dept.name}`];
+            if (dept.description) parts.push(dept.description);
+
+            const domainItems = await db
+              .select(memoryItemsSelection())
+              .from(memoryItems)
+              .where(
+                and(
+                  eq(memoryItems.companyId, companyId),
+                  eq(memoryItems.layer, "domain"),
+                  eq(memoryItems.departmentId, options.departmentContext),
+                  eq(memoryItems.status, "approved"),
+                ),
+              );
+
+            for (const item of domainItems) {
+              parts.push(`${item.title}: ${item.content}`);
+            }
+
+            addSection("Department Context", parts.join("\n"));
+          }
+        }
+      }
+
+      // 3. Department context header (when using relevance path, no legacy DB queries)
+      if ((options.memorySearch || options.memoryItems) && options.relevanceQuery && options.departmentContext) {
         const dept = await db
           .select()
           .from(projects)
@@ -109,23 +244,6 @@ export function contextAssemblyService(db: Db) {
         if (dept) {
           const parts: string[] = [`Department: ${dept.name}`];
           if (dept.description) parts.push(dept.description);
-
-          const domainItems = await db
-            .select(memoryItemsSelection())
-            .from(memoryItems)
-            .where(
-              and(
-                eq(memoryItems.companyId, companyId),
-                eq(memoryItems.layer, "domain"),
-                eq(memoryItems.departmentId, options.departmentContext),
-                eq(memoryItems.status, "approved"),
-              ),
-            );
-
-          for (const item of domainItems) {
-            parts.push(`${item.title}: ${item.content}`);
-          }
-
           addSection("Department Context", parts.join("\n"));
         }
       }

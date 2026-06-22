@@ -65,6 +65,18 @@ export function summarizeEntry(entry: TranscriptEntry): { text: string; tone: Fe
   return null;
 }
 
+export function summarizeSystemLine(text: string): { text: string; tone: FeedTone } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const previewDetection = trimmed.match(/^\[aoa\]\s+(app preview detection\b.*)$/i);
+  if (previewDetection?.[1]) {
+    return { text: previewDetection[1], tone: "info" };
+  }
+
+  return { text: trimmed, tone: "warn" };
+}
+
 export function createFeedItem(
   run: LiveRunForIssue,
   ts: string,
@@ -104,7 +116,7 @@ export function parseStdoutChunk(
   const combined = `${pendingByRun.get(pendingKey) ?? ""}${chunk}`;
   const split = combined.split(/\r?\n/);
   pendingByRun.set(pendingKey, split.pop() ?? "");
-  const adapter = getUIAdapter(run.adapterType);
+  const adapter = getUIAdapter(run.adapterType ?? "process");
 
   const summarized: Array<{ text: string; tone: FeedTone; streamingKind?: "assistant" | "thinking" }> = [];
   const appendSummary = (entry: TranscriptEntry) => {
@@ -176,6 +188,28 @@ export function parseStderrChunk(
   const items: FeedItem[] = [];
   for (const line of split.slice(-8)) {
     const item = createFeedItem(run, ts, line, "error", nextIdRef.current++);
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+export function parseSystemChunk(
+  run: LiveRunForIssue,
+  chunk: string,
+  ts: string,
+  pendingByRun: Map<string, string>,
+  nextIdRef: MutableRefObject<number>,
+): FeedItem[] {
+  const pendingKey = `${run.id}:system`;
+  const combined = `${pendingByRun.get(pendingKey) ?? ""}${chunk}`;
+  const split = combined.split(/\r?\n/);
+  pendingByRun.set(pendingKey, split.pop() ?? "");
+
+  const items: FeedItem[] = [];
+  for (const line of split.slice(-8)) {
+    const summary = summarizeSystemLine(line);
+    if (!summary) continue;
+    const item = createFeedItem(run, ts, summary.text, summary.tone, nextIdRef.current++);
     if (item) items.push(item);
   }
   return items;

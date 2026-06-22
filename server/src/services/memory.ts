@@ -1,4 +1,4 @@
-import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
+import { and, eq, ilike, or, sql, desc, isNull, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
@@ -67,6 +67,8 @@ export interface MultiPathSearchFilters {
   departmentId?: string;
   /** Restrict to items scoped to this project (project of type 'project'). */
   projectId?: string;
+  /** Restrict to items scoped to this goal. */
+  goalId?: string;
   /** Restrict to items in this category. */
   category?: string;
   /** Final top-K to return after RRF + trust weighting. Default 10. */
@@ -75,6 +77,11 @@ export interface MultiPathSearchFilters {
   enableSemantic?: boolean;
   enableKeyword?: boolean;
   enableTemporal?: boolean;
+}
+
+export interface SearchAuditCandidatesFilters {
+  layer?: string;
+  limit?: number;
 }
 
 export interface MultiPathSearchResult {
@@ -88,7 +95,13 @@ export interface MultiPathSearchResult {
   tags: string[] | null;
   departmentId: string | null;
   projectId: string | null;
+  goalId: string | null;
+  taskId: string | null;
+  conversationId: string | null;
+  createdBy: string;
   layer: string | null;
+  visibility: string;
+  expiresAt: Date | null;
   priority: number;
   validationCount: number;
   agentId: string | null;
@@ -149,6 +162,29 @@ export function memoryService(db: Db) {
       }
 
       return db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
+    },
+
+    searchAuditCandidates: (companyId: string, query: string, filters: SearchAuditCandidatesFilters = {}) => {
+      const trimmed = query.trim();
+      if (!trimmed) return Promise.resolve([]);
+
+      const conditions = [
+        eq(memoryItems.companyId, companyId),
+        or(
+          ilike(memoryItems.title, `%${trimmed}%`),
+          ilike(memoryItems.content, `%${trimmed}%`),
+        )!,
+      ];
+      if (filters.layer) {
+        conditions.push(eq(memoryItems.layer, filters.layer));
+      }
+
+      return db
+        .select(memoryItemsSelection())
+        .from(memoryItems)
+        .where(and(...conditions))
+        .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
+        .limit(Math.min(filters.limit ?? 50, 100));
     },
 
     getById: (companyId: string, id: string) =>
@@ -268,6 +304,8 @@ export function memoryService(db: Db) {
             eq(memoryItems.companyId, companyId),
             eq(memoryItems.status, "approved"),
             sql`${memoryItems.embedding} IS NOT NULL`,
+            // A-M5: drop expired active_context (other layers leave expiresAt null).
+            or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
           ];
 
           if (filters.layer) {
@@ -310,6 +348,8 @@ export function memoryService(db: Db) {
       const conditions = [
         eq(memoryItems.companyId, companyId),
         eq(memoryItems.status, "approved"),
+        // A-M5: drop expired active_context (other layers leave expiresAt null).
+        or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
         or(
           ilike(memoryItems.title, `%${query}%`),
           ilike(memoryItems.content, `%${query}%`),
@@ -371,7 +411,7 @@ export function memoryService(db: Db) {
      * Cost: 3 parallel queries (one of which may also hit OpenAI for
      * embedding the query). p50 ~150ms.
      *
-     * Scope filters (departmentId, projectId, layer, category) apply
+     * Scope filters (departmentId, projectId, goalId, layer, category) apply
      * BEFORE search runs. Caller is responsible for downstream RBAC
      * filtering (filterMemoryForScope).
      */
@@ -386,11 +426,16 @@ export function memoryService(db: Db) {
         const conds = [
           eq(memoryItems.companyId, companyId),
           eq(memoryItems.status, "approved"),
+          // A-M5: never serve expired active_context memory. Only active_context
+          // sets expiresAt; other layers leave it null and isNull keeps those.
+          // Use the DB clock (sql`now()`) so server/db time skew can't leak rows.
+          or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
         ];
         if (filters.layer) conds.push(eq(memoryItems.layer, filters.layer));
         if (filters.category) conds.push(eq(memoryItems.category, filters.category));
         if (filters.departmentId) conds.push(eq(memoryItems.departmentId, filters.departmentId));
         if (filters.projectId) conds.push(eq(memoryItems.projectId, filters.projectId));
+        if (filters.goalId) conds.push(eq(memoryItems.goalId, filters.goalId));
         return conds;
       };
 
@@ -405,7 +450,13 @@ export function memoryService(db: Db) {
         tags: memoryItems.tags,
         departmentId: memoryItems.departmentId,
         projectId: memoryItems.projectId,
+        goalId: memoryItems.goalId,
+        taskId: memoryItems.taskId,
+        conversationId: memoryItems.conversationId,
+        createdBy: memoryItems.createdBy,
         layer: memoryItems.layer,
+        visibility: memoryItems.visibility,
+        expiresAt: memoryItems.expiresAt,
         priority: memoryItems.priority,
         validationCount: memoryItems.validationCount,
         agentId: memoryItems.agentId,
@@ -584,7 +635,13 @@ export function memoryService(db: Db) {
           tags: (item.tags as string[] | null) ?? null,
           departmentId: (item.departmentId as string | null) ?? null,
           projectId: (item.projectId as string | null) ?? null,
+          goalId: (item.goalId as string | null) ?? null,
+          taskId: (item.taskId as string | null) ?? null,
+          conversationId: (item.conversationId as string | null) ?? null,
+          createdBy: String(item.createdBy),
           layer: (item.layer as string | null) ?? null,
+          visibility: String(item.visibility),
+          expiresAt: (item.expiresAt as Date | null) ?? null,
           priority: typeof item.priority === "number" ? item.priority : 0,
           validationCount,
           agentId: (item.agentId as string | null) ?? null,
@@ -776,46 +833,61 @@ export function memoryService(db: Db) {
         throw conflict("Memory item must be approved before agents can suggest updates");
       }
 
-      const existingPending = await db
-        .select()
-        .from(memoryItemVersions)
-        .where(
-          and(
-            eq(memoryItemVersions.memoryItemId, memoryItemId),
-            eq(memoryItemVersions.status, "pending"),
-            eq(memoryItemVersions.createdBy, agentId),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
+      // A-M6 — version-number allocation must be conflict-safe. Two different
+      // agents both pass the per-agent pending dedup, both read the same max
+      // version, and both insert max+1 → the unique index
+      // (memory_item_id, version_number) raises 23505 (an unhandled 500).
+      // Serialize allocation: lock the PARENT memory_items row FOR UPDATE, then
+      // run the dedup check + max-version read + insert inside the same tx so a
+      // concurrent caller blocks until we commit and reads our committed state.
+      // The dedup MUST be inside the lock — locking only the max read would
+      // still let two callers act on stale pre-lock dedup decisions.
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from memory_items where id = ${memoryItemId} and company_id = ${companyId} for update`,
+        );
 
-      if (existingPending) {
-        return db
-          .update(memoryItemVersions)
-          .set({ content })
-          .where(eq(memoryItemVersions.id, existingPending.id))
+        const existingPending = await tx
+          .select()
+          .from(memoryItemVersions)
+          .where(
+            and(
+              eq(memoryItemVersions.memoryItemId, memoryItemId),
+              eq(memoryItemVersions.status, "pending"),
+              eq(memoryItemVersions.createdBy, agentId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (existingPending) {
+          return tx
+            .update(memoryItemVersions)
+            .set({ content })
+            .where(eq(memoryItemVersions.id, existingPending.id))
+            .returning()
+            .then((rows) => rows[0]);
+        }
+
+        const latest = await tx
+          .select({ versionNumber: memoryItemVersions.versionNumber })
+          .from(memoryItemVersions)
+          .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
+          .orderBy(desc(memoryItemVersions.versionNumber))
+          .limit(1)
+          .then((rows) => rows[0]?.versionNumber ?? 0);
+
+        return tx
+          .insert(memoryItemVersions)
+          .values({
+            memoryItemId,
+            versionNumber: latest + 1,
+            content,
+            status: "pending",
+            createdBy: agentId,
+          })
           .returning()
           .then((rows) => rows[0]);
-      }
-
-      const latest = await db
-        .select({ versionNumber: memoryItemVersions.versionNumber })
-        .from(memoryItemVersions)
-        .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
-        .orderBy(desc(memoryItemVersions.versionNumber))
-        .limit(1)
-        .then((rows) => rows[0]?.versionNumber ?? 0);
-
-      return db
-        .insert(memoryItemVersions)
-        .values({
-          memoryItemId,
-          versionNumber: latest + 1,
-          content,
-          status: "pending",
-          createdBy: agentId,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      });
     },
 
     approveSuggestedVersion: async (companyId: string, memoryItemId: string, versionId: string) => {
@@ -911,50 +983,64 @@ export function memoryService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!item) return null;
 
-      // Find the latest version number
-      const latest = await db
-        .select({ versionNumber: memoryItemVersions.versionNumber })
-        .from(memoryItemVersions)
-        .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
-        .orderBy(desc(memoryItemVersions.versionNumber))
-        .limit(1)
-        .then((rows) => rows[0]?.versionNumber ?? 0);
+      // A-M6 — serialize version-number allocation. Lock the PARENT
+      // memory_items row FOR UPDATE, then run the per-user draft dedup +
+      // max-version read + insert inside the same tx. Without the lock two
+      // different users both pass the per-user draft dedup and both insert
+      // max+1, colliding on the unique (memory_item_id, version_number) index
+      // → 23505 (an unhandled 500). The dedup MUST be inside the lock so a
+      // concurrent caller can't act on a stale pre-lock decision.
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from memory_items where id = ${memoryItemId} and company_id = ${companyId} for update`,
+        );
 
-      // Check for existing draft by this user
-      const existingDraft = await db
-        .select()
-        .from(memoryItemVersions)
-        .where(
-          and(
-            eq(memoryItemVersions.memoryItemId, memoryItemId),
-            eq(memoryItemVersions.status, "draft"),
-            eq(memoryItemVersions.createdBy, createdBy),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
+        // Check for existing draft by this user (against the now-locked state).
+        const existingDraft = await tx
+          .select()
+          .from(memoryItemVersions)
+          .where(
+            and(
+              eq(memoryItemVersions.memoryItemId, memoryItemId),
+              eq(memoryItemVersions.status, "draft"),
+              eq(memoryItemVersions.createdBy, createdBy),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
 
-      if (existingDraft) {
-        // Update existing draft
-        return db
-          .update(memoryItemVersions)
-          .set({ content })
-          .where(eq(memoryItemVersions.id, existingDraft.id))
+        if (existingDraft) {
+          // Update existing draft
+          return tx
+            .update(memoryItemVersions)
+            .set({ content })
+            .where(eq(memoryItemVersions.id, existingDraft.id))
+            .returning()
+            .then((rows) => rows[0]);
+        }
+
+        // Find the latest version number (inside the lock, so it reflects any
+        // version a concurrent caller just committed).
+        const latest = await tx
+          .select({ versionNumber: memoryItemVersions.versionNumber })
+          .from(memoryItemVersions)
+          .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
+          .orderBy(desc(memoryItemVersions.versionNumber))
+          .limit(1)
+          .then((rows) => rows[0]?.versionNumber ?? 0);
+
+        // Create new draft version
+        return tx
+          .insert(memoryItemVersions)
+          .values({
+            memoryItemId,
+            versionNumber: latest + 1,
+            content,
+            status: "draft",
+            createdBy,
+          })
           .returning()
           .then((rows) => rows[0]);
-      }
-
-      // Create new draft version
-      return db
-        .insert(memoryItemVersions)
-        .values({
-          memoryItemId,
-          versionNumber: latest + 1,
-          content,
-          status: "draft",
-          createdBy,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      });
     },
 
     publishDraft: async (companyId: string, memoryItemId: string, createdBy: string) => {
@@ -1122,6 +1208,7 @@ export function memoryService(db: Db) {
             itemId: memoryItems.id,
             itemTitle: memoryItems.title,
             itemLayer: memoryItems.layer,
+            itemDepartmentId: memoryItems.departmentId,
             itemCategory: memoryItems.category,
             itemSource: memoryItems.source,
             currentContent: memoryItems.content,
@@ -1199,6 +1286,7 @@ export function memoryService(db: Db) {
         itemId: row.itemId,
         itemTitle: row.itemTitle,
         itemLayer: row.itemLayer,
+        itemDepartmentId: row.itemDepartmentId,
         itemCategory: row.itemCategory,
         itemSource: row.itemSource,
         currentContent: row.currentContent,
@@ -1326,6 +1414,55 @@ export function memoryService(db: Db) {
         .limit(limit);
     },
 
+    /**
+     * Phase 7 — Memory cockpit card.
+     *
+     * Returns retrievals for a Commander conversation, newest first.
+     * Items deleted after the retrieval surface with null fields (audit-preserve).
+     * Limit defaults to 100; hard-cap 500.
+     */
+    listRetrievalsForConversation: async (
+      companyId: string,
+      conversationId: string,
+      options: { limit?: number } = {},
+    ) => {
+      const limit = Math.min(options.limit ?? 100, 500);
+
+      return await db
+        .select({
+          id: memoryRetrievals.id,
+          companyId: memoryRetrievals.companyId,
+          agentId: memoryRetrievals.agentId,
+          runId: memoryRetrievals.runId,
+          taskId: memoryRetrievals.taskId,
+          conversationId: memoryRetrievals.conversationId,
+          triggeredBy: memoryRetrievals.triggeredBy,
+          query: memoryRetrievals.query,
+          itemId: memoryRetrievals.itemId,
+          similarityScore: memoryRetrievals.similarityScore,
+          rank: memoryRetrievals.rank,
+          shownToAgent: memoryRetrievals.shownToAgent,
+          createdAt: memoryRetrievals.createdAt,
+          // joined item fields (LEFT JOIN — null when item deleted)
+          itemTitle: memoryItems.title,
+          itemContent: memoryItems.content,
+          itemCategory: memoryItems.category,
+          itemLayer: memoryItems.layer,
+          itemStatus: memoryItems.status,
+          itemPinnedToSkill: memoryItems.pinnedToSkill,
+        })
+        .from(memoryRetrievals)
+        .leftJoin(memoryItems, eq(memoryRetrievals.itemId, memoryItems.id))
+        .where(
+          and(
+            eq(memoryRetrievals.companyId, companyId),
+            eq(memoryRetrievals.conversationId, conversationId),
+          ),
+        )
+        .orderBy(desc(memoryRetrievals.createdAt))
+        .limit(limit);
+    },
+
     moveItem: async (id: string, companyId: string, folderPath: string) => {
       const caps = getDbCapabilities();
       const path = normalizeMemoryFolderPath(folderPath);
@@ -1439,6 +1576,16 @@ export function memoryService(db: Db) {
       // either fails, neither is persisted. Per Phase 6.2c follow-up review.
       const changelog = `layer changed: ${fromLayer} → ${toLayer}`;
       const updated = await db.transaction(async (tx) => {
+        // A-M6 — lock the PARENT memory_items row FOR UPDATE as the first
+        // statement so version-number allocation is serialized. The tx already
+        // wrapped the read+insert, but a bare max read at READ COMMITTED can
+        // still race a concurrent suggestUpdate/saveDraft/changeLayer that
+        // allocates the same max+1 → unique-index 23505. Locking the parent row
+        // forces concurrent allocators to block until we commit.
+        await tx.execute(
+          sql`select id from memory_items where id = ${id} and company_id = ${companyId} for update`,
+        );
+
         const [row] = await tx
           .update(memoryItems)
           .set(patch)

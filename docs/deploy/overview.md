@@ -53,3 +53,7 @@ Or update it later:
 ```sh
 pnpm aoa configure --section server
 ```
+
+## Related Guides
+
+- [Runtime Previews](runtime-previews.md) - open agent-created apps through AoA-owned preview URLs instead of raw `localhost`.

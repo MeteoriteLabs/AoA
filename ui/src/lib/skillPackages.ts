@@ -1,4 +1,5 @@
-import type { CompanySkillListItem } from "@armyofagents/shared";
+import type { CompanySkillListItem, MarketplaceProviderRef } from "@armyofagents/shared";
+import { metadataString, providerFromSkillMetadata } from "./skillProviderMeta";
 
 const SYNTHESIS_THRESHOLD = 2;
 
@@ -14,6 +15,7 @@ export interface SkillPackage {
   count: number;
   /** True when derived from an explicit metadata.packageId, not from owner/repo synthesis */
   explicit: boolean;
+  provider?: MarketplaceProviderRef;
 }
 
 export interface DerivedLibrary {
@@ -22,9 +24,7 @@ export interface DerivedLibrary {
 }
 
 function readMetaString(metadata: unknown, key: string): string | null {
-  if (!metadata || typeof metadata !== "object") return null;
-  const value = (metadata as Record<string, unknown>)[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
+  return metadataString(metadata, key);
 }
 
 function packageableSourceType(sourceType: CompanySkillListItem["sourceType"]): boolean {
@@ -95,13 +95,18 @@ function buildPackage(
   explicit: boolean,
 ): SkillPackage {
   const sortedIds = members.map((m) => m.id).sort((a, b) => a.localeCompare(b));
-  const repoName = id.split("/")[1] ?? id;
+  const repoName = metadataString(members[0]?.metadata, "catalogPackageName") ?? id.split("/")[1] ?? id;
+  const sourceUrl = metadataString(members[0]?.metadata, "catalogPackageSourceUrl") ?? `https://github.com/${id}`;
+  const provider = members
+    .map((member) => providerFromSkillMetadata(member.metadata))
+    .find((candidate): candidate is MarketplaceProviderRef => candidate !== null);
   return {
     id,
     name: repoName,
-    sourceUrl: `https://github.com/${id}`,
+    sourceUrl,
     memberSkillIds: sortedIds,
     count: sortedIds.length,
     explicit,
+    ...(provider ? { provider } : {}),
   };
 }

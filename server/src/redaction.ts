@@ -1,6 +1,25 @@
 const SECRET_PAYLOAD_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+  /(api[-_]?key|access[-_]?token|auth|bearer|secret|passwd|password|credential|jwt|private|cookie|signing|webhook|npm|connection)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+// H4: redact string VALUES that look like a secret even when the key name is
+// innocuous (DATABASE_URL, STRIPE_LIVE, DSN, …). Previously only JWT-shaped
+// values were caught, so a connection string / provider key bound to a
+// non-secret-named field survived this second-pass read redaction. Mirrors the
+// value patterns in adapter-utils redactEnvForLogs + prompt-snapshot.ts.
+const SECRET_VALUE_PATTERNS: RegExp[] = [
+  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/[^\s<>'")]+/i,
+  /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/,
+  /\b[sprSPR]k_(?:live|test)_[A-Za-z0-9]{8,}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  // Generic "<prefix>_<long-random>" tokens — whsec_…, npm_…, vendor keys.
+  /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
+  /-----BEGIN[A-Z ]*PRIVATE KEY-----/,
+];
+function looksLikeSecretValue(value: string): boolean {
+  return JWT_VALUE_RE.test(value) || SECRET_VALUE_PATTERNS.some((re) => re.test(value));
+}
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -43,7 +62,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    if (typeof value === "string" && JWT_VALUE_RE.test(value)) {
+    if (typeof value === "string" && looksLikeSecretValue(value)) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }

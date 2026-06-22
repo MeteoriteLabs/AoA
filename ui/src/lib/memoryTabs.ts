@@ -1,4 +1,40 @@
-export type MemoryTabKind = "memory_item" | "asset";
+export type MemoryTabKind = "home" | "memory_item" | "asset" | "graph" | "open" | "collection";
+
+export const MEMORY_HOME_TAB: MemoryTab = {
+  id: "memory-home",
+  kind: "home",
+  title: "Memory Home",
+};
+
+export const MEMORY_BRAIN_TAB: MemoryTab = {
+  id: "company-graph",
+  kind: "graph",
+  title: "Map",
+};
+
+export const MEMORY_OPEN_TAB: MemoryTab = {
+  id: "memory-open",
+  kind: "open",
+  title: "Open",
+};
+
+export const MEMORY_RECENT_TAB: MemoryTab = {
+  id: "recent",
+  kind: "collection",
+  title: "Recent",
+};
+
+export const MEMORY_UNLINKED_TAB: MemoryTab = {
+  id: "unlinked",
+  kind: "collection",
+  title: "Unlinked",
+};
+
+export const MEMORY_REVIEW_QUEUE_TAB: MemoryTab = {
+  id: "review-queue",
+  kind: "collection",
+  title: "Review Queue",
+};
 
 export interface MemoryTab {
   id: string;

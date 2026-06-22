@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { WorkspaceTimeline } from "../components/workspace/WorkspaceTimeline";
+import { queryKeys } from "../lib/queryKeys";
 
 // ─── Mock data ───────────────────────────────────────────────────────────────
 
@@ -11,6 +12,7 @@ const mockIssue = {
   companyId: "comp-1",
   projectId: "proj-1",
   title: "Fix auth",
+  description: "Fix the login flow and verify session handling.",
   status: "in_progress",
   priority: "high",
   assigneeAgentId: "agent-1",
@@ -78,6 +80,12 @@ const issuesApiMock = {
   get: vi.fn().mockResolvedValue(mockIssue),
   listComments: vi.fn().mockResolvedValue(mockComments),
   addComment: vi.fn().mockResolvedValue({ id: "new-comment" }),
+  addCommentWithAttachments: vi.fn().mockResolvedValue({
+    comment: { id: "new-comment", body: "see attached" },
+    attachments: [{ id: "att-1", originalFilename: "proof.png" }],
+  }),
+  listAttachments: vi.fn().mockResolvedValue([]),
+  listContextBundles: vi.fn().mockResolvedValue([]),
 };
 
 const activityApiMock = {
@@ -159,7 +167,7 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
     },
   });
 
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <WorkspaceTimeline
@@ -169,6 +177,32 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
       </MemoryRouter>
     </QueryClientProvider>,
   );
+
+  return { ...result, queryClient };
+}
+
+function setScrollMetrics(element: HTMLElement, metrics: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
+  Object.defineProperty(element, "scrollHeight", { configurable: true, value: metrics.scrollHeight });
+  Object.defineProperty(element, "clientHeight", { configurable: true, value: metrics.clientHeight });
+  element.scrollTop = metrics.scrollTop;
+}
+
+function makeLiveRun(id = "run-live-scroll") {
+  return {
+    id,
+    agentId: "agent-1",
+    agentName: "Alpha Agent",
+    adapterType: "claude_local",
+    status: "running",
+    invocationSource: "on_demand",
+    triggerDetail: null,
+    startedAt: "2026-04-01T11:00:00Z",
+    createdAt: "2026-04-01T11:00:00Z",
+    finishedAt: null,
+    issueId: "issue-1",
+    logStore: null,
+    logRef: null,
+  };
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -177,6 +211,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   issuesApiMock.get.mockResolvedValue(mockIssue);
   issuesApiMock.listComments.mockResolvedValue(mockComments);
+  issuesApiMock.listAttachments.mockResolvedValue([]);
+  issuesApiMock.listContextBundles.mockResolvedValue([]);
   activityApiMock.runsForIssue.mockResolvedValue(mockRuns);
   heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([]);
   heartbeatsApiMock.activeRunForIssue.mockResolvedValue(null);
@@ -184,6 +220,302 @@ beforeEach(() => {
 });
 
 describe("WorkspaceTimeline — rendering", () => {
+  it("renders completed runs as Codex-like worked-for boundaries", async () => {
+    renderTimeline();
+
+    expect(await screen.findAllByText(/Worked for/i)).toHaveLength(2);
+  });
+
+  it("renders image attachments under the exact comment that uploaded them", async () => {
+    issuesApiMock.listAttachments.mockResolvedValue([
+      {
+        id: "att-1",
+        issueId: "issue-1",
+        issueCommentId: "comment-1",
+        contentType: "image/png",
+        originalFilename: "proof.png",
+        contentPath: "/api/attachments/att-1/content",
+      },
+    ]);
+
+    renderTimeline();
+
+    const attachmentGroup = await screen.findByTestId("timeline-comment-attachments-comment-1");
+    expect(attachmentGroup).toHaveTextContent("proof.png");
+    expect(attachmentGroup.querySelector("img")).toHaveAttribute("src", "/api/attachments/att-1/content");
+    expect(screen.queryByTestId("timeline-comment-attachments-comment-2")).not.toBeInTheDocument();
+  });
+
+  it("renders non-image attachments as compact file pills under the comment", async () => {
+    issuesApiMock.listAttachments.mockResolvedValue([
+      {
+        id: "att-2",
+        issueId: "issue-1",
+        issueCommentId: "comment-1",
+        contentType: "text/markdown",
+        originalFilename: "notes.md",
+        contentPath: "/api/attachments/att-2/content",
+      },
+    ]);
+
+    renderTimeline();
+
+    const attachmentGroup = await screen.findByTestId("timeline-comment-attachments-comment-1");
+    expect(attachmentGroup).toHaveTextContent("notes.md");
+    expect(attachmentGroup).toHaveTextContent("file");
+  });
+
+  it("renders the task brief as the first thread context item", async () => {
+    renderTimeline();
+
+    const brief = await screen.findByTestId("timeline-task-brief");
+    expect(brief).toHaveTextContent("Task");
+    expect(brief).toHaveTextContent("Fix auth");
+    expect(brief).toHaveTextContent("Fix the login flow and verify session handling.");
+    expect(brief).toHaveTextContent("in progress");
+    expect(brief).toHaveTextContent("Assigned to Alpha Agent");
+  });
+
+  it("renders DIS-5-style inline image markdown and recovery diagnostics without blanking", async () => {
+    issuesApiMock.get.mockResolvedValue({
+      ...mockIssue,
+      id: "issue-1",
+      identifier: "DIS-5",
+      title: "aoa deisgn",
+      description:
+        "![ChatGPT Image May 14, 2026, 02_59_35 PM.png](/api/assets/448d649d-2b98-4330-9021-b8c6f32af310/content)\n\n" +
+        "do you think we can animate this ? give me a plan",
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+    });
+    activityApiMock.runsForIssue.mockResolvedValue([
+      {
+        runId: "run-dis-5",
+        status: "succeeded",
+        agentId: "agent-1",
+        startedAt: "2026-05-18T17:29:24.406Z",
+        finishedAt: "2026-05-18T17:29:38.666Z",
+        createdAt: "2026-05-18T17:29:24.397Z",
+        invocationSource: "on_demand",
+        usageJson: { inputTokens: 22044, outputTokens: 392 },
+        resultJson: {
+          stderr: Array.from({ length: 35 }, (_, index) => `diagnostic ${index + 1}`).join("\n"),
+          stdout: JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text: "Yes. We can animate this." },
+          }),
+          stopReason: "completed",
+        },
+        detectedOutputs: null,
+      },
+    ]);
+    issuesApiMock.listComments.mockResolvedValue([
+      {
+        id: "recovery-comment",
+        companyId: "comp-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: null,
+        authorType: "system",
+        presentation: { kind: "system_notice", tone: "warning", title: "Task needs final status" },
+        metadata: null,
+        body: "The agent run finished, but the task is still in progress.",
+        createdAt: "2026-05-18T17:29:38.755Z",
+        updatedAt: "2026-05-18T17:29:38.755Z",
+      },
+    ]);
+    issuesApiMock.listAttachments.mockResolvedValue([]);
+
+    renderTimeline();
+
+    const brief = await screen.findByTestId("timeline-task-brief");
+    expect(brief).toHaveTextContent("DIS-5");
+    expect(brief).toHaveTextContent("aoa deisgn");
+    expect(brief.querySelector("img")).toHaveAttribute(
+      "src",
+      "/api/assets/448d649d-2b98-4330-9021-b8c6f32af310/content",
+    );
+    expect(await screen.findByTestId("timeline-comment-recovery-comment")).toHaveTextContent(
+      "The agent run finished, but the task is still in progress.",
+    );
+    expect(screen.getByTestId("workspace-timeline")).toBeInTheDocument();
+  });
+
+  it("renders task-level attachments in the task brief and keeps comment attachments on the comment", async () => {
+    issuesApiMock.listAttachments.mockResolvedValue([
+      {
+        id: "task-att-1",
+        issueId: "issue-1",
+        issueCommentId: null,
+        contentType: "image/png",
+        originalFilename: "task-screenshot.png",
+        contentPath: "/api/attachments/task-att-1/content",
+        byteSize: 1000,
+      },
+      {
+        id: "comment-att-1",
+        issueId: "issue-1",
+        issueCommentId: "comment-1",
+        contentType: "text/markdown",
+        originalFilename: "comment-note.md",
+        contentPath: "/api/attachments/comment-att-1/content",
+        byteSize: 1000,
+      },
+    ]);
+
+    renderTimeline();
+
+    const taskAttachments = await screen.findByTestId("timeline-task-attachments");
+    expect(taskAttachments).toHaveTextContent("task-screenshot.png");
+    expect(taskAttachments).not.toHaveTextContent("comment-note.md");
+
+    const commentAttachments = await screen.findByTestId("timeline-comment-attachments-comment-1");
+    expect(commentAttachments).toHaveTextContent("comment-note.md");
+    expect(commentAttachments).not.toHaveTextContent("task-screenshot.png");
+  });
+
+  it("shows inherited context when bundle data exists", async () => {
+    issuesApiMock.listContextBundles.mockResolvedValue([
+      {
+        id: "bundle-1",
+        companyId: "comp-1",
+        sourceIssueId: "parent-task-1234",
+        targetIssueId: "issue-1",
+        brief: "Use selected context only.",
+        items: [
+          { id: "item-1", itemType: "attachment", sourceId: "att-1", label: "proof.png" },
+          { id: "item-2", itemType: "comment", sourceId: "comment-parent", label: "Parent note" },
+        ],
+      },
+    ]);
+
+    renderTimeline();
+
+    const brief = await screen.findByTestId("timeline-task-brief");
+    expect(brief).toHaveTextContent("Inherited context");
+    expect(brief).toHaveTextContent("2 selected items");
+    expect(brief).toHaveTextContent("proof.png");
+    expect(brief).toHaveTextContent("Parent note");
+  });
+
+  it("renders active runs as Codex-like working-for boundaries", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-live-1",
+        agentId: "agent-1",
+        agentName: "Alpha Agent",
+        adapterType: "claude_local",
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: null,
+        startedAt: new Date(Date.now() - 140_000).toISOString(),
+        createdAt: new Date(Date.now() - 150_000).toISOString(),
+        finishedAt: null,
+        issueId: "issue-1",
+      },
+    ]);
+
+    renderTimeline();
+
+    expect(await screen.findByText(/Working for/i)).toBeInTheDocument();
+  });
+
+  it("updates active run duration while the run remains open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-04-01T10:00:01Z"));
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-live-timer",
+        agentId: "agent-1",
+        agentName: "Alpha Agent",
+        adapterType: "claude_local",
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: null,
+        startedAt: "2026-04-01T10:00:00Z",
+        createdAt: "2026-04-01T10:00:00Z",
+        finishedAt: null,
+        issueId: "issue-1",
+        logStore: null,
+        logRef: null,
+      },
+    ]);
+
+    renderTimeline();
+
+    expect(await screen.findByText(/Working for 1s/i)).toBeInTheDocument();
+
+    act(() => {
+      vi.setSystemTime(new Date("2026-04-01T10:00:03Z"));
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(await screen.findByText(/Working for [2-9]s/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Working for 1s/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps timeline content in a centered width-safe thread lane", async () => {
+    renderTimeline();
+
+    expect(await screen.findByTestId("timeline-thread-lane")).toHaveClass("max-w-3xl");
+    expect(screen.getByTestId("timeline-thread-lane")).toHaveClass("min-w-0");
+    expect(screen.getByTestId("timeline-scroll")).toHaveClass("overflow-y-auto");
+  });
+
+  it("keeps the chatbar outside the transcript scroll area", async () => {
+    renderTimeline();
+
+    const timeline = await screen.findByTestId("workspace-timeline");
+    const scroll = screen.getByTestId("timeline-scroll");
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+
+    expect(timeline).toHaveClass("flex-1");
+    expect(timeline).toHaveClass("overflow-hidden");
+    expect(scroll).toHaveClass("flex-1");
+    expect(scroll).toHaveClass("overflow-y-auto");
+    expect(chatbar).toHaveClass("shrink-0");
+  });
+
+  it("auto-follows new live activity while the user is pinned near the bottom", async () => {
+    const { queryClient } = renderTimeline();
+
+    const scroll = await screen.findByTestId("timeline-scroll");
+    setScrollMetrics(scroll, { scrollHeight: 1000, clientHeight: 400, scrollTop: 590 });
+    fireEvent.scroll(scroll);
+
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun()]);
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns("issue-1") });
+    });
+
+    await screen.findByTestId("timeline-agent-msg-run-live-scroll");
+    expect(scroll.scrollTop).toBe(1000);
+    expect(screen.queryByText("New activity")).not.toBeInTheDocument();
+  });
+
+  it("pauses auto-follow when the user has scrolled up and resumes from New activity", async () => {
+    const { queryClient } = renderTimeline();
+
+    const scroll = await screen.findByTestId("timeline-scroll");
+    setScrollMetrics(scroll, { scrollHeight: 1000, clientHeight: 400, scrollTop: 120 });
+    fireEvent.scroll(scroll);
+
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun()]);
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns("issue-1") });
+    });
+
+    await screen.findByTestId("timeline-agent-msg-run-live-scroll");
+    expect(scroll.scrollTop).toBe(120);
+
+    fireEvent.click(screen.getByText("New activity"));
+
+    expect(scroll.scrollTop).toBe(1000);
+    expect(screen.queryByText("New activity")).not.toBeInTheDocument();
+  });
+
   it("renders runs and comments in chronological order", async () => {
     renderTimeline();
 
@@ -222,6 +554,10 @@ describe("WorkspaceTimeline — rendering", () => {
   });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("WorkspaceTimeline — input area", () => {
   it("renders the chatbar with textarea and send button", async () => {
     renderTimeline();
@@ -234,7 +570,7 @@ describe("WorkspaceTimeline — input area", () => {
     expect(screen.getByText("Send")).toBeInTheDocument();
   });
 
-  it("Send creates comment and triggers agent wakeup", async () => {
+  it("Send creates a comment and lets the server wake the agent", async () => {
     renderTimeline();
 
     await waitFor(() => {
@@ -251,11 +587,92 @@ describe("WorkspaceTimeline — input area", () => {
       expect(issuesApiMock.addComment).toHaveBeenCalledWith("issue-1", "Please review the changes");
     });
 
-    // Wakeup always goes to assignedAgentId from issue, with null payload (no model override)
-    expect(agentsApiMock.wakeup).toHaveBeenCalledWith("agent-1", {
-      source: "on_demand",
-      reason: "Please review the changes",
-      payload: null,
+    expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("renders the classic separated chatbar rows", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    const separatedRows = chatbar.querySelectorAll(".border-t");
+
+    expect(separatedRows.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders full composer controls when no agent is assigned", async () => {
+    issuesApiMock.get.mockResolvedValue({ ...mockIssue, assigneeAgentId: null });
+
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar-fallback");
+    expect(chatbar).toHaveTextContent("No agent assigned");
+    expect(screen.getByLabelText("Attach file")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Task progress" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Context usage" })).toBeInTheDocument();
+    expect(screen.getByText("Send")).toBeInTheDocument();
+    expect(screen.queryByText("Comment")).not.toBeInTheDocument();
+    expect(screen.queryByText("comment")).not.toBeInTheDocument();
+  });
+
+  it("sends attachment comments from the no-agent composer", async () => {
+    issuesApiMock.get.mockResolvedValue({ ...mockIssue, assigneeAgentId: null });
+
+    renderTimeline();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-chatbar-fallback")).toBeInTheDocument();
+    });
+
+    const file = new File(["fake"], "fallback-proof.txt", { type: "text/plain" });
+    const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(await screen.findByText("fallback-proof.txt")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => {
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
+    });
+  });
+
+  it("selects attachments and sends them with the comment through the combined endpoint", async () => {
+    renderTimeline();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-chatbar")).toBeInTheDocument();
+    });
+
+    const file = new File(["fake"], "proof.png", { type: "image/png" });
+    const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(await screen.findByText("proof.png")).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "see attached" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => {
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "see attached", [file]);
+    });
+    expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows file-only attachment comments", async () => {
+    renderTimeline();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-chatbar")).toBeInTheDocument();
+    });
+
+    const file = new File(["fake"], "evidence.md", { type: "text/markdown" });
+    const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => {
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
     });
   });
 
@@ -268,6 +685,20 @@ describe("WorkspaceTimeline — input area", () => {
 
     const sendButton = screen.getByText("Send");
     expect(sendButton).toBeDisabled();
+  });
+
+  it("does not show latest run output file chips in the composer status row", async () => {
+    activityApiMock.runsForIssue.mockResolvedValue([
+      {
+        ...mockRuns[0],
+        detectedOutputs: [{ path: "report.md", byteSize: 42, kind: "file" }],
+      },
+    ]);
+
+    renderTimeline();
+
+    expect(await screen.findByTestId("workspace-chatbar")).toBeInTheDocument();
+    expect(screen.queryByText(/1 file/i)).not.toBeInTheDocument();
   });
 });
 
@@ -285,6 +716,18 @@ describe("WorkspaceTimeline — chatbar context donut and todos", () => {
 });
 
 describe("WorkspaceTimeline — comment display", () => {
+  it("renders user comments as quiet right-aligned bubbles and agent comments as plain thread text", async () => {
+    renderTimeline();
+
+    const userComment = await screen.findByTestId("timeline-comment-comment-1");
+    const agentComment = await screen.findByTestId("timeline-comment-comment-2");
+
+    expect(userComment).toHaveClass("ml-auto");
+    expect(userComment.firstElementChild).toHaveClass("bg-card");
+    expect(agentComment).toHaveClass("mr-auto");
+    expect(agentComment.firstElementChild).toHaveClass("bg-transparent");
+  });
+
   it("shows author name for agent comments", async () => {
     renderTimeline();
 
@@ -301,6 +744,18 @@ describe("WorkspaceTimeline — comment display", () => {
       // "You" appears in Identity + in the font-medium span
       expect(screen.getAllByText("You").length).toBeGreaterThanOrEqual(1);
     });
+  });
+});
+
+describe("WorkspaceTimeline — chatbar live state", () => {
+  it("shows live run state in the chatbar status row", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-status")]);
+
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    expect(chatbar).toHaveTextContent("Alpha Agent");
+    expect(chatbar).toHaveTextContent("Working");
   });
 });
 

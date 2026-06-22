@@ -118,12 +118,15 @@
               "api/companies",
               "api/agents",
               "api/issues",
+              "api/discussions",
               "api/approvals",
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
               "api/activity",
-              "api/dashboard"
+              "api/dashboard",
+              "api/mcp",
+              "api/workflow-templates"
             ]
           }
         ]

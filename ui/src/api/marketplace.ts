@@ -24,17 +24,27 @@ import { api } from "./client";
 
 // M.3b: Install flow types — wired to backend endpoints from M.2.
 
-export interface InstallRequest {
+export interface SingleInstallRequest {
   catalogItemId: string;
   targetDepartmentId?: string;
   idempotencyKey?: string;
+  role?: "cxo" | "lead" | "general";
+  adapterType?: string;
 }
+
+export interface PackageInstallRequest {
+  packageId: string;
+  catalogItemIds: string[];
+  idempotencyKey?: string;
+}
+
+export type InstallRequest = SingleInstallRequest | PackageInstallRequest;
 
 export interface InstallOperation {
   id: string;
   companyId: string;
   catalogItemId: string;
-  itemType: "plugin" | "skill" | "agent" | "team";
+  itemType: "plugin" | "skill" | "agent" | "team" | "package";
   targetDepartmentId: string | null;
   status: "pending" | "running" | "success" | "failure" | "requested";
   resultEntityId: string | null;
@@ -43,6 +53,14 @@ export interface InstallOperation {
   startedAt: string;
   completedAt: string | null;
   createdAt: string;
+}
+
+export interface ApplyUpdateResult {
+  ok: boolean;
+  pluginId?: string;
+  version?: string;
+  status?: "ready" | "upgrade_pending";
+  delta?: string[];
 }
 
 export interface InstallPlanStep {
@@ -63,6 +81,23 @@ export interface InstallPlan {
     detail: string;
     resolution: "auto-suffix" | "fail-fast" | "warn-and-proceed";
   }>;
+  agentInstall?: {
+    suggestedRole: "cxo" | "lead" | "general";
+    supportedRoles: Array<"cxo" | "lead" | "general">;
+    suggestedAdapterType: string;
+    supportedAdapterTypes: string[];
+    availableAdapterTypes: string[];
+    setupRequired: boolean;
+    setupRequirements: Array<{
+      kind: "secret" | "plugin_config";
+      key: string;
+      label?: string;
+      required: boolean;
+      reason: string;
+      usedBy?: string;
+    }>;
+    warnings: string[];
+  };
 }
 
 export const marketplaceApi = {
@@ -91,7 +126,7 @@ export const marketplaceApi = {
     catalogItemId: string,
   ): Promise<InstallPlan> {
     return api.get<InstallPlan>(
-      `/companies/${companyId}/marketplace/resolve/${catalogItemId}`,
+      `/companies/${companyId}/marketplace/resolve/${encodeURIComponent(catalogItemId)}`,
     );
   },
 
@@ -144,8 +179,8 @@ export const marketplaceApi = {
     );
   },
 
-  async applyUpdate(companyId: string, updateId: string): Promise<void> {
-    await api.post<{ error: string }>(
+  async applyUpdate(companyId: string, updateId: string): Promise<ApplyUpdateResult> {
+    return api.post<ApplyUpdateResult>(
       `/companies/${companyId}/marketplace/updates/${updateId}/apply`,
       {},
     );

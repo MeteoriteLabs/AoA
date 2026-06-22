@@ -21,7 +21,7 @@ export interface OperationRow {
   id: string;
   companyId: string;
   catalogItemId: string;
-  itemType: "plugin" | "skill" | "agent" | "team";
+  itemType: "plugin" | "skill" | "agent" | "team" | "package";
   targetDepartmentId: string | null;
   status: "pending" | "running" | "success" | "failure" | "requested";
   resultEntityId: string | null;
@@ -37,6 +37,14 @@ export interface OperationRow {
 export interface CreateOperationInput {
   companyId: string;
   catalogItem: CatalogItem;
+  targetDepartmentId?: string;
+  idempotencyKey?: string;
+  requestedByUserId: string;
+}
+
+export interface CreatePackageOperationInput {
+  companyId: string;
+  packageId: string;
   targetDepartmentId?: string;
   idempotencyKey?: string;
   requestedByUserId: string;
@@ -112,6 +120,46 @@ export async function createOperation(db: Db, input: CreateOperationInput): Prom
   if (!existing[0]) {
     throw new Error(
       `createOperation: idempotency conflict for key "${input.idempotencyKey}" but row not found — possible concurrent delete`,
+    );
+  }
+
+  return existing[0] as OperationRow;
+}
+
+export async function createPackageOperation(
+  db: Db,
+  input: CreatePackageOperationInput,
+): Promise<OperationRow> {
+  const [row] = await db
+    .insert(marketplaceInstallOperations)
+    .values({
+      companyId: input.companyId,
+      catalogItemId: input.packageId,
+      itemType: "package",
+      targetDepartmentId: input.targetDepartmentId ?? null,
+      status: "pending",
+      idempotencyKey: input.idempotencyKey ?? null,
+      requestedByUserId: input.requestedByUserId,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (row) return row as OperationRow;
+
+  const existing = await db
+    .select()
+    .from(marketplaceInstallOperations)
+    .where(
+      and(
+        eq(marketplaceInstallOperations.companyId, input.companyId),
+        eq(marketplaceInstallOperations.idempotencyKey, input.idempotencyKey!),
+      ),
+    )
+    .limit(1);
+
+  if (!existing[0]) {
+    throw new Error(
+      `createPackageOperation: idempotency conflict for key "${input.idempotencyKey}" but row not found - possible concurrent delete`,
     );
   }
 

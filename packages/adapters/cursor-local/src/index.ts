@@ -1,5 +1,6 @@
 export const type = "cursor";
 export const label = "Cursor CLI (local)";
+export const SANDBOX_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 const CURSOR_FALLBACK_MODEL_IDS = [

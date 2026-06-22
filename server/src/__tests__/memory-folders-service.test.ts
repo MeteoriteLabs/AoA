@@ -90,9 +90,15 @@ describe("memoryFoldersService", () => {
       departmentSlug: "engineering",
       functionType: "software_development",
     });
-    expect(db.folders).toHaveLength(5);
-    expect(db.folders[0].path).toBe("engineering/Decisions");
-    expect(db.folders[0].seedKey).toBe("software_development.decisions");
+    expect(db.folders).toHaveLength(16);
+    expect(db.folders[0].path).toBe("engineering/Overview");
+    expect(db.folders[0].seedKey).toBe("software_development.overview");
+    expect(db.folders).toContainEqual(expect.objectContaining({
+      path: "engineering/Decisions",
+      seedKey: "software_development.decisions",
+    }));
+    expect(db.folders.map((folder) => folder.path)).toContain("engineering/Architecture");
+    expect(db.folders.map((folder) => folder.path)).toContain("engineering/QA & Testing");
   });
 
   it("seedForDepartment is idempotent — second call inserts nothing", async () => {
@@ -112,5 +118,29 @@ describe("memoryFoldersService", () => {
       functionType: "software_development",
     });
     expect(db.folders.length).toBe(before);
+  });
+
+  it("seedForDepartment skips legacy folders that already have the seeded path", async () => {
+    const db = createMockDb();
+    db.folders.push({
+      id: "legacy-decisions",
+      companyId: "co-1",
+      departmentId: "dept-1",
+      path: "engineering/Decisions",
+      displayName: "Decisions",
+      seedKey: null,
+    });
+    const svc = memoryFoldersService(db as never);
+
+    await svc.seedForDepartment({
+      companyId: "co-1",
+      departmentId: "dept-1",
+      departmentSlug: "engineering",
+      functionType: "software_development",
+    });
+
+    expect(db.folders.filter((folder) => folder.path === "engineering/Decisions"))
+      .toHaveLength(1);
+    expect(db.folders).toHaveLength(16);
   });
 });

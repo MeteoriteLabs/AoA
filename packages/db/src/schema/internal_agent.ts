@@ -7,10 +7,12 @@ import {
   index,
   uniqueIndex,
   jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
+import { agents } from "./agents.js";
 
 // ── Table 5: internal_agent_config ──────────────────────────────────────────
 
@@ -34,12 +36,15 @@ export const internalAgentConfig = pgTable(
     // flag). Not read by the dispatch path.
     provider: text("provider").default("anthropic"), // 'anthropic' | 'openai' | 'google'
     model: text("model").default("claude-sonnet-4-6"),
+    // Cheap-model fallback (D4): if set and monthly spend ≥ 80% of budget,
+    // heartbeat swaps adapter model to this value for the rest of the month.
+    cheapModel: text("cheap_model"),
 
     // CLI mode settings
     cliTool: text("cli_tool"), // 'claude_cli' | 'codex' | 'opencode' | null
 
     // Autonomy
-    autonomyLevel: integer("autonomy_level").notNull().default(0), // 0-3, v2.5 ships with 0 only
+    autonomyLevel: integer("autonomy_level").notNull().default(0), // 0-2 (Manual/Assist/Drive), v2.5 ships with 0 only
 
     // Capabilities
     enabledCapabilities: jsonb("enabled_capabilities").notNull().default([
@@ -80,6 +85,41 @@ export const internalAgentConfig = pgTable(
     // Metadata
     metadata: jsonb("metadata").default({}),
 
+    // Per-tool permission overrides for Commander. Keys are tool names.
+    // Null = use system defaults (enabled=true, requireConfirmation=false, minimumRole=team_member).
+    commanderToolPermissions: jsonb("commander_tool_permissions"),
+
+    // Runtime approvals govern Commander tool execution. Vendor bypass only
+    // controls whether AoA forwards approvals to the underlying CLI.
+    runtimeApprovalsEnabled: boolean("runtime_approvals_enabled")
+      .notNull()
+      .default(true),
+    runtimeAllowAlwaysEnabled: boolean("runtime_allow_always_enabled")
+      .notNull()
+      .default(true),
+    vendorCliBypassEnabled: boolean("vendor_cli_bypass_enabled")
+      .notNull()
+      .default(true),
+
+    // Plan 3 Task 8: company-level crew kill-switch.
+    // When true, no crew roles fire for ANY thread in this company.
+    // Thread-level pause is in discussions.crewPaused.
+    crewPaused: boolean("crew_paused").notNull().default(false),
+
+    // Task 0.2 (Inbound Dirty-Data Routing): per-company routing dial.
+    // Values: 'off' | 'suggest' | 'auto_attach' | 'full_auto'
+    // 'off'         = inbound items queue as pending_route but router never fires.
+    // 'suggest'     = router scores + suggests; founder approves attachment.
+    // 'auto_attach' = router auto-attaches confident matches; suggests branch/new.
+    // 'full_auto'   = router auto-attaches and auto-creates when confident.
+    // Default 'off' — teams opt-in as they build trust (mirrors D5 teaching
+    // default philosophy).
+    inboundRoutingLevel: text("inbound_routing_level").notNull().default("off"),
+
+    agentId: uuid("agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -112,6 +152,19 @@ export const internalAgentConversations = pgTable(
     summarizedUpToMessageId: uuid("summarized_up_to_message_id"), // last message included in summary
 
     messageCount: integer("message_count").notNull().default(0), // denormalized
+
+    // Multi-chat (Sprint 3): user-visible conversation title, archive timestamp,
+    // and founder-visible sharing flag (RBAC option C).
+    title: text("title"),            // null = auto-title from first message
+    archivedAt: timestamp("archived_at", { withTimezone: true }), // null = active
+    pinned: boolean("pinned").notNull().default(false),
+    sharedWithCompany: boolean("shared_with_company").notNull().default(false),
+
+    // Manual drag-and-drop ordering of the session list. null = not manually
+    // ordered (the list falls back to recency/date groups). Once the user drags,
+    // every visible conversation gets an explicit index here and the UI switches
+    // to a flat user-arranged list. (Batch 2: Commander session reorder.)
+    sortOrder: integer("sort_order"),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -149,6 +202,8 @@ export const internalAgentMessages = pgTable(
     // Tool interaction
     toolCalls: jsonb("tool_calls"), // array of { id, name, input }
     toolResults: jsonb("tool_results"), // array of { toolCallId, result }
+    outputRefs: jsonb("output_refs"), // CommanderOutputRef[] — distilled viewer refs (design 2026-06-11 §3d)
+    reasoning: text("reasoning"), // assistant's extended-thinking text (accumulated, capped at 16000 — not redacted; model output, rendered escaped like content)
 
     // Context at time of message
     pageContext: text("page_context"), // which page the user was on
@@ -191,12 +246,23 @@ export const internalAgentRuns = pgTable(
     triggerSource: text("trigger_source").notNull(), // extensible: 'user_message', 'discussion_entry', etc.
 
     // Execution state
-    status: text("status").notNull().default("running"), // 'running' | 'completed' | 'failed'
+    status: text("status").notNull().default("running"), // 'running' | 'completed' | 'failed' | 'cancelled'
     errorMessage: text("error_message"), // populated on failure
 
     // What the agent did
     toolsCalled: jsonb("tools_called").default([]), // array of { name, input, output, durationMs, success }
     summary: text("summary"), // human-readable summary of what happened
+
+    // Outbox SEAL key-set (Decision #99 completion, Mechanism B'). The idempotency keys of the
+    // thread_agent_actions this run PROPOSED this turn. Appended by proposeThreadAction (which
+    // runs in the bridge subprocess) and read by the runner / controller on run SUCCESS to seal
+    // those actions proposed→ready (the producer-success gate). Durable here because the bridge
+    // and the seal site are different processes — an in-memory key-set cannot cross. A run that
+    // fails/crashes never seals → its proposed rows are never drained (the GC reaps them).
+    proposedActionKeys: jsonb("proposed_action_keys")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
 
     // Cost tracking (DA-25: cents, not USD)
     tokenUsage: jsonb("token_usage"), // { inputTokens, outputTokens, cachedInputTokens }
@@ -209,6 +275,9 @@ export const internalAgentRuns = pgTable(
       { onDelete: "set null" },
     ),
     userId: text("user_id"), // who triggered (null for proactive/event)
+    agentId: uuid("agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
     // Plain uuid, not a FK — mutual reference with messages.runId would create
     // insert ordering issues (message references run, run references message)
     conversationMessageId: uuid("conversation_message_id"),
@@ -220,6 +289,11 @@ export const internalAgentRuns = pgTable(
     // LLM info
     provider: text("provider"), // 'anthropic' | 'openai' | 'google'
     model: text("model"), // specific model used
+
+    // Audit: redacted+capped snapshot of the assembled system prompt delivered
+    // to the agent CLI. Populated best-effort — never fails the run.
+    // Capped at ~16 000 chars; secrets stripped via redactAndCapPrompt().
+    promptSnapshot: text("prompt_snapshot"),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -245,6 +319,7 @@ export const internalAgentRuns = pgTable(
       table.relatedEntityType,
       table.relatedEntityId,
     ),
+    agentIdx: index("ia_runs_agent_idx").on(table.companyId, table.agentId),
   }),
 );
 
@@ -296,6 +371,10 @@ export const internalAgentConfigRelations = relations(
     company: one(companies, {
       fields: [internalAgentConfig.companyId],
       references: [companies.id],
+    }),
+    agent: one(agents, {
+      fields: [internalAgentConfig.agentId],
+      references: [agents.id],
     }),
   }),
 );

@@ -32,8 +32,8 @@ function jwtConfig() {
   return {
     secret,
     ttlSeconds: parseNumber(process.env.AOA_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
-    issuer: process.env.AOA_AGENT_JWT_ISSUER ?? "paperclip",
-    audience: process.env.AOA_AGENT_JWT_AUDIENCE ?? "paperclip-api",
+    issuer: process.env.AOA_AGENT_JWT_ISSUER ?? "aoa",
+    audience: process.env.AOA_AGENT_JWT_AUDIENCE ?? "aoa-api",
   };
 }
 
@@ -124,8 +124,12 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
 
   const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
   const audience = typeof claims.aud === "string" ? claims.aud : undefined;
-  if (issuer && issuer !== config.issuer) return null;
-  if (audience && audience !== config.audience) return null;
+  // Accept both legacy ("paperclip"/"paperclip-api") and current issuer/audience
+  // to avoid rejecting in-flight JWTs during the rename transition.
+  const validIssuers = new Set([config.issuer, "paperclip"]);
+  const validAudiences = new Set([config.audience, "paperclip-api"]);
+  if (issuer && !validIssuers.has(issuer)) return null;
+  if (audience && !validAudiences.has(audience)) return null;
 
   return {
     sub,

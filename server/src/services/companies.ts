@@ -1,6 +1,13 @@
-import { eq, count, isNull } from "drizzle-orm";
+import { and, eq, count, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
+import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
+import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-commander.js";
+import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
+import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
+import { ensureScout } from "./internal-agent/aoa-agents/ensure-scout.js";
+import { ensureEngineer } from "./internal-agent/aoa-agents/ensure-engineer.js";
+import { ensureChronicler } from "./internal-agent/aoa-agents/ensure-chronicler.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -47,6 +54,7 @@ import {
   workspaceOperations,
   workspaceRuntimeServices,
 } from "@armyofagents/db";
+import { notCrewAssigned } from "./issue-crew-scope.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -62,16 +70,31 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+    let current: unknown = error;
+    const seen = new Set<unknown>();
+
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current);
+      const candidate = current as {
+        cause?: unknown;
+        code?: unknown;
+        constraint?: unknown;
+        constraint_name?: unknown;
+      };
+      const constraint = typeof candidate.constraint === "string"
+        ? candidate.constraint
+        : typeof candidate.constraint_name === "string"
+          ? candidate.constraint_name
+          : undefined;
+
+      if (candidate.code === "23505" && constraint === "companies_issue_prefix_idx") {
+        return true;
+      }
+
+      current = candidate.cause;
+    }
+
+    return false;
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
@@ -90,6 +113,84 @@ export function companyService(db: Db) {
         }).catch((err: unknown) => {
           logger.warn({ err, companyId: company.id }, "memory company-root folder seeding failed");
         });
+        // Decision #100 — the Commander Team comes with every company.
+        // Eagerly seed (1) the default internal_agent_config row and (2) the
+        // Commander kind='aoa' agent linked into that config. (1) MUST precede
+        // (2) — ensureCommanderAgent's internal_agent_config UPDATE no-ops
+        // without an existing config row. Both are idempotent and seeded
+        // non-fatally — exactly mirroring the root-folder seed above — so a
+        // seed failure never breaks company create.
+        //
+        // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
+        // ("Scribe") agent is no longer seeded at company create. The
+        // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
+        // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
+        // Keeper (phase=done sweep) and Adjutant (optional, mid-discussion).
+        // `ensureExtractionAgent` is preserved in the codebase for rollback
+        // safety and so the dispatcher's lazy ensure on the legacy autonomous
+        // path keeps working when the env flag is re-enabled; it is no longer
+        // wired into bootstrap.
+        //
+        // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
+        // A brand-new company that gets a marketplace install immediately after
+        // creation must not have its agents overwritten by the legacy seeders.
+        // Wrapped in try/catch: a transient DB error here must not cause the entire
+        // company creation to 500 — the company row is already committed and the
+        // ensures are non-fatal. On failure, default to running the ensures so the
+        // company is never left without a crew.
+        let mktInstalled: { id: string } | undefined;
+        try {
+          [mktInstalled] = await db
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, company.id),
+                eq(agents.kind, "aoa"),
+                sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
+              ),
+            )
+            .limit(1);
+        } catch (err: unknown) {
+          logger.warn({ err, companyId: company.id }, "marketplace gate check failed — defaulting to legacy crew ensures");
+        }
+
+        if (!mktInstalled) {
+          await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
+          });
+          await ensureCommanderAgent(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Commander agent seeding failed");
+          });
+          // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
+          await ensureCommandStaff(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
+          });
+          // Plan 3 P3.1: seed the Adjutant role (phase-advance keystone, sweep trigger).
+          // Without this, runAdjutantSweep finds no trigger and the phase loop is dead.
+          await ensureAdjutant(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
+          });
+          // Phase D batch 1 (T2): seed Scout (internal-only research arm).
+          await ensureScout(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Scout agent seeding failed");
+          });
+          // Phase D batch 1 (T6): seed Engineer (replaces Maker).
+          // ensureEngineer's first action is to UPDATE any pre-existing
+          // name='Maker' rows in this company to name='Engineer' before its own
+          // INSERT lands, so legacy companies migrate in place without a unique-
+          // index conflict and without spawning a duplicate Maker row.
+          // The legacy ensure-maker.ts file was deleted in Phase D batch 2;
+          // git history preserves it for rollback if ever needed.
+          await ensureEngineer(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Engineer agent seeding failed");
+          });
+          // Routing-card redesign: seed the Chronicler (keeps per-thread
+          // routing cards fresh for the Navigator).
+          await ensureChronicler(db, company.id).catch((err: unknown) => {
+            logger.warn({ err, companyId: company.id }, "Chronicler agent seeding failed");
+          });
+        }
         return company;
       } catch (error) {
         if (!isIssuePrefixConflict(error)) throw error;
@@ -203,10 +304,18 @@ export function companyService(db: Db) {
         db
           .select({ companyId: agents.companyId, count: count() })
           .from(agents)
+          // Per-company agent counts exclude platform (Commander-team) agents.
+          .where(eq(agents.kind, "org"))
           .groupBy(agents.companyId),
         db
           .select({ companyId: issues.companyId, count: count() })
           .from(issues)
+          // Per-company issue (active-tasks) counts exclude crew-agent tasks, so
+          // the lobby card mirrors the agent count's org-only intent. This is a
+          // CROSS-COMPANY batch (groupBy company_id, no fixed company), so the
+          // crew predicate is the CORRELATED form (no arg → agents.company_id =
+          // issues.company_id). Crew tasks live only on the Crew Board.
+          .where(notCrewAssigned())
           .groupBy(issues.companyId),
         db
           .select({ companyId: approvals.companyId, count: count() })

@@ -3,9 +3,9 @@ title: Secrets Management
 summary: Master key, encryption, and strict mode
 ---
 
-AoA encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
+AoA encrypts local secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as secret references.
 
-> **Warning:** `aws_secrets_manager`, `gcp_secret_manager`, and `vault` are stub providers only. Every `createVersion` and `resolveVersion` call throws `"not configured in this deployment"` (see `server/src/secrets/external-stub-providers.ts`). They appear in `SECRET_PROVIDERS` as a roadmap placeholder. **Only `local_encrypted` is production-ready today.**
+AWS Secrets Manager is supported as a provider vault for managed values and external references. `gcp_secret_manager` and `vault` remain coming-soon providers that are visible in descriptors but reject use until implemented.
 
 ## Default Provider: `local_encrypted`
 
@@ -18,6 +18,14 @@ Secrets are encrypted with a local master key stored at:
 > Note: existing installs that still have `~/.paperclip/` are read via the legacy fallback in `cli/src/config/home.ts`. On a fresh install, AoA writes only to `~/.aoa/`.
 
 This key is auto-created during onboarding. The key never leaves your machine.
+
+## AWS Secrets Manager Provider
+
+Configure AWS vaults from the Secrets page or the provider-config API. AWS credentials are resolved from the deployment/runtime credential chain, not from AoA secrets. Use instance roles, workload identity, or environment credentials managed by your infrastructure.
+
+Remote import links AWS secret names/ARNs as external references. Import does not read plaintext secret values. Runtime reads resolve through AWS Secrets Manager and write a `secret_access_events` audit row for every success and failure.
+
+See `docs/deploy/secrets-aws-provider.md` for setup notes.
 
 ## Configuration
 

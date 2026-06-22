@@ -64,38 +64,65 @@ export function deduplicateHeaders(sections: Section[]): Section[] {
 
 /**
  * Compute a section-level diff between two markdown documents.
+ *
+ * Ordering: the diff is built in MINE (current/user) order for retained
+ * (unchanged/changed) and removed sections, so user-authored ordering — and
+ * user-retained sections upstream has dropped — is preserved. Upstream-only
+ * ("added") sections are interleaved at their anchor: each lands immediately
+ * before the surviving mine-section it precedes in theirs, and any added
+ * sections trailing the last shared section are appended at the end.
  */
 export function computeSectionDiff(mine: string, theirs: string): SectionDiff[] {
-  const mineSections = new Map(deduplicateHeaders(splitSections(mine)).map((s) => [s.header, s]));
-  const theirSections = new Map(deduplicateHeaders(splitSections(theirs)).map((s) => [s.header, s]));
+  const mineSections = deduplicateHeaders(splitSections(mine));
+  const theirSectionList = deduplicateHeaders(splitSections(theirs));
+  const theirSections = new Map(theirSectionList.map((s) => [s.header, s]));
+  // Upstream index per header, used to anchor "added" sections relative to
+  // surviving mine-sections.
+  const theirIndex = new Map(theirSectionList.map((s, i) => [s.header, i]));
 
   const result: SectionDiff[] = [];
 
-  // Process sections in upstream order (theirs defines the new structure)
-  for (const [header, theirSection] of theirSections) {
-    const mySection = mineSections.get(header);
+  // "Added" sections (in theirs, not in mine), kept in upstream order so they
+  // are flushed at their correct anchor as we walk mine.
+  const added = theirSectionList.filter((s) => !mineSections.some((m) => m.header === s.header));
+  let addedCursor = 0;
 
-    if (!mySection) {
-      result.push({ header, state: "added", mine: "", theirs: theirSection.content });
-    } else if (mySection.content.trim() === theirSection.content.trim()) {
-      result.push({ header, state: "unchanged", mine: mySection.content, theirs: theirSection.content });
+  // Flush all added sections whose upstream index is < the given boundary.
+  const flushAddedBefore = (boundary: number) => {
+    while (addedCursor < added.length && (theirIndex.get(added[addedCursor].header) ?? 0) < boundary) {
+      const s = added[addedCursor];
+      result.push({ header: s.header, state: "added", mine: "", theirs: s.content });
+      addedCursor += 1;
+    }
+  };
+
+  // Walk mine in order; classify each section, interleaving added sections that
+  // anchor before the current surviving section.
+  for (const mySection of mineSections) {
+    const theirSection = theirSections.get(mySection.header);
+
+    if (theirSection) {
+      // Shared section: flush any added sections anchored before it upstream.
+      flushAddedBefore(theirIndex.get(mySection.header) ?? Number.MAX_SAFE_INTEGER);
+      if (mySection.content.trim() === theirSection.content.trim()) {
+        result.push({ header: mySection.header, state: "unchanged", mine: mySection.content, theirs: theirSection.content });
+      } else {
+        result.push({
+          header: mySection.header,
+          state: "changed",
+          mine: mySection.content,
+          theirs: theirSection.content,
+          wordDiff: diffWords(mySection.content, theirSection.content),
+        });
+      }
     } else {
-      result.push({
-        header,
-        state: "changed",
-        mine: mySection.content,
-        theirs: theirSection.content,
-        wordDiff: diffWords(mySection.content, theirSection.content),
-      });
+      // Removed section (in mine, not theirs): keep it in its original mine slot.
+      result.push({ header: mySection.header, state: "removed", mine: mySection.content, theirs: "" });
     }
   }
 
-  // Find sections in mine but not theirs (removed)
-  for (const [header, mySection] of mineSections) {
-    if (!theirSections.has(header)) {
-      result.push({ header, state: "removed", mine: mySection.content, theirs: "" });
-    }
-  }
+  // Append any remaining added sections (anchored after the last shared section).
+  flushAddedBefore(Number.MAX_SAFE_INTEGER);
 
   return result;
 }

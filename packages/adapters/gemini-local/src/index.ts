@@ -1,5 +1,6 @@
 export const type = "gemini_local";
 export const label = "Gemini CLI (local)";
+export const SANDBOX_INSTALL_COMMAND = "npm install -g @google/gemini-cli";
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [

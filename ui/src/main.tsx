@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { CompanyProvider } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
-import { BreadcrumbProvider } from "./context/BreadcrumbContext";
+import { BreadcrumbProviderWithCompany } from "./context/BreadcrumbContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -15,6 +15,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
 import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { runStorageMigrations } from "./lib/storage-migrations";
 import "@mdxeditor/editor/style.css";
@@ -51,17 +52,19 @@ createRoot(document.getElementById("root")!).render(
             <LiveUpdatesProvider>
               <BrowserRouter>
                 <TooltipProvider>
-                  <BreadcrumbProvider>
+                  <BreadcrumbProviderWithCompany>
                     <SidebarProvider>
                       <DialogProvider>
                         <MarketplaceToastProvider>
-                          <App />
+                          <ErrorBoundary>
+                            <App />
+                          </ErrorBoundary>
                           <InstallToastSlot />
                           <Toaster />
                         </MarketplaceToastProvider>
                       </DialogProvider>
                     </SidebarProvider>
-                  </BreadcrumbProvider>
+                  </BreadcrumbProviderWithCompany>
                 </TooltipProvider>
               </BrowserRouter>
             </LiveUpdatesProvider>

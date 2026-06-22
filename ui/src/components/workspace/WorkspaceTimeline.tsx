@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../../api/issues";
 import { activityApi, type RunForIssue } from "../../api/activity";
@@ -10,22 +10,47 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { TimelineUserMessage } from "./TimelineUserMessage";
 import { TimelineAgentMessage } from "./TimelineAgentMessage";
-import { LiveRunWidget } from "../LiveRunWidget";
+import { TimelineTaskBrief } from "./TimelineTaskBrief";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
 import { Activity } from "lucide-react";
-import { summarizeOutputs } from "./workspace-utils";
 import type { IssueComment, Agent } from "@armyofagents/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
 import { useRunTokens } from "./useRunTokens";
 import { useLatestTodos } from "./useLatestTodos";
 import { getContextLimit } from "./adapter-utils";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../../api/heartbeats";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
   | { kind: "comment"; ts: string; data: IssueComment };
+
+function normalizeTimelineDate(value: string | Date | null): string | null {
+  if (value == null) return null;
+  return typeof value === "string" ? value : value.toISOString();
+}
+
+function liveRunToTimelineRun(run: LiveRunForIssue | ActiveRunForIssue): RunForIssue {
+  return {
+    runId: run.id,
+    status: run.status,
+    agentId: run.agentId,
+    startedAt: normalizeTimelineDate(run.startedAt),
+    finishedAt: normalizeTimelineDate(run.finishedAt),
+    createdAt: normalizeTimelineDate(run.createdAt) ?? new Date().toISOString(),
+    invocationSource: run.invocationSource ?? "",
+    logStore: run.logStore,
+    logRef: run.logRef,
+    processPid: run.processPid,
+    processStartedAt: normalizeTimelineDate(run.processStartedAt ?? null),
+    lastOutputAt: normalizeTimelineDate(run.lastOutputAt ?? null),
+    usageJson: null,
+    resultJson: null,
+    detectedOutputs: null,
+  };
+}
 
 interface WorkspaceTimelineProps {
   issueId: string;
@@ -42,9 +67,13 @@ export function WorkspaceTimeline({
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isPinnedToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [chatInput, setChatInput] = useState("");
   const [modelOverride, setModelOverride] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setChatInput(e.target.value);
@@ -65,6 +94,18 @@ export function WorkspaceTimeline({
   const { data: comments, error: commentsError, isLoading: commentsLoading } = useQuery({
     queryKey: queryKeys.issues.comments(issueId),
     queryFn: () => issuesApi.listComments(issueId),
+    enabled: !!issueId,
+  });
+
+  const { data: attachments } = useQuery({
+    queryKey: queryKeys.issues.attachments(issueId),
+    queryFn: () => issuesApi.listAttachments(issueId),
+    enabled: !!issueId,
+  });
+
+  const { data: contextBundles } = useQuery({
+    queryKey: ["issues", "context-bundles", issueId],
+    queryFn: () => issuesApi.listContextBundles(issueId),
     enabled: !!issueId,
   });
 
@@ -128,9 +169,22 @@ export function WorkspaceTimeline({
     return (linkedRuns ?? []).filter((r) => !liveIds.has(r.runId));
   }, [linkedRuns, liveRuns, activeRun]);
 
+  const liveTimelineRuns = useMemo(() => {
+    const live: Array<LiveRunForIssue | ActiveRunForIssue> = [...(liveRuns ?? [])];
+    if (activeRun && !live.some((run) => run.id === activeRun.id)) {
+      live.push(activeRun);
+    }
+    return live.map(liveRunToTimelineRun);
+  }, [liveRuns, activeRun]);
+
   // Merge runs + comments chronologically
   const mergedTimeline = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [
+      ...liveTimelineRuns.map((r) => ({
+        kind: "run" as const,
+        ts: r.startedAt ?? r.createdAt,
+        data: r,
+      })),
       ...(timelineRuns ?? []).map((r) => ({
         kind: "run" as const,
         ts: r.startedAt ?? r.createdAt,
@@ -143,14 +197,52 @@ export function WorkspaceTimeline({
       })),
     ];
     return items.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-  }, [timelineRuns, comments]);
+  }, [liveTimelineRuns, timelineRuns, comments]);
 
-  // Auto-scroll to bottom when new content arrives
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  const attachmentsByCommentId = useMemo(() => {
+    const grouped = new Map<string, NonNullable<typeof attachments>>();
+    for (const attachment of attachments ?? []) {
+      if (!attachment.issueCommentId) continue;
+      const existing = grouped.get(attachment.issueCommentId) ?? [];
+      grouped.set(attachment.issueCommentId, [...existing, attachment]);
     }
-  }, [mergedTimeline.length, hasLiveRuns]);
+    return grouped;
+  }, [attachments]);
+
+  const taskAttachments = useMemo(
+    () => (attachments ?? []).filter((attachment) => !attachment.issueCommentId),
+    [attachments],
+  );
+
+  const scrollToTimelineBottom = useCallback(() => {
+    if (!scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    isPinnedToBottomRef.current = true;
+    setHasUnseenActivity(false);
+  }, []);
+
+  const handleTimelineScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const pinned = distanceFromBottom <= 96;
+    isPinnedToBottomRef.current = pinned;
+    if (pinned) setHasUnseenActivity(false);
+  }, []);
+
+  const handleTimelineActivity = useCallback(() => {
+    if (!scrollRef.current) return;
+    if (isPinnedToBottomRef.current) {
+      scrollToTimelineBottom();
+    } else {
+      setHasUnseenActivity(true);
+    }
+  }, [scrollToTimelineBottom]);
+
+  // Auto-follow new content only while the reader is pinned near the bottom.
+  useEffect(() => {
+    handleTimelineActivity();
+  }, [mergedTimeline.length, hasLiveRuns, handleTimelineActivity]);
 
   // Agent resolution — always use the task's assigned agent
   const assignedAgentId = issue?.assigneeAgentId ?? null;
@@ -158,10 +250,7 @@ export function WorkspaceTimeline({
   const agentAdapterType = assignedAgent?.adapterType ?? "process";
   const agentDefaultModel = (assignedAgent?.adapterConfig as Record<string, unknown>)?.model as string | null ?? null;
 
-  // Diff stats from latest run
   const latestRun = linkedRuns?.[0] ?? null;
-  const latestOutputs = latestRun?.detectedOutputs ?? [];
-  const { fileCount: latestFileCount, totalBytes: latestTotalBytes } = summarizeOutputs(latestOutputs);
 
   // Token usage across all runs
   const tokenSummary = useRunTokens(linkedRuns);
@@ -172,43 +261,73 @@ export function WorkspaceTimeline({
   // --- Mutations ---
 
   const sendMessage = useMutation({
-    mutationFn: async ({ text, agentId, modelOvr }: { text: string; agentId: string | null; modelOvr: string | null }) => {
-      await issuesApi.addComment(issueId, text);
-      if (agentId) {
-        // TODO: server-side does not yet consume payload.modelOverride — wiring needed in heartbeat service
-        const payload = modelOvr ? { modelOverride: modelOvr } : null;
-        await agentsApi.wakeup(agentId, { source: "on_demand", reason: text, payload });
+    mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
+      if (files.length > 0) {
+        await issuesApi.addCommentWithAttachments(issueId, text, files);
+        return;
       }
+      await issuesApi.addComment(issueId, text);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) });
       setChatInput("");
+      setSelectedFiles([]);
       setModelOverride(null); // Reset model override after send
     },
   });
 
+  const canSend = chatInput.trim().length > 0 || selectedFiles.length > 0;
+
+  const handleAttach = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(e.target.files ?? []);
+    if (incoming.length === 0) return;
+    const next = [...selectedFiles, ...incoming].slice(0, 5);
+    if (selectedFiles.length + incoming.length > 5) {
+      pushToast({ tone: "error", title: "Too many attachments", body: "Attach up to 5 files per message." });
+    }
+    setSelectedFiles(next);
+    e.target.value = "";
+  };
+
+  const removeSelectedFile = (index: number) => {
+    setSelectedFiles((files) => files.filter((_, i) => i !== index));
+  };
+
   const handleSend = () => {
-    if (chatInput.trim()) {
-      sendMessage.mutate({ text: chatInput.trim(), agentId: assignedAgentId, modelOvr: modelOverride });
+    if (canSend) {
+      sendMessage.mutate({ text: chatInput.trim(), files: selectedFiles });
     }
   };
 
+  const chatbarRunState =
+    hasLiveRuns ? "running"
+      : issue?.status === "done" ? "done"
+        : issue?.status === "blocked" ? "blocked"
+          : "idle";
+
   return (
-    <div className={cn("flex flex-col h-full min-h-0", className)} data-testid="workspace-timeline">
+    <div className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", className)} data-testid="workspace-timeline">
       {/* Scrollable timeline */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="timeline-scroll">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto px-4 py-5"
+        data-testid="timeline-scroll"
+        onScroll={handleTimelineScroll}
+      >
+        <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4" data-testid="timeline-thread-lane">
         {(commentsLoading || runsLoading) && (
           <div className="space-y-3" data-testid="timeline-skeleton">
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-20 w-full" />
             ))}
           </div>
-        )}
-
-        {/* Live run widget at top if active */}
-        {hasLiveRuns && (
-          <LiveRunWidget issueId={issueId} companyId={issue?.companyId ?? null} />
         )}
 
         {/* Empty state */}
@@ -219,6 +338,15 @@ export function WorkspaceTimeline({
         )}
 
         {/* Timeline items — structured conversation */}
+        {issue && (
+          <TimelineTaskBrief
+            issue={issue}
+            attachments={taskAttachments}
+            contextBundles={contextBundles ?? []}
+            agentName={assignedAgent?.name ?? null}
+          />
+        )}
+
         {mergedTimeline.map((item, idx) => {
           if (item.kind === "run") {
             const run = item.data;
@@ -235,6 +363,7 @@ export function WorkspaceTimeline({
                 compact={compact}
                 adapterType={agentAdapterType}
                 departmentType={departmentType}
+                onActivity={handleTimelineActivity}
               />
             );
           }
@@ -286,24 +415,40 @@ export function WorkspaceTimeline({
               comment={comment}
               authorName={authorName}
               isAgent={isAgentComment}
+              attachments={attachmentsByCommentId.get(comment.id) ?? []}
             />
           );
         })}
+        </div>
       </div>
 
       {/* Chatbar — unified 3-row widget fixed at bottom */}
+      {hasUnseenActivity && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-28 z-10 flex justify-center">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="pointer-events-auto h-7 rounded-full border border-border bg-background/95 px-3 text-xs shadow-sm"
+            onClick={scrollToTimelineBottom}
+          >
+            New activity
+          </Button>
+        </div>
+      )}
+
       {assignedAgent && (
         <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar">
           {/* Status row */}
           <ChatbarStatusRow
             agentName={assignedAgent.name}
             adapterType={agentAdapterType}
-            fileCount={latestFileCount}
-            totalBytes={latestTotalBytes}
             tokensUsed={tokenSummary.totalTokens > 0 ? tokenSummary.totalTokens : null}
             contextLimit={getContextLimit(agentDefaultModel)}
             todoProgress={todoData.total > 0 ? { completed: todoData.completed, total: todoData.total } : null}
             todoItems={todoData.total > 0 ? todoData.todos : null}
+            runState={chatbarRunState}
+            runDurationLabel={null}
           />
 
           {/* Textarea */}
@@ -324,6 +469,32 @@ export function WorkspaceTimeline({
             />
           </div>
 
+          <input
+            ref={fileInputRef}
+            data-testid="workspace-chatbar-file-input"
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFilesSelected}
+          />
+          {selectedFiles.length > 0 && (
+            <div className="border-t border-border/50 px-3 py-1.5">
+              <div className="flex flex-wrap gap-1">
+                {selectedFiles.map((file, index) => (
+                  <button
+                    key={`${file.name}-${file.size}-${index}`}
+                    type="button"
+                    onClick={() => removeSelectedFile(index)}
+                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    title="Remove attachment"
+                  >
+                    {file.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Controls row */}
           <div className="border-t border-border/50">
             <ChatbarControls
@@ -331,8 +502,9 @@ export function WorkspaceTimeline({
               defaultModel={agentDefaultModel}
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
+              onAttach={handleAttach}
               onSend={handleSend}
-              sendDisabled={!chatInput.trim() || sendMessage.isPending}
+              sendDisabled={!canSend || sendMessage.isPending}
               sendPending={sendMessage.isPending}
             />
           </div>
@@ -342,9 +514,16 @@ export function WorkspaceTimeline({
       {/* Fallback when no agent assigned */}
       {!assignedAgent && (
         <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
-          <div className="px-3 py-1.5 text-xs text-muted-foreground">
-            No agent assigned
-          </div>
+          <ChatbarStatusRow
+            agentName="No agent assigned"
+            adapterType="process"
+            tokensUsed={null}
+            contextLimit={null}
+            todoProgress={todoData.total > 0 ? { completed: todoData.completed, total: todoData.total } : null}
+            todoItems={todoData.total > 0 ? todoData.todos : null}
+            runState={chatbarRunState}
+            runDurationLabel={null}
+          />
           <div className="border-t border-border/50">
             <textarea
               ref={textareaRef}
@@ -361,15 +540,43 @@ export function WorkspaceTimeline({
               }}
             />
           </div>
-          <div className="border-t border-border/50 px-3 py-1.5 flex justify-end">
-            <Button
-              size="sm"
-              className="h-7 text-xs px-3"
-              disabled={!chatInput.trim() || sendMessage.isPending}
-              onClick={handleSend}
-            >
-              Comment
-            </Button>
+          <input
+            ref={fileInputRef}
+            data-testid="workspace-chatbar-file-input"
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFilesSelected}
+          />
+          {selectedFiles.length > 0 && (
+            <div className="border-t border-border/50 px-3 py-1.5">
+              <div className="flex flex-wrap gap-1">
+                {selectedFiles.map((file, index) => (
+                  <button
+                    key={`${file.name}-${file.size}-${index}`}
+                    type="button"
+                    onClick={() => removeSelectedFile(index)}
+                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    title="Remove attachment"
+                  >
+                    {file.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="border-t border-border/50">
+            <ChatbarControls
+              adapterType="comment"
+              defaultModel={null}
+              selectedModel={modelOverride}
+              onModelChange={setModelOverride}
+              onAttach={handleAttach}
+              onSend={handleSend}
+              showModelLabel={false}
+              sendDisabled={!canSend || sendMessage.isPending}
+              sendPending={sendMessage.isPending}
+            />
           </div>
         </div>
       )}

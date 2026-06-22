@@ -1,16 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
+import type { CompanyBrainNode } from "@armyofagents/shared";
+import { resolveViewer } from "@/components/viewers/viewer-registry";
+import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
 import { MarkdownItemViewer } from "./viewers/MarkdownItemViewer";
 import { MemoryFolderSummary } from "./MemoryFolderSummary";
 import { MemoryEmptyViewer } from "./MemoryEmptyViewer";
-import { PdfFileViewer } from "./viewers/PdfFileViewer";
-import { ImageFileViewer } from "./viewers/ImageFileViewer";
-import { VideoFileViewer } from "./viewers/VideoFileViewer";
-import { GenericFileViewer } from "./viewers/GenericFileViewer";
 import { DocxFileViewer } from "./viewers/DocxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 import { MemoryViewerTabs } from "./MemoryViewerTabs";
+import { MemoryGraphViewer } from "./MemoryGraphViewer";
+import { MemoryOpenViewer } from "./MemoryOpenViewer";
+import { MemoryRecentsStrip } from "./MemoryRecentsStrip";
 import type { MemoryTab, MemoryTabKind, TabKey } from "../../lib/memoryTabs";
 
 interface MemoryViewerProps {
@@ -19,6 +21,10 @@ interface MemoryViewerProps {
   activeKey: TabKey | null;
   onActivate: (id: string, kind: MemoryTabKind) => void;
   onClose: (id: string, kind: MemoryTabKind) => void;
+  onAdd?: () => void;
+  onOpenTab?: (tab: MemoryTab) => void;
+  onOpenGraphNode?: (node: CompanyBrainNode) => void;
+  onToggleCollapse?: () => void;
   /** Optional folder fallback for the empty-pane / folder-summary view. */
   folderPath?: string;
 }
@@ -38,19 +44,61 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
   }
   const mt = asset.mimeType;
   const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  if (mt === "application/pdf") {
-    return <PdfFileViewer companyId={companyId} assetId={assetId} />;
-  }
-  if (mt.startsWith("image/")) {
-    return <ImageFileViewer companyId={companyId} assetId={assetId} />;
-  }
-  if (mt.startsWith("video/")) {
-    return <VideoFileViewer companyId={companyId} assetId={assetId} />;
-  }
   if (mt === DOCX_MIME) {
     return <DocxFileViewer companyId={companyId} assetId={assetId} />;
   }
-  return <GenericFileViewer companyId={companyId} assetId={assetId} />;
+
+  const viewer = resolveViewer({
+    contentType: asset.mimeType,
+    filename: asset.fileName,
+    assetUrl: memoryAssetsApi.contentUrl(companyId, assetId),
+    metadata: asset.metadata ?? null,
+  });
+
+  return <SharedContentViewer viewer={viewer} filename={asset.fileName} />;
+}
+
+function MemoryCollectionViewer({
+  companyId,
+  tab,
+  onOpenTab,
+}: {
+  companyId: string;
+  tab: MemoryTab;
+  onOpenTab?: (tab: MemoryTab) => void;
+}) {
+  const descriptions: Record<string, string> = {
+    unlinked: "Memory items without graph links will appear here.",
+    "review-queue": "Memory items waiting for review will appear here.",
+  };
+
+  if (tab.id === "recent") {
+    return (
+      <div className="h-full min-h-0 overflow-auto p-4" data-testid="memory-recent-viewer">
+        <div className="mb-3">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Recent
+          </div>
+          <h2 className="mt-1 text-sm font-semibold">Recently opened memory</h2>
+        </div>
+        <MemoryRecentsStrip
+          companyId={companyId}
+          onOpenTab={(next) => onOpenTab?.(next)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center p-6">
+      <div className="max-w-xs text-center">
+        <div className="text-sm font-semibold">{tab.title}</div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          {descriptions[tab.id] ?? "Memory collection details will appear here."}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 export function MemoryViewer({
@@ -59,6 +107,10 @@ export function MemoryViewer({
   activeKey,
   onActivate,
   onClose,
+  onAdd,
+  onOpenTab,
+  onOpenGraphNode,
+  onToggleCollapse,
   folderPath,
 }: MemoryViewerProps) {
   // Resolve the active tab from the tabs array.
@@ -67,10 +119,35 @@ export function MemoryViewer({
     : null;
 
   let inner: React.ReactNode;
-  if (activeTab && activeTab.kind === "memory_item") {
+  if (activeTab && activeTab.kind === "home") {
+    inner = <MemoryOpenViewer onOpenTab={onOpenTab} />;
+  } else if (activeTab && activeTab.kind === "memory_item") {
     inner = <MarkdownItemViewer companyId={companyId} itemId={activeTab.id} />;
   } else if (activeTab && activeTab.kind === "asset") {
     inner = <AssetViewerSlot companyId={companyId} assetId={activeTab.id} />;
+  } else if (activeTab && activeTab.kind === "graph") {
+    inner = (
+      <MemoryGraphViewer
+        companyId={companyId}
+        itemId={activeTab.id === "company-graph" ? null : activeTab.id}
+        onOpenMemoryItem={(item) => onOpenTab?.({
+          id: item.id,
+          kind: "memory_item",
+          title: item.title,
+        })}
+        onOpenGraphNode={onOpenGraphNode}
+      />
+    );
+  } else if (activeTab && activeTab.kind === "open") {
+    inner = <MemoryOpenViewer onOpenTab={onOpenTab} />;
+  } else if (activeTab && activeTab.kind === "collection") {
+    inner = (
+      <MemoryCollectionViewer
+        companyId={companyId}
+        tab={activeTab}
+        onOpenTab={onOpenTab}
+      />
+    );
   } else if (folderPath) {
     inner = (
       <MemoryFolderSummary
@@ -90,6 +167,8 @@ export function MemoryViewer({
         activeKey={activeKey}
         onActivate={onActivate}
         onClose={onClose}
+        onAdd={onAdd}
+        onToggleCollapse={onToggleCollapse}
       />
       <div className="flex-1 min-h-0 overflow-auto">
         {inner}

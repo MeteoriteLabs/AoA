@@ -8,6 +8,12 @@ import { useTheme } from "../context/ThemeContext";
 interface MarkdownBodyProps {
   children: string;
   className?: string;
+  /**
+   * When provided, clicks on external http(s) links call this instead of
+   * navigating (e.g. Commander opens them in a sandboxed Browser viewer tab).
+   * Mention chips and non-http(s) hrefs are never intercepted.
+   */
+  onLinkOpen?: (url: string) => void;
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -33,7 +39,7 @@ function mentionChipStyle(color: string | null): CSSProperties | undefined {
   };
 }
 
-export function MarkdownBody({ children, className }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, onLinkOpen }: MarkdownBodyProps) {
   const { theme } = useTheme();
   return (
     <div
@@ -43,6 +49,13 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
         className,
       )}
     >
+      {/*
+  SECURITY INVARIANT: rehype-raw is intentionally absent.
+  Commander output (parse-stream-json.ts plaintext fallback) is raw LLM text.
+  Without rehype-raw, react-markdown escapes HTML tags — prevents XSS via prompt injection.
+  Do NOT add rehype-raw without also adding rehype-sanitize with a strict allowlist.
+  See: server/src/services/internal-agent/parse-stream-json.ts
+*/}
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -65,6 +78,22 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
                 <a
                   href={`#skill:${parsedSkill.skillId}`}
                   className="aoa-skill-mention-chip"
+                >
+                  {linkChildren}
+                </a>
+              );
+            }
+            if (onLinkOpen && href && (href.startsWith("http://") || href.startsWith("https://"))) {
+              return (
+                <a
+                  href={href}
+                  rel="noreferrer"
+                  title={href}
+                  className="cursor-pointer underline"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onLinkOpen(href);
+                  }}
                 >
                   {linkChildren}
                 </a>

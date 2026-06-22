@@ -42,8 +42,15 @@ describe("v2.5 discussion constants", () => {
     expect(DISCUSSION_SCOPE_TYPES).toEqual(["department", "project", "goal"]);
   });
 
-  it("DISCUSSION_ENTRY_INPUT_TYPES has 4 values", () => {
-    expect(DISCUSSION_ENTRY_INPUT_TYPES).toEqual(["paste", "write", "voice", "mcp"]);
+  it("DISCUSSION_ENTRY_INPUT_TYPES has 12 values (Phase 1 added scope_proposal + system)", () => {
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toHaveLength(12);
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("paste");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("write");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("voice");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("mcp");
+    // Phase 1 (Task A3): Adjutant scope proposal + crew failure messages
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("scope_proposal");
+    expect(DISCUSSION_ENTRY_INPUT_TYPES).toContain("system");
   });
 
   it("EXTRACTION_STATUSES has 5 values", () => {
@@ -82,8 +89,20 @@ describe("v2.5 internal agent constants", () => {
     expect(TRIGGER_SOURCES).toHaveLength(6);
   });
 
-  it("NOTIFICATION_TYPES has 11 values", () => {
-    expect(NOTIFICATION_TYPES).toHaveLength(11);
+  it("NOTIFICATION_TYPES has 17 values", () => {
+    // 12 pre-Phase-1 types + 5 new thread.* types added in Phase E batch 3
+    // (T23). Keep this assertion in sync with packages/shared/src/constants.ts
+    // so additions don't sneak in without test coverage.
+    expect(NOTIFICATION_TYPES).toHaveLength(17);
+  });
+
+  it("NOTIFICATION_TYPES includes the 5 Phase 1 thread.* types", () => {
+    const set = new Set<string>(NOTIFICATION_TYPES);
+    expect(set.has("thread.scope_proposal_posted")).toBe(true);
+    expect(set.has("thread.artifact_needs_review")).toBe(true);
+    expect(set.has("thread.crew_failed")).toBe(true);
+    expect(set.has("thread.spinoff_suggested")).toBe(true);
+    expect(set.has("thread.human_input_needed")).toBe(true);
   });
 
   it("IA_RUN_STATUSES has 3 values", () => {
@@ -295,37 +314,71 @@ describe("createAnnotationSchema", () => {
 describe("chatMessageSchema", () => {
   it("accepts valid message", () => {
     const result = chatMessageSchema.safeParse({
-      content: "Hello agent",
+      message: "Hello agent",
     });
     expect(result.success).toBe(true);
   });
 
   it("accepts message with context", () => {
     const result = chatMessageSchema.safeParse({
-      content: "Help with tasks",
+      message: "Help with tasks",
       pageContext: "/tasks",
       departmentContext: "550e8400-e29b-41d4-a716-446655440000",
     });
     expect(result.success).toBe(true);
   });
 
+  it("accepts Commander chat with structured context scope", () => {
+    const result = chatMessageSchema.safeParse({
+      message: "What should I remember here?",
+      pageContext: "Task > Close onboarding gap",
+      conversationId: "550e8400-e29b-41d4-a716-446655440001",
+      contextScope: {
+        surface: "task",
+        route: "/tasks/550e8400-e29b-41d4-a716-446655440002",
+        departmentId: "550e8400-e29b-41d4-a716-446655440003",
+        projectId: "550e8400-e29b-41d4-a716-446655440004",
+        goalId: "550e8400-e29b-41d4-a716-446655440005",
+        taskId: "550e8400-e29b-41d4-a716-446655440006",
+        memoryFolderPath: "Company/Product",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown Commander context surfaces", () => {
+    const result = chatMessageSchema.safeParse({
+      message: "hello",
+      contextScope: { surface: "unknown" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects malformed Commander context UUIDs", () => {
+    const result = chatMessageSchema.safeParse({
+      message: "hello",
+      contextScope: { surface: "task", taskId: "not-a-uuid" },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("enforces 10k char limit", () => {
     const result = chatMessageSchema.safeParse({
-      content: "x".repeat(10001),
+      message: "x".repeat(10001),
     });
     expect(result.success).toBe(false);
   });
 
   it("accepts exactly 10k chars", () => {
     const result = chatMessageSchema.safeParse({
-      content: "x".repeat(10000),
+      message: "x".repeat(10000),
     });
     expect(result.success).toBe(true);
   });
 
   it("rejects empty content", () => {
     const result = chatMessageSchema.safeParse({
-      content: "",
+      message: "",
     });
     expect(result.success).toBe(false);
   });

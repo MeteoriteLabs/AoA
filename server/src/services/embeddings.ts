@@ -1,6 +1,11 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { memoryItems } from "@armyofagents/db";
+import {
+  memoryItems,
+  discussions,
+  discussionExtractedItems,
+  embeddingQueue,
+} from "@armyofagents/db";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 import { getDbCapabilities } from "./db-capabilities.js";
@@ -205,3 +210,227 @@ export async function invalidateEmbedding(db: Db, itemId: string): Promise<void>
     .set({ embedding: sql`NULL`, embeddingRetries: 0 } as any)
     .where(eq(memoryItems.id, itemId));
 }
+
+// ─── Write-behind queue (Task B1, Decision D2) ───────────────────────────────
+//
+// `createEmbeddingService` is the pure factory used by the write-behind queue.
+// It takes a generic `LlmEmbedder` so tests can mock the OpenAI dependency.
+// `startEmbeddingWorker` in `embeddings-worker.ts` is the production wiring
+// that injects an OpenAI-backed embedder.
+//
+// Why a separate API from `processEmbeddingQueue` above: the legacy worker
+// polls `memory_items` for NULL embeddings directly — fine for memory but
+// not extensible to the new thread-native targets (`discussions.summary_embedding`,
+// `discussion_extracted_items.embedding`). The new queue accepts arbitrary
+// (table, id, column) tuples so writers anywhere in the system can enqueue
+// an embedding job without coupling the writer to embedding semantics.
+
+const queueLog = logger.child({ service: "embedding-queue" });
+
+export interface LlmEmbedder {
+  embed(text: string): Promise<number[]>;
+}
+
+export type EmbeddingTargetTable =
+  | "memory_items"
+  | "discussions"
+  | "discussion_extracted_items";
+
+export interface EnqueueParams {
+  targetTable: EmbeddingTargetTable;
+  targetId: string;
+  /** snake_case vector column name, e.g. 'embedding' or 'summary_embedding' */
+  targetColumn: string;
+  inputText: string;
+}
+
+export interface ProcessQueueOpts {
+  batchSize?: number;
+  maxAttempts?: number;
+}
+
+export interface ProcessQueueResult {
+  processed: number;
+  failed: number;
+  remaining: number;
+}
+
+const TARGET_TABLE_MAP = {
+  memory_items: memoryItems,
+  discussions: discussions,
+  discussion_extracted_items: discussionExtractedItems,
+} as const;
+
+function isValidTargetTable(value: string): value is EmbeddingTargetTable {
+  return value in TARGET_TABLE_MAP;
+}
+
+/**
+ * Write the generated vector to the target row's vector column.
+ *
+ * The columns referenced here are pgvector custom types. The Drizzle
+ * `customType.toDriver` converts a `number[]` to the pgvector literal
+ * `[v1,v2,...]` string at the driver layer. We pass the array straight
+ * through via dynamic key access; the schema declares it as `vector(1536)`.
+ */
+async function updateVectorColumn(
+  db: Db,
+  targetTable: EmbeddingTargetTable,
+  targetId: string,
+  targetColumn: string,
+  vector: number[],
+): Promise<void> {
+  const table = TARGET_TABLE_MAP[targetTable];
+  if (!table) {
+    throw new Error(`Unknown target table: ${targetTable}`);
+  }
+  await db
+    .update(table)
+    .set({ [targetColumn]: vector } as any)
+    .where(eq(table.id as any, targetId));
+}
+
+export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
+  return {
+    /**
+     * Synchronous embedding generation. Calls the underlying LLM embedder
+     * directly without queueing — useful for query-time use cases like
+     * `find_similar_threads` where the caller needs the vector immediately
+     * to feed a cosine-similarity ORDER BY clause.
+     *
+     * This is distinct from `enqueue` + `processQueue` (which is the
+     * write-behind path for storing embeddings on rows). The sync path
+     * does NOT touch `embedding_queue`.
+     *
+     * Cost note: each call costs one OpenAI API request. Callers should
+     * avoid calling this in hot loops; for batch use cases, batch via
+     * `generateEmbeddingsBatch` directly.
+     */
+    async embedSync(text: string): Promise<number[]> {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        throw new Error("Cannot generate embedding for empty text");
+      }
+      return await llm.embed(trimmed);
+    },
+
+    /**
+     * Enqueue a row for the background worker to process. Synchronous —
+     * returns as soon as the row is in `embedding_queue` with status='pending'.
+     * The actual embedding happens in `processQueue` on the worker tick.
+     */
+    async enqueue(params: EnqueueParams): Promise<{ id: string }> {
+      if (!isValidTargetTable(params.targetTable)) {
+        throw new Error(`Unknown target table: ${params.targetTable}`);
+      }
+      const [row] = await db
+        .insert(embeddingQueue)
+        .values({
+          targetTable: params.targetTable,
+          targetId: params.targetId,
+          targetColumn: params.targetColumn,
+          inputText: params.inputText,
+          status: "pending",
+        })
+        .returning({ id: embeddingQueue.id });
+      return row;
+    },
+
+    /**
+     * Pull a batch of pending rows, embed each, and UPDATE the target
+     * vector column. Failures bump `attempts` and either re-queue or mark
+     * 'failed' once `maxAttempts` is reached.
+     *
+     * Worker loop guarantees:
+     *   - Per-row: marks row 'processing' before embedding so a concurrent
+     *     worker reading the same batch will not double-process it. (The
+     *     'processing' marker is the single concurrency primitive — pair
+     *     with a SELECT FOR UPDATE SKIP LOCKED in a future hardening pass
+     *     if multiple workers are deployed.)
+     *   - Per-batch: returns counts so callers can log/observe backpressure.
+     */
+    async processQueue(opts: ProcessQueueOpts = {}): Promise<ProcessQueueResult> {
+      const batchSize = opts.batchSize ?? 50;
+      const maxAttempts = opts.maxAttempts ?? 3;
+      let processed = 0;
+      let failed = 0;
+
+      const pending = await db
+        .select()
+        .from(embeddingQueue)
+        .where(eq(embeddingQueue.status, "pending"))
+        .limit(batchSize);
+
+      for (const item of pending) {
+        try {
+          // Mark processing so concurrent workers don't pick it up.
+          await db
+            .update(embeddingQueue)
+            .set({
+              status: "processing",
+              updatedAt: new Date(),
+            })
+            .where(eq(embeddingQueue.id, item.id));
+
+          if (!isValidTargetTable(item.targetTable)) {
+            throw new Error(`Unknown target table: ${item.targetTable}`);
+          }
+
+          const vector = await llm.embed(item.inputText);
+
+          await updateVectorColumn(
+            db,
+            item.targetTable,
+            item.targetId,
+            item.targetColumn,
+            vector,
+          );
+
+          await db
+            .update(embeddingQueue)
+            .set({
+              status: "completed",
+              updatedAt: new Date(),
+            })
+            .where(eq(embeddingQueue.id, item.id));
+          processed++;
+        } catch (err) {
+          const nextAttempts = (item.attempts ?? 0) + 1;
+          const finalFailed = nextAttempts >= maxAttempts;
+          await db
+            .update(embeddingQueue)
+            .set({
+              status: finalFailed ? "failed" : "pending",
+              attempts: nextAttempts,
+              error: err instanceof Error ? err.message : String(err),
+              updatedAt: new Date(),
+            })
+            .where(eq(embeddingQueue.id, item.id));
+          if (finalFailed) failed++;
+          queueLog.warn(
+            {
+              queueId: item.id,
+              targetTable: item.targetTable,
+              targetId: item.targetId,
+              attempts: nextAttempts,
+              maxAttempts,
+              finalFailed,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            finalFailed
+              ? "embedding queue row marked failed after exhausting attempts"
+              : "embedding queue row re-queued for retry",
+          );
+        }
+      }
+
+      return {
+        processed,
+        failed,
+        remaining: pending.length - processed - failed,
+      };
+    },
+  };
+}
+
+export type EmbeddingService = ReturnType<typeof createEmbeddingService>;

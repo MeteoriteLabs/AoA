@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
@@ -25,9 +21,41 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentPanelProvider } from "../context/AgentPanelContext";
 
+const NewAgentDialog = lazy(() => import("./NewAgentDialog").then((m) => ({ default: m.NewAgentDialog })));
+const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((m) => ({ default: m.NewGoalDialog })));
+const NewIssueDialog = lazy(() => import("./NewIssueDialog").then((m) => ({ default: m.NewIssueDialog })));
+const NewProjectDialog = lazy(() => import("./NewProjectDialog").then((m) => ({ default: m.NewProjectDialog })));
+
+export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
+  const normalizedPath = pathname.split(/[?#]/, 1)[0] ?? pathname;
+  const segments = normalizedPath.split("/").filter(Boolean);
+  const firstContentIndex = companyPrefix && segments[0]?.toUpperCase() === companyPrefix.toUpperCase() ? 1 : 0;
+  const section = segments[firstContentIndex];
+  const detailId = segments[firstContentIndex + 1];
+
+  return (
+    (section === "workspaces" && Boolean(detailId)) ||
+    section === "settings" ||
+    section === "memory" ||
+    section === "skills" ||
+    (section === "team" && !detailId) ||
+    section === "commander" ||
+    // Threads continuum (§13) is an edge-to-edge resizable surface, like Workspace.
+    section === "discussions" ||
+    section === "threads"
+  );
+}
+
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, setCollapsed, toggleCollapse } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const {
+    newAgentOpen,
+    newGoalOpen,
+    newIssueOpen,
+    newProjectOpen,
+    openNewIssue,
+    openOnboarding,
+  } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
@@ -245,7 +273,7 @@ export function Layout() {
           tabIndex={-1}
           className={cn(
             "flex-1 overflow-auto",
-            !location.pathname.match(/\/(workspaces\/|settings(\?|$|\/)|memory(\?|$|\/)|skills(\?|$|\/))/) && "p-4 md:p-6",
+            !shouldUseFullBleedMain(location.pathname, companyPrefix) && "p-4 md:p-6",
             isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           )}
           onScroll={handleMainScroll}
@@ -257,10 +285,12 @@ export function Layout() {
 
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
+      <Suspense fallback={null}>
+        {newIssueOpen && <NewIssueDialog />}
+        {newProjectOpen && <NewProjectDialog />}
+        {newGoalOpen && <NewGoalDialog />}
+        {newAgentOpen && <NewAgentDialog />}
+      </Suspense>
       <ToastViewport />
       <KeyboardShortcutsCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
     </div>

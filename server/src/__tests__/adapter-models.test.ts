@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@armyofagents/adapter-codex-local";
 import { models as cursorFallbackModels } from "@armyofagents/adapter-cursor-local";
 import { resetOpenCodeModelsCacheForTests } from "@armyofagents/adapter-opencode-local/server";
+import { resetPiModelsCacheForTests } from "@armyofagents/adapter-pi-local/server";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
@@ -10,10 +11,13 @@ describe("adapter model listing", () => {
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.AOA_OPENCODE_COMMAND;
+    delete process.env.AOA_PI_COMMAND;
+    delete process.env.PAPERCLIP_PI_COMMAND;
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
+    resetPiModelsCacheForTests();
     vi.restoreAllMocks();
   });
 
@@ -95,10 +99,18 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "composer-1")).toBe(true);
   });
 
-  it("returns no opencode models when opencode command is unavailable", async () => {
+  it("returns opencode fallback models when opencode command is unavailable", async () => {
     process.env.AOA_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
 
     const models = await listAdapterModels("opencode_local");
+    expect(models.map((model) => model.id)).toContain("openai/gpt-5.2-codex");
+  });
+
+  it("returns an empty list for pi_local when CLI discovery is unavailable", async () => {
+    process.env.AOA_PI_COMMAND = "__missing_pi_command__";
+    process.env.PAPERCLIP_PI_COMMAND = "__missing_pi_command__";
+
+    const models = await listAdapterModels("pi_local");
     expect(models).toEqual([]);
   });
 });

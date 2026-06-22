@@ -21,31 +21,29 @@ The `http` adapter sends a webhook request to an external agent service. The age
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `url` | string | Yes | Webhook URL to POST to |
+| `method` | string | No | HTTP method (default: `POST`) |
 | `headers` | object | No | Additional HTTP headers |
-| `timeoutSec` | number | No | Request timeout |
+| `payloadTemplate` | object | No | Extra JSON fields merged into every request body |
+| `timeoutMs` | number | No | Request timeout in milliseconds (0 = no timeout) |
 
 ## How It Works
 
-1. AoA sends a POST request to the configured URL
-2. The request body includes the execution context (agent ID, task info, wake reason)
+1. AoA sends a POST request (or configured method) to the URL
+2. The URL is validated and DNS-pinned before the request fires (SSRF guard — private IPs rejected)
 3. The external agent processes the request and calls back to the AoA API
-4. Response from the webhook is captured as the run result
+4. Non-2xx responses throw an error and fail the run
 
 ## Request Body
 
-The webhook receives a JSON payload with:
-
 ```json
 {
-  "runId": "...",
   "agentId": "...",
-  "companyId": "...",
-  "context": {
-    "taskId": "...",
-    "wakeReason": "...",
-    "commentId": "..."
-  }
+  "runId": "...",
+  "context": { ... },
+  ...payloadTemplate
 }
 ```
 
-The external agent uses `AOA_API_URL` and an API key to call back to AoA.
+`context` is the execution context passed to the adapter (includes task info, wake reason, etc.). Any fields in `payloadTemplate` are merged into the body.
+
+The external agent authenticates back to AoA using `AOA_API_URL` and an agent API key (configured separately in the agent's environment or hardcoded credentials).

@@ -12,10 +12,17 @@ vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
   gt: () => Symbol("op:gt"),
+  like: () => Symbol("op:like"),
 }));
 
-import { startInstallOperation, dispatchInstall } from "../services/marketplace-install/orchestrator.js";
-import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
+import {
+  startInstallOperation,
+  startPackageInstallOperation,
+  dispatchInstall,
+  dispatchPackageInstall,
+} from "../services/marketplace-install/orchestrator.js";
+import { PackageInstallError } from "../services/marketplace-install/package-installer.js";
+import type { CatalogItem, MarketplaceCatalogFile, MarketplacePackage } from "@armyofagents/shared";
 
 const SKILL: CatalogItem = {
   id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
@@ -27,6 +34,33 @@ const SKILL: CatalogItem = {
 };
 const CATALOG: MarketplaceCatalogFile = {
   schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 1, items: [SKILL],
+};
+
+const PACKAGE: MarketplacePackage = {
+  id: "aoa-curated/package",
+  name: "package",
+  sourceUrl: "https://github.com/aoa-curated/package",
+  memberItemIds: [SKILL.id],
+  count: 1,
+  verified: true,
+  explicit: false,
+};
+
+const PACKAGE_OPERATION = {
+  id: "op-package-1",
+  companyId: "c1",
+  catalogItemId: PACKAGE.id,
+  itemType: "package" as const,
+  targetDepartmentId: null,
+  status: "pending" as const,
+  resultEntityId: null,
+  errorMessage: null,
+  cascadeResults: null,
+  idempotencyKey: "pkg-key",
+  requestedByUserId: "u1",
+  startedAt: new Date("2026-04-30T00:00:00Z"),
+  completedAt: null,
+  createdAt: new Date("2026-04-30T00:00:00Z"),
 };
 
 describe("startInstallOperation", () => {
@@ -73,6 +107,62 @@ describe("startInstallOperation", () => {
     });
     expect(insertedOps).toHaveLength(0);
     expect(op.id).toBe("existing-op");
+  });
+});
+
+describe("startPackageInstallOperation", () => {
+  let insertedOps: any[] = [];
+  const mockDb = {
+    insert: () => ({
+      values: (row: any) => {
+        insertedOps.push(row);
+        return { onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ ...row, id: "op-package-new" }]) }) };
+      },
+    }),
+    select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
+  };
+
+  beforeEach(() => { insertedOps = []; });
+
+  it("creates a package operation row with status=pending", async () => {
+    const op = await startPackageInstallOperation({
+      request: { packageId: PACKAGE.id, catalogItemIds: [SKILL.id] },
+      companyId: "c1",
+      requestedByUserId: "u1",
+      db: mockDb as any,
+    });
+
+    expect(insertedOps).toHaveLength(1);
+    expect(insertedOps[0]).toMatchObject({
+      catalogItemId: PACKAGE.id,
+      itemType: "package",
+      status: "pending",
+      targetDepartmentId: null,
+    });
+    expect(op.id).toBe("op-package-new");
+  });
+
+  it("idempotency: returns existing package op if idempotencyKey matches in last 24h", async () => {
+    const dbWithExisting = {
+      ...mockDb,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([PACKAGE_OPERATION]),
+          }),
+        }),
+      }),
+    };
+
+    const op = await startPackageInstallOperation({
+      request: { packageId: PACKAGE.id, catalogItemIds: [SKILL.id], idempotencyKey: "pkg-key" },
+      companyId: "c1",
+      requestedByUserId: "u1",
+      db: dbWithExisting as any,
+    });
+
+    expect(insertedOps).toHaveLength(0);
+    expect(op.id).toBe("op-package-1");
   });
 });
 
@@ -124,6 +214,87 @@ describe("dispatchInstall", () => {
     expect(installSkillMock).toHaveBeenCalled();
     expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({ status: "success", resultEntityId: "skill-uuid-1" }));
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.completed" }));
+  });
+
+  it("installs direct agent dependencies before creating the agent", async () => {
+    const PLUGIN: CatalogItem = {
+      id: "plugin:aoa-curated/aoa-plugin-github-issues",
+      type: "plugin",
+      name: "GitHub Issues",
+      description: "...",
+      version: "1.0.0",
+      source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+      npm: { packageName: "aoa-plugin-github-issues", version: "1.0.0" },
+      trust: { tier: "verified", source: "aoa-curated" },
+      status: "active",
+      addedAt: "2026-04-30T00:00:00Z",
+      category: "integrations",
+      tags: [],
+    };
+    const AGENT: CatalogItem = {
+      ...SKILL,
+      id: "agent:aoa-curated/github-issue-triager",
+      type: "agent",
+      name: "GitHub Issue Triager",
+      requires: [
+        { type: "skill", id: SKILL.id },
+        { type: "plugin", id: PLUGIN.id },
+      ],
+    };
+    const callOrder: string[] = [];
+    const updateOp = vi.fn(async () => {});
+
+    await dispatchInstall({
+      operation: {
+        id: "op-1",
+        catalogItemId: AGENT.id,
+        itemType: "agent",
+        companyId: "c1",
+        targetDepartmentId: "dept-1",
+      } as any,
+      catalogItem: AGENT,
+      catalog: {
+        schemaVersion: "1.0.0",
+        generatedAt: "2026-05-14T00:00:00Z",
+        itemCount: 3,
+        items: [AGENT, SKILL, PLUGIN],
+      },
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([]),
+          }),
+        }),
+      } as any,
+      installers: {
+        installSkill: vi.fn(async () => {
+          callOrder.push("skill");
+          return { skillId: "skill-row" };
+        }),
+        installPlugin: vi.fn(async () => {
+          callOrder.push("plugin");
+          return { pluginId: "plugin-row", alreadyInstalled: false };
+        }),
+        installAgent: vi.fn(async () => {
+          callOrder.push("agent");
+          return { agentId: "agent-row" };
+        }),
+        installTeam: vi.fn(),
+      },
+      updateOperation: updateOp,
+      publishLiveEvent: vi.fn(),
+    });
+
+    expect(callOrder).toEqual(["skill", "plugin", "agent"]);
+    expect(updateOp).toHaveBeenLastCalledWith("op-1", expect.objectContaining({
+      status: "success",
+      resultEntityId: "agent-row",
+      cascadeResults: expect.arrayContaining([
+        expect.objectContaining({ step: "skill-install", itemId: SKILL.id }),
+        expect.objectContaining({ step: "plugin-precondition", itemId: PLUGIN.id }),
+        expect.objectContaining({ step: "agent-install", itemId: AGENT.id }),
+      ]),
+    }));
   });
 
   it("on installer error, updates operation to failure + publishes failed event", async () => {
@@ -209,5 +380,79 @@ describe("dispatchInstall", () => {
     });
 
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ companyId: "specific-co" }));
+  });
+});
+
+describe("dispatchPackageInstall", () => {
+  it("dispatches package install operations and records cascade results", async () => {
+    const updateOperation = vi.fn().mockResolvedValue(undefined);
+    const publishLiveEvent = vi.fn();
+    const installSkillPackage = vi.fn().mockResolvedValue({
+      installedSkillIds: ["s1"],
+      cascadeResults: [
+        {
+          step: "package-member-skill-install",
+          itemId: SKILL.id,
+          status: "success",
+          resultEntityId: "s1",
+          durationMs: 1,
+        },
+      ],
+    });
+
+    await dispatchPackageInstall({
+      operation: PACKAGE_OPERATION,
+      pkg: PACKAGE,
+      memberItems: [SKILL],
+      db: {} as any,
+      installSkillPackage,
+      updateOperation,
+      publishLiveEvent,
+    });
+
+    expect(updateOperation).toHaveBeenCalledWith("op-package-1", { status: "running" });
+    expect(updateOperation).toHaveBeenLastCalledWith("op-package-1", expect.objectContaining({
+      status: "success",
+      resultEntityId: PACKAGE.id,
+      cascadeResults: expect.arrayContaining([
+        expect.objectContaining({ itemId: SKILL.id, status: "success" }),
+      ]),
+    }));
+    expect(publishLiveEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "marketplace.install.completed",
+    }));
+  });
+
+  it("records package cascade failures on operation failure", async () => {
+    const updateOperation = vi.fn().mockResolvedValue(undefined);
+    const cascadeResults = [
+      {
+        step: "package-member-skill-install" as const,
+        itemId: SKILL.id,
+        status: "failure" as const,
+        errorMessage: "version mismatch",
+        durationMs: 1,
+      },
+    ];
+    const err = new PackageInstallError(
+      `Package install failed for ${SKILL.id}: version mismatch`,
+      cascadeResults,
+    );
+
+    await dispatchPackageInstall({
+      operation: PACKAGE_OPERATION,
+      pkg: PACKAGE,
+      memberItems: [SKILL],
+      db: {} as any,
+      installSkillPackage: vi.fn().mockRejectedValue(err),
+      updateOperation,
+      publishLiveEvent: vi.fn(),
+    });
+
+    expect(updateOperation).toHaveBeenLastCalledWith("op-package-1", expect.objectContaining({
+      status: "failure",
+      errorMessage: `Package install failed for ${SKILL.id}: version mismatch`,
+      cascadeResults,
+    }));
   });
 });

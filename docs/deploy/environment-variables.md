@@ -24,6 +24,10 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_OPEN_ON_LISTEN` | `true` (CLI), `false` (server-only) | Auto-open default browser on first listen |
 | `AOA_CONFIG` | (default path) | Override path to instance `config.json` |
 | `AOA_LOG_DIR` | `<AOA_HOME>/instances/<id>/logs` | Override log directory |
+| `RUN_LOG_BASE_PATH` | `<AOA_HOME>/instances/<id>/data/run-logs` | Override local-file heartbeat run log storage. Use a durable mounted volume in Docker/cloud single-node deployments |
+| `WORKSPACE_OPERATION_LOG_BASE_PATH` | `<AOA_HOME>/instances/<id>/data/workspace-operation-logs` | Override local-file workspace operation log storage. Use a durable mounted volume in Docker/cloud single-node deployments |
+
+For horizontally scaled deployments, local-file run logs require sticky routing or shared durable storage. Object-storage-backed run logs are a future backend; do not rely on per-container ephemeral disk for production run history.
 
 ## Authentication
 
@@ -50,7 +54,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AOA_SECRETS_PROVIDER` | `local_encrypted` | Secret-storage backend. **Only `local_encrypted` is production-ready** — `aws_kms` / `vault` / `gcp_kms` are stub providers that throw `not configured in this deployment` (see `server/src/secrets/external-stub-providers.ts`) |
+| `AOA_SECRETS_PROVIDER` | `local_encrypted` | Default secret-storage backend. `local_encrypted` and `aws_secrets_manager` are supported; `gcp_secret_manager` and `vault` are coming-soon stubs |
 | `AOA_SECRETS_MASTER_KEY` | (from file) | 32-byte encryption key (base64/hex/raw). Use the file path variant in production |
 | `AOA_SECRETS_MASTER_KEY_FILE` | `~/.aoa/.../secrets/master.key` (with legacy `~/.paperclip/` fallback) | Path to key file. Auto-created by `pnpm aoa onboard` |
 | `AOA_SECRETS_STRICT_MODE` | `false` | When `true`, sensitive env keys (`*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values |
@@ -68,6 +72,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_STORAGE_S3_FORCE_PATH_STYLE` | `false` | Force path-style URLs (required for some S3-compatible services) |
 | `AOA_FILE_MAX_BYTES` | `52428800` (50 MB) | Max upload size for assets/artifacts |
 | `AOA_ATTACHMENT_MAX_BYTES` | (= `AOA_FILE_MAX_BYTES`) | Max upload size for issue attachments specifically |
+| `AOA_ATTACHMENTS_PER_COMMENT_MAX` | `5` | Max number of attachments accepted on a single issue comment |
 
 ## Database backups
 
@@ -77,6 +82,8 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_DB_BACKUP_DIR` | `<AOA_HOME>/instances/<id>/data/backups` | Backup directory |
 | `AOA_DB_BACKUP_INTERVAL_MINUTES` | `60` | Backup frequency in minutes |
 | `AOA_DB_BACKUP_RETENTION_DAYS` | `30` | Keep backups this many days, then prune |
+| `AOA_PG_DUMP_PATH` | `pg_dump` | Override the `pg_dump` executable used by backup export jobs |
+| `AOA_PSQL_PATH` | `psql` | Override the `psql` executable used by backup restore/import jobs |
 
 ## Migrations / startup
 
@@ -98,7 +105,9 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AOA_PLUGIN_DIR` | `<AOA_HOME>/plugins` | Plugin discovery directory |
+| `AOA_MARKETPLACE_CDN_URL` | AoA marketplace CDN | Override the marketplace catalog URL. Developer/e2e harnesses can point this at an unreachable local URL to force the bundled catalog snapshot fallback |
 | `AOA_UI_DEV_MIDDLEWARE` | `false` | Set to `true` to mount the Vite UI as Express middleware (used by `pnpm dev`) |
+| `AOA_VITE_HMR_PORT` | (Vite default) | Override the Vite hot-module-reload websocket port when the UI is mounted as Express middleware. Useful for parallel local/e2e AoA instances |
 | `AOA_OPENCODE_COMMAND` | `opencode` | Override path to the `opencode` CLI binary for the OpenCode Local adapter |
 | `AOA_WORKTREES_DIR` | `<AOA_HOME>/instances/<id>/workspaces` | Where the worktree provisioner places per-task git worktrees |
 | `AOA_ENABLE_COMPANY_DELETION` | `true` (dev), `false` (prod) | Feature flag for the destructive "delete company" action |
@@ -113,7 +122,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_COMPANY_ID` | Company ID for this run |
 | `AOA_API_URL` | AoA API base URL the agent should call back to |
 | `AOA_API_KEY` | Short-lived JWT for API auth (rotates each heartbeat) |
-| `AOA_RUN_ID` | Current heartbeat run ID — also sent in `X-Paperclip-Run-Id` HTTP header |
+| `AOA_RUN_ID` | Current heartbeat run ID — also sent in `X-Aoa-Run-Id` HTTP header |
 | `AOA_TASK_ID` | Issue (task) that triggered this wake, if any |
 | `AOA_WAKE_REASON` | Wake trigger reason (`assignment`, `timer`, `mention`, etc.) |
 | `AOA_WAKE_COMMENT_ID` | Comment that triggered this wake, if any |
@@ -121,7 +130,14 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_APPROVAL_STATUS` | Approval decision (`approved` / `rejected` / `revision_requested`) |
 | `AOA_LINKED_ISSUE_IDS` | Comma-separated linked issue IDs for cross-task context |
 | `AOA_WORKSPACE_CWD` | Working directory for the agent (when an execution workspace is provisioned) |
-| `AOA_WORKSPACE_SOURCE`, `AOA_WORKSPACE_ID`, `AOA_WORKSPACE_REPO_URL`, `AOA_WORKSPACE_REPO_REF` | Workspace metadata when applicable |
+| `AOA_WORKSPACE_SOURCE` | How the workspace was provisioned (`task`, `agent_home`, `project_primary`, etc.) |
+| `AOA_WORKSPACE_STRATEGY` | Workspace strategy: `isolated` / `shared` / `reuse_existing` |
+| `AOA_WORKSPACE_ID` | Database ID of the execution workspace record |
+| `AOA_WORKSPACE_REPO_URL` | Git remote URL when the workspace is git-backed |
+| `AOA_WORKSPACE_REPO_REF` | Base ref (branch or tag) that was cloned |
+| `AOA_WORKSPACE_BRANCH` | Git branch name when workspace is git-backed |
+| `AOA_WORKSPACE_WORKTREE_PATH` | Filesystem path to the git worktree when applicable |
+| `AGENT_HOME` | Agent's home directory (memory + life files live here) |
 
 ## Session impersonation (CLI / mcp)
 
@@ -131,6 +147,25 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_SESSION_USER_ID` | Override active user ID |
 | `AOA_SESSION_USER_ROLE` | Override role (`founder`, `team_lead`, `team_member`) |
 | `AOA_SESSION_ENABLED_CAPABILITIES` | Comma-separated list of `internal_agent_config.enabledCapabilities` consumed by the Commander MCP bridge to gate capability-bound tools (`discussion_processing`, `system_actions`, `memory_management`). Set automatically by the host process when spawning the bridge; set manually only when running the bridge subprocess directly. |
+
+## Commander MCP bridge & internal tuning (injected / advanced)
+
+Set automatically by the host process when spawning the Commander MCP bridge or
+internal services — operators rarely set these directly.
+
+| Variable | Description |
+|----------|-------------|
+| `AOA_ACTOR_TYPE` | Actor type the Commander MCP bridge runs as (`board` default, or `agent`) |
+| `AOA_AGENT_KIND` | Agent kind passed into the MCP bridge for an agent-actor run |
+| `AOA_COMMANDER_CONTEXT_SCOPE` | JSON-encoded context scope handed to the Commander MCP bridge |
+| `AOA_DISCUSSION_RUN_MODE` | Discussion run mode for a bridge-driven discussion/thread run |
+| `AOA_EFFECTIVE_AUTONOMY` | Effective autonomy level injected into the bridge run |
+| `AOA_THREAD_FRESHNESS` | Thread freshness window used when resolving thread context |
+| `AOA_TOOL_ALLOWLIST` | Comma-separated allowlist of tool names exposed to the bridge run |
+| `AOA_KEEP_MCP_CONFIG` | When `1`, retains the generated MCP config file after a run (debugging) |
+| `AOA_LOG_STDOUT` | When `0`, suppresses stdout log output (otherwise logs go to stdout) |
+| `AOA_THREAD_EVENT_DEBOUNCE_MS` | Debounce window (ms) for thread live-event → Commander wakeups |
+| `AOA_SCRIBE_AUTONOMOUS_DRAIN_ENABLED` | Feature flag for the Scribe autonomous-drain dispatcher path |
 
 ## LLM Provider Keys (for adapters)
 
@@ -150,4 +185,10 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_TEST_ARGS_PATH` | Path where test harnesses dump captured argv |
 | `AOA_TEST_CAPTURE_PATH` | Path where test harnesses dump captured stdin/env |
 | `AOA_CONTEXT` | CLI context-file override |
+| `AOA_E2E_FAKE_AWS_SECRETS_MANAGER` | Playwright/vitest harness flag for the fake AWS Secrets Manager provider |
 | `AOA_E2E_PORT` / `AOA_E2E_SKIP_LLM` / `AOA_E2E_SKIP_MCP` | Playwright e2e harness — see `tests/README.md` |
+| `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
+| `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
+| `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |
+| `AOA_TEST_COMPANY_ID` / `AOA_TEST_THREAD_ID` | Seed IDs for the bridge stdout-purity test |
+| `AOA_TEST_DATABASE_URL` | Postgres URL for tests that need a real DB connection |

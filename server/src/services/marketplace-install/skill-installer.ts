@@ -1,13 +1,26 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills } from "@armyofagents/db";
-import type { CatalogItem } from "@armyofagents/shared";
+import type { CatalogItem, MarketplaceProviderRef } from "@armyofagents/shared";
 import { loadSkillContent } from "./fetch-resource.js";
+import {
+  deriveBundleTrustLevel,
+  managedCatalogSkillDir,
+  materializeSkillBundle,
+} from "./skill-bundle-materializer.js";
 
 export interface InstallSkillOpts {
   catalogItem: CatalogItem;
   companyId: string;
   db: Db;
+  packageContext?: InstallSkillPackageContext;
+}
+
+export interface InstallSkillPackageContext {
+  packageId: string;
+  packageName: string;
+  sourceUrl: string;
+  provider?: MarketplaceProviderRef;
 }
 
 export interface InstallSkillResult {
@@ -61,9 +74,17 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
     );
   }
 
-  const markdown = await loadSkillContent(catalogItem);
+  const managedBundleDir = managedCatalogSkillDir(companyId, catalogItem.id, catalogItem.version);
+  const materialized = catalogItem.skill?.bundle
+    ? await materializeSkillBundle(catalogItem.skill.bundle, {
+        destination: managedBundleDir,
+        overwrite: true,
+      })
+    : null;
+  const markdown = materialized?.markdown ?? await loadSkillContent(catalogItem);
 
   const slug = catalogItem.id.split("/").pop() ?? catalogItem.id;
+  const fileInventory = materialized?.fileInventory ?? [];
 
   const inserted = await db
     .insert(companySkills)
@@ -79,13 +100,28 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
       sourceRef: catalogItem.version,
       // Marketplace skills are markdown-only (no file inventory). Catalog provenance
       // (verified/community/unverified) is stored in metadata.catalogTrustTier for display.
-      trustLevel: "markdown_only",
+      trustLevel: materialized ? deriveBundleTrustLevel(materialized.fileInventory) : "markdown_only",
       compatibility: "compatible",
-      fileInventory: [],
+      fileInventory: fileInventory as unknown as Record<string, unknown>[],
       metadata: {
         catalogCategory: catalogItem.category,
         catalogTags: catalogItem.tags,
         catalogTrustTier: catalogItem.trust.tier,  // verified | community | unverified — for UI badge
+        catalogProvider: opts.packageContext?.provider ?? catalogItem.provider ?? null,
+        ...(opts.packageContext
+          ? {
+              packageId: opts.packageContext.packageId,
+              catalogPackageId: opts.packageContext.packageId,
+              catalogPackageName: opts.packageContext.packageName,
+              catalogPackageSourceUrl: opts.packageContext.sourceUrl,
+            }
+          : {}),
+        ...(catalogItem.skill?.bundle
+          ? {
+              catalogSkillBundle: catalogItem.skill.bundle,
+              catalogBundleInstallPath: managedBundleDir,
+            }
+          : {}),
         installedAt: new Date().toISOString(),
       },
     })

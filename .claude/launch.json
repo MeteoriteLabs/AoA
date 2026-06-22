@@ -2,6 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "threads",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "cd /d \"C:\\Users\\TK\\OneDrive\\Desktop\\Claude Data\\Paperclip-AoA\\AoA-threads\" && set PORT=3102 && set AOA_UI_DEV_MIDDLEWARE=true && set AOA_MIGRATION_AUTO_APPLY=true && pnpm dev"
+      ],
+      "port": 3102
+    },
+    {
       "name": "app",
       "runtimeExecutable": "cmd",
       "runtimeArgs": [
@@ -27,6 +36,12 @@
       "runtimeExecutable": "cmd",
       "runtimeArgs": ["/c", "pnpm", "dlx", "serve", ".superpowers", "-l", "5174"],
       "port": 5174
+    },
+    {
+      "name": "commander-mockup",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "pnpm", "dlx", "serve", ".claude", "-l", "4788"],
+      "port": 4788
     }
   ]
 }

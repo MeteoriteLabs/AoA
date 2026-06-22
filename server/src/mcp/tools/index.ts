@@ -3,6 +3,7 @@ import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";
 import { approvalToolHandlers } from "./approval-tools.js";
+import { skillToolHandlers } from "./skill-tools.js";
 import type { ToolHandler } from "./types.js";
 
 export {
@@ -10,6 +11,7 @@ export {
   writeToolHandlers,
   documentToolHandlers,
   approvalToolHandlers,
+  skillToolHandlers,
 };
 export * from "./types.js";
 
@@ -18,6 +20,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   ...writeToolHandlers,
   ...documentToolHandlers,
   ...approvalToolHandlers,
+  ...skillToolHandlers,
 };
 
 /**
@@ -46,6 +49,7 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   "memory.search": ALL_ACTORS,
   "memory.get": ALL_ACTORS,
   "memory.retain": ALL_ACTORS,
+  "use_skill": ["board", "commander"],  // HTTP MCP endpoint gate only: founder (board) + commander; worker agents + mcp excluded (skill markdown may contain company IP). Commander's CLI bridge dispatches via tool-registry and does NOT consult this map.
 };
 
 export const TOOL_DEFINITIONS = [
@@ -203,7 +207,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "memory.retain",
     description:
-      "Persist an observation to memory. When called by an agent actor with scopeToSelf=true, the item is auto-approved into that agent's personal scope. All other writes create a pending item awaiting founder review (Critical Rule #6).",
+      "Persist an observation to memory. When called by an agent actor with scopeToSelf=true AND layer=\"working\", the item is auto-approved into that agent's personal working-memory bucket. Self-scoped retains targeting identity/domain/active_context — and all non-agent writes — instead create a pending item awaiting founder review (Critical Rule #6: only the founder approves identity/domain).",
     inputSchema: {
       type: "object",
       properties: {
@@ -481,6 +485,21 @@ export const TOOL_DEFINITIONS = [
         approvalId: { type: "string" },
       },
       required: ["taskId", "approvalId"],
+    },
+  },
+  {
+    name: "use_skill",
+    description:
+      "Load the full instructions for an AoA skill by key (e.g. 'skill:aoa/brainstorm'). Returns the skill's markdown so your model can follow it. Call query_skills first if you are unsure of the available skill keys.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        "key": {
+          type: "string",
+          description: "The skill key, e.g. 'skill:aoa/sprint-planning'",
+        },
+      },
+      required: ["key"],
     },
   },
 ];

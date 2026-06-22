@@ -136,6 +136,18 @@ describe("LobbyCompanyCard", () => {
     expect(screen.getByText(/3 pending/i)).toBeInTheDocument();
   });
 
+  it("shows the unread notifications pill when unread notifications > 0", () => {
+    renderWithProviders(
+      <LobbyCompanyCard
+        company={makeCompany()}
+        stats={makeStats({ unreadNotificationCount: 9 })}
+        onClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/9 unread notifications/i)).toBeInTheDocument();
+    expect(screen.getByText(/9 unread/i)).toBeInTheDocument();
+  });
+
   it("does NOT show the pending pill when count is 0", () => {
     renderWithProviders(
       <LobbyCompanyCard
@@ -145,5 +157,16 @@ describe("LobbyCompanyCard", () => {
       />,
     );
     expect(screen.queryByText(/pending/i, { selector: "span" })).not.toBeInTheDocument();
+  });
+
+  it("does NOT show the unread notifications pill when count is 0", () => {
+    renderWithProviders(
+      <LobbyCompanyCard
+        company={makeCompany()}
+        stats={makeStats({ unreadNotificationCount: 0 })}
+        onClick={vi.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText(/unread notifications/i)).not.toBeInTheDocument();
   });
 });

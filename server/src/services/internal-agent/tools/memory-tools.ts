@@ -1,5 +1,60 @@
 // server/src/services/internal-agent/tools/memory-tools.ts
 import type { AgentTool } from "../types.js";
+import { recordMemoryRetrievals } from "../../memory-retrieval-audit.js";
+import { splitCommanderMemoryItems, type CommanderMemoryCandidate } from "../memory-policy.js";
+import { commanderWorkingMemoryService } from "../working-memory.js";
+import type { NormalizedCommanderContextScope } from "../context-scope.js";
+
+type CommanderMemoryToolCandidate = CommanderMemoryCandidate & { similarity?: number | null };
+
+function dedupeCandidates<T extends CommanderMemoryToolCandidate>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    deduped.push(item);
+  }
+  return deduped;
+}
+
+function toAuditItems(input: {
+  shown: CommanderMemoryToolCandidate[];
+  filtered: CommanderMemoryToolCandidate[];
+}): Array<{ id: string; rank?: number; similarityScore: number | null; shownToAgent: boolean }> {
+  return [...input.shown, ...input.filtered].map((item, index) => ({
+    id: item.id,
+    rank: index + 1,
+    similarityScore: typeof item.similarity === "number" ? item.similarity : null,
+    shownToAgent: input.shown.some((shown) => shown.id === item.id),
+  }));
+}
+
+function filterQueryResults<T extends CommanderMemoryToolCandidate>(input: {
+  items: T[];
+  requestedLayer?: string | null;
+  userId: string;
+  userRole?: string | null;
+  scope: Partial<NormalizedCommanderContextScope>;
+}): { shown: T[]; filtered: T[] } {
+  const layerCandidates = input.requestedLayer
+    ? input.items.filter((item) => item.layer === input.requestedLayer)
+    : input.items;
+  const wrongLayer = input.requestedLayer
+    ? input.items.filter((item) => item.layer !== input.requestedLayer)
+    : [];
+  const split = splitCommanderMemoryItems({
+    items: layerCandidates,
+    userId: input.userId,
+    userRole: input.userRole,
+    scope: input.scope,
+    mode: "explicit_query",
+  });
+  return {
+    shown: split.shown,
+    filtered: [...wrongLayer, ...split.filtered],
+  };
+}
 
 export function createMemoryTools(): AgentTool[] {
   return [
@@ -21,27 +76,192 @@ export function createMemoryTools(): AgentTool[] {
         const { query, layer, limit } = (params ?? {}) as Record<string, unknown>;
         const maxResults = (limit as number) ?? 20;
 
-        // If query text provided, use semantic search; otherwise use list with filters
+        // If query text provided, use multi-path search; otherwise use list with filters.
         if (query) {
-          const items = await ctx.services.memory.searchSemantic(ctx.companyId, query as string, {
-            ...(layer ? { layer: layer as string } : {}),
+          const items = await ctx.services.memory.searchMultiPath(ctx.companyId, query as string, {
             limit: maxResults,
           });
-          const count = Array.isArray(items) ? items.length : 0;
-          return { success: true, data: items, summary: `Found ${count} memory item(s)` };
+          const auditCandidates =
+            typeof ctx.services.memory.searchAuditCandidates === "function"
+              ? await ctx.services.memory.searchAuditCandidates(ctx.companyId, query as string, {
+                limit: Math.max(maxResults, 50),
+              })
+              : [];
+          const split = filterQueryResults({
+            items: Array.isArray(items) ? items : [],
+            requestedLayer: layer as string | undefined,
+            userId: ctx.userId,
+            userRole: ctx.userRole,
+            scope: ctx.contextScope ?? {},
+          });
+          const auditSplit = filterQueryResults({
+            items: dedupeCandidates([
+              ...(Array.isArray(items) ? items : []),
+              ...(Array.isArray(auditCandidates) ? auditCandidates : []),
+            ]),
+            requestedLayer: layer as string | undefined,
+            userId: ctx.userId,
+            userRole: ctx.userRole,
+            scope: ctx.contextScope ?? {},
+          });
+          const shownIds = new Set(split.shown.map((item) => item.id));
+          const auditItems = toAuditItems({
+            shown: split.shown,
+            filtered: [
+              ...split.filtered,
+              ...auditSplit.shown.filter((item) => !shownIds.has(item.id)),
+              ...auditSplit.filtered.filter((item) => !shownIds.has(item.id)),
+            ],
+          });
+          if (auditItems.length > 0) {
+            await recordMemoryRetrievals(ctx.db, {
+              companyId: ctx.companyId,
+              agentId: ctx.agentId ?? null,
+              runId: ctx.runId ?? null,
+              taskId: ctx.contextScope?.taskId ?? null,
+              // A3: conversationId lives in contextScope, not at top-level ctx
+              conversationId: ctx.contextScope?.conversationId ?? null,
+              triggeredBy: "commander_query",
+              query: query as string,
+              items: auditItems,
+            });
+          }
+          const limited = split.shown.slice(0, maxResults);
+          return { success: true, data: limited, summary: `Found ${limited.length} memory item(s)` };
         }
 
         const items = await ctx.services.memory.list(ctx.companyId, {
           ...(layer ? { layer: layer as string } : {}),
         });
-        const limited = Array.isArray(items) ? items.slice(0, maxResults) : items;
+        const split = filterQueryResults({
+          items: Array.isArray(items) ? items : [],
+          requestedLayer: layer as string | undefined,
+          userId: ctx.userId,
+          userRole: ctx.userRole,
+          scope: ctx.contextScope ?? {},
+        });
+        const limited = split.shown.slice(0, maxResults);
+        const limitedIds = new Set(limited.map((item) => item.id));
+        const auditItems = toAuditItems({
+          shown: limited,
+          filtered: [
+            ...split.shown.filter((item) => !limitedIds.has(item.id)),
+            ...split.filtered,
+          ],
+        });
+        if (auditItems.length > 0) {
+          await recordMemoryRetrievals(ctx.db, {
+            companyId: ctx.companyId,
+            agentId: ctx.agentId ?? null,
+            runId: ctx.runId ?? null,
+            taskId: ctx.contextScope?.taskId ?? null,
+            // A3: conversationId lives in contextScope, not at top-level ctx
+            conversationId: ctx.contextScope?.conversationId ?? null,
+            triggeredBy: "commander_query",
+            query: null,
+            items: auditItems,
+          });
+        }
         const count = Array.isArray(limited) ? limited.length : 0;
         return { success: true, data: limited, summary: `Found ${count} memory item(s)` };
       },
     },
     {
-      name: "create_memory",
-      description: "Create a new memory item. Requires founder or team lead approval.",
+      name: "remember_working_context",
+      description: "Remember temporary scoped Commander working context for the current project, goal, task, or conversation.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short working-memory label (required)" },
+          content: { type: "string", description: "Temporary context to remember (required)" },
+        },
+        required: ["title", "content"],
+      },
+      category: "memory",
+      requiredRole: "team_member",
+      requiresConfirmation: false,
+      execute: async (params: unknown, ctx) => {
+        const { title, content } = (params ?? {}) as Record<string, unknown>;
+        const item = await commanderWorkingMemoryService(ctx.services.memory).remember({
+          companyId: ctx.companyId,
+          userId: ctx.userId,
+          userRole: ctx.userRole,
+          title: title as string,
+          content: content as string,
+          scope: ctx.contextScope ?? {},
+        });
+        return {
+          success: true,
+          data: item,
+          summary: `Remembered working context "${item.title}" until ${item.expiresAt?.toISOString?.() ?? item.expiresAt}`,
+        };
+      },
+    },
+    {
+      name: "update_working_context",
+      description: "Update temporary scoped Commander working context.",
+      parameters: {
+        type: "object",
+        properties: {
+          memoryId: { type: "string", description: "Working memory ID (required)" },
+          title: { type: "string", description: "Updated label" },
+          content: { type: "string", description: "Updated temporary context" },
+        },
+        required: ["memoryId"],
+      },
+      category: "memory",
+      requiredRole: "team_member",
+      requiresConfirmation: false,
+      execute: async (params: unknown, ctx) => {
+        const { memoryId, title, content } = (params ?? {}) as Record<string, unknown>;
+        const item = await commanderWorkingMemoryService(ctx.services.memory).update({
+          companyId: ctx.companyId,
+          userId: ctx.userId,
+          userRole: ctx.userRole,
+          memoryId: memoryId as string,
+          ...(typeof title === "string" ? { title } : {}),
+          ...(typeof content === "string" ? { content } : {}),
+          scope: ctx.contextScope ?? {},
+        });
+        return {
+          success: true,
+          data: item,
+          summary: `Updated working context ${memoryId}`,
+        };
+      },
+    },
+    {
+      name: "forget_working_context",
+      description: "Archive temporary scoped Commander working context.",
+      parameters: {
+        type: "object",
+        properties: {
+          memoryId: { type: "string", description: "Working memory ID (required)" },
+        },
+        required: ["memoryId"],
+      },
+      category: "memory",
+      requiredRole: "team_member",
+      requiresConfirmation: false,
+      execute: async (params: unknown, ctx) => {
+        const { memoryId } = (params ?? {}) as Record<string, unknown>;
+        const item = await commanderWorkingMemoryService(ctx.services.memory).forget({
+          companyId: ctx.companyId,
+          userId: ctx.userId,
+          userRole: ctx.userRole,
+          memoryId: memoryId as string,
+          scope: ctx.contextScope ?? {},
+        });
+        return {
+          success: true,
+          data: item,
+          summary: `Forgot working context ${memoryId}`,
+        };
+      },
+    },
+    {
+      name: "suggest_memory",
+      description: "Propose a new memory item for founder approval (status: pending).",
       parameters: {
         type: "object",
         properties: {
@@ -63,7 +283,7 @@ export function createMemoryTools(): AgentTool[] {
           content: content as string,
           layer: layer as string,
           category: (category as string) ?? "reference",
-          source: "agent",
+          source: "commander",
           createdBy: ctx.userId,
           sourceContext: `Created via internal agent tool by user ${ctx.userId}`,
           ...(sourceArtifactId ? { sourceArtifactId: sourceArtifactId as string } : {}),

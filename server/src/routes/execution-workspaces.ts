@@ -10,18 +10,29 @@ import {
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, instanceSettingsService, logActivity, workspaceOperationService } from "../services/index.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  mergeExecutionWorkspaceConfig,
+  mergeExecutionWorkspaceMetadataPatch,
+  readExecutionWorkspaceConfig,
+  toWorkspaceRuntimeService,
+} from "../services/execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
+  refreshPersistedRuntimeServiceRows,
+  resolveConfiguredRuntimeServiceIndexForRow,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertCanControlWorkspace } from "../services/workspace-authz.js";
+import {
+  assertCanConfigureWorkspaceShellCommands,
+  assertCanControlWorkspace,
+  workspaceConfigPatchHasShellCommands,
+} from "../services/workspace-authz.js";
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -84,21 +95,32 @@ export function executionWorkspaceRoutes(db: Db) {
       projectId: existing.projectId ?? null,
     });
     const { config: configPatch, ...restBody } = req.body as Record<string, unknown>;
+    if (workspaceConfigPatchHasShellCommands(configPatch)) {
+      await assertCanConfigureWorkspaceShellCommands(db, req, {
+        companyId: existing.companyId,
+        projectId: existing.projectId ?? null,
+      });
+    }
     const patch: Record<string, unknown> = {
       ...restBody,
       ...(req.body.cleanupEligibleAt ? { cleanupEligibleAt: new Date(req.body.cleanupEligibleAt) } : {}),
     };
     if (configPatch !== undefined) {
+      const metadataBase = req.body.metadata !== undefined
+        ? mergeExecutionWorkspaceMetadataPatch({
+          existingMetadata: existing.metadata,
+          incomingMetadata: req.body.metadata,
+        })
+        : existing.metadata;
       patch.metadata = mergeExecutionWorkspaceConfig(
-        (req.body.metadata as Record<string, unknown> | null | undefined) ?? existing.metadata,
+        metadataBase,
         configPatch as Record<string, unknown>,
       );
     } else if (req.body.metadata !== undefined) {
-      const existingConfig = (existing.metadata as Record<string, unknown> | null)?.config;
-      patch.metadata = {
-        ...(req.body.metadata as Record<string, unknown>),
-        ...(existingConfig !== undefined ? { config: existingConfig } : {}),
-      };
+      patch.metadata = mergeExecutionWorkspaceMetadataPatch({
+        existingMetadata: existing.metadata,
+        incomingMetadata: req.body.metadata,
+      });
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
@@ -247,7 +269,11 @@ export function executionWorkspaceRoutes(db: Db) {
           eq(workspaceRuntimeServices.executionWorkspaceId, id),
         ),
       );
-    res.json(services);
+    const refreshedServices = await refreshPersistedRuntimeServiceRows({
+      db,
+      rows: services,
+    });
+    res.json(refreshedServices.map(toWorkspaceRuntimeService));
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
@@ -334,6 +360,7 @@ export function executionWorkspaceRoutes(db: Db) {
     )?.workspaceRuntime ?? null;
 
     const effectiveRuntimeConfig = existing.config?.workspaceRuntime ?? projectWorkspaceRuntime ?? null;
+    const effectiveRuntimeServices = await svc.loadEffectiveRuntimeServicesByExecutionWorkspace(existing.id);
 
     let target: WorkspaceRuntimeControlTarget;
     try {
@@ -349,7 +376,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
     if (
       target.runtimeServiceId
-      && !(existing.runtimeServices ?? []).some((service) => service.id === target.runtimeServiceId)
+      && !effectiveRuntimeServices.some((service) => service.id === target.runtimeServiceId)
     ) {
       res.status(404).json({ error: "Runtime service not found for this execution workspace" });
       return;
@@ -357,11 +384,32 @@ export function executionWorkspaceRoutes(db: Db) {
 
     const selectedRuntimeServiceId = target.runtimeServiceId ?? null;
     const selectedServiceIndex = target.serviceIndex ?? null;
+    const selectedRuntimeService = selectedRuntimeServiceId
+      ? effectiveRuntimeServices.find((service) => service.id === selectedRuntimeServiceId) ?? null
+      : null;
+    const resolvedServiceIndex =
+      selectedServiceIndex ??
+      (selectedRuntimeService
+        ? resolveConfiguredRuntimeServiceIndexForRow({
+            services: configuredServices,
+            row: selectedRuntimeService,
+            workspaceCwd,
+          })
+        : null);
     if (
       selectedServiceIndex !== null
       && (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
     ) {
       res.status(422).json({ error: "Selected runtime service is not defined in this execution workspace runtime config" });
+      return;
+    }
+
+    if (
+      selectedRuntimeServiceId
+      && (action === "start" || action === "restart")
+      && resolvedServiceIndex === null
+    ) {
+      res.status(422).json({ error: "Selected runtime service cannot be mapped to a configured service" });
       return;
     }
 
@@ -400,7 +448,7 @@ export function executionWorkspaceRoutes(db: Db) {
         recorder,
       );
 
-    let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
+    let runtimeServiceCount = effectiveRuntimeServices.length;
     const stdout: string[] = [];
     const stderr: string[] = [];
     const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
@@ -435,7 +483,7 @@ export function executionWorkspaceRoutes(db: Db) {
           config: { workspaceRuntime: effectiveRuntimeConfig },
           adapterEnv: {},
           onLog,
-          serviceIndex: selectedServiceIndex,
+          serviceIndex: resolvedServiceIndex,
         });
         runtimeServiceCount = startedServices.length;
       } else {
@@ -444,10 +492,10 @@ export function executionWorkspaceRoutes(db: Db) {
 
       const currentDesiredState: "running" | "stopped" =
         existing.config?.desiredState
-        ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
+        ?? (effectiveRuntimeServices.some((service) => service.status === "starting" || service.status === "running")
           ? "running"
           : "stopped");
-      const nextRuntimeState = selectedRuntimeServiceId && selectedServiceIndex === null
+      const nextRuntimeState = action === "stop" && selectedRuntimeServiceId && resolvedServiceIndex === null
         ? {
             desiredState: currentDesiredState,
             serviceStates: existing.config?.serviceStates ?? null,
@@ -457,7 +505,7 @@ export function executionWorkspaceRoutes(db: Db) {
             currentDesiredState,
             currentServiceStates: existing.config?.serviceStates ?? null,
             action: action as "start" | "stop" | "restart",
-            serviceIndex: selectedServiceIndex,
+            serviceIndex: resolvedServiceIndex,
           });
       const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
         desiredState: nextRuntimeState.desiredState,
@@ -492,7 +540,7 @@ export function executionWorkspaceRoutes(db: Db) {
       details: {
         runtimeServiceCount,
         runtimeServiceId: selectedRuntimeServiceId,
-        serviceIndex: selectedServiceIndex,
+        serviceIndex: resolvedServiceIndex,
       },
     });
 

@@ -107,7 +107,12 @@ export function AgentInstructionsTab({
     agent.adapterType === "codex_local" ||
     agent.adapterType === "opencode_local" ||
     agent.adapterType === "hermes_local" ||
-    agent.adapterType === "cursor";
+    agent.adapterType === "cursor" ||
+    // AoA internal agents (Commander, Discussion Extraction) use adapterType="process"
+    // but have an instructions bundle seeded via ensureWritableBundle. Detect support
+    // by the presence of instructionsBundleMode in adapterConfig rather than hard-coding
+    // a kind check (which would require adding kind to the Agent shared type).
+    Boolean(agent.adapterConfig.instructionsBundleMode);
 
   const { data: bundle, isLoading: bundleLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),

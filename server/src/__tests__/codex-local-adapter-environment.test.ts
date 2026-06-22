@@ -29,4 +29,43 @@ describe("codex_local environment diagnostics", () => {
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
+
+  it("reports local Codex auth.json as ready when no API key is configured", async () => {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-home-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-cwd-"));
+
+    try {
+      process.env.CODEX_HOME = codexHome;
+      delete process.env.OPENAI_API_KEY;
+      await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ tokens: { id: "local" } }));
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: process.execPath,
+          cwd,
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "codex_auth_json_present")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
+    } finally {
+      await fs.rm(codexHome, { recursive: true, force: true });
+      await fs.rm(cwd, { recursive: true, force: true });
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      if (previousOpenAiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiKey;
+      }
+    }
+  });
 });

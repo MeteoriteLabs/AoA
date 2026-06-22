@@ -13,7 +13,7 @@
 // in PR #149.
 
 import { createServer } from "node:http";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
 
 // Mock drizzle-orm to break the ESM cycle between vitest's module loader
@@ -86,62 +86,66 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 
+const companySkillsTestPromise = import("../services/company-skills.js").then((mod) => mod.__test__);
+
 describe("company-portability fetch helpers — SSRF guard", () => {
+  let companyPortabilityTest: typeof import("../services/company-portability.js").__test__;
+
+  beforeAll(async () => {
+    companyPortabilityTest = (await import("../services/company-portability.js")).__test__;
+  });
+
   it("fetchJson rejects link-local cloud-metadata IP (169.254.169.254)", async () => {
-    const { __test__ } = await import("../services/company-portability.js");
     await expect(
-      __test__.fetchJson("http://169.254.169.254/latest/meta-data/iam/"),
+      companyPortabilityTest.fetchJson("http://169.254.169.254/latest/meta-data/iam/"),
     ).rejects.toThrow(/private/);
   });
 
   it("fetchText rejects file:// (disallowed protocol)", async () => {
-    const { __test__ } = await import("../services/company-portability.js");
     await expect(
-      __test__.fetchText("file:///etc/passwd"),
+      companyPortabilityTest.fetchText("file:///etc/passwd"),
     ).rejects.toThrow(/Disallowed protocol/);
   });
 
   it("fetchText rejects javascript: (disallowed protocol)", async () => {
-    const { __test__ } = await import("../services/company-portability.js");
     await expect(
-      __test__.fetchText("javascript:alert(1)"),
+      companyPortabilityTest.fetchText("javascript:alert(1)"),
     ).rejects.toThrow(/Disallowed protocol/);
   });
 
   it("fetchText rejects RFC-1918 literal (10.0.0.1)", async () => {
-    const { __test__ } = await import("../services/company-portability.js");
     await expect(
-      __test__.fetchText("http://10.0.0.1/some/path"),
+      companyPortabilityTest.fetchText("http://10.0.0.1/some/path"),
     ).rejects.toThrow(/private/);
   });
 });
 
 describe("company-skills fetch helpers — SSRF guard", () => {
   it("fetchText rejects RFC-1918 literal (10.0.0.1)", async () => {
-    const { __test__ } = await import("../services/company-skills.js");
+    const companySkillsTest = await companySkillsTestPromise;
     await expect(
-      __test__.fetchText("http://10.0.0.1/some/SKILL.md"),
+      companySkillsTest.fetchText("http://10.0.0.1/some/SKILL.md"),
     ).rejects.toThrow(/private/);
   });
 
   it("fetchJson rejects link-local cloud-metadata IP (169.254.169.254)", async () => {
-    const { __test__ } = await import("../services/company-skills.js");
+    const companySkillsTest = await companySkillsTestPromise;
     await expect(
-      __test__.fetchJson("http://169.254.169.254/latest/meta-data/"),
+      companySkillsTest.fetchJson("http://169.254.169.254/latest/meta-data/"),
     ).rejects.toThrow(/private/);
   });
 
   it("fetchText rejects file:// (disallowed protocol)", async () => {
-    const { __test__ } = await import("../services/company-skills.js");
+    const companySkillsTest = await companySkillsTestPromise;
     await expect(
-      __test__.fetchText("file:///etc/passwd"),
+      companySkillsTest.fetchText("file:///etc/passwd"),
     ).rejects.toThrow(/Disallowed protocol/);
   });
 
   it("fetchText rejects IPv6 loopback ([::1])", async () => {
-    const { __test__ } = await import("../services/company-skills.js");
+    const companySkillsTest = await companySkillsTestPromise;
     await expect(
-      __test__.fetchText("http://[::1]/SKILL.md"),
+      companySkillsTest.fetchText("http://[::1]/SKILL.md"),
     ).rejects.toThrow(/private/);
   });
 });

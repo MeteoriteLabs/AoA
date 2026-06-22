@@ -1,8 +1,8 @@
 // server/src/routes/internal-agent.ts
 // Internal Agent HTTP endpoints — T13a
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, eq, asc, desc, gte, lte, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, asc, desc, gte, lte, isNull, inArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConfig,
@@ -15,39 +15,87 @@ import { validate } from "../middleware/index.js";
 import { assertRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { HttpError, badRequest, notFound } from "../errors.js";
+import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
-import { permissionService } from "../services/permissions.js";
-import type { UserRole } from "@armyofagents/shared";
+import { detectCliTool } from "../services/internal-agent/cli-mode.js";
+import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
+import { companySkillService } from "../services/company-skills.js";
+import {
+  createToolRegistry,
+  executeTool,
+} from "../services/internal-agent/tool-registry.js";
+import { createServiceContainer } from "../services/internal-agent/service-container.js";
+import { loadOwnedConversation, resolveActorRole } from "./conversation-authz.js";
+import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
+import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
+import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
+import {
+  resolveRunCostCents,
+  rateModelForCliTool,
+  resolveRunDurationMs,
+  resolveRunCostCentsFromSummary,
+  resolvePersistedProvenance,
+  resolveDonePayload,
+} from "../services/internal-agent/run-cost.js";
+import { humanToolSummary } from "../services/internal-agent/tool-summary.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
-const chatMessageSchema = z.object({
-  message: z.string().min(1).max(10000),
-  pageContext: z.string().optional(),
-});
-
-const confirmActionSchema = z.object({
-  confirmId: z.string().uuid(),
-  approved: z.boolean(),
-});
+const confirmActionSchema = z
+  .object({
+    confirmId: z.string().uuid(),
+    decision: z.enum(["allow_once", "allow_always", "deny"]).optional(),
+    approved: z.boolean().optional(),
+  })
+  .refine((value) => value.decision !== undefined || value.approved !== undefined, {
+    message: "Either decision or approved is required",
+  })
+  .transform((value) => ({
+    confirmId: value.confirmId,
+    decision:
+      value.decision ??
+      (value.approved === true ? "allow_once" : "deny"),
+  }));
 
 const updateConfigSchema = z.object({
   executionMode: z.enum(["api", "cli"]).optional(),
   provider: z.enum(["anthropic", "openai", "google"]).optional(),
   model: z.string().optional(),
   cliTool: z.string().nullable().optional(),
-  autonomyLevel: z.number().int().min(0).max(0).optional(), // v2.5: only 0
+  // Threads crew (Discussions feature) opens autonomyLevel to L2 — the design
+  // ceiling for the crew (task + route + execute). Goals and identity/domain
+  // memory remain founder-gated even at L2 (Decisions #15/#16/#52). Broader
+  // "master autonomy" surface for non-crew agents stays at 0 until those
+  // controls land. See design doc § 4 — autonomy dial.
+  autonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.string()).optional(),
   notificationPreference: z.enum(["silent", "digest", "realtime"]).optional(),
   contextTokenBudget: z.number().int().min(2000).max(32000).optional(),
   budgetMonthlyCents: z.number().int().min(0).nullable().optional(),
   proactiveIntervalMinutes: z.number().int().min(30).max(1440).optional(),
+  cheapModel: z.string().nullable().optional(),
+  crewPaused: z.boolean().optional(),
+  runtimeApprovalsEnabled: z.boolean().optional(),
+  runtimeAllowAlwaysEnabled: z.boolean().optional(),
+  vendorCliBypassEnabled: z.boolean().optional(),
+  // Task 0.7 (Inbound Dirty-Data Routing): per-company routing dial.
+  // Derives allowed values from INBOUND_ROUTING_LEVELS to stay in sync.
+  inboundRoutingLevel: z
+    .enum(["off", "suggest", "auto_attach", "full_auto"])
+    .optional(),
 });
 
 const cancelReminderSchema = z.object({
   status: z.literal("cancelled"),
 });
+
+const toolPermissionSchema = z.object({
+  enabled: z.boolean(),
+  requireConfirmation: z.boolean(),
+  minimumRole: z.enum(["founder", "team_lead", "team_member"]),
+});
+
+const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
 
 // ── Route factory ────────────────────────────────────────────────────────────
 
@@ -87,6 +135,8 @@ export function internalAgentRoutes(db: Db) {
         })
         .returning();
 
+      const runStartedAt = Date.now();
+
       // Signal "thinking" to the UI while we kick off the dispatch.
       res.write(
         `event: thinking\ndata: ${JSON.stringify({ status: "processing" })}\n\n`,
@@ -98,49 +148,40 @@ export function internalAgentRoutes(db: Db) {
             toolsCalled: string[];
             durationMs: number;
             costCents: number;
-            tokenUsage: { inputTokens: number; outputTokens: number };
+            tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+            /** F1: adapter-reported model/provider for provenance (separate from cost-label). */
+            model?: string | null;
+            provider?: string | null;
           }
         | null = null;
 
       try {
         const svc = agentLoopService(db);
-        // C13 fix: look up the caller's actual effective role and
-        // capability set instead of hardcoding "founder". Special-case
-        // local_implicit actors (loopback in local_trusted mode) — they
-        // bypass RBAC elsewhere in the codebase and have no userRoles row,
-        // so getEffectiveRole would return "team_member" by default.
-        const isLocalImplicit =
-          req.actor.type === "board" && req.actor.source === "local_implicit";
-        const isInstanceAdmin =
-          req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-        let userRole: UserRole;
-        // Match middleware/rbac.ts:36-39 bypass semantics: local_implicit (local_trusted
-        // mode) and isInstanceAdmin actors get founder-equivalent access. Note: any
-        // future audit log that records userRole per-tool-call should preserve the
-        // actor's actual identity (the userId is unchanged here) — the coercion to
-        // "founder" applies only to the role string used for tool-dispatch authorization.
-        if (isLocalImplicit || isInstanceAdmin) {
-          userRole = "founder";
-        } else {
-          const role = await permissionService(db).getEffectiveRole(
-            companyId,
-            actor.actorId,
-          );
-          // getEffectiveRole defaults to "team_member" when no role is
-          // assigned; we mirror that fallback here for clarity.
-          userRole = role ?? "team_member";
-        }
+        // Board-gated role: founder-equivalence requires a type:"board" actor.
+        // MCP/agent bearer tokens are always "team_member" regardless of the
+        // userId they carry (a founder-created MCP key replays the founder's
+        // userId, which must NOT grant founder tool-dispatch). See resolveActorRole.
+        const userRole = await resolveActorRole(db, req, companyId);
 
         // Look up the company's enabled capabilities. Empty array if no
         // config row exists — chat will surface "not configured" further
         // down anyway.
         const cfgRows = await db
-          .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+          .select({
+            enabledCapabilities: internalAgentConfig.enabledCapabilities,
+            model: internalAgentConfig.model,
+            cliTool: internalAgentConfig.cliTool,
+          })
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId));
-        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as
-          | string[]
-          | null) ?? [];
+        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as string[] | null) ?? [];
+        // REVIEW FIX (Lens C): price by the ACTIVE cli tool, not the dormant
+        // config.model column (which defaults to sonnet for every company).
+        const effectiveCliTool = cfgRows[0]?.cliTool ?? "claude_cli";
+        const { provider: runProvider, model: runModel } = rateModelForCliTool(
+          effectiveCliTool,
+          cfgRows[0]?.model ?? null,
+        );
 
         const stream = svc.chat({
           companyId,
@@ -149,6 +190,9 @@ export function internalAgentRoutes(db: Db) {
           enabledCapabilities,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
+          departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined,
+          conversationId: req.body.conversationId ?? undefined,
+          contextScope: req.body.contextScope ?? undefined,
         });
 
         for await (const chunk of stream) {
@@ -164,24 +208,54 @@ export function internalAgentRoutes(db: Db) {
               );
               break;
             case "tool_result":
+              // refs are validated/screened + MCP-gated at the parser layer; the
+              // persistence boundary re-validates independently. Forward as-is.
+              // REVIEW FIX (Lens A/B/C): do NOT forward input — unbounded + unused by render.
               res.write(
-                `event: tool_result\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
+                `event: tool_result\ndata: ${JSON.stringify({
+                  name: chunk.name,
+                  success: chunk.result?.success ?? true,
+                  summary: humanToolSummary(chunk.name, chunk.result?.summary ?? chunk.result?.data),
+                  ...(chunk.refs && chunk.refs.length > 0 ? { refs: chunk.refs } : {}),
+                })}\n\n`,
               );
               break;
-            case "action_confirmation":
-              // CLI-mode doesn't yield these today (no per-tool confirmations);
-              // the branch stays here to be explicit about the mapping.
+            case "action_confirmation": {
+              const confirmId = chunk.runId;
+              const paramsSummary =
+                chunk.params &&
+                typeof chunk.params === "object" &&
+                Object.keys(chunk.params as object).length > 0
+                  ? ` with ${Object.entries(chunk.params as Record<string, unknown>)
+                      .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                      .join(", ")}`
+                  : "";
               res.write(
                 `event: action_confirm\ndata: ${JSON.stringify({
-                  confirmId: chunk.runId,
+                  confirmId,
                   action: chunk.toolName,
-                  description: chunk.toolName,
+                  description: `${chunk.toolName}${paramsSummary}`,
+                })}\n\n`,
+              );
+              break;
+            }
+            case "options_prompt":
+              res.write(
+                `event: options_prompt\ndata: ${JSON.stringify({
+                  promptId: chunk.promptId,
+                  question: chunk.question,
+                  options: chunk.options,
                 })}\n\n`,
               );
               break;
             case "error":
               res.write(
                 `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message: chunk.message })}\n\n`,
+              );
+              break;
+            case "reasoning":
+              res.write(
+                `event: reasoning\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`,
               );
               break;
             case "done":
@@ -191,25 +265,49 @@ export function internalAgentRoutes(db: Db) {
         }
 
         // Mark run completed
+        const tokenUsage = finalSummary?.tokenUsage ?? null;
+        const wallClockMs = Date.now() - runStartedAt;
+        const durationMs = resolveRunDurationMs(finalSummary ?? null, wallClockMs);
+        const costCents = resolveRunCostCentsFromSummary(
+          finalSummary ?? null,
+          runProvider,
+          runModel,
+        );
+
+        // F1: prefer the adapter-reported model/provider (actual runtime provenance)
+        // over the cost-label defaults (which are pricing inputs, not provenance).
+        // Cost PRICING still uses runModel/runProvider via resolveRunCostCentsFromSummary above.
+        const { model: persistedModel, provider: persistedProvider } = resolvePersistedProvenance(
+          finalSummary ?? null,
+          runModel,
+          runProvider,
+        );
+
         await db
           .update(internalAgentRuns)
           .set({
             status: "completed",
             completedAt: new Date(),
-            durationMs: finalSummary?.durationMs ?? null,
-            costCents: finalSummary?.costCents ?? null,
-            tokenUsage: finalSummary?.tokenUsage ?? null,
+            durationMs,
+            costCents,
+            tokenUsage,
+            model: persistedModel,
+            provider: persistedProvider,
           })
-          .where(eq(internalAgentRuns.id, run.id));
+          // F6: also scope by companyId for defense-in-depth (id is server-created
+          // so this is not an active hole, but matches the repo's company-scoping rule).
+          .where(and(eq(internalAgentRuns.id, run.id), eq(internalAgentRuns.companyId, companyId)));
 
-        // Send done event. For CLI mode the numeric fields are zeros until
-        // run tracking is re-introduced; the shape matches what the UI expects.
+        // F2: send the LOCALLY-COMPUTED costCents (the value persisted to DB)
+        // and a guaranteed-non-null tokenUsage so the wire matches the DB row.
+        const donePayload = resolveDonePayload(finalSummary ?? null, costCents);
         res.write(
           `event: done\ndata: ${JSON.stringify({
             messageId: run.id,
             runId: run.id,
-            tokenUsage: finalSummary?.tokenUsage ?? { input: 0, output: 0 },
-            costCents: finalSummary?.costCents ?? 0,
+            durationMs,
+            tokenUsage: donePayload.tokenUsage,
+            costCents: donePayload.costCents,
           })}\n\n`,
         );
       } catch (err) {
@@ -242,18 +340,264 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      // Placeholder: confirm/reject pending action by confirmId
-      // Real implementation would look up pending confirmation and execute/reject
+      const actor = getActorInfo(req);
+      const { confirmId, decision } = req.body as {
+        confirmId: string;
+        decision: CommanderRuntimeApprovalDecision;
+      };
+      const approvals = runtimeApprovalService(db);
+
+      if (decision === "deny") {
+        const denied = await approvals.deny(confirmId, companyId, actor.actorId);
+        if (!denied) throw notFound(`No pending confirmation for id: ${confirmId}`);
+        res.json({
+          confirmId,
+          result: "denied",
+          summary: null,
+          error: null,
+          entityType: null,
+          entityId: null,
+        });
+        return;
+      }
+
+      const claimed = await approvals.claimForExecution(
+        confirmId,
+        companyId,
+        actor.actorId,
+        decision,
+      );
+      if (!claimed) {
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+
+
+      // Permissions are re-fetched fresh here — do NOT use pending.userRole or
+      // pending.enabledCapabilities. Those were snapshotted at prompt time and
+      // may be stale if the user's role or company capabilities changed within
+      // the TTL window. Using stale values would allow execution under
+      // revoked permissions (privilege-retention gap). Board-gated: MCP/agent
+      // tokens are always "team_member" (see resolveActorRole).
+      const currentUserRole = await resolveActorRole(db, req, companyId);
+
+      const [cfgForConfirm] = await db
+        .select({
+          enabledCapabilities: internalAgentConfig.enabledCapabilities,
+          commanderToolPermissions: internalAgentConfig.commanderToolPermissions,
+          runtimeApprovalsEnabled: internalAgentConfig.runtimeApprovalsEnabled,
+          runtimeAllowAlwaysEnabled: internalAgentConfig.runtimeAllowAlwaysEnabled,
+        })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+      const currentCapabilities =
+        (cfgForConfirm?.enabledCapabilities as string[] | null) ?? [];
+
+      const tools = createToolRegistry();
+      const tool = tools.find((t) => t.name === claimed.toolName);
+      if (!tool) {
+        await approvals.markFailed(confirmId, companyId, "TOOL_NOT_FOUND");
+        throw notFound(`Tool not found: ${claimed.toolName}`);
+      }
+
+      const services = createServiceContainer(db);
+      const toolContext = {
+        companyId: claimed.companyId,
+        userId: claimed.userId,
+        userRole: currentUserRole,           // fresh — not pending.userRole
+        enabledCapabilities: currentCapabilities, // fresh — not pending.enabledCapabilities
+        agentKind: undefined,
+        toolAllowlist: [] as string[],
+        actorType: "commander",
+        commanderToolPermissions:
+          (cfgForConfirm?.commanderToolPermissions as CommanderToolPermissions | null | undefined) ?? null,
+        runtimeApprovalsEnabled: cfgForConfirm?.runtimeApprovalsEnabled ?? true,
+        db,
+        services,
+      };
+
+      const result = await executeTool(tool, claimed.params, toolContext);
+      if (result.success) {
+        if (
+          decision === "allow_always" &&
+          (cfgForConfirm?.runtimeAllowAlwaysEnabled ?? true)
+        ) {
+          await approvals.createTrustRule({
+            companyId,
+            userId: claimed.userId,
+            toolName: claimed.toolName,
+            params: claimed.params as Record<string, unknown>,
+            createdByUserId: actor.actorId,
+          });
+        }
+        await approvals.markExecuted(confirmId, companyId, {
+          summary: result.summary ?? "",
+          entityType: null,
+          entityId: null,
+        });
+      } else {
+        await approvals.markFailed(
+          confirmId,
+          companyId,
+          result.error ?? result.summary ?? "Tool execution failed",
+        );
+      }
+
       res.json({
-        confirmId: req.body.confirmId,
-        result: "Action confirmation recorded",
+        confirmId,
+        result: result.success ? "executed" : "failed",
+        summary: result.summary ?? null,
+        error: result.error ?? null,
         entityType: null,
         entityId: null,
       });
     },
   );
 
+  // ── Tool Permissions ──────────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/tool-permissions",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({ commanderToolPermissions: internalAgentConfig.commanderToolPermissions })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      const stored = (config?.commanderToolPermissions as Record<string, unknown> | null) ?? {};
+      res.json({ permissions: stored, default: COMMANDER_TOOL_PERMISSION_DEFAULT });
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/internal-agent/tool-permissions",
+    validate(updateToolPermissionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      await db
+        .update(internalAgentConfig)
+        .set({ commanderToolPermissions: req.body })
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      res.json({ success: true });
+    },
+  );
+
+  // ── Test Connection (QA-BUG-010) ────────────────────────────────────
+  // UI button at Settings → Commander → Execution & Model calls this to
+  // validate the configured CLI tool is reachable. The route resolves
+  // the company's `cliTool` (defaulting to `claude_cli` when unset —
+  // matches the agent-loop default in agent-loop.ts:254) and runs the
+  // `detectCliTool` helper that the chat path already uses. Reply shape
+  // matches what `ui/src/api/internal-agent.ts:339` expects:
+  //   { success: boolean, error?: string, detectedTool?: string, path?: string }
+  // No side effects — purely a PATH/availability probe.
+  router.post(
+    "/companies/:companyId/internal-agent/test-connection",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({ cliTool: internalAgentConfig.cliTool })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      const effectiveTool =
+        (config?.cliTool as string | null | undefined) ?? "claude_cli";
+
+      const detection = await detectCliTool(effectiveTool);
+
+      if (!detection.available) {
+        res.json({
+          success: false,
+          error: detection.error,
+          detectedTool: effectiveTool,
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        detectedTool: effectiveTool,
+        path: detection.path,
+      });
+    },
+  );
+
+  // ── Runtime Settings ───────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/runtime-settings",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({
+          runtimeApprovalsEnabled: internalAgentConfig.runtimeApprovalsEnabled,
+          runtimeAllowAlwaysEnabled: internalAgentConfig.runtimeAllowAlwaysEnabled,
+        })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      res.json({
+        runtimeApprovalsEnabled: config?.runtimeApprovalsEnabled ?? true,
+        runtimeAllowAlwaysEnabled: config?.runtimeAllowAlwaysEnabled ?? true,
+      });
+    },
+  );
+
   // ── 2.3 Get Conversation ─────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/tool-trust-rules",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const rules = await runtimeApprovalService(db).listTrustRules(
+        companyId,
+        actor.actorId,
+      );
+
+      res.json({
+        rules: rules.map((rule) => ({
+          id: rule.id,
+          toolName: rule.toolName,
+          scope: rule.scope,
+          paramsHashPrefix: rule.paramsHash.slice(0, 8),
+          paramsHashVersion: rule.paramsHashVersion,
+          lastUsedAt: rule.lastUsedAt,
+          expiresAt: rule.expiresAt,
+          createdAt: rule.createdAt,
+        })),
+      });
+    },
+  );
+
+  router.delete(
+    "/companies/:companyId/internal-agent/tool-trust-rules/:ruleId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const ruleId = req.params.ruleId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const revoked = await runtimeApprovalService(db).revokeTrustRule(
+        ruleId,
+        companyId,
+        actor.actorId,
+      );
+      if (!revoked) throw notFound("Trust rule not found");
+
+      res.json({ success: true });
+    },
+  );
+
   router.get(
     "/companies/:companyId/internal-agent/conversation",
     async (req, res) => {
@@ -450,9 +794,13 @@ export function internalAgentRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       await assertRole(db, req, companyId, "founder");
 
-      // Validate autonomy level (v2.5: only 0)
-      if (req.body.autonomyLevel != null && req.body.autonomyLevel !== 0) {
-        throw badRequest("Autonomy levels 1-3 are not yet available in v2.5");
+      // Validate autonomy level. Threads crew (Discussions feature) opens
+      // L0-L2 — the design ceiling per § 4 (task + route + execute). Goals
+      // and identity/domain memory remain founder-gated even at L2
+      // (Decisions #15/#16/#52). L3 is reserved for future "master autonomy"
+      // surface and remains blocked.
+      if (req.body.autonomyLevel != null && (req.body.autonomyLevel < 0 || req.body.autonomyLevel > 2)) {
+        throw badRequest("autonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
       }
 
       const [updated] = await db
@@ -605,6 +953,265 @@ export function internalAgentRoutes(db: Db) {
       }
 
       res.json(updated);
+    },
+  );
+
+  // ── Conversations: list ──────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/conversations",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      // Board-gated: MCP/agent tokens are always "team_member" and see only
+      // their own conversations (userId scoped). Board founders see all.
+      // See resolveActorRole for the single-sourced rule.
+      const isFounder = (await resolveActorRole(db, req, companyId)) === "founder";
+
+      // Build conditions array — Drizzle's and() does not accept undefined.
+      const conditions: SQL[] = [
+        eq(internalAgentConversations.companyId, companyId),
+        isNull(internalAgentConversations.archivedAt),
+      ];
+      if (!isFounder) {
+        conditions.push(eq(internalAgentConversations.userId, actor.actorId));
+      }
+
+      const rows = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(and(...conditions))
+        .orderBy(desc(internalAgentConversations.updatedAt));
+
+      res.json({ conversations: rows });
+    },
+  );
+
+  // ── Conversations: create new ────────────────────────────────────────
+  router.post(
+    "/companies/:companyId/internal-agent/conversations",
+    validate(z.object({ title: z.string().max(200).optional() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const [conv] = await db
+        .insert(internalAgentConversations)
+        .values({
+          companyId,
+          userId: actor.actorId,
+          // "pending" until conversation switching is wired (full multi-chat support).
+          // "active" is reserved for the conversation the agentLoop is currently using;
+          // creating a second "active" row would make chat routing non-deterministic.
+          status: "pending",
+          title: req.body.title ?? null,
+        })
+        .returning();
+
+      res.status(201).json(conv);
+    },
+  );
+
+  // ── Conversations: reorder (manual drag order) ───────────────────────
+  // Registered BEFORE the `/:convId` routes so "reorder"/"order" are not
+  // captured as a conversation id. Writes are always scoped to the actor's
+  // OWN conversations (even for founders) — manual order is a personal
+  // preference and must never clobber another user's arrangement.
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/reorder",
+    validate(z.object({ orderedIds: z.array(z.string().uuid()).max(1000) })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const scope: SQL[] = [
+        eq(internalAgentConversations.companyId, companyId),
+        eq(internalAgentConversations.userId, actor.actorId),
+      ];
+
+      const { orderedIds } = req.body as { orderedIds: string[] };
+
+      // Only (re)order ids the actor owns and that are still active.
+      const owned = await db
+        .select({ id: internalAgentConversations.id })
+        .from(internalAgentConversations)
+        .where(and(...scope, isNull(internalAgentConversations.archivedAt)));
+      const ownedSet = new Set(owned.map((r) => r.id));
+      const finalIds = orderedIds.filter((id) => ownedSet.has(id));
+
+      await db.transaction(async (tx) => {
+        for (let i = 0; i < finalIds.length; i++) {
+          await tx
+            .update(internalAgentConversations)
+            .set({ sortOrder: i })
+            .where(and(eq(internalAgentConversations.id, finalIds[i]!), ...scope));
+        }
+
+        // Null out sortOrder for any owned active conversations NOT in this reorder.
+        // Makes every reorder an atomic "replace full order" — omitted conversations
+        // revert to recency order (sortOrder: null) instead of keeping stale indices.
+        const finalSet = new Set(finalIds);
+        const omittedIds = [...ownedSet].filter((id) => !finalSet.has(id));
+        if (omittedIds.length > 0) {
+          await tx
+            .update(internalAgentConversations)
+            .set({ sortOrder: null })
+            .where(and(inArray(internalAgentConversations.id, omittedIds), ...scope));
+        }
+      });
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Conversations: reset manual order ────────────────────────────────
+  router.delete(
+    "/companies/:companyId/internal-agent/conversations/order",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      await db
+        .update(internalAgentConversations)
+        .set({ sortOrder: null })
+        .where(
+          and(
+            eq(internalAgentConversations.companyId, companyId),
+            eq(internalAgentConversations.userId, actor.actorId),
+          ),
+        );
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Conversations: archive ───────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/archive",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(db, req, companyId, convId);
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ archivedAt: new Date(), status: "archived" })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: pin ───────────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/pin",
+    validate(z.object({ pinned: z.boolean() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(db, req, companyId, convId);
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ pinned: req.body.pinned })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: rename ────────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/rename",
+    validate(z.object({ title: z.string().min(1).max(200) })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(db, req, companyId, convId);
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ title: req.body.title })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: delete (hard) ────────────────────────────────────
+  // Permanently deletes a conversation and its messages (cascade). Distinct
+  // from the legacy DELETE /conversation endpoint which archives+resets.
+  router.delete(
+    "/companies/:companyId/internal-agent/conversations/:convId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(db, req, companyId, convId);
+
+      await db
+        .delete(internalAgentConversations)
+        .where(eq(internalAgentConversations.id, convId));
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Get Messages for a Specific Conversation ─────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/conversations/:convId/messages",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      // loadOwnedConversation applies the same founder bypass used by
+      // archive/pin/rename/delete: founders can access any company conversation,
+      // non-founders are scoped to their own userId. Throws 404 (not 403) on
+      // mismatch to avoid leaking conversation existence.
+      const conv = await loadOwnedConversation(db, req, companyId, convId);
+
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const messages = await db
+        .select()
+        .from(internalAgentMessages)
+        .where(eq(internalAgentMessages.conversationId, conv.id))
+        .orderBy(asc(internalAgentMessages.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      res.json({ messages, conversationId: convId });
+    },
+  );
+
+  // ── Commander skills: the agent's curated selection (for the chat skill picker) ──
+  router.get(
+    "/companies/:companyId/internal-agent/skills",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const agentId = await ensureCommanderAgent(db, companyId);
+      const skills = await companySkillService(db).listSkillListItemsForAgent(
+        companyId,
+        agentId,
+      );
+      res.json(skills);
     },
   );
 

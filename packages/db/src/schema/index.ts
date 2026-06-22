@@ -19,12 +19,17 @@ export * from "./team_members.js";
 export * from "./team_coordinations.js";
 export { sidebarPreferences } from "./sidebar_preferences.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
+export { userEntityPins } from "./user_entity_pins.js";
 export { goals } from "./goals.js";
+export { goalParents } from "./goal_parents.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
+export { issueContextBundles } from "./issue_context_bundles.js";
+export { issueContextBundleItems } from "./issue_context_bundle_items.js";
+export { issueMonitors } from "./issue_monitors.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
 export { issueAttachments } from "./issue_attachments.js";
@@ -35,8 +40,12 @@ export { costEvents } from "./cost_events.js";
 export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
+export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
+export { runtimeProviderKeys } from "./runtime_provider_keys.js";
+export { secretAccessEvents } from "./secret_access_events.js";
 export { memoryItems } from "./memory_items.js";
 export { memoryAssets } from "./memory_assets.js";
 export { memoryFolders } from "./memory_folders.js";
@@ -46,9 +55,11 @@ export { briefItems } from "./brief_items.js";
 export { taskDependencies } from "./task_dependencies.js";
 export { agentProjects } from "./agent_projects.js";
 export { artifacts, artifactVersions } from "./artifacts.js";
+export { taskOutputs } from "./task_outputs.js";
 export { memoryItemVersions } from "./memory_item_versions.js";
 export { memoryFeedbackPatterns } from "./memory_feedback_patterns.js";
 export { memoryRelations } from "./memory_relations.js";
+export { companyBrainEdges } from "./company_brain_edges.js";
 export { memoryRetrievals } from "./memory_retrievals.js";
 export { memoryExtractionBatches } from "./memory_extraction_batches.js";
 export { memoryExtractions } from "./memory_extractions.js";
@@ -64,12 +75,27 @@ export {
   discussionAnnotations,
 } from "./discussions.js";
 export {
+  threadParticipants,
+  threadLinks,
+  scopeItemDependencies,
+  threadPlanSteps,
+  threadInboxItems,
+  discussionEntryAttachments,
+} from "./threads.js";
+export { threadScopeVersions } from "./thread_scope_versions.js";
+export { threadScopeItems, threadScopeArtifactLinks } from "./thread_scope_items.js";
+export { threadAgentActions } from "./thread_agent_actions.js";
+export { threadOrchestrationState } from "./thread_orchestration_state.js";
+export {
   internalAgentConfig,
   internalAgentConversations,
   internalAgentMessages,
   internalAgentRuns,
   internalAgentReminders,
 } from "./internal_agent.js";
+export { internalAgentRuntimeApprovals } from "./internal_agent_runtime_approvals.js";
+export { internalAgentToolTrustRules } from "./internal_agent_tool_trust_rules.js";
+export { aoaAgentTriggers } from "./aoa_agent_triggers.js";
 export { workflowTemplates } from "./workflow_templates.js";
 export { notifications } from "./notifications.js";
 export { companySkills } from "./company_skills.js";
@@ -80,15 +106,18 @@ export { providerQuotaWindows } from "./provider_quota_windows.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
-export { routines, routineTriggers, routineRuns } from "./routines.js";
+export { routines, routineTriggers, routineRuns, routineRevisions } from "./routines.js";
 export { instanceSettings } from "./instance_settings.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { environments } from "./environments.js";
+export { environmentLeases } from "./environment_leases.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { feedbackVotes } from "./feedback_votes.js";
 export { feedbackExports } from "./feedback_exports.js";
+export { githubInstallations, type GitHubInstallation, type NewGitHubInstallation } from "./github_installations.js";
 
 // Plugin system
 export { plugins } from "./plugins.js";
@@ -100,6 +129,7 @@ export { pluginLogs } from "./plugin_logs.js";
 export { pluginState } from "./plugin_state.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { fileImportJobs } from "./file_import_jobs.js";
+export { embeddingQueue } from "./embedding_queue.js";
 
 // Marketplace
 export { marketplaceCatalogCache } from "./marketplace_catalog_cache.js";

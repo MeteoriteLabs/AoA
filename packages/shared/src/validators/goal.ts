@@ -9,6 +9,7 @@ export const createGoalSchema = z.object({
   parentId: z.string().uuid().optional().nullable(),
   ownerAgentId: z.string().uuid().optional().nullable(),
   projectIds: z.array(z.string().uuid()).optional(),
+  parentIds: z.array(z.string().uuid()).optional(),
 });
 
 export type CreateGoal = z.infer<typeof createGoalSchema>;

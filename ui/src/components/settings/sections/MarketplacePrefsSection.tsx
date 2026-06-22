@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useCompany } from "@/context/CompanyContext";
 import {
   useMarketplaceSettings,
@@ -14,12 +15,30 @@ import {
 } from "@/components/ui/select";
 import { Field, ToggleField } from "@/components/agent-config-primitives";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { cn } from "@/lib/utils";
+import { MarketplaceUpdatesPanel } from "./MarketplaceUpdatesPanel";
 
 export function MarketplacePrefsSection() {
   const { selectedCompanyId } = useCompany();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: settings, isLoading } = useMarketplaceSettings(selectedCompanyId ?? undefined);
   const patch = usePatchMarketplaceSettings(selectedCompanyId ?? undefined);
   const { pushToast } = useToast();
+  const section = searchParams.get("section") === "updates" ? "updates" : "preferences";
+
+  const setSection = useCallback(
+    (next: "preferences" | "updates") => {
+      const updated = new URLSearchParams(searchParams);
+      updated.set("tab", "marketplace");
+      if (next === "updates") {
+        updated.set("section", "updates");
+      } else {
+        updated.delete("section");
+      }
+      setSearchParams(updated, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
 
   const applyPatch = useCallback(
     async (p: Parameters<typeof patch.mutateAsync>[0]) => {
@@ -53,7 +72,33 @@ export function MarketplacePrefsSection() {
       </div>
 
       <div className="p-8">
-        {isLoading ? (
+        <div
+          role="tablist"
+          aria-label="Marketplace settings sections"
+          className="mb-6 inline-flex rounded-md border border-border bg-card-2 p-1"
+        >
+          {(["preferences", "updates"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={section === tab}
+              className={cn(
+                "rounded-[5px] px-3 py-1.5 text-sm font-semibold transition-colors",
+                section === tab
+                  ? "bg-card text-text shadow-sm"
+                  : "text-muted-foreground hover:text-text",
+              )}
+              onClick={() => setSection(tab)}
+            >
+              {tab === "preferences" ? "Preferences" : "Updates"}
+            </button>
+          ))}
+        </div>
+
+        {section === "updates" ? (
+          <MarketplaceUpdatesPanel />
+        ) : isLoading ? (
           <PageSkeleton variant="list" />
         ) : !settings ? (
           <div className="text-sm text-muted-foreground">
@@ -91,14 +136,6 @@ export function MarketplacePrefsSection() {
                     </SelectContent>
                   </Select>
                 </Field>
-                <ToggleField
-                  label="Skill updates"
-                  hint="Auto-apply skill updates when available."
-                  checked={settings.skillUpdatePolicy === "auto"}
-                  onChange={(v) =>
-                    applyPatch({ skillUpdatePolicy: v ? "auto" : "notify" })
-                  }
-                />
                 <ToggleField
                   label="Agent updates"
                   hint="Auto-apply agent updates when available."

@@ -19,6 +19,11 @@ export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,
+  IssueCommentAuthorType,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+  IssueMonitor,
+  IssueMonitorPolicy,
   IssueAncestor,
   IssueAncestorProject,
   IssueAncestorGoal,
@@ -38,6 +43,16 @@ export type {
   MemoryAssetUpdateInput,
 } from "./memory-asset.js";
 export type {
+  CompanyBrainNodeRef,
+  CompanyBrainNode,
+  CompanyBrainEdge,
+  CompanyBrainSemanticEdgeRecord,
+  CompanyBrainNeighborsResponse,
+  CompanyBrainOverviewResponse,
+  CompanyBrainMemoryUsageAgent,
+  CompanyBrainMemoryUsageResponse,
+} from "./company-brain-graph.js";
+export type {
   MemoryFolderRecord,
   MemoryFolderCreateInput,
   MemoryFolderUpdateInput,
@@ -54,6 +69,15 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  CompanySecretProviderConfig,
+  SecretProviderConfigHealthResponse,
+  CompanySecretBinding,
+  CompanySecretUsageBinding,
+  SecretAccessEvent,
+  RemoteSecretImportCandidate,
+  RemoteSecretImportPreviewResult,
+  RemoteSecretImportResult,
+  RuntimeProviderKey,
 } from "./secrets.js";
 export type { CostEvent, CostSummary, CostByAgent } from "./cost.js";
 export type {
@@ -84,6 +108,23 @@ export type {
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
 export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
+export type { Notification } from "./notification.js";
+export type {
+  TaskOutput,
+  TaskOutputType,
+  TaskOutputStatus,
+  TaskOutputReviewState,
+} from "./task-output.js";
+export type {
+  HealthCategory,
+  HealthFinding,
+  HealthFindingAction,
+  HealthReport,
+  HealthReportSummary,
+  HealthScope,
+  HealthSeverity,
+  HealthStatus,
+} from "./health.js";
 export type { MemoryItemVersion } from "./memory-version.js";
 export type { PendingMemoryVersionReview } from "./memory-version.js";
 export type { PendingMemoryArchiveReview, PendingMemoryQueue } from "./memory-pending.js";
@@ -198,12 +239,17 @@ export type {
   RoutineListItem,
   RoutineVariable,
   RoutineVariableDefaultValue,
+  RoutineSnapshot,
+  RoutineRevision,
+  RoutineRevisionListItem,
 } from "./routine.js";
 export type {
   InstanceGeneralSettings,
   InstanceExperimentalSettings,
   InstanceSettings,
   BackupRetentionPolicy,
+  BackupRetentionTieredPolicy,
+  BackupRetentionCountPolicy,
 } from "./instance.js";
 export {
   DAILY_RETENTION_PRESETS,
@@ -263,7 +309,38 @@ export type {
   GitHubPrCreateRequest,
   GitHubPrCreateResponse,
   GitHubPrMetadata,
+  GitHubPrSyncMetadata,
+  GitHubPrSyncResponse,
+  GitHubRepoCollaborator,
+  GitHubRepoLabel,
+  GitHubRepoMilestone,
+  GitHubRepoBranch,
+  GitHubAuthorizedRepo,
+  GitHubPrMergeMethod,
+  GitHubPrMergeRequest,
+  GitHubPrActionResponse,
+  GitHubAppStatus,
+  GitHubAuthStatus,
 } from "./github.js";
+
+export type {
+  Environment,
+  EnvironmentLease,
+  EnvironmentProbeCheck,
+  EnvironmentProbeResult,
+} from "./environment.js";
+
+export type {
+  GitPrReviewState,
+  GitCIStatus,
+  GitPipelineStage,
+  GitBranchInfo,
+  GitCommitNode,
+  GitGraphData,
+  GitProjectGraphResponse,
+  GitBranchEnrichment,
+  GitProjectEnrichResponse,
+} from "./git-graph.js";
 
 export type {
   JsonSchema,

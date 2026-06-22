@@ -52,7 +52,10 @@ import { mcpServerRoutes } from "../mcp/server.js";
 
 function buildApp(options?: {
   actor?: Record<string, unknown>;
-  resolveScope?: (companyId: string, userId: string) => Promise<any>;
+  resolveScope?: (
+    companyId: string,
+    actor: { source: string; userId: string },
+  ) => Promise<any>;
   issues?: any[];
   memoryItem?: Record<string, unknown> | null;
   permissionsSvc?: {
@@ -116,7 +119,7 @@ function buildApp(options?: {
       } as any,
       resolveScope:
         options?.resolveScope ??
-        (async (_companyId, userId) => ({ kind: "founder", userId })),
+        (async (_companyId, actor) => ({ kind: "founder", userId: actor.userId })),
       issuesSvc: {
         list: vi.fn().mockResolvedValue(options?.issues ?? []),
         getById: vi.fn().mockResolvedValue(
@@ -174,9 +177,9 @@ describe("mcp server routes", () => {
 
   it("filters task resources by scoped project access", async () => {
     const { app } = buildApp({
-      resolveScope: async (_companyId, userId) => ({
+      resolveScope: async (_companyId, actor) => ({
         kind: "scoped",
-        userId,
+        userId: actor.userId,
         projectIds: new Set(["project-1"]),
       }),
       issues: [
@@ -276,9 +279,9 @@ describe("mcp server routes", () => {
 
   it("rejects task status updates when RBAC denies write access", async () => {
     const { app, issueUpdate } = buildApp({
-      resolveScope: async (_companyId, userId) => ({
+      resolveScope: async (_companyId, actor) => ({
         kind: "scoped",
-        userId,
+        userId: actor.userId,
         projectIds: new Set(["project-1"]),
       }),
       issues: [
@@ -317,9 +320,9 @@ describe("mcp server routes", () => {
 
   it("rejects memory suggestions targeting an out-of-scope department", async () => {
     const { app, memoryCreate } = buildApp({
-      resolveScope: async (_companyId, userId) => ({
+      resolveScope: async (_companyId, actor) => ({
         kind: "scoped",
-        userId,
+        userId: actor.userId,
         projectIds: new Set(["project-1"]),
       }),
     });

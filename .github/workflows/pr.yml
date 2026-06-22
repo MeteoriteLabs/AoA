@@ -9,11 +9,13 @@ on:
       - master
       - main
       - Porting1.1
+      - feat/v1-combined
   push:
     branches:
       - master
       - main
       - Porting1.1
+      - feat/v1-combined
 
 concurrency:
   group: pr-${{ github.workflow }}-${{ github.ref }}
@@ -33,7 +35,7 @@ jobs:
       - name: Block manual lockfile edits
         if: github.event_name == 'pull_request' && github.head_ref != 'chore/refresh-lockfile'
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
             if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
@@ -98,7 +100,7 @@ jobs:
       - name: Validate dependency resolution when manifests change
         if: github.event_name == 'pull_request'
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
@@ -220,9 +222,11 @@ jobs:
           fi
 
           # 6. No [paperclip] log prefix outside docs (renamed to [aoa]).
-          # Two files are excluded:
+          # Three files are excluded:
           #   - normalize-transcript.ts — matches the upstream Claude CLI
           #     binary's stderr output, not an AoA-emitted prefix.
+          #   - stderr-classification.ts - classifies legacy/upstream stderr,
+          #     not an AoA-emitted prefix.
           #   - find-dead-paperclip-filters.mjs — the audit script that LOOKS
           #     FOR this exact pattern; the literal occurrences are the
           #     script's search target and documentation, not log emissions.
@@ -230,7 +234,7 @@ jobs:
             --include='*.ts' --include='*.tsx' --include='*.mjs' \
             --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
             server/src ui/src cli/src packages/adapters scripts 2>/dev/null \
-            | grep -v 'normalize-transcript\|find-dead-paperclip-filters' || true)
+            | grep -v 'normalize-transcript\|stderr-classification\|find-dead-paperclip-filters' || true)
           if [ -n "$log_hits" ]; then
             echo "::error::Found [paperclip] log prefix (rename to [aoa]):"
             printf '%s\n' "$log_hits"
@@ -407,7 +411,19 @@ jobs:
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright
-        run: npx playwright install --with-deps chromium
+        run: |
+          # OS libraries for chromium (apt). Always works on the runner.
+          npx playwright install-deps chromium
+          # Browser binaries. cdn.playwright.dev intermittently stalls on the
+          # Chrome-for-Testing archives (multi-minute hangs that exhaust this
+          # job's timeout before any test runs). Try the normal install with a
+          # bounded timeout; if it stalls, fall back to Google's Chrome-for-
+          # Testing storage, which serves the byte-identical binaries. The
+          # normal path self-heals once the CDN recovers. (CI-4 hardening.)
+          if ! timeout 150 npx playwright install chromium; then
+            echo "::warning::playwright browser install via cdn.playwright.dev stalled or failed; falling back to Google Chrome-for-Testing storage"
+            bash tests/e2e/scripts/install-chromium-from-google.sh
+          fi
 
       - name: Generate Paperclip config
         run: |
@@ -426,6 +442,7 @@ jobs:
 
       - name: Run e2e tests
         env:
+          # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
@@ -445,13 +462,18 @@ jobs:
   #   - playwright install runs without --with-deps (Linux apt-only flag)
   #   - config file generation uses `shell: bash` for HEREDOC support
   #     (Windows runners ship Git Bash and provide bash as a shell option)
+  #
+  # timeout-minutes is set to 12 (down from 35) so a cdn.playwright.dev stall
+  # fails fast instead of burning 35 min. The required Linux e2e job uses a
+  # Google Chrome-for-Testing storage fallback that avoids CDN stalls entirely;
+  # generalizing that fallback to mac/win is tracked for 1.1.
   e2e-cross-platform:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 12
     continue-on-error: true
 
     steps:
@@ -508,6 +530,7 @@ jobs:
         # container approach lands.
         if: matrix.os != 'windows-latest'
         env:
+          # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 

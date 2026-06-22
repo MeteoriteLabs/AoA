@@ -40,3 +40,8 @@ export { cliModeService, detectCliTool, buildMcpConfig, toolToMcpFormat } from "
 export { createCLISessionStore } from "./cli-session-store.js";
 export type { CLISession, CLIToolType, CLISessionStore } from "./cli-session-store.js";
 export { createToolCallHandler, buildToolListResponse } from "./mcp-bridge.js";
+export {
+  canonicalRuntimeApprovalParams,
+  hashRuntimeApprovalParams,
+  runtimeApprovalService,
+} from "./runtime-approvals.js";

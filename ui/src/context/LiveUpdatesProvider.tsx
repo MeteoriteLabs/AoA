@@ -1,4 +1,13 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@armyofagents/shared";
 import { useCompany } from "./CompanyContext";
@@ -6,9 +15,93 @@ import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 
+/** WS connection lifecycle state surfaced to consumers (e.g. ThreadDetail). */
+export type LiveConnectionState = "connecting" | "open" | "reconnecting" | "offline";
+
+export interface ThreadPresenceMember {
+  userId: string;
+  /** epoch ms of last presence heartbeat (server clock, echoed through). */
+  lastSeen: number;
+  /** whether this member is currently typing. */
+  typing?: boolean;
+}
+
+export interface ThreadWorkingAgent {
+  agentId: string;
+  name: string;
+  /**
+   * Humanized activity label pushed by the crew runner (e.g. "researching",
+   * "writing the plan", "creating an artifact"). Absent for heartbeat-fed
+   * presence and older servers — consumers fall back to "typing".
+   */
+  activity?: string;
+}
+
+interface LiveUpdatesContextValue {
+  connectionState: LiveConnectionState;
+  /** Subscribe the active WS to a thread's events (ref-counted). */
+  subscribeThread: (threadId: string) => void;
+  /** Unsubscribe (ref-counted; only sends unsubscribe when the last consumer leaves). */
+  unsubscribeThread: (threadId: string) => void;
+  /** Send a presence/typing heartbeat for a thread. */
+  sendPresence: (threadId: string, opts?: { typing?: boolean }) => void;
+  /** Register a callback fired whenever the WS reconnects after a drop. Returns an unsubscribe fn. */
+  onReconnect: (cb: () => void) => () => void;
+  /** Latest presence roster per thread (keyed by threadId). */
+  presenceByThread: Record<string, ThreadPresenceMember[]>;
+  /** Latest working-agents roster per thread (keyed by threadId). */
+  workingAgentsByThread: Record<string, ThreadWorkingAgent[]>;
+}
+
+const LiveUpdatesContext = createContext<LiveUpdatesContextValue | null>(null);
+
+// Safe no-op fallback used when a component renders outside LiveUpdatesProvider
+// (e.g. isolated component tests, Storybook). Live updates simply degrade to
+// nothing — the page still works, it just won't receive pokes/presence.
+const NOOP_LIVE_UPDATES: LiveUpdatesContextValue = {
+  connectionState: "connecting",
+  subscribeThread: () => {},
+  unsubscribeThread: () => {},
+  sendPresence: () => {},
+  onReconnect: () => () => {},
+  presenceByThread: {},
+  workingAgentsByThread: {},
+};
+
+/** Access the live-updates WS context (connection state, thread subscribe, presence). */
+export function useLiveUpdates(): LiveUpdatesContextValue {
+  return useContext(LiveUpdatesContext) ?? NOOP_LIVE_UPDATES;
+}
+
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+
+/**
+ * Plan 7: map a thread.* live event to the React Query keys to invalidate
+ * (refetch-on-poke). RBAC stays in REST; invalidation just triggers a refetch.
+ * Returns:
+ *   ["thread", companyId, threadId]   — canonical thread key (Plan 7 contract)
+ *   ["threads", companyId]            — the threads list
+ *   ["threads", companyId, threadId]  — the concrete detail key ThreadDetail uses
+ * Empty array when the event carries no threadId (e.g. presence is handled
+ * separately and never refetches).
+ */
+export function threadEventToInvalidations(
+  event: { type: string; threadId?: string },
+  companyId: string,
+): Array<readonly unknown[]> {
+  const threadId = event.threadId;
+  if (typeof threadId !== "string" || threadId.length === 0) return [];
+  return [
+    ["thread", companyId, threadId],
+    ["threads", companyId],
+    queryKeys.threads.list(companyId),
+    queryKeys.threads.detail(companyId, threadId),
+    queryKeys.discussions.list(companyId),
+    queryKeys.discussions.detail(companyId, threadId),
+  ];
+}
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -334,6 +427,22 @@ function invalidateHeartbeatQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
   }
+
+  // Broaden invalidation to issue views: a run completion typically changes
+  // issue status (in_progress → in_review / done / cancelled), so the list
+  // and any cached issue details need to be refreshed.  Mirrors the
+  // issueRefs-loop from Paperclip 68f69975, adapted for AoA (no issueRefs
+  // field in the live-event payload — invalidate the whole list instead).
+  const status = readString(payload.status);
+  if (status && TERMINAL_RUN_STATUSES.has(status)) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    // Also invalidate any issue detail / run queries keyed by runId in case
+    // the UI has the run's contextSnapshot.issueId cached.
+    const runId = readString(payload.runId);
+    if (runId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.runIssues(runId) });
+    }
+  }
 }
 
 function invalidateActivityQueries(
@@ -459,6 +568,8 @@ function handleLiveEvent(
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
+    // Cockpit Running card tracks queued + running runs → invalidate on both.
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast) gatedPushToast(gate, pushToast, "run-status", toast);
@@ -491,12 +602,43 @@ function handleLiveEvent(
     return;
   }
 
+  // Thread chat experience Phase 5 (Task 5.6 / plan R3): crew agents (and the
+  // founder) moving a card emit a company-broadcast `issue.status_changed`
+  // {companyId, issueId, status} — NOT a thread.* envelope. Invalidate the
+  // issues list and the Crew Board task query so the card moves columns live.
+  if (event.type === "issue.status_changed") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(expectedCompanyId) });
+    // Crew Board (unified flat tracker) key is ["tasks", "crew-board", companyId];
+    // a prefix match (the default predicate) refetches it.
+    queryClient.invalidateQueries({ queryKey: ["tasks", "crew-board", expectedCompanyId] });
+    // Also nudge the live-runs query so the "Live" pill clears/updates promptly.
+    queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(expectedCompanyId) });
+    // Cockpit live invalidation: task status changes affect review/myTasks/today cards
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
+    const issueId = readString(payload.issueId);
+    if (issueId) {
+      const details = readRecord(payload.details);
+      const issueRefs = resolveIssueQueryRefs(queryClient, expectedCompanyId, issueId, details);
+      for (const ref of issueRefs) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+      }
+    }
+    return;
+  }
+
   if (event.type === "discussion.entry.created") {
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
+    // Cockpit live invalidation: new entries may change pending discussion counts
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const discussionId = readString(payload.discussionId);
     if (discussionId) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.discussions.detail(expectedCompanyId, discussionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.threads.detail(expectedCompanyId, discussionId),
       });
     }
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
@@ -508,11 +650,34 @@ function handleLiveEvent(
     event.type === "discussion.extraction.failed"
   ) {
     queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
+    // Cockpit live invalidation: extraction status changes affect discussions card
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const discussionId = readString(payload.discussionId);
     if (discussionId) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.discussions.detail(expectedCompanyId, discussionId),
       });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.threads.detail(expectedCompanyId, discussionId),
+      });
+    }
+    return;
+  }
+
+  // Plan 7: thread.* events (refetch-on-poke). Presence is ephemeral and never
+  // refetches; the ThreadDetail page consumes thread.presence directly.
+  if (event.type.startsWith("thread.") && event.type !== "thread.presence") {
+    const threadId = readString(payload.threadId);
+    if (threadId) {
+      for (const key of threadEventToInvalidations({ type: event.type, threadId }, expectedCompanyId)) {
+        queryClient.invalidateQueries({ queryKey: key as unknown[] });
+      }
+      // Lifecycle changes (scope/participant) can also alter the threads list & badges.
+      queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(expectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: ["threads", expectedCompanyId] });
     }
     return;
   }
@@ -525,6 +690,8 @@ function handleLiveEvent(
   if (event.type === "internal_agent.reminder") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agentReminders(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
+    // Cockpit live invalidation: reminders affect the Today card
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     return;
   }
 
@@ -541,6 +708,8 @@ function handleLiveEvent(
   if (event.type === "internal_agent.run.status") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns(expectedCompanyId) });
+    // Cockpit live invalidation: internal agent run status affects running card
+    queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     const status = readString(payload.status);
     if (status === "failed") {
       gatedPushToast(gate, pushToast, "internal-agent-run", {
@@ -553,11 +722,137 @@ function handleLiveEvent(
   }
 }
 
+function parsePresenceMembers(payload: Record<string, unknown>): ThreadPresenceMember[] {
+  const raw = payload.members;
+  if (!Array.isArray(raw)) return [];
+  const out: ThreadPresenceMember[] = [];
+  for (const m of raw) {
+    if (typeof m !== "object" || m === null) continue;
+    const rec = m as Record<string, unknown>;
+    const userId = typeof rec.userId === "string" ? rec.userId : null;
+    if (!userId) continue;
+    out.push({
+      userId,
+      lastSeen: typeof rec.lastSeen === "number" ? rec.lastSeen : Date.now(),
+      typing: rec.typing === true,
+    });
+  }
+  return out;
+}
+
+function parseWorkingAgents(payload: Record<string, unknown>): ThreadWorkingAgent[] {
+  const raw = payload.workingAgents;
+  if (!Array.isArray(raw)) return [];
+  const out: ThreadWorkingAgent[] = [];
+  for (const item of raw) {
+    if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      if (typeof rec.agentId === "string" && typeof rec.name === "string") {
+        // activity is optional — the server adds it for crew runs; heartbeat
+        // presence and older servers omit it, in which case the pill says "typing".
+        const activity = typeof rec.activity === "string" && rec.activity.length > 0 ? rec.activity : undefined;
+        out.push({ agentId: rec.agentId, name: rec.name, activity });
+      }
+    }
+  }
+  return out;
+}
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+
+  // Live socket + the threads we want subscribed (ref-counted so multiple
+  // components can subscribe to the same thread). Held in refs so the context
+  // callbacks always see the current socket without re-subscribing the effect.
+  const socketRef = useRef<WebSocket | null>(null);
+  const subscribedThreadsRef = useRef<Map<string, number>>(new Map());
+  const reconnectListenersRef = useRef<Set<() => void>>(new Set());
+
+  const [connectionState, setConnectionState] = useState<LiveConnectionState>(
+    typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "connecting",
+  );
+  const [presenceByThread, setPresenceByThread] = useState<Record<string, ThreadPresenceMember[]>>({});
+  const [workingAgentsByThread, setWorkingAgentsByThread] = useState<Record<string, ThreadWorkingAgent[]>>({});
+
+  const sendRaw = useCallback((msg: Record<string, unknown>) => {
+    const sock = socketRef.current;
+    if (sock && sock.readyState === WebSocket.OPEN) {
+      sock.send(JSON.stringify(msg));
+      return true;
+    }
+    return false;
+  }, []);
+
+  const subscribeThread = useCallback(
+    (threadId: string) => {
+      if (!threadId) return;
+      const map = subscribedThreadsRef.current;
+      const next = (map.get(threadId) ?? 0) + 1;
+      map.set(threadId, next);
+      if (next === 1) sendRaw({ subscribe: threadId });
+    },
+    [sendRaw],
+  );
+
+  const unsubscribeThread = useCallback(
+    (threadId: string) => {
+      if (!threadId) return;
+      const map = subscribedThreadsRef.current;
+      const current = map.get(threadId) ?? 0;
+      if (current <= 1) {
+        map.delete(threadId);
+        sendRaw({ unsubscribe: threadId });
+        setPresenceByThread((prev) => {
+          if (!(threadId in prev)) return prev;
+          const copy = { ...prev };
+          delete copy[threadId];
+          return copy;
+        });
+        // Mirror the presence cleanup so stale working-agent state doesn't
+        // accumulate per visited thread for the session.
+        setWorkingAgentsByThread((prev) => {
+          if (!(threadId in prev)) return prev;
+          const copy = { ...prev };
+          delete copy[threadId];
+          return copy;
+        });
+      } else {
+        map.set(threadId, current - 1);
+      }
+    },
+    [sendRaw],
+  );
+
+  const sendPresence = useCallback(
+    (threadId: string, opts?: { typing?: boolean }) => {
+      if (!threadId) return;
+      sendRaw({ presence: threadId, typing: opts?.typing === true });
+    },
+    [sendRaw],
+  );
+
+  const onReconnect = useCallback((cb: () => void) => {
+    reconnectListenersRef.current.add(cb);
+    return () => {
+      reconnectListenersRef.current.delete(cb);
+    };
+  }, []);
+
+  // Track browser online/offline so the composer can warn instead of failing silently.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onOffline = () => setConnectionState("offline");
+    const onOnline = () => setConnectionState((s) => (s === "offline" ? "reconnecting" : s));
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -576,6 +871,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     const scheduleReconnect = () => {
       if (closed) return;
+      setConnectionState("reconnecting");
       reconnectAttempt += 1;
       const delayMs = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempt - 1, 4));
       reconnectTimer = window.setTimeout(() => {
@@ -589,12 +885,31 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(selectedCompanyId)}/events/ws`;
       socket = new WebSocket(url);
+      socketRef.current = socket;
 
       socket.onopen = () => {
-        if (reconnectAttempt > 0) {
+        const wasReconnect = reconnectAttempt > 0;
+        if (wasReconnect) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        setConnectionState("open");
+
+        // Re-subscribe every thread we still care about (the server registry is
+        // per-connection, so a fresh socket starts with zero subscriptions).
+        for (const threadId of subscribedThreadsRef.current.keys()) {
+          sendRaw({ subscribe: threadId });
+        }
+        // Notify consumers so they can catch up (refetch / sinceSeq) on reconnect.
+        if (wasReconnect) {
+          for (const cb of reconnectListenersRef.current) {
+            try {
+              cb();
+            } catch {
+              // listener errors must not break the socket
+            }
+          }
+        }
       };
 
       socket.onmessage = (message) => {
@@ -603,6 +918,17 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
+          // Presence is ephemeral — consume it directly into local state.
+          if (parsed.type === "thread.presence") {
+            const threadId = readString(parsed.payload?.threadId);
+            if (threadId) {
+              const members = parsePresenceMembers(parsed.payload ?? {});
+              setPresenceByThread((prev) => ({ ...prev, [threadId]: members }));
+              const working = parseWorkingAgents(parsed.payload ?? {});
+              setWorkingAgentsByThread((prev) => ({ ...prev, [threadId]: working }));
+            }
+            return;
+          }
           handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current);
         } catch {
           // Ignore non-JSON payloads.
@@ -614,11 +940,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       socket.onclose = () => {
+        if (socketRef.current === socket) socketRef.current = null;
         if (closed) return;
         scheduleReconnect();
       };
     };
 
+    setConnectionState("connecting");
     connect();
 
     return () => {
@@ -631,8 +959,24 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         socket.onclose = null;
         socket.close(1000, "provider_unmount");
       }
+      socketRef.current = null;
     };
-  }, [queryClient, selectedCompanyId, pushToast]);
+  }, [queryClient, selectedCompanyId, pushToast, sendRaw]);
 
-  return <>{children}</>;
+  const contextValue = useMemo<LiveUpdatesContextValue>(
+    () => ({
+      connectionState,
+      subscribeThread,
+      unsubscribeThread,
+      sendPresence,
+      onReconnect,
+      presenceByThread,
+      workingAgentsByThread,
+    }),
+    [connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect, presenceByThread, workingAgentsByThread],
+  );
+
+  return (
+    <LiveUpdatesContext.Provider value={contextValue}>{children}</LiveUpdatesContext.Provider>
+  );
 }

@@ -6,11 +6,16 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildRuntimeServiceProcessTreeKillCommand,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
   normalizeAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  refreshAdapterManagedPreviewRuntimeServiceRows,
+  refreshLocalProcessRuntimeServiceRows,
+  resolveRuntimeServiceReadinessOptions,
+  startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -24,6 +29,17 @@ const leasedRunIds = new Set<string>();
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
+
+describe("runtime service process cleanup", () => {
+  it("uses taskkill tree mode for Windows runtime service cleanup", () => {
+    expect(buildRuntimeServiceProcessTreeKillCommand(1234, "win32")).toEqual({
+      command: "taskkill.exe",
+      args: ["/PID", "1234", "/T", "/F"],
+    });
+
+    expect(buildRuntimeServiceProcessTreeKillCommand(1234, "linux")).toBeNull();
+  });
+});
 
 async function createTempRepo() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
@@ -116,6 +132,65 @@ function createWorkspaceOperationRecorderDouble() {
   return { recorder, operations };
 }
 
+function createConcurrentWorktreeCreationRecorder(input: {
+  repoRoot: string;
+  branchName: string;
+  worktreePath: string;
+}) {
+  let injected = false;
+  const operations: string[] = [];
+
+  const recorder: WorkspaceOperationRecorder = {
+    attachExecutionWorkspaceId: async () => undefined,
+    recordOperation: async (operationInput) => {
+      operations.push(operationInput.command ?? "");
+      if (
+        !injected &&
+        operationInput.phase === "worktree_prepare" &&
+        operationInput.command?.includes("git worktree add") &&
+        operationInput.command.includes(input.branchName)
+      ) {
+        injected = true;
+        await runGit(input.repoRoot, [
+          "worktree",
+          "add",
+          "-b",
+          input.branchName,
+          input.worktreePath,
+          "HEAD",
+        ]);
+      }
+
+      const result = await operationInput.run();
+      return {
+        id: `race-op-${operations.length}`,
+        companyId: "company-1",
+        executionWorkspaceId: null,
+        heartbeatRunId: "run-1",
+        phase: operationInput.phase,
+        command: operationInput.command ?? null,
+        cwd: operationInput.cwd ?? null,
+        status: (result.status ?? "succeeded") as WorkspaceOperation["status"],
+        exitCode: result.exitCode ?? null,
+        logStore: "local_file",
+        logRef: `race-op-${operations.length}.ndjson`,
+        logBytes: 0,
+        logSha256: null,
+        logCompressed: false,
+        stdoutExcerpt: result.stdout ?? null,
+        stderrExcerpt: result.stderr ?? null,
+        metadata: operationInput.metadata ?? null,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    },
+  };
+
+  return { recorder, operations };
+}
+
 afterEach(async () => {
   await Promise.all(
     Array.from(leasedRunIds).map(async (runId) => {
@@ -128,6 +203,18 @@ afterEach(async () => {
   delete process.env.AOA_INSTANCE_ID;
   delete process.env.AOA_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
+});
+
+describe("resolveRuntimeServiceReadinessOptions", () => {
+  it("uses the dev-server-aware readiness timeout when starting services", () => {
+    expect(resolveRuntimeServiceReadinessOptions({
+      service: {
+        name: "web",
+        command: "pnpm dev",
+        readiness: { type: "http" },
+      },
+    })).toEqual({ type: "http", timeoutSec: 90, intervalMs: 500 });
+  });
 });
 
 describe("realizeExecutionWorkspace", () => {
@@ -197,6 +284,55 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.created).toBe(false);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+  });
+
+  it("reuses a worktree created concurrently between path check and git add", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-451-concurrent-worktree-race";
+    const worktreePath = path.join(repoRoot, ".aoa", "worktrees", branchName);
+    const { recorder, operations } = createConcurrentWorktreeCreationRecorder({
+      repoRoot,
+      branchName,
+      worktreePath,
+    });
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-451",
+        title: "Concurrent worktree race",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.created).toBe(false);
+    expect(workspace.branchName).toBe(branchName);
+    expect(path.resolve(workspace.cwd)).toBe(path.resolve(worktreePath));
+    expect(operations.filter((command) => command.includes("git worktree add"))).toHaveLength(1);
+
+    const currentBranch = (
+      await execFileAsync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: workspace.cwd })
+    ).stdout.trim();
+    expect(currentBranch).toBe(branchName);
   });
 
   // Skipped on Windows: provision script is bash with `#!/usr/bin/env bash`
@@ -1107,6 +1243,7 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       startedByRunId: "run-1",
     });
     expect(first[0]?.id).toBe(second[0]?.id);
+    expect(first[0]?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
   it("prefers execution workspace ids over cwd for execution-scoped adapter services", () => {
@@ -1135,6 +1272,541 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       scopeType: "execution_workspace",
       scopeId: "execution-workspace-1",
       executionWorkspaceId: "execution-workspace-1",
+    });
+  });
+
+  it("deduplicates reports that resolve to the same stable service id", () => {
+    const workspace = buildWorkspace("/tmp/project");
+
+    const refs = normalizeAdapterManagedRuntimeServices({
+      adapterType: "codex_local",
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        name: "Codex Agent",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      reports: [
+        {
+          serviceName: "localhost:54853",
+          scopeType: "execution_workspace",
+          url: "http://127.0.0.1:54853/",
+          port: 54853,
+          healthStatus: "healthy",
+        },
+        {
+          serviceName: "localhost:54853",
+          scopeType: "execution_workspace",
+          url: "http://127.0.0.1:54853/",
+          port: 54853,
+          healthStatus: "healthy",
+        },
+      ],
+    });
+
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      serviceName: "localhost:54853",
+      scopeType: "execution_workspace",
+      scopeId: "execution-workspace-1",
+      url: "http://127.0.0.1:54853/",
+      port: 54853,
+    });
+  });
+
+  it("uses the execution workspace and URL as the stable identity for preview services", () => {
+    const workspace = buildWorkspace("/tmp/project");
+    const commonInput = {
+      adapterType: "codex_local",
+      agent: {
+        id: "agent-1",
+        name: "Codex Agent",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      reports: [
+        {
+          serviceName: "localhost:54853",
+          scopeType: "execution_workspace" as const,
+          url: "http://127.0.0.1:54853/",
+          port: 54853,
+          command: null,
+          providerRef: null,
+          healthStatus: "healthy" as const,
+        },
+      ],
+    };
+
+    const first = normalizeAdapterManagedRuntimeServices({
+      ...commonInput,
+      runId: "run-1",
+    });
+    const second = normalizeAdapterManagedRuntimeServices({
+      ...commonInput,
+      runId: "run-2",
+    });
+
+    expect(first[0]?.id).toBe(second[0]?.id);
+  });
+});
+
+describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
+  const baseRow = {
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    executionWorkspaceId: "execution-workspace-1",
+    issueId: "issue-1",
+    scopeType: "execution_workspace",
+    scopeId: "execution-workspace-1",
+    serviceName: "localhost:54853",
+    status: "running",
+    lifecycle: "ephemeral",
+    reuseKey: null,
+    command: null,
+    cwd: "/tmp/project",
+    port: 54853,
+    url: "http://127.0.0.1:54853/",
+    provider: "adapter_managed",
+    providerRef: null,
+    ownerAgentId: "agent-1",
+    startedByRunId: "run-1",
+    lastUsedAt: new Date("2026-05-16T00:00:00.000Z"),
+    startedAt: new Date("2026-05-16T00:00:00.000Z"),
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "healthy",
+    healthCheckedAt: null,
+    createdAt: new Date("2026-05-16T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-16T00:00:00.000Z"),
+  };
+
+  it("does not probe preview rows checked within the TTL", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:30.000Z");
+    const freshRow = {
+      ...baseRow,
+      healthCheckedAt: new Date("2026-05-17T10:00:10.000Z"),
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [freshRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => {
+        probes += 1;
+        return false;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(freshRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("probes preview rows whose health check is stale", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:01:00.000Z");
+    const staleRow = {
+      ...baseRow,
+      healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [staleRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      status: "running",
+      healthStatus: "healthy",
+      healthCheckedAt: now,
+      stoppedAt: null,
+      updatedAt: now,
+    });
+  });
+
+  it("keeps an active adapter-managed preview recoverable after one failed probe", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [baseRow as any],
+      now,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+    expect(result.updates).toEqual([
+      {
+        id: baseRow.id,
+        status: "running",
+        healthStatus: "unhealthy",
+        stoppedAt: null,
+        healthCheckedAt: now,
+        updatedAt: now,
+      },
+    ]);
+  });
+
+  it("marks adapter-managed previews stopped after a consecutive failed probe", async () => {
+    const now = new Date("2026-05-16T10:01:00.000Z");
+    const unhealthyRow = {
+      ...baseRow,
+      healthStatus: "unhealthy",
+      healthCheckedAt: new Date("2026-05-16T10:00:00.000Z"),
+      stoppedAt: null,
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [unhealthyRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it("does not resurrect stopped adapter-managed previews even when the URL is reachable", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+    let probes = 0;
+    const stoppedRow = {
+      ...baseRow,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: new Date("2026-05-16T09:00:00.000Z"),
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [stoppedRow as any],
+      now,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(stoppedRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("marks reachable starting adapter-managed previews running and healthy", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+    const startingRow = {
+      ...baseRow,
+      status: "starting",
+      healthStatus: "unknown",
+      stoppedAt: null,
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [startingRow as any],
+      now,
+      probeUrl: async () => true,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it("does not probe controllable local process services", async () => {
+    let probes = 0;
+    const localProcessRow = {
+      ...baseRow,
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "local_process",
+      command: "pnpm dev",
+      providerRef: "pid:123",
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [localProcessRow as any],
+      now: new Date("2026-05-16T10:00:00.000Z"),
+      probeUrl: async () => {
+        probes += 1;
+        return false;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(localProcessRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("limits concurrent preview probes without dropping previews", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      ...baseRow,
+      id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
+      serviceName: `localhost:${55000 + index}`,
+      port: 55000 + index,
+      url: `http://127.0.0.1:${55000 + index}/`,
+      healthCheckedAt: null,
+    }));
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: rows as any,
+      now,
+      ttlMs: 30_000,
+      maxConcurrency: 5,
+      probeUrl: async () => {
+        probes += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(12);
+    expect(maxActive).toBeLessThanOrEqual(5);
+    expect(result.rows).toHaveLength(12);
+    expect(result.rows.every((row) => row.status === "running")).toBe(true);
+  });
+
+  it("deduplicates concurrent probes for the same preview service", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+    const row = {
+      ...baseRow,
+      healthCheckedAt: null,
+    };
+
+    const probeUrl = async () => {
+      probes += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return true;
+    };
+
+    const [first, second] = await Promise.all([
+      refreshAdapterManagedPreviewRuntimeServiceRows({
+        rows: [row as any],
+        now,
+        ttlMs: 30_000,
+        probeUrl,
+      }),
+      refreshAdapterManagedPreviewRuntimeServiceRows({
+        rows: [row as any],
+        now,
+        ttlMs: 30_000,
+        probeUrl,
+      }),
+    ]);
+
+    expect(probes).toBe(1);
+    expect(first.rows[0]?.healthStatus).toBe("healthy");
+    expect(second.rows[0]?.healthStatus).toBe("healthy");
+  });
+});
+
+describe("refreshLocalProcessRuntimeServiceRows", () => {
+  const baseRow = {
+    id: "33333333-3333-4333-8333-333333333333",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    executionWorkspaceId: "execution-workspace-1",
+    issueId: "issue-1",
+    scopeType: "execution_workspace",
+    scopeId: "execution-workspace-1",
+    serviceName: "web",
+    status: "running",
+    lifecycle: "shared",
+    reuseKey: null,
+    command: "pnpm dev",
+    cwd: "/tmp/project",
+    port: 54853,
+    url: "http://127.0.0.1:54853/",
+    provider: "local_process",
+    providerRef: "12345",
+    ownerAgentId: "agent-1",
+    startedByRunId: null,
+    lastUsedAt: new Date("2026-05-16T00:00:00.000Z"),
+    startedAt: new Date("2026-05-16T00:00:00.000Z"),
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "unknown",
+    healthCheckedAt: null,
+    createdAt: new Date("2026-05-16T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-16T00:00:00.000Z"),
+  };
+
+  it("probes stale local-process service URLs", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [baseRow as any],
+      now,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it("does not resurrect stopped local-process services even when the URL is reachable", async () => {
+    let probes = 0;
+    const stoppedRow = {
+      ...baseRow,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: new Date("2026-05-16T09:00:00.000Z"),
+      healthCheckedAt: new Date("2026-05-16T09:00:00.000Z"),
+    };
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [stoppedRow as any],
+      now: new Date("2026-05-17T10:00:00.000Z"),
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(stoppedRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("probes stale local-process URLs even when the process is still registered in memory", async () => {
+    const refs = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(),
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-root-1",
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        cwd: process.cwd(),
+        branchName: null,
+        worktreePath: null,
+        warnings: [],
+        created: false,
+      },
+      executionWorkspaceId: "execution-workspace-1",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"require('http').createServer((_,r)=>r.end('ok')).listen(process.env.PORT, '127.0.0.1')\"",
+              port: { type: "auto" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    try {
+      let probes = 0;
+      const now = new Date("2026-05-17T10:00:00.000Z");
+      const result = await refreshLocalProcessRuntimeServiceRows({
+        rows: [{
+          ...baseRow,
+          id: refs[0]!.id,
+          port: refs[0]!.port,
+          url: `http://127.0.0.1:${refs[0]!.port}/`,
+          status: "running",
+          healthStatus: "healthy",
+          healthCheckedAt: null,
+        } as any],
+        now,
+        probeUrl: async () => {
+          probes += 1;
+          return false;
+        },
+      });
+
+      expect(probes).toBe(1);
+      expect(result.rows[0]).toMatchObject({
+        status: "running",
+        healthStatus: "unhealthy",
+        stoppedAt: null,
+        healthCheckedAt: now,
+        updatedAt: now,
+      });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-1",
+        workspaceCwd: process.cwd(),
+      });
+    }
+  });
+
+  it("marks local-process services stopped after a consecutive failed probe", async () => {
+    const now = new Date("2026-05-17T10:01:00.000Z");
+    const unhealthyRow = {
+      ...baseRow,
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+      healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+    };
+
+    const result = await refreshLocalProcessRuntimeServiceRows({
+      rows: [unhealthyRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+      healthCheckedAt: now,
+      updatedAt: now,
     });
   });
 });

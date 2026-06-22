@@ -178,9 +178,10 @@ export function permissionService(db: Db) {
 
   /**
    * Check if user can approve/reject memory items.
-   * - Founder: can approve all
-   * - Team lead: can approve domain and active_context for their department
-   * - Team member: cannot approve
+   * - Founder: can approve all layers (sole gatekeeper for identity + domain).
+   * - Team lead: can approve only `active_context` for their own department.
+   * - Team member: cannot approve.
+   * (Decisions #15/#52; R5 — team leads must NOT approve domain.)
    */
   async function canApproveMemory(
     companyId: string,
@@ -195,8 +196,11 @@ export function permissionService(db: Db) {
     const effectiveRole = await getEffectiveRole(companyId, userId);
     if (effectiveRole !== "team_lead") return false;
 
+    // R5: the founder is the sole gatekeeper for identity AND domain (Decisions
+    // #15/#52). A team lead may approve only `active_context` for their own
+    // department (working memory is auto-created and never gated through here).
     const layer = memoryItem?.layer;
-    if (layer === "identity") return false;
+    if (layer !== "active_context") return false;
 
     const departmentId = memoryItem?.departmentId;
     if (!departmentId) return false;

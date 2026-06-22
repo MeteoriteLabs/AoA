@@ -40,7 +40,7 @@ You have two options:
 
 ## What stays the same forever
 
-These identifiers are wire-compat and will not change. See [Wire Compatibility Reference](/aoa/reference/wire-compat) for the full contract.
+These identifiers are wire-compat and will not change. See [Wire Compatibility Reference](../architecture/wire-compat.md) for the full contract.
 
 - `paperclipai` CLI bin alias
 - `X-Paperclip-Run-Id` HTTP header

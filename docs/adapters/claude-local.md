@@ -14,14 +14,19 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `cwd` | string | No | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `instructionsFilePath` | string | No | Absolute path to a markdown instructions file injected at runtime |
 | `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
+| `effort` | string | No | Reasoning effort passed via `--effort` (`low` \| `medium` \| `high`) |
+| `chrome` | boolean | No | Pass `--chrome` when running Claude |
 | `promptTemplate` | string | No | Prompt used for all runs |
-| `env` | object | No | Environment variables (supports secret refs) |
-| `timeoutSec` | number | No | Process timeout (0 = no timeout) |
-| `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat |
-| `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (dev only) |
+| `dangerouslySkipPermissions` | boolean | No | Pass `--dangerously-skip-permissions` to Claude (dev only) |
+| `command` | string | No | CLI command to invoke (default: `claude`) |
+| `extraArgs` | string[] | No | Additional CLI arguments |
+| `env` | object | No | Environment variables (supports secret refs) |
+| `timeoutSec` | number | No | Process timeout in seconds (0 = no timeout) |
+| `graceSec` | number | No | Grace period before force-kill after timeout/cancel |
 
 ## Prompt Templates
 

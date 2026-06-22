@@ -42,6 +42,8 @@ export interface RuntimeSkillEntry {
   name: string;
   markdown: string;
   trustLevel: string;
+  description?: string;
+  triggerPhrases?: string[];
   /** Ancillary files (non-SKILL.md) from local_path skills, injected alongside markdown. */
   files?: Array<{ path: string; content: string }>;
 }
@@ -1273,6 +1275,13 @@ export function resolveSkillReferenceByIdentifier(
   const byId = skills.find((s) => s.id === trimmed);
   if (byId) return { skill: byId, ambiguous: false };
 
+  // Exact key match — catalog skills store their raw catalog ID as the key
+  // (e.g. "skill:github-skills/obra/superpowers/brainstorming"), which may
+  // contain colons that normalizeSkillKey strips. Always try the exact key
+  // before attempting normalization so catalog skill refs round-trip correctly.
+  const byKeyExact = skills.find((s) => s.key === trimmed);
+  if (byKeyExact) return { skill: byKeyExact, ambiguous: false };
+
   // Normalized key match (normalizes each path segment independently)
   const normalizedKey = normalizeSkillKey(trimmed);
   if (normalizedKey) {
@@ -1444,6 +1453,12 @@ export function companySkillService(db: Db) {
             const runtimeConfig = await secrets.resolveAdapterConfigForRuntime(
               agent.companyId,
               (agent.adapterConfig ?? {}) as Record<string, unknown>,
+              {
+                consumerType: "agent",
+                consumerId: agent.id,
+                actorType: "system",
+                actorId: "company-skills",
+              },
             );
             const snapshot = await adapter.listSkills({
               agentId: agent.id,
@@ -1496,7 +1511,16 @@ export function companySkillService(db: Db) {
 
     // For local_path source, try reading from filesystem
     if (skill.sourceType === "local_path" && skill.sourceLocator) {
-      const filePath = path.join(skill.sourceLocator, normalizedPath);
+      // SECURITY: reject path traversal — normalizedPath is joined to the skill
+      // directory on disk, and normalizePortablePath does NOT strip "../", so an
+      // unvalidated path escapes the skill dir (arbitrary file read).
+      let safeRelativePath: string;
+      try {
+        safeRelativePath = validatePackageFileKey(skill.sourceLocator, normalizedPath);
+      } catch {
+        return null;
+      }
+      const filePath = path.join(skill.sourceLocator, safeRelativePath);
       try {
         const content = await fs.readFile(filePath, "utf8");
         const ext = path.extname(normalizedPath).toLowerCase();
@@ -1549,6 +1573,14 @@ export function companySkillService(db: Db) {
     }
 
     const normalizedPath = normalizePortablePath(filePath) || "SKILL.md";
+    // SECURITY: reject path traversal — normalizedPath is joined to the skill
+    // directory on disk, and normalizePortablePath does NOT strip "../", so an
+    // unvalidated path escapes the skill dir (arbitrary file write).
+    try {
+      validatePackageFileKey(skill.sourceLocator ?? ".", normalizedPath);
+    } catch {
+      throw unprocessable(`Invalid file path "${filePath}": path traversal not allowed`);
+    }
     const { editable } = deriveSkillSourceInfo(skill);
     if (!editable) {
       throw unprocessable("GitHub-managed skills can only be edited via install-update");
@@ -2196,9 +2228,57 @@ export function companySkillService(db: Db) {
         const ancillary = await readAncillarySkillFiles(skill.sourceLocator);
         if (ancillary.length > 0) entry.files = ancillary;
       }
+      const catalogBundleInstallPath = asString(skill.metadata?.catalogBundleInstallPath);
+      if (skill.sourceType === "catalog" && catalogBundleInstallPath) {
+        const ancillary = await readAncillarySkillFiles(catalogBundleInstallPath);
+        if (ancillary.length > 0) entry.files = ancillary;
+      }
       entries.push(entry);
     }
     return entries;
+  }
+
+  async function listCompactSkillEntries(
+    companyId: string,
+    agentId: string,
+  ): Promise<Array<{ key: string; name: string; description: string; triggerPhrases: string[] }>> {
+    const agent = await agents.getById(agentId);
+    if (!agent || agent.companyId !== companyId) return [];
+    const skillKeys: string[] = Array.isArray((agent as any).skillKeys)
+      ? (agent as any).skillKeys
+      : [];
+    if (skillKeys.length === 0) return [];
+    const allSkills = await listFull(companyId);
+    return allSkills
+      .filter((skill) => skillKeys.includes(skill.key))
+      .map((skill) => ({
+        key: skill.key,
+        name: skill.name,
+        description: skill.description ?? skill.name,
+        triggerPhrases: Array.isArray((skill as any).triggerPhrases)
+          ? (skill as any).triggerPhrases
+          : [],
+      }));
+  }
+
+  /**
+   * Returns full CompanySkillListItem rows scoped to an agent's skillKeys.
+   * Empty skillKeys → empty list (explicit: no skills selected). Used by the
+   * Commander skill picker so it shows exactly the curated selection.
+   */
+  async function listSkillListItemsForAgent(
+    companyId: string,
+    agentId: string,
+  ): Promise<CompanySkillListItem[]> {
+    const agent = await agents.getById(agentId);
+    if (!agent || agent.companyId !== companyId) return [];
+    const skillKeys: string[] = Array.isArray((agent as any).skillKeys)
+      ? (agent as any).skillKeys
+      : [];
+    if (skillKeys.length === 0) return [];
+    const keySet = new Set(skillKeys);
+    const all = await list(companyId);
+    return all.filter((s) => keySet.has(s.key));
   }
 
   // -----------------------------------------------------------------------
@@ -2358,6 +2438,19 @@ export function companySkillService(db: Db) {
       }
     }
     if (skill.sourceType === "local_path") return "Local";
+    if (skill.sourceType === "catalog") {
+      const metadata = skill.metadata;
+      if (metadata && typeof metadata === "object") {
+        const provider = (metadata as Record<string, unknown>).catalogProvider;
+        if (provider && typeof provider === "object") {
+          const name = (provider as Record<string, unknown>).name;
+          if (typeof name === "string" && name.length > 0) return name;
+        }
+        const packageId = asString((metadata as Record<string, unknown>).catalogPackageId);
+        if (packageId) return packageId;
+      }
+      return "Catalog";
+    }
     return null;
   }
 
@@ -2392,6 +2485,8 @@ export function companySkillService(db: Db) {
     scanProjectWorkspaces,
     installUpdate,
     listRuntimeSkillEntries,
+    listCompactSkillEntries,
+    listSkillListItemsForAgent,
     resolveSkillKeys,
     upsertImportedSkills,
     usage,

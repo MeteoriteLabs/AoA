@@ -47,6 +47,7 @@ export const queryKeys = {
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
+    tree: (companyId: string) => ["goals", "tree", companyId] as const,
     listByProject: (companyId: string, projectId: string) =>
       ["goals", companyId, "project", projectId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
@@ -56,6 +57,7 @@ export const queryKeys = {
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", id, "runs"] as const,
     activity: (companyId: string, id: string) => ["routines", companyId, id, "activity"] as const,
+    revisions: (routineId: string) => ["routineRevisions", routineId] as const,
   },
   approvals: {
     list: (companyId: string, status?: string) =>
@@ -93,10 +95,19 @@ export const queryKeys = {
     session: ["auth", "session"] as const,
     profile: ["auth", "profile"] as const,
   },
+  adapters: {
+    all: ["adapters"] as const,
+  },
   health: ["health"] as const,
+  companyHealth: (companyId: string) => ["health", "company", companyId] as const,
+  instanceHealth: ["health", "instance"] as const,
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
+    providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
+    runtimeProviderKeys: (companyId: string) => ["runtime-provider-keys", companyId] as const,
+    bindings: (secretId: string) => ["secret-bindings", secretId] as const,
+    accessEvents: (secretId: string) => ["secret-access-events", secretId] as const,
   },
   github: {
     patStatus: (companyId: string) => ["github", "patStatus", companyId] as const,
@@ -121,11 +132,20 @@ export const queryKeys = {
     list: (companyId: string) => ["memory", companyId] as const,
     pending: (companyId: string) => ["memory", companyId, "pending"] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
+      neighbors: (companyId: string, id: string) =>
+        ["memory", companyId, id, "neighbors"] as const,
+      companyGraph: (companyId: string, optionsKey = "default") =>
+        ["memory", companyId, "company-graph", optionsKey] as const,
+      usage: (companyId: string, id: string) =>
+        ["memory", companyId, id, "usage"] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
     // V2.6 Phase 3
     retrievalsForIssue: (companyId: string, issueId: string) =>
       ["memory", companyId, "retrievals", "issue", issueId] as const,
+    // Phase 7: Commander Memory cockpit card
+    retrievalsForConversation: (companyId: string, conversationId: string) =>
+      ["memory", companyId, "retrievals", "conversation", conversationId] as const,
     // V2.6 Phase 4
     starterTemplates: (companyId: string) =>
       ["memory", companyId, "starter-templates"] as const,
@@ -171,9 +191,15 @@ export const queryKeys = {
     list: (companyId: string) => ["discussions", companyId] as const,
     detail: (companyId: string, id: string) => ["discussions", companyId, id] as const,
   },
+  threads: {
+    list: (companyId: string) => ["threads", companyId, "list"] as const,
+    detail: (companyId: string, id: string) => ["threads", companyId, id] as const,
+    inbox: (companyId: string) => ["threads-inbox", companyId] as const,
+  },
   agentGreeting: (companyId: string) => ["agent-greeting", companyId] as const,
   agentConversation: (companyId: string) => ["agent-conversation", companyId] as const,
   agentConfig: (companyId: string) => ["agent-config", companyId] as const,
+  commanderSkills: (companyId: string) => ["commander-skills", companyId] as const,
   agentRuns: (companyId: string) => ["agent-runs", companyId] as const,
   agentReminders: (companyId: string) => ["agent-reminders", companyId] as const,
   notifications: (companyId: string) => ["notifications", companyId] as const,
@@ -184,6 +210,10 @@ export const queryKeys = {
   artifacts: {
     byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
     detail: (id: string) => ["artifacts", "detail", id] as const,
+  },
+  taskOutputs: {
+    byIssue: (issueId: string) => ["task-outputs", "issue", issueId] as const,
+    detail: (id: string) => ["task-outputs", "detail", id] as const,
   },
   mcp: {
     status: (companyId: string) => ["mcp", companyId, "status"] as const,
@@ -219,6 +249,11 @@ export const queryKeys = {
     runtimeServices: (id: string) =>
       ["executionWorkspaces", "detail", id, "runtime-services"] as const,
   },
+  environments: {
+    list: (companyId: string) => ["environments", companyId] as const,
+    detail: (companyId: string, id: string) => ["environments", companyId, id] as const,
+  },
+  cockpit: (companyId: string) => ["cockpit", companyId] as const,
   plugins: {
     all: ["plugins"] as const,
     list: ["plugins", "list"] as const,

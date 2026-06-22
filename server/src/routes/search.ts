@@ -19,11 +19,24 @@ export function searchRoutes(db: Db) {
 
     const includeArchived = req.query.includeArchived === "true";
     const limitPerType = req.query.limitPerType ? Number(req.query.limitPerType) : undefined;
+
+    // Phase 1 Phase E batch 3 (T24): thread-only filters. The service drops
+    // unrecognized values (anything outside `THREAD_INTENTS`/`THREAD_PHASES`
+    // narrows nothing because the WHERE clause won't match) — we accept the
+    // raw strings here and let the SQL ignore unmatched rows.
+    const intent = typeof req.query.intent === "string" ? req.query.intent : undefined;
+    const phase = typeof req.query.phase === "string" ? req.query.phase : undefined;
+    const participant =
+      typeof req.query.participant === "string" ? req.query.participant : undefined;
+
     const results = await svc.search(companyId, {
       query: q,
       actor: req.actor,
       includeArchived,
       limitPerType: Number.isFinite(limitPerType) ? limitPerType : undefined,
+      ...(intent ? { intent } : {}),
+      ...(phase ? { phase } : {}),
+      ...(participant ? { participant } : {}),
     });
 
     res.json(results);

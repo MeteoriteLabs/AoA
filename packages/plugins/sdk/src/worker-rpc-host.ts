@@ -594,6 +594,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             title: input.title,
             description: input.description,
             priority: input.priority,
+            workMode: input.workMode,
             assigneeAgentId: input.assigneeAgentId,
           });
         },

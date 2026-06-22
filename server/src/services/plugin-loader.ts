@@ -1965,10 +1965,18 @@ export function pluginLoader(
       mkdirSync(scratchPath, { recursive: true });
 
       // Apply Node permission model for sandboxed plugins.
+      // Resolve the plugin's package directory so the sandbox can scope
+      // `--allow-fs-read` to it (instead of full host read). Local-path installs
+      // persist `packagePath`; npm installs land under the managed plugins root.
+      const packageDir =
+        plugin.packagePath && existsSync(plugin.packagePath)
+          ? plugin.packagePath
+          : resolveManagedInstallPackageDir(localPluginDir, plugin.packageName);
       const sandboxFlags = buildSandboxExecArgv({
         pluginId,
         trustTier: plugin.trustTier,
         capabilities: (manifest.capabilities ?? []) as PluginCapability[],
+        packageDir,
       });
 
       // --permission flags break the test runner's module resolver; sandbox is dev/prod only.

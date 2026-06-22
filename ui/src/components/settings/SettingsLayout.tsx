@@ -1,17 +1,16 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useSidebar } from "@/context/SidebarContext";
-import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity } from "lucide-react";
+import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { SidebarCollapseToggle } from "@/components/SidebarCollapseToggle";
 
 const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 
 export type SettingsSectionId =
-  | "general" | "commander" | "llm" | "budget" | "mcp" | "github"
+  | "general" | "health" | "commander" | "llm" | "budget" | "mcp" | "github"
   | "plugins" | "marketplace" | "archive"
-  | "activity";
+  | "activity" | "environments" | "secrets";
 
 interface SettingsItem {
   id: SettingsSectionId;
@@ -31,11 +30,14 @@ export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
     { id: "activity",    label: "Activity",           icon: Activity },
   ]},
   { group: "Operations", items: [
-    { id: "commander",   label: "Commander",          icon: Shield },
-    { id: "llm",         label: "LLM providers",      icon: KeyRound },
-    { id: "budget",      label: "Budget & caps",      icon: DollarSign },
-    { id: "mcp",         label: "MCP API keys",       icon: Plug },
-    { id: "github",      label: "GitHub",             icon: Github, tone: "transitional" },
+    { id: "health",       label: "Health",             icon: HeartPulse },
+    { id: "commander",    label: "Commander",          icon: Shield },
+    { id: "llm",          label: "LLM providers",      icon: KeyRound },
+    { id: "budget",       label: "Budget & caps",      icon: DollarSign },
+    { id: "mcp",          label: "MCP API keys",       icon: Plug },
+    { id: "environments", label: "Environments",       icon: Layers },
+    { id: "secrets",      label: "Secrets",            icon: KeyRound },
+    { id: "github",       label: "GitHub",             icon: Github, tone: "transitional" },
   ]},
   { group: "Extensions", items: [
     { id: "plugins",     label: "Plugins",            icon: Puzzle },
@@ -76,17 +78,39 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
     });
   };
 
-  const secondaryWidth = secondaryCollapsed ? 48 : 200;
-
   return (
-    <div className="relative flex h-full min-h-0 flex-col md:flex-row">
+    <div className="relative flex h-full min-h-0 flex-col bg-muted/30 p-2 md:flex-row md:gap-2">
       {/* SecondarySidebar — desktop only. NO redundant "Settings" header. */}
       <aside
         className={cn(
-          "hidden md:flex shrink-0 flex-col bg-card/30 border-r border-border transition-[width] duration-[180ms]",
+          "hidden md:flex shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm transition-[width] duration-[180ms]",
           secondaryCollapsed ? "w-[48px]" : "w-[200px]",
         )}
       >
+        <div
+          className={cn(
+            "flex h-[42px] shrink-0 items-center border-b border-border",
+            secondaryCollapsed ? "justify-center px-0" : "gap-2 px-3",
+          )}
+          data-testid="settings-secondary-header"
+        >
+          {!secondaryCollapsed && (
+            <div className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+              Settings
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={toggleSecondary}
+            title={secondaryCollapsed ? "Expand settings nav" : "Collapse settings nav"}
+            aria-label={secondaryCollapsed ? "Expand settings nav" : "Collapse settings nav"}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          >
+            {secondaryCollapsed
+              ? <PanelLeft className="h-4 w-4" aria-hidden />
+              : <PanelLeftClose className="h-4 w-4" aria-hidden />}
+          </button>
+        </div>
         <nav
           className={cn(
             "flex-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none] py-3",
@@ -153,17 +177,6 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
           ))}
         </nav>
       </aside>
-
-      {/* External collapse toggle — hidden on mobile (parity with primary sidebar) */}
-      {!isMobile && (
-        <SidebarCollapseToggle
-          collapsed={secondaryCollapsed}
-          onToggle={toggleSecondary}
-          sidebarWidth={secondaryWidth}
-          className="hidden md:inline-flex"
-          ariaLabel={secondaryCollapsed ? "Expand settings nav" : "Collapse settings nav"}
-        />
-      )}
 
       {/* Mobile sub-nav — horizontal scrollable pill row */}
       <div className="md:hidden border-b border-border-soft py-2 px-3 flex gap-2 overflow-x-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">

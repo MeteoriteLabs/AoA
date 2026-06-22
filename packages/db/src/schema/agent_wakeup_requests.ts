@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -17,6 +18,13 @@ export const agentWakeupRequests = pgTable(
     requestedByActorType: text("requested_by_actor_type"),
     requestedByActorId: text("requested_by_actor_id"),
     idempotencyKey: text("idempotency_key"),
+    // Optional hard dedup key for cross-process coalescing of queued wakeups.
+    // Populated by services (e.g. thread-events Adjutant debounce) as
+    // `${agentId}:${threadId}:queued` paired with `.onConflictDoNothing()` so
+    // duplicate inserts are rejected at the DB layer via the partial unique
+    // index below — historical (claimed/finished/failed) rows sharing the
+    // same dedupKey are unaffected.
+    dedupKey: text("dedup_key"),
     runId: uuid("run_id"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
@@ -36,5 +44,15 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    companyIdempotencyKeyUq: uniqueIndex("agent_wakeup_requests_company_idempotency_key_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`idempotency_key is not null and reason in ('max_turn_continuation_retry', 'issue_monitor_due', 'finish_successful_run_handoff')`),
+    // Partial unique index for hard cross-process dedup of *queued* wakeups.
+    // Only fires while a row is still queued; once it transitions to
+    // claimed/finished/failed the dedupKey may legitimately recur for the
+    // next queued wakeup. NULL dedupKey rows are excluded entirely.
+    dedupKeyQueuedUq: uniqueIndex("agent_wakeup_requests_dedup_key_queued_uq")
+      .on(table.dedupKey)
+      .where(sql`status = 'queued' AND dedup_key IS NOT NULL`),
   }),
 );

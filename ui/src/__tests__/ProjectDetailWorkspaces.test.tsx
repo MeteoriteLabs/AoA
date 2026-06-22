@@ -8,6 +8,7 @@
 // Workspaces) needs the same treatment as rows are added.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // These tests render a multi-query page; give enough headroom for slow CI runs.
 vi.setConfig({ testTimeout: 15000 });
@@ -33,6 +34,24 @@ const mockProject = {
   companyId: "comp-1",
   issuePrefix: "TC",
   simpleId: "ENG",
+  // Intentionally NOT "software_development" here: the workspace-list tests
+  // (ENG-99-fix-auth, archive, etc.) rely on ProjectWorkspaces rendering.
+  // For software_development the Workspaces tab renders GitCommandCentre instead.
+  // Individual tests that need software_development override via mockResolvedValue.
+  functionType: null as string | null,
+  goalIds: [],
+  goalId: null,
+  goals: [],
+  workspaces: [],
+  leadAgentId: null,
+  createdAt: "2026-04-01T09:00:00Z",
+  updatedAt: "2026-04-01T10:00:00Z",
+  executionWorkspacePolicy: {
+    enabled: true,
+    defaultMode: "isolated_workspace",
+    allowIssueOverride: true,
+    workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+  },
 };
 
 function makeWorkspace(overrides: Record<string, unknown> = {}) {
@@ -113,6 +132,11 @@ const projectsApiMock = {
   budget: vi.fn().mockResolvedValue({ agents: [], totalSpendCents: 0 }),
   assignAgent: vi.fn(),
   unassignAgent: vi.fn(),
+  createWorkspace: vi.fn().mockResolvedValue({}),
+  updateWorkspace: vi.fn().mockResolvedValue({}),
+  removeWorkspace: vi.fn().mockResolvedValue({}),
+  getEnvironment: vi.fn().mockResolvedValue({ env: null }),
+  updateEnvironment: vi.fn().mockResolvedValue({ env: null }),
 };
 
 vi.mock("../components/TaskSlideOver", () => ({
@@ -131,6 +155,21 @@ vi.mock("../api/projects", () => ({
     {},
     { get: (_t, prop) => (projectsApiMock as any)[prop] },
   ),
+}));
+
+vi.mock("../api/filesystem", () => ({
+  filesystemApi: {
+    home: vi.fn().mockResolvedValue({ homePath: "C:\\Work", platform: "win32" }),
+    drives: vi.fn().mockResolvedValue({ drives: [{ name: "C:", path: "C:\\" }], platform: "win32" }),
+    browse: vi.fn().mockResolvedValue({
+      currentPath: "C:\\Work",
+      parentPath: "C:\\",
+      homePath: "C:\\Work",
+      platform: "win32",
+      entries: [{ name: "Repo", path: "C:\\Work\\Repo", type: "directory", isGitRepo: true }],
+    }),
+    mkdir: vi.fn().mockResolvedValue({ path: "C:\\Work\\New" }),
+  },
 }));
 
 vi.mock("../api/issues", () => ({
@@ -200,6 +239,7 @@ function renderProjectDetail(initialPath: string) {
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+          <Route path="projects/:projectId/settings" element={<ProjectDetail />} />
           <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
           <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
           <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
@@ -215,9 +255,43 @@ function renderProjectDetail(initialPath: string) {
 }
 
 beforeEach(() => {
+  // clearAllMocks resets call history without wiping implementations set in
+  // vi.mock() factories (goalsApi, agentsApi, issuesApi, etc.).  Any mock
+  // whose implementation varies per-test is explicitly re-established below.
   vi.clearAllMocks();
-  projectsApiMock.get.mockResolvedValue(mockProject);
+  // Re-establish implementations that individual tests may override.
   executionWorkspacesApiMock.list.mockResolvedValue(mockWorkspaces);
+  executionWorkspacesApiMock.update.mockResolvedValue({});
+  executionWorkspacesApiMock.getCloseReadiness.mockResolvedValue({
+    workspaceId: "ws-1",
+    state: "ready",
+    blockingReasons: [],
+    warnings: [],
+    linkedIssues: [],
+    plannedActions: [
+      {
+        kind: "archive_record",
+        label: "Archive workspace record",
+        description: "Keep the execution workspace history.",
+        command: null,
+      },
+    ],
+    isDestructiveCloseAllowed: true,
+    isSharedWorkspace: false,
+    isProjectPrimaryWorkspace: false,
+    git: null,
+    runtimeServices: [],
+  });
+  projectsApiMock.get.mockResolvedValue(mockProject);
+  projectsApiMock.update.mockResolvedValue(mockProject);
+  projectsApiMock.listAgents.mockResolvedValue([]);
+  projectsApiMock.list.mockResolvedValue([mockProject]);
+  projectsApiMock.budget.mockResolvedValue({ agents: [], totalSpendCents: 0 });
+  projectsApiMock.createWorkspace.mockResolvedValue({});
+  projectsApiMock.updateWorkspace.mockResolvedValue({});
+  projectsApiMock.removeWorkspace.mockResolvedValue({});
+  projectsApiMock.getEnvironment.mockResolvedValue({ env: null });
+  projectsApiMock.updateEnvironment.mockResolvedValue({ env: null });
   // Archive now uses a Dialog instead of window.confirm
 });
 
@@ -240,6 +314,103 @@ describe("ProjectDetail — Workspaces tab", () => {
     await screen.findByText("Budget");
     await screen.findByText("Discussions");
     await screen.findByText("Workspaces");
+    await screen.findByRole("button", { name: "Settings" });
+  });
+
+  it("renders the Settings tab with Workspace & Runtime content", async () => {
+    projectsApiMock.get.mockResolvedValue({ ...mockProject, functionType: "software_development" });
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/settings");
+
+    const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
+    expect(settingsTab.className).toContain("border-foreground");
+
+    // Anchor on the WHOLE settings tree committing together rather than a
+    // sequential findByText chain. Under max parallel-suite CPU starvation the
+    // per-assertion 5 s budgets could trip mid-render (e.g. "Status" observed but
+    // "Created" not yet), failing nondeterministically at whichever assertion the
+    // poll happened to land on. One waitFor that requires every section at once —
+    // polled up to 10 s, well within the 30 s testTimeout — only passes once the
+    // full ProjectSettings + ProjectProperties tree has rendered, so it can never
+    // observe a partial commit.
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Department details" })).toBeInTheDocument();
+      expect(screen.getByText("Status")).toBeInTheDocument();
+      expect(screen.getByText("Created")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
+      expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
+      expect(screen.getByText("Environment Variables")).toBeInTheDocument();
+    }, { timeout: 10000 });
+    expect(screen.queryByTestId("project-workspaces-list")).not.toBeInTheDocument();
+  });
+
+  it("opens workspace source modals from Settings", async () => {
+    projectsApiMock.get.mockResolvedValue({ ...mockProject, functionType: "software_development" });
+    const user = userEvent.setup();
+    renderProjectDetail("/projects/ENG/settings");
+
+    await user.click(await screen.findByRole("button", { name: /add local folder/i }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Add local folder");
+    expect(await screen.findByRole("button", { name: /select path/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+    await user.click(await screen.findByRole("button", { name: /add github repo/i }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Add GitHub repo");
+    await user.type(screen.getByPlaceholderText("https://github.com/org/repo"), "https://github.com/acme/app");
+    await user.click(screen.getByRole("button", { name: /save repo/i }));
+
+    await waitFor(() => {
+      expect(projectsApiMock.createWorkspace).toHaveBeenCalledWith(
+        mockProject.id,
+        { cwd: "/__paperclip_repo_only__", repoUrl: "https://github.com/acme/app" },
+      );
+    });
+  });
+
+  it("removes only the selected workspace source when a row has both local folder and repo", async () => {
+    const user = userEvent.setup();
+    projectsApiMock.get.mockResolvedValue({
+      ...mockProject,
+      functionType: "software_development",
+      workspaces: [
+        {
+          id: "source-1",
+          name: "Primary",
+          cwd: "C:\\Work\\Repo",
+          repoUrl: "https://github.com/acme/app.git",
+          repoRef: null,
+          metadata: null,
+          isPrimary: true,
+          createdAt: "2026-04-01T09:00:00Z",
+          updatedAt: "2026-04-01T10:00:00Z",
+        },
+      ],
+    });
+
+    renderProjectDetail("/projects/ENG/settings");
+
+    await user.click(await screen.findByRole("button", { name: "Delete workspace repo" }));
+
+    await waitFor(() => {
+      expect(projectsApiMock.updateWorkspace).toHaveBeenCalledWith(
+        mockProject.id,
+        "source-1",
+        { repoUrl: null },
+      );
+    });
+    expect(projectsApiMock.removeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("keeps department overview simple and moves controls out of the profile", async () => {
+    projectsApiMock.get.mockResolvedValue({ ...mockProject, functionType: "software_development" });
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/overview");
+
+    expect(await screen.findByPlaceholderText("Add a department description...")).toHaveValue("Engineering department");
+    expect(await screen.findByTestId("project-function-type-badge")).toHaveTextContent(/Software department/i);
+    expect(screen.queryByText("Properties")).not.toBeInTheDocument();
+    expect(screen.queryByText("Environment Variables")).not.toBeInTheDocument();
+    expect(await screen.findByText("Workspaces", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByText("Add workspace local folder")).not.toBeInTheDocument();
+    expect(await screen.findByText("Goals", {}, { timeout: 5000 })).toBeInTheDocument();
   });
 
   it("shows workspace list when workspaces tab is active", async () => {
@@ -342,15 +513,23 @@ describe("ProjectDetail — Workspaces tab", () => {
   it("calls update with archived status when Archive is confirmed via dialog", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    fireEvent.click(await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 5000 }));
+    // Settle the executionWorkspaces list query BEFORE interacting: wait for
+    // BOTH archive buttons so the list's resolving re-render has fully flushed.
+    // Clicking ws-1 while the query is still resolving races a re-render that
+    // detaches the just-found node — the click then lands on a stale element,
+    // the AlertDialog never opens, and confirm-archive-workspace never appears
+    // (the 5 s "unable to find confirm-archive-workspace" flake seen only under
+    // parallel-suite CPU contention; same stale-node race already mitigated for
+    // workspace-row-ws-1 above). Re-query fresh and click in one sync tick.
+    await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 5000 });
+    await screen.findByTestId("archive-workspace-ws-2", {}, { timeout: 5000 });
+    fireEvent.click(screen.getByTestId("archive-workspace-ws-1"));
 
-    // Readiness loads via getCloseReadiness mock; wait for the action button
-    // to be enabled before confirming. The AlertDialog action starts disabled
-    // while readiness is loading. Re-query the button each waitFor tick so
-    // a React re-render between findByTestId and the assertion can't leave
-    // us holding a stale DOM node (this races under parallel-suite load).
-    // 5 s timeout matches the rest of the file — 1 s was too tight under
-    // heavy parallel-suite CPU contention on Windows CI.
+    // Readiness loads via getCloseReadiness mock; the AlertDialog action starts
+    // disabled while readiness is loading. Wait for the dialog to open, THEN for
+    // the action to enable. Re-query each waitFor tick so a React re-render
+    // between query and assertion can't leave us holding a stale DOM node.
+    await screen.findByTestId("confirm-archive-workspace", {}, { timeout: 5000 });
     await waitFor(() => {
       expect(screen.getByTestId("confirm-archive-workspace")).not.toBeDisabled();
     }, { timeout: 5000 });
@@ -375,13 +554,15 @@ describe("ProjectDetail — Workspaces tab", () => {
     // parallel-suite CPU contention, React sometimes flushes the tab
     // shell before the executionWorkspaces query resolves. Use a generous
     // timeout to handle slow CI / parallel-suite runs.
-    await screen.findByText("Archived (2)", {}, { timeout: 5000 });
+    const archivedTrigger = await screen.findByTestId("archived-workspaces-trigger", {}, { timeout: 5000 });
+    expect(archivedTrigger).toHaveTextContent("Archived (2)");
 
     // Archived workspaces are NOT visible by default (collapsed)
     expect(screen.queryByTestId("archived-workspaces-list")).not.toBeInTheDocument();
 
     // Click to expand
-    fireEvent.click(screen.getByTestId("archived-workspaces-trigger"));
+    const user = userEvent.setup();
+    await user.click(archivedTrigger);
 
     expect(await screen.findByTestId("archived-workspaces-list")).toBeInTheDocument();
   });
@@ -397,9 +578,9 @@ describe("ProjectDetail — Workspaces tab", () => {
     // test budget under parallel-suite load when each waitFor consumes its
     // 5s ceiling sequentially.
     await screen.findByText("Workspaces", {}, { timeout: 5000 });
-    await screen.findByTestId("workspaces-loading", {}, { timeout: 5000 });
+    const loading = await screen.findByTestId("workspaces-loading", {}, { timeout: 5000 });
 
-    const skeletons = screen.getByTestId("workspaces-loading").querySelectorAll("[data-slot='skeleton']");
+    const skeletons = loading.querySelectorAll("[data-slot='skeleton']");
     expect(skeletons.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -1,0 +1,46 @@
+name: LLM Evals
+
+on:
+  pull_request:
+    paths:
+      - 'server/src/services/internal-agent/aoa-agents/**'
+      - 'server/src/services/extraction.ts'
+      - 'server/src/services/embeddings.ts'
+      - 'server/src/eval/**'
+      - 'server/src/__tests__/eval-*.test.ts'
+
+# Allow only one concurrent eval run per PR — cancel the previous run
+# when a new commit lands so we don't burn OpenAI budget on stale code.
+concurrency:
+  group: llm-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    name: Run LLM eval suites
+    runs-on: ubuntu-latest
+    # Skip the job on PRs from forks — OPENAI_API_KEY is not available to
+    # forked PRs by design, and running with no key would fail every llm-graded
+    # fixture. Repo-internal PRs still run.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run LLM eval suites
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: pnpm eval:run

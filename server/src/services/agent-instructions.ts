@@ -729,6 +729,9 @@ export function agentInstructionsService() {
     deleteFile,
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
+    // ensureWritableBundle is the legacy name used by seed-commander-bundle.ts and its tests;
+    // both names point to the same implementation.
+    ensureWritableBundle,
     materializeManagedBundle,
   };
 }

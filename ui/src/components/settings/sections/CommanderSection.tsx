@@ -6,9 +6,17 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { internalAgentApi } from "@/api/internal-agent";
+import {
+  commanderTrustRulesApi,
+  internalAgentApi,
+  toolPermissionsApi,
+} from "@/api/internal-agent";
+import type {
+  CommanderToolPermission,
+  CommanderTrustRule,
+} from "@/api/internal-agent";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatCents, budgetProgressColor, relativeTime } from "@/lib/utils";
+import { formatCents, budgetProgressColor, relativeTime, formatTokens } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -155,8 +163,15 @@ export function CommanderSection() {
     useState<NotificationPreference>("realtime");
   const [contextTokenBudget, setContextTokenBudget] = useState<number>(8000);
   const [budgetMonthlyCents, setBudgetMonthlyCents] = useState<number>(5000);
+  const [cheapModel, setCheapModel] = useState<string>("");
   const [proactiveIntervalMinutes, setProactiveIntervalMinutes] =
     useState<number>(240);
+  const [runtimeApprovalsEnabled, setRuntimeApprovalsEnabled] =
+    useState<boolean>(true);
+  const [runtimeAllowAlwaysEnabled, setRuntimeAllowAlwaysEnabled] =
+    useState<boolean>(true);
+  const [vendorCliBypassEnabled, setVendorCliBypassEnabled] =
+    useState<boolean>(true);
 
   // Connection test
   const [connectionStatus, setConnectionStatus] = useState<
@@ -201,6 +216,80 @@ export function CommanderSection() {
     enabled: !!selectedCompanyId && active === "history",
   });
 
+  // Permissions tab state
+  const { data: permissionsData, isLoading: permissionsLoading } = useQuery({
+    queryKey: ["commander-tool-permissions", selectedCompanyId],
+    queryFn: () => toolPermissionsApi.get(selectedCompanyId!),
+    enabled: !!selectedCompanyId && active === "permissions",
+  });
+
+  const { data: trustRulesData, isLoading: trustRulesLoading } = useQuery({
+    queryKey: ["commander-tool-trust-rules", selectedCompanyId],
+    queryFn: () => commanderTrustRulesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && active === "trusted-actions",
+  });
+
+  const [permissionEdits, setPermissionEdits] = useState<Record<string, Partial<CommanderToolPermission>>>({});
+
+  const updatePermissionsMutation = useMutation({
+    mutationFn: (perms: Record<string, CommanderToolPermission>) =>
+      toolPermissionsApi.update(selectedCompanyId!, perms),
+    onSuccess: () => {
+      setPermissionEdits({});
+      queryClient.invalidateQueries({ queryKey: ["commander-tool-permissions"] });
+    },
+  });
+
+  const revokeTrustRuleMutation = useMutation({
+    mutationFn: (ruleId: string) =>
+      commanderTrustRulesApi.revoke(selectedCompanyId!, ruleId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["commander-tool-trust-rules", selectedCompanyId],
+      });
+    },
+  });
+
+  const KNOWN_TOOLS = [
+    "update_company_identity",
+    "create_task",
+    "update_task",
+    "create_goal",
+    "extract_from_content",
+    "query_company",
+    "query_tasks",
+    "query_agents",
+    "use_skill",
+    "delegate_to_subagent",
+  ];
+
+  const defaultPerm: CommanderToolPermission = permissionsData?.default ?? {
+    enabled: true,
+    requireConfirmation: false,
+    minimumRole: "team_member" as const,
+  };
+
+  function getEffectivePerm(toolName: string): CommanderToolPermission {
+    const stored = permissionsData?.permissions[toolName] ?? defaultPerm;
+    const edited = permissionEdits[toolName] ?? {};
+    return { ...stored, ...edited };
+  }
+
+  function handlePermEdit(toolName: string, field: keyof CommanderToolPermission, value: unknown) {
+    setPermissionEdits((prev) => ({
+      ...prev,
+      [toolName]: { ...(prev[toolName] ?? {}), [field]: value },
+    }));
+  }
+
+  function handlePermissionsSave() {
+    const merged: Record<string, CommanderToolPermission> = {};
+    for (const tool of KNOWN_TOOLS) {
+      merged[tool] = getEffectivePerm(tool);
+    }
+    updatePermissionsMutation.mutate(merged);
+  }
+
   // Sync form from config
   useEffect(() => {
     if (!config) return;
@@ -211,6 +300,10 @@ export function CommanderSection() {
     );
     setContextTokenBudget(config.contextTokenBudget);
     setBudgetMonthlyCents(config.budgetMonthlyCents ?? 5000);
+    setCheapModel(config.cheapModel ?? "");
+    setRuntimeApprovalsEnabled(config.runtimeApprovalsEnabled ?? true);
+    setRuntimeAllowAlwaysEnabled(config.runtimeAllowAlwaysEnabled ?? true);
+    setVendorCliBypassEnabled(config.vendorCliBypassEnabled ?? true);
     if (config.proactiveIntervalMinutes != null) {
       setProactiveIntervalMinutes(config.proactiveIntervalMinutes);
     }
@@ -240,6 +333,9 @@ export function CommanderSection() {
     saveMutation.mutate({
       executionMode: "cli",
       cliTool,
+      runtimeApprovalsEnabled,
+      runtimeAllowAlwaysEnabled,
+      vendorCliBypassEnabled,
     });
   }
 
@@ -253,7 +349,10 @@ export function CommanderSection() {
   }
 
   function saveBudget() {
-    saveMutation.mutate({ budgetMonthlyCents });
+    saveMutation.mutate({
+      budgetMonthlyCents,
+      cheapModel: cheapModel.trim() || null,
+    });
   }
 
   // --- Handlers ---
@@ -338,6 +437,12 @@ export function CommanderSection() {
             connectionStatus={connectionStatus}
             connectionError={connectionError}
             handleTestConnection={handleTestConnection}
+            runtimeApprovalsEnabled={runtimeApprovalsEnabled}
+            setRuntimeApprovalsEnabled={setRuntimeApprovalsEnabled}
+            runtimeAllowAlwaysEnabled={runtimeAllowAlwaysEnabled}
+            setRuntimeAllowAlwaysEnabled={setRuntimeAllowAlwaysEnabled}
+            vendorCliBypassEnabled={vendorCliBypassEnabled}
+            setVendorCliBypassEnabled={setVendorCliBypassEnabled}
             saveExecution={saveExecution}
             isPending={saveMutation.isPending}
             saveMessage={saveMessage}
@@ -363,6 +468,8 @@ export function CommanderSection() {
           <BudgetTabContent
             budgetMonthlyCents={budgetMonthlyCents}
             setBudgetMonthlyCents={setBudgetMonthlyCents}
+            cheapModel={cheapModel}
+            setCheapModel={setCheapModel}
             spentCents={spentCents}
             utilization={utilization}
             progressColor={progressColor}
@@ -380,7 +487,199 @@ export function CommanderSection() {
             fetchNextPage={fetchNextPage}
           />
         )}
+        {active === "permissions" && (
+          <div className="space-y-4">
+            {permissionsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading tool permissions...
+              </div>
+            ) : (
+              <>
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+                  <p className="text-xs text-amber-900">
+                    <strong>Note:</strong> Per-tool permissions are stored. Runtime enforcement: Claude CLI gates write tools strictly via structured tool events; codex and opencode use best-effort marker detection. For guaranteed gating, set Commander to Claude CLI under Execution &amp; Model.
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Control which tools Commander can use and what level of access each requires.
+                </p>
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">Tool</th>
+                        <th className="px-3 py-2 text-center font-medium text-xs text-muted-foreground w-20">Enabled</th>
+                        <th className="px-3 py-2 text-center font-medium text-xs text-muted-foreground w-24">Confirm</th>
+                        <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground w-36">Min Role</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {KNOWN_TOOLS.map((toolName) => {
+                        const perm = getEffectivePerm(toolName);
+                        return (
+                          <tr key={toolName} className="hover:bg-muted/20 transition-colors">
+                            <td className="px-3 py-2 font-mono text-xs">{toolName}</td>
+                            <td className="px-3 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                checked={perm.enabled}
+                                onChange={(e) => handlePermEdit(toolName, "enabled", e.target.checked)}
+                                className="rounded"
+                                aria-label={`Enable Commander to use ${toolName}`}
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                checked={perm.requireConfirmation}
+                                onChange={(e) => handlePermEdit(toolName, "requireConfirmation", e.target.checked)}
+                                className="rounded"
+                                aria-label={`Require confirmation for ${toolName}`}
+                              />
+                            </td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={perm.minimumRole}
+                                onChange={(e) => handlePermEdit(toolName, "minimumRole", e.target.value)}
+                                className="text-xs border border-border rounded px-1.5 py-0.5 bg-background"
+                                aria-label={`Minimum role for ${toolName}`}
+                              >
+                                <option value="team_member">Member</option>
+                                <option value="team_lead">Lead</option>
+                                <option value="founder">Founder</option>
+                              </select>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    onClick={handlePermissionsSave}
+                    disabled={updatePermissionsMutation.isPending || Object.keys(permissionEdits).length === 0}
+                  >
+                    {updatePermissionsMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Save permissions
+                  </Button>
+                </div>
+                {updatePermissionsMutation.isSuccess && (
+                  <p className="text-xs text-green-600">Permissions saved.</p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {active === "trusted-actions" && (
+          <TrustedActionsTabContent
+            rules={trustRulesData?.rules ?? []}
+            isLoading={trustRulesLoading}
+            revokeRule={(ruleId) => revokeTrustRuleMutation.mutate(ruleId)}
+            revokingRuleId={
+              revokeTrustRuleMutation.isPending
+                ? revokeTrustRuleMutation.variables
+                : null
+            }
+            error={
+              revokeTrustRuleMutation.isError
+                ? revokeTrustRuleMutation.error.message
+                : null
+            }
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+function TrustedActionsTabContent({
+  rules,
+  isLoading,
+  revokeRule,
+  revokingRuleId,
+  error,
+}: {
+  rules: CommanderTrustRule[];
+  isLoading: boolean;
+  revokeRule: (ruleId: string) => void;
+  revokingRuleId: string | null;
+  error: string | null;
+}) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading trusted actions...
+      </div>
+    );
+  }
+
+  if (rules.length === 0) {
+    return (
+      <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
+        No trusted Commander actions yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        Revoke exact actions that were approved with allow always. Fingerprints
+        identify the saved tool parameters without exposing the original values.
+      </p>
+      <div className="rounded-md border border-border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Tool
+              </th>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Fingerprint
+              </th>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Created
+              </th>
+              <th className="px-3 py-2 text-right font-medium text-xs text-muted-foreground">
+                Action
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rules.map((rule) => (
+              <tr key={rule.id}>
+                <td className="px-3 py-2 font-mono text-xs">{rule.toolName}</td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {rule.paramsHashVersion}:{rule.paramsHashPrefix}
+                </td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">
+                  {relativeTime(rule.createdAt)}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => revokeRule(rule.id)}
+                    disabled={revokingRuleId === rule.id}
+                  >
+                    {revokingRuleId === rule.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Revoke
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
     </div>
   );
 }
@@ -395,6 +694,12 @@ interface ExecutionTabContentProps {
   connectionStatus: "untested" | "loading" | "success" | "failed";
   connectionError: string | null;
   handleTestConnection: () => Promise<void>;
+  runtimeApprovalsEnabled: boolean;
+  setRuntimeApprovalsEnabled: (v: boolean) => void;
+  runtimeAllowAlwaysEnabled: boolean;
+  setRuntimeAllowAlwaysEnabled: (v: boolean) => void;
+  vendorCliBypassEnabled: boolean;
+  setVendorCliBypassEnabled: (v: boolean) => void;
   saveExecution: () => void;
   isPending: boolean;
   saveMessage: string | null;
@@ -406,6 +711,12 @@ function ExecutionTabContent({
   connectionStatus,
   connectionError,
   handleTestConnection,
+  runtimeApprovalsEnabled,
+  setRuntimeApprovalsEnabled,
+  runtimeAllowAlwaysEnabled,
+  setRuntimeAllowAlwaysEnabled,
+  vendorCliBypassEnabled,
+  setVendorCliBypassEnabled,
   saveExecution,
   isPending,
   saveMessage,
@@ -455,6 +766,57 @@ function ExecutionTabContent({
         <p className="text-xs text-muted-foreground mt-1">
           Higher levels available in V3
         </p>
+      </div>
+
+      <div className="rounded-md border border-border p-3 space-y-3 max-w-xl">
+        <p className="text-xs font-medium text-muted-foreground">
+          Runtime Approvals
+        </p>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={runtimeApprovalsEnabled}
+            onChange={(e) => setRuntimeApprovalsEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-input"
+            aria-label="Require AoA runtime approvals"
+          />
+          <span>
+            <span className="font-medium">Require AoA runtime approvals</span>
+            <span className="block text-xs text-muted-foreground">
+              Show approval cards before Commander executes confirmation-gated tools.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={runtimeAllowAlwaysEnabled}
+            onChange={(e) => setRuntimeAllowAlwaysEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-input"
+            aria-label="Allow always for exact repeated actions"
+          />
+          <span>
+            <span className="font-medium">Allow always for exact repeated actions</span>
+            <span className="block text-xs text-muted-foreground">
+              Let users trust the same tool with the same parameters until revoked.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={vendorCliBypassEnabled}
+            onChange={(e) => setVendorCliBypassEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-input"
+            aria-label="Bypass vendor CLI approval prompts"
+          />
+          <span>
+            <span className="font-medium">Bypass vendor CLI approval prompts</span>
+            <span className="block text-xs text-muted-foreground">
+              Use AoA approvals as the primary gate instead of forwarding prompts to the CLI.
+            </span>
+          </span>
+        </label>
       </div>
 
       {/* Test Connection */}
@@ -670,6 +1032,8 @@ function CapabilitiesTabContent({
 interface BudgetTabContentProps {
   budgetMonthlyCents: number;
   setBudgetMonthlyCents: (v: number) => void;
+  cheapModel: string;
+  setCheapModel: (v: string) => void;
   spentCents: number;
   utilization: number;
   progressColor: string;
@@ -681,6 +1045,8 @@ interface BudgetTabContentProps {
 function BudgetTabContent({
   budgetMonthlyCents,
   setBudgetMonthlyCents,
+  cheapModel,
+  setCheapModel,
   spentCents,
   utilization,
   progressColor,
@@ -742,6 +1108,25 @@ function BudgetTabContent({
         )}
       </div>
 
+      {/* Cost-saver fallback model */}
+      <div className="space-y-2">
+        <label htmlFor="cheap-model-input" className="text-sm font-medium text-foreground">
+          Cost-saver fallback at 80%
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Model to use when monthly spend reaches 80% of budget. Leave blank to disable.
+        </p>
+        <input
+          id="cheap-model-input"
+          type="text"
+          data-testid="cheap-model-input"
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          placeholder="e.g. claude-haiku-4-5"
+          value={cheapModel}
+          onChange={(e) => setCheapModel(e.target.value)}
+        />
+      </div>
+
       <TabSaveButton
         onClick={saveBudget}
         isPending={isPending}
@@ -770,6 +1155,7 @@ interface RunHistoryTabContentProps {
     costCents: number;
     durationMs: number;
     createdAt: string;
+    tokenUsage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
   }>;
   runsAggregates: RunHistoryAggregates | undefined;
   hasNextPage: boolean | undefined;
@@ -777,7 +1163,7 @@ interface RunHistoryTabContentProps {
   fetchNextPage: () => void;
 }
 
-function RunHistoryTabContent({
+export function RunHistoryTabContent({
   allRuns,
   runsAggregates,
   hasNextPage,
@@ -794,7 +1180,7 @@ function RunHistoryTabContent({
             <p className="text-lg font-semibold">{runsAggregates.totalRuns}</p>
           </div>
           <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Total Cost</p>
+            <p className="text-xs text-muted-foreground">Est. Cost</p>
             <p className="text-lg font-semibold">
               {formatCents(runsAggregates.totalCostCents)}
             </p>
@@ -814,6 +1200,10 @@ function RunHistoryTabContent({
         </div>
       )}
 
+      <p className="text-xs text-muted-foreground">
+        Cost is an estimate at list prices. CLI subscription runs have no per-call charge.
+      </p>
+
       {/* Runs table */}
       {allRuns.length > 0 ? (
         <div className="overflow-x-auto">
@@ -822,7 +1212,8 @@ function RunHistoryTabContent({
               <tr className="border-b text-left text-xs text-muted-foreground">
                 <th className="pb-2 font-medium">Trigger</th>
                 <th className="pb-2 font-medium">Status</th>
-                <th className="pb-2 font-medium">Cost</th>
+                <th className="pb-2 font-medium">Est. Cost</th>
+                <th className="pb-2 font-medium">Tokens</th>
                 <th className="pb-2 font-medium">Duration</th>
                 <th className="pb-2 font-medium">Date</th>
               </tr>
@@ -845,6 +1236,11 @@ function RunHistoryTabContent({
                     </span>
                   </td>
                   <td className="py-2">{formatCents(run.costCents)}</td>
+                  <td className="py-2 text-muted-foreground">
+                    {run.tokenUsage
+                      ? `${formatTokens(run.tokenUsage.inputTokens)} / ${formatTokens(run.tokenUsage.outputTokens)}`
+                      : "—"}
+                  </td>
                   <td className="py-2">
                     {(run.durationMs / 1000).toFixed(1)}s
                   </td>

@@ -81,7 +81,10 @@ type Artifact = {
 
 function buildApp(options?: {
   actor?: Record<string, unknown>;
-  resolveScope?: (companyId: string, userId: string) => Promise<any>;
+  resolveScope?: (
+    companyId: string,
+    actor: { source: string; userId: string },
+  ) => Promise<any>;
   resolveRole?: (companyId: string, userId: string) => Promise<string>;
   tasks?: Task[];
   artifacts?: Artifact[];
@@ -182,7 +185,7 @@ function buildApp(options?: {
       } as any,
       resolveScope:
         options?.resolveScope ??
-        (async (_companyId, userId) => ({ kind: "founder", userId })),
+        (async (_companyId, actor) => ({ kind: "founder", userId: actor.userId })),
       resolveRole: options?.resolveRole ?? (async () => "founder"),
       resolveScopedAgentIds: async () => null,
       issuesSvc: {
@@ -351,9 +354,9 @@ describe("MCP task-document tools (artifact mapping)", () => {
 
     it("returns 404 when scoped user targets a task outside their scope", async () => {
       const { app } = buildApp({
-        resolveScope: async (_c, userId) => ({
+        resolveScope: async (_c, actor) => ({
           kind: "scoped",
-          userId,
+          userId: actor.userId,
           projectIds: new Set(["proj-mine"]),
         }),
         resolveRole: async () => "team_member",

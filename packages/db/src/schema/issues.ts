@@ -14,10 +14,16 @@ import { agents } from "./agents.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { companies } from "./companies.js";
-import { heartbeatRuns } from "./heartbeat_runs.js";
 import { authUsers } from "./auth.js";
 import { artifacts } from "./artifacts.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import { environments } from "./environments.js";
+// discussions imports issues, creating a circular module-init dependency.
+// The lazy `(): AnyPgColumn => discussions.id` callback below is evaluated at
+// table-build time (after both modules have finished loading), matching the
+// existing executionWorkspaces ↔ issues circular pattern.
+import { discussions } from "./discussions.js";
+import { threadScopeVersions } from "./thread_scope_versions.js";
 
 export const issues = pgTable(
   "issues",
@@ -30,17 +36,29 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    // The status a task held immediately before it was auto-blocked by a
+    // dependency. Restored on unblock so an auto-blocked `backlog` task is not
+    // silently promoted to `todo` (and auto-dispatched). Nullable; only set
+    // while a task is in the `blocked` state, cleared when unblocked. (A-M10)
+    blockedFromStatus: text("blocked_from_status"),
+    workMode: text("work_mode").notNull().default("standard"),
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, { onDelete: "set null" }),
     assigneeUserId: text("assignee_user_id"),
-    checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
-    executionRunId: uuid("execution_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // Polymorphic run lock: holds a heartbeat_runs.id (org agents) OR an internal_agent_runs.id (crew, Decision #100).
+    // No FK — the column is polymorphic across two run tables, so it cannot reference a single one.
+    checkoutRunId: uuid("checkout_run_id"),
+    executionRunId: uuid("execution_run_id"),
     executionAgentNameKey: text("execution_agent_name_key"),
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
     executionWorkspaceId: uuid("execution_workspace_id")
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    executionEnvironmentId: uuid("execution_environment_id").references(
+      () => environments.id,
+      { onDelete: "set null" },
+    ),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     issueNumber: integer("issue_number"),
@@ -59,6 +77,19 @@ export const issues = pgTable(
     originKind: text("origin_kind"),
     originId: text("origin_id"),
     originRunId: uuid("origin_run_id"),
+    // Phase 1 (Task A3): the discussion thread that produced this task via
+    // Dispatcher's scope_proposal acceptance. Nullable; ON DELETE SET NULL
+    // so deleting the source thread does not cascade-delete tasks that were
+    // spawned from it (the task can outlive the thread). Lazy FK reference
+    // because discussions.ts imports issues (see top of file).
+    sourceDiscussionId: uuid("source_discussion_id").references(
+      (): AnyPgColumn => discussions.id,
+      { onDelete: "set null" },
+    ),
+    scopeVersionId: uuid("scope_version_id").references(
+      (): AnyPgColumn => threadScopeVersions.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -81,5 +112,8 @@ export const issues = pgTable(
       .on(table.originKind, table.originId)
       .where(sql`origin_kind IS NOT NULL AND status NOT IN ('done', 'cancelled')`),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
+    sourceDiscussionIdx: index("issues_source_discussion_idx").on(table.sourceDiscussionId),
+    scopeVersionIdx: index("issues_scope_version_idx").on(table.scopeVersionId),
+    companyOriginKindIdx: index("issues_company_origin_kind_idx").on(table.companyId, table.originKind),
   }),
 );

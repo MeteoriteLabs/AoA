@@ -118,9 +118,60 @@
   }
 }
 
+@keyframes thread-attention {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(34, 197, 94, 0);
+  }
+}
+
+.thread-attention-pulse {
+  animation: thread-attention 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-attention-pulse {
+    animation: none;
+  }
+}
+
 @keyframes float-gentle {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-3px); }
+}
+
+/* Commander confirmation card border pulse — border-color only (no box-shadow, no paint cost).
+   30 iterations × 2s = 60s then auto-stops. Wrapped in prefers-reduced-motion so the class
+   is safe to apply unconditionally; reduced-motion users see a static amber border. */
+@keyframes commander-pulse-border {
+  0%, 100% { border-color: #fde68a; /* amber-200 */ }
+  50%       { border-color: #f59e0b; /* amber-400 */ }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .commander-pulse-border {
+    animation: commander-pulse-border 2s ease-in-out 30;
+  }
+}
+
+/* Commander rich (contenteditable) input. Uncontrolled — the DOM owns the
+   live text. `pre-wrap` preserves the Shift+Enter newlines we insert as "\n";
+   the JS-toggled `.is-empty` class drives the placeholder (more reliable than
+   `:empty`, which a leftover <br> would defeat). */
+.commander-input {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-y: auto;
+  outline: none;
+}
+.commander-input.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  pointer-events: none;
+  user-select: none;
 }
 
 :root {
@@ -137,6 +188,12 @@
   --warning: #a87a1c;
   --error: #ef4444;
   --info: #2563eb;
+
+  /* Rich-input tokens (Commander). One color per token kind; expandable
+     (skill now; mention/file later). Text color + soft wash background so the
+     token reads as an atomic unit without being a removable pill chip. */
+  --token-skill: #2563eb;
+  --token-skill-bg: color-mix(in srgb, var(--token-skill) 10%, transparent);
 
   /* Data palette (same hex on both modes) */
   --data-teal: #3fa8c7;
@@ -158,6 +215,9 @@
   --border: hsl(20 8% 88%);
   --border-soft: hsl(20 8% 92%);
   --border-strong: hsl(20 8% 78%);
+
+  /* Sizing tokens */
+  --row-compact: 32px; /* denser than --row-data for high-frequency session lists */
 
   /* Component tokens (light) */
   --secondary-sidebar-bg: oklch(0.92 0.005 30);
@@ -221,6 +281,10 @@
   --warning: #d9a938;
   --error: #ef4444;
   --info: #3b82f6;
+
+  /* Rich-input tokens (Commander) — lighter blue for contrast on dark. */
+  --token-skill: #6ea8fe;
+  --token-skill-bg: color-mix(in srgb, var(--token-skill) 14%, transparent);
 
   /* Data palette (same as light) */
   --data-teal: #3fa8c7;
@@ -332,6 +396,24 @@
   textarea,
   [data-slot="select-trigger"] {
     min-height: 44px;
+  }
+
+  /* Commander (Task 11): dense ghost icon buttons (28px) and the session-row
+     overflow menu (22px) are comfortable with a mouse but too small to tap.
+     Bump them to a ~40px square hit area on coarse pointers only — fine
+     (mouse) pointers keep the dense desktop sizing untouched. The session
+     overflow trigger is normally hover-revealed; force it visible on touch
+     since there is no hover. */
+  [data-commander-touch] {
+    min-width: 40px;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  [data-commander-touch].group-hover\:flex {
+    display: inline-flex !important;
   }
 }
 

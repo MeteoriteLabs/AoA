@@ -26,7 +26,7 @@ interface WorkspaceTaskNavProps {
   companyPrefix: string;
   projectId: string;
   selectedIssueId: string | null;
-  onSelectIssue: (issueId: string) => void;
+  onSelectIssue: (issueId: string, executionWorkspaceId?: string | null) => void;
   onBack: () => void;
   departmentName: string;
   collapsed?: boolean;
@@ -128,19 +128,21 @@ export function WorkspaceTaskNav({
   if (collapsed) {
     return (
       <div
-        className="flex flex-col h-full items-start py-2 gap-1"
+        className="flex flex-col h-full items-center gap-1"
         data-testid="workspace-task-nav-collapsed"
       >
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          title="Expand tasks"
-          className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-          data-testid="workspace-task-nav-expand"
-          aria-label="Expand task list"
-        >
-          <PanelLeft className="h-4 w-4" />
-        </button>
+        <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border" data-testid="workspace-task-nav-header">
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title="Expand tasks"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            data-testid="workspace-task-nav-expand"
+            aria-label="Expand task list"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+        </div>
 
         <div className="w-6 h-px bg-border my-1" />
 
@@ -177,33 +179,29 @@ export function WorkspaceTaskNav({
   return (
     <div className="flex flex-col h-full" data-testid="workspace-task-nav">
       {/* Back button + collapse chevron */}
-      <div className="flex items-center border-b border-border shrink-0">
+      <div className="flex h-[42px] items-center border-b border-border shrink-0" data-testid="workspace-task-nav-header">
         <button
           type="button"
           onClick={onBack}
-          className="flex-1 flex items-center gap-1.5 px-3 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors min-w-0"
+          title={`Back to ${departmentName}`}
+          className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
           data-testid="workspace-back-btn"
         >
           <ChevronLeft className="h-4 w-4 shrink-0" />
-          <span className="truncate">Back to Department</span>
+          <span className="truncate">{departmentName}</span>
         </button>
         {onToggleCollapse && (
           <button
             type="button"
             onClick={onToggleCollapse}
             title="Collapse tasks"
-            className="flex items-center justify-center w-9 h-9 mr-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            className="mr-1 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
             data-testid="workspace-task-nav-collapse"
             aria-label="Collapse task list"
           >
             <PanelLeftClose className="h-4 w-4" />
           </button>
         )}
-      </div>
-
-      {/* Department name */}
-      <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground border-b border-border shrink-0">
-        {departmentName}
       </div>
 
       {/* Search */}
@@ -265,7 +263,7 @@ export function WorkspaceTaskNav({
                         key={issue.id}
                         issue={issue}
                         isSelected={issue.id === selectedIssueId}
-                        onSelect={() => onSelectIssue(issue.id)}
+                        onSelect={() => onSelectIssue(issue.id, issue.executionWorkspaceId)}
                       />
                     ))}
                   </div>

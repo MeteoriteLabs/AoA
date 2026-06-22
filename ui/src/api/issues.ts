@@ -1,6 +1,25 @@
 import type { Approval, Issue, IssueAttachment, IssueComment, IssueDocument, DocumentRevision, UpsertIssueDocument, IssueLabel } from "@armyofagents/shared";
 import { api } from "./client";
 
+export type IssueContextBundle = {
+  id: string;
+  companyId: string;
+  sourceIssueId?: string | null;
+  sourceDiscussionId?: string | null;
+  sourceScopeVersionId?: string | null;
+  sourceScopeItemId?: string | null;
+  sourceKind?: "issue" | "discussion_scope" | string;
+  targetIssueId: string;
+  brief?: string | null;
+  items: Array<{
+    id: string;
+    itemType: string;
+    sourceId?: string | null;
+    label?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }>;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -15,6 +34,30 @@ export const issuesApi = {
       q?: string;
       /** UUID to get children of that parent; `null` for top-level tasks only; omit for all. */
       parentId?: string | null;
+      /**
+       * Task 1.4: when true, restrict to tasks with origin_kind='crew_thread'
+       * (crew-board provenance, decision D10). The server-side handler also opts
+       * into a LEFT JOIN that populates `Issue.sourceThreadTitle` so the
+       * TeamPage Tasks tab can group results by source thread title.
+       * Renamed from `sourceDiscussionIdNotNull`.
+       *
+       * @deprecated Prefer `taskScope: 'crew'`. The server maps a bare
+       * `crewBoard=true` to `taskScope='crew'`, and an explicit `taskScope`
+       * always wins, so the two are interchangeable. Kept for back-compat.
+       */
+      crewBoard?: boolean;
+      /**
+       * Crew/org board separation (unified-crew-board design 2026-06-02).
+       *   `org`  — exclude crew-agent tasks (the fail-safe DEFAULT applied
+       *            server-side when omitted). Board surfaces that should NOT
+       *            show crew work pass nothing and inherit this.
+       *   `crew` — only crew-agent tasks (the Crew Board).
+       *   `all`  — include both. The task GRAPH (dependencies, children,
+       *            live-run labeling, search, an agent's own task list) MUST
+       *            pass `all` so crew tasks stay visible there.
+       * Forwarded verbatim as the `taskScope` query param.
+       */
+      taskScope?: "org" | "crew" | "all";
     },
   ) => {
     const params = new URLSearchParams();
@@ -28,6 +71,12 @@ export const issuesApi = {
     if (filters?.q) params.set("q", filters.q);
     if (filters && Object.prototype.hasOwnProperty.call(filters, "parentId")) {
       params.set("parentId", filters.parentId === null ? "null" : (filters.parentId as string));
+    }
+    if (filters?.crewBoard) {
+      params.set("crewBoard", "true");
+    }
+    if (filters?.taskScope) {
+      params.set("taskScope", filters.taskScope);
     }
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
@@ -49,16 +98,50 @@ export const issuesApi = {
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
   listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
+  addComment: (
+    id: string,
+    body: string,
+    reopen?: boolean,
+    interrupt?: boolean,
+    structured?: Pick<IssueComment, "authorType" | "presentation" | "metadata">,
+  ) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
       {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
+        ...(structured?.authorType === undefined ? {} : { authorType: structured.authorType }),
+        ...(structured?.presentation === undefined ? {} : { presentation: structured.presentation }),
+        ...(structured?.metadata === undefined ? {} : { metadata: structured.metadata }),
       },
     ),
+  addCommentWithAttachments: (
+    id: string,
+    body: string,
+    files: File[],
+    reopen?: boolean,
+    interrupt?: boolean,
+  ) => {
+    const form = new FormData();
+    form.append("body", body);
+    if (reopen !== undefined) form.append("reopen", String(reopen));
+    if (interrupt !== undefined) form.append("interrupt", String(interrupt));
+    for (const file of files) {
+      form.append("files", file);
+    }
+    return api.postForm<{ comment: IssueComment; attachments: IssueAttachment[] }>(
+      `/issues/${id}/comments-with-attachments`,
+      form,
+    );
+  },
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
+  listContextBundles: (id: string) => api.get<IssueContextBundle[]>(`/issues/${id}/context-bundles`),
+  updateContextBundleItemIncluded: (issueId: string, itemId: string, included: boolean) =>
+    api.patch<IssueContextBundle["items"][number]>(
+      `/issues/${issueId}/context-bundles/items/${itemId}`,
+      { included },
+    ),
   uploadAttachment: (
     companyId: string,
     issueId: string,

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { AdapterSkillEntry, AdapterSkillSnapshot } from "./types.js";
 
@@ -88,7 +89,49 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
-const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+// H4 (Codex P1): widened beyond the original key|token|secret|… set to also
+// catch common secret-bearing env-name fragments whose VALUES are
+// provider-specific opaque strings the value patterns below can't all enumerate
+// — e.g. WEBHOOK_SIGNING (whsec_…), NPM_AUTH (npm tokens), *_CREDENTIAL, *_DSN,
+// *_CONNECTION, *_BEARER, *_PAT. Over-redacting a log value is safe.
+const SENSITIVE_ENV_KEY =
+  /(key|token|secret|password|passwd|auth|cookie|credential|bearer|signing|webhook|npm|private|connection)/i;
+
+// H4: key-name matching alone leaked secrets bound (via secret_ref) to env vars
+// whose NAME does not contain one of the words above — DATABASE_URL, STRIPE_LIVE,
+// NPM_AUTH, DSN, WEBHOOK_SIGNING, CONNECTION, PAT, … — in plaintext into the
+// persisted heartbeat_run_events row and the SSE broadcast. So ALSO redact a
+// value (regardless of key name) when it LOOKS like a secret. Over-redacting a
+// log value is safe; leaking one is not. (Patterns are kept inline here because
+// adapter-utils cannot import the server's feedback-redaction patterns — wrong
+// dependency direction; they mirror the connection-string/provider-key/JWT/PEM
+// rules in server/src/services/prompt-snapshot.ts.)
+const SENSITIVE_ENV_VALUE_PATTERNS: RegExp[] = [
+  // Connection strings / DSNs (postgres://user:pass@host, mongodb+srv://, redis://, …)
+  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/[^\s<>'")]+/i,
+  // Anthropic / OpenAI-style provider keys (sk-… / sk-ant-…)
+  /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/,
+  // Stripe-style keys (sk_live_…, pk_test_…, rk_live_…)
+  /\b[sprSPR]k_(?:live|test)_[A-Za-z0-9]{8,}\b/,
+  // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  // AWS access key id
+  /\bAKIA[0-9A-Z]{16}\b/,
+  // Slack tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-)
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  // H4 (Codex P1): generic "<prefix>_<long-random>" token shape — catches
+  // Stripe webhook signing (whsec_…), npm tokens (npm_…), Doppler (dp.pt.…→
+  // not here), and most vendor "prefix_<base62>" keys regardless of the prefix.
+  /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
+  // JWTs (three base64url segments)
+  /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
+  // PEM private-key blocks
+  /-----BEGIN[A-Z ]*PRIVATE KEY-----/,
+];
+
+function looksLikeSecretValue(value: string): boolean {
+  return SENSITIVE_ENV_VALUE_PATTERNS.some((re) => re.test(value));
+}
 
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -155,7 +198,10 @@ export function renderTemplate(template: string, data: Record<string, unknown>) 
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
+    redacted[key] =
+      SENSITIVE_ENV_KEY.test(key) || (typeof value === "string" && looksLikeSecretValue(value))
+        ? "***REDACTED***"
+        : value;
   }
   return redacted;
 }
@@ -282,6 +328,7 @@ export async function runChildProcess(
      * database row so that an out-of-process watchdog can kill the group.
      */
     onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
+    shell?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -293,7 +340,7 @@ export async function runChildProcess(
       env: mergedEnv,
       // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
       // The `command` value comes from trusted adapter configuration, not user input.
-      shell: process.platform === "win32",
+      shell: opts.shell ?? process.platform === "win32",
       // detached:true on POSIX puts the child in its own process group (pgid === pid),
       // so signalRunningProcess can address the whole group via process.kill(-pgid, signal)
       // and reap any subprocesses spawned by the child.
@@ -314,8 +361,16 @@ export async function runChildProcess(
     }
 
     if (opts.stdin != null && child.stdin) {
-      child.stdin.write(opts.stdin);
-      child.stdin.end();
+      // EPIPE / ERR_STREAM_DESTROYED here is benign: the child exited before we
+      // finished writing stdin. The close handler still resolves with the captured
+      // exit code. Swallow it — an unhandled 'error' on a writable crashes the process.
+      child.stdin.on("error", () => {});
+      try {
+        child.stdin.write(opts.stdin);
+        child.stdin.end();
+      } catch {
+        // synchronous throw (e.g. write-after-end / destroyed) — also benign here
+      }
     }
 
     let timedOut = false;
@@ -478,6 +533,36 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export const buildPaperclipEnv = buildAoaEnv;
+
+const DEFAULT_AOA_INSTANCE_ID = "default";
+const PATH_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+function expandHomePrefix(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  return value;
+}
+
+export function resolveAoaInstanceRootForAdapter(input: {
+  homeDir?: string;
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const homeRaw = input.homeDir?.trim() || env.AOA_HOME?.trim();
+  const homeDir = path.resolve(homeRaw ? expandHomePrefix(homeRaw) : path.resolve(os.homedir(), ".aoa"));
+  const instanceId = input.instanceId?.trim() || env.AOA_INSTANCE_ID?.trim() || DEFAULT_AOA_INSTANCE_ID;
+  if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid AOA_INSTANCE_ID '${instanceId}'.`);
+  return path.resolve(homeDir, "instances", instanceId);
+}
+
+export const resolvePaperclipInstanceRootForAdapter = resolveAoaInstanceRootForAdapter;
+
+export const DEFAULT_AOA_AGENT_PROMPT_TEMPLATE =
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.";
+export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = DEFAULT_AOA_AGENT_PROMPT_TEMPLATE;
+
 // ---------------------------------------------------------------------------
 // Wake payload normalization / prompt rendering
 // ---------------------------------------------------------------------------
@@ -488,6 +573,7 @@ type AoaWakeIssue = {
   title: string | null;
   status: string | null;
   priority: string | null;
+  workMode: string | null;
 };
 
 type AoaWakeExecutionPrincipal = {
@@ -538,6 +624,7 @@ function normalizeAoaWakeIssue(value: unknown): AoaWakeIssue | null {
   const title = asString(issue.title, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
+  const workMode = asString(issue.workMode, "standard").trim() || "standard";
   if (!id && !identifier && !title) return null;
   return {
     id,
@@ -545,6 +632,7 @@ function normalizeAoaWakeIssue(value: unknown): AoaWakeIssue | null {
     title,
     status,
     priority,
+    workMode,
   };
 }
 
@@ -768,6 +856,21 @@ export function renderAoaWakePrompt(
   return lines.join("\n").trim();
 }
 export const renderPaperclipWakePrompt = renderAoaWakePrompt;
+
+export function readAoaIssueWorkModeFromContext(context: Record<string, unknown>): string | null {
+  const candidates = [
+    parseObject(context.paperclipWake).issue,
+    parseObject(context.aoaWake).issue,
+    context.issue,
+    context.task,
+  ];
+  for (const candidate of candidates) {
+    const workMode = asString(parseObject(candidate).workMode, "").trim();
+    if (workMode) return workMode;
+  }
+  return null;
+}
+export const readPaperclipIssueWorkModeFromContext = readAoaIssueWorkModeFromContext;
 
 // ---------------------------------------------------------------------------
 // Log-friendly env + command resolution
@@ -1051,6 +1154,40 @@ export async function readAoaRuntimeSkillEntries(
 }
 export const readPaperclipRuntimeSkillEntries = readAoaRuntimeSkillEntries;
 
+export async function materializeAoaSkillCopy(source: string, target: string): Promise<{ skippedSymlinks: string[] }> {
+  // Codex P2: fs.cp's filter only skips copying matching SOURCE paths — it does
+  // NOT delete a same-named path already present in the TARGET. For a persistent
+  // runtime target reused across runs (e.g. ACPX Codex's CODEX_HOME/skills/
+  // <runtimeName>), a .git dir or symlink materialized by an earlier run/version
+  // would otherwise survive, defeating the exclude-VCS/symlink guarantee below.
+  // Remove the target up front so each materialization is a clean, filtered copy
+  // (the skill source is authoritative; nothing in target is worth preserving).
+  await fs.rm(target, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const resolvedSource = path.resolve(source);
+  const skippedSymlinks: string[] = [];
+  await fs.cp(source, target, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    dereference: false,
+    filter: async (src) => {
+      // Never materialize a nested VCS dir into the runtime skill tree, and
+      // never follow symlinked descendants out of the skill dir (security:
+      // a malicious skill could symlink to host files / dirs outside it).
+      if (path.basename(src) === ".git") return false;
+      const info = await fs.lstat(src);
+      if (info.isSymbolicLink()) {
+        skippedSymlinks.push(path.relative(resolvedSource, path.resolve(src)));
+        return false;
+      }
+      return true;
+    },
+  });
+  return { skippedSymlinks };
+}
+export const materializePaperclipSkillCopy = materializeAoaSkillCopy;
+
 export async function readAoaSkillMarkdown(
   moduleDir: string,
   skillKey: string,
@@ -1237,4 +1374,186 @@ export async function removeMaintainerOnlySkillSymlinks(
   } catch {
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Workspace env-var propagation helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply AoA workspace environment variables to an env record.
+ *
+ * Centralizes all 9 AOA_WORKSPACE_* / AGENT_HOME env keys so adapters
+ * don't drift from each other. Values that are null, undefined, or empty
+ * strings are silently skipped (the key is not written to the record).
+ *
+ * Ports d47ffa87 from paperclip (rebranded paperclip→aoa).
+ */
+export function applyAoaWorkspaceEnv(
+  env: Record<string, string>,
+  input: {
+    workspaceCwd?: string | null;
+    workspaceSource?: string | null;
+    workspaceStrategy?: string | null;
+    workspaceId?: string | null;
+    workspaceRepoUrl?: string | null;
+    workspaceRepoRef?: string | null;
+    workspaceBranch?: string | null;
+    workspaceWorktreePath?: string | null;
+    agentHome?: string | null;
+  },
+): Record<string, string> {
+  const mappings: [string, string | null | undefined][] = [
+    ["AOA_WORKSPACE_CWD", input.workspaceCwd],
+    ["AOA_WORKSPACE_SOURCE", input.workspaceSource],
+    ["AOA_WORKSPACE_STRATEGY", input.workspaceStrategy],
+    ["AOA_WORKSPACE_ID", input.workspaceId],
+    ["AOA_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
+    ["AOA_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["AOA_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["AOA_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
+    ["AGENT_HOME", input.agentHome],
+  ];
+  for (const [key, value] of mappings) {
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
+  return env;
+}
+
+export function refreshAoaWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  envConfig?: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  workspaceSource?: string | null;
+  workspaceStrategy?: string | null;
+  workspaceId?: string | null;
+  workspaceRepoUrl?: string | null;
+  workspaceRepoRef?: string | null;
+  workspaceBranch?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  agentHome?: string | null;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): Record<string, string> {
+  const workspaceCwd = input.executionTargetIsRemote
+    ? input.executionCwd || input.workspaceCwd || null
+    : input.workspaceCwd || null;
+  applyAoaWorkspaceEnv(input.env, {
+    workspaceCwd,
+    workspaceSource: input.workspaceSource ?? null,
+    workspaceStrategy: input.workspaceStrategy ?? null,
+    workspaceId: input.workspaceId ?? null,
+    workspaceRepoUrl: input.workspaceRepoUrl ?? null,
+    workspaceRepoRef: input.workspaceRepoRef ?? null,
+    workspaceBranch: input.workspaceBranch ?? null,
+    workspaceWorktreePath: input.executionTargetIsRemote ? null : input.workspaceWorktreePath ?? null,
+    agentHome: input.agentHome ?? null,
+  });
+  if (input.workspaceHints && input.workspaceHints.length > 0) {
+    input.env.AOA_WORKSPACES_JSON = JSON.stringify(input.workspaceHints);
+  }
+  const envConfig = parseObject(input.envConfig);
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") input.env[key] = value;
+  }
+  return input.env;
+}
+export const refreshPaperclipWorkspaceEnvForExecution = refreshAoaWorkspaceEnvForExecution;
+
+export function shapeAoaWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  targetType: "local" | "sandbox-docker";
+  localCwd: string;
+  executionCwd: string;
+}): Record<string, string> {
+  if (input.targetType === "local") return { ...input.env };
+
+  const next = { ...input.env };
+  if (next.AOA_WORKSPACE_CWD === input.localCwd) {
+    next.AOA_WORKSPACE_CWD = input.executionCwd;
+  }
+  if (next.AOA_WORKSPACE_WORKTREE_PATH === input.localCwd) {
+    delete next.AOA_WORKSPACE_WORKTREE_PATH;
+  }
+
+  if (next.AOA_WORKSPACES_JSON) {
+    try {
+      const parsed = JSON.parse(next.AOA_WORKSPACES_JSON) as unknown;
+      if (!Array.isArray(parsed)) {
+        delete next.AOA_WORKSPACES_JSON;
+      } else {
+        next.AOA_WORKSPACES_JSON = JSON.stringify(
+          parsed.map((item) => {
+            if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
+            const workspace = item as Record<string, unknown>;
+            if (workspace.cwd === input.localCwd) return { ...workspace, cwd: input.executionCwd };
+            const { cwd: _cwd, ...rest } = workspace;
+            return rest;
+          }),
+        );
+      }
+    } catch {
+      delete next.AOA_WORKSPACES_JSON;
+    }
+  }
+
+  return next;
+}
+
+export const applyPaperclipWorkspaceEnv = applyAoaWorkspaceEnv;
+export function shapePaperclipWorkspaceEnvForExecution(input: {
+  workspaceCwd?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const workspaceCwd =
+    input.executionTargetIsRemote ? input.executionCwd || input.workspaceCwd || null : input.workspaceCwd || null;
+  const workspaceWorktreePath = input.executionTargetIsRemote ? null : input.workspaceWorktreePath || null;
+  const workspaceHints = (input.workspaceHints ?? []).map((hint) => {
+    if (!input.executionTargetIsRemote || !input.workspaceCwd || !input.executionCwd) return hint;
+    if (hint.cwd === input.workspaceCwd) return { ...hint, cwd: input.executionCwd };
+    return hint;
+  });
+  return { workspaceCwd, workspaceWorktreePath, workspaceHints };
+}
+
+export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
+  env: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  executionCwd?: string | null;
+  executionTargetIsRemote?: boolean;
+}): Record<string, string> {
+  const nextEnv = Object.fromEntries(
+    Object.entries(input.env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const localWorkspaceCwd =
+    typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+      ? path.resolve(input.workspaceCwd)
+      : null;
+  const remoteWorkspaceCwd =
+    typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+      ? input.executionCwd.trim()
+      : null;
+
+  if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
+    return nextEnv;
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!key.endsWith("_WORKSPACE_CWD")) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (path.resolve(trimmed) !== localWorkspaceCwd) continue;
+    nextEnv[key] = remoteWorkspaceCwd;
+  }
+  return nextEnv;
 }

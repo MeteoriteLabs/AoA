@@ -91,10 +91,17 @@ function isPaired(lines: readonly string[], assertBoardLineIdx: number): boolean
   const surrounding = lines.slice(Math.max(0, assertBoardLineIdx - 2), assertBoardLineIdx + 1).join("\n");
   if (OPT_OUT_COMMENT.test(surrounding)) return true;
 
-  // (2) paired check anywhere in the same handler body (after the assertBoard line)
+  // (2) paired check anywhere in the same handler body — BEFORE or after the
+  // assertBoard line. The docstring says "paired somewhere in its handler body",
+  // and a scope check that PRECEDES assertBoard is equally valid: e.g.
+  // routes/cockpit.ts runs assertCompanyAccess first on purpose so an
+  // unauthenticated actor gets 401 (not the 403 assertBoard would throw). Scanning
+  // only the lookahead missed that legitimate ordering. Still catches genuinely
+  // unpaired calls (no scope check anywhere in the handler). Span is bounded to a
+  // single handler (between consecutive router.X( lines), so pairs don't leak across.
   const span = findHandlerSpan(lines, assertBoardLineIdx);
-  const handlerLookahead = lines.slice(assertBoardLineIdx + 1, span.endLine).join("\n");
-  if (PAIRED_PATTERNS.some((p) => p.test(handlerLookahead))) return true;
+  const handlerBody = lines.slice(span.startLine, span.endLine).join("\n");
+  if (PAIRED_PATTERNS.some((p) => p.test(handlerBody))) return true;
 
   return false;
 }

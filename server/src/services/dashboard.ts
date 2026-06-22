@@ -2,6 +2,7 @@ import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, approvals, companies, costEvents, issues } from "@armyofagents/db";
 import { notFound } from "../errors.js";
+import { notCrewAssigned } from "./issue-crew-scope.js";
 
 export function dashboardService(db: Db) {
   return {
@@ -17,13 +18,16 @@ export function dashboardService(db: Db) {
       const agentRows = await db
         .select({ status: agents.status, count: sql<number>`count(*)` })
         .from(agents)
-        .where(eq(agents.companyId, companyId))
+        // Exclude platform (Commander-team) agents from user dashboard counts.
+        .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")))
         .groupBy(agents.status);
 
+      // Org-workload task status rollup — exclude crew-agent tasks (they live on
+      // the Crew Board, not this dashboard). 2026-06-02 unified separation, T-B.
       const taskRows = await db
         .select({ status: issues.status, count: sql<number>`count(*)` })
         .from(issues)
-        .where(eq(issues.companyId, companyId))
+        .where(and(eq(issues.companyId, companyId), notCrewAssigned(companyId)))
         .groupBy(issues.status);
 
       const pendingApprovals = await db
@@ -40,6 +44,8 @@ export function dashboardService(db: Db) {
           and(
             eq(issues.companyId, companyId),
             eq(issues.status, "in_progress"),
+            // Org-workload stale count — exclude crew (T-B).
+            notCrewAssigned(companyId),
             sql`${issues.startedAt} < ${staleCutoff.toISOString()}`,
           ),
         )

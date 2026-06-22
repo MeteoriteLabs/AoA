@@ -33,12 +33,11 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import { eq, and, desc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { companySecrets, companySecretVersions, pluginConfig } from "@armyofagents/db";
-import type { SecretProvider } from "@armyofagents/shared";
-import { getSecretProvider } from "../secrets/provider-registry.js";
+import { companySecrets, pluginConfig } from "@armyofagents/db";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { secretService } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -51,12 +50,6 @@ import { pluginRegistryService } from "./plugin-registry.js";
 function secretNotFound(secretRef: string): Error {
   const err = new Error(`Secret not found: ${secretRef}`);
   err.name = "SecretNotFoundError";
-  return err;
-}
-
-function secretVersionNotFound(secretRef: string): Error {
-  const err = new Error(`No version found for secret: ${secretRef}`);
-  err.name = "SecretVersionNotFoundError";
   return err;
 }
 
@@ -123,7 +116,14 @@ export function extractSecretRefsFromConfig(
   configJson: unknown,
   schema?: Record<string, unknown> | null,
 ): Set<string> {
-  const refs = new Set<string>();
+  return new Set(extractSecretRefPathsFromConfig(configJson, schema).keys());
+}
+
+export function extractSecretRefPathsFromConfig(
+  configJson: unknown,
+  schema?: Record<string, unknown> | null,
+): Map<string, string> {
+  const refs = new Map<string, string>();
   if (configJson == null || typeof configJson !== "object") return refs;
 
   const secretPaths = collectSecretRefPaths(schema);
@@ -138,7 +138,7 @@ export function extractSecretRefsFromConfig(
         current = (current as Record<string, unknown>)[k];
       }
       if (typeof current === "string" && isUuid(current)) {
-        refs.add(current);
+        refs.set(current, dotPath);
       }
     }
     return refs;
@@ -147,17 +147,19 @@ export function extractSecretRefsFromConfig(
   // Fallback: no schema or no secret-ref annotations — collect all UUIDs.
   // This preserves backwards compatibility for plugins that omit
   // instanceConfigSchema.
-  function walkAll(value: unknown): void {
+  function walkAll(value: unknown, path: string): void {
     if (typeof value === "string") {
-      if (isUuid(value)) refs.add(value);
+      if (isUuid(value)) refs.set(value, path || "config");
     } else if (Array.isArray(value)) {
-      for (const item of value) walkAll(item);
+      for (const [index, item] of value.entries()) walkAll(item, path ? `${path}.${index}` : String(index));
     } else if (value !== null && typeof value === "object") {
-      for (const v of Object.values(value as Record<string, unknown>)) walkAll(v);
+      for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+        walkAll(v, path ? `${path}.${key}` : key);
+      }
     }
   }
 
-  walkAll(configJson);
+  walkAll(configJson, "");
   return refs;
 }
 
@@ -249,12 +251,14 @@ export function createPluginSecretsHandler(
 ): PluginSecretsService {
   const { db, pluginId } = options;
   const registry = pluginRegistryService(db);
+  const secrets = secretService(db);
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
 
-  let cachedAllowedRefs: Set<string> | null = null;
+  let cachedAllowedRefs: Map<string, string> | null = null;
   let cachedAllowedRefsExpiry = 0;
+  let cachedPluginCompanyId: string | null = null;
   const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds, matches event bus TTL
 
   return {
@@ -299,11 +303,12 @@ export function createPluginSecretsHandler(
 
         const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
           ?.instanceConfigSchema as Record<string, unknown> | undefined;
-        cachedAllowedRefs = extractSecretRefsFromConfig(configRow?.configJson, schema);
+        cachedAllowedRefs = extractSecretRefPathsFromConfig(configRow?.configJson, schema);
+        cachedPluginCompanyId = plugin?.companyId ?? null;
         cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
       }
 
-      if (!cachedAllowedRefs.has(trimmedRef)) {
+      if (!cachedAllowedRefs.has(trimmedRef) || !cachedPluginCompanyId) {
         // Return "not found" to avoid leaking whether the secret exists
         throw secretNotFound(trimmedRef);
       }
@@ -317,38 +322,18 @@ export function createPluginSecretsHandler(
         .where(eq(companySecrets.id, trimmedRef))
         .then((rows) => rows[0] ?? null);
 
-      if (!secret) {
+      if (!secret || secret.companyId !== cachedPluginCompanyId) {
         throw secretNotFound(trimmedRef);
       }
 
-      // ---------------------------------------------------------------
-      // 3. Fetch the latest version's material
-      // ---------------------------------------------------------------
-      const versionRow = await db
-        .select()
-        .from(companySecretVersions)
-        .where(
-          and(
-            eq(companySecretVersions.secretId, secret.id),
-            eq(companySecretVersions.version, secret.latestVersion),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-
-      if (!versionRow) {
-        throw secretVersionNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 4. Resolve through the appropriate secret provider
-      // ---------------------------------------------------------------
-      const provider = getSecretProvider(secret.provider as SecretProvider);
-      const resolved = await provider.resolveVersion({
-        material: versionRow.material as Record<string, unknown>,
-        externalRef: secret.externalRef,
+      return secrets.resolveSecretValue(cachedPluginCompanyId, secret.id, "latest", {
+        consumerType: "plugin",
+        consumerId: pluginId,
+        actorType: "plugin",
+        actorId: pluginId,
+        pluginId,
+        configPath: `plugin.config.${cachedAllowedRefs.get(trimmedRef) ?? "config"}`,
       });
-
-      return resolved;
     },
   };
 }

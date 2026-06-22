@@ -16,11 +16,21 @@ export async function fetchCatalogResource(item: CatalogItem, kind: string): Pro
   if (!item.resourceUrl) {
     throw new Error(`${kind}: ${item.id} has no resourceUrl`);
   }
-  const res = await fetch(item.resourceUrl, {
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  return fetchCatalogResourceUrl(item.resourceUrl, kind);
+}
+
+export async function fetchCatalogResourceUrl(url: string, kind: string): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to fetch ${kind}: ${message} from ${url}`, { cause: err });
+  }
   if (!res.ok) {
-    throw new Error(`Failed to fetch ${kind}: HTTP ${res.status} from ${item.resourceUrl}`);
+    throw new Error(`Failed to fetch ${kind}: HTTP ${res.status} from ${url}`);
   }
   return await res.text();
 }

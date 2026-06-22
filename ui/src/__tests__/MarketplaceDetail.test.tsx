@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -89,6 +89,64 @@ describe("MarketplaceDetail", () => {
     expect(screen.getByText("Verified")).toBeInTheDocument();
     // Breadcrumb + page title + README heading → 3 matches.
     expect(screen.getAllByText("Code Review").length).toBeGreaterThan(1);
+  });
+
+  it("renders provider logo and provider byline in the hero", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce({
+      ...FULL_CATALOG,
+      items: FULL_CATALOG.items.map((item) =>
+        item.id === "skill:aoa-curated/code-review"
+          ? {
+              ...item,
+              provider: {
+                id: "armyofagents",
+                name: "Army of Agents",
+                logoUrl: "https://example.com/aoa-logo.png",
+                fallbackInitials: "AoA",
+              },
+            }
+          : item,
+      ),
+    });
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("img", { name: "Army of Agents logo" }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("img", { name: "Army of Agents logo" })).toHaveClass("size-16");
+    expect(screen.getByText("by Army of Agents")).toBeInTheDocument();
+  });
+
+  it("organizes the top section as a detail card with badge, metadata, package, and install action", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    vi.mocked(marketplaceApi.getPackages).mockResolvedValue([
+      {
+        id: "garrytan/gstack",
+        name: "gstack",
+        sourceUrl: "https://github.com/garrytan/gstack",
+        memberItemIds: ["skill:aoa-curated/code-review"],
+        count: 1,
+        verified: true,
+        explicit: false,
+      },
+    ]);
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length).toBeGreaterThanOrEqual(1),
+    );
+
+    const hero = screen.getByTestId("marketplace-detail-hero-card");
+    expect(within(hero).getByTestId("marketplace-detail-type-badge")).toHaveTextContent("SKILL");
+    expect(within(hero).getAllByText(/^skill$/i)).toHaveLength(1);
+    const badges = within(hero).getByTestId("marketplace-detail-badges");
+    expect(within(badges).getByRole("link", { name: /part of gstack/i })).toBeInTheDocument();
+    expect(within(badges).getByText("Verified")).toBeInTheDocument();
+    expect(within(hero).getByTestId("marketplace-detail-metadata")).toHaveTextContent("Version");
+    expect(within(hero).getByTestId("marketplace-detail-metadata")).toHaveTextContent("v1.0.0");
+    expect(within(hero).getByRole("button", { name: /^install$/i })).toBeInTheDocument();
   });
 
   it("renders plugin detail with capabilities list", async () => {

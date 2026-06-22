@@ -176,6 +176,9 @@ vi.mock("@/api/plugins", () => ({
 vi.mock("@/api/github-integration", () => ({
   githubIntegrationApi: {
     status: vi.fn().mockResolvedValue({ configured: false }),
+    appStatus: vi.fn().mockResolvedValue({ installed: false }),
+    getAppInstallUrl: vi.fn().mockResolvedValue({ url: "https://github.com/apps/test/installations/new" }),
+    disconnectApp: vi.fn().mockResolvedValue({ removed: true }),
     setPat: vi.fn().mockResolvedValue({ configured: true, githubUser: "test-user" }),
     removePat: vi.fn().mockResolvedValue({ configured: false, removed: true }),
     createPR: vi.fn().mockResolvedValue({}),
@@ -267,19 +270,24 @@ describe("SettingsPage redesign — Phase F shell", () => {
     try { localStorage.removeItem("aoa.settings-secondary-collapsed"); } catch { /* noop */ }
   });
 
-  it("renders the SecondarySidebar with all 10 section items", () => {
+  it("renders the SecondarySidebar with all 13 section items", () => {
     renderSettings();
     // Defensive: catch silent drift in section count.
     const totalItems = SETTINGS_SECTIONS.flatMap((g) => g.items).length;
-    expect(totalItems).toBe(10);
+    expect(totalItems).toBe(13);
     // Each label appears in both the desktop sidebar and the mobile sub-nav pill row
     // (CSS media queries that hide one or the other are not evaluated in JSDOM).
     expect(screen.getAllByText("General").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Health").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Activity").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Commander").length).toBeGreaterThan(0);
     expect(screen.getAllByText("LLM providers").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Budget & caps").length).toBeGreaterThan(0);
     expect(screen.getAllByText("MCP API keys").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Environments").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Secrets").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Environments")[0]).toBeVisible();
+    expect(screen.getAllByText("Secrets")[0]).toBeVisible();
     expect(screen.getAllByText("GitHub").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Plugins").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Marketplace prefs").length).toBeGreaterThan(0);
@@ -351,12 +359,23 @@ describe("SettingsPage redesign — Phase F shell", () => {
   it("Marketplace prefs section: renders Updates / Access / Catalog Refresh + updateWindow Select", async () => {
     renderSettings("/P4/settings?tab=marketplace");
     expect(await screen.findByText(/^Updates$/)).toBeInTheDocument();
+    expect(await screen.findByText(/Plugin update policy/i)).toBeInTheDocument();
     expect(screen.getByText(/^Access$/)).toBeInTheDocument();
     // "Catalog Refresh" appears in both the sub-section header and the field label.
     const catalogMatches = screen.getAllByText(/Catalog Refresh/i);
     expect(catalogMatches.length).toBeGreaterThan(0);
     // Ghost setting — updateWindow
     expect(screen.getByText(/Update window/i)).toBeInTheDocument();
+  });
+
+  it("clears marketplace section state when switching to another settings section", async () => {
+    const user = userEvent.setup();
+    renderSettings("/P4/settings?tab=marketplace&section=updates");
+
+    await user.click((await screen.findAllByRole("button", { name: /^General$/ }))[0]!);
+    await user.click((await screen.findAllByRole("button", { name: /^Marketplace prefs$/ }))[0]!);
+
+    expect(await screen.findByText("Plugin update policy")).toBeInTheDocument();
   });
 
   it("LLM providers section: renders Anthropic, OpenAI, Google", async () => {
@@ -392,20 +411,19 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.queryByText(/Activity event log/i)).toBeNull();
   });
 
-  it("does NOT render the redundant 'Settings' header inside the secondary aside", async () => {
+  it("renders the settings secondary nav as a rounded local panel with an internal header toggle", async () => {
     renderSettings();
-    // After cleanup, the aside's first child should be the <nav>, not a header div with "Settings" text.
-    // Selector: SecondarySidebar aside (has shrink-0 + flex-col; uses md:flex for responsive display).
     const aside = document.querySelector("aside.shrink-0.flex-col");
     expect(aside).not.toBeNull();
-    const firstChild = aside!.firstElementChild;
-    expect(firstChild?.tagName.toLowerCase()).toBe("nav");
-  });
+    expect(aside?.className).toContain("rounded-xl");
+    expect(aside?.className).toContain("border");
 
-  it("renders the SecondarySidebar collapse toggle button", async () => {
-    renderSettings();
-    // SidebarCollapseToggle's aria-label is overridden via its `ariaLabel` prop in SettingsLayout.
-    expect(await screen.findByLabelText(/collapse settings nav|expand settings nav/i)).toBeInTheDocument();
+    const firstChild = aside!.firstElementChild;
+    expect(firstChild?.getAttribute("data-testid")).toBe("settings-secondary-header");
+    expect(firstChild?.textContent).toContain("Settings");
+
+    const toggle = await screen.findByLabelText(/collapse settings nav/i);
+    expect(firstChild).toContainElement(toggle);
   });
 
   it("toggles the SecondarySidebar between expanded (200px) and collapsed (48px)", async () => {
@@ -435,12 +453,13 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.getByText(/migrating to plugins/i)).toBeInTheDocument();
 
     // The GitHubIntegrationCard's actual rendered content. With a mocked
-    // status of `{ configured: false }`, the unconnected branch shows a PAT
-    // input + "Connect" button + descriptive copy.
+    // status of `{ configured: false }` and App not installed, the card shows
+    // both the "Connect with GitHub" App button and the PAT "Connect" button.
     expect(
       await screen.findByLabelText(/GitHub Personal Access Token/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Connect/i })).toBeInTheDocument();
+    // At least one button matching "Connect" (PAT or App section).
+    expect(screen.getAllByRole("button", { name: /Connect/i }).length).toBeGreaterThan(0);
   });
 
   it("/settings/commander route redirects to /settings?tab=commander", async () => {

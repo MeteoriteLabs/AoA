@@ -1,0 +1,410 @@
+import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { execute } from "../server/execute.js";
+import type { AdapterInvocationMeta, AdapterProviderSandboxRunInput } from "@armyofagents/adapter-utils";
+
+async function writeFakeClaudeCommand(commandPath: string): Promise<string> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.AOA_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  cwd: process.cwd(),
+  prompt: fs.readFileSync(0, "utf8"),
+  env: {
+    AOA_API_KEY: process.env.AOA_API_KEY,
+    AOA_RUN_ID: process.env.AOA_RUN_ID,
+    CUSTOM_ENV: process.env.CUSTOM_ENV,
+  },
+};
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
+}
+console.log(JSON.stringify({
+  type: "system",
+  subtype: "init",
+  session_id: "claude-session-1",
+  model: "claude-test",
+}));
+console.log(JSON.stringify({
+  type: "assistant",
+  message: { content: [{ type: "text", text: "hello" }] },
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  session_id: "claude-session-1",
+  result: "ok",
+  usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0 },
+  total_cost_usd: 0,
+}));
+`;
+  const jsPath = commandPath + ".js";
+  await fs.writeFile(jsPath, script, "utf8");
+  await fs.chmod(jsPath, 0o755);
+
+  if (process.platform === "win32") {
+    const cmdPath = commandPath + ".cmd";
+    await fs.writeFile(cmdPath, `@node "%~dp0agent.js" %*\r\n`, "utf8");
+    return cmdPath;
+  }
+
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+  return commandPath;
+}
+
+describe("claude execute target", () => {
+  it("uses explicit local target without changing command, stdin, env, or metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-execute-target-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    const metaEvents: AdapterInvocationMeta[] = [];
+
+    try {
+      const result = await execute({
+        runId: "run-claude-target",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            AOA_TEST_CAPTURE_PATH: capturePath,
+            CUSTOM_ENV: "custom-value",
+          },
+          promptTemplate: "Prompt for {{agent.id}} in {{runId}}.",
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "claude", installCommand: "do-not-run" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+        onMeta: async (next) => {
+          metaEvents.push(next);
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.executionCwd).toBe(workspace);
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        argv: string[];
+        cwd: string;
+        prompt: string;
+        env: Record<string, string>;
+      };
+      expect(capture.cwd).toBe(workspace);
+      expect(capture.argv).toEqual(expect.arrayContaining(["--print", "-", "--output-format", "stream-json"]));
+      expect(capture.prompt).toBe("Prompt for agent-1 in run-claude-target.");
+      expect(capture.env).toMatchObject({
+        AOA_API_KEY: "secret-run-token",
+        AOA_RUN_ID: "run-claude-target",
+        CUSTOM_ENV: "custom-value",
+      });
+      const meta = metaEvents.at(-1);
+      expect(meta?.commandNotes).toContain("Execution target: local");
+      expect(meta?.env?.AOA_API_KEY).toBe("***REDACTED***");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("places variadic extra CLI options after the stdin prompt marker", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-extra-args-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    const mcpConfigPath = path.join(root, "mcp.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(mcpConfigPath, "{}", "utf8");
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        runId: "run-claude-extra-args",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Prompt for {{agent.id}}.",
+          args: ["--mcp-config", mcpConfigPath],
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "claude", installCommand: "do-not-run" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { argv: string[] };
+      const promptMarkerIndex = capture.argv.findIndex((arg) => arg === "-");
+      const mcpConfigIndex = capture.argv.findIndex((arg) => arg === "--mcp-config");
+      expect(mcpConfigIndex).toBeGreaterThanOrEqual(0);
+      expect(mcpConfigIndex).toBeGreaterThan(promptMarkerIndex);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs provider-sandbox instructions and DB-backed skills before execution", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-provider-instructions-"));
+    const workspace = path.join(root, "workspace");
+    const instructionsPath = path.join(root, "instructions.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(instructionsPath, "Follow the configured instructions.", "utf8");
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout: [
+            JSON.stringify({
+              type: "system",
+              subtype: "init",
+              session_id: "claude-session-1",
+              model: "claude-test",
+            }),
+            JSON.stringify({
+              type: "assistant",
+              message: { content: [{ type: "text", text: "hello" }] },
+            }),
+            JSON.stringify({
+              type: "result",
+              subtype: "success",
+              session_id: "claude-session-1",
+              result: "ok",
+              usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0 },
+              total_cost_usd: 0,
+            }),
+          ].join("\n"),
+        };
+      }),
+    };
+
+    try {
+      const result = await execute({
+        runId: "run-claude-provider-instructions",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          env: {
+            ANTHROPIC_API_KEY: "test-anthropic-key",
+          },
+        },
+        context: {
+          skills: [
+            {
+              key: "company/review",
+              name: "Company Review",
+              markdown: "# Company Review\n\nUse the company-specific rubric.",
+            },
+          ],
+        },
+        executionTarget: {
+          type: "provider-sandbox",
+          provider: "e2b",
+          providerLeaseId: "sandbox-1",
+          remoteCwd: "/home/user/aoa-workspace",
+          shell: "bash",
+          runner: providerRunner,
+        },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.executionCwd).toBe("/home/user/aoa-workspace");
+      expect(result.sessionParams).toMatchObject({
+        sessionId: "claude-session-1",
+        cwd: "/home/user/aoa-workspace",
+        remoteExecution: {
+          type: "provider-sandbox",
+          provider: "e2b",
+          providerLeaseId: "sandbox-1",
+          remoteCwd: "/home/user/aoa-workspace",
+        },
+      });
+      const syncInstructions = providerInputs.find((input) =>
+        input.stdin && input.stdin === Buffer.from(
+          [
+            "Follow the configured instructions.",
+            `The above agent instructions were loaded from ${instructionsPath}. Resolve any relative file references from ${path.dirname(instructionsPath)}/.`,
+          ].join("\n"),
+        ).toString("base64")
+      );
+      expect(syncInstructions?.args.join(" ")).toContain("/home/user/aoa-workspace/.aoa-runtime/claude/agent-instructions.md");
+      const runInput = providerInputs.find((input) => input.args.includes("--print"));
+      expect(runInput).toBeDefined();
+      expect(runInput!.cwd).toBe("/home/user/aoa-workspace");
+      expect(runInput!.env.HOME).toBe("/home/user/aoa-workspace/.aoa-runtime/claude");
+      expect(runInput!.args).toEqual(expect.arrayContaining([
+        "--append-system-prompt-file",
+        "/home/user/aoa-workspace/.aoa-runtime/claude/agent-instructions.md",
+        "--add-dir",
+        "/home/user/aoa-workspace/.aoa-runtime/claude/.claude/skills",
+      ]));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs provider-sandbox targets through the remote install wrapper", async () => {
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout: [
+            JSON.stringify({
+              type: "system",
+              subtype: "init",
+              session_id: "claude-session-1",
+              model: "claude-test",
+            }),
+            JSON.stringify({
+              type: "assistant",
+              message: { content: [{ type: "text", text: "hello" }] },
+            }),
+            JSON.stringify({
+              type: "result",
+              subtype: "success",
+              session_id: "claude-session-1",
+              result: "ok",
+              usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0 },
+              total_cost_usd: 0,
+            }),
+          ].join("\n"),
+        };
+      }),
+    };
+
+    const result = await execute({
+      runId: "run-claude-provider",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+        env: {
+          ANTHROPIC_API_KEY: "test-anthropic-key",
+          CUSTOM_ENV: "custom-value",
+        },
+        promptTemplate: "Prompt for {{agent.id}} in {{runId}}.",
+        timeoutSec: 10,
+        graceSec: 1,
+      },
+      context: {},
+      executionTarget: {
+        type: "provider-sandbox",
+        provider: "e2b",
+        providerLeaseId: "sandbox-1",
+        remoteCwd: "/home/user/aoa-workspace",
+        shell: "bash",
+        runner: providerRunner,
+      },
+      runtimeCommandSpec: {
+        command: "claude",
+        installCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+      authToken: "secret-run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    const providerInput = providerInputs.find((input) => input.args.includes("--print"));
+    expect(providerInput).toBeDefined();
+    expect(providerInput).toMatchObject({
+      command: "bash",
+      args: [
+        "-lc",
+        [
+          "set -e",
+          "npm install -g @anthropic-ai/claude-code",
+          'exec "$@"',
+        ].join("\n"),
+        "bash",
+        "claude",
+        "--print",
+        "-",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--add-dir",
+        "/home/user/aoa-workspace/.aoa-runtime/claude/.claude/skills",
+      ],
+      cwd: "/home/user/aoa-workspace",
+    });
+    expect(providerInput!.env.ANTHROPIC_API_KEY).toBe("test-anthropic-key");
+    expect(providerInput!.env.CUSTOM_ENV).toBe("custom-value");
+  });
+});
