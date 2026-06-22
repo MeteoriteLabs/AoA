@@ -33,6 +33,7 @@ import { ThreadCollapsedTabStrip, ThreadViewer } from "../components/threads/Thr
 import { ScopeTab } from "../components/threads/ScopeTab";
 import { BranchesTab } from "../components/threads/BranchesTab";
 import { ThreadErrorBanner } from "../components/threads/ThreadErrorBanner";
+import { ThreadVisibilityControls } from "../components/threads/ThreadVisibilityControls";
 import type { ScopeItem } from "../components/threads/scopeGrouping";
 import { autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
 import {
@@ -1135,6 +1136,14 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
                   {newEntryLabel}
                 </span>
               )}
+
+              {/* Per-thread visibility selector + public share-link block.
+                  Restored from the retired OriginCard (group-chat redesign
+                  dropped it). Company-scoped → needs selectedCompanyId. */}
+              <ThreadVisibilityControls
+                thread={thread}
+                companyId={selectedCompanyId!}
+              />
             </div>
 
             {(shownParticipants.length > 0 || thread.ownerUserId === null) && (
