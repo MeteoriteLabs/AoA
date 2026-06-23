@@ -72,6 +72,8 @@ const ADAPTER_CONSTRAINT_TYPES = new Set([
 // The probe spawns a real CLI; cap concurrent probes per company to prevent abuse.
 // (Hard timeout ceiling is already enforced per-adapter: e.g. codex test.ts uses
 // timeoutSec 45 + graceSec 5 — see packages/adapters/*/server/test.ts.)
+// NOTE: in-process only — a multi-instance deployment would need a distributed
+// lock to share this counter. Acceptable for the Phase 1 single-process target.
 const MAX_CONCURRENT_PROBES_PER_COMPANY = 1;
 const inFlightProbeCounts = new Map<string, number>();
 
@@ -525,7 +527,7 @@ export function agentRoutes(db: Db) {
       // Unit D: per-company concurrency cap — reject if a probe is already running.
       const inFlight = inFlightProbeCounts.get(companyId) ?? 0;
       if (inFlight >= MAX_CONCURRENT_PROBES_PER_COMPANY) {
-        res.status(429).json({ error: "A connection test is already running for this company. Please wait for it to finish and retry." });
+        res.status(429).set("Retry-After", "30").json({ error: "A connection test is already running for this company. Please wait for it to finish and retry." });
         return;
       }
       inFlightProbeCounts.set(companyId, inFlight + 1);
@@ -551,7 +553,7 @@ export function agentRoutes(db: Db) {
         // Unit D (Part B): resolve the model the SAME way a real run would, so
         // the probe tests reality. Best-effort detection; shell-unsafe is a hard 422.
         let probeAdapterConfig: Record<string, unknown> = runtimeAdapterConfig;
-        if (type === "codex_local" || type === "claude_local" || type === "gemini_local" || type === "opencode_local") {
+        if (ADAPTER_CONSTRAINT_TYPES.has(type)) {
           const reqModel = runtimeAdapterConfig.model;
           if (typeof reqModel === "string" && reqModel.length > 0) {
             try {
@@ -628,7 +630,11 @@ export function agentRoutes(db: Db) {
       } finally {
         // Unit D: always decrement the in-flight counter regardless of outcome.
         const n = (inFlightProbeCounts.get(companyId) ?? 1) - 1;
-        if (n <= 0) inFlightProbeCounts.delete(companyId); else inFlightProbeCounts.set(companyId, n);
+        if (n <= 0) {
+          inFlightProbeCounts.delete(companyId);
+        } else {
+          inFlightProbeCounts.set(companyId, n);
+        }
       }
     },
   );

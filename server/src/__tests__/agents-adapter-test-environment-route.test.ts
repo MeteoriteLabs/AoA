@@ -350,7 +350,11 @@ describe("POST /companies/:companyId/adapters/:type/test-environment", () => {
   it("returns 403 when actor lacks read-configurations permission", async () => {
     // An actor that is a board member but NOT local_implicit and NOT instance admin
     // and without agents:create permission (canUser returns false).
-    // accessService().canUser is already vi.fn() (returns undefined = falsy).
+    // canUser mock: the vi.mock factory creates a fresh vi.fn() per accessService()
+    // call — no module-level handle exists to call .mockReturnValue(false) on it.
+    // vi.fn() returns undefined by default (falsy), which the RBAC gate treats as
+    // "no permission". This is intentionally equivalent to mockReturnValue(false);
+    // extracting a hoisted handle would require refactoring the mock factory.
     const restrictedApp = makeApp({
       type: "board",
       source: "session",       // NOT local_implicit

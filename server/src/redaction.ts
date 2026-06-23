@@ -76,6 +76,9 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
  * error details). Reuses the same value patterns as the object-level redactor so
  * there is a single source of truth. Used to scrub adapter test-connection output
  * before returning it to a client (Unit D — provider-switching).
+ * Note: JWT-shaped tokens are matched token-wise (whitespace-delimited), so a JWT
+ * embedded without surrounding whitespace (e.g. "Authorization:eyJ...") may not be
+ * redacted. API-key-style secrets use word-boundary patterns and are caught in context.
  */
 export function redactSecretsInString(value: string): string {
   let out = value;
