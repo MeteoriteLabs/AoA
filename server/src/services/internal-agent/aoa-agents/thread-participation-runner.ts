@@ -54,6 +54,8 @@ import type { CrewRole } from "./autonomy.js";
 import { resolveCrewRole } from "./resolve-crew-role.js";
 import type { ParticipantRunner } from "../../thread-orchestration.js";
 import { logger } from "../../../middleware/logger.js";
+import { mapRunFailureToFriendlyReason } from "./thread-participation-failure.js";
+import { redactSecretsInString } from "../../../redaction.js";
 
 const log = logger.child({ svc: "thread-participation-runner" });
 
@@ -178,6 +180,42 @@ export function makeThreadParticipationRunner(
           `thread participation run completed without an agent-authored post_entry for thread ${threadId}`,
         );
       }
+    }
+
+    // Unit E (Phase 1): surface failed runs instead of silently swallowing them
+    // under the misleading "agent self-posted via MCP" debug label.
+    //
+    // A result.status === "failed" run never self-posted — the agent did not
+    // complete. We log at error level with a friendly, secret-redacted reason so
+    // operators can diagnose the failure. We still return "" to preserve the B1
+    // no-double-post contract: requestParticipation skips its own entry-insert on
+    // an empty return, which is correct here — we do NOT want to inject an error
+    // message as an agent-authored entry (that would misattribute the error text
+    // to the agent).
+    //
+    // A system-entry insertion path (posting a clearly-marked notice entry on
+    // behalf of the system rather than the agent) is not available in this runner
+    // without injecting a new dep (an entry-insert function). That enhancement is
+    // tracked for a later unit — the minimum correct behaviour is error-level
+    // logging with redacted details (no longer silently swallowed/mislabeled).
+    if (result.status !== "succeeded") {
+      const friendlyReason = mapRunFailureToFriendlyReason(result.errorMessage);
+      const redactedRaw = result.errorMessage
+        ? redactSecretsInString(result.errorMessage)
+        : "(no error message)";
+      log.error(
+        {
+          threadId,
+          agentId,
+          role,
+          effectiveAutonomy,
+          status: result.status,
+          reason: friendlyReason,
+          rawError: redactedRaw,
+        },
+        "participation runner: agent run failed — not a self-post",
+      );
+      return "";
     }
 
     log.debug(
