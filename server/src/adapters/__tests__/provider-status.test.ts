@@ -22,6 +22,10 @@ describe("parseCodexAuthMode", () => {
     expect(parseCodexAuthMode({ agentEnvApiKey: null, authJson: { auth_mode: "chatgpt" }, serverEnvApiKey: "sk-company" }))
       .toBe("chatgpt");
   });
+  it("returns 'apikey' from auth.json auth_mode field set to 'apikey'", () => {
+    expect(parseCodexAuthMode({ agentEnvApiKey: null, authJson: { auth_mode: "apikey" } }))
+      .toBe("apikey");
+  });
 });
 
 // Type-level assertion: ProviderAuthMode must be importable and include these literals

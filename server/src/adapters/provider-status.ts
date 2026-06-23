@@ -24,6 +24,6 @@ export function parseCodexAuthMode(inputs: CodexAuthInputs): ProviderAuthMode {
     return ((j as { auth_mode: string }).auth_mode === "apikey") ? "apikey" : "chatgpt";
   }
   if (typeof (j as { OPENAI_API_KEY?: unknown }).OPENAI_API_KEY === "string") return "apikey";
-  return "unknown";
   // serverEnvApiKey intentionally unused — company-level key must never influence auth mode.
+  return "unknown";
 }
