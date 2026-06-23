@@ -38,7 +38,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, redactSecretsInString } from "../redaction.js";
 import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -67,6 +67,13 @@ const ADAPTER_CONSTRAINT_TYPES = new Set([
   "claude_local",
   "gemini_local",
 ]);
+
+// Unit D: per-company concurrency cap for the adapter test-connection probe.
+// The probe spawns a real CLI; cap concurrent probes per company to prevent abuse.
+// (Hard timeout ceiling is already enforced per-adapter: e.g. codex test.ts uses
+// timeoutSec 45 + graceSec 5 — see packages/adapters/*/server/test.ts.)
+const MAX_CONCURRENT_PROBES_PER_COMPANY = 1;
+const inFlightProbeCounts = new Map<string, number>();
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -504,6 +511,9 @@ export function agentRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
+
+      // RBAC check and 404 check happen BEFORE incrementing the in-flight
+      // counter so they never leak a slot.
       await assertCanReadConfigurations(req, companyId);
 
       const adapter = findServerAdapter(type);
@@ -512,67 +522,113 @@ export function agentRoutes(db: Db) {
         return;
       }
 
-      const inputAdapterConfig =
-        (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
-      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        companyId,
-        inputAdapterConfig,
-        { strictMode: strictSecretsMode },
-      );
-      const runtimeAdapterConfig = await secretsSvc.resolveAdapterConfigForRuntime(
-        companyId,
-        normalizedAdapterConfig,
-        {
-          consumerType: "system",
-          consumerId: `adapter-test:${type}`,
-          actorType: "system",
-        },
-      );
-
-      const environmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? req.body.environmentId.trim()
-          : null;
-      const acquiredEnvironment = environmentId
-        ? await environmentRuns.acquireForRun({
-            companyId,
-            environmentId,
-            adapterType: type,
-            issueId: null,
-            heartbeatRunId: null,
-            persistedExecutionWorkspace: null,
-          })
-        : null;
+      // Unit D: per-company concurrency cap — reject if a probe is already running.
+      const inFlight = inFlightProbeCounts.get(companyId) ?? 0;
+      if (inFlight >= MAX_CONCURRENT_PROBES_PER_COMPANY) {
+        res.status(429).json({ error: "A connection test is already running for this company. Please wait for it to finish and retry." });
+        return;
+      }
+      inFlightProbeCounts.set(companyId, inFlight + 1);
 
       try {
-        const result = await adapter.testEnvironment({
+        const inputAdapterConfig =
+          (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+        const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
           companyId,
-          adapterType: type,
-          config: runtimeAdapterConfig,
-          executionTarget: acquiredEnvironment?.configPatch.executionTarget,
-          environmentName: acquiredEnvironment?.environment.name ?? null,
-        });
+          inputAdapterConfig,
+          { strictMode: strictSecretsMode },
+        );
+        const runtimeAdapterConfig = await secretsSvc.resolveAdapterConfigForRuntime(
+          companyId,
+          normalizedAdapterConfig,
+          {
+            consumerType: "system",
+            consumerId: `adapter-test:${type}`,
+            actorType: "system",
+          },
+        );
 
-        res.json(result);
-      } finally {
-        if (acquiredEnvironment) {
-          await environmentRuntime.releaseRunLease({
-            environment: acquiredEnvironment.environment,
-            lease: acquiredEnvironment.lease,
-            status: "released",
-          }).catch((err) => {
-            logger.warn(
-              {
-                err,
-                companyId,
-                environmentId,
-                adapterType: type,
-                leaseId: acquiredEnvironment.lease.id,
-              },
-              "Failed to release adapter environment test lease",
-            );
-          });
+        // Unit D (Part B): resolve the model the SAME way a real run would, so
+        // the probe tests reality. Best-effort detection; shell-unsafe is a hard 422.
+        let probeAdapterConfig: Record<string, unknown> = runtimeAdapterConfig;
+        if (type === "codex_local" || type === "claude_local" || type === "gemini_local" || type === "opencode_local") {
+          const reqModel = runtimeAdapterConfig.model;
+          if (typeof reqModel === "string" && reqModel.length > 0) {
+            try {
+              const status = await getProviderStatus(type, { companyId, adapterConfig: runtimeAdapterConfig }, realProviderStatusDeps);
+              const resolved = resolveModel(type, reqModel, status);
+              probeAdapterConfig = { ...runtimeAdapterConfig };
+              if (resolved.omitModelFlag) delete probeAdapterConfig.model;
+              else probeAdapterConfig.model = resolved.model;
+            } catch (resolveErr) {
+              if (resolveErr instanceof ShellUnsafeModelError) {
+                throw unprocessable(`Unsafe model identifier: ${String(reqModel)}`);
+              }
+              logger.warn({ err: resolveErr }, "adapter-test: model resolution failed (best-effort, using requested model)");
+            }
+          }
         }
+
+        const environmentId =
+          typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
+            ? req.body.environmentId.trim()
+            : null;
+        const acquiredEnvironment = environmentId
+          ? await environmentRuns.acquireForRun({
+              companyId,
+              environmentId,
+              adapterType: type,
+              issueId: null,
+              heartbeatRunId: null,
+              persistedExecutionWorkspace: null,
+            })
+          : null;
+
+        try {
+          const result = await adapter.testEnvironment({
+            companyId,
+            adapterType: type,
+            config: probeAdapterConfig,
+            executionTarget: acquiredEnvironment?.configPatch.executionTarget,
+            environmentName: acquiredEnvironment?.environment.name ?? null,
+          });
+
+          // Unit D (Part C): redact any secrets that leaked into check messages
+          // before returning the result to the client.
+          const redactedResult = {
+            ...result,
+            checks: result.checks.map((c) => ({
+              ...c,
+              message: typeof c.message === "string" ? redactSecretsInString(c.message) : c.message,
+              ...(typeof c.detail === "string" ? { detail: redactSecretsInString(c.detail) } : {}),
+              ...(typeof c.hint === "string" ? { hint: redactSecretsInString(c.hint) } : {}),
+            })),
+          };
+          res.json(redactedResult);
+        } finally {
+          if (acquiredEnvironment) {
+            await environmentRuntime.releaseRunLease({
+              environment: acquiredEnvironment.environment,
+              lease: acquiredEnvironment.lease,
+              status: "released",
+            }).catch((err) => {
+              logger.warn(
+                {
+                  err,
+                  companyId,
+                  environmentId,
+                  adapterType: type,
+                  leaseId: acquiredEnvironment.lease.id,
+                },
+                "Failed to release adapter environment test lease",
+              );
+            });
+          }
+        }
+      } finally {
+        // Unit D: always decrement the in-flight counter regardless of outcome.
+        const n = (inFlightProbeCounts.get(companyId) ?? 1) - 1;
+        if (n <= 0) inFlightProbeCounts.delete(companyId); else inFlightProbeCounts.set(companyId, n);
       }
     },
   );

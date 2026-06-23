@@ -22,6 +22,8 @@ const mockResolveAdapterConfigForRuntime = vi.hoisted(() =>
 );
 const mockAcquireForRun = vi.hoisted(() => vi.fn());
 const mockReleaseRunLease = vi.hoisted(() => vi.fn());
+const mockGetProviderStatus = vi.hoisted(() => vi.fn());
+const mockFindServerAdapter = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => ({
@@ -68,11 +70,16 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../adapters/index.js", () => ({
   findActiveServerAdapter: vi.fn(),
-  findServerAdapter: vi.fn(() => ({
-    type: "process",
-    testEnvironment: mockAdapterTestEnvironment,
-  })),
+  findServerAdapter: mockFindServerAdapter,
   listAdapterModels: vi.fn(),
+}));
+
+vi.mock("../adapters/provider-status.js", () => ({
+  getProviderStatus: mockGetProviderStatus,
+}));
+
+vi.mock("../adapters/provider-status-deps.js", () => ({
+  realProviderStatusDeps: {},
 }));
 
 vi.mock("../services/environment-run-orchestrator.js", () => ({
@@ -110,17 +117,17 @@ import { errorHandler } from "../middleware/index.js";
 const COMPANY_ID = "company-1";
 const ENVIRONMENT_ID = "22222222-2222-4222-8222-222222222222";
 
-function makeApp() {
+function makeApp(actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = {
+    req.actor = (actorOverride ?? {
       type: "board",
       source: "local_implicit",
       userId: "board",
       companyIds: [COMPANY_ID],
       isInstanceAdmin: true,
-    } as never;
+    }) as never;
     next();
   });
   app.use("/api", agentRoutes({} as never));
@@ -131,6 +138,11 @@ function makeApp() {
 describe("POST /companies/:companyId/adapters/:type/test-environment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: process adapter (skips model resolution)
+    mockFindServerAdapter.mockReturnValue({
+      type: "process",
+      testEnvironment: mockAdapterTestEnvironment,
+    });
     mockAdapterTestEnvironment.mockResolvedValue({
       adapterType: "process",
       status: "pass",
@@ -168,6 +180,15 @@ describe("POST /companies/:companyId/adapters/:type/test-environment", () => {
         },
       },
     });
+    mockReleaseRunLease.mockResolvedValue(undefined);
+    // Default: getProviderStatus not called unless test sets it up
+    mockGetProviderStatus.mockResolvedValue({
+      adapterType: "codex_local",
+      installed: true,
+      authenticated: true,
+      authMode: "chatgpt",
+      defaultModelResolved: "gpt-5.5",
+    });
   });
 
   it("passes the selected environment execution target into the adapter test and releases the lease", async () => {
@@ -202,5 +223,146 @@ describe("POST /companies/:companyId/adapters/:type/test-environment", () => {
       lease: expect.objectContaining({ id: "lease-1" }),
       status: "released",
     }));
+  });
+
+  it("resolves the model via getProviderStatus for codex_local before probing", async () => {
+    // Override adapter type to codex_local for this test
+    mockFindServerAdapter.mockReturnValue({
+      type: "codex_local",
+      testEnvironment: mockAdapterTestEnvironment,
+    });
+    mockAdapterTestEnvironment.mockResolvedValue({
+      adapterType: "codex_local",
+      status: "pass",
+      checks: [],
+      testedAt: "2026-06-01T00:00:00.000Z",
+    });
+    mockGetProviderStatus.mockResolvedValue({
+      adapterType: "codex_local",
+      installed: true,
+      authenticated: true,
+      authMode: "chatgpt",
+      defaultModelResolved: "gpt-5.5",
+    });
+
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/adapters/codex_local/test-environment`)
+      .send({
+        adapterConfig: { model: "gpt-5.3-codex" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockGetProviderStatus).toHaveBeenCalledWith(
+      "codex_local",
+      expect.objectContaining({ companyId: COMPANY_ID }),
+      expect.anything(),
+    );
+    // gpt-5.3-codex is CODEX_INCOMPATIBLE (contains "codex") in chatgpt mode →
+    // resolveModel should fall back to defaultModelResolved "gpt-5.5"
+    expect(mockAdapterTestEnvironment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ model: "gpt-5.5" }),
+      }),
+    );
+  });
+
+  it("redacts secrets in check message/detail/hint before returning to client", async () => {
+    const secretKey = "sk-ant-abc123DEF456ghi789xyz";
+    mockAdapterTestEnvironment.mockResolvedValue({
+      adapterType: "codex_local",
+      status: "warn",
+      checks: [
+        {
+          code: "x",
+          level: "warn",
+          message: "probe failed",
+          detail: `leaked ${secretKey} here`,
+          hint: `try removing ${secretKey} from config`,
+        },
+      ],
+      testedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/adapters/process/test-environment`)
+      .send({ adapterConfig: {} });
+
+    expect(res.status).toBe(200);
+    expect(res.body.checks[0].detail).not.toContain(secretKey);
+    expect(res.body.checks[0].detail).toContain("***REDACTED***");
+    expect(res.body.checks[0].hint).not.toContain(secretKey);
+    expect(res.body.checks[0].hint).toContain("***REDACTED***");
+    // message was clean, should be unchanged
+    expect(res.body.checks[0].message).toBe("probe failed");
+  });
+
+  it("returns 429 when a probe is already in-flight for the same company", async () => {
+    // Strategy: use supertest's .end() callback to fire request A without
+    // awaiting — so the HTTP request is actually dispatched. Then signal via
+    // a Promise inside the mock when the adapter is entered (slot is held),
+    // send request B, assert 429, then release the gate to clean up.
+    let releaseGate!: () => void;
+    let adapterStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const adapterStartedSignal = new Promise<void>((resolve) => { adapterStarted = resolve; });
+    const successResult = {
+      adapterType: "process",
+      status: "pass",
+      checks: [],
+      testedAt: "2026-06-01T00:00:00.000Z",
+    };
+    // First call: signal that it started, then hold the slot
+    mockAdapterTestEnvironment.mockImplementationOnce(async () => {
+      adapterStarted();
+      await gate;
+      return successResult;
+    });
+    // Second call (if reached): returns immediately
+    mockAdapterTestEnvironment.mockResolvedValueOnce(successResult);
+
+    const app = makeApp();
+
+    // Fire request A using .end() — this dispatches without blocking our async function
+    let resolveA!: (res: request.Response) => void;
+    const reqAPromise = new Promise<request.Response>((resolve) => { resolveA = resolve; });
+    request(app)
+      .post(`/api/companies/${COMPANY_ID}/adapters/process/test-environment`)
+      .send({ adapterConfig: {} })
+      .end((_err, res) => resolveA(res));
+
+    // Wait until request A has entered the adapter (slot is incremented)
+    await adapterStartedSignal;
+
+    // Now request B should hit the 429 cap
+    const resB = await request(app)
+      .post(`/api/companies/${COMPANY_ID}/adapters/process/test-environment`)
+      .send({ adapterConfig: {} });
+
+    expect(resB.status).toBe(429);
+    expect(resB.body.error).toMatch(/already running/i);
+
+    // Release A's gate and confirm it completes cleanly (slot decremented)
+    releaseGate();
+    const resA = await reqAPromise;
+    expect(resA.status).toBe(200);
+  });
+
+  it("returns 403 when actor lacks read-configurations permission", async () => {
+    // An actor that is a board member but NOT local_implicit and NOT instance admin
+    // and without agents:create permission (canUser returns false).
+    // accessService().canUser is already vi.fn() (returns undefined = falsy).
+    const restrictedApp = makeApp({
+      type: "board",
+      source: "session",       // NOT local_implicit
+      userId: "restricted-user",
+      companyIds: [COMPANY_ID],
+      isInstanceAdmin: false,  // NOT instance admin
+    });
+
+    const res = await request(restrictedApp)
+      .post(`/api/companies/${COMPANY_ID}/adapters/process/test-environment`)
+      .send({ adapterConfig: {} });
+
+    expect(res.status).toBe(403);
   });
 });

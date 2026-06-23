@@ -71,6 +71,25 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
   return redacted;
 }
 
+/**
+ * Redact secret-looking substrings from a FREE-FORM string (probe stdout/stderr,
+ * error details). Reuses the same value patterns as the object-level redactor so
+ * there is a single source of truth. Used to scrub adapter test-connection output
+ * before returning it to a client (Unit D — provider-switching).
+ */
+export function redactSecretsInString(value: string): string {
+  let out = value;
+  for (const re of SECRET_VALUE_PATTERNS) {
+    out = out.replace(new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g"), REDACTED_EVENT_VALUE);
+  }
+  // JWT_VALUE_RE is anchored (^...$) for whole-value matching; apply it token-wise.
+  out = out
+    .split(/(\s+)/)
+    .map((tok) => (JWT_VALUE_RE.test(tok) ? REDACTED_EVENT_VALUE : tok))
+    .join("");
+  return out;
+}
+
 export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
