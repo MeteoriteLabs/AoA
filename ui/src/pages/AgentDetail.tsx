@@ -1277,12 +1277,15 @@ function ConfigurationTab({
     enabled: Boolean(companyId),
   });
 
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      setSaveWarnings(result.warnings ?? []);
     },
   });
 
@@ -1295,7 +1298,7 @@ function ConfigurationTab({
       <AgentConfigForm
         mode="edit"
         agent={agent}
-        onSave={(patch) => updateAgent.mutate(patch)}
+        onSave={(patch) => { setSaveWarnings([]); updateAgent.mutate(patch); }}
         isSaving={updateAgent.isPending}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
@@ -1304,6 +1307,16 @@ function ConfigurationTab({
         hideInlineSave
         sectionLayout="cards"
       />
+
+      {saveWarnings.length > 0 && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 space-y-1">
+          {saveWarnings.map((w, i) => (
+            <p key={i} className="text-xs text-amber-600 dark:text-amber-400">
+              Heads up: {w}
+            </p>
+          ))}
+        </div>
+      )}
 
       <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
     </div>

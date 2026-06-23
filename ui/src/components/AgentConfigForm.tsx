@@ -829,6 +829,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 allowDefault={adapterType !== "opencode_local"}
                 required={adapterType === "opencode_local"}
                 groupByProvider={adapterType === "opencode_local"}
+                defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
@@ -1473,6 +1474,7 @@ function ModelDropdown({
   allowDefault,
   required,
   groupByProvider,
+  defaultLabel,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1482,6 +1484,7 @@ function ModelDropdown({
   allowDefault: boolean;
   required: boolean;
   groupByProvider: boolean;
+  defaultLabel?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const selected = models.find((m) => m.id === value);
@@ -1535,7 +1538,7 @@ function ModelDropdown({
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
                 ? selected.label
-                : value || (allowDefault ? "Default" : required ? "Select model (required)" : "Select model")}
+                : value || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
             </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
@@ -1560,7 +1563,7 @@ function ModelDropdown({
                   onOpenChange(false);
                 }}
               >
-                Default
+                {defaultLabel ?? "Default"}
               </button>
             )}
             {groupedModels.map((group) => (

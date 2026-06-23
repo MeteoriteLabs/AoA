@@ -974,7 +974,7 @@ export function OnboardingWizard() {
                       id="crew-model"
                       data-testid="crew-model"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. gpt-5.3-codex"
+                      placeholder="e.g. gpt-5.5"
                       value={crewModel}
                       onChange={(e) => setCrewModel(e.target.value)}
                     />

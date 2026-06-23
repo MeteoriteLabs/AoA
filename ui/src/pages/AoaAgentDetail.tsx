@@ -458,13 +458,16 @@ function AoaConfigurePage({
     enabled: Boolean(companyId),
   });
 
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: () => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       if (agent.urlKey) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
+      setSaveWarnings(result.warnings ?? []);
     },
   });
 
@@ -477,7 +480,7 @@ function AoaConfigurePage({
       <AgentConfigForm
         mode="edit"
         agent={agent}
-        onSave={(patch) => updateAgent.mutate(patch)}
+        onSave={(patch) => { setSaveWarnings([]); updateAgent.mutate(patch); }}
         isSaving={updateAgent.isPending}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
@@ -486,6 +489,16 @@ function AoaConfigurePage({
         hideInlineSave
         sectionLayout="cards"
       />
+
+      {saveWarnings.length > 0 && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 space-y-1">
+          {saveWarnings.map((w, i) => (
+            <p key={i} className="text-xs text-amber-600 dark:text-amber-400">
+              Heads up: {w}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

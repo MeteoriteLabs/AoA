@@ -41,7 +41,11 @@ export type OrgNode = UnifiedOrgNode;
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
+  warnings?: string[];
 }
+
+/** Agent returned from create/update endpoints — may include soft warnings (e.g. model corrections). */
+export type AgentSaveResult = Agent & { warnings?: string[] };
 
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
@@ -107,7 +111,7 @@ export const agentsApi = {
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
-    api.patch<Agent>(agentPath(id, companyId), data),
+    api.patch<AgentSaveResult>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: { canCreateAgents: boolean }, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId, "/permissions"), data),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
