@@ -42,8 +42,8 @@ import { redactEventPayload } from "../redaction.js";
 import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
 } from "@armyofagents/adapter-codex-local";
+import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@armyofagents/adapter-cursor-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@armyofagents/adapter-opencode-local/server";
 import {
@@ -269,7 +269,7 @@ export function agentRoutes(db: Db) {
     const next = { ...adapterConfig };
     if (adapterType === "codex_local") {
       if (!asNonEmptyString(next.model)) {
-        next.model = DEFAULT_CODEX_LOCAL_MODEL;
+        next.model = DEFAULT_CODEX_CHAT_MODEL;
       }
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||

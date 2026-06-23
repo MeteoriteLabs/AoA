@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig } from "@armyofagents/db";
+import { DEFAULT_CODEX_CHAT_MODEL, isCodexCompatibleModel } from "../codex-model.js";
 
 /**
  * Resolves the right CLI adapter for AoA crew agents based on the company's
@@ -63,7 +64,10 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
       return {
         adapterType: "opencode_local",
         adapterConfig: {
-          model: "gpt-5.3-codex",
+          // opencode uses a `provider/model` slash id. gpt-5.3-codex was a bare
+          // codex id (API-key-only) that 400s on a ChatGPT login — replaced
+          // with the correct slash format for subscription accounts.
+          model: "openai/gpt-5.2-codex",
         },
       };
     case "openai":
@@ -71,7 +75,10 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
       return {
         adapterType: "codex_local",
         adapterConfig: {
-          model: "gpt-5.3-codex",
+          // gpt-5.3-codex was an API-key-only model that 400s on ChatGPT
+          // subscription logins. Use DEFAULT_CODEX_CHAT_MODEL (gpt-5.5) which
+          // is verified-safe for subscription accounts (Test C in codex-model.ts).
+          model: DEFAULT_CODEX_CHAT_MODEL,
           dangerouslyBypassApprovalsAndSandbox: true,
         },
       };
@@ -123,6 +130,15 @@ export function needsAdapterBackfill(
   // Case 2: claude_local crew rows missing the permission-skip flag.
   if (adapterType === "claude_local") {
     return adapterConfig?.dangerouslySkipPermissions !== true;
+  }
+  // Case 3: codex_local rows with an incompatible model (e.g. gpt-5.3-codex,
+  // an API-key-only model that 400s on ChatGPT subscription accounts). The
+  // consumer rewrite path (resolveCrewAdapterForCompany + mergeAdapterConfig)
+  // now yields DEFAULT_CODEX_CHAT_MODEL (gpt-5.5) for codex rows.
+  if (adapterType === "codex_local") {
+    const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
+    // A persisted codex model that a ChatGPT login would reject needs rewriting.
+    return model.length > 0 && !isCodexCompatibleModel(model);
   }
   return false;
 }
