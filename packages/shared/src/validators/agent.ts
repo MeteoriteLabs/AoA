@@ -24,7 +24,69 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   }
 });
 
-export const createAgentSchema = z.object({
+// ---------------------------------------------------------------------------
+// Cross-family + shell-safety refinement helpers (pure; no server imports)
+// ---------------------------------------------------------------------------
+
+const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+// Shell-safety consistent with the server's isShellSafeModel (Unit B): a model
+// may be a provider/model slash id (opencode); validate EACH segment and cap at 2.
+function isShellSafeModelId(model: string): boolean {
+  const segments = model.split("/");
+  return segments.length <= 2 && segments.every((s) => SAFE_MODEL_RE.test(s));
+}
+
+function modelFamily(model: string): "claude" | "openai" | "gemini" | "unknown" {
+  const m = model.includes("/") ? model.split("/").pop()! : model; // opencode openai/<id>
+  if (/^claude-/i.test(m)) return "claude";
+  if (/^(gpt-|o\d|chatgpt)/i.test(m)) return "openai";
+  if (/^gemini-|^auto$/i.test(m)) return "gemini";
+  return "unknown";
+}
+
+const ADAPTER_FAMILY: Record<string, "claude" | "openai" | "gemini"> = {
+  claude_local: "claude",
+  codex_local: "openai",
+  opencode_local: "openai",
+  gemini_local: "gemini",
+};
+
+function refineAdapterModel(
+  val: { adapterType?: string; adapterConfig?: Record<string, unknown> },
+  ctx: z.RefinementCtx,
+) {
+  const at = val.adapterType;
+  const model = val.adapterConfig?.model;
+  if (!at || typeof model !== "string" || model.length === 0) return;
+
+  if (!isShellSafeModelId(model)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["adapterConfig", "model"],
+      message: `Unsafe model identifier: ${model}`,
+    });
+    return;
+  }
+
+  const fam = modelFamily(model);
+  const expected = ADAPTER_FAMILY[at];
+  if (expected && fam !== "unknown" && fam !== expected) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["adapterConfig", "model"],
+      message: `Model "${model}" (${fam}) does not match adapter ${at} (${expected}).`,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Base object — NOT exported directly; derived schemas all chain from this.
+// ZodEffects (.superRefine) does not have .extend/.omit, so we apply
+// superRefine LAST on each exported schema after any structural transforms.
+// ---------------------------------------------------------------------------
+
+const _createAgentBase = z.object({
   name: z.string().min(1),
   kind: z.enum(["org", "aoa"]).optional().default("org"),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -43,16 +105,20 @@ export const createAgentSchema = z.object({
   metadata: z.record(z.unknown()).optional().nullable(),
 });
 
+export const createAgentSchema = _createAgentBase.superRefine(refineAdapterModel);
+
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
-export const createAgentHireSchema = createAgentSchema.extend({
-  sourceIssueId: z.string().uuid().optional().nullable(),
-  sourceIssueIds: z.array(z.string().uuid()).optional(),
-});
+export const createAgentHireSchema = _createAgentBase
+  .extend({
+    sourceIssueId: z.string().uuid().optional().nullable(),
+    sourceIssueIds: z.array(z.string().uuid()).optional(),
+  })
+  .superRefine(refineAdapterModel);
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
-export const updateAgentSchema = createAgentSchema
+export const updateAgentSchema = _createAgentBase
   .omit({ permissions: true })
   .partial()
   .extend({
@@ -61,7 +127,8 @@ export const updateAgentSchema = createAgentSchema
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     skillKeys: z.array(z.string()).optional(),
     defaultEnvironmentId: z.string().uuid().optional().nullable(),
-  });
+  })
+  .superRefine(refineAdapterModel);
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
