@@ -52,4 +52,11 @@ describe("getProviderStatus (codex)", () => {
       { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: "sk-agent" } } }, deps);
     expect(s.authMode).toBe("apikey");
   });
+  it("propagates apikey auth_mode from the managed auth.json through to authenticated", async () => {
+    const apikeyDeps = { ...deps, readAuthJson: async () => ({ auth_mode: "apikey" } as Record<string, unknown>) };
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: {} } }, apikeyDeps);
+    expect(s.authMode).toBe("apikey");
+    expect(s.authenticated).toBe(true);
+  });
 });
