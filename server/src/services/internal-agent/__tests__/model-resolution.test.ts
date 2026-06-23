@@ -23,4 +23,19 @@ describe("resolveModel", () => {
       .toBe("claude-sonnet-4-5-20250929");
     expect(resolveModel("gemini_local", "auto", { authMode: "unknown", defaultModelResolved: null }).omitModelFlag).toBe(true);
   });
+  it("passes an opencode provider/model slash model through unchanged (shell-safe)", () => {
+    const r = resolveModel("opencode_local", "openai/gpt-5.2-codex", { authMode: "unknown", defaultModelResolved: null });
+    expect(r.model).toBe("openai/gpt-5.2-codex");
+    expect(r.omitModelFlag).toBe(false);
+  });
+  it("passes a codex -codex model through unchanged on an apikey login (no correction, no note)", () => {
+    const r = resolveModel("codex_local", "gpt-5.3-codex", { authMode: "apikey", defaultModelResolved: "gpt-5.5" });
+    expect(r.model).toBe("gpt-5.3-codex");
+    expect(r.note).toBeUndefined();
+  });
+  it("passes a non-auto gemini model through unchanged", () => {
+    const r = resolveModel("gemini_local", "gemini-2.5-pro", { authMode: "unknown", defaultModelResolved: null });
+    expect(r.model).toBe("gemini-2.5-pro");
+    expect(r.omitModelFlag).toBe(false);
+  });
 });

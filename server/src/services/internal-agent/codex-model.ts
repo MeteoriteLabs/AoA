@@ -43,9 +43,14 @@ export function isCodexCompatibleModel(model: string | null | undefined): boolea
   );
 }
 
-/** True when `model` is non-empty and contains only shell-safe characters. */
+/** True when `model` is non-empty and contains only shell-safe characters.
+ * opencode uses a `provider/model` slash format; each segment is validated
+ * individually (cap at 2 segments) against {@link SAFE_MODEL_RE}. */
 export function isShellSafeModel(model: string | null | undefined): boolean {
-  return !!model && SAFE_MODEL_RE.test(model.trim());
+  if (!model) return false;
+  // opencode uses provider/model slash format; validate each segment.
+  const segments = model.trim().split("/");
+  return segments.length <= 2 && segments.every((s) => SAFE_MODEL_RE.test(s));
 }
 
 /**

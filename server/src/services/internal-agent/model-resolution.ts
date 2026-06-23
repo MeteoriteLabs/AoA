@@ -9,6 +9,7 @@ import {
   isShellSafeModel,
   isCodexCompatibleModel,
   resolveCodexChatModel,
+  DEFAULT_CODEX_CHAT_MODEL,
 } from "./codex-model.js";
 
 export class ShellUnsafeModelError extends Error {
@@ -26,6 +27,7 @@ export interface ResolveModelStatus {
 export interface ResolvedModel {
   model?: string;
   omitModelFlag: boolean;
+  /** Operator-facing reason a model was corrected. Caller must wrap before surfacing to the UI (never forward raw). */
   note?: string;
 }
 
@@ -55,13 +57,16 @@ export function resolveModel(
   if (m && !isShellSafeModel(m)) throw new ShellUnsafeModelError(m);
 
   if (adapterType === "codex_local") {
-    // Reuse the proven Commander resolver: validates compatibility, falls back
-    // to gpt-5.5. Pass null for empty so resolveCodexChatModel skips it.
+    // In apikey mode, codex-family/API-key-only models (e.g. gpt-5.3-codex) are
+    // valid — pass the (already shell-safe-checked) model through; no correction.
+    if (status.authMode === "apikey") {
+      return { model: m || status.defaultModelResolved || DEFAULT_CODEX_CHAT_MODEL, omitModelFlag: false };
+    }
+    // Otherwise (chatgpt/subscription/unknown): validate against ChatGPT
+    // compatibility and fall back to the safe default, with a note if corrected.
     const resolved = resolveCodexChatModel(m || null, status.defaultModelResolved);
-    const note =
-      m && !isCodexCompatibleModel(m)
-        ? `"${m}" is not supported on a ChatGPT Codex login; using ${resolved}.`
-        : undefined;
+    const note = (m && !isCodexCompatibleModel(m))
+      ? `"${m}" is not supported on a ChatGPT Codex login; using ${resolved}.` : undefined;
     return { model: resolved, omitModelFlag: false, note };
   }
 
