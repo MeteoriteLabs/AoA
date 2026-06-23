@@ -28,6 +28,9 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 // Cross-family + shell-safety refinement helpers (pure; no server imports)
 // ---------------------------------------------------------------------------
 
+// NOTE: intentionally duplicated from server/src/services/internal-agent/codex-model.ts
+// (SAFE_MODEL_RE) — the shared package cannot import from server. Keep the two in sync:
+// if you change this, change codex-model.ts too (and vice versa).
 const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 // Shell-safety consistent with the server's isShellSafeModel (Unit B): a model
@@ -52,6 +55,8 @@ const ADAPTER_FAMILY: Record<string, "claude" | "openai" | "gemini"> = {
   gemini_local: "gemini",
 };
 
+// `val` is loosely typed because this refinement runs across the create / hire /
+// (partial) update shapes — all of which carry adapterType + adapterConfig.
 function refineAdapterModel(
   val: { adapterType?: string; adapterConfig?: Record<string, unknown> },
   ctx: z.RefinementCtx,

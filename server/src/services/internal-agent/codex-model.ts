@@ -24,6 +24,7 @@ export const COMMANDER_CODEX_REASONING_EFFORT = "high";
 // Shell-safe charset (spawn uses shell:true on Windows — REVIEW FIX C10/S5):
 // the resolved model is interpolated into argv, so reject anything that isn't
 // a plain model identifier. Full-string anchor (NOT a prefix test).
+// Mirrored (intentionally duplicated) in packages/shared/src/validators/agent.ts — keep in sync.
 export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 // OpenAI chat families usable on a ChatGPT/subscription codex account.
 const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt)/i;
