@@ -39,16 +39,6 @@ vi.mock("../adapters/provider-status.js", () => ({
   getProviderStatus: mockGetProviderStatus,
 }));
 
-// ── provider-status-deps: stub the real fs deps (never read disk in tests) ───
-vi.mock("../adapters/provider-status-deps.js", () => ({
-  realProviderStatusDeps: {
-    resolveManagedCodexHomeDir: vi.fn().mockResolvedValue("/tmp/codex"),
-    readAuthJson: vi.fn().mockResolvedValue({ auth_mode: "chatgpt" }),
-    readSharedCodexModel: vi.fn().mockResolvedValue("gpt-5.5"),
-    isInstalled: vi.fn().mockResolvedValue(true),
-  },
-}));
-
 // ── Service mocks ─────────────────────────────────────────────────────────────
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),

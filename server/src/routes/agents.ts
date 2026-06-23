@@ -56,7 +56,17 @@ import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
 import { getProviderStatus } from "../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
-import { resolveModel } from "../services/internal-agent/model-resolution.js";
+import { resolveModel, ShellUnsafeModelError } from "../services/internal-agent/model-resolution.js";
+
+// Adapter types that go through the assertAdapterConfigConstraints validation
+// path (provider-status + model-resolution checks). Allocated once at module
+// scope rather than per-request inside the PATCH handler.
+const ADAPTER_CONSTRAINT_TYPES = new Set([
+  "opencode_local",
+  "codex_local",
+  "claude_local",
+  "gemini_local",
+]);
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -328,6 +338,12 @@ export function agentRoutes(db: Db) {
           const resolved = resolveModel(adapterType, model, status);
           if (resolved.note) warnings.push(resolved.note);
         } catch (warnErr) {
+          // Shell-safety is a mandatory hard-block (defense-in-depth behind the
+          // shared schema's 400). Never let a shell-unsafe model slip through the
+          // soft-warn path as a silent success.
+          if (warnErr instanceof ShellUnsafeModelError) {
+            throw unprocessable(`Unsafe model identifier: ${String(adapterConfig.model)}`);
+          }
           logger.warn({ err: warnErr }, "agents: auth-mismatch soft-warn check failed (best-effort, ignored)");
         }
       }
@@ -951,6 +967,8 @@ export function agentRoutes(db: Db) {
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
     );
+    // Unconditional call — function self-dispatches by adapterType and returns []
+    // cheaply for non-constraint types; create always sets adapterConfig.
     const adapterWarnings = await assertAdapterConfigConstraints(
       companyId,
       hireInput.adapterType,
@@ -1330,12 +1348,6 @@ export function agentRoutes(db: Db) {
     const touchesAdapterConfiguration =
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
-    const ADAPTER_CONSTRAINT_TYPES = new Set([
-      "opencode_local",
-      "codex_local",
-      "claude_local",
-      "gemini_local",
-    ]);
     let adapterWarnings: string[] = [];
     if (touchesAdapterConfiguration && requestedAdapterType != null && ADAPTER_CONSTRAINT_TYPES.has(requestedAdapterType)) {
       const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
