@@ -102,7 +102,7 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
 /**
  * Decide whether an existing agent row needs an adapter backfill.
  *
- * Returns true in two cases:
+ * Returns true in three cases:
  *
  * 1) **Legacy unrunnable `process` rows** (the original P1-B trigger):
  *    `adapter_type='process'` with no `command`. The legacy ensure-*.ts
@@ -116,6 +116,12 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
  *    silently no-op on every MCP tool call (permission gate hangs in
  *    --print mode). Backfill upgrades existing rows on startup so we
  *    don't need to manually edit every agent's adapterConfig.
+ *
+ * 3) **codex_local crew agents pinned to a ChatGPT-incompatible model**
+ *    (provider-switching fix): an API-key-only Codex model (e.g.
+ *    `gpt-5.3-codex`) persisted on a row 400s on a ChatGPT/subscription
+ *    login. Backfill rewrites it to the validated default (`gpt-5.5`) so
+ *    existing rows self-heal on boot.
  */
 export function needsAdapterBackfill(
   adapterType: string | null | undefined,

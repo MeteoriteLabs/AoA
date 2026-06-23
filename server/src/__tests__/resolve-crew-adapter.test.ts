@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from "vitest";
 import { resolveCrewAdapterFor, needsAdapterBackfill } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
+import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
 
 describe("resolve-crew-adapter (provider-switching fixes)", () => {
   it("codex default is no longer the API-key-only gpt-5.3-codex", () => {
@@ -24,5 +25,8 @@ describe("resolve-crew-adapter (provider-switching fixes)", () => {
   });
   it("backfill leaves a compatible codex row alone", () => {
     expect(needsAdapterBackfill("codex_local", { model: "gpt-5.5" })).toBe(false);
+  });
+  it("is a stable fixpoint: a codex row rewritten to the default is not re-flagged", () => {
+    expect(needsAdapterBackfill("codex_local", { model: DEFAULT_CODEX_CHAT_MODEL })).toBe(false);
   });
 });
