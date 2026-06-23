@@ -41,7 +41,6 @@ export type OrgNode = UnifiedOrgNode;
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
-  warnings?: string[];
 }
 
 /** Agent returned from create/update endpoints — may include soft warnings (e.g. model corrections). */

@@ -14,6 +14,7 @@ import { AoaTriggersTab } from "../components/agent-detail/AoaTriggersTab";
 import { AoaRunsPanel } from "../components/agent-detail/AoaRunsPanel";
 import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentSaveWarnings } from "../components/AgentSaveWarnings";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
@@ -490,15 +491,7 @@ function AoaConfigurePage({
         sectionLayout="cards"
       />
 
-      {saveWarnings.length > 0 && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 space-y-1">
-          {saveWarnings.map((w, i) => (
-            <p key={i} className="text-xs text-amber-600 dark:text-amber-400">
-              Heads up: {w}
-            </p>
-          ))}
-        </div>
-      )}
+      <AgentSaveWarnings warnings={saveWarnings} />
     </div>
   );
 }

@@ -16,6 +16,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentSaveWarnings } from "../components/AgentSaveWarnings";
 import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 // Tabs and PageTabBar are now used via AgentDetailCore
@@ -1308,15 +1309,7 @@ function ConfigurationTab({
         sectionLayout="cards"
       />
 
-      {saveWarnings.length > 0 && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 space-y-1">
-          {saveWarnings.map((w, i) => (
-            <p key={i} className="text-xs text-amber-600 dark:text-amber-400">
-              Heads up: {w}
-            </p>
-          ))}
-        </div>
-      )}
+      <AgentSaveWarnings warnings={saveWarnings} />
 
       <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
     </div>
