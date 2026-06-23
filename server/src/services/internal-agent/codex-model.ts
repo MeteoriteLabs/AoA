@@ -24,7 +24,7 @@ export const COMMANDER_CODEX_REASONING_EFFORT = "high";
 // Shell-safe charset (spawn uses shell:true on Windows — REVIEW FIX C10/S5):
 // the resolved model is interpolated into argv, so reject anything that isn't
 // a plain model identifier. Full-string anchor (NOT a prefix test).
-const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 // OpenAI chat families usable on a ChatGPT/subscription codex account.
 const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt)/i;
 // GPT-Codex variants (…-codex / codex-…) require an API key, NOT a ChatGPT
@@ -41,6 +41,11 @@ export function isCodexCompatibleModel(model: string | null | undefined): boolea
     CODEX_FAMILY_RE.test(m) &&
     !CODEX_INCOMPATIBLE_RE.test(m)
   );
+}
+
+/** True when `model` is non-empty and contains only shell-safe characters. */
+export function isShellSafeModel(model: string | null | undefined): boolean {
+  return !!model && SAFE_MODEL_RE.test(model.trim());
 }
 
 /**
