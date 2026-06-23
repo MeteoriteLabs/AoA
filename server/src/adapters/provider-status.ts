@@ -28,7 +28,7 @@ export function parseCodexAuthMode(inputs: CodexAuthInputs): ProviderAuthMode {
   return "unknown";
 }
 
-interface ProviderStatusDeps {
+export interface ProviderStatusDeps {
   resolveManagedCodexHomeDir: (env: NodeJS.ProcessEnv, companyId: string) => string;
   readAuthJson: (homeDir: string) => Promise<Record<string, unknown> | null>;
   readSharedCodexModel: () => Promise<string | null>;

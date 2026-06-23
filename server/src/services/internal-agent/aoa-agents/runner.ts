@@ -21,6 +21,9 @@ import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 import { maybeExecuteFakeCrewTurn } from "./fake-crew-llm.js";
+import { getProviderStatus } from "../../../adapters/provider-status.js";
+import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
+import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
@@ -376,6 +379,22 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       contextBundle,
     });
 
+    // Provider-switching (Unit B): resolve the model auth-aware + shell-safe and
+    // strip any inherited company OPENAI_API_KEY before spawn. getProviderStatus
+    // (Unit A) is the real detector; resolveModel throws on shell-unsafe — caught
+    // by the run's existing try/catch and surfaced via Unit E.
+    const providerStatus = await getProviderStatus(
+      agent.adapterType,
+      { companyId: agent.companyId, adapterConfig: baseConfig },
+      realProviderStatusDeps,
+    );
+    const resolvedBaseConfig = applyModelResolutionToConfig(
+      agent.adapterType,
+      baseConfig,
+      providerStatus,
+      { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null },
+    );
+
     // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
     // it for codex/opencode/etc. leaked an invalid flag into their argv (the
     // reason codex AoA agents got zero MCP tools). claude_local is the ONLY
@@ -389,8 +408,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // returns it verbatim.
     const isClaudeFamily = agent.adapterType === "claude_local";
     const config = isClaudeFamily
-      ? { ...baseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
-      : { ...baseConfig, promptTemplate: triggerPrompt };
+      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
+      : { ...resolvedBaseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
