@@ -19,7 +19,7 @@
  * Categories, in priority order:
  *   auth        — not logged in / login required / unauthorized / authentication /
  *                 api[_ ]?key / 401
- *   model       — model + (not supported / not found / invalid / 400 / unavailable)
+ *   model       — model + (not supported / not found / invalid / 400 / unavailable / not available)
  *   cli-missing — command not found / enoent / not installed / is not executable
  *   generic     — everything else (including null / undefined / empty string)
  */
@@ -55,6 +55,7 @@ const MODEL_QUALIFIERS: RegExp[] = [
   /invalid/,
   /\b400\b/,
   /unavailable/,
+  /not available/,
 ];
 
 const CLI_PATTERNS: RegExp[] = [

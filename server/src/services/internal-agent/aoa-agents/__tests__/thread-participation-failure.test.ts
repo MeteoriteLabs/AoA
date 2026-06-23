@@ -77,6 +77,11 @@ describe("mapRunFailureToFriendlyReason", () => {
     expect(result).toMatch(/model.*isn't available|model.*not available/i);
   });
 
+  it("model: 'not available' two-word phrase → model message (Gemini/OpenAI/Claude region errors)", () => {
+    const result = mapRunFailureToFriendlyReason("The model gemini-2.0-flash is not available in your region");
+    expect(result).toMatch(/model.*isn't available|model.*not available/i);
+  });
+
   // ── CLI-missing class ─────────────────────────────────────────────────────
 
   it("cli: 'command not found' → cli message", () => {

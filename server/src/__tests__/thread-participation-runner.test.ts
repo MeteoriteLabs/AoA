@@ -43,13 +43,16 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
+// Use vi.hoisted so the error spy is accessible as a stable module-level handle,
+// matching the mockRunAoaAgent / mockResolveCrewRole pattern in this file.
+const { mockLogError } = vi.hoisted(() => ({ mockLogError: vi.fn() }));
 vi.mock("../middleware/logger.js", () => ({
   logger: {
     child: vi.fn(() => ({
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
-      error: vi.fn(),
+      error: mockLogError,
     })),
   },
 }));
@@ -149,6 +152,7 @@ describe("makeThreadParticipationRunner", () => {
     vi.clearAllMocks();
     mockRunAoaAgent.mockReset();
     mockResolveCrewRole.mockReset();
+    mockLogError.mockReset();
   });
 
   it("1: calls runAoaAgent with thread.participation payload and returns \"\" (agent self-posts)", async () => {
@@ -276,6 +280,9 @@ describe("makeThreadParticipationRunner", () => {
 
     // B1 contract preserved: "" → no double-post.
     expect(reply).toBe("");
+    // Unit E contract: the failed run is SURFACED — not silently swallowed.
+    // A future refactor that re-swallows the error will break this assertion.
+    expect(mockLogError).toHaveBeenCalledTimes(1);
   });
 
   it("7: throws when a successful run produced NO post action and posted no entry", async () => {

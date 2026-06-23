@@ -200,6 +200,10 @@ export function makeThreadParticipationRunner(
     // logging with redacted details (no longer silently swallowed/mislabeled).
     if (result.status !== "succeeded") {
       const friendlyReason = mapRunFailureToFriendlyReason(result.errorMessage);
+      // Two distinct redaction calls, two distinct inputs — not redundant:
+      // this one redacts the raw errorMessage for the `rawError` log field;
+      // mapRunFailureToFriendlyReason internally redacts its own static friendly
+      // text (defensive future-proofing). Each call guards a different string.
       const redactedRaw = result.errorMessage
         ? redactSecretsInString(result.errorMessage)
         : "(no error message)";
