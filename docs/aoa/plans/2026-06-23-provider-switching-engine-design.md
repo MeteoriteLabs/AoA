@@ -19,7 +19,7 @@ A 2026-06-23 systematic-debugging session proved "switching providers doesn't wo
 
 **Key architectural facts established by review (these reshape the design):**
 - The runner does **not** assemble `--model`; each adapter's `execute.ts` **and** `test.ts` read `config.model`. The only true choke point is **mutating `config.model` in `runner.ts:~319` before `adapter.execute`**.
-- Codex runs against a **managed per-company `CODEX_HOME`** (`resolveManagedCodexHomeDir(env, companyId)`, `codex-local/src/server/codex-home.ts`), whose `auth.json` is **copied from `~/.codex` OR written from a per-company `OPENAI_API_KEY`** (forcing apikey mode). `config.toml` (for the default model) is read from the **shared** `~/.codex`. Auth-mode detection must be **company-scoped**.
+- Codex runs against a **managed per-company `CODEX_HOME`** (`resolveManagedCodexHomeDir(env, companyId)`, `codex-local/src/server/codex-home.ts`). By default its `auth.json` is **copied from the shared `~/.codex` login** — the separately-installed Codex CLI / ChatGPT subscription. It is written as an **api-key** `auth.json` **only** when a *per-agent* `adapterConfig.env.OPENAI_API_KEY` is explicitly set on that agent (`execute.ts:280-289` reads `env.OPENAI_API_KEY`, which is seeded **only** from `buildAoaEnv` + `adapterConfig.env` — verified: it never spreads `process.env` and never reads a company-level key). `config.toml` (for the default model) is read from the **shared** `~/.codex`. **This per-agent key is NOT the company-level extraction/embedding `OPENAI_API_KEY`** — Decision #91 reserves that solely for the Provider SDK, and the CLI/provider-switching path must never read or depend on it. Auth-mode detection must be **company-scoped** and read exactly these sources.
 - Commander's `server/src/services/internal-agent/cli-mode.ts` is a **second** model-resolution path (via `codex-model.ts`) with its own `CODEX_HOME`. It must be unified with the crew path or they diverge.
 - **`server/src/services/internal-agent/codex-model.ts` already exists** and implements: family classifier + API-key-only detection + shell-safety (`SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/`, line 27), and `resolveCodexChatModel` with a validated `gpt-5.5` safe default (`DEFAULT_CODEX_CHAT_MODEL`, line 13). **We extend and reuse this — not reinvent it.**
 - The bad default `gpt-5.3-codex` is **persisted** at `resolve-crew-adapter.ts:66,74` and `agents.ts:270-273`; `needsAdapterBackfill` (`resolve-crew-adapter.ts:113-128`) **skips `codex_local`**, so existing rows never self-heal.
@@ -47,7 +47,7 @@ interface ProviderStatus {
 }
 getProviderStatus(adapterType, { companyId, adapterConfig }): Promise<ProviderStatus>
 ```
-- **Codex (company-scoped):** resolve the **managed** home via `resolveManagedCodexHomeDir(env, companyId)`; if `adapterConfig.env.OPENAI_API_KEY` (or a per-company key) is set → `authMode: "apikey"`; else parse the managed `auth.json` `auth_mode`. `defaultModelResolved` = `readSharedCodexModel()` (shared `~/.codex/config.toml`, e.g. `gpt-5.5`). The detected mode MUST equal the mode the run will actually use.
+- **Codex (company-scoped):** resolve the **managed** home via `resolveManagedCodexHomeDir(env, companyId)`; if a **per-agent** `adapterConfig.env.OPENAI_API_KEY` is explicitly set on that agent → `authMode: "apikey"`; else parse the managed `auth.json` `auth_mode` (the shared ChatGPT login). **The company-level extraction/embedding `OPENAI_API_KEY` is never consulted** (non-goal — see §7; covered by a test). `defaultModelResolved` = `readSharedCodexModel()` (shared `~/.codex/config.toml`, e.g. `gpt-5.5`). The detected mode MUST equal the mode the run will actually use.
 - **Claude:** `~/.claude/.credentials.json` → `subscription` vs `apikey`; best-effort validity note (no token material).
 - **Gemini / OpenCode:** installed + authenticated best-effort; `unknown` mode acceptable.
 - Pure parsing where possible; never emits secrets; `detail` redacted via `SENSITIVE_ENV_VALUE_PATTERNS`.
@@ -98,7 +98,7 @@ Run (crew via runner.ts AND Commander via cli-mode.ts):
 - **Probe abuse control:** per-company concurrency cap + timeout ceiling; reuse/extend existing RBAC.
 - **Secret hygiene:** provider stdout/stderr and status `detail` redacted through value-pattern redaction (not just key-name); unit test asserts a planted `sk-...` is stripped.
 - **RBAC + audit:** changes founder/team-lead-gated per existing agent-route authz; versioned via `agent_config_revisions`.
-- **Auth boundary (documented):** provider logins are instance-level (host CLI auth), except a per-company Codex `OPENAI_API_KEY` which scopes to the managed home. Phase 2 stores keys in encrypted `company_secrets`.
+- **Auth boundary (documented):** provider logins are instance-level — the separately-installed CLIs' own logins (e.g. the shared ChatGPT Codex login, the Claude CLI login). The **only** per-scope override is a deliberate **per-agent** `adapterConfig.env.OPENAI_API_KEY`. The **company-level extraction/embedding `OPENAI_API_KEY` (Decision #91) is never used to run agents** — provider-switching MUST NOT read or depend on it (enforced by a test in Unit A). Phase 2 stores any user-entered keys in encrypted `company_secrets`, injected only at spawn.
 
 ## 8. Testing strategy (every type) — with the review's additions
 
