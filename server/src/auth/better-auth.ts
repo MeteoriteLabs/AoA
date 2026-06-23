@@ -3,6 +3,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
+import type { Auth } from "better-auth";
 import type { Db } from "@armyofagents/db";
 import {
   authAccounts,
@@ -26,7 +27,7 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type BetterAuthInstance = ReturnType<typeof betterAuth>;
+type BetterAuthInstance = Auth<any>;
 
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
