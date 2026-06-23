@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseCodexAuthMode, type ProviderAuthMode } from "../provider-status.js";
+import { parseCodexAuthMode, getProviderStatus, type ProviderAuthMode } from "../provider-status.js";
 
 describe("parseCodexAuthMode", () => {
   it("returns 'apikey' when a per-agent OPENAI_API_KEY is present", () => {
@@ -31,3 +31,25 @@ describe("parseCodexAuthMode", () => {
 // Type-level assertion: ProviderAuthMode must be importable and include these literals
 const _typeCheck: ProviderAuthMode[] = ["subscription", "chatgpt", "apikey", "unknown"];
 void _typeCheck;
+
+describe("getProviderStatus (codex)", () => {
+  const deps = {
+    resolveManagedCodexHomeDir: () => "/managed/home",
+    readAuthJson: async () => ({ auth_mode: "chatgpt" } as Record<string, unknown>),
+    readSharedCodexModel: async () => "gpt-5.5",
+    isInstalled: async () => true,
+  };
+  it("reports chatgpt + defaultModelResolved from the SHARED config, managed home for auth", async () => {
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: {} } }, deps);
+    expect(s.authMode).toBe("chatgpt");
+    expect(s.defaultModelResolved).toBe("gpt-5.5");
+    expect(s.installed).toBe(true);
+    expect(s.authenticated).toBe(true);
+  });
+  it("a per-agent OPENAI_API_KEY flips to apikey", async () => {
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: "sk-agent" } } }, deps);
+    expect(s.authMode).toBe("apikey");
+  });
+});

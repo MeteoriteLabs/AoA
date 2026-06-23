@@ -27,3 +27,34 @@ export function parseCodexAuthMode(inputs: CodexAuthInputs): ProviderAuthMode {
   // serverEnvApiKey intentionally unused — company-level key must never influence auth mode.
   return "unknown";
 }
+
+interface ProviderStatusDeps {
+  resolveManagedCodexHomeDir: (env: NodeJS.ProcessEnv, companyId: string) => string;
+  readAuthJson: (homeDir: string) => Promise<Record<string, unknown> | null>;
+  readSharedCodexModel: () => Promise<string | null>;
+  isInstalled: (adapterType: string) => Promise<boolean>;
+}
+
+export async function getProviderStatus(
+  adapterType: string,
+  ctx: { companyId: string; adapterConfig: Record<string, unknown> },
+  deps: ProviderStatusDeps,
+): Promise<ProviderStatus> {
+  if (adapterType === "codex_local") {
+    const env = (ctx.adapterConfig.env ?? {}) as Record<string, unknown>;
+    const agentEnvApiKey = typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY : null;
+    const home = deps.resolveManagedCodexHomeDir(process.env, ctx.companyId);
+    const authJson = await deps.readAuthJson(home);
+    const authMode = parseCodexAuthMode({ agentEnvApiKey, authJson });
+    const installed = await deps.isInstalled(adapterType);
+    return {
+      adapterType, installed,
+      authenticated: authMode !== "unknown",
+      authMode,
+      defaultModelResolved: await deps.readSharedCodexModel(),
+    };
+  }
+  // claude/gemini/opencode: best-effort installed/authenticated, authMode "unknown" acceptable (Phase 1).
+  const installed = await deps.isInstalled(adapterType);
+  return { adapterType, installed, authenticated: installed, authMode: "unknown", defaultModelResolved: null };
+}
