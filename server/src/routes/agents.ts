@@ -54,6 +54,9 @@ import { environmentRunOrchestrator } from "../services/environment-run-orchestr
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
+import { getProviderStatus } from "../adapters/provider-status.js";
+import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
+import { resolveModel } from "../services/internal-agent/model-resolution.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -290,25 +293,47 @@ export function agentRoutes(db: Db) {
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
-  ) {
-    if (adapterType !== "opencode_local") return;
-    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
-      consumerType: "system",
-      consumerId: `adapter-check:${adapterType ?? "unknown"}`,
-      actorType: "system",
-    });
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
-    try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
+  ): Promise<string[]> {
+    const warnings: string[] = [];
+
+    if (adapterType === "opencode_local") {
+      const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+        consumerType: "system",
+        consumerId: `adapter-check:${adapterType ?? "unknown"}`,
+        actorType: "system",
       });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
+      try {
+        await ensureOpenCodeModelConfiguredAndAvailable({
+          model: runtimeConfig.model,
+          command: runtimeConfig.command,
+          cwd: runtimeConfig.cwd,
+          env: runtimeEnv,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+      return warnings; // opencode has no soft-warn tier
     }
+
+    // Auth-mode soft-warn (Unit C): if the configured model would be runtime-
+    // corrected for the detected provider auth mode, surface a non-blocking
+    // warning. Best-effort — detection/resolution failures must NOT block a save.
+    if (adapterType === "codex_local" || adapterType === "claude_local" || adapterType === "gemini_local") {
+      const model = adapterConfig.model;
+      if (typeof model === "string" && model.length > 0) {
+        try {
+          const status = await getProviderStatus(adapterType, { companyId, adapterConfig }, realProviderStatusDeps);
+          const resolved = resolveModel(adapterType, model, status);
+          if (resolved.note) warnings.push(resolved.note);
+        } catch (warnErr) {
+          logger.warn({ err: warnErr }, "agents: auth-mismatch soft-warn check failed (best-effort, ignored)");
+        }
+      }
+    }
+
+    return warnings;
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
@@ -926,7 +951,7 @@ export function agentRoutes(db: Db) {
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertAdapterConfigConstraints(
+    const adapterWarnings = await assertAdapterConfigConstraints(
       companyId,
       hireInput.adapterType,
       normalizedAdapterConfig,
@@ -1052,7 +1077,7 @@ export function agentRoutes(db: Db) {
       });
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(201).json({ agent, approval, ...(adapterWarnings.length ? { warnings: adapterWarnings } : {}) });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -1074,7 +1099,7 @@ export function agentRoutes(db: Db) {
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertAdapterConfigConstraints(
+    const adapterWarnings = await assertAdapterConfigConstraints(
       companyId,
       req.body.adapterType,
       normalizedAdapterConfig,
@@ -1122,7 +1147,7 @@ export function agentRoutes(db: Db) {
       });
     }
 
-    res.status(201).json(agent);
+    res.status(201).json({ ...agent, ...(adapterWarnings.length ? { warnings: adapterWarnings } : {}) });
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -1305,7 +1330,14 @@ export function agentRoutes(db: Db) {
     const touchesAdapterConfiguration =
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
+    const ADAPTER_CONSTRAINT_TYPES = new Set([
+      "opencode_local",
+      "codex_local",
+      "claude_local",
+      "gemini_local",
+    ]);
+    let adapterWarnings: string[] = [];
+    if (touchesAdapterConfiguration && requestedAdapterType != null && ADAPTER_CONSTRAINT_TYPES.has(requestedAdapterType)) {
       const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : (asRecord(existing.adapterConfig) ?? {});
@@ -1314,7 +1346,7 @@ export function agentRoutes(db: Db) {
         rawEffectiveAdapterConfig,
         { strictMode: strictSecretsMode },
       );
-      await assertAdapterConfigConstraints(
+      adapterWarnings = await assertAdapterConfigConstraints(
         existing.companyId,
         requestedAdapterType,
         effectiveAdapterConfig,
@@ -1361,7 +1393,7 @@ export function agentRoutes(db: Db) {
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json({ ...agent, ...(adapterWarnings.length ? { warnings: adapterWarnings } : {}) });
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
