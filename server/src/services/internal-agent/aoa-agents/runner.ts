@@ -22,6 +22,7 @@ import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 import { maybeExecuteFakeCrewTurn } from "./fake-crew-llm.js";
 import { getProviderStatus } from "../../../adapters/provider-status.js";
+import type { ProviderStatus } from "../../../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
 import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
 
@@ -383,11 +384,29 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // strip any inherited company OPENAI_API_KEY before spawn. getProviderStatus
     // (Unit A) is the real detector; resolveModel throws on shell-unsafe — caught
     // by the run's existing try/catch and surfaced via Unit E.
-    const providerStatus = await getProviderStatus(
-      agent.adapterType,
-      { companyId: agent.companyId, adapterConfig: baseConfig },
-      realProviderStatusDeps,
-    );
+    //
+    // Provider-status detection is best-effort (consistent with the runner's other
+    // guarded I/O): a detection hiccup must not abort an otherwise-ready run. Model
+    // RESOLUTION still hard-fails on shell-unsafe input — that throw comes from
+    // applyModelResolutionToConfig below, outside this guard, and is recorded as a
+    // failed run by the outer catch.
+    let providerStatus: ProviderStatus;
+    try {
+      providerStatus = await getProviderStatus(
+        agent.adapterType,
+        { companyId: agent.companyId, adapterConfig: baseConfig },
+        realProviderStatusDeps,
+      );
+    } catch (statusErr) {
+      log.warn({ err: statusErr }, "aoa-runner: provider status detection failed (best-effort fallback to unknown)");
+      providerStatus = {
+        adapterType: agent.adapterType,
+        installed: true,
+        authenticated: false,
+        authMode: "unknown",
+        defaultModelResolved: null,
+      };
+    }
     const resolvedBaseConfig = applyModelResolutionToConfig(
       agent.adapterType,
       baseConfig,

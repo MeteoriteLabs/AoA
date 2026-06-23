@@ -17,4 +17,9 @@ describe("applyModelResolutionToConfig", () => {
       { inheritedEnvOpenAiKey: "sk-company" });
     expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBe("sk-agent");
   });
+  it("sets env to {} (no inherited key leaks) when the codex config has no env field", () => {
+    const cfg = applyModelResolutionToConfig("codex_local", { model: "gpt-5.5" }, status,
+      { inheritedEnvOpenAiKey: "sk-company" });
+    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBeUndefined();
+  });
 });
