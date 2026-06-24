@@ -67,6 +67,7 @@ import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engi
 import { ensureChronicler } from "./services/internal-agent/aoa-agents/ensure-chronicler.js";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
+import { backfillOrgCodexModels } from "./services/internal-agent/aoa-agents/org-codex-backfill.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
@@ -754,6 +755,13 @@ void db
           ),
           ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
             logger.warn({ err, companyId: row.id }, "commander backfill failed"),
+          ),
+          // Part A2: heal org codex rows pinned to an api-key-only model
+          // (e.g. gpt-5.3-codex) that a ChatGPT/subscription login rejects with
+          // HTTP 400. Best-effort sibling — never blocks boot. New companies
+          // already get the safe gpt-5.5 create-default; this catches pre-existing rows.
+          backfillOrgCodexModels(db as any, row.id).catch((err: unknown) =>
+            logger.warn({ err, companyId: row.id }, "org codex backfill failed"),
           ),
           // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
           // ("Scribe") agent is no longer backfilled at startup. The
