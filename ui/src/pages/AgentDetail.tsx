@@ -71,6 +71,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { toast } from "@/lib/toast";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@armyofagents/shared";
@@ -195,6 +196,7 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
@@ -315,9 +317,19 @@ export function AgentDetail() {
       if (action === "invoke" && data && typeof data === "object" && "id" in data) {
         navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
       }
+      if (action === "terminate") {
+        toast.success(`${agent?.name ?? "Agent"} terminated`, {
+          description: "The agent was stopped and removed from the roster.",
+        });
+        navigate("/agents");
+      }
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+    onError: (err, action) => {
+      const message = err instanceof Error ? err.message : "Action failed";
+      setActionError(message);
+      if (action === "terminate") {
+        toast.error("Failed to terminate agent", { description: message });
+      }
     },
   });
 
@@ -337,11 +349,16 @@ export function AgentDetail() {
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       setActionError(null);
+      toast.success("Agent session reset", {
+        description: "The next run starts a fresh session (no resumed context).",
+      });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agentLookupRef) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reset session");
+      const message = err instanceof Error ? err.message : "Failed to reset session";
+      setActionError(message);
+      toast.error("Failed to reset session", { description: message });
     },
   });
 
@@ -474,6 +491,7 @@ export function AgentDetail() {
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
               navigator.clipboard.writeText(agent.id);
+              toast.success("Agent ID copied");
               setMoreOpen(false);
             }}
           >
@@ -482,6 +500,7 @@ export function AgentDetail() {
           </button>
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+            title="Clear the agent's saved runtime session so the next run starts fresh (no resumed context)."
             onClick={() => {
               resetTaskSession.mutate(null);
               setMoreOpen(false);
@@ -492,9 +511,10 @@ export function AgentDetail() {
           </button>
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+            title="Stop this agent and remove it from the roster."
             onClick={() => {
-              agentAction.mutate("terminate");
               setMoreOpen(false);
+              setTerminateConfirmOpen(true);
             }}
           >
             <Trash2 className="h-3 w-3" />
@@ -514,8 +534,11 @@ export function AgentDetail() {
     typeof (agent.adapterConfig as Record<string, unknown> | null)?.model === "string"
       ? ((agent.adapterConfig as Record<string, unknown>).model as string)
       : undefined;
+  // AgentHeroCard renders KPI links with a plain Link (no company-prefix helper),
+  // so prefix the deep-links here to match the rest of the app's routing.
+  const heroLinkPrefix = companyPrefix ? `/${companyPrefix}` : "";
   const heroKpis: HeroKpi[] = [
-    { key: "tasks", label: "Tasks (wk)", value: heroKpiStats.tasksCompleted, to: `/issues?assignee=${agent.id}` },
+    { key: "tasks", label: "Tasks (wk)", value: heroKpiStats.tasksCompleted, to: `${heroLinkPrefix}/issues?assignee=${agent.id}` },
     { key: "success", label: "Success", value: heroKpiStats.successRate !== null ? `${heroKpiStats.successRate}%` : "—" },
     { key: "cost", label: "Cost (wk)", value: `$${heroKpiStats.cost.toFixed(2)}` },
     {
@@ -527,7 +550,7 @@ export function AgentDetail() {
       key: "last-run",
       label: "Last run",
       value: latestHeroRun ? relativeTime(latestHeroRun.createdAt) : "—",
-      to: latestHeroRun ? `/agents/${canonicalAgentRef}/runs/${latestHeroRun.id}` : undefined,
+      to: latestHeroRun ? `${heroLinkPrefix}/agents/${canonicalAgentRef}/runs/${latestHeroRun.id}` : undefined,
     },
     {
       key: "last-heartbeat",
@@ -637,6 +660,18 @@ export function AgentDetail() {
             );
           }
           return null;
+        }}
+      />
+      <ConfirmDialog
+        open={terminateConfirmOpen}
+        onOpenChange={setTerminateConfirmOpen}
+        title={`Terminate ${agent.name}?`}
+        description="This stops the agent, cancels any active runs, and removes it from the roster. This can't be undone from here."
+        confirmLabel="Terminate"
+        destructive
+        onConfirm={() => {
+          setTerminateConfirmOpen(false);
+          agentAction.mutate("terminate");
         }}
       />
     </>
