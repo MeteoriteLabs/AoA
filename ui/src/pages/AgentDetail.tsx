@@ -197,6 +197,8 @@ export function AgentDetail() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
+  // Pending in-app navigation held back by the unsaved-changes guard.
+  const [pendingNav, setPendingNav] = useState<string | null>(null);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
@@ -412,6 +414,22 @@ export function AgentDetail() {
   if (!agent) return null;
   const isPendingApproval = agent.status === "pending_approval";
   const showActionBar = (activeView === "configure" && configDirty) || (activeView === "instructions" && instrDirty);
+
+  // Tab/in-page navigation guard: if the Config or Instructions tab has unsaved
+  // edits, hold the navigation and confirm before discarding. (Browser-level
+  // refresh/close is covered separately by useBeforeUnload above. Cross-page
+  // sidebar/<Link> nav isn't guarded — that needs a data router + useBlocker.)
+  const viewPath = (v: string) =>
+    v === "overview" ? `/agents/${canonicalAgentRef}` : `/agents/${canonicalAgentRef}/${v}`;
+  const handleViewChange = (v: string) => {
+    if (v === activeView) return;
+    const target = viewPath(v);
+    if (configDirty || instrDirty) {
+      setPendingNav(target);
+      return;
+    }
+    navigate(target);
+  };
   const activeSaving = activeView === "instructions" ? instrSaving : configSaving;
   const activeSaveRef = activeView === "instructions" ? saveInstrActionRef : saveConfigActionRef;
   const activeCancelRef = activeView === "instructions" ? cancelInstrActionRef : cancelConfigActionRef;
@@ -480,8 +498,8 @@ export function AgentDetail() {
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
-              navigate(`/agents/${canonicalAgentRef}/configure`);
               setMoreOpen(false);
+              handleViewChange("configure");
             }}
           >
             <Settings className="h-3 w-3" />
@@ -576,12 +594,7 @@ export function AgentDetail() {
           { value: "configure", label: "Config" },
         ]}
         activeView={activeView}
-        onViewChange={(v) => {
-          const target = v === "overview"
-            ? `/agents/${canonicalAgentRef}`
-            : `/agents/${canonicalAgentRef}/${v}`;
-          navigate(target);
-        }}
+        onViewChange={handleViewChange}
         headerActions={workerHeaderActions}
         heroKpis={heroKpis}
         heroBadges={{ adapter: agent.adapterType, model: heroModel }}
@@ -660,6 +673,21 @@ export function AgentDetail() {
             );
           }
           return null;
+        }}
+      />
+      <ConfirmDialog
+        open={!!pendingNav}
+        onOpenChange={(open) => { if (!open) setPendingNav(null); }}
+        title="Discard unsaved changes?"
+        description="You have unsaved edits on this tab. Leaving will discard them."
+        confirmLabel="Discard & leave"
+        destructive
+        onConfirm={() => {
+          const target = pendingNav;
+          setConfigDirty(false);
+          setInstrDirty(false);
+          setPendingNav(null);
+          if (target) navigate(target);
         }}
       />
       <ConfirmDialog
