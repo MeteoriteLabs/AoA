@@ -153,10 +153,10 @@ test.describe("provider-switching: agent config save-side", () => {
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
 
-    // The Adapter section is collapsed by default in the cards/edit layout —
-    // expand it to reveal the model picker.
+    // The model picker lives in the "Permissions & Configuration" section,
+    // which is collapsed by default in the cards/edit layout — expand it.
     await page
-      .getByRole("button", { name: "Adapter", exact: true })
+      .getByRole("button", { name: "Permissions & Configuration" })
       .click();
 
     await expect(
@@ -173,9 +173,9 @@ test.describe("provider-switching: agent config save-side", () => {
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
 
-    // Expand the collapsed Adapter section.
+    // Expand the collapsed "Permissions & Configuration" section (holds the model picker).
     await page
-      .getByRole("button", { name: "Adapter", exact: true })
+      .getByRole("button", { name: "Permissions & Configuration" })
       .click();
 
     // Open the model picker. The trigger shows the current model value
