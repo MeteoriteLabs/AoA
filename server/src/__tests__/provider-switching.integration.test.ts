@@ -33,7 +33,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
@@ -42,6 +42,8 @@ import { agentService } from "../services/agents.js";
 import { applyModelResolutionToConfig } from "../services/internal-agent/aoa-agents/runner-model-resolution.js";
 import { needsAdapterBackfill, resolveCrewAdapterFor } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
+import { backfillOrgCodexModels, orgCodexRowNeedsBackfill } from "../services/internal-agent/aoa-agents/org-codex-backfill.js";
+import { resolveRunScopedModel } from "../services/heartbeat-provider-resolution.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Embedded-postgres harness (mirrors aoa-backend.integration.test.ts exactly)
@@ -278,6 +280,180 @@ describe.skipIf(process.platform === "win32")(
       },
     );
 
+    // ── Task-3 Cases: Org backfill + runtime parity ───────────────────────────
+
+    // Case 1 — Org backfill fixpoint
+    it("case-1: backfillOrgCodexModels heals a kind:org row and is idempotent", async () => {
+      if (setupError) throw new Error(String(setupError));
+
+      // Seed a second company for this case so it gets a clean count
+      const orgCompanyId = firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO companies (id, name, issue_prefix)
+        VALUES (gen_random_uuid(), 'Org Backfill Fixpoint Co', 'OBF')
+        RETURNING id
+      `));
+
+      firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
+        VALUES (
+          gen_random_uuid(),
+          ${orgCompanyId},
+          'Org Fixpoint Agent',
+          'org',
+          'codex_local',
+          ${{ model: "gpt-5.3-codex" }}::jsonb
+        )
+        RETURNING id
+      `));
+
+      // First sweep: should heal at least one row
+      const count1 = await backfillOrgCodexModels(db, orgCompanyId);
+      expect(count1).toBeGreaterThanOrEqual(1);
+
+      // Re-read the row and confirm the model was corrected
+      const rows = await db.execute<{ adapter_config: unknown }>(sql`
+        SELECT adapter_config FROM agents WHERE company_id = ${orgCompanyId}
+      `);
+      const cfg = Array.isArray(rows)
+        ? (rows[0] as any)?.adapter_config
+        : (rows as any).rows?.[0]?.adapter_config;
+
+      expect((cfg as any).model).toBe(DEFAULT_CODEX_CHAT_MODEL);
+
+      // Fixpoint: orgCodexRowNeedsBackfill returns false after the heal
+      expect(
+        orgCodexRowNeedsBackfill({
+          kind: "org",
+          adapterType: "codex_local",
+          adapterConfig: cfg as Record<string, unknown>,
+        }),
+      ).toBe(false);
+
+      // Second sweep: idempotent — nothing to fix
+      const count2 = await backfillOrgCodexModels(db, orgCompanyId);
+      expect(count2).toBe(0);
+    });
+
+    // Case 1b — Backfill PRESERVES org config (shallow-merge proof)
+    it("case-1b: backfillOrgCodexModels preserves env/cwd/promptTemplate/timeoutSec (shallow-merge)", async () => {
+      if (setupError) throw new Error(String(setupError));
+
+      const orgCompanyId = firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO companies (id, name, issue_prefix)
+        VALUES (gen_random_uuid(), 'Org Backfill Shallow Merge Co', 'OBS')
+        RETURNING id
+      `));
+
+      const orgAgentId = firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
+        VALUES (
+          gen_random_uuid(),
+          ${orgCompanyId},
+          'Org Shallow Merge Agent',
+          'org',
+          'codex_local',
+          ${{ model: "gpt-5.3-codex", env: { FOO: "bar" }, cwd: "/x", promptTemplate: "p", timeoutSec: 30 }}::jsonb
+        )
+        RETURNING id
+      `));
+
+      await backfillOrgCodexModels(db, orgCompanyId);
+
+      // Re-read and verify all fields preserved except model
+      const row = await db.execute<{ adapter_config: unknown }>(sql`
+        SELECT adapter_config FROM agents WHERE id = ${orgAgentId}
+      `);
+      const cfg: any = Array.isArray(row)
+        ? (row[0] as any)?.adapter_config
+        : (row as any).rows?.[0]?.adapter_config;
+
+      expect(cfg.model).toBe("gpt-5.5");
+      expect(cfg.env?.FOO).toBe("bar");
+      expect(cfg.cwd).toBe("/x");
+      expect(cfg.promptTemplate).toBe("p");
+      expect(cfg.timeoutSec).toBe(30);
+    });
+
+    // Case 1c — Skip per-agent-key org row
+    it("case-1c: backfillOrgCodexModels skips org row that owns its own OPENAI_API_KEY", async () => {
+      if (setupError) throw new Error(String(setupError));
+
+      // Own company for clean count
+      const orgCompanyId = firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO companies (id, name, issue_prefix)
+        VALUES (gen_random_uuid(), 'Org Skip Api Key Co', 'OSK')
+        RETURNING id
+      `));
+
+      const orgAgentId = firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
+        VALUES (
+          gen_random_uuid(),
+          ${orgCompanyId},
+          'Org Per-Key Agent',
+          'org',
+          'codex_local',
+          ${{ model: "gpt-5.3-codex", env: { OPENAI_API_KEY: "sk-agent" } }}::jsonb
+        )
+        RETURNING id
+      `));
+
+      // Sweep should return 0 — this row has its own api key and is NOT a backfill target
+      const count = await backfillOrgCodexModels(db, orgCompanyId);
+      expect(count).toBe(0);
+
+      // Model must be unchanged
+      const row = await db.execute<{ adapter_config: unknown }>(sql`
+        SELECT adapter_config FROM agents WHERE id = ${orgAgentId}
+      `);
+      const cfg: any = Array.isArray(row)
+        ? (row[0] as any)?.adapter_config
+        : (row as any).rows?.[0]?.adapter_config;
+
+      expect(cfg.model).toBe("gpt-5.3-codex");
+    });
+
+    // Case 2 — Org runtime resolution parity
+    it("case-2: resolveRunScopedModel and applyModelResolutionToConfig produce identical output (org↔crew parity)", async () => {
+      if (setupError) throw new Error(String(setupError));
+
+      const status = { authMode: "chatgpt", defaultModelResolved: "gpt-5.5" } as const;
+
+      // Use fresh object literals — the engine may merge/mutate in place
+      const viaOrg = resolveRunScopedModel("codex_local", { model: "gpt-5.3-codex" }, status);
+      const viaCrew = applyModelResolutionToConfig("codex_local", { model: "gpt-5.3-codex" }, status);
+
+      expect(viaOrg.model).toBe("gpt-5.5");
+      expect(viaCrew.model).toBe("gpt-5.5");
+      // Parity: the org seam and crew engine must produce identical results for
+      // identical inputs — they share the same resolution engine under the hood.
+      expect(viaOrg.model).toBe(viaCrew.model);
+    });
+
+    // Case 3 — Org NOT healed by crew backfill detection (predicate scoping)
+    it("case-3: orgCodexRowNeedsBackfill is true for kind:org and false for kind:aoa (org-scoped predicate)", async () => {
+      if (setupError) throw new Error(String(setupError));
+
+      // The org predicate detects org rows that need healing
+      expect(
+        orgCodexRowNeedsBackfill({
+          kind: "org",
+          adapterType: "codex_local",
+          adapterConfig: { model: "gpt-5.3-codex" },
+        }),
+      ).toBe(true);
+
+      // A non-org row (kind:'aoa') is never an org-backfill target —
+      // proving the org-scoping: the two sweeps are keyed on kind differently.
+      expect(
+        orgCodexRowNeedsBackfill({
+          kind: "aoa",
+          adapterType: "codex_local",
+          adapterConfig: { model: "gpt-5.3-codex" },
+        }),
+      ).toBe(false);
+    });
+
     // ── 5. CROSS-COMPANY ISOLATION (bonus assertion) ─────────────────────────
 
     it("5: agent resolution does not affect agents in other companies (isolation check)", async () => {
@@ -323,3 +499,43 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Case 4 — Heartbeat wiring edge-#5 source-order guard
+//
+// WHY a source-order guard (not a spawn/spy test):
+//   (a) Driving the real heartbeat `executeRun` is infeasible in this harness —
+//       it is a deeply-nested private closure requiring the full run lifecycle,
+//       adapter registry, and CLI binaries. The existing file already documents
+//       this constraint for the "runner argv" sub-test.
+//   (b) Spying on `resolveAdapterExecutionContext` is also infeasible: it is
+//       called SAME-MODULE inside heartbeat.ts, so an external `vi.spyOn` cannot
+//       intercept the internal call (ES-module live binding, no proxy).
+//   As a result, we verify the critical ordering invariant structurally from
+//   source — deterministic, fast, cross-platform, no CLI dependencies.
+//   If an anchor string ever changes, this test fails loudly, forcing a reviewer
+//   to confirm the edge-#5 ordering is still correct in the new code.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("heartbeat wiring — edge #5 source-order guard", () => {
+  it("resolveRunScopedModel is called AFTER cheap-model swap and BEFORE resolveAdapterExecutionContext", async () => {
+    const src = await readFile(new URL("../services/heartbeat.ts", import.meta.url), "utf8");
+
+    // Anchor 1: cheap-model swap (budget-based model override)
+    const iCheapSwap = src.indexOf("runScopedConfig = { ...runScopedConfig, model: cheapModel }");
+    // Anchor 2: provider-switching resolution (edge #5)
+    const iResolve = src.indexOf("runScopedConfig = resolveRunScopedModel(");
+    // Anchor 3: adapter execution-context build (must come AFTER resolution)
+    // Use the destructure form to target the CALL SITE, not the exported function definition.
+    const iContext = src.indexOf("const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(");
+
+    // Each anchor must exist verbatim — fail loudly if any moved (wiring was refactored)
+    expect(iCheapSwap, "anchor 'cheap-model swap' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
+    expect(iResolve, "anchor 'resolveRunScopedModel call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
+    expect(iContext, "anchor 'resolveAdapterExecutionContext destructure call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
+
+    // Edge #5 ordering: cheap-swap < resolve < context-build
+    expect(iResolve).toBeGreaterThan(iCheapSwap);
+    expect(iContext).toBeGreaterThan(iResolve);
+  });
+});
