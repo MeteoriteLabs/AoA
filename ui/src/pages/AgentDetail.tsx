@@ -602,6 +602,7 @@ export function AgentDetail() {
                 onCancelActionChange={setCancelConfigAction}
                 onSavingChange={setConfigSaving}
                 updatePermissions={updatePermissions}
+                isMobile={isMobile}
               />
             );
           }
@@ -886,6 +887,7 @@ function AgentConfigurePage({
   onCancelActionChange,
   onSavingChange,
   updatePermissions,
+  isMobile,
 }: {
   agent: Agent;
   agentId: string;
@@ -895,6 +897,7 @@ function AgentConfigurePage({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
   updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
+  isMobile?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
@@ -924,6 +927,16 @@ function AgentConfigurePage({
 
   return (
     <div className="space-y-6">
+      {isMobile ? (
+        <ConfigurationTab
+          agent={agent}
+          onDirtyChange={onDirtyChange}
+          onSaveActionChange={onSaveActionChange}
+          onCancelActionChange={onCancelActionChange}
+          onSavingChange={onSavingChange}
+          companyId={companyId}
+        />
+      ) : (
       <div className="h-[calc(100vh-15rem)] min-h-[460px]">
         <Group orientation="horizontal" className="h-full gap-2">
           <Panel defaultSize="24%" minSize="16%" maxSize="42%" className="h-full overflow-auto min-w-0">
@@ -961,6 +974,7 @@ function AgentConfigurePage({
           </Panel>
         </Group>
       </div>
+      )}
 
       <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
       <ApiKeysAccordion agentId={agentId} companyId={companyId} />
