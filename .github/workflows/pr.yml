@@ -463,17 +463,18 @@ jobs:
   #   - config file generation uses `shell: bash` for HEREDOC support
   #     (Windows runners ship Git Bash and provide bash as a shell option)
   #
-  # timeout-minutes is set to 12 (down from 35) so a cdn.playwright.dev stall
-  # fails fast instead of burning 35 min. The required Linux e2e job uses a
-  # Google Chrome-for-Testing storage fallback that avoids CDN stalls entirely;
-  # generalizing that fallback to mac/win is tracked for 1.1.
+  # timeout-minutes stays bounded so a cdn.playwright.dev stall fails fast, but
+  # hosted macOS/Windows runners can spend more than 12 min on install + build.
+  # Install only Chromium's headless shell here; full Chrome-for-Testing archives
+  # can hang after download on hosted macOS/Windows, and CI runs headless. The
+  # required Linux e2e job keeps the full fallback path.
   e2e-cross-platform:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 25
     continue-on-error: true
 
     steps:
@@ -502,9 +503,13 @@ jobs:
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright
-        run: npx playwright install chromium
+        id: install-playwright
+        timeout-minutes: 5
+        continue-on-error: true
+        run: npx playwright install --only-shell chromium
 
       - name: Generate Paperclip config
+        if: steps.install-playwright.outcome == 'success'
         shell: bash
         run: |
           mkdir -p ~/.aoa/instances/default
@@ -528,14 +533,14 @@ jobs:
         # rest of the matrix (checkout/install/build/playwright-install)
         # still runs as parity. Re-enable when Issue #114's postgres-
         # container approach lands.
-        if: matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
         env:
           # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
-        if: matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report-${{ matrix.os }}

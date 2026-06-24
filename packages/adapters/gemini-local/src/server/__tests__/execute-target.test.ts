@@ -5,6 +5,10 @@ import path from "node:path";
 import { execute } from "../execute.js";
 import type { AdapterInvocationMeta } from "@armyofagents/adapter-utils";
 
+async function expectSameRealPath(actual: string, expected: string): Promise<void> {
+  await expect(fs.realpath(actual)).resolves.toBe(await fs.realpath(expected));
+}
+
 async function writeFakeGeminiCommand(commandPath: string): Promise<string> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -113,7 +117,7 @@ describe("gemini execute target", () => {
         prompt: string;
         env: Record<string, string>;
       };
-      expect(capture.cwd).toBe(workspace);
+      await expectSameRealPath(capture.cwd, workspace);
       expect(capture.argv).toEqual(expect.arrayContaining(["--output-format", "stream-json", "--prompt"]));
       expect(capture.prompt).toContain("AoA runtime note:");
       expect(capture.env).toMatchObject({

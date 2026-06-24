@@ -5,6 +5,10 @@ import path from "node:path";
 import { execute } from "../server/execute.js";
 import type { AdapterInvocationMeta, AdapterProviderSandboxRunInput } from "@armyofagents/adapter-utils";
 
+async function expectSameRealPath(actual: string, expected: string): Promise<void> {
+  await expect(fs.realpath(actual)).resolves.toBe(await fs.realpath(expected));
+}
+
 async function writeFakeCodexCommand(commandPath: string): Promise<string> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -99,7 +103,8 @@ describe("codex execute target", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect(result.executionCwd).toBe(workspace);
+      expect(result.executionCwd).toBeTruthy();
+      await expectSameRealPath(result.executionCwd!, workspace);
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
         argv: string[];
@@ -107,7 +112,7 @@ describe("codex execute target", () => {
         prompt: string;
         env: Record<string, string>;
       };
-      expect(capture.cwd).toBe(workspace);
+      await expectSameRealPath(capture.cwd, workspace);
       expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
       expect(capture.prompt).toBe("Prompt for agent-1 in run-codex-target.");
       expect(capture.env).toMatchObject({
