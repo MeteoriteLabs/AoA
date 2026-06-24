@@ -110,9 +110,10 @@ async function seedCompanyViaWizard(
  * Seed a codex_local agent via the API. In local_trusted mode the synthetic
  * local-board actor is auto-authorised, so no Bearer token is needed.
  *
- * Pass `model` to pin an explicit adapterConfig.model; omit it to leave the
- * model unset (so the config form renders the `Default → gpt-5.5` picker
- * label).
+ * Pass `model` to pin an explicit adapterConfig.model; omit it and the server
+ * injects the codex default (DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5") via
+ * applyCreateDefaultsByAdapterType, so the stored config still carries a
+ * concrete model.
  */
 async function seedCodexAgent(
   request: APIRequestContext,
@@ -148,7 +149,9 @@ test.describe("provider-switching: agent config save-side", () => {
     request,
   }) => {
     const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
-    // No explicit model → picker should render the `Default → gpt-5.5` label.
+    // No explicit model on create -> the server injects the codex default
+    // (DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5") via applyCreateDefaultsByAdapterType,
+    // so the stored config persists model="gpt-5.5" and the picker reflects it.
     const agentId = await seedCodexAgent(request, companyId);
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
@@ -159,9 +162,17 @@ test.describe("provider-switching: agent config save-side", () => {
       .getByRole("button", { name: "Permissions & Configuration" })
       .click();
 
+    // Default reflected: the trigger shows the server-pinned gpt-5.5, not a
+    // placeholder (a created codex agent always persists a concrete model).
+    const trigger = page.getByRole("button", { name: "gpt-5.5", exact: true });
+    await expect(trigger).toBeVisible({ timeout: 10_000 });
+
+    // ...and gpt-5.5 is offered in the list: opening the picker surfaces a
+    // second exact "gpt-5.5" button (the option) alongside the trigger.
+    await trigger.click();
     await expect(
-      page.getByRole("button", { name: /Default → gpt-5\.5/ }),
-    ).toBeVisible({ timeout: 10_000 });
+      page.getByRole("button", { name: "gpt-5.5", exact: true }),
+    ).toHaveCount(2);
   });
 
   test("saving codex gpt-5.3-codex surfaces a 'using gpt-5.5' warning", async ({
