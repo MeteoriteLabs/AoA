@@ -1139,7 +1139,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
         : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
 
   return (
-    <div className={`rounded-md border px-3 py-2 text-xs ${statusClass}`}>
+    <div data-testid="adapter-env-result" className={`rounded-md border px-3 py-2 text-xs ${statusClass}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium">{statusLabel}</span>
         <span className="text-[11px] opacity-80">
