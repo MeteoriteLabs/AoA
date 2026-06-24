@@ -177,6 +177,10 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
+> Docs-only PRs (every changed file under `docs/` or a `*.md` outside `.github/`)
+> skip the heavy CI suite and pass via the `ci-required` aggregator in ~1 min.
+> Any `.github/**` file or other code path runs the full suite.
+
 ## 9. API and Auth Expectations
 
 - Base path: `/api`
