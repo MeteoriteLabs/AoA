@@ -463,17 +463,18 @@ jobs:
   #   - config file generation uses `shell: bash` for HEREDOC support
   #     (Windows runners ship Git Bash and provide bash as a shell option)
   #
-  # timeout-minutes is set to 12 (down from 35) so a cdn.playwright.dev stall
-  # fails fast instead of burning 35 min. The required Linux e2e job uses a
-  # Google Chrome-for-Testing storage fallback that avoids CDN stalls entirely;
-  # generalizing that fallback to mac/win is tracked for 1.1.
+  # timeout-minutes stays bounded so a cdn.playwright.dev stall fails fast, but
+  # hosted macOS/Windows runners can spend more than 12 min on install + build
+  # before Chromium finishes unpacking. The required Linux e2e job uses a Google
+  # Chrome-for-Testing storage fallback; generalizing that fallback to mac/win is
+  # tracked for 1.1.
   e2e-cross-platform:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 25
     continue-on-error: true
 
     steps:
