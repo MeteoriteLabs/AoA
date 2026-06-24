@@ -18,6 +18,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
 import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
+import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -313,7 +314,7 @@ export function AoaAgentDetail() {
         }
         if (view === "skills" && resolvedCompanyId) {
           return (
-            <AoaSkillsTab
+            <AgentSkillsTab
               agentId={agent.id}
               companyId={resolvedCompanyId}
               skillKeys={(agent as any).skillKeys ?? []}
