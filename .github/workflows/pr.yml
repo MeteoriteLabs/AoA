@@ -732,3 +732,54 @@ jobs:
               f"{checked} snapshots chain-checked, all SQL files present"
           )
           PYEOF
+
+  # Single required status check. Branch protection requires ONLY this job.
+  # Runs ALWAYS (`!cancelled()`), even when upstream jobs fail or skip, and
+  # computes the verdict explicitly so a `skipped` job cannot silently pass —
+  # closing the Phase 1 skip-success class. On a draft PR `changes` is skipped,
+  # so this gate goes RED (drafts are unmergeable; a passing required check
+  # there would be the footgun). Marking ready re-runs everything for real.
+  ci-required:
+    needs: [changes, policy, brand-check, verify, e2e, migrations]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Evaluate required gate
+        env:
+          R_CODE: ${{ needs.changes.outputs.code }}
+          R_CHANGES: ${{ needs.changes.result }}
+          R_POLICY: ${{ needs.policy.result }}
+          R_BRAND: ${{ needs['brand-check'].result }}
+          R_VERIFY: ${{ needs.verify.result }}
+          R_E2E: ${{ needs.e2e.result }}
+          R_MIGRATIONS: ${{ needs.migrations.result }}
+        run: |
+          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY e2e=$R_E2E migrations=$R_MIGRATIONS"
+          fail=0
+          # Detector must have succeeded. Skipped (draft) => red, by design.
+          if [ "$R_CHANGES" != "success" ]; then
+            echo "::error::changes detector not success ($R_CHANGES) — draft or detector failure"
+            fail=1
+          fi
+          # Always-on cheap gates must pass.
+          for kv in "policy=$R_POLICY" "brand-check=$R_BRAND"; do
+            name="${kv%%=*}"; res="${kv#*=}"
+            [ "$res" = "success" ] || { echo "::error::$name=$res (required)"; fail=1; }
+          done
+          # Fail closed on an unexpected detector output (defense in depth):
+          # if changes succeeded, code MUST be exactly true or false.
+          if [ "$R_CHANGES" = "success" ] && [ "$R_CODE" != "true" ] && [ "$R_CODE" != "false" ]; then
+            echo "::error::invalid changes.outputs.code ($R_CODE)"
+            fail=1
+          fi
+          # Heavy jobs required to pass ONLY when code changed. On a docs-only
+          # PR (code=false) they are skipped, which is allowed.
+          if [ "$R_CODE" = "true" ]; then
+            for kv in "verify=$R_VERIFY" "e2e=$R_E2E" "migrations=$R_MIGRATIONS"; do
+              name="${kv%%=*}"; res="${kv#*=}"
+              [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
+            done
+          fi
+          [ "$fail" = "0" ] && echo "ci-required: PASS"
+          exit $fail
