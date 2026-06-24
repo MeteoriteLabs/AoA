@@ -534,6 +534,42 @@ Summarize:
 - Required checks unchanged and still green on `main`.
 - Phase 2 (Release hardening + GitHub App) still pending.
 
+## Task 8: Update AGENTS.md §7 for the retired lockfile bot/bypass
+
+**Files:**
+- Modify: `AGENTS.md` (§7 "Dependency Change Workflow")
+
+Added after Codex's cloud review of PR #228 flagged (P2) that `AGENTS.md §7` still documents the `chore/refresh-lockfile` escape-hatch branch and the `refresh-lockfile.yml` bot — both removed by Task 4. A contributor following those docs would now have a lockfile PR rejected. The policy change and its contributor docs must ship together. (Archived session logs under `docs/archive/` also mention the bot; they are historical/non-authoritative per CLAUDE.md and are left untouched.)
+
+- [ ] **Step 1: Rewrite the intro + add a retirement note**
+
+Replace the "escape hatch" framing with the current rule: a PR committing `pnpm-lock.yaml` is blocked unless it also changes a manifest. Add a dated note that the `chore/refresh-lockfile` carve-out and the `refresh-lockfile.yml` bot were retired 2026-06-24, with the Phase 2 re-introduction pointer.
+
+- [ ] **Step 2: Replace the workflow subsections**
+
+Drop "Manual flow (current)" (the `chore/refresh-lockfile` ceremony), "Automation: refresh-lockfile.yml bot", and the layered "Inline lockfile updates (added 2026-05-05)" history. Replace with three current subsections: "Standard flow: change a dependency" (manifest + lockfile together, any branch), "Lockfile-only refresh (no manifest change)" (blocked, no automated path, workaround), and "Two dependency PRs racing" (regenerate-on-rebase).
+
+- [ ] **Step 3: Verify**
+
+```sh
+rg -n "chore/refresh-lockfile|refresh-lockfile\.yml|Porting1.1" AGENTS.md
+```
+
+Expected: no matches (no stale branch/bot/Porting1.1 references in AGENTS.md).
+
+```sh
+rg -n "Block manual lockfile edits|together, on any branch|Retired 2026-06-24" AGENTS.md
+```
+
+Expected: the new gate reference + standard-flow + retirement note are present.
+
+- [ ] **Step 4: Commit**
+
+```sh
+git add AGENTS.md
+git commit -m "docs(deps): rewrite AGENTS.md dependency workflow for retired lockfile bot/bypass"
+```
+
 ---
 
 ## Codex review (2026-06-24)
@@ -545,6 +581,7 @@ Independent review via `/codex review` (gpt, read-only). Verdicts and resolution
 - **Factual error fixed** — `package.json:57` already pins `packageManager: pnpm@9.15.4`, so the v4 `version:` input is not required. Task 5 rationale corrected (kept for sibling-workflow consistency, not necessity).
 - **[P2] fixed** — Task 1 verify command `-A3` → `-A8`; stale `release.yml` "current porting branch" prose cleaned in Task 2.
 - **Decision resolved** — draft PRs are now gated (Task 1 Step 2 + `ready_for_review`), per user choice.
+- **PR-time Codex P2 (cloud reviewer on #228) resolved** — `AGENTS.md §7` documented the now-removed `chore/refresh-lockfile` escape hatch + `refresh-lockfile.yml` bot; rewritten in **Task 8** so the contributor docs match the closed-bypass policy.
 
 ## Self-Review
 
