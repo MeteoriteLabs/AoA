@@ -3589,7 +3589,7 @@ export function heartbeatService(db: Db) {
           realProviderStatusDeps,
         );
       } catch (statusErr) {
-        logger.warn({ err: statusErr, runId: run.id }, "[heartbeat] provider status detection failed (best-effort fallback to unknown)");
+        logger.warn({ err: statusErr, companyId: agent.companyId, agentId: agent.id, runId: run.id }, "[heartbeat] provider status detection failed (best-effort fallback to unknown)");
         providerStatus = { adapterType: agent.adapterType, installed: true, authenticated: false, authMode: "unknown", defaultModelResolved: null };
       }
       runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null });
