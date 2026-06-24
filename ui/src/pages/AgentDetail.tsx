@@ -733,47 +733,9 @@ function AgentOverview({
   agentRouteId: string;
   trustScore?: import("@armyofagents/shared").AgentTrustScore | null;
 }) {
-  // Quick stats (trailing 7-day window) — see ui/src/lib/agent-kpis.ts
-  const {
-    tasksCompleted: tasksCompletedThisWeek,
-    successRate,
-    completedRuns: completedRunsThisWeekCount,
-    cost: costThisWeek,
-  } = computeAgentKpis({ runs, assignedIssues });
-
   return (
     <div className="space-y-8">
-      {/* Quick stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="border border-border rounded-lg p-4">
-          <span className="text-xs text-muted-foreground block">Status</span>
-          <div className="mt-1">
-            <StatusBadge status={agent.status} />
-          </div>
-        </div>
-        <div className="border border-border rounded-lg p-4">
-          <span className="text-xs text-muted-foreground block">Tasks completed</span>
-          <span className="text-2xl font-semibold block mt-1">{tasksCompletedThisWeek}</span>
-          <span className="text-[11px] text-muted-foreground">this week</span>
-        </div>
-        <div className="border border-border rounded-lg p-4">
-          <span className="text-xs text-muted-foreground block">Success rate</span>
-          <span className="text-2xl font-semibold block mt-1">{successRate !== null ? `${successRate}%` : "\u2014"}</span>
-          <span className="text-[11px] text-muted-foreground">this week ({completedRunsThisWeekCount} runs)</span>
-        </div>
-        <div className="border border-border rounded-lg p-4">
-          <span className="text-xs text-muted-foreground block">Cost</span>
-          <span className="text-2xl font-semibold block mt-1">${costThisWeek.toFixed(2)}</span>
-          <span className="text-[11px] text-muted-foreground">this week</span>
-        </div>
-      </div>
-
-      <AgentTrustScoreCard score={trustScore} />
-
-      {/* Latest Run */}
-      <LatestRunCard runs={runs} agentId={agentRouteId} />
-
-      {/* Charts */}
+      {/* Activity (per-run KPIs now live in the hero card) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <ChartCard title="Run Activity" subtitle="Last 14 days">
           <RunActivityChart runs={runs} />
@@ -825,18 +787,81 @@ function AgentOverview({
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
 
-      {/* Configuration Summary */}
-      <ConfigSummary
+      {/* Org & health (re-homed from the old Configuration summary; the rest lives in the Config tab) */}
+      <OrgHealthCard
         agent={agent}
-        agentRouteId={agentRouteId}
         reportsToAgent={reportsToAgent}
         directReports={directReports}
       />
+
+      {/* Trust */}
+      <AgentTrustScoreCard score={trustScore} />
     </div>
   );
 }
 
 /* Chart components imported from ../components/ActivityCharts */
+
+/* ---- Org & health (re-homed from the old Configuration summary) ---- */
+
+function OrgHealthCard({
+  agent,
+  reportsToAgent,
+  directReports,
+}: {
+  agent: Agent;
+  reportsToAgent: Agent | null;
+  directReports: Agent[];
+}) {
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium">Org &amp; health</h3>
+      <div className="border border-border rounded-lg p-4 space-y-3">
+        <div className="space-y-2 text-sm">
+          <SummaryRow label="Reports to">
+            {reportsToAgent ? (
+              <Link
+                to={`/agents/${agentRouteRef(reportsToAgent)}`}
+                className="text-blue-600 hover:underline dark:text-blue-400"
+              >
+                <Identity name={reportsToAgent.name} size="sm" />
+              </Link>
+            ) : (
+              <span className="text-muted-foreground">Nobody (top-level)</span>
+            )}
+          </SummaryRow>
+          <SummaryRow label="Last heartbeat">
+            {agent.lastHeartbeatAt ? (
+              <span>{relativeTime(agent.lastHeartbeatAt)}</span>
+            ) : (
+              <span className="text-muted-foreground">Never</span>
+            )}
+          </SummaryRow>
+        </div>
+        {directReports.length > 0 && (
+          <div className="pt-1">
+            <span className="text-xs text-muted-foreground">Direct reports</span>
+            <div className="mt-1 space-y-1">
+              {directReports.map((r) => (
+                <Link
+                  key={r.id}
+                  to={`/agents/${agentRouteRef(r)}`}
+                  className="flex items-center gap-2 text-sm text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[r.status] ?? agentStatusDotDefault}`} />
+                  </span>
+                  {r.name}
+                  <span className="text-muted-foreground text-xs">({roleLabels[r.role] ?? r.role})</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ---- Configuration Summary ---- */
 
