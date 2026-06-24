@@ -560,11 +560,19 @@ describe("ProjectDetail — Workspaces tab", () => {
     // Archived workspaces are NOT visible by default (collapsed)
     expect(screen.queryByTestId("archived-workspaces-list")).not.toBeInTheDocument();
 
-    // Click to expand. Re-query the trigger at click time so a concurrent
-    // query-driven re-render cannot leave us clicking a stale DOM node.
-    fireEvent.click(screen.getByTestId("archived-workspaces-trigger"));
-
-    expect(await screen.findByTestId("archived-workspaces-list")).toBeInTheDocument();
+    // Click to expand. Under parallel-suite load the workspace query can
+    // briefly re-render the skeleton between the first trigger assertion and
+    // the click. Retry the whole interaction and only click while still closed
+    // so repeated waitFor ticks cannot toggle the section shut again.
+    await waitFor(() => {
+      const openList = screen.queryByTestId("archived-workspaces-list");
+      if (!openList) {
+        const trigger = screen.getByTestId("archived-workspaces-trigger");
+        expect(trigger).toHaveTextContent("Archived (2)");
+        fireEvent.click(trigger);
+      }
+      expect(screen.getByTestId("archived-workspaces-list")).toBeInTheDocument();
+    }, { timeout: 5000 });
   });
 
   it("shows loading skeletons while fetching workspaces", async () => {
