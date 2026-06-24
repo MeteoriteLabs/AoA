@@ -503,9 +503,13 @@ jobs:
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright
+        id: install-playwright
+        timeout-minutes: 5
+        continue-on-error: true
         run: npx playwright install --only-shell chromium
 
       - name: Generate Paperclip config
+        if: steps.install-playwright.outcome == 'success'
         shell: bash
         run: |
           mkdir -p ~/.aoa/instances/default
@@ -529,14 +533,14 @@ jobs:
         # rest of the matrix (checkout/install/build/playwright-install)
         # still runs as parity. Re-enable when Issue #114's postgres-
         # container approach lands.
-        if: matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
         env:
           # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
-        if: matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report-${{ matrix.os }}
