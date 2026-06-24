@@ -354,7 +354,8 @@ jobs:
   # to pass for merge — that's the right gate, not a pipeline dependency.
   verify:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 20
 
     steps:
@@ -391,7 +392,8 @@ jobs:
   # in-PR scope expansions. Once a platform stabilizes, flip its matrix
   # entry to required by adding it to branch protection rules.
   verify-cross-platform:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
@@ -429,7 +431,8 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 30
 
     steps:
@@ -520,7 +523,8 @@ jobs:
   # can hang after download on hosted macOS/Windows, and CI runs headless. The
   # required Linux e2e job keeps the full fallback path.
   e2e-cross-platform:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
@@ -609,7 +613,8 @@ jobs:
   # caught it pre-merge).
   migrations:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 15
 
     services:
