@@ -68,6 +68,7 @@ import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type
 import { agentRouteRef } from "../lib/utils";
 import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 import { asRecord, usageNumber, runMetrics } from "../lib/run-metrics";
+import { computeAgentKpis } from "../lib/agent-kpis";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -748,25 +749,13 @@ function AgentOverview({
   agentRouteId: string;
   trustScore?: import("@armyofagents/shared").AgentTrustScore | null;
 }) {
-  // Compute quick stats
-  const now = new Date();
-  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-  const runsThisWeek = runs.filter((r) => new Date(r.createdAt) >= weekAgo);
-  const completedRunsThisWeek = runsThisWeek.filter((r) => r.status === "succeeded" || r.status === "failed");
-  const succeededThisWeek = runsThisWeek.filter((r) => r.status === "succeeded").length;
-  const successRate = completedRunsThisWeek.length > 0
-    ? Math.round((succeededThisWeek / completedRunsThisWeek.length) * 100)
-    : null;
-
-  const tasksCompletedThisWeek = assignedIssues.filter(
-    (i) => i.status === "done" && new Date(i.createdAt) >= weekAgo
-  ).length;
-
-  const costThisWeek = runsThisWeek.reduce((sum, r) => {
-    const m = runMetrics(r);
-    return sum + m.cost;
-  }, 0);
+  // Quick stats (trailing 7-day window) — see ui/src/lib/agent-kpis.ts
+  const {
+    tasksCompleted: tasksCompletedThisWeek,
+    successRate,
+    completedRuns: completedRunsThisWeekCount,
+    cost: costThisWeek,
+  } = computeAgentKpis({ runs, assignedIssues });
 
   return (
     <div className="space-y-8">
@@ -786,7 +775,7 @@ function AgentOverview({
         <div className="border border-border rounded-lg p-4">
           <span className="text-xs text-muted-foreground block">Success rate</span>
           <span className="text-2xl font-semibold block mt-1">{successRate !== null ? `${successRate}%` : "\u2014"}</span>
-          <span className="text-[11px] text-muted-foreground">this week ({completedRunsThisWeek.length} runs)</span>
+          <span className="text-[11px] text-muted-foreground">this week ({completedRunsThisWeekCount} runs)</span>
         </div>
         <div className="border border-border rounded-lg p-4">
           <span className="text-xs text-muted-foreground block">Cost</span>
