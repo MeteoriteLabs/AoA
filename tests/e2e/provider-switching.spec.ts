@@ -192,6 +192,9 @@ test.describe("provider-switching: agent config save-side", () => {
     await page.getByRole("button", { name: "Save" }).click();
 
     // Server-generated warning: model swapped to the codex-compatible default.
+    // Assumes the CI runner has no shared Codex login configured, so the
+    // detected auth mode resolves "unknown" (not "apikey") and resolveModel
+    // takes the ChatGPT-compat branch, falling back to gpt-5.5.
     await expect(page.getByRole("alert")).toContainText(/using gpt-5\.5/i, {
       timeout: 15_000,
     });
@@ -215,9 +218,14 @@ test.describe("provider-switching: agent config save-side", () => {
     const { companyId } = await seedCompanyViaWizard(page, request);
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
 
+    // Include adapterType so the shared schema's shell-safety refinement runs
+    // (refineAdapterModel early-returns when adapterType is absent). This keeps
+    // the rejection on the same 400 schema hard-block path as the cross-family
+    // test above; without adapterType the request would instead reach the
+    // route's runtime guard and surface as 422.
     const res = await request.patch(
       `/api/agents/${agentId}?companyId=${companyId}`,
-      { data: { adapterConfig: { model: "gpt-5 && rm" } } },
+      { data: { adapterType: "codex_local", adapterConfig: { model: "gpt-5 && rm" } } },
     );
     expect(res.status()).toBe(400);
   });
@@ -239,6 +247,8 @@ test.describe("provider-switching: agent config save-side", () => {
     await page.getByRole("button", { name: "Test environment" }).click();
 
     // Pass OR fail status both render the result div (codex may be absent on CI).
+    // Generous timeout: the probe spawns a real adapter CLI, which can be slow
+    // to cold-start on a CI runner.
     await expect(page.getByTestId("adapter-env-result")).toBeVisible({
       timeout: 60_000,
     });
