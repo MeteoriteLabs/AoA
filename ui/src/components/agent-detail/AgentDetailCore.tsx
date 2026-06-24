@@ -132,19 +132,18 @@ export function AgentDetailCore({
         </div>
       )}
 
-      {/* Tab navigation */}
-      {!urlRunId && (
-        <Tabs
+      {/* Tab navigation — always shown; a selected run is still within the
+          Runs tab (master-detail), so the tab bar must not vanish. */}
+      <Tabs
+        value={activeView}
+        onValueChange={onViewChange}
+      >
+        <PageTabBar
+          items={tabs}
           value={activeView}
           onValueChange={onViewChange}
-        >
-          <PageTabBar
-            items={tabs}
-            value={activeView}
-            onValueChange={onViewChange}
-          />
-        </Tabs>
-      )}
+        />
+      </Tabs>
 
       {/* Tab content */}
       {renderTab(activeView)}
