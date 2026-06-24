@@ -139,7 +139,7 @@ export function AgentSkillsTab({
   };
 
   return (
-    <div className="py-2 space-y-4 max-w-3xl">
+    <div className="py-2 space-y-4 max-w-[1400px]">
       <p className="text-sm text-muted-foreground">
         Skills injected into this agent's context on every run.
       </p>

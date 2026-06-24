@@ -494,7 +494,7 @@ function AoaConfigurePage({
   }, [onSavingChange, updateAgent.isPending]);
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-[1400px] space-y-6">
       <AgentConfigForm
         mode="edit"
         agent={agent}

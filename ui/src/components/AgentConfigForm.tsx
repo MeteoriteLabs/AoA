@@ -471,10 +471,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     );
 
   return (
-    <div className={cn("relative", cards && "space-y-6")}>
+    <div className={cn("relative", cards && "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
-        <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
+        <div className="sticky top-0 z-10 lg:col-span-2 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">Unsaved changes</span>
             <Button
