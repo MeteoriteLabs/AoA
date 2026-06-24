@@ -38,7 +38,7 @@ Two coupled deliverables:
 
 ### A1 — Heartbeat choke point (the load-bearing change)
 
-Apply resolution to `runScopedConfig` in `server/src/services/heartbeat.ts`, immediately before `adapter.execute(...)` (~line 3732), mirroring the crew runner:
+Apply resolution to `runScopedConfig` in `server/src/services/heartbeat.ts` **after** the budget/recovery cheap-model swaps (~3544-3575) and **before** `resolveAdapterExecutionContext(runScopedConfig, adapter)` (~3704) — not merely before `adapter.execute` (~3732), since `resolveAdapterExecutionContext` also derives from `runScopedConfig`. Mirroring the crew runner:
 
 ```
 providerStatus = best-effort getProviderStatus(agent.adapterType, { companyId, adapterConfig: runScopedConfig }, realProviderStatusDeps)   // guarded; fallback authMode "unknown"
@@ -53,7 +53,7 @@ runScopedConfig = applyModelResolutionToConfig(agent.adapterType, runScopedConfi
 
 ### A2 — Org-codex boot backfill sweep
 
-The existing backfill (`needsAdapterBackfill` + the crew `ensure-*`/seed consumers) only heals crew (`kind: "aoa"`) rows. Org agents are never seeded by that path. Add a **boot sweep** that, on startup, finds `kind: "org"` + `codex_local` agents whose persisted `adapterConfig.model` fails `isCodexCompatibleModel` and rewrites them to `DEFAULT_CODEX_CHAT_MODEL` (`gpt-5.5`) via `mergeAdapterConfig`. Reuse `needsAdapterBackfill`'s codex predicate; the only new surface is the org population sweep + its wiring at boot.
+The existing backfill (`needsAdapterBackfill` + the crew `ensure-*`/seed consumers) only heals crew (`kind: "aoa"`) rows. Org agents are never seeded by that path. Add a **boot sweep** that, on startup, finds `kind: "org"` + `codex_local` agents whose persisted `adapterConfig.model` fails `isCodexCompatibleModel` and rewrites them to `DEFAULT_CODEX_CHAT_MODEL` (`gpt-5.5`) via **shallow-merge** (`{ ...existing, model: DEFAULT_CODEX_CHAT_MODEL }`). Do NOT use `mergeAdapterConfig` (crew-oriented; drops `env`/`cwd`/`promptTemplate`/`timeoutSec`). Reuse `needsAdapterBackfill`'s codex predicate; the only new surface is the org population sweep + its wiring in the `server/src/index.ts` boot all-company loop (~703-769), NOT in `companies.ts` (create-only — existing companies would be missed).
 
 ### A3 — Tests (Part A)
 
@@ -140,7 +140,7 @@ Every layer maps to this list (✔ = that layer asserts it):
 - **Include org now** — implement the extension + test it together (not a later follow-up).
 - **Watch the correction live** in ChatGPT-codex mode.
 - **Branching:** keep PR #221 (crew+Commander) mergeable as-is; land Part A + Part B on `feat/provider-switching-org`, stacked on #221, as its own reviewable PR.
-- **Reuse the engine** — no parallel resolver; the only new application point is `heartbeat.ts:3732` + the org backfill sweep.
+- **Reuse the engine** — no parallel resolver; the only new application point is `heartbeat.ts` (after cheap-model swaps ~3575, before `resolveAdapterExecutionContext` ~3704) + the org backfill sweep.
 
 ## 8. Logistics
 

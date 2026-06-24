@@ -28,7 +28,7 @@
 | `server/src/services/heartbeat-provider-resolution.ts` (new) | 1 | tiny pure seam: `resolveRunScopedModel(adapterType, runScopedConfig, status, opts)` wrapping `applyModelResolutionToConfig` (testable; documents edge #5) |
 | `server/src/services/internal-agent/aoa-agents/org-codex-backfill.ts` (new) | 2 | boot sweep: org codex rows with incompatible models → `gpt-5.5` |
 | `server/src/services/internal-agent/aoa-agents/__tests__/org-codex-backfill.test.ts` (new) | 2 | unit: predicate + sweep (mock-DB) |
-| `server/src/services/companies.ts` (modify ~162) | 2 | invoke the org sweep at the company-bootstrap path |
+| `server/src/index.ts` (modify ~703-769) | 2 | invoke the org sweep in the boot all-company startup loop |
 | `server/src/__tests__/provider-switching.integration.test.ts` (modify) | 3 | org argv + org backfill + org-vs-crew parity (`skipIf(win32)`) |
 | `tests/e2e/provider-switching.spec.ts` (rewrite) | 4 | real Playwright specs (UI/save-side) |
 | `tests/e2e/helpers/seed-company.ts` (reuse) | 4 | existing cleanup/seed helper |
@@ -144,7 +144,7 @@ git commit -m "feat(provider-switching): apply resolution at heartbeat choke poi
 
 ## Task 2 — Org-codex boot backfill sweep (Part A2)
 
-**Files:** Create `org-codex-backfill.ts` + test; Modify `companies.ts`.
+**Files:** Create `org-codex-backfill.ts` + test; Modify `server/src/index.ts`.
 
 - [ ] **Step 2.1: Write the failing test** — `server/src/services/internal-agent/aoa-agents/__tests__/org-codex-backfill.test.ts`
 
@@ -222,7 +222,7 @@ export async function backfillOrgCodexModels(db: Db, companyId: string): Promise
 
 - [ ] **Step 2.4: Run — expect PASS (5 tests).**
 
-- [ ] **Step 2.5: Wire into the BOOT all-company sweep** (P1, Codex review) — `server/src/services/index.ts`, inside the existing per-company startup loop (~line 703-769) that already runs `ensureCommandStaff`/`ensureAdjutant`/…/`ensureCommanderAgent`. Add `backfillOrgCodexModels(db, row.id)` to that `Promise.all` (best-effort `.catch`), mirroring the sibling ensures. Do NOT wire it in `companies.ts` (that path is create-only — existing companies would be missed). New companies get the safe create-default (`gpt-5.5`) already, so the boot sweep is the right and sufficient hook. Import `backfillOrgCodexModels` at the top of `index.ts` next to the existing `ensure-*` imports.
+- [ ] **Step 2.5: Wire into the BOOT all-company sweep** (P1, Codex review) — `server/src/index.ts`, inside the existing per-company startup loop (~line 703-769) that already runs `ensureCommandStaff`/`ensureAdjutant`/…/`ensureCommanderAgent`. Add `backfillOrgCodexModels(db, row.id)` to that `Promise.all` (best-effort `.catch`), mirroring the sibling ensures. Do NOT wire it in `companies.ts` (that path is create-only — existing companies would be missed). New companies get the safe create-default (`gpt-5.5`) already, so the boot sweep is the right and sufficient hook. Import `backfillOrgCodexModels` at the top of `server/src/index.ts` next to the existing `ensure-*` imports.
 
 - [ ] **Step 2.6: Run bootstrap suites for no regression.**
 
@@ -232,69 +232,11 @@ Expected: PASS. (If `index.ts` isn't unit-testable in isolation, rely on the Tas
 - [ ] **Step 2.7: Commit**
 
 ```bash
-git add server/src/services/internal-agent/aoa-agents/org-codex-backfill.ts server/src/services/internal-agent/aoa-agents/__tests__/org-codex-backfill.test.ts server/src/services/companies.ts
+git add server/src/services/internal-agent/aoa-agents/org-codex-backfill.ts server/src/services/internal-agent/aoa-agents/__tests__/org-codex-backfill.test.ts server/src/index.ts
 git commit -m "feat(provider-switching): org codex boot backfill sweep (Part A2)"
 ```
 
----
-
-## Task 2B — Codex adapter: keyless agents use the CLI login, not the ambient key (closes the #221 env-strip leak)
-
-**Decision (user, 2026-06-24):** a codex agent with NO per-agent key authenticates via the `codex login` subscription — never the ambient `process.env.OPENAI_API_KEY`. A per-agent key (set in the agent config page) still wins. This is a SHARED codex-adapter change affecting crew + org codex auth (intended); it also makes the live `gpt-5.3-codex → gpt-5.5` correction fire naturally on a ChatGPT login.
-
-**Root cause (Codex review, verified):** `packages/adapters/codex-local/src/server/execute.ts:280-283` computes `configuredOpenAiApiKey` = the agent `env.OPENAI_API_KEY` ELSE the ambient `process.env.OPENAI_API_KEY`, and line 332 builds `runtimeEnv = ensurePathInEnv({ ...process.env, ...env })`. So a keyless agent gets the ambient key both as its provisioned auth (api-key `auth.json`) and in its spawn env. The #221 `applyModelResolutionToConfig` strip operates on `config.env` only and cannot stop this.
-
-**Files:** Modify `packages/adapters/codex-local/src/server/execute.ts`; add a pure helper + test; re-document `runner-model-resolution.ts`.
-
-- [ ] **Step 2B.1: Write the failing test** — `packages/adapters/codex-local/src/server/__tests__/agent-codex-api-key.test.ts` (follow the package's existing test layout):
-
-```ts
-import { describe, it, expect } from "vitest";
-import { resolveAgentCodexApiKey } from "../execute.js"; // export it in 2B.3
-
-describe("resolveAgentCodexApiKey", () => {
-  it("returns the agent's own key when set", () => {
-    expect(resolveAgentCodexApiKey({ OPENAI_API_KEY: "sk-agent" })).toBe("sk-agent");
-  });
-  it("returns null when the agent did NOT set one (use the codex login, NOT the ambient key)", () => {
-    expect(resolveAgentCodexApiKey({})).toBeNull();
-    expect(resolveAgentCodexApiKey({ OPENAI_API_KEY: "   " })).toBeNull();
-  });
-});
-```
-
-- [ ] **Step 2B.2: Run — expect FAIL** (`resolveAgentCodexApiKey` not exported). `cd packages/adapters/codex-local && pnpm exec vitest run src/server/__tests__/agent-codex-api-key.test.ts`
-
-- [ ] **Step 2B.3: Implement.** In `execute.ts`, add the exported pure helper and use it; drop the `process.env` fallback:
-
-```ts
-/** The codex api key for THIS agent — only an agent-set key, never the ambient
- *  process.env key (a keyless agent authenticates via the codex login). */
-export function resolveAgentCodexApiKey(env: Record<string, unknown>): string | null {
-  return typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
-    ? env.OPENAI_API_KEY.trim()
-    : null;
-}
-```
-Replace the `const configuredOpenAiApiKey = ...` block (~280-283) with `const configuredOpenAiApiKey = resolveAgentCodexApiKey(env);`. Then, right after `const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });` (~332), strip the ambient key when the agent didn't set one:
-
-```ts
-  // A keyless agent must not inherit the ambient OPENAI_API_KEY — it authenticates
-  // via the codex login (managed CODEX_HOME/auth.json). Only a per-agent key survives.
-  if (!configuredOpenAiApiKey) delete runtimeEnv.OPENAI_API_KEY;
-```
-(`resolveCodexBillingType(env)` at ~331 already reads the agent `env`, so it correctly reports "subscription" for a keyless agent — leave it.)
-
-- [ ] **Step 2B.4: Run — expect PASS.** Run the codex adapter suite: `cd packages/adapters/codex-local && pnpm exec vitest run` — no regressions.
-
-- [ ] **Step 2B.5: Re-document the #221 helper** — in `server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts`, update the env-strip comment to note the codex adapter (Task 2B) is now the PRIMARY guard against the ambient key, and this `config.env` strip is secondary defense-in-depth. (No logic change.)
-
-- [ ] **Step 2B.6: Commit**
-
-```bash
-git add packages/adapters/codex-local/src/server/execute.ts packages/adapters/codex-local/src/server/__tests__/agent-codex-api-key.test.ts server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts
-git commit -m "fix(provider-switching): keyless codex agents use the CLI login, not the ambient OPENAI_API_KEY (closes #221 env-strip leak)"
-```
+> **Note:** The env-strip / keyless-codex auth fix (originally Task 2B) has been split to a separate PR due to the multi-layer scope (`adapter-utils/server-utils.ts` spawn re-merge, remote keyless flow, probe alignment). It is tracked separately on `feat/provider-switching-env-strip`.
 
 ---
 
@@ -308,7 +250,7 @@ git commit -m "fix(provider-switching): keyless codex agents use the CLI login, 
   1c. **Skip per-agent-key org row (Codex P1):** seed `kind:"org"` codex `{ model:"gpt-5.3-codex", env:{ OPENAI_API_KEY:"sk-agent" } }`; run the sweep; re-read → `model` UNCHANGED (`gpt-5.3-codex`), fixed count 0.
   2. **Org runtime resolution parity:** for `{ authMode:"chatgpt", defaultModelResolved:"gpt-5.5" }`, assert `resolveRunScopedModel("codex_local", { model:"gpt-5.3-codex" }, status).model === "gpt-5.5"` — and equals the crew helper's output for the same input (parity).
   3. **Org NOT healed by crew backfill:** assert the crew `needsAdapterBackfill` path does not touch the org row (it's org-scoped), proving the two sweeps are distinct.
-  4. **Heartbeat WIRING (no-spawn, Codex P2):** the unit test only proves the wrapper calls the helper; this proves `heartbeat.ts` actually invokes it after the cheap-swap and before execute. Seed a `kind:"org"` codex agent with `model:"gpt-5.3-codex"`, trigger one heartbeat run through the real path with an instrumented/fake server adapter whose `execute` captures `config.model` (no real spawn — mirror how `cli-mode-codex-integration.test.ts` or the existing aoa integration captures args); assert the captured `config.model === "gpt-5.5"`. If a budget/recovery (cheap-model) scenario is feasible to seed, also seed it and assert resolution still wins (runs after the swap, edge #5).
+  4. **Heartbeat WIRING (no-spawn, Codex P2):** the unit test only proves the wrapper calls the helper; this proves `heartbeat.ts` actually invokes it in the correct order — AFTER cheap-swaps (~3575) and BEFORE `resolveAdapterExecutionContext` (~3704). Seed a `kind:"org"` codex agent with `model:"gpt-5.3-codex"`. Instrument/spy on BOTH `resolveAdapterExecutionContext` AND the adapter `execute` call (mirror the no-spawn pattern in `cli-mode-codex-integration.test.ts`). Assert: (a) the model passed to `resolveAdapterExecutionContext` is ALREADY `"gpt-5.5"` (not `"gpt-5.3-codex"`) — this is the critical edge-#5 gate; (b) the model passed to `execute` is also `"gpt-5.5"`. If both assertions pass, the ordering is proven. If a budget/recovery (cheap-model) scenario is feasible to seed, also seed it and assert the same (resolution after the swap, edge #5).
 
 Use the existing seeding/`db.execute` pattern in the file. Each case is a `it(...)` with concrete inserts + asserts (no `it.skip`).
 
