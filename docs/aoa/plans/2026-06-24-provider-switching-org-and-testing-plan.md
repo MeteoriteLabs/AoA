@@ -14,7 +14,7 @@
 
 ## Hard rules (carry into every task)
 - **Reuse only** — no new resolver. Import `applyModelResolutionToConfig` from `server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts`, `getProviderStatus` + `type ProviderStatus` from `server/src/adapters/provider-status.ts`, `realProviderStatusDeps` from `server/src/adapters/provider-status-deps.ts`.
-- **Edge #5** — in `heartbeat.ts`, resolution runs AFTER the cheap-model swaps (lines ~3544-3575), before `adapter.execute` (~3732).
+- **Edge #5** — in `heartbeat.ts`, resolution runs AFTER the cheap-model swaps (lines ~3544-3575) and BEFORE `resolveAdapterExecutionContext` (~3704) — not merely before `adapter.execute` (~3732) — since the context build also derives from `runScopedConfig`.
 - **Best-effort detection** — a `getProviderStatus` throw falls back to `authMode: "unknown"`; never breaks a run. `ShellUnsafeModelError` from `applyModelResolutionToConfig` propagates to the existing run-failure path.
 - **Never read the company extraction `OPENAI_API_KEY`** for switching; the env-strip is codex-only and only strips an INHERITED key.
 - TDD: failing test → run (fail) → minimal impl → run (pass) → commit. DRY/YAGNI.
@@ -165,6 +165,9 @@ describe("orgCodexRowNeedsBackfill", () => {
   it("ignores non-codex org rows", () => {
     expect(orgCodexRowNeedsBackfill({ kind: "org", adapterType: "claude_local", adapterConfig: { model: "gpt-5.5" } })).toBe(false);
   });
+  it("leaves an org codex row that set its OWN OPENAI_API_KEY (apikey mode — gpt-5.3-codex is valid)", () => {
+    expect(orgCodexRowNeedsBackfill({ kind: "org", adapterType: "codex_local", adapterConfig: { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: "sk-agent" } } })).toBe(false);
+  });
 });
 ```
 
@@ -177,49 +180,54 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents } from "@armyofagents/db";
 import { isCodexCompatibleModel, DEFAULT_CODEX_CHAT_MODEL } from "../codex-model.js";
-import { mergeAdapterConfig } from "./resolve-crew-adapter.js";
+
+function hasPerAgentOpenAiKey(adapterConfig: Record<string, unknown> | null | undefined): boolean {
+  const env = adapterConfig?.env as Record<string, unknown> | undefined;
+  return typeof env?.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0;
+}
 
 export function orgCodexRowNeedsBackfill(
   row: { kind?: string | null; adapterType?: string | null; adapterConfig?: Record<string, unknown> | null },
 ): boolean {
   if (row.kind !== "org" || row.adapterType !== "codex_local") return false;
+  // P1 (Codex review): an org agent with its OWN api key validly runs an
+  // api-key-only model (gpt-5.3-codex) in apikey mode — never rewrite it.
+  if (hasPerAgentOpenAiKey(row.adapterConfig)) return false;
   const model = typeof row.adapterConfig?.model === "string" ? row.adapterConfig.model : "";
   return model.length > 0 && !isCodexCompatibleModel(model);
 }
 
 /** Boot sweep: heal org codex rows in a company whose model a ChatGPT login would reject. */
 export async function backfillOrgCodexModels(db: Db, companyId: string): Promise<number> {
-  const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+  // P1 (Codex review): filter in SQL by kind+adapterType (not select-all-then-filter).
+  const rows = await db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org"), eq(agents.adapterType, "codex_local")));
   let fixed = 0;
   for (const row of rows) {
     if (!orgCodexRowNeedsBackfill(row as never)) continue;
-    const next = mergeAdapterConfig(row.adapterConfig as Record<string, unknown> | null, {
-      model: DEFAULT_CODEX_CHAT_MODEL,
-      dangerouslyBypassApprovalsAndSandbox: true,
-    });
+    // P1 (Codex review): SHALLOW-merge — replace ONLY model, preserving the org
+    // agent's env/cwd/promptTemplate/timeoutSec/etc. (mergeAdapterConfig is
+    // crew-only and keeps only instructions* fields, dropping everything else).
+    const existing = (row.adapterConfig as Record<string, unknown> | null) ?? {};
+    const next = { ...existing, model: DEFAULT_CODEX_CHAT_MODEL };
     await db.update(agents).set({ adapterConfig: next }).where(and(eq(agents.id, row.id), eq(agents.companyId, companyId)));
     fixed += 1;
   }
   return fixed;
 }
 ```
-(Confirm `agents` table import path + that `agents.kind`/`adapterType`/`adapterConfig` columns exist — they do, per `packages/db/src/schema`. If `mergeAdapterConfig`'s codex bypass default differs, match `resolveCrewAdapterFor`'s codex case.)
+(Confirm `agents.kind`/`adapterType`/`adapterConfig`/`env` columns exist — they do. Do NOT use `mergeAdapterConfig` here.)
 
-- [ ] **Step 2.4: Run — expect PASS (4 tests).**
+- [ ] **Step 2.4: Run — expect PASS (5 tests).**
 
-- [ ] **Step 2.5: Wire into the company-bootstrap path** — `server/src/services/companies.ts`, alongside the existing `ensureCommanderAgent(db, company.id)` call (~line 162), add (best-effort, never block bootstrap):
+- [ ] **Step 2.5: Wire into the BOOT all-company sweep** (P1, Codex review) — `server/src/services/index.ts`, inside the existing per-company startup loop (~line 703-769) that already runs `ensureCommandStaff`/`ensureAdjutant`/…/`ensureCommanderAgent`. Add `backfillOrgCodexModels(db, row.id)` to that `Promise.all` (best-effort `.catch`), mirroring the sibling ensures. Do NOT wire it in `companies.ts` (that path is create-only — existing companies would be missed). New companies get the safe create-default (`gpt-5.5`) already, so the boot sweep is the right and sufficient hook. Import `backfillOrgCodexModels` at the top of `index.ts` next to the existing `ensure-*` imports.
 
-```ts
-          await backfillOrgCodexModels(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "org codex backfill failed (best-effort, ignored)");
-          });
-```
-Import at top of `companies.ts`: `import { backfillOrgCodexModels } from "./internal-agent/aoa-agents/org-codex-backfill.js";` (match the existing `ensure-commander` import style).
-
-- [ ] **Step 2.6: Run companies + bootstrap suites for no regression.**
+- [ ] **Step 2.6: Run bootstrap suites for no regression.**
 
 Run: `pnpm --filter @armyofagents/server exec vitest run src/__tests__/aoa-bootstrap-wiring.test.ts`
-Expected: PASS.
+Expected: PASS. (If `index.ts` isn't unit-testable in isolation, rely on the Task 3 integration test seeding a bad org row + invoking `backfillOrgCodexModels(db, companyId)` directly.)
 
 - [ ] **Step 2.7: Commit**
 
@@ -230,14 +238,77 @@ git commit -m "feat(provider-switching): org codex boot backfill sweep (Part A2)
 
 ---
 
+## Task 2B — Codex adapter: keyless agents use the CLI login, not the ambient key (closes the #221 env-strip leak)
+
+**Decision (user, 2026-06-24):** a codex agent with NO per-agent key authenticates via the `codex login` subscription — never the ambient `process.env.OPENAI_API_KEY`. A per-agent key (set in the agent config page) still wins. This is a SHARED codex-adapter change affecting crew + org codex auth (intended); it also makes the live `gpt-5.3-codex → gpt-5.5` correction fire naturally on a ChatGPT login.
+
+**Root cause (Codex review, verified):** `packages/adapters/codex-local/src/server/execute.ts:280-283` computes `configuredOpenAiApiKey` = the agent `env.OPENAI_API_KEY` ELSE the ambient `process.env.OPENAI_API_KEY`, and line 332 builds `runtimeEnv = ensurePathInEnv({ ...process.env, ...env })`. So a keyless agent gets the ambient key both as its provisioned auth (api-key `auth.json`) and in its spawn env. The #221 `applyModelResolutionToConfig` strip operates on `config.env` only and cannot stop this.
+
+**Files:** Modify `packages/adapters/codex-local/src/server/execute.ts`; add a pure helper + test; re-document `runner-model-resolution.ts`.
+
+- [ ] **Step 2B.1: Write the failing test** — `packages/adapters/codex-local/src/server/__tests__/agent-codex-api-key.test.ts` (follow the package's existing test layout):
+
+```ts
+import { describe, it, expect } from "vitest";
+import { resolveAgentCodexApiKey } from "../execute.js"; // export it in 2B.3
+
+describe("resolveAgentCodexApiKey", () => {
+  it("returns the agent's own key when set", () => {
+    expect(resolveAgentCodexApiKey({ OPENAI_API_KEY: "sk-agent" })).toBe("sk-agent");
+  });
+  it("returns null when the agent did NOT set one (use the codex login, NOT the ambient key)", () => {
+    expect(resolveAgentCodexApiKey({})).toBeNull();
+    expect(resolveAgentCodexApiKey({ OPENAI_API_KEY: "   " })).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2B.2: Run — expect FAIL** (`resolveAgentCodexApiKey` not exported). `cd packages/adapters/codex-local && pnpm exec vitest run src/server/__tests__/agent-codex-api-key.test.ts`
+
+- [ ] **Step 2B.3: Implement.** In `execute.ts`, add the exported pure helper and use it; drop the `process.env` fallback:
+
+```ts
+/** The codex api key for THIS agent — only an agent-set key, never the ambient
+ *  process.env key (a keyless agent authenticates via the codex login). */
+export function resolveAgentCodexApiKey(env: Record<string, unknown>): string | null {
+  return typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
+    ? env.OPENAI_API_KEY.trim()
+    : null;
+}
+```
+Replace the `const configuredOpenAiApiKey = ...` block (~280-283) with `const configuredOpenAiApiKey = resolveAgentCodexApiKey(env);`. Then, right after `const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });` (~332), strip the ambient key when the agent didn't set one:
+
+```ts
+  // A keyless agent must not inherit the ambient OPENAI_API_KEY — it authenticates
+  // via the codex login (managed CODEX_HOME/auth.json). Only a per-agent key survives.
+  if (!configuredOpenAiApiKey) delete runtimeEnv.OPENAI_API_KEY;
+```
+(`resolveCodexBillingType(env)` at ~331 already reads the agent `env`, so it correctly reports "subscription" for a keyless agent — leave it.)
+
+- [ ] **Step 2B.4: Run — expect PASS.** Run the codex adapter suite: `cd packages/adapters/codex-local && pnpm exec vitest run` — no regressions.
+
+- [ ] **Step 2B.5: Re-document the #221 helper** — in `server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts`, update the env-strip comment to note the codex adapter (Task 2B) is now the PRIMARY guard against the ambient key, and this `config.env` strip is secondary defense-in-depth. (No logic change.)
+
+- [ ] **Step 2B.6: Commit**
+
+```bash
+git add packages/adapters/codex-local/src/server/execute.ts packages/adapters/codex-local/src/server/__tests__/agent-codex-api-key.test.ts server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts
+git commit -m "fix(provider-switching): keyless codex agents use the CLI login, not the ambient OPENAI_API_KEY (closes #221 env-strip leak)"
+```
+
+---
+
 ## Task 3 — Integration extensions (Layer 2, `skipIf(win32)`)
 
 **Files:** Modify `server/src/__tests__/provider-switching.integration.test.ts`.
 
 - [ ] **Step 3.1: Add org-path integration cases** (mirror the existing harness; the file already seeds a company + agents). Add inside the existing `describe.skipIf(process.platform === "win32")` block:
   1. **Org backfill:** seed a `kind:"org"` codex agent with `adapterConfig.model = "gpt-5.3-codex"`; call `backfillOrgCodexModels(db, companyId)`; re-read → `model === "gpt-5.5"`; assert `orgCodexRowNeedsBackfill` is now false (fixpoint).
+  1b. **Backfill PRESERVES org config (Codex P2):** seed a `kind:"org"` codex agent with `adapterConfig = { model:"gpt-5.3-codex", env:{ FOO:"bar" }, cwd:"/x", promptTemplate:"p", timeoutSec: 30 }`; run the sweep; re-read → `model === "gpt-5.5"` AND `env.FOO === "bar"`, `cwd === "/x"`, `promptTemplate === "p"`, `timeoutSec === 30` all preserved (proves the shallow-merge, not `mergeAdapterConfig`).
+  1c. **Skip per-agent-key org row (Codex P1):** seed `kind:"org"` codex `{ model:"gpt-5.3-codex", env:{ OPENAI_API_KEY:"sk-agent" } }`; run the sweep; re-read → `model` UNCHANGED (`gpt-5.3-codex`), fixed count 0.
   2. **Org runtime resolution parity:** for `{ authMode:"chatgpt", defaultModelResolved:"gpt-5.5" }`, assert `resolveRunScopedModel("codex_local", { model:"gpt-5.3-codex" }, status).model === "gpt-5.5"` — and equals the crew helper's output for the same input (parity).
   3. **Org NOT healed by crew backfill:** assert the crew `needsAdapterBackfill` path does not touch the org row (it's org-scoped), proving the two sweeps are distinct.
+  4. **Heartbeat WIRING (no-spawn, Codex P2):** the unit test only proves the wrapper calls the helper; this proves `heartbeat.ts` actually invokes it after the cheap-swap and before execute. Seed a `kind:"org"` codex agent with `model:"gpt-5.3-codex"`, trigger one heartbeat run through the real path with an instrumented/fake server adapter whose `execute` captures `config.model` (no real spawn — mirror how `cli-mode-codex-integration.test.ts` or the existing aoa integration captures args); assert the captured `config.model === "gpt-5.5"`. If a budget/recovery (cheap-model) scenario is feasible to seed, also seed it and assert resolution still wins (runs after the swap, edge #5).
 
 Use the existing seeding/`db.execute` pattern in the file. Each case is a `it(...)` with concrete inserts + asserts (no `it.skip`).
 
