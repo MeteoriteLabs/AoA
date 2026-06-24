@@ -29,6 +29,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Cheap change-detector: decides whether the heavy suite needs to run.
+  # docs-only (code=false) iff EVERY changed file is under docs/ or is a *.md
+  # OUTSIDE .github/. Any .github/** file, or any other path, => code=true =>
+  # full CI. On push (main) code is always true. Skips on draft (zero CI).
+  changes:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Detect non-doc changes
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "push event -> code=true"
+            exit 0
+          fi
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          if [ -z "$changed" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "empty diff -> code=true (fail safe)"
+            exit 0
+          fi
+          code=false
+          if printf '%s\n' "$changed" | grep -qE '^\.github/'; then
+            code=true        # any .github/** file (incl .github/*.md) => full CI
+          elif printf '%s\n' "$changed" | grep -qEv '^docs/|\.md$'; then
+            code=true        # any file that is not under docs/ and not a *.md
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "changed files:"; printf '%s\n' "$changed"
+          echo "=> code=$code"
+
   policy:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
