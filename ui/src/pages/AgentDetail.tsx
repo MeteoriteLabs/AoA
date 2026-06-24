@@ -60,6 +60,14 @@ import {
   Shield,
   History,
   Search,
+  User,
+  Plug,
+  SlidersHorizontal,
+  Heart,
+  Brain,
+  PanelLeftClose,
+  PanelLeftOpen,
+  type LucideIcon,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -70,6 +78,7 @@ import { agentRouteRef } from "../lib/utils";
 import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import { asRecord, usageNumber, runMetrics } from "../lib/run-metrics";
 import { computeAgentKpis } from "../lib/agent-kpis";
 import { formatTrustScorePercent, hasTrustScoreData } from "../lib/trust-score";
@@ -901,14 +910,28 @@ function AgentConfigurePage({
 }) {
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
-  const [section, setSection] = useState<"identity" | "adapter" | "permissions" | "runPolicy" | "context">("identity");
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const navPanelRef = useRef<PanelImperativeHandle>(null);
   const isLocal = ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "cursor"].includes(agent.adapterType);
-  const navSections: { key: "identity" | "adapter" | "permissions" | "runPolicy" | "context"; label: string }[] = [
-    { key: "identity", label: "Identity" },
-    { key: "adapter", label: "Adapter & model" },
-    ...(isLocal ? [{ key: "permissions" as const, label: "Permissions & config" }] : []),
-    { key: "runPolicy", label: "Run policy" },
-    { key: "context", label: "Context" },
+  type FormKey = "identity" | "adapter" | "permissions" | "runPolicy" | "context";
+  type NavKey = FormKey | "apikeys" | "perms" | "revisions";
+  const formKeys: FormKey[] = ["identity", "adapter", "permissions", "runPolicy", "context"];
+  const isFormKey = (k: NavKey): k is FormKey => (formKeys as string[]).includes(k);
+  const [section, setSection] = useState<NavKey>("identity");
+  const [formSection, setFormSection] = useState<FormKey>("identity");
+  const selectNav = (k: NavKey) => {
+    setSection(k);
+    if (isFormKey(k)) setFormSection(k);
+  };
+  const navItems: { key: NavKey; label: string; icon: LucideIcon; lower?: boolean }[] = [
+    { key: "identity", label: "Identity", icon: User },
+    { key: "adapter", label: "Adapter & model", icon: Plug },
+    ...(isLocal ? [{ key: "permissions" as NavKey, label: "Permissions & config", icon: SlidersHorizontal }] : []),
+    { key: "runPolicy", label: "Run policy", icon: Heart },
+    { key: "context", label: "Context", icon: Brain },
+    { key: "apikeys", label: "API keys", icon: Key, lower: true },
+    { key: "perms", label: "Permissions", icon: Shield, lower: true },
+    { key: "revisions", label: "Revisions", icon: History, lower: true },
   ];
 
   const { data: configRevisions } = useQuery({
@@ -939,28 +962,57 @@ function AgentConfigurePage({
       ) : (
       <div className="h-[calc(100vh-15rem)] min-h-[460px]">
         <Group orientation="horizontal" className="h-full gap-2">
-          <Panel defaultSize="24%" minSize="16%" maxSize="42%" className="h-full overflow-auto min-w-0">
-            <div className="h-full overflow-auto rounded-xl border border-border bg-background p-2 space-y-1">
-              {navSections.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => setSection(item.key)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors",
-                    section === item.key
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent/40",
-                  )}
-                >
-                  {item.label}
-                </button>
-              ))}
+          <Panel
+            id="config-nav"
+            defaultSize="22%"
+            minSize="14%"
+            maxSize="40%"
+            collapsible
+            collapsedSize="4%"
+            panelRef={navPanelRef}
+            onResize={(s) => setNavCollapsed(s.asPercentage <= 6)}
+            className="h-full overflow-hidden min-w-0"
+          >
+            <div className="h-full overflow-auto rounded-xl border border-border bg-background p-2 flex flex-col gap-0.5">
+              <button
+                type="button"
+                onClick={() => (navCollapsed ? navPanelRef.current?.expand() : navPanelRef.current?.collapse())}
+                className="self-end p-1.5 rounded-md text-muted-foreground hover:bg-accent/40"
+                title={navCollapsed ? "Expand" : "Collapse"}
+                aria-label={navCollapsed ? "Expand config nav" : "Collapse config nav"}
+              >
+                {navCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+              </button>
+              {navItems.map((item, i) => {
+                const Icon = item.icon;
+                const active = section === item.key;
+                const showDivider = item.lower && !navItems[i - 1]?.lower;
+                return (
+                  <div key={item.key}>
+                    {showDivider && <div className="my-1 h-px bg-border/70" />}
+                    <button
+                      type="button"
+                      onClick={() => selectNav(item.key)}
+                      title={navCollapsed ? item.label : undefined}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors",
+                        navCollapsed && "justify-center px-0",
+                        active
+                          ? "bg-accent text-accent-foreground font-medium"
+                          : "text-muted-foreground hover:bg-accent/40",
+                      )}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      {!navCollapsed && <span className="truncate">{item.label}</span>}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </Panel>
           <Separator className="w-1 shrink-0 cursor-col-resize rounded bg-transparent hover:bg-border/70 transition-colors" />
-          <Panel className="h-full overflow-auto min-w-0">
-            <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4">
+          <Panel className="h-full overflow-hidden min-w-0">
+            <div className={cn("h-full overflow-auto rounded-xl border border-border bg-background p-4", !isFormKey(section) && "hidden")}>
               <ConfigurationTab
                 agent={agent}
                 onDirtyChange={onDirtyChange}
@@ -968,14 +1020,79 @@ function AgentConfigurePage({
                 onCancelActionChange={onCancelActionChange}
                 onSavingChange={onSavingChange}
                 companyId={companyId}
-                activeSection={section}
+                activeSection={formSection}
               />
             </div>
+            {section === "apikeys" && (
+              <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4">
+                <h3 className="text-sm font-medium mb-3">API keys</h3>
+                <KeysTab agentId={agentId} companyId={companyId} />
+              </div>
+            )}
+            {section === "perms" && (
+              <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4">
+                <h3 className="text-sm font-medium mb-3">Permissions</h3>
+                <div className="flex items-center justify-between text-sm max-w-xl">
+                  <span>Can create new agents</span>
+                  <Button
+                    variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))}
+                    disabled={updatePermissions.isPending}
+                  >
+                    {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {section === "revisions" && (
+              <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4">
+                <h3 className="text-sm font-medium mb-3">
+                  Configuration revisions{" "}
+                  <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+                </h3>
+                {(configRevisions ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(configRevisions ?? []).slice(0, 10).map((revision) => (
+                      <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-xs text-muted-foreground">
+                            <span className="font-mono">{revision.id.slice(0, 8)}</span>
+                            <span className="mx-1">·</span>
+                            <span>{formatDate(revision.createdAt)}</span>
+                            <span className="mx-1">·</span>
+                            <span>{revision.source}</span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-xs"
+                            onClick={() => rollbackConfig.mutate(revision.id)}
+                            disabled={rollbackConfig.isPending}
+                          >
+                            Restore
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Changed:{" "}
+                          {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </Panel>
         </Group>
       </div>
       )}
 
+      {isMobile && (
+        <>
       <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
       <ApiKeysAccordion agentId={agentId} companyId={companyId} />
 
@@ -1030,6 +1147,8 @@ function AgentConfigurePage({
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }
