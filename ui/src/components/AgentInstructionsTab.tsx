@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { toast } from "@/lib/toast";
 import {
   Dialog,
   DialogBody,
@@ -179,7 +180,12 @@ export function AgentInstructionsTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
-    onError: () => setAwaitingRefresh(false),
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      toast.error("Couldn't save instructions", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
   });
 
   const saveFile = useMutation({
@@ -193,19 +199,30 @@ export function AgentInstructionsTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
-    onError: () => setAwaitingRefresh(false),
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      toast.error("Couldn't save file", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
   });
 
   const deleteFile = useMutation({
     mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
     onMutate: () => setAwaitingRefresh(true),
     onSuccess: (_, relativePath) => {
+      toast.success("File deleted");
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
-    onError: () => setAwaitingRefresh(false),
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      toast.error("Couldn't delete file", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
   });
 
   const uploadMarkdownImage = useMutation({
