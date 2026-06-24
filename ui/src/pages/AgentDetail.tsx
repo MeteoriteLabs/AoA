@@ -67,6 +67,7 @@ import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@armyofagents/shared";
 import { agentRouteRef } from "../lib/utils";
 import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
+import { asRecord, usageNumber, runMetrics } from "../lib/run-metrics";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -191,38 +192,6 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   return "overview";
 }
 
-function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
-  if (!usage) return 0;
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  return 0;
-}
-
-function runMetrics(run: HeartbeatRun) {
-  const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
-  const result = (run.resultJson ?? null) as Record<string, unknown> | null;
-  const input = usageNumber(usage, "inputTokens", "input_tokens");
-  const output = usageNumber(usage, "outputTokens", "output_tokens");
-  const cached = usageNumber(
-    usage,
-    "cachedInputTokens",
-    "cached_input_tokens",
-    "cache_read_input_tokens",
-  );
-  const cost =
-    usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
-    usageNumber(result, "total_cost_usd", "cost_usd", "costUsd");
-  return {
-    input,
-    output,
-    cached,
-    cost,
-    totalTokens: input + output,
-  };
-}
-
 export function getAdapterResultOutput(
   run: Pick<HeartbeatRun, "resultJson" | "status">,
   adapterType: string,
@@ -241,11 +210,6 @@ export function getAdapterResultOutput(
 }
 
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
 
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
