@@ -384,11 +384,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   };
 
   // Section toggle state — advanced always starts collapsed
-  const [identityOpen, setIdentityOpen] = useState(false);
-  const [adapterOpen, setAdapterOpen] = useState(false);
-  const [permissionsConfigOpen, setPermissionsConfigOpen] = useState(false);
-  const [runPolicyOpen, setRunPolicyOpen] = useState(false);
-  const [contextOpen, setContextOpen] = useState(false);
+  // P4: default sections expanded in the edit (cards) layout so Config reads as a
+  // full in-place form (matching the redesign mockup); users can still collapse.
+  const [identityOpen, setIdentityOpen] = useState(true);
+  const [adapterOpen, setAdapterOpen] = useState(true);
+  const [permissionsConfigOpen, setPermissionsConfigOpen] = useState(true);
+  const [runPolicyOpen, setRunPolicyOpen] = useState(true);
+  const [contextOpen, setContextOpen] = useState(true);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
