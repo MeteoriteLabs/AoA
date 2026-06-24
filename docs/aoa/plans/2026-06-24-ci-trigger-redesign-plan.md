@@ -570,6 +570,65 @@ git add AGENTS.md
 git commit -m "docs(deps): rewrite AGENTS.md dependency workflow for retired lockfile bot/bypass"
 ```
 
+## Task 9: Re-run gates on PR base-branch retarget (`edited` activity)
+
+**Files:**
+- Modify: `.github/workflows/pr.yml` (trigger `types` + the 7 job guards)
+- Modify: `CLAUDE.md` (trigger-model doc)
+
+Added after Codex's re-review of PR #228 flagged (P2) that retargeting a PR to a new base fires the `pull_request` `edited` activity, which the `types` list omitted — so a retargeted PR would not re-validate against its new merge base (stale false-green). The team retargets stacked PRs, so this is a real hole (user decision: fix now).
+
+- [ ] **Step 1: Add `edited` to the trigger types**
+
+In `pr.yml`, change `types: [opened, synchronize, reopened, ready_for_review]` to `types: [opened, synchronize, reopened, ready_for_review, edited]`, and extend the trigger comment to explain `edited` re-runs CI on base retarget.
+
+- [ ] **Step 2: Extend the per-job guard (all 7 jobs)**
+
+Replace the guard on every job with:
+
+```yaml
+    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+```
+
+Keeps push-to-main + non-draft PR behavior, runs on a base-change `edited`, and skips title/body-only `edited` events so they don't burn CI.
+
+- [ ] **Step 3: Update CLAUDE.md**
+
+Update the draft-guard bullet to the new expression and note that retargets re-run CI against the new base.
+
+- [ ] **Step 4: Verify (static)**
+
+```sh
+rg -c "github.event.changes.base" .github/workflows/pr.yml
+```
+
+Expected: `7` (base-change clause on each job).
+
+```sh
+rg -n "ready_for_review, edited" .github/workflows/pr.yml
+python -c "import yaml; yaml.safe_load(open('.github/workflows/pr.yml')); print('pr.yml OK')"
+```
+
+Expected: `edited` present in `types`; `pr.yml OK`.
+
+- [ ] **Step 5: Commit**
+
+```sh
+git add .github/workflows/pr.yml CLAUDE.md
+git commit -m "ci(pr): re-run gates on base retarget (edited); skip title/body edits"
+```
+
+- [ ] **Step 6: Verify live (with the Task 7 smoke PR, post-merge)**
+
+After the smoke PR exists (Task 7 Step 4, base `ci-smoke-base`), retarget it and confirm a fresh gate run fires:
+
+```sh
+gh pr edit <smokePR#> --base main
+gh pr checks <smokePR#>
+```
+
+Expected: a new gate run starts for the retargeted base (the `edited`/`changes.base` path). Before this task, retargeting produced no new run. (Then restore/close per Task 7 Step 6.)
+
 ---
 
 ## Codex review (2026-06-24)
@@ -582,6 +641,7 @@ Independent review via `/codex review` (gpt, read-only). Verdicts and resolution
 - **[P2] fixed** — Task 1 verify command `-A3` → `-A8`; stale `release.yml` "current porting branch" prose cleaned in Task 2.
 - **Decision resolved** — draft PRs are now gated (Task 1 Step 2 + `ready_for_review`), per user choice.
 - **PR-time Codex P2 (cloud reviewer on #228) resolved** — `AGENTS.md §7` documented the now-removed `chore/refresh-lockfile` escape hatch + `refresh-lockfile.yml` bot; rewritten in **Task 8** so the contributor docs match the closed-bypass policy.
+- **PR-time Codex P2 #2 (retarget gap) resolved** — the `pull_request` trigger omitted `edited`, so retargeting a PR to a new base skipped CI (stale false-green). Added `edited` to `types` + a `changes.base` clause on the 7 guards (**Task 9**), per user decision (fix now).
 
 ## Self-Review
 
