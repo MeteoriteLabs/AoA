@@ -134,7 +134,7 @@ describe.skipIf(process.platform === "win32")(
           ${companyId},
           'Test Codex Agent',
           'codex_local',
-          ${{ model: "gpt-5.3-codex", dangerouslyBypassApprovalsAndSandbox: true }}::jsonb
+          ${JSON.stringify({ model: "gpt-5.3-codex", dangerouslyBypassApprovalsAndSandbox: true })}::jsonb
         )
         RETURNING id
       `));
@@ -180,7 +180,7 @@ describe.skipIf(process.platform === "win32")(
       await db.execute(sql`
         UPDATE agents
         SET adapter_type = 'codex_local',
-            adapter_config = ${{ model: "gpt-5.3-codex", dangerouslyBypassApprovalsAndSandbox: true }}::jsonb
+            adapter_config = ${JSON.stringify({ model: "gpt-5.3-codex", dangerouslyBypassApprovalsAndSandbox: true })}::jsonb
         WHERE id = ${agentId}
       `);
 
@@ -245,7 +245,7 @@ describe.skipIf(process.platform === "win32")(
       // Write the corrected config to the DB
       await db.execute(sql`
         UPDATE agents
-        SET adapter_config = ${newAdapter.adapterConfig}::jsonb
+        SET adapter_config = ${JSON.stringify(newAdapter.adapterConfig)}::jsonb
         WHERE id = ${agentId}
       `);
 
@@ -297,7 +297,7 @@ describe.skipIf(process.platform === "win32")(
           ${company2Id},
           'Isolated Agent',
           'codex_local',
-          ${{ model: "gpt-5.3-codex" }}::jsonb
+          ${JSON.stringify({ model: "gpt-5.3-codex" })}::jsonb
         )
         RETURNING id
       `));
