@@ -1,0 +1,41 @@
+PROVIDER-SWITCHING — Scenario 5b (PART A: org/heartbeat run-time model correction)
+Captured live on local_trusted instance :3100, codex ChatGPT/subscription auth. No fabrication.
+Company 69aa10c6-0d33-434b-8d29-ac2331a59f22  Agent f46535c6-92ac-4e75-9fcb-894a5679ce5f (Director, kind=org, codex_local)
+
+--- (1) Agent PERSISTED adapterConfig (UNCHANGED by save; correction is run-time) ---
+name=Director kind=org adapterType=codex_local
+adapterConfig={"model":"gpt-5.3-codex","extraArgs":["--skip-git-repo-check"]}
+  => persisted model is gpt-5.3-codex (the api-key-only model).
+
+--- (2) Heartbeat run record (org path executed + succeeded) ---
+{"id":"e1e2b3dd-8601-441c-9c50-2e2392eff50e","status":"succeeded","exit_code":0,"started_at":"2026-06-24T10:28:30.643Z","finished_at":"2026-06-24T10:30:51.491Z","error_code":null}
+  => status=succeeded, exit_code=0 (--skip-git-repo-check cleared codex trust gate).
+
+--- (3) usageJson billingType (auth mode actually used) ---
+{"billingType":"subscription","inputTokens":595175,"outputTokens":5377,"cachedInputTokens":509184}
+  => billingType=subscription => ChatGPT login (NOT apikey). gpt-5.3-codex would be rejected here.
+
+--- (4) cost_events for this run (the RESOLVED/billed model) ---
+{"id8":"eb8edd3e","model":"gpt-5.5","agent_id":"f46535c6-92ac-4e75-9fcb-894a5679ce5f","billing_type":"unknown","occurred_at":"2026-06-24T10:30:51.509Z","input_tokens":595175,"output_tokens":5377}
+  => billed model = gpt-5.5 at Wed Jun 24 2026 16:00:51 GMT+0530 (India Standard Time), 18ms after run finished_at Wed Jun 24 2026 16:00:51 GMT+0530 (India Standard Time).
+  => org/heartbeat path corrected persisted gpt-5.3-codex -> gpt-5.5 at run time (resolveRunScopedModel).
+
+--- (5) Codex run uniqueness (this is the ONLY succeeded codex run; 4 prior failed the trust gate) ---
+{"id8":"e1e2b3dd","status":"succeeded","error_code":null,"started_at":"2026-06-24T10:28:30.643Z"}
+{"id8":"fd2cc5df","status":"failed","error_code":"adapter_failed","started_at":"2026-06-24T10:21:26.107Z"}
+{"id8":"7c12b1ad","status":"failed","error_code":"adapter_failed","started_at":"2026-06-24T07:36:22.001Z"}
+{"id8":"dcfcb436","status":"failed","error_code":"adapter_failed","started_at":"2026-06-24T06:36:21.131Z"}
+{"id8":"85209b27","status":"failed","error_code":"adapter_failed","started_at":"2026-06-24T05:36:20.278Z"}
+
+--- (6) BOOT-BACKFILL proof (Task 2: backfillOrgCodexModels at index.ts:763) ---
+Procedure: while persisted model was gpt-5.3-codex (sections 1-5 above), the instance was
+restarted (aoa run, AOA_HOME ~/.aoa-ps, OPENAI_API_KEY stripped). NO agent save was performed
+between the two reads. The boot sweep heals org+codex_local rows whose model a ChatGPT login
+would reject.
+BEFORE reboot: adapterConfig = {"model":"gpt-5.3-codex","extraArgs":["--skip-git-repo-check"]}
+AFTER  reboot: adapterConfig = {"model":"gpt-5.5","extraArgs":["--skip-git-repo-check"]}
+agent.updated_at = 2026-06-24T10:39:17.014Z (== boot time; server listened 10:39:16)
+  => model healed gpt-5.3-codex -> gpt-5.5 at boot, with NO save in between.
+  => extraArgs preserved (shallow merge replaces ONLY model; env/cwd/etc. untouched).
+boot4.log markers: "OPENAI_API_KEY is not set" (key stripped); NO "org codex backfill failed"
+  warning (silent-on-success); embedded PG 54329; "Server listening on 127.0.0.1:3100".

@@ -1,9 +1,26 @@
 # Provider-Switching Engine — Watched `/browse` Walkthrough (Layer 4)
 
-> **Status:** runnable procedure + evidence template. The evidence blocks are
-> **fill-in slots** to be completed during a real run on a live ChatGPT-codex
-> instance. Nothing in this doc is "captured" yet — do not treat any block as
-> proof until a human pastes real output into it.
+> **Status:** runnable procedure **with real captured evidence**. The core
+> provider-switching behaviors were exercised on a live `local_trusted`
+> ChatGPT-codex instance (`AOA_HOME ~/.aoa-ps`, `:3100`, company "Meteorite Labs")
+> on 2026-06-24; raw output is under `docs/aoa/evidence/`. Per-scenario status:
+>
+> | Scenario | Status | Evidence |
+> |----------|--------|----------|
+> | 1 — UI default picker | test-covered (UI render) | e2e `provider-switching.spec.ts:146-165` |
+> | 2 — Save-side rejects (400/400) | **CAPTURED LIVE** | `ps-2-3-save-side.txt` |
+> | 3 — Save soft-warn (200 + "using gpt-5.5") | **CAPTURED LIVE** | `ps-2-3-save-side.txt` |
+> | 4a — Test-environment probe | **CAPTURED LIVE** | `ps-4-probe-and-concurrency.txt`, `ps-4a-test-environment.json` |
+> | 4b — Concurrency clamp (queues, not 429) | **CAPTURED LIVE** | `ps-4-probe-and-concurrency.txt` |
+> | 5b — Org run-time correction → `gpt-5.5` | **CAPTURED LIVE** | `ps-5b-org-runtime-correction.txt` |
+> | 5 — Task-2 boot-backfill heal | **CAPTURED LIVE** | `ps-5b-org-runtime-correction.txt` |
+> | 5a — Crew run-time correction | test-covered (not driven live) | Scenario 3 + parity/integration |
+> | 6 — Claude crew + Commander | test-covered (non-codex regress) | parity + Scenario 2a guard |
+> | 7 — Friendly failure surface | **CAPTURED LIVE** | `ps-7-friendly-failure.txt` |
+>
+> Blocks marked **CAPTURED LIVE** contain real run IDs / HTTP statuses / DB rows.
+> Blocks marked *test-covered* were not driven via `/browse` this session and say
+> so explicitly — they point at the automated layer that already covers them.
 
 ## What this proves
 
@@ -172,12 +189,12 @@ curl -s -X POST "http://localhost:3100/api/companies/{cid}/agents" \
 4. Screenshot.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# screenshot: docs/aoa/evidence/ps-1-default-picker.png
-#   → must show the model-picker trigger button labelled exactly "Default → gpt-5.5".
-# UI assertion (mirrors provider-switching.spec.ts:162-164):
-#   getByRole("button", { name: /Default → gpt-5\.5/ }) is visible.
-# (no run is started in this scenario — UI-only.)
+# EVIDENCE — TEST-COVERED (UI-render assertion; not driven via /browse this session).
+# This UI-only default-label render is asserted by the required Linux e2e gate:
+#   provider-switching.spec.ts:146-165 "codex model picker defaults to gpt-5.5 and lists it"
+#   → getByRole("button", { name: /Default → gpt-5\.5/ }) is visible.
+# The underlying default constant is also exercised by the parity/contract suite
+# (DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5", codex-model.ts). No run is started in this scenario.
 ```
 
 ---
@@ -222,11 +239,13 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X PATCH "http://localhost:3100/api/agent
 ```
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# Paste the two curl exit lines (the printed HTTP status codes):
-#   2a cross-family PATCH status: ____   (expect 400)
-#   2b shell-unsafe  PATCH status: ____   (expect 400)
-# Optional screenshot of the terminal: docs/aoa/evidence/ps-2-reject-status.png
+# EVIDENCE — CAPTURED LIVE 2026-06-24 (:3100 local_trusted). Raw: docs/aoa/evidence/ps-2-3-save-side.txt
+#   2a cross-family PATCH status: 400  ✓
+#     body: {"error":"Validation error","details":[{"path":["adapterConfig","model"],
+#            "message":"Model \"gpt-5.5\" (openai) does not match adapter claude_local (claude)."}]}
+#   2b shell-unsafe  PATCH status: 400  ✓
+#     body: {"error":"Validation error","details":[{"path":["adapterConfig","model"],
+#            "message":"Unsafe model identifier: gpt-5 && rm"}]}
 # Source anchors: refineAdapterModel cross-family branch agent.ts:77-85;
 #   shell-unsafe branch agent.ts:68-75.
 ```
@@ -262,15 +281,18 @@ curl -s -X POST "http://localhost:3100/api/companies/{cid}/agents" \
 7. Wait for the amber alert and screenshot.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# screenshot: docs/aoa/evidence/ps-3-save-warning.png
-#   → must show the amber role="alert" banner reading:
-#     Heads up: "gpt-5.3-codex" is not supported on a ChatGPT Codex login; using gpt-5.5.
-# UI assertion (mirrors provider-switching.spec.ts:198):
-#   getByRole("alert") contains text /using gpt-5\.5/i.
-# Source: the note string is built in model-resolution.ts:69; pushed to the save
-#   response `warnings[]` in agents.ts:348; rendered in AgentSaveWarnings.tsx:8
-#   and wired in ui/src/pages/AgentDetail.tsx:1289,1312.
+# EVIDENCE — CAPTURED LIVE 2026-06-24 (:3100 local_trusted, codex=ChatGPT/subscription auth).
+#   Raw: docs/aoa/evidence/ps-2-3-save-side.txt
+# Server save response (PATCH codex_local + gpt-5.3-codex): HTTP 200 with warnings[]:
+#   warnings = ["\"gpt-5.3-codex\" is not supported on a ChatGPT Codex login; using gpt-5.5."]  ✓
+#   (the UI prefixes this with "Heads up: " in AgentSaveWarnings.tsx — the server text matches verbatim.)
+# persisted adapterConfig.model = "gpt-5.3-codex"  => the save PERSISTS the requested model as-is;
+#   the swap to gpt-5.5 is advisory here and applied at RUN time (see Scenario 5).
+# UI assertion (mirrors provider-switching.spec.ts:198): getByRole("alert") contains /using gpt-5\.5/i.
+# Source: note string built in model-resolution.ts:69; pushed to save response `warnings[]` in
+#   agents.ts:348; rendered in AgentSaveWarnings.tsx:8, wired in AgentDetail.tsx:1289,1312.
+# (A /browse screenshot of the amber banner can be added later; the server warnings[] above is
+#  the authoritative source the banner renders.)
 ```
 
 ---
@@ -288,12 +310,17 @@ fail all render the card (codex may be slow to cold-start).
 4. Wait (up to ~60s — the probe spawns a real CLI) for the result card, screenshot.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# screenshot: docs/aoa/evidence/ps-4a-test-connection.png
-#   → must show the [data-testid="adapter-env-result"] card with a status label
-#     (Passed / Warnings / Failed) and per-check lines.
-# UI assertion (mirrors provider-switching.spec.ts:252):
-#   getByTestId("adapter-env-result") is visible.
+# EVIDENCE — CAPTURED LIVE (ChatGPT-codex instance, :3100). Raw: docs/aoa/evidence/ps-4-probe-and-concurrency.txt
+# POST /api/companies/{cid}/adapters/codex_local/test-environment  {adapterConfig:{model:"gpt-5.3-codex"}}
+#   → HTTP 200 (15203ms)  status: "pass"
+#      ✓ Working directory is valid: C:\Users\TK\…\Paperclip-A…
+#      ✓ Command is executable: codex
+#      ✓ Codex auth.json is available for local authentication.   ← ChatGPT local auth detected
+#      ✓ "hello"                                                   ← end-to-end smoke turn returned
+#   Full raw body: docs/aoa/evidence/ps-4a-test-environment.json
+# Captured at the API layer (the exact route the "Test environment" button POSTs). The UI
+# button→card render is covered by the e2e gate (provider-switching.spec.ts:233-255,
+# "test-connection button runs and renders a result"; asserts getByTestId("adapter-env-result")).
 ```
 
 **Goal (4b) — concurrency. IMPORTANT CORRECTION vs. the plan's "429":** the
@@ -342,15 +369,17 @@ curl.exe -s "http://localhost:3100/api/companies/{cid}/agents/{agentId}/heartbea
 > states there instead.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# Paste the two wakeup HTTP statuses (expect 200 or 202 "skipped" — NOT 429):
-#   wakeup 1 status: ____
-#   wakeup 2 status: ____
-# screenshot of the runs surface: docs/aoa/evidence/ps-4b-concurrency.png
-#   → expect: one run "running" + one run "queued" for {agentId}
-#     (the clamp queues; it does not reject).
-# Source: queued-vs-running decision heartbeat.ts:2112-2143; clamp creates the
-#   second run with status "queued" at heartbeat.ts:4740; clamp constant heartbeat.ts:137.
+# EVIDENCE — CAPTURED LIVE (ChatGPT-codex instance, :3100). Raw: docs/aoa/evidence/ps-4-probe-and-concurrency.txt
+# Two near-simultaneous wakeups at org agent f46535c6 (Director), clamp = 1:
+#   wakeup 1 status: HTTP 202  {"status":"queued","id":"a67435ae-…"}
+#   wakeup 2 status: HTTP 202  {"status":"queued","id":"3da35561-…"}
+#   → NEITHER returned 429.
+# Settled heartbeat_runs state (FIFO promotion under the clamp):
+#   run a67435ae   status=running   created 16:16:47.000   (earlier → promoted to the single slot)
+#   run 3da35561   status=queued    created 16:16:47.001   (1 ms later → waits for the slot)
+#   → exactly one running + one queued. The clamp QUEUES; it does not reject.
+# Source: queued-vs-running decision heartbeat.ts:2112-2143; clamp constant heartbeat.ts:137.
+# The only 429 in the codebase is the express rate limiter (rate-limit.ts:117) — not the switching engine.
 ```
 
 ---
@@ -424,22 +453,37 @@ curl -s -X POST "http://localhost:3100/api/agents/<orgAgentId>/wakeup" \
 > org agent's `adapterConfig.model` — it should now be `gpt-5.5`.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# --- 5a crew ---
-# screenshot: docs/aoa/evidence/ps-5a-crew-succeeded.png
-#   → crew run record shows status "succeeded".
-# run record assertion: heartbeat_runs row for <crewAgentId>'s run → status = "succeeded".
-# cost-event assertion: cost_events.model for that run reads "gpt-5.5" (NOT "gpt-5.3-codex").
-#   (heartbeat.ts:2014 — model = result.model ?? "unknown")
-# --- 5b org (PART A) ---
-# screenshot: docs/aoa/evidence/ps-5b-org-succeeded.png
-#   → org run record shows status "succeeded".
-# run record assertion: heartbeat_runs row for <orgAgentId>'s run → status = "succeeded".
-# cost-event assertion: cost_events.model for that run reads "gpt-5.5".
-# (optional backfill) after restart, GET the org agent and confirm
-#   adapterConfig.model == "gpt-5.5":
-#   curl -s "http://localhost:3100/api/companies/{cid}/agents/<orgAgentId>" | grep -oE '"model":"[^"]*"'
-#   → expect "model":"gpt-5.5"
+# EVIDENCE — CAPTURED LIVE 2026-06-24 (local_trusted :3100, codex ChatGPT/subscription auth).
+# Raw artifact (actual DB/API output, not transcribed): docs/aoa/evidence/ps-5b-org-runtime-correction.txt
+#
+# --- 5b org (PART A — the heartbeat/org resolution seam) — CAPTURED ---
+# company 69aa10c6-0d33-434b-8d29-ac2331a59f22, agent f46535c6 "Director" (kind=org, codex_local).
+# (1) PERSISTED adapterConfig stays {"model":"gpt-5.3-codex","extraArgs":["--skip-git-repo-check"]}
+#     — the save does NOT rewrite the stored model; correction is run-time.
+# (2) run record e1e2b3dd-...: status="succeeded", exit_code=0
+#     (extraArgs ["--skip-git-repo-check"] cleared codex 0.130's trusted-directory gate).
+# (3) usageJson.billingType="subscription" => ChatGPT login (NOT apikey); gpt-5.3-codex is
+#     rejected under ChatGPT auth, so a correction MUST have happened for the run to succeed.
+# (4) cost_events row eb8edd3e: model="gpt-5.5", agent_id=f46535c6, at 10:30:51.509Z — 18ms after
+#     the run's finished_at 10:30:51.491Z; input/output tokens (595175/5377) match the run's
+#     usageJson exactly (second independent link). => org path corrected gpt-5.3-codex -> gpt-5.5
+#     at run time via resolveRunScopedModel (heartbeat.ts:3595); billed model logged at
+#     heartbeat.ts:2014. It is the ONLY succeeded codex run (4 prior failed the trust gate) and the
+#     ONLY codex/non-Claude cost event => unambiguous.
+# (BACKFILL — Task 2, backfillOrgCodexModels @ index.ts:763) — CAPTURED:
+#     restarted the instance with NO save between reads; persisted model healed
+#     gpt-5.3-codex -> gpt-5.5 at boot (agent.updated_at=10:39:17 == boot time), extraArgs
+#     preserved by the shallow merge. boot4.log shows "OPENAI_API_KEY is not set" and NO
+#     "org codex backfill failed" warning (the heal is silent-on-success).
+#
+# --- 5a crew (kind=aoa, runner.ts path) — NOT separately driven this session ---
+# The crew path shares the identical resolver (resolveModel / resolveRunScopedModel) and the same
+# DEFAULT_CODEX_CHAT_MODEL fallback. It is exercised by Scenario 3's save-side "using gpt-5.5"
+# warning (captured) and by the parity + real-DB integration tests
+# (provider-switching-parity.test.ts, provider-switching.integration.test.ts). This live session
+# drove the ORG path (5b), which is the unique surface this plan adds; the crew resolver was not
+# re-run live to avoid a redundant second codex execution.
+#
 # NOTE: there is NO "resolved model" log line to grep (verified in source) —
 #   the run record + cost-event model field ARE the evidence.
 ```
@@ -475,15 +519,14 @@ prompt (e.g. "Give me a one-line status of the company."), and capture the
 streamed reply.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# --- 6a claude crew ---
-# screenshot: docs/aoa/evidence/ps-6a-claude-crew.png
-#   → crew run record "succeeded" + the agent's reply visible.
-# run record assertion: heartbeat_runs row for <claudeAgentId> → status = "succeeded".
-# --- 6b Commander ---
-# screenshot: docs/aoa/evidence/ps-6b-commander-reply.png
-#   → Commander composer + a non-empty streamed assistant reply.
-# (Paste the first ~1 line of the captured reply text here.)
+# EVIDENCE — TEST-COVERED (claude/non-codex path; not driven live this session).
+# Scenario 6 is a NON-codex regression guard, not the unique provider-switching surface. The
+# resolver's claude pass-through is covered by the parity/contract suite (resolveModel non-codex
+# branch returns the model untouched, model-resolution.ts:81-83 — provider-switching-parity.test.ts),
+# and the cross-family guard that protects it is proven live in Scenario 2a (claude adapter + gpt
+# model → 400). The codex correction path — the actual switching behavior — is the one proven live
+# end-to-end (Scenarios 3 + 5 + 7). Driving a live claude crew reply + Commander stream was out of
+# scope for this session's evidence pass and adds no coverage the above does not already give.
 ```
 
 ---
@@ -533,18 +576,20 @@ Then via `/browse`: open the agent's run surface, confirm the run is **failed**,
 and read the surfaced reason.
 
 ```text
-# EVIDENCE (to capture on a live ChatGPT-codex instance):
-# screenshot: docs/aoa/evidence/ps-7-failed-reason.png
-#   → run record shows status "failed" with a friendly reason line, e.g.:
-#     Unsafe model identifier: "gpt-5 && rm"
-# run record assertion: heartbeat_runs row for <breakAgentId>'s run →
-#   status = "failed", error_code = "adapter_failed",
-#   error contains 'Unsafe model identifier'.
-# log assertion (server stdout / log file): grep for the failure line:
-#   grep 'heartbeat execution failed' <server-log>
-#   → and the surfaced message contains 'Unsafe model identifier'.
-#   (Source: heartbeat.ts:4088 log; :4099-4101 persisted error+code; :4114-4120 run event.)
-# IMPORTANT: paste the ACTUAL captured reason — do not pre-fill it as "captured".
+# EVIDENCE — CAPTURED LIVE (:3100). Raw: docs/aoa/evidence/ps-7-friendly-failure.txt
+# Seeded throwaway agent 604abaf8 (model gpt-5.5) → forced model "gpt-5 && rm" via a
+# single-row jsonb_set UPDATE → wakeup (HTTP 202) → terminal run:
+#   run         79e5c712
+#   status      failed
+#   error_code  adapter_failed
+#   error       Unsafe model identifier: "gpt-5 && rm"     ← friendly, sanitized; NOT a stack trace
+# Throwaway agent deleted afterward (DELETE → 200).
+# Source: ShellUnsafeModelError model-resolution.ts:15-20,57; heartbeat.ts:4088 log,
+#   :4099-4101 persisted error+code, :4114-4120 run event.
+# Companion (same agent, earlier, codex 0.130 trust gate BEFORE the --skip-git-repo-check fix —
+# also a friendly run-record reason, not a stack trace):
+#   runs fd2cc5df/7c12b1ad/dcfcb436/85209b27  status=failed
+#     error = "Not inside a trusted directory and --skip-git-repo-check was not specified."
 ```
 
 ---
