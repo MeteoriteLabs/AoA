@@ -28,8 +28,10 @@ headless CI runner can reach.
 ## Prerequisites
 
 - The live instance runs on **Windows** (see the running-instance notes in
-  `CLAUDE.md` / project memory). `curl` examples are given in both **bash** and
-  **PowerShell** forms where the quoting differs; pick the shell you launch from.
+  `CLAUDE.md` / project memory). Command blocks below are written for **Git Bash**;
+  if you launch from **Windows PowerShell**, apply the conversion table immediately
+  below before pasting (`curl.exe`, backtick line-continuations, `Select-String`,
+  background jobs). Scenarios 2 and 4b already include explicit PowerShell forms.
 - `/browse` drives a real Chromium via Playwright (the canonical browser path —
   do NOT use `mcp__claude-in-chrome__*`). Every "open / click / type" step below
   is a concrete `/browse` action.
@@ -45,6 +47,21 @@ headless CI runner can reach.
   `heartbeat.ts:3595` passes `inheritedEnvOpenAiKey` and the codex branch in
   `applyModelResolutionToConfig` deletes it — but the cleanest setup is to never
   set it in the first place.)
+
+> **Windows PowerShell conversion (read before pasting any bash block).** In
+> **Windows PowerShell 5.1** — the default shell on this machine — several POSIX
+> idioms below do NOT work as-is. Convert them:
+>
+> | Bash (as written) | Windows PowerShell |
+> |-------------------|--------------------|
+> | `curl ...` | `curl.exe ...` — bare `curl` is an **alias for `Invoke-WebRequest`** and does not understand `-s -X -d -o`. |
+> | line continuation `\` | backtick `` ` `` (or put the command on one line) |
+> | `-o /dev/null` | `-o NUL` |
+> | `grep 'x'` | `Select-String 'x'` |
+> | `cmd & … wait` (backgrounding) | `Start-Job { curl.exe ... }` ×2, then `Get-Job \| Wait-Job` |
+>
+> For the single-line `curl` POSTs, swapping `curl` → `curl.exe` is the only change
+> needed (the single-quoted JSON bodies are shell-identical).
 
 ## Naming + endpoint cheat-sheet (verified against source)
 
@@ -93,8 +110,10 @@ ChatGPT (not api-key) auth mode, the live correction in Scenarios 3 and 5 fires.
 #    shared chatgpt auth.json (enabling the live correction). Replace <companyId>.
 rm -rf "$HOME/.codex/aoa-instances/<companyId>"
 
-# 3. Confirm the shared ChatGPT login exists (chatgpt mode, NOT an api-key file):
-cat "$HOME/.codex/auth.json"   # should NOT be {"OPENAI_API_KEY": "..."}
+# 3. Confirm the login is NOT an api-key file, WITHOUT echoing the token:
+grep -q '"OPENAI_API_KEY"' "$HOME/.codex/auth.json" \
+  && echo "WARNING: api-key auth.json — live correction will NOT fire" \
+  || echo "ok: chatgpt login (no top-level OPENAI_API_KEY)"
 
 # 4. Launch WITHOUT a stray OPENAI_API_KEY. (Do not `export OPENAI_API_KEY=...`.)
 unset OPENAI_API_KEY
@@ -109,8 +128,8 @@ AOA_HOME="C:\\Users\\TK\\.aoa-ps" PORT=3100 pnpm aoa onboard --yes --run
 # 2. Reset the per-company managed home. Replace <companyId>.
 Remove-Item -Recurse -Force "$env:USERPROFILE\.codex\aoa-instances\<companyId>" -ErrorAction SilentlyContinue
 
-# 3. Confirm the shared ChatGPT login (should NOT be an OPENAI_API_KEY file):
-Get-Content "$env:USERPROFILE\.codex\auth.json"
+# 3. Confirm NOT an api-key file, WITHOUT printing the token:
+if (Select-String -Quiet -Path "$env:USERPROFILE\.codex\auth.json" -Pattern 'OPENAI_API_KEY') { "WARNING: api-key auth.json — live correction will NOT fire" } else { "ok: chatgpt login" }
 
 # 4. Launch WITHOUT a stray OPENAI_API_KEY in this shell.
 Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
@@ -123,7 +142,11 @@ $env:AOA_HOME = "C:\Users\TK\.aoa-ps"; $env:PORT = "3100"; pnpm aoa onboard --ye
 > curl -s http://localhost:3100/api/companies   # → [{ id, name, issuePrefix }, ...]
 > ```
 > Throughout, `{cid}` = company id, `{ISSUE_PREFIX}` = the company's `issuePrefix`,
-> `{agentId}` = the agent's id (from the seed responses below).
+> `{agentId}` = the agent's id (from the seed responses below). A placeholder is the
+> same value whether written `{agentId}` or `<agentId>`, and `<companyId>` (in the
+> setup filesystem paths) is the same value as `{cid}`. Scenarios 5–7 use
+> descriptive ids (`<crewAgentId>`, `<orgAgentId>`, `<claudeAgentId>`,
+> `<breakAgentId>`) — each is the id from that scenario's own seed response.
 
 ---
 
@@ -195,10 +218,7 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 PowerShell equivalent (single-quote the JSON, escape inner quotes):
 
 ```powershell
-curl.exe -s -o NUL -w "%{http_code}`n" -X PATCH `
-  "http://localhost:3100/api/agents/{agentId}?companyId={cid}" `
-  -H "Content-Type: application/json" `
-  --data-raw '{"adapterType":"codex_local","adapterConfig":{"model":"gpt-5 && rm"}}'
+curl.exe -s -o NUL -w "%{http_code}`n" -X PATCH "http://localhost:3100/api/agents/{agentId}?companyId={cid}" -H "Content-Type: application/json" --data-raw '{"adapterType":"codex_local","adapterConfig":{"model":"gpt-5 && rm"}}'
 ```
 
 ```text
@@ -250,7 +270,7 @@ curl -s -X POST "http://localhost:3100/api/companies/{cid}/agents" \
 #   getByRole("alert") contains text /using gpt-5\.5/i.
 # Source: the note string is built in model-resolution.ts:69; pushed to the save
 #   response `warnings[]` in agents.ts:348; rendered in AgentSaveWarnings.tsx:8
-#   and wired in AgentDetail.tsx:1289,1312.
+#   and wired in ui/src/pages/AgentDetail.tsx:1289,1312.
 ```
 
 ---
@@ -306,6 +326,17 @@ curl -s "http://localhost:3100/api/companies/{cid}/agents/{agentId}/heartbeat/ru
   grep -oE '"status":"(queued|running|succeeded|failed)"'
 ```
 
+PowerShell equivalent (background jobs fire the two wakeups near-simultaneously):
+
+```powershell
+$b1 = '{"source":"on_demand","triggerDetail":"manual","reason":"ps-4b-concurrency-1"}'
+$b2 = '{"source":"on_demand","triggerDetail":"manual","reason":"ps-4b-concurrency-2"}'
+Start-Job { param($b) curl.exe -s -X POST "http://localhost:3100/api/agents/{agentId}/wakeup" -H "Content-Type: application/json" --data-raw $b } -ArgumentList $b1 | Out-Null
+Start-Job { param($b) curl.exe -s -X POST "http://localhost:3100/api/agents/{agentId}/wakeup" -H "Content-Type: application/json" --data-raw $b } -ArgumentList $b2 | Out-Null
+Get-Job | Wait-Job | Out-Null
+curl.exe -s "http://localhost:3100/api/companies/{cid}/agents/{agentId}/heartbeat/runs" | Select-String -Pattern '"status":"(queued|running|succeeded|failed)"'
+```
+
 > The exact runs-list endpoint may differ — if the path above 404s, open the
 > agent's **Activity / runs** surface in the UI via `/browse` and read the run
 > states there instead.
@@ -318,8 +349,8 @@ curl -s "http://localhost:3100/api/companies/{cid}/agents/{agentId}/heartbeat/ru
 # screenshot of the runs surface: docs/aoa/evidence/ps-4b-concurrency.png
 #   → expect: one run "running" + one run "queued" for {agentId}
 #     (the clamp queues; it does not reject).
-# Source: queued-vs-running decision heartbeat.ts:2112-2143; queued status set
-#   heartbeat.ts:1699; clamp constant heartbeat.ts:137.
+# Source: queued-vs-running decision heartbeat.ts:2112-2143; clamp creates the
+#   second run with status "queued" at heartbeat.ts:4740; clamp constant heartbeat.ts:137.
 ```
 
 ---
