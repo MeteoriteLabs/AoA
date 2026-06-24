@@ -148,8 +148,17 @@ defects and are now **fixed + verified live**:
 
 Still genuinely fine / low: Runs controls (Retry/Cancel/Resume/Login — correctly wired,
 state-gated), inline icon edit, Config run-policy/Context toggles, mobile layouts.
-OBS-2 (intermittent 404): not reproducible on clean nav, no page-level polling; needs a
-captured repro.
+OBS-2 (intermittent 404): **RESOLVED — root cause found.** It's
+`GET /api/agents/:ref → 404` for a **terminated agent**: the by-urlKey resolver filters
+`status !== "terminated"` ([agents.ts:898](../../../server/src/services/agents.ts)), so a
+terminated agent is unresolvable by URL key. React Query's background refetch of a
+terminated (or just-removed) agent logs the 404. Surfaces on the terminated-agent page,
+briefly right after Terminate (stale cache renders while the refetch 404s), and in a
+create-then-instant-navigate race. **Benign / expected**: correct server behavior, no
+functional break, and BUG-1's post-terminate redirect already keeps users off
+terminated-agent URLs in the normal flow. Optional polish only: render a clean "this
+agent was terminated" state when the detail query 404s (instead of stale cache). Not
+fixed — logged as expected behavior.
 
 ## Recommended fix order (on approval)
 
