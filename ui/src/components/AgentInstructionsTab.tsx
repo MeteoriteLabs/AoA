@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -784,7 +785,7 @@ export function AgentInstructionsTab({
               Create a new file in this instructions bundle. It’s saved when you save the file’s contents.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
+          <DialogBody className="space-y-2">
             <Input
               value={newFilePath}
               onChange={(event) => setNewFilePath(event.target.value)}
@@ -805,7 +806,7 @@ export function AgentInstructionsTab({
             {newFilePath.trim() && visibleFilePaths.includes(newFilePath.trim()) && (
               <p className="text-xs text-amber-400">A file with that path already exists.</p>
             )}
-          </div>
+          </DialogBody>
           <DialogFooter>
             <Button
               type="button"

@@ -1369,6 +1369,8 @@ function RunsTab({
   adapterType: string;
 }) {
   const { isMobile } = useSidebar();
+  const [listCollapsed, setListCollapsed] = useState(false);
+  const runListPanelRef = useRef<PanelImperativeHandle>(null);
 
   if (runs.length === 0) {
     return (
@@ -1415,27 +1417,95 @@ function RunsTab({
     );
   }
 
-  // Desktop: side-by-side layout
+  // Desktop: resizable two-pane (run list | detail) with a collapsible list rail.
   return (
-    <div className="flex gap-0">
-      {/* Left: run list — border stretches full height, content sticks */}
-      <div className={cn(
-        "shrink-0 border border-border rounded-lg",
-        selectedRun ? "w-72" : "w-full",
-      )}>
-        <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
-        ))}
-        </div>
-      </div>
-
-      {/* Right: run detail — natural height, page scrolls */}
-      {selectedRun && (
-        <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
-        </div>
-      )}
+    <div className="h-[calc(100vh-16rem)] min-h-[460px]">
+      <Group orientation="horizontal" className="h-full gap-2">
+        <Panel
+          id="runs-list"
+          defaultSize="26%"
+          minSize="16%"
+          maxSize="44%"
+          collapsible
+          collapsedSize="5%"
+          panelRef={runListPanelRef}
+          onResize={(s) => setListCollapsed(s.asPercentage <= 8)}
+          className="h-full overflow-hidden min-w-0"
+        >
+          <div className="h-full overflow-hidden rounded-xl border border-border bg-background">
+            {listCollapsed ? (
+              <aside className="flex h-full w-full flex-col items-center bg-card">
+                <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border">
+                  <button
+                    type="button"
+                    onClick={() => runListPanelRef.current?.expand()}
+                    title="Expand"
+                    aria-label="Expand runs list"
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  >
+                    <PanelLeftOpen className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="flex flex-1 flex-col items-center gap-1 overflow-auto py-2">
+                  {sorted.map((run) => {
+                    const info = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+                    const Icon = info.icon;
+                    const active = run.id === effectiveRunId;
+                    return (
+                      <Link
+                        key={run.id}
+                        to={`/agents/${agentRouteId}/runs/${run.id}`}
+                        title={`${run.id.slice(0, 8)} · ${relativeTime(run.createdAt)}`}
+                        aria-label={`Run ${run.id.slice(0, 8)}`}
+                        className={cn(
+                          "flex size-10 items-center justify-center rounded-md no-underline transition-colors",
+                          active
+                            ? "bg-accent text-accent-foreground"
+                            : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                        )}
+                      >
+                        <Icon className={cn("size-4", info.color, run.status === "running" && "animate-spin")} />
+                      </Link>
+                    );
+                  })}
+                </div>
+              </aside>
+            ) : (
+              <div className="flex h-full flex-col">
+                <div className="flex h-[42px] shrink-0 items-center justify-between border-b border-border pl-3 pr-1.5">
+                  <h4 className="text-sm font-medium">
+                    Runs <span className="font-normal text-muted-foreground">· {sorted.length}</span>
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => runListPanelRef.current?.collapse()}
+                    title="Collapse"
+                    aria-label="Collapse runs list"
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-auto">
+                  {sorted.map((run) => (
+                    <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Panel>
+        <Separator className="w-1 shrink-0 cursor-col-resize rounded bg-transparent hover:bg-border/70 transition-colors" />
+        <Panel className="h-full overflow-hidden min-w-0">
+          <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4">
+            {selectedRun ? (
+              <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+            ) : (
+              <p className="text-sm text-muted-foreground">Select a run to view its details.</p>
+            )}
+          </div>
+        </Panel>
+      </Group>
     </div>
   );
 }
