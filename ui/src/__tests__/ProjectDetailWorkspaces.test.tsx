@@ -560,9 +560,9 @@ describe("ProjectDetail — Workspaces tab", () => {
     // Archived workspaces are NOT visible by default (collapsed)
     expect(screen.queryByTestId("archived-workspaces-list")).not.toBeInTheDocument();
 
-    // Click to expand
-    const user = userEvent.setup();
-    await user.click(archivedTrigger);
+    // Click to expand. Re-query the trigger at click time so a concurrent
+    // query-driven re-render cannot leave us clicking a stale DOM node.
+    fireEvent.click(screen.getByTestId("archived-workspaces-trigger"));
 
     expect(await screen.findByTestId("archived-workspaces-list")).toBeInTheDocument();
   });
