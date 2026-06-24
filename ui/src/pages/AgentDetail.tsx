@@ -968,46 +968,88 @@ function AgentConfigurePage({
             minSize="14%"
             maxSize="40%"
             collapsible
-            collapsedSize="4%"
+            collapsedSize="5%"
             panelRef={navPanelRef}
-            onResize={(s) => setNavCollapsed(s.asPercentage <= 6)}
+            onResize={(s) => setNavCollapsed(s.asPercentage <= 8)}
             className="h-full overflow-hidden min-w-0"
           >
-            <div className="h-full overflow-auto rounded-xl border border-border bg-background p-2 flex flex-col gap-0.5">
-              <button
-                type="button"
-                onClick={() => (navCollapsed ? navPanelRef.current?.expand() : navPanelRef.current?.collapse())}
-                className="self-end p-1.5 rounded-md text-muted-foreground hover:bg-accent/40"
-                title={navCollapsed ? "Expand" : "Collapse"}
-                aria-label={navCollapsed ? "Expand config nav" : "Collapse config nav"}
-              >
-                {navCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-              </button>
-              {navItems.map((item, i) => {
-                const Icon = item.icon;
-                const active = section === item.key;
-                const showDivider = item.lower && !navItems[i - 1]?.lower;
-                return (
-                  <div key={item.key}>
-                    {showDivider && <div className="my-1 h-px bg-border/70" />}
+            <div className="h-full overflow-hidden rounded-xl border border-border bg-background">
+              {navCollapsed ? (
+                <aside className="flex h-full w-full flex-col items-center bg-card">
+                  <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border">
                     <button
                       type="button"
-                      onClick={() => selectNav(item.key)}
-                      title={navCollapsed ? item.label : undefined}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors",
-                        navCollapsed && "justify-center px-0",
-                        active
-                          ? "bg-accent text-accent-foreground font-medium"
-                          : "text-muted-foreground hover:bg-accent/40",
-                      )}
+                      onClick={() => navPanelRef.current?.expand()}
+                      title="Expand"
+                      aria-label="Expand config nav"
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
                     >
-                      <Icon className="h-4 w-4 shrink-0" />
-                      {!navCollapsed && <span className="truncate">{item.label}</span>}
+                      <PanelLeftOpen className="h-3.5 w-3.5" />
                     </button>
                   </div>
-                );
-              })}
+                  <div className="flex flex-1 flex-col items-center gap-1 overflow-auto py-2">
+                    {navItems.map((item, i) => {
+                      const Icon = item.icon;
+                      const active = section === item.key;
+                      const showDivider = item.lower && !navItems[i - 1]?.lower;
+                      return (
+                        <div key={item.key} className="flex flex-col items-center gap-1">
+                          {showDivider && <div className="my-1 h-px w-6 bg-border" />}
+                          <button
+                            type="button"
+                            onClick={() => selectNav(item.key)}
+                            title={item.label}
+                            aria-label={item.label}
+                            className={cn(
+                              "relative flex size-10 items-center justify-center rounded-md transition-colors",
+                              active
+                                ? "bg-accent text-accent-foreground"
+                                : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                            )}
+                          >
+                            <Icon className="size-4" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </aside>
+              ) : (
+                <div className="h-full overflow-auto p-2 flex flex-col gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => navPanelRef.current?.collapse()}
+                    className="self-end p-1.5 rounded-md text-muted-foreground hover:bg-accent/40"
+                    title="Collapse"
+                    aria-label="Collapse config nav"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </button>
+                  {navItems.map((item, i) => {
+                    const Icon = item.icon;
+                    const active = section === item.key;
+                    const showDivider = item.lower && !navItems[i - 1]?.lower;
+                    return (
+                      <div key={item.key}>
+                        {showDivider && <div className="my-1 h-px bg-border/70" />}
+                        <button
+                          type="button"
+                          onClick={() => selectNav(item.key)}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors",
+                            active
+                              ? "bg-accent text-accent-foreground font-medium"
+                              : "text-muted-foreground hover:bg-accent/40",
+                          )}
+                        >
+                          <Icon className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </Panel>
           <Separator className="w-1 shrink-0 cursor-col-resize rounded bg-transparent hover:bg-border/70 transition-colors" />
