@@ -34,7 +34,9 @@ export async function backfillOrgCodexModels(db: Db, companyId: string): Promise
     // crew-only and keeps only instructions* fields, dropping everything else).
     const existing = (row.adapterConfig as Record<string, unknown> | null) ?? {};
     const next = { ...existing, model: DEFAULT_CODEX_CHAT_MODEL };
-    await db.update(agents).set({ adapterConfig: next }).where(and(eq(agents.id, row.id), eq(agents.companyId, companyId)));
+    // Bump updatedAt on the heal, matching the sibling ensure*/backfill convention
+    // (e.g. ensure-commander.ts) so the rewrite is visible in audit/ordered views.
+    await db.update(agents).set({ adapterConfig: next, updatedAt: new Date() }).where(and(eq(agents.id, row.id), eq(agents.companyId, companyId)));
     fixed += 1;
   }
   return fixed;
