@@ -570,13 +570,17 @@ git add AGENTS.md
 git commit -m "docs(deps): rewrite AGENTS.md dependency workflow for retired lockfile bot/bypass"
 ```
 
-## Task 9: Re-run gates on PR base-branch retarget (`edited` activity)
+## Task 9: ~~Re-run gates on PR base-branch retarget (`edited` activity)~~ — REVERTED
 
-**Files:**
+> **REVERTED (Codex P1 on #228).** This task added `edited` to the `pull_request` types + a `changes.base` guard. Codex's third pass flagged a **P1**: on a *mergeable* PR, a title/body edit fires `edited`, the guard skips all 7 required jobs, and GitHub treats skipped required checks as **passing** — so a title edit could satisfy branch protection (main has no required reviews) without real CI, and `cancel-in-progress` would also kill any running real gate. The fix was a net-negative (a merge-bypass to close a narrow gap), so it was reverted. The retarget gap is re-classified as a **Phase 1.1 follow-up**. The steps below are retained as a record of the reverted attempt.
+>
+> **Best-practice forward plan (Phase 1.1) — aggregator gate:** introduce one always-running required job `ci-required` (`needs:` all heavy jobs, `if: always()`, verdict computed from `needs.*.result`); make branch protection require only `ci-required`; demote the heavy jobs to non-required + conditional. That single refactor makes draft-gating, retarget re-runs (`edited` + `changes.base`), and the docs `paths-ignore` optimization all safe, because the required check's conclusion is computed explicitly instead of relying on GitHub's skip=success default. Most repos also handle retarget simply via "push to re-trigger" or `strict` branch protection.
+
+**Files (reverted attempt):**
 - Modify: `.github/workflows/pr.yml` (trigger `types` + the 7 job guards)
 - Modify: `CLAUDE.md` (trigger-model doc)
 
-Added after Codex's re-review of PR #228 flagged (P2) that retargeting a PR to a new base fires the `pull_request` `edited` activity, which the `types` list omitted — so a retargeted PR would not re-validate against its new merge base (stale false-green). The team retargets stacked PRs, so this is a real hole (user decision: fix now).
+Originally added after Codex's re-review flagged (P2) that retargeting a PR fires `pull_request.edited`, omitted from `types`, so a retargeted PR would not re-validate against its new base (stale false-green). Implemented, then reverted per the P1 above.
 
 - [ ] **Step 1: Add `edited` to the trigger types**
 
@@ -641,7 +645,8 @@ Independent review via `/codex review` (gpt, read-only). Verdicts and resolution
 - **[P2] fixed** — Task 1 verify command `-A3` → `-A8`; stale `release.yml` "current porting branch" prose cleaned in Task 2.
 - **Decision resolved** — draft PRs are now gated (Task 1 Step 2 + `ready_for_review`), per user choice.
 - **PR-time Codex P2 (cloud reviewer on #228) resolved** — `AGENTS.md §7` documented the now-removed `chore/refresh-lockfile` escape hatch + `refresh-lockfile.yml` bot; rewritten in **Task 8** so the contributor docs match the closed-bypass policy.
-- **PR-time Codex P2 #2 (retarget gap) resolved** — the `pull_request` trigger omitted `edited`, so retargeting a PR to a new base skipped CI (stale false-green). Added `edited` to `types` + a `changes.base` clause on the 7 guards (**Task 9**), per user decision (fix now).
+- **PR-time Codex P2 #2 (retarget gap) → fix REVERTED.** Added `edited` + a `changes.base` clause (Task 9), but Codex's **P1 #3** showed it introduced a worse problem (next bullet). Reverted; retarget deferred to Phase 1.1 (aggregator gate).
+- **PR-time Codex P1 #3 (skip-success bypass) resolved by revert.** Including `edited` made title/body edits skip the 7 required jobs into skipped-success, which GitHub treats as passing — a branch-protection bypass on a repo with no required reviews. Reverted the `edited` change; **Task 9** kept as a record. Best practice = aggregator gate (Phase 1.1).
 
 ## Self-Review
 
