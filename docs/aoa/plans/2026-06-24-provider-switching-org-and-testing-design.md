@@ -81,12 +81,12 @@ Extend `provider-switching.integration.test.ts`:
 
 ### Layer 3 — Automated Playwright e2e (the permanent CI gate)
 
-Replace the `test.skip` placeholder with real specs. Use a **mocked crew/provider-status seam** so assertions are deterministic without real LLM calls or real auth (the crew/heartbeat spawn and `getProviderStatus` are injected/mocked at the server boundary the e2e harness controls). Specs:
+Replace the `test.skip` placeholder with real specs. The e2e drives the **real UI + server** but asserts only **route/UI-observable** behavior — it does NOT spawn the crew/heartbeat or call a real LLM. Determinism for the auth-dependent surfaces comes from mocking **`getProviderStatus` at the route layer** (so the soft-warn fires predictably) and mocking the **probe adapter** (so test-connection returns a fixed result). The run-time argv correction is NOT an e2e concern — that lives in Layer 2 (integration, via `onMeta.commandArgs`). Specs:
 - Onboarding shows codex default `gpt-5.5`; placeholder `e.g. gpt-5.5`.
 - Agent config model picker: `Default → gpt-5.5`, family-correct list (per-adapter), `gpt-5.5` present.
 - Save: cross-family → `400` inline; shell-unsafe → `400`; auth-mismatch → `warnings[]` renders via `AgentSaveWarnings`.
-- Test-connection probe → ✓/✗ result; per-company concurrency → `429`; planted secret redacted.
-- Correction (mocked chatgpt provider-status): codex `gpt-5.3-codex` → resolved `gpt-5.5` in the run argv.
+- **Correction, save-side:** with `getProviderStatus` mocked to chatgpt, saving codex `gpt-5.3-codex` renders the "using `gpt-5.5`" warning; with it mocked to apikey, no warning (passthrough).
+- Test-connection probe (mocked adapter) → ✓/✗ result; per-company concurrency → `429`; planted secret redacted.
 - Org agent: create + save surfaces (defaults, warnings) behave identically to crew.
 - Runs on CI Linux (Windows e2e remains skipped at the playwright-config level, per existing CI policy).
 
@@ -107,7 +107,7 @@ Every layer maps to this list (✔ = that layer asserts it):
 
 | Scenario | Unit | Integration | e2e | Watched |
 |---|---|---|---|---|
-| codex chatgpt + `gpt-5.3-codex` → corrected `gpt-5.5` (crew/Commander/**org**) | ✔ | ✔ | ✔ (mocked) | ✔ (live) |
+| codex chatgpt + `gpt-5.3-codex` → corrected `gpt-5.5` (crew/Commander/**org**) | ✔ | ✔ (argv) | ✔ (save-warn) | ✔ (live) |
 | codex apikey + `gpt-5.3-codex` → passthrough | ✔ | ✔ | ✔ | ✔ |
 | codex + `gpt-5.5` → runs | ✔ | ✔ | – | ✔ |
 | claude + claude model → runs (crew/Commander/**org**) | – | – | ✔ (mocked) | ✔ (live) |
