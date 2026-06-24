@@ -61,8 +61,10 @@
     },
     "overrides": {
       "@cursor/sdk>sqlite3": "-",
+      "@connectrpc/connect-node>undici": "6.27.0",
       "sqlite3": "-",
       "defu": "6.1.5",
+      "undici": "7.28.0",
       "rollup": ">=4.59.0"
     }
   }
