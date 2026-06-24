@@ -266,6 +266,22 @@ Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR
 
 ### CI Platform Status
 
+**Triggers (2026-06-24 redesign):**
+
+- `pr.yml` (the gate suite) runs on **every** pull request — no base-branch
+  filter — plus `push` to `main`. Required checks: `verify`, `e2e`,
+  `migrations`, `policy`, `brand-check`. Cross-platform lanes stay advisory.
+- **Draft PRs are gated:** each `pr.yml` job carries
+  `if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}`,
+  and the `pull_request` trigger lists `ready_for_review`. Draft PRs show the
+  gate jobs as `skipped`; marking a PR ready re-runs them for real before merge.
+- `release.yml` / `docker.yml` run on `push` to `main` (Docker also on `v*`
+  tags). The porting-era branch allow-list is gone.
+- Do NOT re-introduce a `branches:` filter on `pr.yml`'s `pull_request` trigger
+  (it silently ran zero checks on stacked/feature PRs), and do NOT add a
+  `paths:`/`paths-ignore:` filter to `pr.yml` (a skipped required check leaves
+  PRs stuck on "Expected — Waiting for status").
+
 | Platform | Verify | E2E |
 |----------|--------|-----|
 | Linux | Required gate | Required gate |
