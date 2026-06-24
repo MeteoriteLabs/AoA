@@ -464,10 +464,10 @@ jobs:
   #     (Windows runners ship Git Bash and provide bash as a shell option)
   #
   # timeout-minutes stays bounded so a cdn.playwright.dev stall fails fast, but
-  # hosted macOS/Windows runners can spend more than 12 min on install + build
-  # before Chromium finishes unpacking. The required Linux e2e job uses a Google
-  # Chrome-for-Testing storage fallback; generalizing that fallback to mac/win is
-  # tracked for 1.1.
+  # hosted macOS/Windows runners can spend more than 12 min on install + build.
+  # Install only Chromium's headless shell here; full Chrome-for-Testing archives
+  # can hang after download on hosted macOS/Windows, and CI runs headless. The
+  # required Linux e2e job keeps the full fallback path.
   e2e-cross-platform:
     strategy:
       fail-fast: false
@@ -503,7 +503,7 @@ jobs:
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright
-        run: npx playwright install chromium
+        run: npx playwright install --only-shell chromium
 
       - name: Generate Paperclip config
         shell: bash
