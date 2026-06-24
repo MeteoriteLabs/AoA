@@ -293,7 +293,8 @@ describe.skipIf(process.platform === "win32")(
         RETURNING id
       `));
 
-      firstId(await db.execute<{ id: string }>(sql`
+      // Agent id is not needed — case-1 re-reads by company_id below.
+      await db.execute(sql`
         INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
         VALUES (
           gen_random_uuid(),
@@ -303,8 +304,7 @@ describe.skipIf(process.platform === "win32")(
           'codex_local',
           ${{ model: "gpt-5.3-codex" }}::jsonb
         )
-        RETURNING id
-      `));
+      `);
 
       // First sweep: should heal at least one row
       const count1 = await backfillOrgCodexModels(db, orgCompanyId);
@@ -367,7 +367,7 @@ describe.skipIf(process.platform === "win32")(
         ? (row[0] as any)?.adapter_config
         : (row as any).rows?.[0]?.adapter_config;
 
-      expect(cfg.model).toBe("gpt-5.5");
+      expect(cfg.model).toBe(DEFAULT_CODEX_CHAT_MODEL);
       expect(cfg.env?.FOO).toBe("bar");
       expect(cfg.cwd).toBe("/x");
       expect(cfg.promptTemplate).toBe("p");
@@ -411,47 +411,6 @@ describe.skipIf(process.platform === "win32")(
         : (row as any).rows?.[0]?.adapter_config;
 
       expect(cfg.model).toBe("gpt-5.3-codex");
-    });
-
-    // Case 2 — Org runtime resolution parity
-    it("case-2: resolveRunScopedModel and applyModelResolutionToConfig produce identical output (org↔crew parity)", async () => {
-      if (setupError) throw new Error(String(setupError));
-
-      const status = { authMode: "chatgpt", defaultModelResolved: "gpt-5.5" } as const;
-
-      // Use fresh object literals — the engine may merge/mutate in place
-      const viaOrg = resolveRunScopedModel("codex_local", { model: "gpt-5.3-codex" }, status);
-      const viaCrew = applyModelResolutionToConfig("codex_local", { model: "gpt-5.3-codex" }, status);
-
-      expect(viaOrg.model).toBe("gpt-5.5");
-      expect(viaCrew.model).toBe("gpt-5.5");
-      // Parity: the org seam and crew engine must produce identical results for
-      // identical inputs — they share the same resolution engine under the hood.
-      expect(viaOrg.model).toBe(viaCrew.model);
-    });
-
-    // Case 3 — Org NOT healed by crew backfill detection (predicate scoping)
-    it("case-3: orgCodexRowNeedsBackfill is true for kind:org and false for kind:aoa (org-scoped predicate)", async () => {
-      if (setupError) throw new Error(String(setupError));
-
-      // The org predicate detects org rows that need healing
-      expect(
-        orgCodexRowNeedsBackfill({
-          kind: "org",
-          adapterType: "codex_local",
-          adapterConfig: { model: "gpt-5.3-codex" },
-        }),
-      ).toBe(true);
-
-      // A non-org row (kind:'aoa') is never an org-backfill target —
-      // proving the org-scoping: the two sweeps are keyed on kind differently.
-      expect(
-        orgCodexRowNeedsBackfill({
-          kind: "aoa",
-          adapterType: "codex_local",
-          adapterConfig: { model: "gpt-5.3-codex" },
-        }),
-      ).toBe(false);
     });
 
     // ── 5. CROSS-COMPANY ISOLATION (bonus assertion) ─────────────────────────
@@ -499,6 +458,58 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure org resolution + predicate — NO DB, so these run on EVERY platform.
+// The skipIf(win32) block above only gates the embedded-postgres cases; these
+// two are pure-function checks and gain real Windows-CI signal by living here.
+// (The same logic also has dedicated cross-platform unit coverage in
+// provider-switching-parity.test.ts and heartbeat-provider-resolution.test.ts;
+// this asserts it at the org-integration layer too.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("provider-switching — pure org resolution + predicate (cross-platform)", () => {
+  // Case 2 — Org↔crew runtime resolution parity (incl. opts forwarding)
+  it("case-2: resolveRunScopedModel is a faithful pass-through of applyModelResolutionToConfig (org↔crew parity)", () => {
+    const status = { authMode: "chatgpt", defaultModelResolved: "gpt-5.5" } as const;
+    // Pass the 4th `opts` arg on BOTH sides so the parity check also covers the
+    // opts-forwarding path of the wrapper. (`inheritedEnvOpenAiKey` has no
+    // observable effect on the returned config when the agent did not set its
+    // own env key — the deeper env-strip hardening is owned by a separate PR;
+    // here we only assert the org seam is a faithful pass-through.)
+    const opts = { inheritedEnvOpenAiKey: "sk-company" };
+    const viaOrg = resolveRunScopedModel("codex_local", { model: "gpt-5.3-codex", env: {} }, status, opts);
+    const viaCrew = applyModelResolutionToConfig("codex_local", { model: "gpt-5.3-codex", env: {} }, status, opts);
+
+    expect(viaOrg.model).toBe(DEFAULT_CODEX_CHAT_MODEL); // incompatible model corrected
+    // Full-config deep-equal — non-tautological (a `.model`-only assertion would
+    // miss divergence in env or any other field). Catches a future regression
+    // where the wrapper stops forwarding args or the two paths drift apart.
+    expect(viaOrg).toEqual(viaCrew);
+  });
+
+  // Case 3 — Org NOT healed by crew backfill detection (predicate scoping)
+  it("case-3: orgCodexRowNeedsBackfill is true for kind:org and false for kind:aoa (org-scoped predicate)", () => {
+    // The org predicate detects org rows that need healing
+    expect(
+      orgCodexRowNeedsBackfill({
+        kind: "org",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.3-codex" },
+      }),
+    ).toBe(true);
+
+    // A non-org row (kind:'aoa') is never an org-backfill target —
+    // proving the org-scoping: the two sweeps are keyed on kind differently.
+    expect(
+      orgCodexRowNeedsBackfill({
+        kind: "aoa",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.3-codex" },
+      }),
+    ).toBe(false);
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Case 4 — Heartbeat wiring edge-#5 source-order guard
