@@ -69,6 +69,8 @@ import { agentRouteRef } from "../lib/utils";
 import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 import { asRecord, usageNumber, runMetrics } from "../lib/run-metrics";
 import { computeAgentKpis } from "../lib/agent-kpis";
+import { formatTrustScorePercent, hasTrustScoreData } from "../lib/trust-score";
+import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
 import { formatEnvForDisplay } from "../lib/env-redaction";
 import { parseAgentDetailView, type AgentDetailView } from "../lib/agent-detail-view";
 
@@ -491,9 +493,39 @@ export function AgentDetail() {
     </>
   );
 
+  // Hero KPI strip (mirrors Overview stats; Overview cards removed in Phase 3)
+  const heroKpiStats = computeAgentKpis({ runs: heartbeats ?? [], assignedIssues });
+  const latestHeroRun = [...(heartbeats ?? [])].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )[0];
+  const heroModel =
+    typeof (agent.adapterConfig as Record<string, unknown> | null)?.model === "string"
+      ? ((agent.adapterConfig as Record<string, unknown>).model as string)
+      : undefined;
+  const heroKpis: HeroKpi[] = [
+    { key: "tasks", label: "Tasks (wk)", value: heroKpiStats.tasksCompleted, to: `/issues?assignee=${agent.id}` },
+    { key: "success", label: "Success", value: heroKpiStats.successRate !== null ? `${heroKpiStats.successRate}%` : "—" },
+    { key: "cost", label: "Cost (wk)", value: `$${heroKpiStats.cost.toFixed(2)}` },
+    {
+      key: "trust",
+      label: "Trust",
+      value: trustScore && hasTrustScoreData(trustScore) ? formatTrustScorePercent(trustScore.currentScore) : "—",
+    },
+    {
+      key: "last-run",
+      label: "Last run",
+      value: latestHeroRun ? relativeTime(latestHeroRun.createdAt) : "—",
+      to: latestHeroRun ? `/agents/${canonicalAgentRef}/runs/${latestHeroRun.id}` : undefined,
+    },
+    {
+      key: "last-heartbeat",
+      label: "Last heartbeat",
+      value: agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "Never",
+    },
+  ];
+
   return (
     <>
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
           This agent is pending board approval and cannot be invoked yet.
@@ -516,6 +548,9 @@ export function AgentDetail() {
           navigate(target);
         }}
         headerActions={workerHeaderActions}
+        heroKpis={heroKpis}
+        heroBadges={{ adapter: agent.adapterType, model: heroModel }}
+        headerError={actionError}
         actionBar={{
           show: showActionBar,
           saving: activeSaving,
