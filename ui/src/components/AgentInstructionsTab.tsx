@@ -290,53 +290,55 @@ export function AgentInstructionsTab({
   useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
   useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
 
-  useEffect(() => {
-    onSaveActionChange(isDirty ? () => {
-      const save = async () => {
-        const shouldClearLegacy =
-          Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
-        if (bundleDirty && bundleDraft) {
-          await updateBundle.mutateAsync({
-            mode: bundleDraft.mode,
-            rootPath: bundleDraft.mode === "external" ? bundleDraft.rootPath : null,
-            entryFile: bundleDraft.entryFile,
-          });
-        }
-        if (fileDirty) {
-          await saveFile.mutateAsync({
-            path: selectedOrEntryFile,
-            content: displayValue,
-            clearLegacyPromptTemplate: shouldClearLegacy,
-          });
-        }
-      };
-      void save().catch(() => undefined);
-    } : null);
+  const handleInstrSave = useCallback(() => {
+    const save = async () => {
+      const shouldClearLegacy =
+        Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
+      if (bundleDirty && bundleDraft) {
+        await updateBundle.mutateAsync({
+          mode: bundleDraft.mode,
+          rootPath: bundleDraft.mode === "external" ? bundleDraft.rootPath : null,
+          entryFile: bundleDraft.entryFile,
+        });
+      }
+      if (fileDirty) {
+        await saveFile.mutateAsync({
+          path: selectedOrEntryFile,
+          content: displayValue,
+          clearLegacyPromptTemplate: shouldClearLegacy,
+        });
+      }
+    };
+    void save().catch(() => undefined);
   }, [
     bundle,
     bundleDirty,
     bundleDraft,
     displayValue,
     fileDirty,
-    isDirty,
-    onSaveActionChange,
     saveFile,
     selectedOrEntryFile,
     updateBundle,
   ]);
 
+  const handleInstrCancel = useCallback(() => {
+    setDraft(null);
+    if (bundle) {
+      setBundleDraft({
+        mode: persistedMode,
+        rootPath: persistedRootPath,
+        entryFile: bundle.entryFile,
+      });
+    }
+  }, [bundle, persistedMode, persistedRootPath]);
+
   useEffect(() => {
-    onCancelActionChange(isDirty ? () => {
-      setDraft(null);
-      if (bundle) {
-        setBundleDraft({
-          mode: persistedMode,
-          rootPath: persistedRootPath,
-          entryFile: bundle.entryFile,
-        });
-      }
-    } : null);
-  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath]);
+    onSaveActionChange(isDirty ? handleInstrSave : null);
+  }, [isDirty, handleInstrSave, onSaveActionChange]);
+
+  useEffect(() => {
+    onCancelActionChange(isDirty ? handleInstrCancel : null);
+  }, [isDirty, handleInstrCancel, onCancelActionChange]);
 
   const handleSeparatorDrag = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -374,7 +376,7 @@ export function AgentInstructionsTab({
   }
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="max-w-[1400px] space-y-6">
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
@@ -384,12 +386,6 @@ export function AgentInstructionsTab({
           ))}
         </div>
       )}
-
-      <LoadedSkillsPanel
-        agent={agent}
-        companyId={companyId}
-        skillKeys={((agent as unknown) as { skillKeys?: string[] }).skillKeys ?? []}
-      />
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -703,17 +699,40 @@ export function AgentInstructionsTab({
                 </p>
               </div>
             </div>
-            {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setDeleteFileConfirmOpen(true)}
-                disabled={deleteFile.isPending}
-              >
-                Delete
-              </Button>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              {isDirty && (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleInstrCancel}
+                    disabled={isSaving}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleInstrSave}
+                    disabled={isSaving}
+                  >
+                    {isSaving ? "Saving…" : "Save"}
+                  </Button>
+                </>
+              )}
+              {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDeleteFileConfirmOpen(true)}
+                  disabled={deleteFile.isPending}
+                >
+                  Delete
+                </Button>
+              )}
+            </div>
           </div>
 
           {selectedFileExists && fileLoading && !selectedFileDetail ? (
@@ -724,7 +743,7 @@ export function AgentInstructionsTab({
               value={displayValue}
               onChange={(value) => setDraft(value ?? "")}
               placeholder="# Agent instructions"
-              contentClassName="min-h-[420px] text-sm font-mono"
+              contentClassName="min-h-[60vh] text-sm font-mono"
               imageUploadHandler={async (file) => {
                 const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
                 const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -735,7 +754,7 @@ export function AgentInstructionsTab({
             <textarea
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              className="min-h-[60vh] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
               placeholder="File contents"
             />
           )}
