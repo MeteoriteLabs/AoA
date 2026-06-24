@@ -38,7 +38,7 @@ async function seedCompanyViaWizard(
 
   // ── Lobby empty state opens the wizard ──
   const createCompanyButton = page.getByRole("button", {
-    name: /^(create organization|new organization)$/i,
+    name: /^create organization$/i,
   });
   await expect(createCompanyButton).toBeVisible({ timeout: 10_000 });
   await createCompanyButton.click();
