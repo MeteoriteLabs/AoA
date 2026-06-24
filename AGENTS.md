@@ -112,94 +112,58 @@ Notes:
 
 ## 7. Dependency Change Workflow
 
-Adding, upgrading, or removing a dep needs special handling because CI blocks any PR that commits `pnpm-lock.yaml` (the policy gate in [`.github/workflows/pr.yml:30-37`](.github/workflows/pr.yml) — *"CI owns lockfile updates"*).
+Adding, upgrading, or removing a dependency needs care because CI blocks any PR that commits `pnpm-lock.yaml` **on its own**. The gate is the `Block manual lockfile edits` step in the `policy` job of [`.github/workflows/pr.yml`](.github/workflows/pr.yml): it fails a PR that changes `pnpm-lock.yaml` *unless the same PR also changes a package manifest* (`package.json`, `pnpm-workspace.yaml`, `.npmrc`, or a `pnpmfile`). Lockfile-only commits are rejected; lockfile + manifest together is allowed.
 
-The escape hatch: a PR whose head branch is named **exactly** `chore/refresh-lockfile`. The policy gate is keyed on the literal branch name; any other name (e.g. `chore/refresh-lockfile-2`, `chore/lockfile`) is blocked.
+> **Retired 2026-06-24:** the old `chore/refresh-lockfile` branch-name escape hatch and the `refresh-lockfile.yml` auto-bot were removed. The bot watched the now-dead `Porting1.1` branch, and the branch-name carve-out was a policy bypass — any PR could use that exact name to slip a lockfile-only change past the gate. Re-introducing an auto-refresh bot pointed at `main` is a Phase 2 follow-up. Until then, refresh the lockfile inline (below).
 
-### Manual flow (current)
+### Standard flow: change a dependency
+
+Commit the manifest and the regenerated lockfile **together, on any branch** — no special branch name required.
 
 ```sh
-# 1. Branch off the target base
-git checkout -b chore/refresh-lockfile origin/Porting1.1
+# 1. Edit the relevant package.json (root, server/, ui/, packages/*/).
+#    Add / upgrade / remove deps as needed.
 
-# 2. Edit the relevant package.json files (root, server/, ui/, packages/*/)
-#    Add/remove deps as needed.
-
-# 3. Regenerate the lockfile
+# 2. Regenerate the lockfile.
 pnpm install --no-frozen-lockfile
 
-# 4. Verify it's in sync — should be a no-op
+# 3. Verify it's in sync — should be a no-op.
 pnpm install --frozen-lockfile
 
-# 5. Commit BOTH manifest changes and pnpm-lock.yaml
+# 4. Commit BOTH the manifest change(s) and pnpm-lock.yaml in the same PR.
 git add package.json '**/package.json' pnpm-lock.yaml
 git commit -m "chore(deps): <description>"
-git push -u origin chore/refresh-lockfile
 
-# 6. Open PR — policy gate's lockfile-block step is skipped via the
-#    branch-name exception. CI's "Validate dependency resolution when
-#    manifests change" step runs `pnpm install --lockfile-only
-#    --no-frozen-lockfile` to confirm internal consistency.
-
-# 7. Squash-merge after review.
+# 5. Open the PR. The policy gate accepts the lockfile because a manifest
+#    changed; the "Validate dependency resolution when manifests change"
+#    step re-runs `pnpm install --lockfile-only --no-frozen-lockfile` to
+#    confirm the lockfile is internally consistent.
 ```
 
-### Consuming PRs that need new deps
+The gate's logic lives in the `Block manual lockfile edits` step of the `policy` job in `.github/workflows/pr.yml`. The manifest match is:
+`(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$`.
 
-If a feature PR needs a new dep that isn't on the base yet:
+### Lockfile-only refresh (no manifest change)
 
-1. Land the `chore/refresh-lockfile` PR **first** (so the dep is on the base lockfile).
-2. Rebase the feature PR onto the updated base. Manifest hunks become no-ops; the lockfile rebase WILL conflict — resolve by keeping the base's version:
+A pure lockfile refresh (e.g. transitive-dependency drift with no manifest edit) is **blocked by the gate and currently has no automated path** — the auto-bot was retired (see the note above). Options:
+
+- Pair the refresh with a real manifest change. This is the common case: you are usually refreshing *because* you changed a dependency.
+- Otherwise, fold it into the next dependency-changing PR.
+
+### Two dependency PRs racing
+
+If two open PRs both add deps, the second to merge hits a `pnpm-lock.yaml` conflict when it rebases onto the updated base. Resolve by regenerating, not by hand-merging the lockfile:
 
 ```sh
-git rebase origin/<base>
-git checkout --theirs pnpm-lock.yaml package.json '**/package.json'
-git add pnpm-lock.yaml package.json '**/package.json'
+git rebase origin/main
+# take the base lockfile, then regenerate it against your manifests
+git checkout origin/main -- pnpm-lock.yaml
+pnpm install --no-frozen-lockfile
+git add pnpm-lock.yaml
 git rebase --continue
 ```
 
-The feature PR's verify uses `--frozen-lockfile`; deps are now on the base, so the lockfile is in sync.
-
-### Caveats
-
-- **Single-use branch name.** `chore/refresh-lockfile` is the literal exception token. Only one such branch can be open at a time. If two contributors need to update the lockfile simultaneously, coordinate via Slack.
-- **Don't rename the branch after merge** until the post-merge CI passes — GitHub auto-deletes the remote branch on squash-merge with `--delete-branch`.
-
-### Automation: `refresh-lockfile.yml` bot
-
-[`.github/workflows/refresh-lockfile.yml`](.github/workflows/refresh-lockfile.yml) watches `Porting1.1` for manifest changes, regenerates the lockfile in CI, opens (or updates) a `chore/refresh-lockfile` PR automatically, and auto-merges via squash.
-
-**For most contributors this means:** open your feature PR with the manifest change committed (no lockfile). Once you merge, the bot fires, regenerates the lockfile on a separate PR, and auto-merges that PR. The next contributor's feature PR rebases off the new base with the updated lockfile already in place.
-
-**The manual flow above** is still useful when:
-- You need to verify the regenerated lockfile locally before pushing.
-- You want to ship the manifest + lockfile in one commit (the bot adds a separate commit).
-- The bot is broken and you need to bypass it.
-
-### Inline lockfile updates (added 2026-05-05)
-
-The policy gate's `Block manual lockfile edits` step now allows `pnpm-lock.yaml`
-commits when **package manifests also changed in the same PR**. The check matches
-this regex against the PR diff: `(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$`.
-
-This means you can ship a single PR that adds a dependency:
-
-1. Edit `package.json` (root or workspace) to add the new dep.
-2. Run `pnpm install --no-frozen-lockfile` to update `pnpm-lock.yaml`.
-3. Commit BOTH files together in any branch.
-
-The gate accepts the lockfile because it's accompanied by manifest changes.
-Stealth lockfile-only commits (no manifest change) are still blocked.
-
-The recommended path is still the `chore/refresh-lockfile` bot — it auto-merges
-and keeps the lockfile fresh after manifest edits land. Use the inline path
-when:
-- You're adding a new dep and want the manifest + lockfile in a single
-  reviewable commit.
-- The bot is broken or has an open chore PR you don't want to interfere with.
-
-The gate's logic is at `.github/workflows/pr.yml` (`Block manual lockfile edits`
-step in the `policy` job).
+The `verify` job uses `--frozen-lockfile`, so the regenerated lockfile must be in sync before you push.
 
 ## 8. Verification Before Hand-off
 
