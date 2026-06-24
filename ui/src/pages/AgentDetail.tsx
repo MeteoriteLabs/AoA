@@ -70,6 +70,7 @@ import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 import { asRecord, usageNumber, runMetrics } from "../lib/run-metrics";
 import { computeAgentKpis } from "../lib/agent-kpis";
 import { formatEnvForDisplay } from "../lib/env-redaction";
+import { parseAgentDetailView, type AgentDetailView } from "../lib/agent-detail-view";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -139,16 +140,6 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   }
 
   container.scrollTo({ top: container.scrollHeight, behavior });
-}
-
-type AgentDetailView = "overview" | "instructions" | "configure" | "runs" | "skills";
-
-function parseAgentDetailView(value: string | null): AgentDetailView {
-  if (value === "configure" || value === "configuration") return "configure";
-  if (value === "instructions") return value;
-  if (value === "runs") return value;
-  if (value === "skills") return value;
-  return "overview";
 }
 
 export function getAdapterResultOutput(
