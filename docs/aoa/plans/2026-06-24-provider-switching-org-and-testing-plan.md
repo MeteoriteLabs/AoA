@@ -12,6 +12,20 @@
 
 ---
 
+> **AMENDMENT (2026-06-24, post-review):** **Task 2 (Part A2 — the org-codex boot backfill
+> `org-codex-backfill.ts` + its `index.ts` wiring) was REMOVED.** A Codex review (finding
+> P2(b)) showed it mutates a founder-PINNED model based on a boot-time GUESS of a *runtime*
+> property (auth mode): a company sharing an api-key `auth.json` — where `gpt-5.3-codex` is
+> valid — had its pinned choice silently clobbered on every restart, and the sweep had no
+> crew/Commander counterpart (parity break). The run-time seam (Task 1 / Part A1,
+> `resolveRunScopedModel`) corrects at the only correct moment — run time, when the live auth
+> mode is known — and is now the **sole** correction path; the persisted row is left exactly
+> as the founder pinned it. Removed with Task 2: `org-codex-backfill.ts`, its unit test, and
+> integration `case-1/1b/1c` + `case-3`. **Tasks 1, 3 (case-2/3a/3b/test-5), 4, 5 stand as
+> shipped.** Honesty trail: `docs/aoa/evidence/ps-5b-org-runtime-correction.txt` §6.
+
+---
+
 ## Hard rules (carry into every task)
 - **Reuse only** — no new resolver. Import `applyModelResolutionToConfig` from `server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts`, `getProviderStatus` + `type ProviderStatus` from `server/src/adapters/provider-status.ts`, `realProviderStatusDeps` from `server/src/adapters/provider-status-deps.ts`.
 - **Edge #5** — in `heartbeat.ts`, resolution runs AFTER the cheap-model swaps (lines ~3544-3575) and BEFORE `resolveAdapterExecutionContext` (~3704) — not merely before `adapter.execute` (~3732) — since the context build also derives from `runScopedConfig`.

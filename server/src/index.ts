@@ -67,7 +67,6 @@ import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engi
 import { ensureChronicler } from "./services/internal-agent/aoa-agents/ensure-chronicler.js";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
-import { backfillOrgCodexModels } from "./services/internal-agent/aoa-agents/org-codex-backfill.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
@@ -709,20 +708,6 @@ void db
       // Wrap each company independently: a failure for one company must never
       // abort the backfill for the remaining companies.
       try {
-        // Part A2: heal org codex rows pinned to an api-key-only model (e.g.
-        // gpt-5.3-codex) that a ChatGPT/subscription login rejects with HTTP 400.
-        // MUST run for EVERY company, BEFORE the marketplace crew gate below — org
-        // codex agents are independent of marketplace crew governance, so the gate's
-        // `continue` must not skip this heal (kind:"aoa" crew presence says nothing
-        // about a stale kind:"org" codex row). Best-effort; never blocks boot. New
-        // companies already get the safe gpt-5.5 create-default; this catches
-        // pre-existing rows. The heartbeat runtime seam also corrects at run time —
-        // this keeps the *persisted* row consistent. Do NOT move back into the gated
-        // Promise.all.
-        await backfillOrgCodexModels(db as any, row.id).catch((err: unknown) =>
-          logger.warn({ err, companyId: row.id }, "org codex backfill failed"),
-        );
-
         // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
         // Wrapped so a transient DB error defaults to running the ensures (safe:
         // ensures are idempotent and non-fatal on legacy companies).
@@ -770,9 +755,6 @@ void db
           ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
             logger.warn({ err, companyId: row.id }, "commander backfill failed"),
           ),
-          // NOTE: backfillOrgCodexModels runs unconditionally ABOVE, before the
-          // marketplace gate — it must not be re-added here (the gate's `continue`
-          // would skip it for marketplace-governed companies).
           // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
           // ("Scribe") agent is no longer backfilled at startup. The
           // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_

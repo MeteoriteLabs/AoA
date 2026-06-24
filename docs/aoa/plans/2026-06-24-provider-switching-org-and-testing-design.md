@@ -7,6 +7,16 @@
 
 ---
 
+> **AMENDMENT (2026-06-24, post-review):** the **boot backfill** half of Part A (`org-codex-backfill.ts`)
+> was **removed** after review. It rewrote a founder-PINNED model from a boot-time GUESS of a *runtime*
+> property (auth mode), clobbering companies on a shared api-key `auth.json` where `gpt-5.3-codex` is
+> valid, and had no crew/Commander parity. The **run-time seam** (`resolveRunScopedModel` on the
+> heartbeat path) is the sole, correct correction point and stands as shipped. Wherever this spec says
+> "+ self-healing backfill" or "boot sweep," read it as historical context — only the run-time
+> resolution shipped. See `docs/aoa/evidence/ps-5b-org-runtime-correction.txt` §6.
+
+---
+
 ## 1. Goal
 
 Two coupled deliverables:

@@ -27,15 +27,18 @@ adapterConfig={"model":"gpt-5.3-codex","extraArgs":["--skip-git-repo-check"]}
 {"id8":"dcfcb436","status":"failed","error_code":"adapter_failed","started_at":"2026-06-24T06:36:21.131Z"}
 {"id8":"85209b27","status":"failed","error_code":"adapter_failed","started_at":"2026-06-24T05:36:20.278Z"}
 
---- (6) BOOT-BACKFILL proof (Task 2: backfillOrgCodexModels at index.ts:763) ---
-Procedure: while persisted model was gpt-5.3-codex (sections 1-5 above), the instance was
-restarted (aoa run, AOA_HOME ~/.aoa-ps, OPENAI_API_KEY stripped). NO agent save was performed
-between the two reads. The boot sweep heals org+codex_local rows whose model a ChatGPT login
-would reject.
-BEFORE reboot: adapterConfig = {"model":"gpt-5.3-codex","extraArgs":["--skip-git-repo-check"]}
-AFTER  reboot: adapterConfig = {"model":"gpt-5.5","extraArgs":["--skip-git-repo-check"]}
-agent.updated_at = 2026-06-24T10:39:17.014Z (== boot time; server listened 10:39:16)
-  => model healed gpt-5.3-codex -> gpt-5.5 at boot, with NO save in between.
-  => extraArgs preserved (shallow merge replaces ONLY model; env/cwd/etc. untouched).
-boot4.log markers: "OPENAI_API_KEY is not set" (key stripped); NO "org codex backfill failed"
-  warning (silent-on-success); embedded PG 54329; "Server listening on 127.0.0.1:3100".
+--- (6) BOOT-BACKFILL — REMOVED 2026-06-24 (superseded; no longer in the codebase) ---
+The Task-2 boot sweep `backfillOrgCodexModels` (formerly wired in server/src/index.ts)
+was REMOVED. The run-time seam in sections (1)-(5) above is now the SOLE correction path.
+Rationale (best-practice-at-scale): the sweep mutated a founder-PINNED model based on a
+boot-time GUESS of a RUNTIME property (auth mode). For a company sharing an api-key
+auth.json — where gpt-5.3-codex is a VALID model — that silently clobbered the founder's
+choice on every restart (the Codex P2(b) finding). It also had no crew/Commander
+counterpart, so it broke parity. Correcting at run time (when the live auth mode is known)
+is the only correct moment; the persisted row is now left exactly as the founder pinned it,
+while cost_events still reflects the resolved/billed model (section 4).
+
+Historical note (no longer reproducible): when the sweep existed, a reboot with
+OPENAI_API_KEY stripped healed gpt-5.3-codex -> gpt-5.5 at boot (extraArgs preserved via
+shallow merge), captured live at agent.updated_at 2026-06-24T10:39:17.014Z. As of the A2
+removal there is NO persisted-row rewrite on boot — do not expect one.

@@ -42,7 +42,6 @@ import { agentService } from "../services/agents.js";
 import { applyModelResolutionToConfig } from "../services/internal-agent/aoa-agents/runner-model-resolution.js";
 import { needsAdapterBackfill, resolveCrewAdapterFor } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
-import { backfillOrgCodexModels, orgCodexRowNeedsBackfill } from "../services/internal-agent/aoa-agents/org-codex-backfill.js";
 import { resolveRunScopedModel } from "../services/heartbeat-provider-resolution.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -280,139 +279,6 @@ describe.skipIf(process.platform === "win32")(
       },
     );
 
-    // ── Task-3 Cases: Org backfill + runtime parity ───────────────────────────
-
-    // Case 1 — Org backfill fixpoint
-    it("case-1: backfillOrgCodexModels heals a kind:org row and is idempotent", async () => {
-      if (setupError) throw new Error(String(setupError));
-
-      // Seed a second company for this case so it gets a clean count
-      const orgCompanyId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name, issue_prefix)
-        VALUES (gen_random_uuid(), 'Org Backfill Fixpoint Co', 'OBF')
-        RETURNING id
-      `));
-
-      // Agent id is not needed — case-1 re-reads by company_id below.
-      await db.execute(sql`
-        INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
-        VALUES (
-          gen_random_uuid(),
-          ${orgCompanyId},
-          'Org Fixpoint Agent',
-          'org',
-          'codex_local',
-          ${{ model: "gpt-5.3-codex" }}::jsonb
-        )
-      `);
-
-      // First sweep: should heal at least one row
-      const count1 = await backfillOrgCodexModels(db, orgCompanyId);
-      expect(count1).toBeGreaterThanOrEqual(1);
-
-      // Re-read the row and confirm the model was corrected
-      const rows = await db.execute<{ adapter_config: unknown }>(sql`
-        SELECT adapter_config FROM agents WHERE company_id = ${orgCompanyId}
-      `);
-      const cfg = Array.isArray(rows)
-        ? (rows[0] as any)?.adapter_config
-        : (rows as any).rows?.[0]?.adapter_config;
-
-      expect((cfg as any).model).toBe(DEFAULT_CODEX_CHAT_MODEL);
-
-      // Fixpoint: orgCodexRowNeedsBackfill returns false after the heal
-      expect(
-        orgCodexRowNeedsBackfill({
-          kind: "org",
-          adapterType: "codex_local",
-          adapterConfig: cfg as Record<string, unknown>,
-        }),
-      ).toBe(false);
-
-      // Second sweep: idempotent — nothing to fix
-      const count2 = await backfillOrgCodexModels(db, orgCompanyId);
-      expect(count2).toBe(0);
-    });
-
-    // Case 1b — Backfill PRESERVES org config (shallow-merge proof)
-    it("case-1b: backfillOrgCodexModels preserves env/cwd/promptTemplate/timeoutSec (shallow-merge)", async () => {
-      if (setupError) throw new Error(String(setupError));
-
-      const orgCompanyId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name, issue_prefix)
-        VALUES (gen_random_uuid(), 'Org Backfill Shallow Merge Co', 'OBS')
-        RETURNING id
-      `));
-
-      const orgAgentId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
-        VALUES (
-          gen_random_uuid(),
-          ${orgCompanyId},
-          'Org Shallow Merge Agent',
-          'org',
-          'codex_local',
-          ${{ model: "gpt-5.3-codex", env: { FOO: "bar" }, cwd: "/x", promptTemplate: "p", timeoutSec: 30 }}::jsonb
-        )
-        RETURNING id
-      `));
-
-      await backfillOrgCodexModels(db, orgCompanyId);
-
-      // Re-read and verify all fields preserved except model
-      const row = await db.execute<{ adapter_config: unknown }>(sql`
-        SELECT adapter_config FROM agents WHERE id = ${orgAgentId}
-      `);
-      const cfg: any = Array.isArray(row)
-        ? (row[0] as any)?.adapter_config
-        : (row as any).rows?.[0]?.adapter_config;
-
-      expect(cfg.model).toBe(DEFAULT_CODEX_CHAT_MODEL);
-      expect(cfg.env?.FOO).toBe("bar");
-      expect(cfg.cwd).toBe("/x");
-      expect(cfg.promptTemplate).toBe("p");
-      expect(cfg.timeoutSec).toBe(30);
-    });
-
-    // Case 1c — Skip per-agent-key org row
-    it("case-1c: backfillOrgCodexModels skips org row that owns its own OPENAI_API_KEY", async () => {
-      if (setupError) throw new Error(String(setupError));
-
-      // Own company for clean count
-      const orgCompanyId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO companies (id, name, issue_prefix)
-        VALUES (gen_random_uuid(), 'Org Skip Api Key Co', 'OSK')
-        RETURNING id
-      `));
-
-      const orgAgentId = firstId(await db.execute<{ id: string }>(sql`
-        INSERT INTO agents (id, company_id, name, kind, adapter_type, adapter_config)
-        VALUES (
-          gen_random_uuid(),
-          ${orgCompanyId},
-          'Org Per-Key Agent',
-          'org',
-          'codex_local',
-          ${{ model: "gpt-5.3-codex", env: { OPENAI_API_KEY: "sk-agent" } }}::jsonb
-        )
-        RETURNING id
-      `));
-
-      // Sweep should return 0 — this row has its own api key and is NOT a backfill target
-      const count = await backfillOrgCodexModels(db, orgCompanyId);
-      expect(count).toBe(0);
-
-      // Model must be unchanged
-      const row = await db.execute<{ adapter_config: unknown }>(sql`
-        SELECT adapter_config FROM agents WHERE id = ${orgAgentId}
-      `);
-      const cfg: any = Array.isArray(row)
-        ? (row[0] as any)?.adapter_config
-        : (row as any).rows?.[0]?.adapter_config;
-
-      expect(cfg.model).toBe("gpt-5.3-codex");
-    });
-
     // ── 5. CROSS-COMPANY ISOLATION (bonus assertion) ─────────────────────────
 
     it("5: agent resolution does not affect agents in other companies (isolation check)", async () => {
@@ -460,15 +326,15 @@ describe.skipIf(process.platform === "win32")(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pure org resolution + predicate — NO DB, so these run on EVERY platform.
-// The skipIf(win32) block above only gates the embedded-postgres cases; these
-// two are pure-function checks and gain real Windows-CI signal by living here.
+// Pure org resolution — NO DB, so this runs on EVERY platform.
+// The skipIf(win32) block above only gates the embedded-postgres cases; this
+// one is a pure-function check and gains real Windows-CI signal by living here.
 // (The same logic also has dedicated cross-platform unit coverage in
 // provider-switching-parity.test.ts and heartbeat-provider-resolution.test.ts;
 // this asserts it at the org-integration layer too.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("provider-switching — pure org resolution + predicate (cross-platform)", () => {
+describe("provider-switching — pure org resolution (cross-platform)", () => {
   // Case 2 — Org↔crew runtime resolution parity (incl. opts forwarding)
   it("case-2: resolveRunScopedModel is a faithful pass-through of applyModelResolutionToConfig (org↔crew parity)", () => {
     const status = { authMode: "chatgpt", defaultModelResolved: "gpt-5.5" } as const;
@@ -486,28 +352,6 @@ describe("provider-switching — pure org resolution + predicate (cross-platform
     // miss divergence in env or any other field). Catches a future regression
     // where the wrapper stops forwarding args or the two paths drift apart.
     expect(viaOrg).toEqual(viaCrew);
-  });
-
-  // Case 3 — Org NOT healed by crew backfill detection (predicate scoping)
-  it("case-3: orgCodexRowNeedsBackfill is true for kind:org and false for kind:aoa (org-scoped predicate)", () => {
-    // The org predicate detects org rows that need healing
-    expect(
-      orgCodexRowNeedsBackfill({
-        kind: "org",
-        adapterType: "codex_local",
-        adapterConfig: { model: "gpt-5.3-codex" },
-      }),
-    ).toBe(true);
-
-    // A non-org row (kind:'aoa') is never an org-backfill target —
-    // proving the org-scoping: the two sweeps are keyed on kind differently.
-    expect(
-      orgCodexRowNeedsBackfill({
-        kind: "aoa",
-        adapterType: "codex_local",
-        adapterConfig: { model: "gpt-5.3-codex" },
-      }),
-    ).toBe(false);
   });
 });
 

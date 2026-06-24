@@ -13,7 +13,7 @@
 > | 4a — Test-environment probe | **CAPTURED LIVE** | `ps-4-probe-and-concurrency.txt`, `ps-4a-test-environment.json` |
 > | 4b — Concurrency clamp (queues, not 429) | **CAPTURED LIVE** | `ps-4-probe-and-concurrency.txt` |
 > | 5b — Org run-time correction → `gpt-5.5` | **CAPTURED LIVE** | `ps-5b-org-runtime-correction.txt` |
-> | 5 — Task-2 boot-backfill heal | **CAPTURED LIVE** | `ps-5b-org-runtime-correction.txt` |
+> | ~~5 — Task-2 boot-backfill heal~~ | **REMOVED 2026-06-24** — backfill deleted post-review; run-time seam (5b) is the sole correction path | `ps-5b-org-runtime-correction.txt` §6 |
 > | 5a — Crew run-time correction | test-covered (not driven live) | Scenario 3 + parity/integration |
 > | 6 — Claude crew + Commander | test-covered (non-codex regress) | parity + Scenario 2a guard |
 > | 7 — Friendly failure surface | **CAPTURED LIVE** | `ps-7-friendly-failure.txt` |
@@ -390,8 +390,16 @@ curl.exe -s "http://localhost:3100/api/companies/{cid}/agents/{agentId}/heartbea
 an **org** codex agent are each set to `gpt-5.3-codex`, triggered, and observed to
 complete **`succeeded`** — having actually run on `gpt-5.5`. **The org one proves
 Part A** (the heartbeat/org path resolves through `resolveRunScopedModel`,
-`heartbeat.ts:3595`). The org boot-backfill sweep (`backfillOrgCodexModels`) also
-heals a persisted org row at boot.
+`heartbeat.ts:3595`).
+
+> **AMENDMENT (2026-06-24, post-review):** the org **boot-backfill** sweep
+> (`backfillOrgCodexModels`) referenced throughout this scenario — including the
+> "Boot-backfill check" sub-step and the `(BACKFILL — Task 2 …)` evidence callout
+> below — was **REMOVED**. It rewrote a founder-PINNED model from a boot-time guess
+> of a *runtime* property and had no crew/Commander parity. The **run-time** seam
+> proven here is now the sole correction path; the persisted row is left exactly as
+> the founder pinned it. Treat every boot-backfill step below as historical (no
+> longer reproducible). See `docs/aoa/evidence/ps-5b-org-runtime-correction.txt` §6.
 
 > **Evidence anchoring — there is NO "resolved model" log line.** I grepped the
 > heartbeat spawn path: `resolveRunScopedModel` at `heartbeat.ts:3595` is
