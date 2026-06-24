@@ -119,7 +119,7 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores, onMut
   }
 
   return (
-    <div className="space-y-4">
+    <div className="p-5 space-y-4">
       <header className="mb-3 flex items-center justify-between">
         <div>
           <h2 className="text-sm font-bold">

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/agent-shortnames.ts";
+import {
+  hasAgentShortnameCollision,
+  findAgentShortnameCollision,
+  deduplicateAgentName,
+} from "../services/agent-shortnames.ts";
 
 describe("hasAgentShortnameCollision", () => {
   it("detects collisions by normalized shortname", () => {
@@ -65,5 +69,42 @@ describe("deduplicateAgentName", () => {
       { id: "a1", name: "openclaw", status: "terminated" },
     ]);
     expect(name).toBe("OpenClaw");
+  });
+});
+
+describe("findAgentShortnameCollision", () => {
+  it("returns the colliding row (incl. kind) so callers can tailor the message", () => {
+    // Regression: a founder hiring an org agent named "Engineer" collides with
+    // the built-in AoA crew agent of the same name, which is hidden from the
+    // Agents tab. The collision row's kind drives the actionable error message.
+    const hit = findAgentShortnameCollision("Engineer", [
+      { id: "aoa1", name: "Engineer", status: "idle", kind: "aoa" },
+      { id: "o1", name: "Director", status: "idle", kind: "org" },
+    ]);
+    expect(hit?.id).toBe("aoa1");
+    expect(hit?.kind).toBe("aoa");
+  });
+
+  it("returns null when there is no collision", () => {
+    const hit = findAgentShortnameCollision("Engineer", [
+      { id: "o1", name: "Director", status: "idle", kind: "org" },
+    ]);
+    expect(hit).toBeNull();
+  });
+
+  it("ignores terminated agents", () => {
+    const hit = findAgentShortnameCollision("Engineer", [
+      { id: "aoa1", name: "Engineer", status: "terminated", kind: "aoa" },
+    ]);
+    expect(hit).toBeNull();
+  });
+
+  it("respects excludeAgentId so renaming keeps an agent's own shortname", () => {
+    const hit = findAgentShortnameCollision(
+      "Engineer",
+      [{ id: "a1", name: "Engineer", status: "idle", kind: "org" }],
+      { excludeAgentId: "a1" },
+    );
+    expect(hit).toBeNull();
   });
 });
