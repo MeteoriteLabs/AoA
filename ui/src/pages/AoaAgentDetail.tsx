@@ -17,6 +17,7 @@ import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
+import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -183,6 +184,13 @@ export function AoaAgentDetail() {
     },
   });
 
+  // Top-level AoA runs (shares AoaOverview's query key → deduped) for the hero "Total runs" KPI.
+  const { data: aoaRunsForKpi } = useQuery({
+    queryKey: ["aoa-runs", agent?.id ?? aoaRouteRef, resolvedCompanyId],
+    queryFn: () => agentsApi.getAoaRuns(agent?.id ?? aoaRouteRef, resolvedCompanyId as string),
+    enabled: Boolean(agent && resolvedCompanyId),
+  });
+
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
@@ -239,15 +247,27 @@ export function AoaAgentDetail() {
     </>
   ) : undefined;
 
+  const heroBadges = {
+    adapter: agent.adapterType,
+    model:
+      typeof (agent.adapterConfig as Record<string, unknown> | null)?.model === "string"
+        ? ((agent.adapterConfig as Record<string, unknown>).model as string)
+        : undefined,
+  };
+  const heroKpis: HeroKpi[] = [
+    { key: "role", label: "Role", value: roleLabels[agent.role] ?? agent.role },
+    { key: "total-runs", label: "Total runs", value: (aoaRunsForKpi ?? []).length },
+  ];
+
   return (
     <>
-      {lifecycleError && (
-        <p className="text-sm text-destructive">{lifecycleError}</p>
-      )}
     <AgentDetailCore
       agent={agent}
       tabs={tabs}
       headerActions={headerActions}
+      heroKpis={heroKpis}
+      heroBadges={heroBadges}
+      headerError={lifecycleError}
       activeView={activeView}
       onViewChange={(v) => {
         const target =
