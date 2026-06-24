@@ -3,9 +3,7 @@ name: Docker
 on:
   push:
     branches:
-      - "master"
       - "main"
-      - "Porting1.1"
     tags:
       - "v*"
   workflow_dispatch:
