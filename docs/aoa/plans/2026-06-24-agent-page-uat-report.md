@@ -131,6 +131,26 @@ made no file edits, the instance stayed stable through the test run.
 
 ---
 
+## Follow-up: deferred-item investigation + fixes (2026-06-24)
+
+Investigated the "not deep-tested" set. Most were sound (state-gated controls, icon
+edit, config toggles feeding the proven save pipeline, mobile). Two were genuine
+defects and are now **fixed + verified live**:
+
+- **Dirty-guard (in-app nav)** — `useBeforeUnload` only caught browser-level nav; switching
+  tabs (or kebab "Configure") with unsaved Config/Instructions edits silently discarded
+  them. Fixed (`16e792a32`): tab/kebab nav routes through a guard → "Discard unsaved
+  changes?" ConfirmDialog. Note: `<BrowserRouter>` (not a data router) means `useBlocker`
+  is unavailable, so cross-page sidebar/`<Link>` nav still isn't intercepted — that needs
+  a data-router migration (logged, out of scope).
+- **Instructions save/delete silent on failure** — `onError` swallowed errors. Fixed
+  (`03898c197`): `toast.error` on each failure + a "File deleted" success toast.
+
+Still genuinely fine / low: Runs controls (Retry/Cancel/Resume/Login — correctly wired,
+state-gated), inline icon edit, Config run-policy/Context toggles, mobile layouts.
+OBS-2 (intermittent 404): not reproducible on clean nav, no page-level polling; needs a
+captured repro.
+
 ## Recommended fix order (on approval)
 
 1. **BUG-1** (Terminate confirm + aftermath) — High, safety + correctness.
