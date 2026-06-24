@@ -75,6 +75,8 @@ type AgentConfigFormProps = {
   hideInlineSave?: boolean;
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
+  /** When set (cards/edit), only this section's card renders — drives the two-pane settings nav. */
+  activeSection?: "identity" | "adapter" | "permissions" | "runPolicy" | "context";
 } & (
   | {
       mode: "create";
@@ -212,6 +214,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
+  const activeSection = props.activeSection;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   useDisabledAdaptersSync();
@@ -471,7 +474,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     );
 
   return (
-    <div className={cn("relative", cards && "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start")}>
+    <div className={cn("relative", cards && !activeSection && "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 lg:col-span-2 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -490,7 +493,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Identity (edit only) ---- */}
       {!isCreate && (
-        <div className={cn("w-full", !cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden")}>
+        <div className={cn("w-full", !cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "identity" && "hidden")}>
           {cards
             ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setIdentityOpen(!identityOpen)}><User className="h-3 w-3" /> Identity<span className="ml-auto">{identityOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
@@ -629,7 +632,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), cards && !isCreate && "border border-border rounded-lg overflow-hidden")}>
+      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), cards && !isCreate && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "adapter" && "hidden")}>
         {cards && !isCreate
           ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setAdapterOpen(!adapterOpen)}><Plug className="h-3 w-3" /> Adapter<span className="ml-auto">{adapterOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
           : (
@@ -784,7 +787,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Permissions & Configuration ---- */}
       {isLocal && (
-        <div className={cn(!cards && "border-b border-border", cards && !isCreate && "border border-border rounded-lg overflow-hidden")}>
+        <div className={cn(!cards && "border-b border-border", cards && !isCreate && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "permissions" && "hidden")}>
           {cards && !isCreate
             ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setPermissionsConfigOpen(!permissionsConfigOpen)}><SlidersHorizontal className="h-3 w-3" /> Permissions &amp; Configuration<span className="ml-auto">{permissionsConfigOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
             : cards
@@ -1008,7 +1011,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : (
-        <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden")}>
+        <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "runPolicy" && "hidden")}>
           {cards
             ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setRunPolicyOpen(!runPolicyOpen)}><Heart className="h-3 w-3" /> Run Policy<span className="ml-auto">{runPolicyOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
@@ -1086,7 +1089,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ── Context section (edit mode only — defaults are fine for new agents) ── */}
       {!isCreate && (
-        <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden")}>
+        <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "context" && "hidden")}>
           {cards
             ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setContextOpen(!contextOpen)}><Brain className="h-3 w-3" /> Context<span className="ml-auto">{contextOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Brain className="h-3 w-3" /> Context</div>

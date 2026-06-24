@@ -69,6 +69,7 @@ import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type
 import { agentRouteRef } from "../lib/utils";
 import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { asRecord, usageNumber, runMetrics } from "../lib/run-metrics";
 import { computeAgentKpis } from "../lib/agent-kpis";
 import { formatTrustScorePercent, hasTrustScoreData } from "../lib/trust-score";
@@ -897,6 +898,15 @@ function AgentConfigurePage({
 }) {
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [section, setSection] = useState<"identity" | "adapter" | "permissions" | "runPolicy" | "context">("identity");
+  const isLocal = ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "cursor"].includes(agent.adapterType);
+  const navSections: { key: "identity" | "adapter" | "permissions" | "runPolicy" | "context"; label: string }[] = [
+    { key: "identity", label: "Identity" },
+    { key: "adapter", label: "Adapter & model" },
+    ...(isLocal ? [{ key: "permissions" as const, label: "Permissions & config" }] : []),
+    { key: "runPolicy", label: "Run policy" },
+    { key: "context", label: "Context" },
+  ];
 
   const { data: configRevisions } = useQuery({
     queryKey: queryKeys.agents.configRevisions(agent.id),
@@ -913,16 +923,46 @@ function AgentConfigurePage({
   });
 
   return (
-    <div className="max-w-[1400px] space-y-6">
-      <ConfigurationTab
-        agent={agent}
-        onDirtyChange={onDirtyChange}
-        onSaveActionChange={onSaveActionChange}
-        onCancelActionChange={onCancelActionChange}
-        onSavingChange={onSavingChange}
-        updatePermissions={updatePermissions}
-        companyId={companyId}
-      />
+    <div className="space-y-6">
+      <div className="h-[calc(100vh-15rem)] min-h-[460px]">
+        <Group orientation="horizontal" className="h-full gap-2">
+          <Panel defaultSize="24%" minSize="16%" maxSize="42%" className="h-full overflow-auto min-w-0">
+            <div className="h-full overflow-auto rounded-xl border border-border bg-background p-2 space-y-1">
+              {navSections.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setSection(item.key)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors",
+                    section === item.key
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/40",
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </Panel>
+          <Separator className="w-1 shrink-0 cursor-col-resize rounded bg-transparent hover:bg-border/70 transition-colors" />
+          <Panel className="h-full overflow-auto min-w-0">
+            <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4">
+              <ConfigurationTab
+                agent={agent}
+                onDirtyChange={onDirtyChange}
+                onSaveActionChange={onSaveActionChange}
+                onCancelActionChange={onCancelActionChange}
+                onSavingChange={onSavingChange}
+                companyId={companyId}
+                activeSection={section}
+              />
+            </div>
+          </Panel>
+        </Group>
+      </div>
+
+      <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
       <ApiKeysAccordion agentId={agentId} companyId={companyId} />
 
       {/* Configuration Revisions — card accordion */}
@@ -1036,7 +1076,7 @@ function ConfigurationTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
-  updatePermissions,
+  activeSection,
 }: {
   agent: Agent;
   companyId?: string;
@@ -1044,7 +1084,7 @@ function ConfigurationTab({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
+  activeSection?: "identity" | "adapter" | "permissions" | "runPolicy" | "context";
 }) {
   const queryClient = useQueryClient();
 
@@ -1071,22 +1111,19 @@ function ConfigurationTab({
   }, [onSavingChange, updateAgent.isPending]);
 
   return (
-    <div className="space-y-6">
-      <AgentConfigForm
-        mode="edit"
-        agent={agent}
-        onSave={(patch) => updateAgent.mutate(patch)}
-        isSaving={updateAgent.isPending}
-        adapterModels={adapterModels}
-        onDirtyChange={onDirtyChange}
-        onSaveActionChange={onSaveActionChange}
-        onCancelActionChange={onCancelActionChange}
-        hideInlineSave
-        sectionLayout="cards"
-      />
-
-      <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
-    </div>
+    <AgentConfigForm
+      mode="edit"
+      agent={agent}
+      onSave={(patch) => updateAgent.mutate(patch)}
+      isSaving={updateAgent.isPending}
+      adapterModels={adapterModels}
+      onDirtyChange={onDirtyChange}
+      onSaveActionChange={onSaveActionChange}
+      onCancelActionChange={onCancelActionChange}
+      hideInlineSave
+      sectionLayout="cards"
+      activeSection={activeSection}
+    />
   );
 }
 
