@@ -8,11 +8,16 @@ on:
   # fix for the porting-era allow-list that silently ran zero checks on
   # stacked / feature-to-feature PRs. `ready_for_review` is listed so that
   # marking a draft PR ready re-fires the workflow and the draft-guarded jobs
-  # (see each job's `if:`) run for real before merge. `edited` is listed so a
-  # PR retargeted to a new base re-runs CI against that base; the per-job `if:`
-  # only acts on base changes (`changes.base`), not title/body edits.
+  # (see each job's `if:`) run for real before merge.
+  #
+  # NOTE: `edited` is deliberately NOT listed. Adding it would re-run on
+  # title/body edits too, and skipping the jobs there produces skipped-success
+  # required checks (GitHub treats a skipped required job as passing) that can
+  # satisfy branch protection without real CI. Retarget re-runs are a Phase 1.1
+  # follow-up via the aggregator-gate pattern. Until then, push a commit (or
+  # "Update branch") after retargeting to re-trigger the gate.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review]
   # push only on main: post-merge signal + warms the pnpm cache. Feature
   # branches get their signal from the PR run, not a duplicate push run.
   push:
@@ -26,7 +31,7 @@ concurrency:
 jobs:
   policy:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 5
 
     steps:
@@ -112,7 +117,7 @@ jobs:
   brand-check:
     needs: [policy]
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 10
 
     steps:
@@ -310,7 +315,7 @@ jobs:
   # to pass for merge — that's the right gate, not a pipeline dependency.
   verify:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 20
 
     steps:
@@ -347,7 +352,7 @@ jobs:
   # in-PR scope expansions. Once a platform stabilizes, flip its matrix
   # entry to required by adding it to branch protection rules.
   verify-cross-platform:
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
@@ -385,7 +390,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 30
 
     steps:
@@ -476,7 +481,7 @@ jobs:
   # can hang after download on hosted macOS/Windows, and CI runs headless. The
   # required Linux e2e job keeps the full fallback path.
   e2e-cross-platform:
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
@@ -565,7 +570,7 @@ jobs:
   # caught it pre-merge).
   migrations:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 15
 
     services:

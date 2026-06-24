@@ -271,12 +271,15 @@ Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR
 - `pr.yml` (the gate suite) runs on **every** pull request — no base-branch
   filter — plus `push` to `main`. Required checks: `verify`, `e2e`,
   `migrations`, `policy`, `brand-check`. Cross-platform lanes stay advisory.
-- **Draft PRs are gated; retargets re-run:** the `pull_request` trigger lists
-  `ready_for_review` + `edited`, and each `pr.yml` job carries
-  `if: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.draft && (github.event.action != 'edited' || github.event.changes.base != null)) }}`.
-  Draft PRs show the gate jobs as `skipped`; marking a PR ready re-runs them.
-  Retargeting a PR to a new base re-runs CI against that base (the guard fires
-  only on base changes, not title/body edits).
+- **Draft PRs are gated:** each `pr.yml` job carries
+  `if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}`,
+  and the `pull_request` trigger lists `ready_for_review`. Draft PRs show the
+  gate jobs as `skipped`; marking a PR ready re-runs them for real before merge.
+  (Safe despite skip-as-success: drafts can't be merged, and `ready_for_review`
+  re-runs the jobs. Do NOT add `edited` to chase retarget re-runs — on a
+  *mergeable* PR a title/body edit would skip the required jobs into a success
+  and bypass branch protection. Retarget + `paths-ignore` need the aggregator
+  gate pattern, tracked for 1.1.)
 - `release.yml` / `docker.yml` run on `push` to `main` (Docker also on `v*`
   tags). The porting-era branch allow-list is gone.
 - Do NOT re-introduce a `branches:` filter on `pr.yml`'s `pull_request` trigger
