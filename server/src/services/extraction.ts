@@ -5,6 +5,8 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getProviderApiKey, createProvider, resolveAvailableProvider } from "./internal-agent/providers/index.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
+import { resolveExtractionEngine, resolveCompanyCliTool } from "./extraction-engine.js";
+import { extractViaCli, CliExtractionError } from "./extraction-cli.js";
 
 // Re-export pure parser symbols so existing importers (`from "./extraction.js"`)
 // continue to work unchanged after the move to extraction-parser.ts.
@@ -384,24 +386,19 @@ export function extractionService(db: Db) {
           return;
         }
 
-        // 4. Pre-check: verify an LLM provider/key is available before proceeding
-        const [preCheckConfig] = await db
-          .select()
-          .from(internalAgentConfig)
-          .where(eq(internalAgentConfig.companyId, companyId));
-
-        // Resolve a usable provider: the configured one, or any provider that
-        // actually has a key (DB secret or env var). Adding any one key works.
-        let resolvedProvider: { provider: string; apiKey: string; model: string };
+        // 4. Decide the extraction ENGINE *before* any hosted-key precheck.
+        //    Keyless extraction only runs if we choose the engine first: the
+        //    "cli" engine bypasses provider resolution entirely. The legacy
+        //    no-provider `skipped` outcome now happens ONLY when NEITHER a CLI
+        //    nor a hosted key exists (resolveExtractionEngine throws).
+        let engine: "cli" | "api";
         try {
-          resolvedProvider = await resolveAvailableProvider(
-            db,
-            companyId,
-            preCheckConfig?.provider ?? undefined,
-          );
-        } catch {
+          engine = await resolveExtractionEngine(db, companyId);
+        } catch (engineErr) {
           const msg =
-            "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
+            engineErr instanceof Error
+              ? engineErr.message
+              : "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow, or set a provider key in Settings → LLM Providers.";
           log.warn(msg);
           await db
             .update(discussionEntries)
@@ -415,7 +412,16 @@ export function extractionService(db: Db) {
 
         // (status was already set to 'processing' by the atomic claim above)
 
-        // 6. Get thread context (most recent 10 entries, excluding current)
+        // 5. Fetch agent config (used by both engines: provider/model hint for
+        //    the api path, and shared for downstream bookkeeping). Cheap single
+        //    read; harmless on the cli path.
+        const [agentConfig] = await db
+          .select()
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId));
+
+        // 6. Get thread context (most recent 10 entries, excluding current).
+        //    Shared by BOTH engines.
         const previousEntries = await db
           .select()
           .from(discussionEntries)
@@ -430,7 +436,8 @@ export function extractionService(db: Db) {
           .map((e: any) => e.rawContent)
           .join("\n---\n");
 
-        // 7. Build extraction prompt
+        // 7. Build extraction prompt. Shared by BOTH engines — there is no
+        //    second extraction prompt to maintain.
         const { text: deptList, lookup: deptLookup } =
           await buildDepartmentsList(db, companyId);
         const prompt = EXTRACTION_PROMPT_TEMPLATE.replace(
@@ -438,12 +445,77 @@ export function extractionService(db: Db) {
           deptList,
         );
 
-        // 8. Use agent config from pre-check (already fetched above)
-        const agentConfig = preCheckConfig;
+        const userContent = threadContext
+          ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
+          : entry.rawContent;
 
         let extractedItems: ExtractedItem[];
 
-        if (resolvedProvider) {
+        if (engine === "cli") {
+          // ── Keyless CLI extraction ────────────────────────────────────
+          // NO resolveAvailableProvider call: the CLI is keyless. extractViaCli
+          // returns already-parsed ExtractedItem[] (no parseExtractedItems step).
+          const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
+          log.info({ cliTool }, "Using CLI engine for extraction (keyless)");
+
+          try {
+            extractedItems = await extractViaCli(cliTool, prompt, userContent, {
+              codexModel: agentConfig?.model ?? null,
+            });
+          } catch (cliErr) {
+            if (cliErr instanceof CliExtractionError) {
+              // Terminalize as `failed` (NOT `skipped`) — a CLI was chosen but
+              // the run itself failed (missing/not-authed/timeout/crash/parse).
+              // Record kind + message so Task 7's failure UX can surface it.
+              const failPayload = JSON.stringify({
+                kind: cliErr.kind,
+                message: cliErr.message,
+              });
+              log.error({ kind: cliErr.kind, err: cliErr }, "CLI extraction failed");
+              await db
+                .update(discussionEntries)
+                .set({
+                  extractionStatus: "failed",
+                  sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${failPayload}::jsonb)`,
+                })
+                .where(eq(discussionEntries.id, entryId));
+
+              publishLiveEvent({
+                companyId,
+                type: "discussion.extraction.failed",
+                payload: { discussionId, entryId, error: cliErr.message },
+              });
+              return;
+            }
+            // Non-CLI error: rethrow into the outer catch (terminalizes failed).
+            throw cliErr;
+          }
+        } else {
+          // ── Hosted API extraction ─────────────────────────────────────
+          // The provider precheck lives here, on the api path ONLY. With no
+          // hosted key this previously short-circuited the whole function; now
+          // it is unreachable on the cli path, so keyless extraction proceeds.
+          let resolvedProvider: { provider: string; apiKey: string; model: string };
+          try {
+            resolvedProvider = await resolveAvailableProvider(
+              db,
+              companyId,
+              agentConfig?.provider ?? undefined,
+            );
+          } catch {
+            const msg =
+              "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
+            log.warn(msg);
+            await db
+              .update(discussionEntries)
+              .set({
+                extractionStatus: "skipped",
+                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
+              })
+              .where(eq(discussionEntries.id, entryId));
+            return;
+          }
+
           // ── Agent-based extraction ────────────────────────────────────
           log.info(`Using ${resolvedProvider.provider} provider for extraction`);
 
@@ -463,10 +535,6 @@ export function extractionService(db: Db) {
               agentConfig?.provider === resolvedProvider.provider && agentConfig?.model
                 ? agentConfig.model
                 : resolvedProvider.model;
-
-            const userContent = threadContext
-              ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
-              : entry.rawContent;
 
             let text = "";
             for await (const chunk of provider.chat({
@@ -502,13 +570,6 @@ export function extractionService(db: Db) {
               .where(eq(internalAgentRuns.id, run.id));
             throw providerErr;
           }
-        } else {
-          // ── Legacy fallback extraction ────────────────────────────────
-          log.info("No agent config — using legacy extraction");
-          const userContent = threadContext
-            ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
-            : entry.rawContent;
-          extractedItems = await callLLM(prompt, userContent, db, companyId);
         }
 
         log.info({ itemCount: extractedItems.length }, "Extraction complete");

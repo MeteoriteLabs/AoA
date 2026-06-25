@@ -99,6 +99,15 @@ vi.mock("../services/internal-agent/providers/index.js", () => ({
     mockResolveAvailableProvider(...args),
 }));
 
+// These tests exercise the HOSTED-API extraction path. Force the engine router
+// to "api" so the decision is deterministic (no real `claude`/`codex` PATH probe)
+// and consumes no select-queue slot — the api precheck then lives entirely in the
+// api branch, exactly as these fixtures expect.
+vi.mock("../services/extraction-engine.js", () => ({
+  resolveExtractionEngine: vi.fn(async () => "api"),
+  resolveCompanyCliTool: vi.fn(async () => "claude_cli"),
+}));
+
 import { extractionService } from "../services/extraction.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

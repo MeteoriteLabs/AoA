@@ -25,6 +25,14 @@ vi.mock("../middleware/logger.js", () => ({
 vi.mock("../services/internal-agent/providers/index.js", () => ({
   getProviderApiKey: vi.fn(async () => "k"),
   createProvider: vi.fn(),
+  resolveAvailableProvider: vi.fn(async () => ({ provider: "openai", apiKey: "k", model: "gpt-4o" })),
+}));
+
+// Force the engine to "api" so the atomic-claim assertions (select counts) are
+// not perturbed by a real CLI PATH probe and so we never spawn a real binary.
+vi.mock("../services/extraction-engine.js", () => ({
+  resolveExtractionEngine: vi.fn(async () => "api"),
+  resolveCompanyCliTool: vi.fn(async () => "claude_cli"),
 }));
 
 import { extractionService } from "../services/extraction.js";
