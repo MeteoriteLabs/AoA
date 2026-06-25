@@ -6,7 +6,9 @@
 
 **Architecture:** Option A (locked in the design doc, decision table row 1). Migrate `ui/src/main.tsx` from plain `<BrowserRouter>` to an *incremental* data router — `createBrowserRouter([{ path: "*", element: <App /> }])` + `<RouterProvider>` — so the entire existing `<Routes>`/`<Route>` tree in `App.tsx` rides along **untouched** (the officially-supported descendant-`<Routes>` nesting bridge). Add one `UnsavedChangesProvider` (mounted inside the router, outside `<Routes>`) that owns exactly **one** `useBlocker` and a centralized "Discard unsaved changes?" `ConfirmDialog`. Expose a `useUnsavedChanges(isDirty)` hook that page components call to register their dirty state. Rewire `AgentDetail` + `AoaAgentDetail` to the global guard and delete the bespoke `pendingNav`/`handleViewChange`/`onHeroNavigate` plumbing (plus the now-dead props threaded through `AgentDetailCore`/`AgentHeroCard`). **Keep `useBeforeUnload`** in both pages — `useBlocker` does not fire on tab-close/refresh.
 
-**Tech Stack:** React 19, react-router-dom `^7.18.0` (supports `createBrowserRouter` + `RouterProvider` + `createMemoryRouter` + `useBlocker`), TypeScript, Vitest + @testing-library/react. App navigation uses `@/lib/router` (auto-injects company prefix; `export * from "react-router-dom"` already re-exports `useBlocker` and `useBeforeUnload` transitively). UI test command: **`pnpm --filter @armyofagents/ui test:run`** (= `vitest run`). Typecheck: **`pnpm --filter @armyofagents/ui typecheck`** (= `tsc -b`). Manual runtime verification (spike only) uses the gstack `/browse` skill — never `preview_start` or claude-in-chrome for this app.
+**Tech Stack:** React 19, react-router-dom `^7.18.0` (supports `createBrowserRouter` + `RouterProvider` + `createMemoryRouter` + `useBlocker`), TypeScript, Vitest + @testing-library/react, Playwright (e2e). App navigation uses `@/lib/router` (auto-injects company prefix; `export * from "react-router-dom"` already re-exports `useBlocker` and `useBeforeUnload` transitively). UI test command: **`pnpm --filter @armyofagents/ui test:run`** (= `vitest run`). Typecheck: **`pnpm --filter @armyofagents/ui typecheck`** (= `tsc -b`). E2e command (real browser, throwaway local_trusted instance on :3199): **`pnpm test:e2e`** (= `playwright test --config=tests/e2e/playwright.config.ts`); single spec: **`pnpm test:e2e agent-unsaved-guard`**; headed for local debugging: **`pnpm test:e2e:headed agent-unsaved-guard`**. Manual runtime verification (spike only) uses the gstack `/browse` skill — never `preview_start` or claude-in-chrome for this app.
+
+> **E2e platform reality (from `tests/e2e/playwright.config.ts`):** the suite boots ONE throwaway instance via `pnpm aoa onboard --yes --run` in `local_trusted` mode (no auth needed), chromium-only, `workers: 1` (specs share one embedded-postgres instance; helpers are not worker-safe), 60s per-test timeout. **On the user's Windows machine the suite self-skips** — `testMatch` collapses to `windows-embedded-postgres-skip.spec.ts` when `process.platform === "win32" && !DATABASE_URL` (embedded-postgres can't start as `runneradmin`). So `agent-unsaved-guard.spec.ts` is proven on **Linux CI (required gate)** and self-skips locally on Windows unless `DATABASE_URL` points at an external Postgres. Local hands-on proof for the dev is the Task 1 `/browse` spike + the Task 6 manual sweep; the e2e is the durable regression net on CI.
 
 ---
 
@@ -31,9 +33,18 @@ ui/src/
     AgentHeroCard.tsx                       ← MODIFY (remove onNavigate prop + onClick interception)
     __tests__/
       AgentHeroCard.test.tsx               ← MODIFY (replace the stale onNavigate-fires test with a plain-<Link> render test)
+  components/
+    AgentConfigForm.tsx                     ← MODIFY (add data-testid="agent-config-name-input" to the Identity "Name" DraftInput — the e2e dirty handle; DraftInput spreads ...props onto its <input>)
   __tests__/
     AoaAgentDetail.test.tsx                 ← MODIFY (drop the mocked-router guard assumptions if any break; add dirty-nav parity if feasible)
+
+tests/e2e/
+  agent-unsaved-guard.spec.ts              ← NEW (real-browser Playwright proof of the global guard: sidebar <Link>, browser Back, Discard-vs-Cancel, clean-no-dialog)
+  helpers/
+    seed-company.ts                        ← UNCHANGED (reused verbatim: seedCompany + cleanupTestCompanies)
 ```
+
+> **Why the new source `data-testid`:** the Config Identity "Name" field is a `DraftInput` (renders a plain `<input>` that spreads `...props`, so a forwarded `data-testid` lands on the input). It currently exposes only `placeholder="Agent name"`. A placeholder locator is brittle (copy can change), so Task 3 adds `data-testid="agent-config-name-input"` to that one DraftInput as the e2e/integration dirty handle. Everything else the specs touch is already stable via accessible roles/names: the Tabs (`role="tab"` named "Config"/"Instructions"/"Overview"), the sidebar nav (`role="link"` named "Tasks"/"Home"), and the centralized dialog (Radix `AlertDialog` → `role="alertdialog"`, title "Discard unsaved changes?", buttons "Discard & leave" / "Cancel"). No extra testids needed there.
 
 **Repo rules honored:** use `@/lib/router` (auto-prefixing) for all app navigation, never raw `react-router-dom` for app links; AoA is not open source — no OSS/license headers; commit messages end with the `Co-Authored-By` trailer below; this ships as its own PR/branch off `main`.
 
@@ -164,13 +175,62 @@ Create the global guard primitive: a provider owning ONE `useBlocker` + the cent
     return render(<RouterProvider router={router} />);
   }
   ```
-  Then write these cases (each asserting on the centralized dialog title "Discard unsaved changes?" / `role="alertdialog"`):
-  - `dirty + <Link> click → confirm dialog appears; URL unchanged until "Discard & leave"; confirming navigates`.
-  - `dirty + <Link> click → "Cancel"/dismiss keeps the URL and clears the dialog`.
-  - `clean (dirty=false) + <Link> click → NO dialog; navigation happens immediately`.
-  - `two registrants, one dirty → dialog appears` and `both clean → no dialog` (ref-count behavior).
-  - `same-path navigation while dirty → NO dialog` (the path-equality guard).
-  > For the Back-button case, leave a `it.skip` or a comment pointing to the manual spike (Task 1) — jsdom popstate is unreliable; the spike is the real proof. Do NOT fake-pass it.
+  Then write these cases as **separate `it(...)` blocks** (each asserting on the centralized dialog title "Discard unsaved changes?" via `screen.getByRole("alertdialog")` / `screen.getByRole("button", { name: "Discard & leave" })` / `screen.getByRole("button", { name: "Cancel" })`). Maximize coverage — these are distinct, independently-failing assertions, NOT one mega-test:
+
+  1. **`dirty + <Link> click → dialog appears AND URL is unchanged` (the block half).**
+     ```tsx
+     it("dirty + cross-path <Link> → shows the confirm dialog and holds the URL", async () => {
+       const user = userEvent.setup();
+       renderApp(true);
+       expect(screen.getByText("Dirty Page")).toBeInTheDocument();
+       await user.click(screen.getByRole("link", { name: "go other" }));
+       expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+       expect(screen.getByText("Discard unsaved changes?")).toBeInTheDocument();
+       // URL/route did NOT change — still on the dirty page.
+       expect(screen.getByText("Dirty Page")).toBeInTheDocument();
+       expect(screen.queryByText("Other Page")).not.toBeInTheDocument();
+     });
+     ```
+  2. **`dirty + <Link> + "Discard & leave" → navigation PROCEEDS` (discard-leaves, a SEPARATE assertion from #1).**
+     ```tsx
+     it("dirty + Discard & leave → proceeds to the target route", async () => {
+       const user = userEvent.setup();
+       renderApp(true);
+       await user.click(screen.getByRole("link", { name: "go other" }));
+       await user.click(await screen.findByRole("button", { name: "Discard & leave" }));
+       expect(await screen.findByText("Other Page")).toBeInTheDocument();
+       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+     });
+     ```
+  3. **`dirty + <Link> + "Cancel" → STAYS put` (cancel-stays, a SEPARATE assertion from #2).**
+     ```tsx
+     it("dirty + Cancel → stays on the page and dismisses the dialog", async () => {
+       const user = userEvent.setup();
+       renderApp(true);
+       await user.click(screen.getByRole("link", { name: "go other" }));
+       await user.click(await screen.findByRole("button", { name: "Cancel" }));
+       await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+       expect(screen.getByText("Dirty Page")).toBeInTheDocument();
+       expect(screen.queryByText("Other Page")).not.toBeInTheDocument();
+     });
+     ```
+  4. **`clean (dirty=false) + <Link> → NO dialog, navigates immediately` (the guard must NOT fire when not dirty).**
+     ```tsx
+     it("clean nav → no dialog, navigates immediately", async () => {
+       const user = userEvent.setup();
+       renderApp(false);
+       await user.click(screen.getByRole("link", { name: "go other" }));
+       expect(await screen.findByText("Other Page")).toBeInTheDocument();
+       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+     });
+     ```
+  5. **`same-path navigation while dirty → NO dialog` (the `pathname` equality guard).** Render a `<Link>` whose `to` equals the current path (e.g. `to="/"` from `/`) and assert clicking it never raises the dialog even with `dirty=true`.
+  6. **Ref-count: two registrants — fires iff ANY is dirty.** Mount TWO `DirtyPage`-style children each calling `useUnsavedChanges(...)` with independent flags inside the same provider:
+     - `editorA dirty + editorB clean → cross-path nav SHOWS the dialog` (one dirty is enough).
+     - `editorA clean + editorB clean → cross-path nav shows NO dialog`.
+     - `editorA dirty, then editorA unmounts (cleanup) → nav shows NO dialog` (unmount drops the registrant so a stale flag can't block forever; assert by conditionally rendering editorA off).
+  7. **Two SIMULTANEOUS dirty editors both contribute (Config-dirty vs Instructions-dirty analogue).** Mount `editorA dirty` and `editorB dirty` together; assert one dialog appears on cross-path nav, and that "Discard & leave" clears BOTH registrants (a second immediate cross-path nav after discarding does NOT re-block, proving `registrantsRef.current.clear()` wiped both).
+  > **Back-button (popstate):** add an `it.skip("blocks the browser Back button (proven by the Task 1 /browse spike + the agent-unsaved-guard e2e)", ...)` with a one-line comment that jsdom/MemoryRouter popstate is unreliable, so the REAL proof is (a) the manual `/browse` spike (Task 1) and (b) the Playwright `agent-unsaved-guard.spec.ts` `page.goBack()` case (Task 6). Do NOT fake-pass it in jsdom.
 - [ ] **Run the test, confirm it FAILS** (modules don't exist yet): `pnpm --filter @armyofagents/ui test:run useUnsavedChanges`.
 - [ ] **Implement `ui/src/context/UnsavedChangesProvider.tsx`:**
   ```tsx
@@ -310,11 +370,16 @@ Replace `AgentDetail`'s bespoke per-page guard with one `useUnsavedChanges(...)`
 
 ### Steps
 
-- [ ] **Write/extend a failing test** that proves the new wiring. Add a focused spec — `ui/src/__tests__/AgentDetailGuard.test.tsx` (or extend an existing AgentDetail test) — that mounts `AgentDetail` wrapped in `UnsavedChangesProvider` inside a `createMemoryRouter`/`RouterProvider`, drives the Config tab dirty (via the lifted `onDirtyChange` → set a draft), and asserts:
-  - dirty + click a **sidebar-style `<Link>`** (rendered as a sibling route target) → centralized "Discard unsaved changes?" dialog appears; confirming navigates.
-  - clean → `<Link>` nav happens with no dialog.
-  - the existing **tab switch with a dirty Config** still surfaces the dialog (parity with the old `handleViewChange`).
-  > Because `AgentDetail` mocks are heavy (see `AoaAgentDetail.test.tsx` for the established mock surface: `@/lib/router`, `../api/agents`, `../context/*`, `AgentDetailCore`, etc.), you may instead assert the *contract*: that `AgentDetail` calls `useUnsavedChanges` with `configDirty || instrDirty`. Prefer the integration-style assertion (real provider + real `useBlocker`) where the mock surface allows it; fall back to a `vi.mock` spy on `useUnsavedChanges` to assert it's called with the combined dirty flag. Pick the lighter one that still proves behavior, not implementation.
+- [ ] **Write/extend a failing test** that proves the new wiring. Add a focused spec — `ui/src/__tests__/AgentDetailGuard.test.tsx` (or extend an existing AgentDetail test) — that mounts `AgentDetail` wrapped in `UnsavedChangesProvider` inside a `createMemoryRouter`/`RouterProvider` with a sibling route target, drives the Config tab dirty (type into `getByTestId("agent-config-name-input")`, which is `immediate` → flips `configDirty`), and asserts **each trigger surface as a SEPARATE `it(...)`** so the three navigation entry points are independently covered:
+  - **(tab switch, parity with the old `handleViewChange`)** dirty Config + click the **Instructions tab** (`getByRole("tab", { name: "Instructions" })`, a distinct `pathname` `/agents/<ref>/instructions`) → centralized "Discard unsaved changes?" dialog appears; "Discard & leave" proceeds to Instructions; "Cancel" stays on Config with the typed edit still present.
+  - **(hero KPI deep-link)** dirty Config + click a hero KPI `<Link>` (`getByTestId("hero-kpi-last-run")` or `hero-kpi-tasks`, a cross-path route) → the SAME centralized dialog appears (proving the deleted per-card `onNavigate` interception was correctly replaced by the global guard, not lost).
+  - **(sidebar `<Link>` — shimmed)** dirty Config + click a sibling sidebar-style `<Link to="/issues">` rendered next to `AgentDetail` in the harness → dialog appears; Cancel stays, Discard navigates. (Real sidebar+Back are proven in the e2e, Task 6; this shim proves the provider intercepts an out-of-page `<Link>`.)
+  - **(clean control)** with Config NOT dirty, every one of the above navigations happens immediately with NO dialog.
+  > Because `AgentDetail` mocks are heavy (see `AoaAgentDetail.test.tsx` for the established mock surface: `@/lib/router`, `../api/agents`, `../context/*`, `AgentDetailCore`, etc.), prefer the integration-style assertion (real `UnsavedChangesProvider` + real `useBlocker` in a `createMemoryRouter`) where the mock surface allows it — that's what proves the three trigger surfaces actually route through the one guard. If the heavy mocks make a full mount impractical, fall back to a `vi.mock` spy on `useUnsavedChanges` asserting `AgentDetail` calls it with `configDirty || instrDirty` AND keep the tab/KPI/sidebar trigger coverage in the Task 2 provider test (which already exercises a real `<Link>`). Do not let the fallback drop the multi-surface coverage — the whole point of this follow-up is that all three entry points hit the same dialog.
+- [ ] **Assert BOTH editors independently arm the guard (Config-dirty vs Instructions-dirty).** `AgentDetail` registers `configDirty || instrDirty`, so each editor must be able to trigger the guard alone. Add two assertions (integration mount, or the spy fallback asserting the combined-flag argument transitions to `true`):
+  - **Config-only dirty:** type into `getByTestId("agent-config-name-input")` (Instructions untouched) → cross-path nav shows the dialog.
+  - **Instructions-only dirty:** switch to the Instructions tab, edit a file in the editor (drives `onDirtyChange(true)` via `AgentInstructionsTab`'s `instrDirty`) with Config clean → cross-path nav shows the dialog.
+  > This proves the `||` combination, not just one branch — a regression that wired only `configDirty` (dropping `instrDirty`) would silently pass a Config-only test but fail this Instructions-only one.
 - [ ] **Run the test, confirm it FAILS:** `pnpm --filter @armyofagents/ui test:run AgentDetail`.
 - [ ] **Edit `AgentDetail.tsx`:**
   - Add the import (line ~2 area, after the `@/lib/router` import line — `useUnsavedChanges` is NOT a router symbol so it imports from the hook):
@@ -340,6 +405,20 @@ Replace `AgentDetail`'s bespoke per-page guard with one `useUnsavedChanges(...)`
     > IMPORTANT verify-during-impl: every tab path (`/agents/<ref>` vs `/agents/<ref>/configure` vs `/agents/<ref>/instructions`) is a DISTINCT `pathname`, so the provider's `currentLocation.pathname !== nextLocation.pathname` guard WILL block a dirty tab switch. Confirm in the parity test. If a tab switch were ever same-path (it isn't here), it would slip the guard — that's acceptable per design (same-path = no data loss risk).
   - **Delete** the `onHeroNavigate={…}` prop (601–610) from `<AgentDetailCore>`. Hero KPI deep-links (`/issues?...`, `/agents/<ref>/runs/<id>`) are cross-path and will be blocked by the provider automatically.
   - **Delete** the `pendingNav` `<ConfirmDialog>` (687–701) entirely. Leave the terminate `<ConfirmDialog>` (702–713) intact.
+- [ ] **Add the stable e2e dirty handle** to `ui/src/components/AgentConfigForm.tsx`. The Identity "Name" field (lines ~513–520) is a `DraftInput` rendering a plain `<input>` that spreads `...props`. Add a `data-testid` so the e2e (and the AgentDetail integration test) can locate + dirty it reliably without depending on placeholder copy:
+    ```tsx
+    <Field label="Name" hint={help.name}>
+      <DraftInput
+        value={eff("identity", "name", props.agent.name)}
+        onCommit={(v) => mark("identity", "name", v)}
+        immediate
+        className={inputClass}
+        placeholder="Agent name"
+        data-testid="agent-config-name-input"
+      />
+    </Field>
+    ```
+    > `DraftInput` (`agent-config-primitives.tsx:300`) destructures `value/onCommit/immediate/className` and spreads the rest onto `<input {...props}>`, so `data-testid` lands on the input element. `immediate` means each keystroke calls `onCommit` → marks the Config draft dirty synchronously (no blur needed) — exactly what the e2e/integration tests rely on to flip `configDirty`. This is the ONLY source-test-id this plan introduces.
 - [ ] **Edit `AgentDetailCore.tsx`:** remove the `onHeroNavigate?: (to: string) => boolean;` prop (lines 35–37 of the interface), remove it from the destructure (line 66), and remove `onNavigate={onHeroNavigate}` from `<AgentHeroCard>` (line 81).
 - [ ] **Edit `AgentHeroCard.tsx`:** remove the `onNavigate?: (to: string) => boolean;` prop (lines 30–32 of `AgentHeroCardProps`), remove it from the destructure (line 55), and remove the `onClick={(e) => { if (onNavigate?.(kpi.to!)) e.preventDefault(); }}` handler from the KPI `<Link>` (lines 119–121). The KPI `<Link>` keeps its `to`, `data-testid`, and className. After this edit the KPI link is a plain navigation `<Link>` again — the discard-confirm now happens globally via the provider's `useBlocker`, not via an inline per-Link interception.
 - [ ] **UPDATE the existing `AgentHeroCard` test to match the deleted prop** at `ui/src/components/agent-detail/__tests__/AgentHeroCard.test.tsx`. The current file has a test (lines 65–78) that asserts the now-deleted `onNavigate` callback fires:
@@ -490,16 +569,160 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 
 ---
 
-## Task 6 — Full verification + parity sweep
+## Task 6 — Playwright e2e: real-browser proof of the global guard (`agent-unsaved-guard.spec.ts`)
+
+> **This is the durable regression net.** The unit/integration tests (Tasks 2–3) prove the provider/hook in jsdom; the Task 1 `/browse` spike proves the runtime once, by hand, then is reverted. This spec is the ONLY automated proof in a REAL browser — and the only automated proof of the **browser Back button** (`page.goBack()`), which jsdom/MemoryRouter popstate can't exercise. It rides the existing e2e harness verbatim (no new helpers, no invented utilities).
+
+**Files:**
+- `tests/e2e/agent-unsaved-guard.spec.ts` (NEW)
+- Reuses `tests/e2e/helpers/seed-company.ts` (`seedCompany`, `cleanupTestCompanies`) — verified present and used by `commander-team-tab.spec.ts` / `planning-mode.spec.ts`.
+
+**Harness facts grounded by reading the suite (do NOT invent):**
+- The webServer boots one throwaway `local_trusted` instance (`pnpm aoa onboard --yes --run`) on `:3199`; `baseURL` is set, so specs use **relative** paths (`page.goto("/...")`).
+- `seedCompany(request, name)` POSTs `/api/companies` (synthetic local-board actor is auto-authorised in `local_trusted` — no Bearer token) and returns `{ id, issuePrefix }`.
+- A worker agent is seeded by POST `/api/companies/${id}/agents` (pattern proven in `commander-team-tab.spec.ts`). Use `adapterType: "claude_local"` so the Config Identity form + Instructions bundle are available.
+- Agent detail route (from `App.tsx`): `/{prefix}/agents/{agentId}` (Overview), `/{prefix}/agents/{agentId}/configure` (Config tab), `/{prefix}/agents/{agentId}/instructions`. Go straight to the Config tab via the `/configure` URL.
+- Dirty handle: `getByTestId("agent-config-name-input")` (added in Task 3; `immediate` → keystroke flips `configDirty`).
+- Cross-page sidebar nav: the expanded sidebar renders `NavLink`s → `page.getByRole("link", { name: "Tasks" })` (also "Home"/"Agents"). The dialog: Radix `AlertDialog` → `page.getByRole("alertdialog")`, title text "Discard unsaved changes?", buttons `getByRole("button", { name: "Discard & leave" })` and `{ name: "Cancel" }`.
+
+### Steps
+
+- [ ] **Add the seed helper inline in the spec** (mirrors `seedAoaAgent` in `commander-team-tab.spec.ts`, but kind=org/worker):
+  ```ts
+  async function seedWorkerAgent(request: APIRequestContext, companyId: string) {
+    const res = await request.post(`/api/companies/${companyId}/agents`, {
+      data: {
+        name: "Guard E2E Agent",
+        role: "general",
+        title: "Guard E2E Agent",
+        adapterType: "claude_local",
+      },
+    });
+    if (!res.ok()) {
+      const body = await res.text().catch(() => "(no body)");
+      throw new Error(`seedWorkerAgent failed: ${res.status()} ${body}`);
+    }
+    return (await res.json()) as { id: string; urlKey?: string };
+  }
+  ```
+  > Confirm the worker-agent create payload against `server/src/routes/agents.ts` during impl (the AoA variant uses `kind: "aoa"`; a worker/org agent omits `kind` or sets `kind: "org"`). If `claude_local` requires extra fields at create, fall back to the minimal accepted shape and still open the Config tab — the Identity "Name" field exists for every adapter.
+- [ ] **Write the spec.** Full skeleton (real locators, no placeholders):
+  ```ts
+  import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+  import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+
+  /**
+   * E2E — Global unsaved-changes guard (Follow-up #1).
+   *
+   * Proves the ONE global UnsavedChangesProvider/useBlocker in a real browser:
+   *  - dirty + sidebar <Link> → "Discard unsaved changes?" dialog; Cancel stays, Discard leaves
+   *  - dirty + browser Back (page.goBack) → the same dialog (the jsdom-impossible case)
+   *  - clean nav → no dialog, navigates immediately
+   *
+   * Self-skips on Windows-without-DATABASE_URL via the config's testMatch
+   * (embedded-postgres can't start as runneradmin). Required gate on Linux CI.
+   */
+
+  async function seedWorkerAgent(request: APIRequestContext, companyId: string) { /* as above */ }
+
+  async function openDirtyConfig(page: Page, request: APIRequestContext) {
+    const company = await seedCompany(request, `E2E-Guard-${Date.now()}`);
+    const agent = await seedWorkerAgent(request, company.id);
+    const ref = agent.urlKey ?? agent.id;
+    await page.goto(`/${company.issuePrefix}/agents/${ref}/configure`);
+    const nameInput = page.getByTestId("agent-config-name-input");
+    await expect(nameInput).toBeVisible({ timeout: 15_000 });
+    // Make the Config form dirty (immediate commit on each keystroke).
+    await nameInput.fill("Guard E2E Agent EDITED");
+    return { company, ref, nameInput };
+  }
+
+  test.describe("global unsaved-changes guard", () => {
+    test.beforeEach(async ({ request }) => {
+      await cleanupTestCompanies(request, /^E2E-Guard-/);
+    });
+
+    test("dirty + sidebar <Link> + Cancel → stays on the agent page, edit intact", async ({ page, request }) => {
+      const { ref, nameInput } = await openDirtyConfig(page, request);
+      await page.getByRole("link", { name: "Tasks" }).click();
+      // Global confirm dialog appears; URL has NOT changed.
+      const dialog = page.getByRole("alertdialog");
+      await expect(dialog).toBeVisible({ timeout: 5_000 });
+      await expect(dialog.getByText("Discard unsaved changes?")).toBeVisible();
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(dialog).toBeHidden();
+      await expect(page).toHaveURL(new RegExp(`/agents/${ref}/configure`));
+      await expect(nameInput).toHaveValue("Guard E2E Agent EDITED");
+    });
+
+    test("dirty + sidebar <Link> + Discard → navigation proceeds, edit gone", async ({ page, request }) => {
+      const { ref } = await openDirtyConfig(page, request);
+      await page.getByRole("link", { name: "Tasks" }).click();
+      const dialog = page.getByRole("alertdialog");
+      await expect(dialog).toBeVisible({ timeout: 5_000 });
+      await dialog.getByRole("button", { name: "Discard & leave" }).click();
+      // Navigated away from the agent page to /issues (Tasks).
+      await expect(page).toHaveURL(/\/issues(\b|\/|\?|$)/, { timeout: 5_000 });
+      await expect(page).not.toHaveURL(new RegExp(`/agents/${ref}/configure`));
+    });
+
+    test("dirty + browser Back → the confirm dialog appears (jsdom can't prove this)", async ({ page, request }) => {
+      // Arrive at /configure from a real prior history entry so Back has a target.
+      const company = await seedCompany(request, `E2E-Guard-${Date.now()}`);
+      const agent = await seedWorkerAgent(request, company.id);
+      const ref = agent.urlKey ?? agent.id;
+      await page.goto(`/${company.issuePrefix}/agents/${ref}`); // Overview (history entry #1)
+      await page.getByRole("tab", { name: "Config" }).click();   // → /configure (history entry #2)
+      const nameInput = page.getByTestId("agent-config-name-input");
+      await expect(nameInput).toBeVisible({ timeout: 15_000 });
+      await nameInput.fill("Back-button dirty edit");
+      // Press the real browser Back button.
+      await page.goBack();
+      const dialog = page.getByRole("alertdialog");
+      await expect(dialog).toBeVisible({ timeout: 5_000 });
+      await expect(dialog.getByText("Discard unsaved changes?")).toBeVisible();
+      // Cancel keeps us on /configure with the edit intact.
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(page).toHaveURL(new RegExp(`/agents/${ref}/configure`));
+      await expect(nameInput).toHaveValue("Back-button dirty edit");
+    });
+
+    test("clean (no edits) + sidebar nav → no dialog, navigates immediately", async ({ page, request }) => {
+      const company = await seedCompany(request, `E2E-Guard-${Date.now()}`);
+      const agent = await seedWorkerAgent(request, company.id);
+      const ref = agent.urlKey ?? agent.id;
+      await page.goto(`/${company.issuePrefix}/agents/${ref}/configure`);
+      await expect(page.getByTestId("agent-config-name-input")).toBeVisible({ timeout: 15_000 });
+      // Do NOT edit anything — form is clean.
+      await page.getByRole("link", { name: "Tasks" }).click();
+      await expect(page).toHaveURL(/\/issues(\b|\/|\?|$)/, { timeout: 5_000 });
+      await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    });
+  });
+  ```
+  > **Locator-grounding to re-verify during impl** (selectors taken from real source, but confirm against the running app):
+  > - Sidebar "Tasks" → `/issues` (`Sidebar.tsx:139`). If the sidebar starts collapsed in the e2e viewport, the link is icon-only inside a Tooltip — either assert against the default-expanded sidebar or target the icon link by `aria-label`/Tooltip. Confirm the expanded `NavLink` exposes the accessible name "Tasks" in the running app; if not, fall back to `page.locator('a[href$="/issues"]')`.
+  > - The Config tab trigger is a Radix `TabsTrigger` (`role="tab"`, name "Config"). The `/configure` deep-link also lands on the Config tab directly (used by the sidebar/clean tests to skip the tab click).
+  > - If `seedWorkerAgent` with `adapterType: "claude_local"` is rejected at create, drop to the minimal accepted body; the Identity "Name" input is adapter-agnostic so the dirty handle still works.
+- [ ] **Run the spec** (Linux/macOS or Windows-with-DATABASE_URL): `pnpm test:e2e agent-unsaved-guard`. Headed debugging: `pnpm test:e2e:headed agent-unsaved-guard`.
+  > On the user's Windows dev box without `DATABASE_URL`, the config's `testMatch` self-skips the whole suite — that is EXPECTED. Do not treat the Windows self-skip as a failure; the required proof is the Linux CI `e2e` gate. For a hands-on local check, run the Task 1 `/browse` spike against the running dev app.
+- [ ] **Confirm the spec is picked up** by the config (`testMatch: "**/*.spec.ts"`, `testDir: "."`) — a plain `*.spec.ts` under `tests/e2e/` is auto-collected; no config edit needed.
+- [ ] **Commit:** `test(ui): e2e prove global unsaved-changes guard (sidebar <Link> + browser Back)`.
+
+---
+
+## Task 7 — Full verification + parity sweep
 
 **Files:** none (verification only).
 
 - [ ] Run the FULL UI suite green: `pnpm --filter @armyofagents/ui test:run`.
 - [ ] Run typecheck clean: `pnpm --filter @armyofagents/ui typecheck`.
 - [ ] Run build clean: `pnpm --filter @armyofagents/ui build`.
+- [ ] **Run the new e2e spec green** (Linux/macOS, or Windows-with-`DATABASE_URL`): `pnpm test:e2e agent-unsaved-guard`. On the user's Windows box without `DATABASE_URL` the suite self-skips by design — that is expected, not a failure; the binding proof is the Linux CI `e2e` gate. (Optionally run the whole suite `pnpm test:e2e` to confirm no cross-spec regression.)
 - [ ] Manually re-verify (gstack `/browse`, on the running app) the four parity behaviors end-to-end with the REAL provider (not the spike): (1) dirty + sidebar `<Link>` → dialog; (2) dirty + browser Back → dialog; (3) clean nav → no dialog; (4) dirty + agent tab switch / hero KPI deep-link → dialog. Confirm "Discard & leave" proceeds and "Cancel" stays.
 - [ ] Confirm `useBeforeUnload` still fires on tab-close/refresh in both `AgentDetail` and `AoaAgentDetail` (the dialog won't show — the browser's native beforeunload prompt does).
 - [ ] Grep to confirm the bespoke plumbing is gone: `pendingNav` and `onHeroNavigate` should no longer appear anywhere; `onNavigate` should no longer appear in `AgentHeroCard.tsx` **or its test** (`AgentHeroCard.test.tsx` — the stale `onNavigate`-fires assertion must be replaced, not left dangling). Note: `onNavigate` legitimately remains in UNRELATED components (`RoutineCard.tsx`, `LobbySidebar.tsx`, `LobbyShell.tsx`, `TaskOutputViewer.tsx`'s `onNavigateToTask`) — those are different props and must NOT be touched. `useUnsavedChanges` should appear in both detail pages.
+- [ ] Grep to confirm the e2e dirty handle is wired: `data-testid="agent-config-name-input"` appears exactly once (`AgentConfigForm.tsx`) and is referenced by `tests/e2e/agent-unsaved-guard.spec.ts` (and, if used there, the Task 3 integration test).
 
 ---
 
@@ -511,8 +734,11 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 - [ ] `AgentDetail` + `AoaAgentDetail` register via `useUnsavedChanges`; both KEEP `useBeforeUnload`.
 - [ ] Bespoke guard DELETED from `AgentDetail` (`pendingNav` state, the `pendingNav`-setting `handleViewChange` branch, `onHeroNavigate` prop + handler, the `pendingNav` `<ConfirmDialog>`) and the now-dead props removed from `AgentDetailCore` (`onHeroNavigate`) and `AgentHeroCard` (`onNavigate`).
 - [ ] **The stale `AgentHeroCard.test.tsx` `onNavigate`-fires test is replaced** (same task as the prop deletion, Task 3) with a plain-`<Link>` render test; no test still references the deleted `onNavigate` / `onHeroNavigate` / `pendingNav` / `handleViewChange` symbols.
-- [ ] **The four parity behaviors are proven by tests** (Task 2 unit + Task 3 integration): dirty + sidebar nav → dialog; dirty + Back → dialog (unit-shimmed + spike-proven); clean nav → no dialog; existing tab/hero guard still fires.
-- [ ] **UI suite green**, **typecheck clean**, **build clean**.
+- [ ] **The four parity behaviors are proven by tests at every layer** — unit/component (Task 2 provider/hook + Task 3 AgentDetail integration) AND real-browser e2e (Task 6): dirty + sidebar nav → dialog; dirty + Back → dialog; clean nav → no dialog; existing tab/hero-KPI guard still fires. Cancel-stays and Discard-leaves are SEPARATE assertions at each layer.
+- [ ] **The unit/component suite explicitly covers** (Task 2 + Task 3): cancel-stays vs discard-leaves as distinct `it`s; guard does NOT fire when clean; guard fires for tab-switch, hero-KPI, AND shimmed sidebar `<Link>`; ref-count (one-of-two dirty fires, unmount drops a registrant); same-path nav does not block; Config-dirty and Instructions-dirty each arm the guard independently.
+- [ ] **The Playwright e2e `tests/e2e/agent-unsaved-guard.spec.ts` is green on Linux CI** (required `e2e` gate) and proves the FOUR real-browser scenarios: (1) dirty + sidebar `<Link>` → dialog, Cancel STAYS (URL unchanged, edit intact); (2) dirty + sidebar `<Link>` → Discard PROCEEDS (URL changes, edit gone); (3) dirty + **browser Back (`page.goBack()`)** → dialog (the jsdom-impossible case); (4) clean + sidebar nav → NO dialog, navigates immediately. Self-skips on Windows-without-`DATABASE_URL` by config `testMatch` (expected, not a failure).
+- [ ] **The e2e dirty handle `data-testid="agent-config-name-input"` exists** (one occurrence, `AgentConfigForm.tsx` Identity "Name" `DraftInput`) and is referenced by the e2e spec.
+- [ ] **UI suite green**, **typecheck clean**, **build clean**, **e2e green on Linux CI**.
 - [ ] Ships as its own PR off `main`; commit messages carry the `Co-Authored-By` trailer.
 
 ---
@@ -526,5 +752,6 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
   2. **`anyDirty` closure freshness in the blocker fn.** I pass a `useCallback(({…}) => anyDirty && …, [anyDirty])` to `useBlocker`. Verify v7 re-reads the latest function on each navigation attempt (it should, since the callback identity changes when `anyDirty` flips). If v7 snapshots the fn at first render, switch to a ref-read inside a stable callback.
   3. **Same-path guard.** The provider only blocks when `currentLocation.pathname !== nextLocation.pathname`. Verify every agent tab path is genuinely distinct (`/agents/<ref>` vs `/agents/<ref>/configure` vs `/instructions`) so dirty tab switches still block — they are, but confirm in the parity test.
   4. **Provider ordering in `main.tsx`.** `UnsavedChangesProvider` must be inside `RouterProvider` (uses `useBlocker`) and the `@/lib/router` `Link` override needs `CompanyProvider` above the router. Both hold in the proposed tree; double-check no provider that previously sat inside `<BrowserRouter>` got dropped.
-  5. **Back-button test coverage.** The browser Back path is only proven manually (spike + Task 6) because jsdom popstate is unreliable; the unit suite shims it / skips it. Reviewers should accept the manual proof rather than expect a flaky jsdom Back-button test.
+  5. **Back-button test coverage.** The browser Back path is now proven by an AUTOMATED real-browser e2e — `tests/e2e/agent-unsaved-guard.spec.ts`'s `page.goBack()` case (Task 6) — plus the one-time manual `/browse` spike (Task 1). The jsdom unit suite intentionally `it.skip`s the Back case (popstate is unreliable in jsdom/MemoryRouter) and points at the e2e. Reviewers should verify the e2e Back case is real (it navigates Overview → Config to create a history entry, then `goBack()`), not a no-op.
   6. **`AoaAgentDetail` newly gains a tab-switch guard** it didn't have before (its `onViewChange` was unguarded). This is a behavior improvement, not a regression — but it's a behavior change worth calling out.
+- **Maximal-coverage pass (2026-06-26):** added a real Playwright e2e (`tests/e2e/agent-unsaved-guard.spec.ts`, Task 6) on the existing harness (`pnpm test:e2e`, throwaway `local_trusted` :3199, chromium, workers:1) — four scenarios incl. the jsdom-impossible `page.goBack()` — and strengthened the vitest layer: Task 2 now has cancel-stays / discard-leaves / clean-no-dialog / same-path / ref-count / two-simultaneous-dirty as SEPARATE `it`s; Task 3 asserts the guard fires for tab-switch AND hero-KPI AND a shimmed sidebar `<Link>`, and that Config-dirty and Instructions-dirty each arm it independently. One new source `data-testid="agent-config-name-input"` (on the Config Identity "Name" `DraftInput`, which spreads `...props`) is the only source change beyond the guard itself; every other selector rides existing accessible roles/names (`role="tab"`, `role="link"`, Radix `role="alertdialog"`). Helper audit: `tests/e2e/helpers/seed-company.ts` (`seedCompany`/`cleanupTestCompanies`) covers company seeding; a worker-agent seed is inlined in the spec mirroring `commander-team-tab.spec.ts`'s `seedAoaAgent` (no agent-seed helper exists in `helpers/` — flagged, but inlining matches the suite's established convention). Windows self-skip (embedded-postgres / `runneradmin`) means the e2e binds on Linux CI; local hands-on proof stays the `/browse` spike.

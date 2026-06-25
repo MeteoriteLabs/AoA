@@ -16,7 +16,7 @@
 packages/shared/src/
   redaction.ts                         (NEW) — pure patterns + functions, re-exported from index.ts
   index.ts                             (EDIT) — add re-export of redaction members
-  __tests__/redaction.test.ts          (NEW) — focused pattern/function test
+  __tests__/redaction.test.ts          (NEW) — EXHAUSTIVE pattern/function test (every key fragment, all 9 value patterns, negatives/edges, barrel re-export). No e2e — pure functions; rationale in Task 1.
 
 packages/adapter-utils/
   package.json                         (EDIT) — add @armyofagents/shared to dependencies
@@ -53,7 +53,7 @@ ui/src/lib/
 
 ## Task 1 — Create the shared redaction module + its test (no consumers yet)
 
-This task adds the new shared source + a focused test and proves the shared suite is green before any consumer is rewired.
+This task adds the new shared source + its **exhaustive** unit test (every key-name fragment, one value per all 9 value patterns under innocuous keys, plus negative/edge/passthrough cases) and proves the shared suite is green before any consumer is rewired. There is no Playwright e2e for this module — redaction is pure data/functions, so unit tests are the correct and complete tool (rationale recorded inline in the test step below).
 
 **Files:**
 - `packages/shared/src/redaction.ts` (NEW)
@@ -61,7 +61,7 @@ This task adds the new shared source + a focused test and proves the shared suit
 
 Steps:
 
-- [ ] **Write the failing test first.** Create `packages/shared/src/__tests__/redaction.test.ts` importing from the not-yet-existing module (`../redaction.js`). This test is the new focused oracle and must fail at first because the module does not exist:
+- [ ] **Write the failing test first.** Create `packages/shared/src/__tests__/redaction.test.ts` importing from the not-yet-existing module (`../redaction.js`). This is the **exhaustive** oracle for the shared module — one concrete case for every distinct redaction scenario: each key-name fragment, each of the 9 value patterns under an *innocuous* key (the H4 value-shape path), and the negative/edge passthrough cases. It must fail at first because the module does not exist. Note: the value-shape cases deliberately use key names that do **not** match `SENSITIVE_ENV_KEY` (verified: `DATABASE_URL`, `CACHE`, `STORE`, `BILLING`, `PROVIDER`, `CLOUD`, `AWS_ID`, `SLACK`, `VENDOR`, `JWT`, `PEM_BLOB`, `STRIPE_LIVE`, `DEPLOY_PAT` all return `false` for the key regex) so each case truly exercises the value pattern, not the key shortcut:
 
   ```ts
   import { describe, it, expect } from "vitest";
@@ -73,27 +73,78 @@ Steps:
     redactEnvForLogs,
   } from "../redaction.js";
 
+  // ---------------------------------------------------------------------------
+  // Fixtures shared across the suites below.
+  // ---------------------------------------------------------------------------
+
+  // Key-name fragments that MUST trigger redaction regardless of value.
+  // One entry per fragment in the SENSITIVE_ENV_KEY alternation, plus case mix.
+  const SENSITIVE_KEY_CASES: Array<[string, string]> = [
+    ["OPENAI_API_KEY", "key"],
+    ["MY_TOKEN", "token"],
+    ["MY_SECRET", "secret"],
+    ["DB_PASSWORD", "password"],
+    ["DB_PASSWD", "passwd"],
+    ["AUTH_HEADER", "auth"],
+    ["SESSION_COOKIE", "cookie"],
+    ["X_CREDENTIAL", "credential"],
+    ["API_BEARER", "bearer"],
+    ["WEBHOOK_SIGNING", "signing"],
+    ["FOO_WEBHOOK", "webhook"],
+    ["NPM_CONFIG", "npm"],
+    ["GH_PRIVATE", "private"],
+    ["DB_CONNECTION", "connection"],
+    // Case-insensitivity (regex is /…/i): lower-case fragment still matches.
+    ["service_token", "token (lower-case)"],
+  ];
+
+  // One secret-looking VALUE per value pattern, each under an INNOCUOUS key
+  // (key regex returns false) so the VALUE path — not the key path — is what
+  // forces redaction. The pattern index each case targets is noted.
+  const SECRET_VALUE_CASES: Array<[string, string, string]> = [
+    // [innocuousKey, value, pattern]
+    ["DATABASE_URL", "postgresql://user:s3cr3t@db.internal:5432/app", "p0 connection string (postgres)"],
+    ["STORE", "mongodb+srv://u:p@cluster0.abc.mongodb.net/db", "p0 connection string (mongodb+srv)"],
+    ["CACHE", "redis://:hunter2@cache:6379/0", "p0 connection string (redis)"],
+    ["PROVIDER", "sk-ant-abcdefghijklmnop", "p1 sk-/sk-ant- provider key"],
+    ["BILLING", "sk_live_abcdEFGH12345678", "p2 Stripe sk_live_"],
+    ["CHECKOUT", "pk_test_abcdEFGH12345678", "p2 Stripe pk_test_"],
+    ["DEPLOY_PAT", "ghp_abcdefghijklmnopqrstuvwxyz0123", "p3 GitHub ghp_"],
+    ["VENDOR", "gho_abcdefghijklmnopqrstuvwxyz0123", "p3 GitHub gho_"],
+    ["CLOUD", "AKIAIOSFODNN7EXAMPLE", "p4 AWS access key id"],
+    ["SLACK", "xoxb-1234567890-abcdefghijklmnop", "p5 Slack xoxb-"],
+    ["MESSENGER", "whsec_3f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c", "p6 generic prefix_<random> (whsec_)"],
+    ["REGISTRY", "npm_abcdefghijklmnopqrstuvwxyz0123456789", "p6 generic prefix_<random> (npm_)"],
+    [
+      "JWT",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwfQ.dGhpc2lzYXNpZ25hdHVyZXZhbA",
+      "p7 JWT (three base64url segments)",
+    ],
+    ["PEM_BLOB", "-----BEGIN RSA PRIVATE KEY-----", "p8 PEM private-key block"],
+  ];
+
+  // Plain, non-secret values under innocuous keys → must NEVER be redacted.
+  const BENIGN_CASES: Array<[string, string]> = [
+    ["AOA_API_URL", "http://localhost:3100"], // http (not a DSN scheme) → passthrough
+    ["NODE_ENV", "production"],
+    ["LOG_LEVEL", "info"],
+    ["PORT", "8080"],
+    ["REGION", "us-east-1"],
+    ["NODE_VERSION", "v24.14.0"],
+    ["AOA_AGENT_ID", "ff55fc57-b5e2-4b15-90fd-2fc97605e5d5"], // UUID is not JWT-shaped
+  ];
+
   describe("SENSITIVE_ENV_KEY", () => {
-    it("matches secret-bearing key fragments (case-insensitive)", () => {
-      for (const key of [
-        "OPENAI_API_KEY",
-        "MY_SECRET",
-        "AUTH_TOKEN",
-        "PASSWORD",
-        "DB_PASSWD",
-        "SESSION_COOKIE",
-        "DEPLOY_CREDENTIAL",
-        "API_BEARER",
-        "WEBHOOK_SIGNING",
-        "NPM_AUTH",
-        "GH_PRIVATE",
-        "DB_CONNECTION",
-      ]) {
-        expect(SENSITIVE_ENV_KEY.test(key)).toBe(true);
-      }
+    it.each(SENSITIVE_KEY_CASES)("matches %s (fragment: %s)", (key) => {
+      expect(SENSITIVE_ENV_KEY.test(key)).toBe(true);
     });
-    it("does not match benign keys", () => {
-      for (const key of ["NODE_ENV", "PORT", "LOG_LEVEL", "AOA_API_URL", "AOA_AGENT_ID"]) {
+    it.each(BENIGN_CASES.map(([k]) => [k]))("does not match benign key %s", (key) => {
+      expect(SENSITIVE_ENV_KEY.test(key)).toBe(false);
+    });
+    it("does not match the innocuous keys used by the value-shape cases", () => {
+      // Guards the H4 contract: each value-shape case must exercise the VALUE
+      // path, so its key must NOT short-circuit via the key regex.
+      for (const [key] of SECRET_VALUE_CASES) {
         expect(SENSITIVE_ENV_KEY.test(key)).toBe(false);
       }
     });
@@ -103,46 +154,81 @@ Steps:
     it("has exactly nine patterns", () => {
       expect(SENSITIVE_ENV_VALUE_PATTERNS).toHaveLength(9);
     });
+    it("each entry is a RegExp", () => {
+      for (const re of SENSITIVE_ENV_VALUE_PATTERNS) {
+        expect(re).toBeInstanceOf(RegExp);
+      }
+    });
   });
 
   describe("looksLikeSecretValue", () => {
-    it("flags secret-looking values", () => {
-      expect(looksLikeSecretValue("postgresql://user:s3cr3t@db.internal:5432/app")).toBe(true);
-      expect(looksLikeSecretValue("sk-ant-abcdefghijklmnop")).toBe(true);
-      expect(looksLikeSecretValue("sk_live_abcdEFGH12345678")).toBe(true);
-      expect(looksLikeSecretValue("ghp_abcdefghijklmnopqrstuvwxyz0123")).toBe(true);
-      expect(looksLikeSecretValue("AKIAIOSFODNN7EXAMPLE")).toBe(true);
-      expect(looksLikeSecretValue("xoxb-1234567890-abcdefghijklmnop")).toBe(true);
-      expect(looksLikeSecretValue("whsec_3f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c")).toBe(true);
-      expect(
-        looksLikeSecretValue("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwfQ.dGhpc2lzYXNpZ25hdHVyZXZhbA"),
-      ).toBe(true);
-      expect(looksLikeSecretValue("-----BEGIN RSA PRIVATE KEY-----")).toBe(true);
+    it.each(SECRET_VALUE_CASES)("flags the %s value (%s)", (_key, value) => {
+      expect(looksLikeSecretValue(value)).toBe(true);
     });
-    it("ignores benign values", () => {
-      expect(looksLikeSecretValue("http://localhost:3100")).toBe(false);
-      expect(looksLikeSecretValue("production")).toBe(false);
-      expect(looksLikeSecretValue("us-east-1")).toBe(false);
+    it.each(BENIGN_CASES)("ignores the benign value of %s (%s)", (_key, value) => {
+      expect(looksLikeSecretValue(value)).toBe(false);
     });
   });
 
   describe("shouldRedactSecretValue", () => {
-    it("redacts by key OR by value, ignores non-strings without a matching key", () => {
-      expect(shouldRedactSecretValue("API_KEY", "x")).toBe(true);
-      expect(shouldRedactSecretValue("DATABASE_URL", "postgresql://user:pass@db:5432/app")).toBe(true);
-      expect(shouldRedactSecretValue("PORT", "8080")).toBe(false);
+    // Key-name path: true regardless of the (string) value.
+    it.each(SENSITIVE_KEY_CASES)("redacts by sensitive key %s (fragment: %s)", (key) => {
+      expect(shouldRedactSecretValue(key, "x")).toBe(true);
+    });
+    // Value-shape path: innocuous key, secret-looking string value → true.
+    it.each(SECRET_VALUE_CASES)("redacts by value shape under innocuous key %s (%s)", (key, value) => {
+      expect(shouldRedactSecretValue(key, value)).toBe(true);
+    });
+    // Negative: innocuous key + plain value → false.
+    it.each(BENIGN_CASES)("does not redact benign %s=%s", (key, value) => {
+      expect(shouldRedactSecretValue(key, value)).toBe(false);
+    });
+    // Non-string values under a benign key are not redacted here (callers
+    // handle secret_ref objects upstream); a sensitive key still wins.
+    it("ignores non-string values when the key is benign", () => {
       expect(shouldRedactSecretValue("PORT", 8080)).toBe(false);
+      expect(shouldRedactSecretValue("PORT", true)).toBe(false);
+      expect(shouldRedactSecretValue("PORT", null)).toBe(false);
+      expect(shouldRedactSecretValue("PORT", undefined)).toBe(false);
       expect(shouldRedactSecretValue("PORT", { type: "secret_ref" })).toBe(false);
+    });
+    it("redacts a sensitive key even when the value is a non-string", () => {
+      expect(shouldRedactSecretValue("API_KEY", 8080)).toBe(true);
+      expect(shouldRedactSecretValue("API_KEY", { type: "secret_ref" })).toBe(true);
     });
   });
 
   describe("redactEnvForLogs", () => {
-    it("redacts by key name and by secret-looking value, preserves benign values", () => {
+    it("redacts every sensitive-key entry to ***REDACTED***", () => {
+      const env = Object.fromEntries(SENSITIVE_KEY_CASES.map(([k]) => [k, "irrelevant-value"]));
+      const out = redactEnvForLogs(env);
+      for (const [k] of SENSITIVE_KEY_CASES) {
+        expect(out[k]).toBe("***REDACTED***");
+      }
+    });
+    it("redacts every secret-looking VALUE under an innocuous key", () => {
+      const env = Object.fromEntries(SECRET_VALUE_CASES.map(([k, v]) => [k, v]));
+      const out = redactEnvForLogs(env);
+      for (const [k] of SECRET_VALUE_CASES) {
+        expect(out[k]).toBe("***REDACTED***");
+      }
+    });
+    it("preserves benign values byte-for-byte (incl. the http:// API URL)", () => {
+      const env = Object.fromEntries(BENIGN_CASES.map(([k, v]) => [k, v]));
+      const out = redactEnvForLogs(env);
+      for (const [k, v] of BENIGN_CASES) {
+        expect(out[k]).toBe(v);
+      }
+    });
+    it("handles an empty env object", () => {
+      expect(redactEnvForLogs({})).toEqual({});
+    });
+    it("redacts a mixed env in a single pass, leaving benign keys untouched", () => {
       const out = redactEnvForLogs({
-        OPENAI_API_KEY: "sk-whatever",
-        DATABASE_URL: "postgresql://user:s3cr3t@db.internal:5432/app",
-        NODE_ENV: "production",
-        AOA_API_URL: "http://localhost:3100",
+        OPENAI_API_KEY: "sk-whatever", // sensitive key
+        DATABASE_URL: "postgresql://user:s3cr3t@db.internal:5432/app", // sensitive value
+        NODE_ENV: "production", // benign
+        AOA_API_URL: "http://localhost:3100", // benign
       });
       expect(out.OPENAI_API_KEY).toBe("***REDACTED***");
       expect(out.DATABASE_URL).toBe("***REDACTED***");
@@ -151,6 +237,11 @@ Steps:
     });
   });
   ```
+
+  > **Byte-identical to the oracles.** Every expectation above is intentionally identical to the two pre-existing oracle suites for the moved behavior — confirmed by hand against `packages/adapter-utils/src/__tests__/redact-env-for-logs.test.ts` and `ui/src/lib/__tests__/env-redaction.test.ts`:
+  > - `redactEnvForLogs` cases reuse the exact key/value pairs from the adapter-utils oracle (`OPENAI_API_KEY`/`MY_SECRET`/`AUTH_TOKEN`, `DATABASE_URL`/`REDIS_DSN`/`STRIPE_LIVE`/`PROVIDER`/`DEPLOY_PAT`/`SIGNING`, `WEBHOOK_SIGNING`/`NPM_AUTH`/`AWS_ID`/`SLACK`, and the `NODE_ENV`/`AOA_API_URL`/`LOG_LEVEL`/`PORT` passthroughs) → same `***REDACTED***` / passthrough outcomes.
+  > - `shouldRedactSecretValue` cases reuse the UI oracle's keys/values (`OPENAI_API_KEY`/`PASSWORD`/`WEBHOOK_SIGNING`/`NPM_TOKEN`/`DB_CONNECTION`, the `DATABASE_URL`/`CACHE`/`BILLING`/`GH`/`CLOUD`/`JWT` value-shape set, the `AOA_API_URL`/`AOA_AGENT_ID`/`NODE_VERSION` benign set) → same booleans, including `PORT`→`false`.
+  > - **No e2e for this module — and why.** Redaction is pure data + pure functions over plain values; unit tests are the correct and complete tool and the cases above are exhaustive (every key fragment, every value pattern, every negative/edge). An e2e of the Run-detail env display would require seeding a heartbeat run with secret-bearing env just to re-prove the same function output through the UI — out of scope for this consolidation and strictly lower-value than the exhaustive unit coverage here. The existing two oracle suites must continue to pass **unchanged**.
 
 - [ ] **Run the new test — expect FAIL** (module not found):
   `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/redaction.test.ts`
@@ -528,8 +619,10 @@ Steps:
 - [ ] `packages/shared/src/redaction.ts` exists with the verbatim key regex (1), value patterns (9), `looksLikeSecretValue`, `shouldRedactSecretValue`, `redactEnvForLogs`; re-exported from `packages/shared/src/index.ts`.
 - [ ] `packages/adapter-utils/src/server-utils.ts` has no inline redaction constants/functions; it imports + re-exports `redactEnvForLogs` and `looksLikeSecretValue` from `@armyofagents/shared`; `@armyofagents/shared` is in adapter-utils `dependencies`.
 - [ ] `ui/src/lib/env-redaction.ts` imports `shouldRedactSecretValue` from `@armyofagents/shared` (re-exporting it) and keeps `redactEnvValue` + `formatEnvForDisplay` wrappers; no inline patterns.
-- [ ] **Behavior oracles pass unchanged:** `packages/adapter-utils/src/__tests__/redact-env-for-logs.test.ts` and `ui/src/lib/__tests__/env-redaction.test.ts`.
-- [ ] New `packages/shared/src/__tests__/redaction.test.ts` passes (incl. the 9-pattern length assertion + barrel-resolution block).
+- [ ] **Behavior oracles pass unchanged:** `packages/adapter-utils/src/__tests__/redact-env-for-logs.test.ts` and `ui/src/lib/__tests__/env-redaction.test.ts` are NOT edited and stay green.
+- [ ] New `packages/shared/src/__tests__/redaction.test.ts` passes with **exhaustive coverage**: a concrete case for every `SENSITIVE_ENV_KEY` fragment (key-name path), one secret-looking value for **each of the 9** `SENSITIVE_ENV_VALUE_PATTERNS` under an *innocuous* key (the H4 value-shape path), negative/passthrough cases (plain values, empty env, non-string/null/undefined handling), the 9-pattern length assertion, and the barrel-resolution block (Task 2).
+- [ ] **Byte-identical to the oracles:** every shared-test expectation for the moved functions (`redactEnvForLogs`, `shouldRedactSecretValue`, `looksLikeSecretValue`) matches the outcome asserted in the two pre-existing oracle suites for the same inputs (no behavior drift).
+- [ ] **No e2e is expected or required** for this module — redaction is pure data/functions; unit tests are the correct and complete tool (rationale recorded in Task 1). The UI-only wrappers (`redactEnvValue` `secret_ref` → `***SECRET_REF***`, `formatEnvForDisplay` sort+join) stay covered by the unchanged UI oracle.
 - [ ] `pnpm --filter @armyofagents/shared test:run`, `pnpm --filter @armyofagents/adapter-utils test:run`, `pnpm --filter @armyofagents/ui test:run`, and `pnpm --filter @armyofagents/server exec vitest run src/__tests__/aoa-heartbeat-kind-guard.test.ts` are all green.
 - [ ] `pnpm build` and `pnpm typecheck` are clean across the workspace; `pnpm check:tokens` clean.
 - [ ] PR opened off `main`; commits carry the `Co-Authored-By` trailer.
@@ -539,6 +632,9 @@ Steps:
 ## Self-review
 
 - **Zero behavior change is enforced by the two pre-existing oracle suites** (`redact-env-for-logs.test.ts`, `env-redaction.test.ts`), which are deliberately left untouched and re-run after each move. The new shared test is additive, not a replacement.
+- **The new shared test is exhaustive, not a smoke test.** It carries a concrete case for every `SENSITIVE_ENV_KEY` fragment, one secret-looking value for each of the 9 value patterns under an *innocuous* key (so the value-shape path is exercised, not the key shortcut — verified by hand: every value-shape key returns `false` for the key regex), and the negative/edge set (plain values, empty env, non-string/null/undefined). A dedicated assertion locks the contract that the value-shape keys do not match the key regex.
+- **Byte-identical to the oracles:** the shared-test inputs and expected outputs for `redactEnvForLogs` / `shouldRedactSecretValue` / `looksLikeSecretValue` are the same input→output pairs already asserted in the two oracle suites (cross-checked against `redact-env-for-logs.test.ts` and `env-redaction.test.ts`), so the shared module is proven to reproduce the exact existing behavior — not a re-interpretation.
+- **No Playwright e2e for this follow-up — by design.** Redaction is pure data + pure functions over plain values; unit tests are the correct and complete verification tool and the cases above are exhaustive across all patterns. An e2e of the Run-detail env display would require seeding a heartbeat run with secret-bearing env to re-prove the same function output through the DOM — out of scope and strictly lower-value than the unit coverage. The UI-only wrappers (`redactEnvValue`'s `secret_ref` → `***SECRET_REF***` and `formatEnvForDisplay`'s sort+`key=value` join) remain covered by the unchanged UI oracle.
 - **No dependency cycle:** `packages/shared/src/index.ts` imports nothing from adapter-utils (verified by reading the full barrel), so adapter-utils → shared is a clean DAG edge; `pnpm build` (Task 5) proves topo order.
 - **Every `redactEnvForLogs` import path stays valid:** all importers use `@armyofagents/adapter-utils/server-utils` (or the `server/src/adapters/utils.ts` shim that re-exports from it), and the re-export keeps the symbol exported from `server-utils`. The one server test that references `redactEnvForLogs` only *mocks* it, so it is unaffected; it is re-run in Task 5 as a sanity check.
 - **UI resolves via the root barrel**, matching all ~40 existing shared imports — the re-export is from `index.ts`, with a barrel-resolution assertion in the new test.

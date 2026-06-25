@@ -31,6 +31,7 @@ ui/src/pages/AgentDetail.tsx                                  # pass agent.updat
 ui/src/pages/AoaAgentDetail.tsx                               # pass agent.updatedAt to AgentSkillsTab; 409 onError on config save
 ui/src/components/AgentConfigForm.tsx                          # inject expectedUpdatedAt: agent.updatedAt into save patch
 ui/src/components/__tests__/AgentConfigForm.concurrency.test.tsx  # NEW — patch carries expectedUpdatedAt
+tests/e2e/agent-skill-toggle-persist.spec.ts                  # NEW — Playwright happy-path round-trip (toggle ON/OFF → reload → persisted)
 docs/architecture/decisions.md                                # NEW Decision #104 (locked pattern)
 ```
 
@@ -41,6 +42,8 @@ docs/architecture/decisions.md                                # NEW Decision #10
 - Shared suite (single file): `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/agent-validators.test.ts`
 - UI suite (single file): `pnpm --filter @armyofagents/ui exec vitest run src/components/agent-detail/__tests__/AgentSkillsTab.test.tsx`
 - UI suite (all): `pnpm --filter @armyofagents/ui exec vitest run`
+- **E2E (single spec, Linux-gated / Windows self-skips):** `pnpm test:e2e agent-skill-toggle-persist` (the root `test:e2e` script = `playwright test --config=tests/e2e/playwright.config.ts`; a trailing path/substring filters to one spec). Boots a throwaway `local_trusted` instance on :3199.
+- E2E (full suite): `pnpm test:e2e`
 - Typecheck (whole workspace): `pnpm typecheck`
 
 > Note: `server/package.json` has **no** `test` script — tests are driven by `vitest` at the root or per-package via `pnpm --filter <pkg> exec vitest run`. Use the per-package `exec vitest` form above. (Verified: root `package.json` defines `"test": "vitest"` / `"test:run": "vitest run"`; the per-package configs are `server/vitest.config.ts`, `packages/shared/vitest.config.ts`, `ui/vitest.config.ts`.)
@@ -721,7 +724,140 @@ TDD steps:
 
 ---
 
-## Task 6 — Governance: record the locked decision
+## Task 6 — E2E smoke: happy-path optimistic-concurrency round-trip (single client)
+
+**Why this task exists:** Tasks 2/2b/3/4/5 prove every server + UI branch in isolation (mock + real-DB + component), but nothing proves the *whole stack* — UI sends `agent.updatedAt` → route forwards it via options → service ms-precision guard matches → write persists → reload re-renders the persisted state. A single Playwright spend covers that real round-trip end to end against a live `local_trusted` instance: toggle a skill ON, **reload**, assert it's still attached (the token matched and the write persisted); toggle OFF, reload, assert detached. This is the happy-path proof that the opt-in token never spuriously 409s a normal single-user edit (the precision regression, observable through the UI).
+
+**Feasibility — verified against the real harness (no invented helper APIs):**
+- `seedCompany(request, name)` (`tests/e2e/helpers/seed-company.ts`) → company with `id` + `issuePrefix`. In `local_trusted` mode the synthetic local-board actor is auto-authorised by every `/api/...` route, so **no Bearer token** is needed for any seed call.
+- **Company skill seeding IS supported** via the existing REST route — `POST /api/companies/:companyId/skills` (`server/src/routes/company-skills.ts:99`), body validated by `companySkillCreateSchema` (`packages/shared/src/validators/company-skill.ts:112`): only `name` is required (`slug`/`description`/`markdown` optional). The 201 response is a `CompanySkill` carrying the server-derived `key` and `name`. There is **no** dedicated e2e helper wrapping this, but the spec calls the route directly via `request.post(...)` exactly as `marketplace-install-flow.spec.ts` does for `request-install` — no new helper file is required. (Honest note: the spec doesn't need the returned `key`; it locates the toggle row by the visible skill **name** and reads `aria-pressed`.)
+- **Worker agent seeding IS supported** via `POST /api/companies/:companyId/agents` (`server/src/routes/agents.ts:1058`, `createAgentSchema`): only `name` is required (kind defaults `org`, adapterType `process`, status `idle` in `local_trusted` because `requireBoardApprovalForNewAgents=false` — Divergence D6). The 201 response carries the agent `id`.
+- **Navigation:** the Skills tab is a real URL — `/{issuePrefix}/agents/{agentId}/skills` (route `:companyPrefix/agents/:agentId/:tab`, `ui/src/App.tsx:156`; `companyPrefix` = `company.issuePrefix`, same shape `planning-mode.spec.ts` uses). The agent route id accepts the raw `agent.id` (the GET resolves by id or urlKey).
+- **Assertion surface:** skill rows render as `role="button"` with `aria-pressed={isAttached}` and show `skill.name` (`AgentSkillsTab.tsx:143-145`). Toggling clicks the row; the `pushToast`/optimistic update + invalidate is the production path. After **reload**, `aria-pressed` reflects the persisted `skillKeys` from the agent detail refetch — the load-bearing persistence assertion.
+
+**What this task does NOT cover (stated honestly, not faked):**
+- **The two-client 409 conflict — the core scenario — is NOT expressible in a single-browser Playwright spec.** Reproducing it needs editor A and editor B holding the *same* stale token while one writes first; a single page context can't hold two divergent in-memory tokens against one row without contrivance that wouldn't exercise the real UI flow. The **real conflict coverage lives elsewhere and is already in this plan**: the server-side 409 (stale token while the row exists) is proven by the mock-style service test (**Task 2**) and the real-DB integration test (**Task 2b**), and the **UI** 409 branch (rollback + refetch + toast) + the stale-token-ref defence are proven by the component tests (**Task 4**). This e2e is deliberately scoped to the single-client happy path it *can* prove honestly.
+- **Two-client coverage is tracked, not invented here.** A genuine multi-client 409 e2e would require either authenticated multi-user mode (no e2e harness yet — see `playwright.config.ts` note, tracked for 1.1) or driving two API clients with hand-managed tokens (a server/integration concern already covered by Task 2b). Do not add a fake "conflict" by mutating the row via `request` mid-toggle and asserting a toast — that races the optimistic UI and would be flaky theatre, not real conflict proof.
+
+**CI reality (matches the repo posture):** Linux e2e is the **required gate**; the Windows e2e lane **self-skips** at the Playwright-config level (`WINDOWS_WITH_EMBEDDED_POSTGRES` → `testMatch` becomes only `windows-embedded-postgres-skip.spec.ts`; Issue #114). So this spec is gated on Linux and never runs on the Windows runner — same as every other spec in `tests/e2e/`. Running it locally on Windows (no `DATABASE_URL`) self-skips; rely on CI Linux for the gating run.
+
+**Files:**
+- `tests/e2e/agent-skill-toggle-persist.spec.ts` — NEW. Import `{ test, expect }` from `@playwright/test` and `{ seedCompany, cleanupTestCompanies }` from `./helpers/seed-company`. Mirror the structure of `planning-mode.spec.ts` (afterEach cleanup by name prefix) and the direct-`request` calls of `marketplace-install-flow.spec.ts`.
+
+Steps (no TDD red/green — e2e is additive coverage of already-implemented behavior from Tasks 2-5; it must pass once those land):
+
+- [ ] **Write the spec.** Seed via API, drive the UI, reload, assert persistence:
+  ```ts
+  import { test, expect, type APIRequestContext } from "@playwright/test";
+  import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
+
+  /**
+   * E2E: optimistic-concurrency happy-path round-trip (single client).
+   *
+   * Proves the WHOLE stack: the Skills tab sends `agent.updatedAt` as the
+   * `expectedUpdatedAt` token → the route forwards it via options → the service
+   * ms-precision (`date_trunc`) guard MATCHES (no spurious 409 on a normal edit)
+   * → the write persists → a page reload re-renders the persisted attached set.
+   *
+   * The two-client 409 conflict is NOT expressible in a single browser context;
+   * that scenario is covered by the server tests (Task 2 mock + Task 2b real-DB)
+   * and the UI component test (Task 4: 409 rollback/toast + stale-token ref).
+   *
+   * Linux e2e is the required gate; the Windows lane self-skips at the Playwright
+   * config level (embedded-postgres can't start on the CI Windows runner).
+   */
+  const PREFIX = /^E2E-SkillToggle-/;
+
+  async function seedCompanyWithSkillAndAgent(request: APIRequestContext) {
+    const company = await seedCompany(request, `E2E-SkillToggle-${Date.now()}`);
+
+    // Company skill — POST /api/companies/:cid/skills (companySkillCreateSchema:
+    // only `name` required). 201 → CompanySkill { key, name, ... }.
+    const skillRes = await request.post(`/api/companies/${company.id}/skills`, {
+      data: { name: "Persisted Skill", description: "E2E concurrency round-trip skill" },
+    });
+    expect(skillRes.status(), await skillRes.text()).toBe(201);
+    const skill = (await skillRes.json()) as { key: string; name: string };
+
+    // Worker agent — POST /api/companies/:cid/agents (createAgentSchema: only
+    // `name` required; defaults kind=org, adapterType=process, status=idle in
+    // local_trusted). 201 → { id }.
+    const agentRes = await request.post(`/api/companies/${company.id}/agents`, {
+      data: { name: "Skill Toggle Agent" },
+    });
+    expect(agentRes.status(), await agentRes.text()).toBe(201);
+    const agent = (await agentRes.json()) as { id: string };
+
+    return { company, skill, agent };
+  }
+
+  test.describe("agent skill toggle persists (optimistic concurrency round-trip)", () => {
+    test.afterEach(async ({ request }) => {
+      await cleanupTestCompanies(request, PREFIX);
+    });
+
+    test("toggle ON persists across reload, then toggle OFF persists across reload", async ({
+      page,
+      request,
+    }) => {
+      const { company, skill, agent } = await seedCompanyWithSkillAndAgent(request);
+
+      // Open the agent's Skills tab directly by URL.
+      await page.goto(`/${company.issuePrefix}/agents/${agent.id}/skills`);
+
+      // The skill starts UNATTACHED → its row is a role=button with aria-pressed=false.
+      const row = page.getByRole("button", { name: new RegExp(skill.name, "i") });
+      await expect(row).toBeVisible({ timeout: 15_000 });
+      await expect(row).toHaveAttribute("aria-pressed", "false");
+
+      // Toggle ON. The PATCH carries expectedUpdatedAt = agent.updatedAt; the
+      // ms-precision guard must MATCH (no spurious 409) and persist skillKeys.
+      const attachResponse = page.waitForResponse(
+        (r) =>
+          r.request().method() === "PATCH" &&
+          new URL(r.url()).pathname === `/api/agents/${agent.id}`,
+      );
+      await row.click();
+      expect((await attachResponse).status(), "attach PATCH must succeed (no spurious 409)").toBe(200);
+
+      // RELOAD — the attached set must come back from the server, not optimism.
+      await page.reload();
+      const rowAfterAttach = page.getByRole("button", { name: new RegExp(skill.name, "i") });
+      await expect(rowAfterAttach).toBeVisible({ timeout: 15_000 });
+      await expect(rowAfterAttach, "skill must still be attached after reload").toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+
+      // Toggle OFF — the SECOND edit re-sends the token advanced from the first
+      // response (the stale-token ref), so it also must not self-409.
+      const detachResponse = page.waitForResponse(
+        (r) =>
+          r.request().method() === "PATCH" &&
+          new URL(r.url()).pathname === `/api/agents/${agent.id}`,
+      );
+      await rowAfterAttach.click();
+      expect((await detachResponse).status(), "detach PATCH must succeed").toBe(200);
+
+      // RELOAD — must come back detached.
+      await page.reload();
+      const rowAfterDetach = page.getByRole("button", { name: new RegExp(skill.name, "i") });
+      await expect(rowAfterDetach).toBeVisible({ timeout: 15_000 });
+      await expect(rowAfterDetach, "skill must be detached after reload").toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    });
+  });
+  ```
+  > **Locator robustness:** if `getByRole("button", { name: skill.name })` proves ambiguous (the row's accessible name concatenates name + trust/source labels + key), narrow with `.filter({ hasText: skill.name })` over `page.locator('[role="button"][aria-pressed]')`, or anchor on the unique `skill.key` (rendered in the `font-mono` line) — both are real DOM in `AgentSkillsTab.tsx`. Do **not** introduce a new `data-testid` in source (this task only edits the plan/spec); pick a locator that works against the component as-built.
+  > **No fake conflict.** The spec must not mutate the agent via `request` between toggles to manufacture a 409 — that races the optimistic UI and is flaky. Conflict coverage is Task 2/2b/4, as stated above.
+- [ ] **Run, expect PASS (Linux) / SKIP (Windows):** `pnpm test:e2e agent-skill-toggle-persist`. On Windows without `DATABASE_URL` the whole suite self-skips (collects only the windows-skip spec); locally verify by running on Linux/CI, or set `DATABASE_URL` to an external Postgres on Windows. The spec exercises only behavior implemented in Tasks 2-5, so it is green once those are committed.
+- [ ] **Commit:** `test(agents-e2e): skill toggle persists across reload (optimistic-concurrency round-trip)`.
+
+---
+
+## Task 7 — Governance: record the locked decision
 
 **Files:**
 - `docs/architecture/decisions.md` — append a new section. The latest decision is **#103** (file ends at line 798 with the `[#197]`/`[#198]`/`[#203]` link-reference footer). The next number is **#104**. Recent decisions use the `## Decision #NNN — Title (date)` prose format (see #92–#103).
@@ -784,13 +920,14 @@ Steps (no test — docs):
 
 ---
 
-## Task 7 — Full-suite verification + finish
+## Task 8 — Full-suite verification + finish
 
 **Files:** none (verification + git).
 
 - [ ] **Server suite (all):** `pnpm --filter @armyofagents/server exec vitest run` → green.
 - [ ] **Shared suite (all):** `pnpm --filter @armyofagents/shared exec vitest run` → green.
 - [ ] **UI suite (all):** `pnpm --filter @armyofagents/ui exec vitest run` → green.
+- [ ] **E2E smoke (Linux gate; Windows self-skips):** `pnpm test:e2e agent-skill-toggle-persist` → green on Linux/CI (or with an external `DATABASE_URL` on Windows). On the Windows runner the suite self-skips by design — do not treat the skip as a failure.
 - [ ] **Workspace typecheck:** `pnpm typecheck` → clean.
 - [ ] **Self-review the diff:** `git diff main...HEAD` — confirm: **no raw SQL migration files** and no schema changes (the parameterized `sql\`date_trunc('milliseconds', …) = ${…}\`` fragment in the guarded UPDATE is a Drizzle `sql` template with bound params, not a raw-SQL file — the same construct `issues.ts` already uses; this is allowed and is **not** a migration), no OSS headers, every commit has the Co-Authored-By trailer, the token is optional everywhere (no caller is forced to send it), the transport-only `expectedUpdatedAt` never reaches Drizzle `.set()` (destructured out on the route), and the three original `AgentSkillsTab` payload assertions are untouched.
 - [ ] **Use superpowers:finishing-a-development-branch** to open the PR off `main` (own branch `feat/agent-update-optimistic-concurrency`). PR body ends with the `🤖 Generated with [Claude Code]` line; verify `ci-required` is green.
@@ -805,8 +942,9 @@ Steps (no test — docs):
 - [ ] `PATCH /api/agents/:id` forwards `expectedUpdatedAt` **only via the options object** (destructured out of `patchData` so it never reaches Drizzle `.set()` — asserted by test); a thrown conflict surfaces as HTTP 409 with `{ details: { currentUpdatedAt } }` (ISO string) via the existing error middleware; the vanished-row null still 404s; no-token PATCH still 200s. (Task 3)
 - [ ] Skills tab sends the token only when the `expectedUpdatedAt` prop is provided, advances a `latestExpectedUpdatedAt` ref from each successful update response so back-to-back toggles don't self-409 (asserted by test), handles 409 (rollback + refetch + toast), and the three pre-existing exact-payload assertions still pass unchanged. (Task 4)
 - [ ] Config save injects the token from `agent.updatedAt`; both worker + AoA `updateAgent` mutations handle 409 (refetch + toast). (Task 5)
-- [ ] **Decision #104** recorded in `docs/architecture/decisions.md`. (Task 6)
-- [ ] Server + shared + UI suites green; `pnpm typecheck` clean; back-compat (no-token) path tested at every layer. (Task 7)
+- [ ] **E2E happy-path round-trip:** a real `local_trusted` instance — seed company + company skill + worker agent via REST, open the Skills tab, toggle a skill ON → reload → still attached (no spurious 409), toggle OFF → reload → detached. Linux-gated / Windows self-skips. The two-client 409 is explicitly out of scope for e2e (covered by Tasks 2/2b/4). (Task 6)
+- [ ] **Decision #104** recorded in `docs/architecture/decisions.md`. (Task 7)
+- [ ] Server + shared + UI suites green; the e2e smoke green on Linux/CI; `pnpm typecheck` clean; back-compat (no-token) path tested at every layer. (Task 8)
 
 ---
 
@@ -818,4 +956,30 @@ Steps (no test — docs):
 - **Transport token never reaches `.set()` (Codex P1 #1):** the route destructures `const { expectedUpdatedAt, ...bodyRest } = req.body` and builds `patchData` from `bodyRest`, forwarding the token **only** in the `svc.update` options object (alongside `recordRevision`). A route test asserts the patch (arg 2) does NOT contain `expectedUpdatedAt` while the options (arg 3) does — otherwise it would flow into `.set({ ...normalizedPatch, updatedAt })` as a phantom column.
 - **Stale-token self-409 defeated in the UI (Codex P1 #4):** `AgentSkillsTab` advances a `latestExpectedUpdatedAt` ref from each **successful** `agentsApi.update` response's `updatedAt` (mirroring the existing `latestSkillKeys` ref) and sends the ref — not the prop. A test fires two sequential toggles before any refetch and asserts the second call carries the token advanced from the first response (no self-409). `agentsApi.update` already returns the `Agent` (verified `ui/src/api/agents.ts:109-110`), so capturing it is the only success-path change.
 - **Back-compat is load-bearing and tested at all four layers** (validator absent-token, service no-token, route no-token-in-options, UI prop-absent payload). The `AgentSkillsTab` payload-test question is resolved by an **optional prop** whose absent default is exactly what the three existing tests render — so they stay byte-identical; new prop-present tests cover the opt-in. The ref starts as `undefined` when the prop is absent, so the prop-absent payload is still exactly `{ skillKeys: [...] }`.
+- **E2E proves the full round-trip the unit/integration tests can't (Task 6):** mock tests prove branches, the real-DB test proves the precision guard, the component test proves the UI 409 branch — but only the Playwright spec proves UI→route→service→DB→**reload re-render** as one flow. It is scoped honestly to the single-client happy path (toggle ON/OFF → reload → persisted). The **two-client conflict is deliberately NOT faked in e2e**: a single browser context can't hold two divergent stale tokens against one row, and racing a `request`-side mutation against the optimistic UI would be flaky theatre. Real conflict coverage = Task 2 (mock 409), Task 2b (real-DB 409), Task 4 (UI 409 rollback/toast + stale-token ref). Multi-client e2e needs authenticated-mode coverage (no harness yet — tracked for 1.1).
+
+- **Maximal-coverage matrix (every required scenario has a home — audit before merge):**
+
+  | Layer | Scenario | Where |
+  |-------|----------|-------|
+  | Validator | absent token parses (back-compat) | Task 1 |
+  | Validator | valid ISO token accepted | Task 1 |
+  | Validator | non-datetime token rejected | Task 1 |
+  | Service | no token → last-write-wins succeeds | Task 2 |
+  | Service | matching token → succeeds | Task 2 |
+  | Service | stale token (row exists) → 409 w/ ISO `currentUpdatedAt` | Task 2 |
+  | Service | token + vanished row → `null` (route → 404, NOT 409) | Task 2 |
+  | Service | freshly-created `defaultNow()` row → ms token succeeds FIRST time | Task 2b (real DB) |
+  | Service | stale token re-sent after an edit → 409 | Task 2b (real DB) |
+  | Route | token forwarded ONLY via options; absent from patch arg | Task 3 |
+  | Route | thrown conflict → HTTP 409 w/ `{ details: { currentUpdatedAt } }` | Task 3 |
+  | Route | vanished-row null → 404 | Task 3 |
+  | Route | no-token PATCH → 200, options omit token | Task 3 |
+  | UI (Skills) | token included when prop present | Task 4 |
+  | UI (Skills) | token ABSENT when prop absent (3 stable payload tests) | Task 4 |
+  | UI (Skills) | 409 → rollback + refetch + toast | Task 4 |
+  | UI (Skills) | two sequential toggles send the FRESH (advanced) token | Task 4 |
+  | UI (Config) | save patch carries `expectedUpdatedAt` from `agent.updatedAt` | Task 5 |
+  | UI (Config) | both worker + AoA mutations handle 409 (refetch + toast) | Task 5 |
+  | E2E | happy-path round-trip: toggle ON/OFF → reload → persisted (single client) | Task 6 |
 - **Things to double-check during execution:** (1) `createAgentDb`'s FIFO `selects` ordering for the dual-select sequence (initial `getById` + post-conflict re-read) — if it fights the helper, drop to a small inline sequence-DB (sanctioned by the repo). (2) Whether a page-level test for `AgentDetail`/`AoaAgentDetail` asserts an exact config-save payload — if so it needs the same `expect.objectContaining` relaxation (grep before Task 5's broad run). (3) The `@/lib/toast` vs `../../lib/toast` import alias must match each file's existing convention (Skills tab uses relative `../..`; pages may use `@/`). (4) `z.string().datetime({ offset: true })` must accept the exact form `new Date().toISOString()` emits — confirm in the validator test (it does: `…Z` is offset-compatible). (5) The embedded-postgres integration test only runs on Linux; running it locally on Windows self-skips — rely on CI for the gating run, per the repo's posture.

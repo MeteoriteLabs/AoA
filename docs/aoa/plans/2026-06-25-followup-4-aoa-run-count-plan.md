@@ -6,7 +6,9 @@
 
 **Architecture:** `GET /companies/:companyId/agents/:id/aoa-runs` (in `server/src/routes/agents.ts`) currently reads `internal_agent_runs`, caps rows at `min(limit ?? 50, 200)`, and returns a **bare array**. We change it to return `{ runs, total, limit }` — mirroring the proven same-table precedent at `server/src/routes/internal-agent.ts:861-895`, which computes the total with `sql<number>\`count(*)::int\`` (the exact idiom at `internal-agent.ts:864`) alongside the paginated query. We use `sql` (already imported by the routes that share this table's contract tests) rather than drizzle's `count` helper, because the existing `agentRoutes` route tests (`server/src/__tests__/agents-keys-routes.test.ts`, `server/src/__tests__/aoa-budget-autopause.test.ts`) mock `drizzle-orm` and provide a `sql` stub but **no `count` export** — importing/calling `count` would resolve to `undefined` and break them. The count is index-backed by `ia_runs_agent_idx` on `(companyId, agentId)` (`packages/db/src/schema/internal_agent.ts:322`) — no schema change. All UI consumers (`getAoaRuns` client + `AoaRunsPanel` + the hero query + the Overview query) read `.runs` for lists and `.total` for the count. `/aoa-runs` is internal (only our own UI consumes it), so the array→object shape change is safe within this one PR provided all consumers are updated atomically.
 
-**Tech Stack:** Express 5 + Drizzle ORM (server), React + TanStack Query + Vitest/Testing-Library (UI). Drizzle ORM only — no raw SQL, no schema/migration change. AoA is not open source — no OSS license headers. This is its own PR/branch off `main`.
+**Tech Stack:** Express 5 + Drizzle ORM (server), React + TanStack Query + Vitest/Testing-Library (UI), Playwright (e2e). Drizzle ORM only — no raw SQL, no schema/migration change. AoA is not open source — no OSS license headers. This is its own PR/branch off `main`.
+
+**Test coverage (three layers, maximal):** (1) **server unit/contract** — 5 cases incl. total > page cap, total == 0, total <= limit; (2) **UI unit** — KPI + Overview stat read `.total` for >cap / <cap / zero, relabel verified; (3) **Playwright e2e smoke** (`tests/e2e/aoa-run-count-kpi.spec.ts`, Linux-gated, Windows self-skips) — the real hero KPI + Overview stat render a numeric "Total runs" end-to-end. Honest limitation: e2e cannot seed `internal_agent_runs` (no public insert API), so it asserts a `0` count proving shape+relabel; the beyond-cap count is owned by the server unit test.
 
 ---
 
@@ -19,7 +21,8 @@
 | `ui/src/api/agents.ts` | Modify | Change `getAoaRuns` return type from `unknown[]` to a new `AoaRunsResponse` (`{ runs: unknown[]; total: number; limit: number }`). |
 | `ui/src/components/agent-detail/AoaRunsPanel.tsx` | Modify | Read `data.runs` instead of treating `data` as the array. |
 | `ui/src/pages/AoaAgentDetail.tsx` | Modify | Hero KPI: read `aoaRunsForKpi?.total`; relabel `"Recent runs"` → `"Total runs"`, key `recent-runs` → `total-runs`; drop the `>= 50 ? "50+"` cap logic. Overview stat: read `runs?.total` instead of `runList.length`. |
-| `ui/src/__tests__/AoaAgentDetail.test.tsx` | Modify | Replace the `"Recent runs: 50+"` assertion with a `"Total runs: <real number>"` assertion against the new `{ runs, total }` mock shape. |
+| `ui/src/__tests__/AoaAgentDetail.test.tsx` | Modify | Replace the `"Recent runs: 50+"` assertion with a `"Total runs: <real number>"` assertion against the new `{ runs, total }` mock shape. Also cover `total === 0` (empty) and `total > 0` (below cap) so the KPI reads `.total` for every range. |
+| `tests/e2e/aoa-run-count-kpi.spec.ts` | Create | Playwright e2e smoke (Linux-gated, Windows self-skips): seed a company (AoA crew auto-provisions), open an auto-seeded AoA agent's detail page (`/{prefix}/team/aoa/{agentId}`), and assert the hero KPI renders the **"Total runs"** label with a **numeric** value (not the literal `"50+"`, not a crash) and that the Overview "Total runs" stat shows the same number. Runs cannot be seeded via any public API (only internal service code inserts `internal_agent_runs`), so the asserted value is `"0"` — this proves the `{ runs, total }` shape + relabel render end-to-end; the count-beyond-the-cap correctness is proven by the server unit test, not e2e. |
 
 ---
 
@@ -57,7 +60,7 @@ Precedent to mirror (verified, `server/src/routes/internal-agent.ts:862-895`): a
 
 ### Steps
 
-- [ ] Create the failing test file `server/src/__tests__/aoa-runs-total.test.ts`. It mocks `drizzle-orm` + `@armyofagents/db`, builds the router via `agentRoutes(db)`, extracts the `/aoa-runs` GET handler from `router.stack`, and invokes it with a fake `req`/`res`. The mock DB is sequence-based: the **first** `db.select(...)` resolves to the count row `[{ total: 137 }]`; the **second** resolves to a 50-row page. Assert the JSON body is `{ runs, total: 137, limit: 50 }` and `total > runs.length`. Write this file exactly:
+- [ ] Create the failing test file `server/src/__tests__/aoa-runs-total.test.ts`. It mocks `drizzle-orm` + `@armyofagents/db`, builds the router via `agentRoutes(db)`, extracts the `/aoa-runs` GET handler from `router.stack`, and invokes it with a fake `req`/`res`. The mock DB is sequence-based: the **first** `db.select(...)` resolves to the count row, the **second** resolves to the page. Five scenarios are covered: (1) **total beyond the cap** (count `137`, page 50 rows → `total > runs.length` — the core regression); (2) **limit clamp** (`?limit=999` → `200`); (3) **empty / total == 0** (count `0`, page `[]` → `{ runs: [], total: 0 }`); (4) **total <= limit** (count `3`, page 3 rows → `total === runs.length`); (5) **defensive empty count row** (count `[]` → `total` falls back to `0`, never undefined). Write this file exactly:
 
 ```ts
 // Unit/contract test for GET /companies/:companyId/agents/:id/aoa-runs.
@@ -206,6 +209,48 @@ describe("GET /aoa-runs returns { runs, total, limit }", () => {
     expect(body.total).toBe(5);
     expect(body.limit).toBe(200);
   });
+
+  it("returns { runs: [], total: 0 } when the agent has never run (empty)", async () => {
+    // Count query → [{ total: 0 }]; page query → [] (no rows).
+    const db = createSequenceDb([[{ total: 0 }], []]);
+    const handler = getAoaRunsHandler(db);
+    let body: any;
+    const req: any = { params: { companyId: "c1", id: "a1" }, query: {} };
+    const res: any = { json: (v: unknown) => { body = v; } };
+    await handler(req, res, () => {});
+    expect(body.total).toBe(0);
+    expect(body.limit).toBe(50);
+    expect(Array.isArray(body.runs)).toBe(true);
+    expect(body.runs).toHaveLength(0);
+  });
+
+  it("returns total == runs.length when the total is within the page limit", async () => {
+    // total (3) <= default limit (50): the full set fits on one page, so
+    // total equals the page length — the count and the list agree.
+    const page = [{ id: "r0" }, { id: "r1" }, { id: "r2" }];
+    const db = createSequenceDb([[{ total: 3 }], page]);
+    const handler = getAoaRunsHandler(db);
+    let body: any;
+    const req: any = { params: { companyId: "c1", id: "a1" }, query: {} };
+    const res: any = { json: (v: unknown) => { body = v; } };
+    await handler(req, res, () => {});
+    expect(body.total).toBe(3);
+    expect(body.runs).toHaveLength(3);
+    expect(body.total).toBe(body.runs.length);
+  });
+
+  it("defaults total to 0 when the count query returns no row (defensive)", async () => {
+    // The handler destructures `[{ total } = { total: 0 }]` — if the count
+    // select somehow yields an empty array, total falls back to 0 (never NaN/undefined).
+    const db = createSequenceDb([[], []]);
+    const handler = getAoaRunsHandler(db);
+    let body: any;
+    const req: any = { params: { companyId: "c1", id: "a1" }, query: {} };
+    const res: any = { json: (v: unknown) => { body = v; } };
+    await handler(req, res, () => {});
+    expect(body.total).toBe(0);
+    expect(body.runs).toHaveLength(0);
+  });
 });
 ```
 
@@ -285,7 +330,7 @@ with:
 pnpm --filter @armyofagents/server exec vitest run src/__tests__/aoa-runs-total.test.ts
 ```
 
-Expected: both cases pass (`total === 137`, `limit === 50`, `runs.length === 50`, `total > runs.length`; second case `total === 5`, `limit === 200`).
+Expected: all five cases pass — beyond-cap (`total === 137`, `limit === 50`, `runs.length === 50`, `total > runs.length`); limit-clamp (`total === 5`, `limit === 200`); empty (`total === 0`, `runs.length === 0`); within-limit (`total === 3 === runs.length`); defensive (`total === 0` from an empty count row).
 
 - [ ] Verify the existing AoA agents route source-contract test still passes (it greps for `aoa-runs` / `internalAgentRuns`, which we preserved):
 
@@ -582,7 +627,11 @@ with:
 ```tsx
   // Follow-up #4: /aoa-runs returns { runs, total } — `total` is count(*) over
   // ALL runs, so the hero KPI shows the true total-ever (no "50+" cap), labelled
-  // "Total runs".
+  // "Total runs". NOTE: the testid here is `kpi-total-runs` because the
+  // AgentDetailCore MOCK in this file renders `data-testid={`kpi-${k.key}`}`
+  // (see the vi.mock for AgentDetailCore ~line 89). The REAL AgentHeroCard uses
+  // `hero-kpi-${key}` — that surface is exercised by the e2e spec (Task 6), not
+  // by this mocked unit test.
   it("labels the run KPI 'Total runs' and shows the true total beyond the page cap", async () => {
     mockGetAoaRuns.mockResolvedValue({
       runs: Array.from({ length: 50 }, (_, i) => ({ id: `r${i}` })),
@@ -594,7 +643,59 @@ with:
       expect(screen.getByTestId("kpi-total-runs")).toHaveTextContent("Total runs: 137");
     });
   });
+
+  // total within the page (no cap hit): the KPI shows the real number, not "50+".
+  it("shows the exact run total when it is below the page cap", async () => {
+    mockGetAoaRuns.mockResolvedValue({
+      runs: Array.from({ length: 7 }, (_, i) => ({ id: `r${i}` })),
+      total: 7,
+      limit: 50,
+    });
+    renderWithProviders(<AoaAgentDetail />);
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-total-runs")).toHaveTextContent("Total runs: 7");
+    });
+  });
+
+  // Empty agent (never run): the KPI reads "Total runs: 0", not a blank/NaN/"50+".
+  it("shows 'Total runs: 0' when the agent has no runs", async () => {
+    mockGetAoaRuns.mockResolvedValue({ runs: [], total: 0, limit: 50 });
+    renderWithProviders(<AoaAgentDetail />);
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-total-runs")).toHaveTextContent("Total runs: 0");
+    });
+    // Belt-and-suspenders: the old capped label must be gone everywhere.
+    expect(screen.queryByTestId("kpi-recent-runs")).not.toBeInTheDocument();
+    expect(screen.queryByText(/50\+/)).not.toBeInTheDocument();
+  });
 ```
+
+- [ ] Add an Overview-stat test asserting the **Overview** "Total runs" stat (a separate render surface from the hero KPI) also reads `.total`, not the capped page length. The Overview stat has **no testid** — it is a `<span>` rendered after the "Total runs" label inside `AoaOverview` (`AoaAgentDetail.tsx:398-401`). Scope to its container via the label text. NOTE: `AoaOverview` is NOT mocked in this file (only `AgentDetailCore` is), so it renders the real Overview markup when the `overview` tab is active (the default). Add this test inside the main describe block, after the run-KPI tests:
+
+```tsx
+  // Follow-up #4: the Overview "Total runs" stat reads `total` (count(*) over
+  // ALL runs), not the capped page length. Mock a page shorter than `total` to
+  // prove the stat is NOT derived from runs.length.
+  it("Overview 'Total runs' stat shows the true total, not the page length", async () => {
+    mockGetAoaRuns.mockResolvedValue({
+      runs: Array.from({ length: 50 }, (_, i) => ({ id: `r${i}` })),
+      total: 212,
+      limit: 50,
+    });
+    renderWithProviders(<AoaAgentDetail />);
+    // The Overview tab is the default view. Find the stat by its label, then
+    // assert the sibling value span renders the true total (212), not 50.
+    await waitFor(() => {
+      const label = screen.getByText("Total runs", { selector: "span.text-xs" });
+      const card = label.closest("div");
+      expect(card).not.toBeNull();
+      expect(card!).toHaveTextContent("212");
+      expect(card!).not.toHaveTextContent("50");
+    });
+  });
+```
+
+> If `getByText("Total runs", { selector: "span.text-xs" })` proves brittle against the design-system class (e.g. the muted-label class changes), fall back to `screen.getAllByText("Total runs")` and assert that the Overview-stat occurrence's card contains `212`. Both the hero KPI label ("Total runs:") and the Overview label ("Total runs") use the same words, so the `selector`/role scoping is what disambiguates them — a reviewer should confirm the selector matches the real `AoaOverview` markup at implementation time.
 
 - [ ] Run the AoaAgentDetail UI test file — expect it to **PASS** (the KPI now renders `Total runs: 137` under testid `kpi-total-runs`, and the other suites get a valid `{ runs, total }` default):
 
@@ -602,7 +703,7 @@ with:
 pnpm --filter @armyofagents/ui exec vitest run src/__tests__/AoaAgentDetail.test.tsx
 ```
 
-Expected: all describe blocks pass, including the rewritten run-KPI test.
+Expected: all describe blocks pass, including the rewritten run-KPI test, the within-cap and zero-runs KPI cases, and the Overview-stat test.
 
 - [ ] Run the AoaRunsPanel test if one exists, to confirm `.runs` access didn't break it (no dedicated test file is expected; this command is a safety net and may report "no test files" — that is acceptable):
 
@@ -630,7 +731,133 @@ EOF
 
 ---
 
-## Task 6 — Definition of done (full suites + typecheck green)
+## Task 6 — E2E smoke: AoA run-count KPI renders end-to-end
+
+**Files**
+- Create: `tests/e2e/aoa-run-count-kpi.spec.ts`
+
+**Why an e2e here.** Tasks 1 + 5 prove the route shape and the React wiring in isolation (mocked). This spec proves the *whole chain* renders against a real server + DB + real `AgentHeroCard` / `AoaOverview` components: a real `GET /aoa-runs` returns `{ runs, total, limit }`, the hero KPI reads `.total` under the label **"Total runs"** (not the old `"Recent runs" / "50+"`), and the Overview "Total runs" stat shows the same number. It is the only test that exercises the **real** `hero-kpi-total-runs` testid (the unit test in Task 5 asserts the *mock's* `kpi-total-runs`).
+
+**Feasibility — runs CANNOT be seeded in e2e (honest limitation).** The KPI counts the `internal_agent_runs` table. There is **no public API** to insert a run: every `db.insert(internalAgentRuns)` lives in internal service code paths only (verified — `server/src/routes/internal-agent.ts:128`, `server/src/services/extraction.ts:530`, `server/src/services/internal-agent/event-listener.ts:113`, `proactive.ts:61`, `aoa-agents/runner.ts:143`). Triggering one of those from e2e would mean driving a full Commander/crew run with a fake CLI — out of scope and flaky. The existing e2e helpers (`helpers/seed-company.ts`, `helpers/real-crew.ts`) expose **no run-seeding primitive**, and this plan does **not** invent one. Therefore a freshly-seeded company's AoA crew agent has **0 runs**, and the realistic e2e assertion is: the KPI shows the number **`0`** under the label **"Total runs"**, and the Overview stat also shows **`0`**. That proves the response-shape change + the relabel render correctly end-to-end (the API responds with the object shape, the components read `.total`, nothing crashes, and the literal `"50+"` is gone). **The "count beyond the page cap" correctness is proven by the server unit test (Task 1), not by this e2e** — this spec asserts a number renders under the right label, not a specific large count.
+
+**Harness facts (verified).**
+- Config: `tests/e2e/playwright.config.ts` boots a throwaway `local_trusted` instance on `:3199` (`pnpm aoa onboard --yes --run`), chromium, `workers: 1`, `timeout: 60_000`. In `local_trusted` the synthetic local-board actor authorises `/api/companies` and `/api/companies/:id/agents` with **no Bearer token**.
+- **Windows self-skips:** when `process.platform === "win32"` and no `DATABASE_URL`, the config sets `testMatch` to **only** `windows-embedded-postgres-skip.spec.ts` and drops the `webServer`, so this spec never runs on the embedded-postgres Windows runner (Issue #114). It runs on the **required Linux gate** and the advisory macOS lane. No extra skip guard is needed in the spec itself — `testMatch` handles it.
+- Seeding: `seedCompany(request, name)` returns `{ id, name, issuePrefix }`. A freshly-created company is **auto-provisioned an AoA crew** (`ensureCommanderAgent` in `routes/companies.ts`), so `GET /api/companies/:id/agents?kind=aoa` returns the crew (Commander/Planner/etc.) without any explicit agent seed — the exact pattern used by `team-aoa-tasks-crew-board.spec.ts:24-29`.
+- Route: the AoA agent detail page is `/{issuePrefix}/team/aoa/{agentId}` (`ui/src/App.tsx:146`); `{agentId}` accepts the agent UUID. Overview is the default tab.
+- Real testids: the hero KPI is `data-testid="hero-kpi-${key}"` (`ui/src/components/agent-detail/AgentHeroCard.tsx:118,129`) → after the relabel, **`hero-kpi-total-runs`**. The Overview "Total runs" stat has **no testid** (`AoaAgentDetail.tsx:398-401`) — scope to it via its label text.
+
+### Steps
+
+- [ ] Create `tests/e2e/aoa-run-count-kpi.spec.ts` exactly:
+
+```ts
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+
+/**
+ * E2E smoke — Follow-up #4: AoA agent run-count KPI.
+ *
+ * Proves the full chain renders end-to-end against a real server + DB + the real
+ * AgentHeroCard / AoaOverview components:
+ *   - GET /aoa-runs returns { runs, total, limit } (not a bare array),
+ *   - the hero KPI is labelled "Total runs" (not the old "Recent runs"/"50+") and
+ *     renders a NUMERIC value via the real `hero-kpi-total-runs` testid,
+ *   - the Overview "Total runs" stat shows the SAME number.
+ *
+ * LIMITATION (documented honestly): runs cannot be seeded via any public API —
+ * internal_agent_runs is only written by internal service code paths (Commander /
+ * crew runs), and no e2e helper seeds one. So a freshly-seeded company's AoA crew
+ * agent has 0 runs and the asserted value is "0". This proves the response-shape
+ * change + relabel render correctly; the "count beyond the page cap (50)"
+ * correctness is proven by the server unit test (aoa-runs-total.test.ts), NOT here.
+ *
+ * Windows self-skips: playwright.config.ts restricts testMatch to the
+ * windows-embedded-postgres-skip spec on the embedded-postgres Windows runner
+ * (Issue #114). This runs on the required Linux gate + advisory macOS lane.
+ */
+
+async function firstAoaAgent(
+  request: APIRequestContext,
+  companyId: string,
+): Promise<{ id: string; name: string }> {
+  const res = await request.get(`/api/companies/${companyId}/agents?kind=aoa`);
+  expect(res.ok(), await res.text()).toBe(true);
+  const agents = (await res.json()) as Array<{ id: string; name: string }>;
+  expect(agents.length, "company auto-provisions an AoA crew on create").toBeGreaterThan(0);
+  return agents[0];
+}
+
+test.describe("AoA run-count KPI", () => {
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request, /^E2E-RunCount-/);
+  });
+
+  test("hero KPI and Overview stat render a numeric 'Total runs' (not '50+')", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-RunCount-${Date.now()}`);
+    const agent = await firstAoaAgent(request, company.id);
+
+    await page.goto(`/${company.issuePrefix}/team/aoa/${agent.id}`);
+
+    // Hero KPI: real AgentHeroCard testid is `hero-kpi-<key>`; after the relabel
+    // the key is `total-runs`. Assert the label says "Total runs" and the value is
+    // a number (a freshly-seeded crew agent has 0 runs) — NOT the literal "50+".
+    const heroKpi = page.getByTestId("hero-kpi-total-runs");
+    await expect(heroKpi).toBeVisible({ timeout: 15_000 });
+    await expect(heroKpi).toContainText("Total runs");
+    await expect(heroKpi).toContainText("0");
+    await expect(heroKpi).not.toContainText("50+");
+    // The old label must be gone (relabel proof).
+    await expect(page.getByTestId("hero-kpi-recent-runs")).toHaveCount(0);
+
+    // Overview "Total runs" stat (default tab, no testid) — scope via its label.
+    const overviewLabel = page.getByText("Total runs", { exact: true }).first();
+    await expect(overviewLabel).toBeVisible({ timeout: 10_000 });
+    // The stat value sits in the same card as the label; assert the card shows 0.
+    const statCard = page.locator("div", { has: overviewLabel }).first();
+    await expect(statCard).toContainText("0");
+
+    // Sanity: no crash / error boundary on the page.
+    await expect(page.getByText(/something went wrong/i)).toHaveCount(0);
+  });
+});
+```
+
+> Reviewer note — Overview-stat locator. The Overview stat has no testid; the spec scopes to it by the label text "Total runs". The hero KPI also contains the words "Total runs", so `getByText("Total runs", { exact: true })` may match more than one node — `.first()` + the `div has=label` card scope is the disambiguator. If this proves flaky at implementation time, the cheapest hardening is to add `data-testid="aoa-overview-total-runs"` to the stat value span in `AoaOverview` (`AoaAgentDetail.tsx:400`) and assert that directly; that is a one-line, behaviour-neutral addition the implementer may make if the text-scoped locator is brittle. Document the choice in the commit.
+
+- [ ] Run the new e2e spec in isolation — expect **PASS** on Linux/macOS, **skipped** on the embedded-postgres Windows runner:
+
+```bash
+pnpm exec playwright test --config=tests/e2e/playwright.config.ts aoa-run-count-kpi.spec.ts
+```
+
+Expected: 1 passed (Linux/macOS). On Windows-without-`DATABASE_URL` the runner only matches `windows-embedded-postgres-skip.spec.ts`, so this file reports as not-run (the suite stays green). Locally on Windows you can run it against an external Postgres by exporting `DATABASE_URL` first.
+
+- [ ] Commit the e2e spec:
+
+```bash
+git add tests/e2e/aoa-run-count-kpi.spec.ts
+git commit -m "$(cat <<'EOF'
+test(e2e): AoA run-count KPI renders 'Total runs' end-to-end
+
+Seed a company (AoA crew auto-provisions), open an AoA agent detail page, and
+assert the real hero KPI (hero-kpi-total-runs) and the Overview stat render a
+numeric "Total runs" value (not "50+", no crash). Runs can't be seeded via API,
+so the value is 0 — this proves the { runs, total } shape + relabel render e2e;
+beyond-cap correctness is covered by the server unit test. Linux-gated; Windows
+self-skips (embedded-postgres, Issue #114).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+## Task 7 — Definition of done (full suites + typecheck green)
 
 **Files**
 - None (verification only)
@@ -653,6 +880,17 @@ pnpm --filter @armyofagents/ui exec vitest run
 
 Expected: all tests pass (AoaAgentDetail suite green with the new shape).
 
+- [ ] Run the **e2e** smoke (the new spec rides the full suite; or run it in isolation). Linux/macOS run it; Windows-without-`DATABASE_URL` self-skips it:
+
+```bash
+# Full e2e suite (root package script):
+pnpm test:e2e
+# …or just the new spec:
+pnpm exec playwright test --config=tests/e2e/playwright.config.ts aoa-run-count-kpi.spec.ts
+```
+
+Expected: `aoa-run-count-kpi.spec.ts` passes on Linux (required gate) + macOS (advisory); not-run on the embedded-postgres Windows runner. (`pnpm test:e2e` = `playwright test --config=tests/e2e/playwright.config.ts`, defined in the root `package.json`.)
+
 - [ ] Run **typecheck** across the workspace — expect clean:
 
 ```bash
@@ -667,7 +905,7 @@ Expected: no type errors (server + UI both clean).
 git diff --name-only main...HEAD
 ```
 
-Expected: only `server/src/routes/agents.ts`, `server/src/__tests__/aoa-runs-total.test.ts`, `ui/src/api/agents.ts`, `ui/src/components/agent-detail/AoaRunsPanel.tsx`, `ui/src/pages/AoaAgentDetail.tsx`, `ui/src/__tests__/AoaAgentDetail.test.tsx` (plus this plan doc). No files under `packages/db/`.
+Expected: only `server/src/routes/agents.ts`, `server/src/__tests__/aoa-runs-total.test.ts`, `ui/src/api/agents.ts`, `ui/src/components/agent-detail/AoaRunsPanel.tsx`, `ui/src/pages/AoaAgentDetail.tsx`, `ui/src/__tests__/AoaAgentDetail.test.tsx`, `tests/e2e/aoa-run-count-kpi.spec.ts` (plus this plan doc). No files under `packages/db/`.
 
 ---
 
@@ -678,11 +916,18 @@ This plan implements **only** the "Follow-up #4 — True AoA run count" section 
 - **Server (count + shape):** Task 1 adds `sql` to the `drizzle-orm` import (was `{ and, desc, eq }`) and changes `/aoa-runs` from a bare array to `{ runs, total, limit }`, with `total = sql<number>\`count(*)::int\`` over `(companyId, agentId)` — mirroring the verified precedent at `internal-agent.ts:864`. We deliberately use `sql`, **not** drizzle's `count` helper: the sibling `agentRoutes` route tests (`agents-keys-routes.test.ts`, `aoa-budget-autopause.test.ts`) `vi.mock("drizzle-orm")` with a `sql` Proxy stub but no `count` export (verified), so importing/calling `count` would resolve to `undefined()` and break them, whereas `sql` is already stubbed in both — zero mock changes needed (Codex P1 fix). Index-backed by `ia_runs_agent_idx` (verified at `internal_agent.ts:322`); no schema change. Semantics: total ever.
 - **Blast radius (complete, verified by grep):** client `getAoaRuns` (Task 2), `AoaRunsPanel` (Task 3), hero query at `AoaAgentDetail.tsx:189-193` + KPI at `:255-265` (Task 4), Overview query/stat at `:363-400` (Task 4), and the test mock in `AoaAgentDetail.test.tsx` (Task 5). Nothing else consumes `getAoaRuns`.
 - **Relabel:** hero KPI "Recent runs" → "Total runs" (key `recent-runs` → `total-runs`), cap logic removed (Task 4). Overview already says "Total runs"; it now reads the true `total` (Task 4).
-- **Testing (per spec):** server test seeds count > page cap and asserts `total` and `runs.length === 50` (Task 1); UI test asserts KPI shows the real number under the "Total runs" label, replacing the old `"50+"` assertion (Task 5).
-- **PR boundary:** server route + UI consumers + tests, one PR off `main` (Decisions: locked). TDD per repo rules (failing test → minimal real code → passing test). No OSS headers; commit trailers per repo convention.
+- **Testing — maximal coverage across three layers:**
+  - **Server unit/contract (Task 1, 5 cases):** total **beyond the cap** (count 137, page 50 → `total > runs.length` — the core regression); **limit clamp** (`?limit=999` → 200); **empty / total == 0** (`{ runs: [], total: 0 }`); **total <= limit** (count 3 → `total === runs.length`); **defensive empty count row** (`total` falls back to 0). Proves the `{ runs, total, limit }` shape and the count-beyond-cap semantics.
+  - **UI unit (Task 5, 4 cases + mock-default fix):** hero KPI shows the true total **beyond the cap** (137), **within the cap** (7), and **zero** ("Total runs: 0"); the old `kpi-recent-runs` / `"50+"` are gone; a dedicated **Overview-stat** test proves the Overview "Total runs" stat reads `.total` (212), not the capped page length. All three `beforeEach` mock defaults move to the `{ runs, total, limit }` shape.
+  - **E2E smoke (Task 6, Linux-gated):** the **real** `hero-kpi-total-runs` KPI + the Overview stat render a numeric "Total runs" value end-to-end (no `"50+"`, no crash). **Honest limitation:** runs cannot be seeded via any public API, so the e2e value is `0` — it proves the shape + relabel render through the real components; the beyond-cap count is proven by the server unit test, not e2e.
+- **Consumers read `{ runs, total }` everywhere (verified):** `AoaRunsPanel` reads `.runs` (Task 3); both `AoaAgentDetail` queries — the hero-KPI query (`:189-193`) and the Overview query (`:363-376`) — read `.total` for the count and `.runs` for the list (Task 4). No consumer still treats the response as a bare array.
+- **PR boundary:** server route + UI consumers + unit tests + one e2e smoke, one PR off `main` (Decisions: locked). TDD per repo rules (failing test → minimal real code → passing test). No OSS headers; commit trailers per repo convention.
 
 **Things a reviewer should double-check:**
 1. **Route-handler extraction in the server test.** The test pulls the `/aoa-runs` handler off `router.stack` and calls it directly with a fake `req`/`res`. This is a slight extension of the repo's existing source-grep contract pattern (`aoa-agents-api.test.ts` does not invoke handlers). It avoids needing the embedded-postgres real-DB harness (which is Windows-skipped). The `vi.mock("../services/index.js", ...)` stub list mirrors the real import at `agents.ts:25-36`; if `agentRoutes` imports another module at construction time that the stubs miss, the import may need one more `vi.mock`. A reviewer should run the file once to confirm the router builds under the mocks. An alternative the reviewer may prefer: a real-DB integration test mirroring `agents-list-excludes-platform.integration.test.ts` (seed >50 runs, assert `total`), Linux-gated — heavier but exercises the actual `count()` SQL.
 2. **`sql\`count(*)::int\`` mock (Codex P1 fix).** The route uses `sql<number>\`count(*)::int\`` (the `internal-agent.ts:864` idiom), and the test stubs drizzle's `sql` with the same Proxy the existing `agentRoutes` mocks use — the mock DB's `select()` ignores the field map and returns the pre-queued rows, so the stub only needs to not throw. The original draft used drizzle's `count()` helper and added `count` to the import; that would have broken `agents-keys-routes.test.ts` and `aoa-budget-autopause.test.ts`, whose `drizzle-orm` mocks export `sql` but not `count` (calling `count()` → `undefined()` at router build / handler run). Switching to `sql` means those two existing mocks need **no edit**. The mock proves the route *shape and wiring* (two queries, object response), not the SQL semantics — the integration alternative in note 1 would prove the SQL. This matches how the repo's other contract tests trade SQL-fidelity for portability.
 3. **`mockResolvedValue([])` → object shape in all three `beforeEach` blocks.** If any `beforeEach` is missed, the hero KPI reads `undefined?.total ?? 0` (renders `0`, harmless) but it's cleaner to update all three; the find-and-replace-all in Task 5 covers them. Confirm the count of replacements is 3.
 4. **`AoaRunsResponse.runs` typed as `unknown[]`.** This matches the existing untyped pattern (the client returned `unknown[]` before; consumers cast locally to `AoaRun[]`). A reviewer wanting stronger typing could import/define a shared run type, but that's out of scope for this minimal-change follow-up.
+5. **Two different KPI testids — by design (do not "unify").** The Task 5 **unit** test asserts `kpi-total-runs`; the Task 6 **e2e** asserts `hero-kpi-total-runs`. These are not a typo: the unit test **mocks** `AgentDetailCore` and that mock renders `data-testid={`kpi-${k.key}`}` (`AoaAgentDetail.test.tsx` ~line 94), whereas the **real** `AgentHeroCard` renders `data-testid={`hero-kpi-${kpi.key}`}` (`AgentHeroCard.tsx:118,129`). The e2e is the only test that exercises the real testid. A reviewer should confirm both testids resolve to `total-runs` after the relabel and not conflate them.
+6. **E2E asserts `0`, not a large count (honest limitation).** `internal_agent_runs` has no public insert endpoint (verified — only internal service paths write it; no e2e helper seeds a run), so a freshly-seeded crew agent has 0 runs and the e2e asserts the KPI renders `0` under "Total runs". The "beyond the cap" correctness is owned by the server unit test (Task 1), not the e2e. This plan deliberately does **not** invent a run-seeding helper. If a reviewer wants e2e to assert a non-zero count, that requires either a new test-only run-seeding endpoint or driving a real crew run with a fake CLI — both are explicitly out of scope for this follow-up.
+7. **Overview-stat locator (no testid).** Both the unit Overview-stat test and the e2e scope to the Overview "Total runs" stat by label text because the stat span has no `data-testid` (`AoaAgentDetail.tsx:398-401`). If either locator is brittle in practice, the implementer may add `data-testid="aoa-overview-total-runs"` to the stat value span — a one-line, behaviour-neutral change noted in both Task 5 and Task 6.
