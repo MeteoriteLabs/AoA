@@ -555,8 +555,10 @@ with:
 with:
 
 ```tsx
-          <span className="text-2xl font-semibold block mt-1">{totalRuns}</span>
+          <span data-testid="aoa-overview-total-runs" className="text-2xl font-semibold block mt-1">{totalRuns}</span>
 ```
+
+> The `data-testid="aoa-overview-total-runs"` is **required** (not optional): the hero KPI is also labelled "Total runs" now, so the e2e (Task 6) must target this testid to actually prove the Overview stat — a label-text locator would match the hero instead (Codex P1).
 
 - [ ] Typecheck the UI — now expected to be **clean** (the client type, the panel, and both page sites all agree on `{ runs, total }`):
 
@@ -745,7 +747,7 @@ EOF
 - **Windows self-skips:** when `process.platform === "win32"` and no `DATABASE_URL`, the config sets `testMatch` to **only** `windows-embedded-postgres-skip.spec.ts` and drops the `webServer`, so this spec never runs on the embedded-postgres Windows runner (Issue #114). It runs on the **required Linux gate** and the advisory macOS lane. No extra skip guard is needed in the spec itself — `testMatch` handles it.
 - Seeding: `seedCompany(request, name)` returns `{ id, name, issuePrefix }`. A freshly-created company is **auto-provisioned an AoA crew** (`ensureCommanderAgent` in `routes/companies.ts`), so `GET /api/companies/:id/agents?kind=aoa` returns the crew (Commander/Planner/etc.) without any explicit agent seed — the exact pattern used by `team-aoa-tasks-crew-board.spec.ts:24-29`.
 - Route: the AoA agent detail page is `/{issuePrefix}/team/aoa/{agentId}` (`ui/src/App.tsx:146`); `{agentId}` accepts the agent UUID. Overview is the default tab.
-- Real testids: the hero KPI is `data-testid="hero-kpi-${key}"` (`ui/src/components/agent-detail/AgentHeroCard.tsx:118,129`) → after the relabel, **`hero-kpi-total-runs`**. The Overview "Total runs" stat has **no testid** (`AoaAgentDetail.tsx:398-401`) — scope to it via its label text.
+- Real testids: the hero KPI is `data-testid="hero-kpi-${key}"` (`ui/src/components/agent-detail/AgentHeroCard.tsx:118,129`) → after the relabel, **`hero-kpi-total-runs`**. The Overview "Total runs" stat now gets **`data-testid="aoa-overview-total-runs"`** on its value span (added in Task 4); the e2e asserts that testid directly, because the hero KPI also says "Total runs" and a label-text locator would match the hero, not Overview.
 
 ### Steps
 
@@ -813,12 +815,13 @@ test.describe("AoA run-count KPI", () => {
     // The old label must be gone (relabel proof).
     await expect(page.getByTestId("hero-kpi-recent-runs")).toHaveCount(0);
 
-    // Overview "Total runs" stat (default tab, no testid) — scope via its label.
-    const overviewLabel = page.getByText("Total runs", { exact: true }).first();
-    await expect(overviewLabel).toBeVisible({ timeout: 10_000 });
-    // The stat value sits in the same card as the label; assert the card shows 0.
-    const statCard = page.locator("div", { has: overviewLabel }).first();
-    await expect(statCard).toContainText("0");
+    // Overview "Total runs" stat — assert via a dedicated testid (added to the
+    // stat value span in Task 4). The hero KPI ALSO says "Total runs" now, so a
+    // label-text locator would match the hero, not Overview, and the assertion
+    // would pass without proving Overview at all (Codex P1).
+    const overviewStat = page.getByTestId("aoa-overview-total-runs");
+    await expect(overviewStat).toBeVisible({ timeout: 10_000 });
+    await expect(overviewStat).toHaveText("0");
 
     // Sanity: no crash / error boundary on the page.
     await expect(page.getByText(/something went wrong/i)).toHaveCount(0);
@@ -930,4 +933,4 @@ This plan implements **only** the "Follow-up #4 — True AoA run count" section 
 4. **`AoaRunsResponse.runs` typed as `unknown[]`.** This matches the existing untyped pattern (the client returned `unknown[]` before; consumers cast locally to `AoaRun[]`). A reviewer wanting stronger typing could import/define a shared run type, but that's out of scope for this minimal-change follow-up.
 5. **Two different KPI testids — by design (do not "unify").** The Task 5 **unit** test asserts `kpi-total-runs`; the Task 6 **e2e** asserts `hero-kpi-total-runs`. These are not a typo: the unit test **mocks** `AgentDetailCore` and that mock renders `data-testid={`kpi-${k.key}`}` (`AoaAgentDetail.test.tsx` ~line 94), whereas the **real** `AgentHeroCard` renders `data-testid={`hero-kpi-${kpi.key}`}` (`AgentHeroCard.tsx:118,129`). The e2e is the only test that exercises the real testid. A reviewer should confirm both testids resolve to `total-runs` after the relabel and not conflate them.
 6. **E2E asserts `0`, not a large count (honest limitation).** `internal_agent_runs` has no public insert endpoint (verified — only internal service paths write it; no e2e helper seeds a run), so a freshly-seeded crew agent has 0 runs and the e2e asserts the KPI renders `0` under "Total runs". The "beyond the cap" correctness is owned by the server unit test (Task 1), not the e2e. This plan deliberately does **not** invent a run-seeding helper. If a reviewer wants e2e to assert a non-zero count, that requires either a new test-only run-seeding endpoint or driving a real crew run with a fake CLI — both are explicitly out of scope for this follow-up.
-7. **Overview-stat locator (no testid).** Both the unit Overview-stat test and the e2e scope to the Overview "Total runs" stat by label text because the stat span has no `data-testid` (`AoaAgentDetail.tsx:398-401`). If either locator is brittle in practice, the implementer may add `data-testid="aoa-overview-total-runs"` to the stat value span — a one-line, behaviour-neutral change noted in both Task 5 and Task 6.
+7. **Overview-stat locator.** Task 4 adds `data-testid="aoa-overview-total-runs"` to the Overview stat value span (`AoaAgentDetail.tsx:398-401`); the **e2e asserts that testid directly** — the hero KPI now also says "Total runs", so a label-text locator would match the hero, not Overview (Codex P1, this round). The **unit** Overview-stat test stays scoped by `{ selector: "span.text-xs" }` on the label, which is unambiguous there because the hero is mocked (rendered as plain "label: value" text, not a `span.text-xs`).

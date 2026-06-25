@@ -644,7 +644,7 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 
     test("dirty + sidebar <Link> + Cancel → stays on the agent page, edit intact", async ({ page, request }) => {
       const { ref, nameInput } = await openDirtyConfig(page, request);
-      await page.getByRole("link", { name: "Tasks" }).click();
+      await page.getByRole("link", { name: /^Tasks$/ }).click();
       // Global confirm dialog appears; URL has NOT changed.
       const dialog = page.getByRole("alertdialog");
       await expect(dialog).toBeVisible({ timeout: 5_000 });
@@ -657,7 +657,7 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 
     test("dirty + sidebar <Link> + Discard → navigation proceeds, edit gone", async ({ page, request }) => {
       const { ref } = await openDirtyConfig(page, request);
-      await page.getByRole("link", { name: "Tasks" }).click();
+      await page.getByRole("link", { name: /^Tasks$/ }).click();
       const dialog = page.getByRole("alertdialog");
       await expect(dialog).toBeVisible({ timeout: 5_000 });
       await dialog.getByRole("button", { name: "Discard & leave" }).click();
@@ -694,14 +694,14 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
       await page.goto(`/${company.issuePrefix}/agents/${ref}/configure`);
       await expect(page.getByTestId("agent-config-name-input")).toBeVisible({ timeout: 15_000 });
       // Do NOT edit anything — form is clean.
-      await page.getByRole("link", { name: "Tasks" }).click();
+      await page.getByRole("link", { name: /^Tasks$/ }).click();
       await expect(page).toHaveURL(/\/issues(\b|\/|\?|$)/, { timeout: 5_000 });
       await expect(page.getByRole("alertdialog")).toHaveCount(0);
     });
   });
   ```
   > **Locator-grounding to re-verify during impl** (selectors taken from real source, but confirm against the running app):
-  > - Sidebar "Tasks" → `/issues` (`Sidebar.tsx:139`). If the sidebar starts collapsed in the e2e viewport, the link is icon-only inside a Tooltip — either assert against the default-expanded sidebar or target the icon link by `aria-label`/Tooltip. Confirm the expanded `NavLink` exposes the accessible name "Tasks" in the running app; if not, fall back to `page.locator('a[href$="/issues"]')`.
+  > - Sidebar "Tasks" → `/issues` (`Sidebar.tsx:139`). If the sidebar starts collapsed in the e2e viewport, the link is icon-only inside a Tooltip — either assert against the default-expanded sidebar or target the icon link by `aria-label`/Tooltip. Confirm the expanded `NavLink` exposes the accessible name "Tasks" in the running app; if not, fall back to `page.locator('a[href$="/issues"]')`. The click locators use an **anchored** name `/^Tasks$/` so they don't collide with the hero KPI link labelled "Tasks (wk)" — Playwright's `name` is a substring match by default, so an unanchored "Tasks" would strict-mode-fail on two matches (Codex P1).
   > - The Config tab trigger is a Radix `TabsTrigger` (`role="tab"`, name "Config"). The `/configure` deep-link also lands on the Config tab directly (used by the sidebar/clean tests to skip the tab click).
   > - If `seedWorkerAgent` with `adapterType: "claude_local"` is rejected at create, drop to the minimal accepted body; the Identity "Name" input is adapter-agnostic so the dirty handle still works.
 - [ ] **Run the spec** (Linux/macOS or Windows-with-DATABASE_URL): `pnpm test:e2e agent-unsaved-guard`. Headed debugging: `pnpm test:e2e:headed agent-unsaved-guard`.
