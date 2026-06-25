@@ -18,6 +18,8 @@ import { AgentSaveWarnings } from "../components/AgentSaveWarnings";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
+import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
+import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -184,6 +186,13 @@ export function AoaAgentDetail() {
     },
   });
 
+  // Top-level AoA runs (shares AoaOverview's query key → deduped) for the hero "Total runs" KPI.
+  const { data: aoaRunsForKpi } = useQuery({
+    queryKey: ["aoa-runs", agent?.id ?? aoaRouteRef, resolvedCompanyId],
+    queryFn: () => agentsApi.getAoaRuns(agent?.id ?? aoaRouteRef, resolvedCompanyId as string),
+    enabled: Boolean(agent && resolvedCompanyId),
+  });
+
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
@@ -234,21 +243,37 @@ export function AoaAgentDetail() {
           <span className="hidden sm:inline">Pause</span>
         </Button>
       )}
-      <span className="hidden sm:inline">
-        <StatusBadge status={agent.status} />
-      </span>
     </>
   ) : undefined;
 
+  const heroBadges = {
+    adapter: agent.adapterType,
+    model:
+      typeof (agent.adapterConfig as Record<string, unknown> | null)?.model === "string"
+        ? ((agent.adapterConfig as Record<string, unknown>).model as string)
+        : undefined,
+  };
+  // /aoa-runs returns at most a capped page (default 50), so the fetched length is the
+  // recent-run count, not a true total — label it honestly and show "50+" at the cap.
+  const recentRunCount = (aoaRunsForKpi ?? []).length;
+  const heroKpis: HeroKpi[] = [
+    { key: "role", label: "Role", value: roleLabels[agent.role] ?? agent.role },
+    {
+      key: "recent-runs",
+      label: "Recent runs",
+      value: recentRunCount >= 50 ? "50+" : recentRunCount,
+    },
+  ];
+
   return (
     <>
-      {lifecycleError && (
-        <p className="text-sm text-destructive">{lifecycleError}</p>
-      )}
     <AgentDetailCore
       agent={agent}
       tabs={tabs}
       headerActions={headerActions}
+      heroKpis={heroKpis}
+      heroBadges={heroBadges}
+      headerError={lifecycleError}
       activeView={activeView}
       onViewChange={(v) => {
         const target =
@@ -294,7 +319,7 @@ export function AoaAgentDetail() {
         }
         if (view === "skills" && resolvedCompanyId) {
           return (
-            <AoaSkillsTab
+            <AgentSkillsTab
               agentId={agent.id}
               companyId={resolvedCompanyId}
               skillKeys={(agent as any).skillKeys ?? []}
@@ -477,7 +502,7 @@ function AoaConfigurePage({
   }, [onSavingChange, updateAgent.isPending]);
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-[1400px] space-y-6">
       <AgentConfigForm
         mode="edit"
         agent={agent}
