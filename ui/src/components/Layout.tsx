@@ -5,7 +5,6 @@ import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { CommandPalette } from "./CommandPalette";
-import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { useDialog } from "../context/DialogContext";
@@ -291,7 +290,6 @@ export function Layout() {
         {newGoalOpen && <NewGoalDialog />}
         {newAgentOpen && <NewAgentDialog />}
       </Suspense>
-      <ToastViewport />
       <KeyboardShortcutsCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
     </div>
     </AgentPanelProvider>

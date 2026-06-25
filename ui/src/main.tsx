@@ -13,6 +13,7 @@ import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
+import { ToastViewport } from "@/components/ToastViewport";
 import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -61,6 +62,7 @@ createRoot(document.getElementById("root")!).render(
                           </ErrorBoundary>
                           <InstallToastSlot />
                           <Toaster />
+                          <ToastViewport />
                         </MarketplaceToastProvider>
                       </DialogProvider>
                     </SidebarProvider>
