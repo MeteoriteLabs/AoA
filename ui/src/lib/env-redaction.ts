@@ -2,14 +2,38 @@ import { asRecord } from "./run-metrics";
 
 export const REDACTED_ENV_VALUE = "***REDACTED***";
 
+// Mirrors the server's redactEnvForLogs (packages/adapter-utils/src/server-utils.ts)
+// so the Run-detail env display can't render a credential the server already treats
+// as sensitive (the UI receives the raw adapter.invoke env, not the log-redacted copy).
+// Over-redacting a displayed value is safe; leaking one is not. Keep in sync with that
+// source if its patterns change.
 const SECRET_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
-const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+  /(key|token|secret|password|passwd|auth|cookie|credential|bearer|signing|webhook|npm|private|connection)/i;
+const SECRET_ENV_VALUE_PATTERNS: RegExp[] = [
+  // Connection strings / DSNs (postgres://user:pass@host, mongodb+srv://, redis://, …)
+  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/[^\s<>'")]+/i,
+  // Anthropic / OpenAI-style provider keys (sk-… / sk-ant-…)
+  /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/,
+  // Stripe-style keys (sk_live_…, pk_test_…, rk_live_…)
+  /\b[sprSPR]k_(?:live|test)_[A-Za-z0-9]{8,}\b/,
+  // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  // AWS access key id
+  /\bAKIA[0-9A-Z]{16}\b/,
+  // Slack tokens (xoxb-, xoxp-, …)
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  // Generic "<prefix>_<long-random>" tokens (whsec_…, npm_…, vendor keys)
+  /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
+  // JWTs (three base64url segments)
+  /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
+  // PEM private-key blocks
+  /-----BEGIN[A-Z ]*PRIVATE KEY-----/,
+];
 
 export function shouldRedactSecretValue(key: string, value: unknown): boolean {
   if (SECRET_ENV_KEY_RE.test(key)) return true;
   if (typeof value !== "string") return false;
-  return JWT_VALUE_RE.test(value);
+  return SECRET_ENV_VALUE_PATTERNS.some((re) => re.test(value));
 }
 
 export function redactEnvValue(key: string, value: unknown): string {
