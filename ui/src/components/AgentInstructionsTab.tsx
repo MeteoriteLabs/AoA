@@ -2,28 +2,36 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { assetsApi } from "../api/assets";
-import { companySkillsApi } from "../api/companySkills";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { useNavigate } from "@/lib/router";
 import { PackageFileTree, buildFileTree } from "./PackageFileTree";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { CopyText } from "./CopyText";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { toast } from "@/lib/toast";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronRight, Copy, FolderOpen, HelpCircle, Sparkles } from "lucide-react";
+import { Group, Panel, Separator } from "react-resizable-panels";
+import type { PanelImperativeHandle } from "react-resizable-panels";
+import { ChevronRight, Copy, FileText, HelpCircle, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import { cn } from "../lib/utils";
 import type {
   Agent,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
-  CompanySkillListItem,
 } from "@armyofagents/shared";
 
 function isMarkdown(pathValue: string) {
@@ -66,7 +74,6 @@ export function AgentInstructionsTab({
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
-  const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<{
     mode: "managed" | "external";
@@ -74,11 +81,11 @@ export function AgentInstructionsTab({
     entryFile: string;
   } | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
-  const [showNewFileInput, setShowNewFileInput] = useState(false);
+  const [showNewFileDialog, setShowNewFileDialog] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [filePanelWidth, setFilePanelWidth] = useState(260);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [filesCollapsed, setFilesCollapsed] = useState(false);
+  const filePanelRef = useRef<PanelImperativeHandle>(null);
   const [awaitingRefresh, setAwaitingRefresh] = useState(false);
   const [deleteFileConfirmOpen, setDeleteFileConfirmOpen] = useState(false);
   const lastFileVersionRef = useRef<string | null>(null);
@@ -90,11 +97,10 @@ export function AgentInstructionsTab({
 
   useEffect(() => {
     setSelectedFile("AGENTS.md");
-    setShowFilePanel(false);
     setDraft(null);
     setBundleDraft(null);
     setNewFilePath("");
-    setShowNewFileInput(false);
+    setShowNewFileDialog(false);
     setPendingFiles([]);
     setExpandedDirs(new Set());
     setAwaitingRefresh(false);
@@ -170,7 +176,12 @@ export function AgentInstructionsTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
-    onError: () => setAwaitingRefresh(false),
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      toast.error("Couldn't save instructions", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
   });
 
   const saveFile = useMutation({
@@ -184,19 +195,30 @@ export function AgentInstructionsTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
-    onError: () => setAwaitingRefresh(false),
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      toast.error("Couldn't save file", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
   });
 
   const deleteFile = useMutation({
     mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
     onMutate: () => setAwaitingRefresh(true),
     onSuccess: (_, relativePath) => {
+      toast.success("File deleted");
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
-    onError: () => setAwaitingRefresh(false),
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      toast.error("Couldn't delete file", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
   });
 
   const uploadMarkdownImage = useMutation({
@@ -290,74 +312,70 @@ export function AgentInstructionsTab({
   useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
   useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
 
-  useEffect(() => {
-    onSaveActionChange(isDirty ? () => {
-      const save = async () => {
-        const shouldClearLegacy =
-          Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
-        if (bundleDirty && bundleDraft) {
-          await updateBundle.mutateAsync({
-            mode: bundleDraft.mode,
-            rootPath: bundleDraft.mode === "external" ? bundleDraft.rootPath : null,
-            entryFile: bundleDraft.entryFile,
-          });
-        }
-        if (fileDirty) {
-          await saveFile.mutateAsync({
-            path: selectedOrEntryFile,
-            content: displayValue,
-            clearLegacyPromptTemplate: shouldClearLegacy,
-          });
-        }
-      };
-      void save().catch(() => undefined);
-    } : null);
+  const handleInstrSave = useCallback(() => {
+    const save = async () => {
+      const shouldClearLegacy =
+        Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
+      if (bundleDirty && bundleDraft) {
+        await updateBundle.mutateAsync({
+          mode: bundleDraft.mode,
+          rootPath: bundleDraft.mode === "external" ? bundleDraft.rootPath : null,
+          entryFile: bundleDraft.entryFile,
+        });
+      }
+      if (fileDirty) {
+        await saveFile.mutateAsync({
+          path: selectedOrEntryFile,
+          content: displayValue,
+          clearLegacyPromptTemplate: shouldClearLegacy,
+        });
+      }
+    };
+    void save().catch(() => undefined);
   }, [
     bundle,
     bundleDirty,
     bundleDraft,
     displayValue,
     fileDirty,
-    isDirty,
-    onSaveActionChange,
     saveFile,
     selectedOrEntryFile,
     updateBundle,
   ]);
 
-  useEffect(() => {
-    onCancelActionChange(isDirty ? () => {
-      setDraft(null);
-      if (bundle) {
-        setBundleDraft({
-          mode: persistedMode,
-          rootPath: persistedRootPath,
-          entryFile: bundle.entryFile,
-        });
-      }
-    } : null);
-  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath]);
+  const handleInstrCancel = useCallback(() => {
+    setDraft(null);
+    if (bundle) {
+      setBundleDraft({
+        mode: persistedMode,
+        rootPath: persistedRootPath,
+        entryFile: bundle.entryFile,
+      });
+    }
+  }, [bundle, persistedMode, persistedRootPath]);
 
-  const handleSeparatorDrag = useCallback((event: React.MouseEvent) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = filePanelWidth;
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const delta = moveEvent.clientX - startX;
-      const next = Math.max(180, Math.min(500, startWidth + delta));
-      setFilePanelWidth(next);
-    };
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, [filePanelWidth]);
+  useEffect(() => {
+    onSaveActionChange(isDirty ? handleInstrSave : null);
+  }, [isDirty, handleInstrSave, onSaveActionChange]);
+
+  useEffect(() => {
+    onCancelActionChange(isDirty ? handleInstrCancel : null);
+  }, [isDirty, handleInstrCancel, onCancelActionChange]);
+
+  const selectFile = (filePath: string) => {
+    setSelectedFile(filePath);
+    if (!fileOptions.includes(filePath)) setDraft("");
+  };
+
+  const handleCreateFile = () => {
+    const candidate = newFilePath.trim();
+    if (!candidate || candidate.includes("..") || visibleFilePaths.includes(candidate)) return;
+    setPendingFiles((prev) => (prev.includes(candidate) ? prev : [...prev, candidate]));
+    setSelectedFile(candidate);
+    setDraft("");
+    setNewFilePath("");
+    setShowNewFileDialog(false);
+  };
 
   if (!isLocal) {
     return (
@@ -373,8 +391,113 @@ export function AgentInstructionsTab({
     return <AgentInstructionsTabSkeleton />;
   }
 
+  const fileTreeNode = (
+    <PackageFileTree
+      nodes={fileTree}
+      selectedFile={selectedOrEntryFile}
+      expandedDirs={expandedDirs}
+      checkedFiles={new Set()}
+      onToggleDir={(dirPath) => setExpandedDirs((current) => {
+        const next = new Set(current);
+        if (next.has(dirPath)) next.delete(dirPath);
+        else next.add(dirPath);
+        return next;
+      })}
+      onSelectFile={selectFile}
+      onToggleCheck={() => {}}
+      showCheckboxes={false}
+      renderFileExtra={(node) => {
+        const file = bundle?.files.find((entry) => entry.path === node.path);
+        if (!file) return null;
+        if (file.deprecated) {
+          return (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide cursor-help">
+                  virtual file
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={4}>
+                Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
+              </TooltipContent>
+            </Tooltip>
+          );
+        }
+        return (
+          <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+            {file.isEntryFile ? "entry" : `${file.size}b`}
+          </span>
+        );
+      }}
+    />
+  );
+
+  const editorPane = (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+          <p className="text-xs text-muted-foreground">
+            {selectedFileExists
+              ? selectedFileSummary?.deprecated
+                ? "Deprecated virtual file"
+                : `${selectedFileDetail?.language ?? "text"} file`
+              : "New file in this bundle"}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {isDirty && (
+            <>
+              <Button type="button" size="sm" variant="ghost" onClick={handleInstrCancel} disabled={isSaving}>
+                Cancel
+              </Button>
+              <Button type="button" size="sm" onClick={handleInstrSave} disabled={isSaving}>
+                {isSaving ? "Saving…" : "Save"}
+              </Button>
+            </>
+          )}
+          {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setDeleteFileConfirmOpen(true)}
+              disabled={deleteFile.isPending}
+            >
+              Delete
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {selectedFileExists && fileLoading && !selectedFileDetail ? (
+        <PromptEditorSkeleton />
+      ) : isMarkdown(selectedOrEntryFile) ? (
+        <MarkdownEditor
+          key={selectedOrEntryFile}
+          value={displayValue}
+          onChange={(value) => setDraft(value ?? "")}
+          placeholder="# Agent instructions"
+          contentClassName="min-h-[60vh] text-sm font-mono"
+          imageUploadHandler={async (file) => {
+            const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
+            const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+            return asset.contentPath;
+          }}
+        />
+      ) : (
+        <textarea
+          value={displayValue}
+          onChange={(event) => setDraft(event.target.value)}
+          className="min-h-[60vh] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+          placeholder="File contents"
+        />
+      )}
+    </>
+  );
+
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="max-w-[1400px] space-y-6">
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
@@ -384,12 +507,6 @@ export function AgentInstructionsTab({
           ))}
         </div>
       )}
-
-      <LoadedSkillsPanel
-        agent={agent}
-        companyId={companyId}
-        skillKeys={((agent as unknown) as { skillKeys?: string[] }).skillKeys ?? []}
-      />
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -544,203 +661,190 @@ export function AgentInstructionsTab({
         </CollapsibleContent>
       </Collapsible>
 
-      <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
-        <div className={cn(
-          "border border-border rounded-lg p-3 space-y-3 shrink-0",
-          isMobile && showFilePanel && "block",
-          isMobile && !showFilePanel && "hidden",
-        )} style={isMobile ? undefined : { width: filePanelWidth }}>
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">Files</h4>
-            <div className="flex items-center gap-1">
-              {!showNewFileInput && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  className="h-7 w-7"
-                  onClick={() => setShowNewFileInput(true)}
-                >
-                  +
-                </Button>
-              )}
-              {isMobile && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={() => setShowFilePanel(false)}
-                >
-                  ✕
-                </Button>
-              )}
-            </div>
-          </div>
-          {showNewFileInput && (
-            <div className="space-y-2">
-              <Input
-                value={newFilePath}
-                onChange={(event) => setNewFilePath(event.target.value)}
-                placeholder="TOOLS.md"
-                className="font-mono text-sm"
-                autoFocus
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setShowNewFileInput(false);
-                    setNewFilePath("");
-                  }
-                }}
-              />
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  className="flex-1"
-                  disabled={!newFilePath.trim() || newFilePath.includes("..")}
-                  onClick={() => {
-                    const candidate = newFilePath.trim();
-                    if (!candidate || candidate.includes("..")) return;
-                    setPendingFiles((prev) => prev.includes(candidate) ? prev : [...prev, candidate]);
-                    setSelectedFile(candidate);
-                    setDraft("");
-                    setNewFilePath("");
-                    setShowNewFileInput(false);
-                  }}
-                >
-                  Create
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="flex-1"
-                  onClick={() => {
-                    setShowNewFileInput(false);
-                    setNewFilePath("");
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-          <PackageFileTree
-            nodes={fileTree}
-            selectedFile={selectedOrEntryFile}
-            expandedDirs={expandedDirs}
-            checkedFiles={new Set()}
-            onToggleDir={(dirPath) => setExpandedDirs((current) => {
-              const next = new Set(current);
-              if (next.has(dirPath)) next.delete(dirPath);
-              else next.add(dirPath);
-              return next;
-            })}
-            onSelectFile={(filePath) => {
-              setSelectedFile(filePath);
-              if (!fileOptions.includes(filePath)) setDraft("");
-              if (isMobile) setShowFilePanel(false);
-            }}
-            onToggleCheck={() => {}}
-            showCheckboxes={false}
-            renderFileExtra={(node) => {
-              const file = bundle?.files.find((entry) => entry.path === node.path);
-              if (!file) return null;
-              if (file.deprecated) {
-                return (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide cursor-help">
-                        virtual file
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
-                    </TooltipContent>
-                  </Tooltip>
-                );
-              }
-              return (
-                <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
-                  {file.isEntryFile ? "entry" : `${file.size}b`}
-                </span>
-              );
-            }}
-          />
-        </div>
-
-        {/* Draggable separator */}
-        {!isMobile && (
-          <div
-            className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
-            onMouseDown={handleSeparatorDrag}
-          />
-        )}
-
-        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              {isMobile && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  className="h-7 w-7 shrink-0"
-                  onClick={() => setShowFilePanel(true)}
-                >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                </Button>
-              )}
-              <div className="min-w-0">
-                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
-                <p className="text-xs text-muted-foreground">
-                  {selectedFileExists
-                    ? selectedFileSummary?.deprecated
-                      ? "Deprecated virtual file"
-                      : `${selectedFileDetail?.language ?? "text"} file`
-                    : "New file in this bundle"}
-                </p>
-              </div>
-            </div>
-            {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
+      {isMobile ? (
+        <div className="space-y-3">
+          <div className="rounded-lg border border-border">
+            <div className="flex h-[42px] items-center justify-between border-b border-border pl-3 pr-1.5">
+              <h4 className="text-sm font-medium">Files</h4>
               <Button
                 type="button"
-                size="sm"
+                size="icon"
                 variant="outline"
-                onClick={() => setDeleteFileConfirmOpen(true)}
-                disabled={deleteFile.isPending}
+                className="h-7 w-7"
+                onClick={() => setShowNewFileDialog(true)}
+                aria-label="Add file"
               >
-                Delete
+                <Plus className="h-3.5 w-3.5" />
               </Button>
-            )}
+            </div>
+            <div className="max-h-[40vh] overflow-auto p-2">{fileTreeNode}</div>
           </div>
+          <div className="rounded-lg border border-border p-4 space-y-3">{editorPane}</div>
+        </div>
+      ) : (
+        <div className="h-[calc(100vh-16rem)] min-h-[460px]">
+          <Group orientation="horizontal" className="h-full gap-2">
+            <Panel
+              id="instr-files"
+              defaultSize="24%"
+              minSize="14%"
+              maxSize="42%"
+              collapsible
+              collapsedSize="5%"
+              panelRef={filePanelRef}
+              onResize={(s) => setFilesCollapsed(s.asPercentage <= 8)}
+              className="h-full overflow-hidden min-w-0"
+            >
+              <div className="h-full overflow-hidden rounded-xl border border-border bg-background">
+                {filesCollapsed ? (
+                  <aside className="flex h-full w-full flex-col items-center bg-card">
+                    <div className="flex h-[42px] w-full shrink-0 items-center justify-center border-b border-border">
+                      <button
+                        type="button"
+                        onClick={() => filePanelRef.current?.expand()}
+                        title="Expand"
+                        aria-label="Expand files nav"
+                        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                      >
+                        <PanelLeftOpen className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="flex flex-1 flex-col items-center gap-1 overflow-auto py-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowNewFileDialog(true)}
+                        title="Add file"
+                        aria-label="Add file"
+                        className="flex size-10 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                      >
+                        <Plus className="size-4" />
+                      </button>
+                      <div className="my-1 h-px w-6 bg-border" />
+                      {visibleFilePaths.map((path) => {
+                        const active = selectedOrEntryFile === path;
+                        const isEntry = path === currentEntryFile;
+                        return (
+                          <button
+                            key={path}
+                            type="button"
+                            onClick={() => selectFile(path)}
+                            title={path}
+                            aria-label={path}
+                            className={cn(
+                              "relative flex size-10 items-center justify-center rounded-md transition-colors",
+                              active
+                                ? "bg-accent text-accent-foreground"
+                                : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                            )}
+                          >
+                            <FileText className="size-4" />
+                            {isEntry && <span className="absolute bottom-1 right-1 size-1.5 rounded-full bg-primary" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </aside>
+                ) : (
+                  <div className="flex h-full flex-col">
+                    <div className="flex h-[42px] shrink-0 items-center justify-between border-b border-border pl-3 pr-1.5">
+                      <h4 className="text-sm font-medium">Files</h4>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowNewFileDialog(true)}
+                          title="Add file"
+                          aria-label="Add file"
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => filePanelRef.current?.collapse()}
+                          title="Collapse"
+                          aria-label="Collapse files nav"
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                        >
+                          <PanelLeftClose className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-auto p-2">{fileTreeNode}</div>
+                  </div>
+                )}
+              </div>
+            </Panel>
+            <Separator className="w-1 shrink-0 cursor-col-resize rounded bg-transparent hover:bg-border/70 transition-colors" />
+            <Panel className="h-full overflow-hidden min-w-0">
+              <div className="h-full overflow-auto rounded-xl border border-border bg-background p-4 space-y-3">
+                {editorPane}
+              </div>
+            </Panel>
+          </Group>
+        </div>
+      )}
 
-          {selectedFileExists && fileLoading && !selectedFileDetail ? (
-            <PromptEditorSkeleton />
-          ) : isMarkdown(selectedOrEntryFile) ? (
-            <MarkdownEditor
-              key={selectedOrEntryFile}
-              value={displayValue}
-              onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
-              contentClassName="min-h-[420px] text-sm font-mono"
-              imageUploadHandler={async (file) => {
-                const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
-                const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                return asset.contentPath;
+      <Dialog
+        open={showNewFileDialog}
+        onOpenChange={(open) => {
+          setShowNewFileDialog(open);
+          if (!open) setNewFilePath("");
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add file</DialogTitle>
+            <DialogDescription>
+              Create a new file in this instructions bundle. It’s saved when you save the file’s contents.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-2">
+            <Input
+              value={newFilePath}
+              onChange={(event) => setNewFilePath(event.target.value)}
+              placeholder="TOOLS.md"
+              className="font-mono text-sm"
+              autoFocus
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  handleCreateFile();
+                }
               }}
             />
-          ) : (
-            <textarea
-              value={displayValue}
-              onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
-              placeholder="File contents"
-            />
-          )}
-        </div>
-      </div>
+            <p className="text-xs text-muted-foreground">
+              Markdown (<code>.md</code>) files render in the rich editor. Use a relative path like{" "}
+              <code>docs/STYLE.md</code> to nest.
+            </p>
+            {newFilePath.trim() && visibleFilePaths.includes(newFilePath.trim()) && (
+              <p className="text-xs text-amber-400">A file with that path already exists.</p>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setShowNewFileDialog(false);
+                setNewFilePath("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleCreateFile}
+              disabled={
+                !newFilePath.trim() ||
+                newFilePath.includes("..") ||
+                visibleFilePaths.includes(newFilePath.trim())
+              }
+            >
+              Create file
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={deleteFileConfirmOpen}
@@ -769,139 +873,6 @@ export function AgentInstructionsTabSkeleton() {
         <Skeleton className="h-[500px] w-[260px] shrink-0" />
         <Skeleton className="h-[500px] flex-1" />
       </div>
-    </div>
-  );
-}
-
-/**
- * Read-only summary of skills attached to this agent. Skills are part of
- * the agent's runtime context (injected at every heartbeat run alongside
- * the AGENTS.md bundle), so surfacing them on the Instructions tab puts
- * the full picture of "what the agent sees" in one place. Toggling skills
- * on/off still happens on the Skills tab.
- */
-function LoadedSkillsPanel({
-  agent,
-  companyId,
-  skillKeys,
-}: {
-  agent: Agent;
-  companyId?: string;
-  skillKeys: string[];
-}) {
-  const navigate = useNavigate();
-
-  const { data: allSkills, isLoading } = useQuery({
-    queryKey: queryKeys.companySkills.list(companyId ?? ""),
-    queryFn: () => companySkillsApi.list(companyId!),
-    enabled: Boolean(companyId),
-  });
-
-  const skillsRoute = `/agents/${agent.urlKey ?? agent.id}/skills`;
-
-  const attached = useMemo<CompanySkillListItem[]>(() => {
-    if (!allSkills) return [];
-    const set = new Set(skillKeys);
-    return allSkills.filter((s) => set.has(s.key));
-  }, [allSkills, skillKeys]);
-
-  // Keys that are attached to the agent but no longer exist in the
-  // company library (e.g. a skill was deleted while still referenced).
-  // Surface them so the founder isn't surprised when behavior changes.
-  const orphanKeys = useMemo<string[]>(() => {
-    if (!allSkills) return [];
-    const have = new Set(allSkills.map((s) => s.key));
-    return skillKeys.filter((k) => !have.has(k));
-  }, [allSkills, skillKeys]);
-
-  if (!companyId) return null;
-
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
-          <h4 className="text-sm font-medium">Loaded skills</h4>
-          <Badge variant="outline" className="text-[10px]">
-            {isLoading ? "…" : attached.length}
-          </Badge>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="h-7 text-xs"
-          onClick={() => navigate(skillsRoute)}
-        >
-          Manage in Skills tab
-        </Button>
-      </div>
-      <p className="mb-2 text-xs text-muted-foreground">
-        Skills below are injected into this agent's context on every run, alongside the AGENTS.md
-        bundle.
-      </p>
-
-      {isLoading ? (
-        <div className="space-y-1.5">
-          <Skeleton className="h-5 w-full" />
-          <Skeleton className="h-5 w-3/4" />
-        </div>
-      ) : attached.length === 0 && orphanKeys.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          No skills attached.{" "}
-          <button
-            type="button"
-            onClick={() => navigate(skillsRoute)}
-            className="underline underline-offset-2 hover:text-foreground"
-          >
-            Attach skills
-          </button>{" "}
-          from the company library.
-        </p>
-      ) : (
-        <div className="flex flex-wrap gap-1.5">
-          {attached.map((s) => (
-            <Tooltip key={s.id}>
-              <TooltipTrigger asChild>
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 font-mono text-[11px]",
-                  )}
-                  title={s.key}
-                >
-                  {s.name}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={4}>
-                <div className="max-w-xs space-y-0.5">
-                  <div className="font-mono text-[11px]">{s.key}</div>
-                  {s.description && (
-                    <div className="text-xs text-muted-foreground">{s.description}</div>
-                  )}
-                </div>
-              </TooltipContent>
-            </Tooltip>
-          ))}
-          {orphanKeys.map((k) => (
-            <Tooltip key={k}>
-              <TooltipTrigger asChild>
-                <span
-                  className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] text-amber-200"
-                  title={k}
-                >
-                  ! {k.split("/").pop()}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={4}>
-                <div className="max-w-xs">
-                  Skill <span className="font-mono">{k}</span> is attached but missing from the
-                  company library. It won't be injected at runtime.
-                </div>
-              </TooltipContent>
-            </Tooltip>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

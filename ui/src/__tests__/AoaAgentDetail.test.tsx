@@ -85,10 +85,15 @@ vi.mock("../lib/queryKeys", () => ({
 }));
 
 vi.mock("../components/agent-detail/AgentDetailCore", () => ({
-  AgentDetailCore: ({ agent, tabs, activeView, renderTab, headerActions }: any) => (
+  AgentDetailCore: ({ agent, tabs, activeView, renderTab, headerActions, heroKpis }: any) => (
     <div data-testid="agent-detail-core">
       <h1 data-testid="agent-name">{agent?.name}</h1>
       <div data-testid="header-actions">{headerActions}</div>
+      <div data-testid="hero-kpis">
+        {heroKpis?.map((k: any) => (
+          <span key={k.key} data-testid={`kpi-${k.key}`}>{k.label}: {String(k.value)}</span>
+        ))}
+      </div>
       <div data-testid="tab-content">{renderTab(activeView)}</div>
       <div data-testid="tabs">
         {tabs?.map((t: any) => (
@@ -192,6 +197,16 @@ describe("AoaAgentDetail", () => {
       expect(screen.getByTestId("tab-skills")).toBeInTheDocument();
       expect(screen.getByTestId("tab-configure")).toBeInTheDocument();
       expect(screen.getByTestId("tab-triggers")).toBeInTheDocument();
+    });
+  });
+
+  // Codex P2: /aoa-runs is capped (default 50), so labeling its length "Total runs"
+  // undercounts. It's now "Recent runs" and shows "50+" at the cap.
+  it("labels the run KPI 'Recent runs' and shows 50+ when the run list is capped", async () => {
+    mockGetAoaRuns.mockResolvedValue(Array.from({ length: 50 }, (_, i) => ({ id: `r${i}` })));
+    renderWithProviders(<AoaAgentDetail />);
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-recent-runs")).toHaveTextContent("Recent runs: 50+");
     });
   });
 });
