@@ -1,6 +1,6 @@
-import { and, eq, ilike, or, sql, desc, isNull, gt } from "drizzle-orm";
+import { and, eq, ilike, or, sql, desc, isNull, gt, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
+import { agents, embeddingQueue, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { enqueueMemoryEmbedding } from "./memory-write.js";
@@ -10,6 +10,8 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
 import { buildMemoryInsert, memoryItemsSelection } from "./memory-projection.js";
 import { publishLiveEvent } from "./live-events.js";
+import { deriveIndexStatus, resolveSemanticAvailable } from "./memory-index-status.js";
+import type { MemoryIndexStatus } from "@armyofagents/shared";
 
 const log = logger.child({ service: "memory" });
 
@@ -124,9 +126,97 @@ function isValidLayer(layer: string | null | undefined): boolean {
   return !!layer && MEMORY_ITEM_LAYERS.includes(layer as (typeof MEMORY_ITEM_LAYERS)[number]);
 }
 
+// ─── Index-status enrichment helpers (Task W5) ────────────────────────────────
+
+/**
+ * Batch-fetch the latest embedding_queue status for a set of memory item IDs.
+ * Uses a single query (no N+1): selects all rows for the given IDs then keeps
+ * the most recently created row per targetId.
+ *
+ * Returns a Map: targetId → latest queue status string.
+ * IDs with no queue row are absent from the map (callers treat as null).
+ */
+async function batchFetchQueueStatuses(
+  db: Db,
+  ids: string[],
+): Promise<Map<string, "pending" | "processing" | "completed" | "failed">> {
+  if (ids.length === 0) return new Map();
+
+  // One query: fetch all queue rows for these items ordered newest-first.
+  // We then keep only the first-seen row per targetId (= latest by createdAt).
+  const rows = await db
+    .select({
+      targetId: embeddingQueue.targetId,
+      status: embeddingQueue.status,
+    })
+    .from(embeddingQueue)
+    .where(
+      and(
+        eq(embeddingQueue.targetTable, "memory_items"),
+        inArray(embeddingQueue.targetId, ids),
+      ),
+    )
+    .orderBy(desc(embeddingQueue.createdAt));
+
+  const result = new Map<string, "pending" | "processing" | "completed" | "failed">();
+  for (const row of rows) {
+    if (!result.has(row.targetId)) {
+      result.set(
+        row.targetId,
+        row.status as "pending" | "processing" | "completed" | "failed",
+      );
+    }
+  }
+  return result;
+}
+
+/**
+ * Determine whether the embedding column IS NOT NULL for a given item row.
+ * When pgvector is absent, the embedding column doesn't exist so always false.
+ * When it exists, the row's `embedding` field is a non-null value if set.
+ *
+ * `memoryItemsSelection()` includes the `embedding` column only when
+ * `hasVectorSupport` is true; otherwise the field is absent on the row.
+ * We rely on that: if the field is present and truthy, the vector exists.
+ */
+function rowHasVector(row: Record<string, unknown>): boolean {
+  return row.embedding != null;
+}
+
+/**
+ * Enrich a list of memory item rows with `indexStatus` (per-item) and compute
+ * `semanticAvailable` (company-level). No N+1: queue statuses are batch-fetched
+ * in a single query.
+ *
+ * Returns the enriched items (same array length, each item with `indexStatus`
+ * field attached) and the company-level `semanticAvailable` flag.
+ */
+async function enrichWithIndexStatus<T extends Record<string, unknown>>(
+  db: Db,
+  companyId: string,
+  items: T[],
+): Promise<{ items: Array<T & { indexStatus: MemoryIndexStatus }>; semanticAvailable: boolean }> {
+  // Parallel: batch queue lookup + semantic-available check.
+  const ids = items.map((it) => it.id as string);
+  const [queueStatuses, semanticAvailable] = await Promise.all([
+    batchFetchQueueStatuses(db, ids),
+    resolveSemanticAvailable(db, companyId),
+  ]);
+
+  const enriched = items.map((item) => ({
+    ...item,
+    indexStatus: deriveIndexStatus({
+      hasVector: rowHasVector(item),
+      queueStatus: queueStatuses.get(item.id as string) ?? null,
+    }),
+  }));
+
+  return { items: enriched, semanticAvailable };
+}
+
 export function memoryService(db: Db) {
   return {
-    list: (companyId: string, filters: MemoryFilters = {}) => {
+    list: async (companyId: string, filters: MemoryFilters = {}) => {
       const conditions = [eq(memoryItems.companyId, companyId)];
 
       if (filters.category) {
@@ -162,7 +252,9 @@ export function memoryService(db: Db) {
         }
       }
 
-      return db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
+      const rows = await db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
+      // Enrich with per-item indexStatus and company-level semanticAvailable (Task W5).
+      return enrichWithIndexStatus(db, companyId, rows as Array<Record<string, unknown>>);
     },
 
     searchAuditCandidates: (companyId: string, query: string, filters: SearchAuditCandidatesFilters = {}) => {
@@ -188,12 +280,23 @@ export function memoryService(db: Db) {
         .limit(Math.min(filters.limit ?? 50, 100));
     },
 
-    getById: (companyId: string, id: string) =>
-      db
+    getById: async (companyId: string, id: string) => {
+      const rows = await db
         .select(memoryItemsSelection())
         .from(memoryItems)
-        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .then((rows) => rows[0] ?? null),
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)));
+      const row = rows[0] ?? null;
+      if (!row) return null;
+      // Enrich with per-item indexStatus (Task W5 — additive field, same outer shape).
+      const queueStatuses = await batchFetchQueueStatuses(db, [id]);
+      return {
+        ...(row as Record<string, unknown>),
+        indexStatus: deriveIndexStatus({
+          hasVector: rowHasVector(row as Record<string, unknown>),
+          queueStatus: queueStatuses.get(id) ?? null,
+        }),
+      };
+    },
 
     create: (
       companyId: string,

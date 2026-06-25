@@ -358,6 +358,7 @@ export type {
   DocumentRevision,
   Goal,
   MemoryItem,
+  MemoryIndexStatus,
   CompanyBrainNodeRef,
   CompanyBrainNode,
   CompanyBrainEdge,
