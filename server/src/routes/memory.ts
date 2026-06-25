@@ -16,6 +16,7 @@ import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
+import { resolveSemanticAvailable } from "../services/memory-index-status.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryAccess, assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
@@ -114,8 +115,11 @@ export function memoryRoutes(db: Db) {
       tags: req.query.tags ? (req.query.tags as string).split(",") : undefined,
       search: req.query.search as string | undefined,
     };
-    const result = await svc.list(companyId, filters);
-    res.json(result);
+    const [items, semanticAvailable] = await Promise.all([
+      svc.list(companyId, filters),
+      resolveSemanticAvailable(db, companyId),
+    ]);
+    res.json({ items, semanticAvailable });
   });
 
   router.get("/companies/:companyId/memory-pending", async (req, res) => {

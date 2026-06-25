@@ -10,9 +10,7 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
 import { buildMemoryInsert, memoryItemsSelection } from "./memory-projection.js";
 import { publishLiveEvent } from "./live-events.js";
-import { deriveIndexStatus, resolveSemanticAvailable } from "./memory-index-status.js";
-import type { MemoryIndexStatus } from "@armyofagents/shared";
-
+import { deriveIndexStatus } from "./memory-index-status.js";
 const log = logger.child({ service: "memory" });
 
 /** Validate embedding values are all finite numbers and format for pgvector. */
@@ -183,36 +181,6 @@ function rowHasVector(row: Record<string, unknown>): boolean {
   return row.embedding != null;
 }
 
-/**
- * Enrich a list of memory item rows with `indexStatus` (per-item) and compute
- * `semanticAvailable` (company-level). No N+1: queue statuses are batch-fetched
- * in a single query.
- *
- * Returns the enriched items (same array length, each item with `indexStatus`
- * field attached) and the company-level `semanticAvailable` flag.
- */
-async function enrichWithIndexStatus<T extends Record<string, unknown>>(
-  db: Db,
-  companyId: string,
-  items: T[],
-): Promise<{ items: Array<T & { indexStatus: MemoryIndexStatus }>; semanticAvailable: boolean }> {
-  // Parallel: batch queue lookup + semantic-available check.
-  const ids = items.map((it) => it.id as string);
-  const [queueStatuses, semanticAvailable] = await Promise.all([
-    batchFetchQueueStatuses(db, ids),
-    resolveSemanticAvailable(db, companyId),
-  ]);
-
-  const enriched = items.map((item) => ({
-    ...item,
-    indexStatus: deriveIndexStatus({
-      hasVector: rowHasVector(item),
-      queueStatus: queueStatuses.get(item.id as string) ?? null,
-    }),
-  }));
-
-  return { items: enriched, semanticAvailable };
-}
 
 export function memoryService(db: Db) {
   return {
@@ -253,8 +221,19 @@ export function memoryService(db: Db) {
       }
 
       const rows = await db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
-      // Enrich with per-item indexStatus and company-level semanticAvailable (Task W5).
-      return enrichWithIndexStatus(db, companyId, rows as Array<Record<string, unknown>>);
+      // Enrich with per-item indexStatus (Task W5 — additive field, array contract preserved).
+      // semanticAvailable lives at the route level — call resolveSemanticAvailable() there.
+      const queueStatuses = await batchFetchQueueStatuses(
+        db,
+        rows.map((r) => (r as Record<string, unknown>).id as string),
+      );
+      return rows.map((item) => ({
+        ...(item as Record<string, unknown>),
+        indexStatus: deriveIndexStatus({
+          hasVector: rowHasVector(item as Record<string, unknown>),
+          queueStatus: queueStatuses.get((item as Record<string, unknown>).id as string) ?? null,
+        }),
+      }));
     },
 
     searchAuditCandidates: (companyId: string, query: string, filters: SearchAuditCandidatesFilters = {}) => {

@@ -5,10 +5,12 @@
  *
  * Covers:
  *   A. deriveIndexStatus: pure function, all 4 output states.
- *   B. enrichWithIndexStatus (via list): batched queue lookup, per-item
- *      indexStatus, top-level semanticAvailable.
- *   C. semanticAvailable independence: item with stored vector stays "indexed"
- *      even when the company has no key (semanticAvailable = false).
+ *   B. list() enrichment: batched queue lookup, per-item indexStatus returned
+ *      as a plain array (semanticAvailable NOT in list() return value — it lives
+ *      at the route level, built via resolveSemanticAvailable()).
+ *   C. resolveSemanticAvailable: short-circuits when pgvector absent; returns
+ *      false when key missing. Item with stored vector stays "indexed"
+ *      even when semanticAvailable is false (axes are independent).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -134,7 +136,9 @@ describe("deriveIndexStatus (pure function)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section B: list enrichment — indexStatus per item + semanticAvailable
+// Section B: list() enrichment — returns Item[] (array), each with indexStatus
+// semanticAvailable is NOT part of list()'s return value; it is computed at
+// the route level via resolveSemanticAvailable().
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -169,17 +173,12 @@ function makeListDb(opts: {
   };
 }
 
-describe("list enrichment", () => {
-  const mockGetProviderApiKey = getProviderApiKey as ReturnType<typeof vi.fn>;
-
+describe("list() enrichment — returns Item[] with per-item indexStatus", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: getDbCapabilities returns hasVectorSupport:true (set in mock above).
   });
 
-  it("enriches items with indexStatus and returns semanticAvailable:true when key resolves", async () => {
-    mockGetProviderApiKey.mockResolvedValue("sk-test-key");
-
+  it("returns an array of items each enriched with indexStatus", async () => {
     const db = makeListDb({
       memoryRows: [
         { id: "m-1", companyId: "co-1", title: "T1", embedding: null },
@@ -196,40 +195,33 @@ describe("list enrichment", () => {
     const svc = memoryService(db as any);
     const result = await svc.list("co-1");
 
-    expect(result.semanticAvailable).toBe(true);
-    expect(result.items).toHaveLength(3);
+    // list() MUST return an array — not an envelope object.
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(3);
 
-    const m1 = result.items.find((i) => i.id === "m-1");
-    const m2 = result.items.find((i) => i.id === "m-2");
-    const m3 = result.items.find((i) => i.id === "m-3");
+    const m1 = result.find((i) => i.id === "m-1");
+    const m2 = result.find((i) => i.id === "m-2");
+    const m3 = result.find((i) => i.id === "m-3");
 
     expect(m1?.indexStatus).toBe("failed");    // no vector, queue=failed
     expect(m2?.indexStatus).toBe("indexed");   // has vector → always indexed
     expect(m3?.indexStatus).toBe("pending");   // no vector, queue=pending
   });
 
-  it("returns semanticAvailable:false when key resolution throws", async () => {
-    mockGetProviderApiKey.mockRejectedValue(new Error("No API key configured"));
-
-    const db = makeListDb({
-      memoryRows: [
-        { id: "m-1", companyId: "co-1", title: "T1", embedding: null },
-      ],
-      queueRows: [],
-    });
+  it("returns empty array when no items exist", async () => {
+    const db = makeListDb({ memoryRows: [], queueRows: [] });
 
     const { memoryService } = await import("../services/memory.js");
     const svc = memoryService(db as any);
     const result = await svc.list("co-1");
 
-    expect(result.semanticAvailable).toBe(false);
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.indexStatus).toBe("not_indexed");
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(0);
   });
 
-  it("item with stored vector stays 'indexed' even when semanticAvailable is false (key removed)", async () => {
-    // Key is gone — company can't embed new items.
-    mockGetProviderApiKey.mockRejectedValue(new Error("No API key"));
+  it("indexStatus per item is independent of key availability (no key = items still enriched)", async () => {
+    // Key resolver will throw — but list() doesn't call it, so items are still enriched.
+    (getProviderApiKey as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("No key"));
 
     const db = makeListDb({
       memoryRows: [
@@ -243,33 +235,15 @@ describe("list enrichment", () => {
     const svc = memoryService(db as any);
     const result = await svc.list("co-1");
 
-    // Axis 2: company can't embed.
-    expect(result.semanticAvailable).toBe(false);
-
-    // Axis 1: per-item is independent.
-    const vec = result.items.find((i) => i.id === "m-vec");
-    const none = result.items.find((i) => i.id === "m-none");
-
-    expect(vec?.indexStatus).toBe("indexed");     // stored vector wins
+    // Per-item status is determined by the embedding column + queue, not the key.
+    expect(Array.isArray(result)).toBe(true);
+    const vec = result.find((i) => i.id === "m-vec");
+    const none = result.find((i) => i.id === "m-none");
+    expect(vec?.indexStatus).toBe("indexed");      // stored vector wins
     expect(none?.indexStatus).toBe("not_indexed"); // no vector, no queue row
   });
 
-  it("empty list returns semanticAvailable and empty items array", async () => {
-    mockGetProviderApiKey.mockResolvedValue("sk-ok");
-
-    const db = makeListDb({ memoryRows: [], queueRows: [] });
-
-    const { memoryService } = await import("../services/memory.js");
-    const svc = memoryService(db as any);
-    const result = await svc.list("co-1");
-
-    expect(result.semanticAvailable).toBe(true);
-    expect(result.items).toHaveLength(0);
-  });
-
   it("uses only one queue query regardless of item count (no N+1)", async () => {
-    mockGetProviderApiKey.mockResolvedValue("sk-ok");
-
     // Build a db that counts select() calls.
     let selectCalls = 0;
     const db = {
@@ -295,10 +269,39 @@ describe("list enrichment", () => {
 
     const { memoryService } = await import("../services/memory.js");
     const svc = memoryService(db as any);
-    await svc.list("co-1");
+    const result = await svc.list("co-1");
 
+    // list() returns an array.
+    expect(Array.isArray(result)).toBe(true);
     // Exactly 2 select calls: one for memory_items, one for embedding_queue.
     expect(selectCalls).toBe(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section B2: resolveSemanticAvailable — returns the envelope-level flag
+// (the route builds { items, semanticAvailable } using this + list() in parallel)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("resolveSemanticAvailable — key-availability axis", () => {
+  const mockGetProviderApiKey = getProviderApiKey as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns true when key resolves and pgvector is present", async () => {
+    mockGetProviderApiKey.mockResolvedValue("sk-test-key");
+    const { resolveSemanticAvailable } = await import("../services/memory-index-status.js");
+    const result = await resolveSemanticAvailable({} as any, "co-1");
+    expect(result).toBe(true);
+  });
+
+  it("returns false when key resolution throws", async () => {
+    mockGetProviderApiKey.mockRejectedValue(new Error("No API key configured"));
+    const { resolveSemanticAvailable } = await import("../services/memory-index-status.js");
+    const result = await resolveSemanticAvailable({} as any, "co-1");
+    expect(result).toBe(false);
   });
 });
 
