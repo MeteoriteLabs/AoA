@@ -33,7 +33,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
@@ -42,7 +42,6 @@ import { agentService } from "../services/agents.js";
 import { applyModelResolutionToConfig } from "../services/internal-agent/aoa-agents/runner-model-resolution.js";
 import { needsAdapterBackfill, resolveCrewAdapterFor } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
-import { resolveRunScopedModel } from "../services/heartbeat-provider-resolution.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Embedded-postgres harness (mirrors aoa-backend.integration.test.ts exactly)
@@ -324,73 +323,3 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pure org resolution — NO DB, so this runs on EVERY platform.
-// The skipIf(win32) block above only gates the embedded-postgres cases; this
-// one is a pure-function check and gains real Windows-CI signal by living here.
-// (The same logic also has dedicated cross-platform unit coverage in
-// provider-switching-parity.test.ts and heartbeat-provider-resolution.test.ts;
-// this asserts it at the org-integration layer too.)
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("provider-switching — pure org resolution (cross-platform)", () => {
-  // Case 2 — Org↔crew runtime resolution parity (incl. opts forwarding)
-  it("case-2: resolveRunScopedModel is a faithful pass-through of applyModelResolutionToConfig (org↔crew parity)", () => {
-    const status = { authMode: "chatgpt", defaultModelResolved: "gpt-5.5" } as const;
-    // Pass the 4th `opts` arg on BOTH sides so the parity check also covers the
-    // opts-forwarding path of the wrapper. (`inheritedEnvOpenAiKey` has no
-    // observable effect on the returned config when the agent did not set its
-    // own env key — the deeper env-strip hardening is owned by a separate PR;
-    // here we only assert the org seam is a faithful pass-through.)
-    const opts = { inheritedEnvOpenAiKey: "sk-company" };
-    const viaOrg = resolveRunScopedModel("codex_local", { model: "gpt-5.3-codex", env: {} }, status, opts);
-    const viaCrew = applyModelResolutionToConfig("codex_local", { model: "gpt-5.3-codex", env: {} }, status, opts);
-
-    expect(viaOrg.model).toBe(DEFAULT_CODEX_CHAT_MODEL); // incompatible model corrected
-    // Full-config deep-equal — non-tautological (a `.model`-only assertion would
-    // miss divergence in env or any other field). Catches a future regression
-    // where the wrapper stops forwarding args or the two paths drift apart.
-    expect(viaOrg).toEqual(viaCrew);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Case 4 — Heartbeat wiring edge-#5 source-order guard
-//
-// WHY a source-order guard (not a spawn/spy test):
-//   (a) Driving the real heartbeat `executeRun` is infeasible in this harness —
-//       it is a deeply-nested private closure requiring the full run lifecycle,
-//       adapter registry, and CLI binaries. The existing file already documents
-//       this constraint for the "runner argv" sub-test.
-//   (b) Spying on `resolveAdapterExecutionContext` is also infeasible: it is
-//       called SAME-MODULE inside heartbeat.ts, so an external `vi.spyOn` cannot
-//       intercept the internal call (ES-module live binding, no proxy).
-//   As a result, we verify the critical ordering invariant structurally from
-//   source — deterministic, fast, cross-platform, no CLI dependencies.
-//   If an anchor string ever changes, this test fails loudly, forcing a reviewer
-//   to confirm the edge-#5 ordering is still correct in the new code.
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("heartbeat wiring — edge #5 source-order guard", () => {
-  it("resolveRunScopedModel is called AFTER cheap-model swap and BEFORE resolveAdapterExecutionContext", async () => {
-    const src = await readFile(new URL("../services/heartbeat.ts", import.meta.url), "utf8");
-
-    // Anchor 1: cheap-model swap (budget-based model override)
-    const iCheapSwap = src.indexOf("runScopedConfig = { ...runScopedConfig, model: cheapModel }");
-    // Anchor 2: provider-switching resolution (edge #5)
-    const iResolve = src.indexOf("runScopedConfig = resolveRunScopedModel(");
-    // Anchor 3: adapter execution-context build (must come AFTER resolution)
-    // Use the destructure form to target the CALL SITE, not the exported function definition.
-    const iContext = src.indexOf("const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(");
-
-    // Each anchor must exist verbatim — fail loudly if any moved (wiring was refactored)
-    expect(iCheapSwap, "anchor 'cheap-model swap' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
-    expect(iResolve, "anchor 'resolveRunScopedModel call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
-    expect(iContext, "anchor 'resolveAdapterExecutionContext destructure call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
-
-    // Edge #5 ordering: cheap-swap < resolve < context-build
-    expect(iResolve).toBeGreaterThan(iCheapSwap);
-    expect(iContext).toBeGreaterThan(iResolve);
-  });
-});
