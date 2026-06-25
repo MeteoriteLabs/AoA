@@ -23,6 +23,7 @@ const payload = {
     AOA_RUN_ID: process.env.AOA_RUN_ID,
     CODEX_HOME: process.env.CODEX_HOME,
     CUSTOM_ENV: process.env.CUSTOM_ENV,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   },
 };
 if (capturePath) {
@@ -131,6 +132,78 @@ describe("codex execute target", () => {
         process.env.CODEX_HOME = previousCodexHome;
       }
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  async function runCodexAndCaptureEnv(configEnv: Record<string, string>): Promise<Record<string, string>> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-envstrip-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeCodexCommand(commandBase);
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      const result = await execute({
+        runId: "run-envstrip",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex Coder", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath, ...configEnv },
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "codex", installCommand: "do-not-run" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { env: Record<string, string> };
+      return capture.env;
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("does NOT pass the ambient OPENAI_API_KEY to the codex child when config.env has none (Codex finding 3)", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-server-ambient";
+    try {
+      const env = await runCodexAndCaptureEnv({});
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prev;
+    }
+  });
+
+  it("DOES pass a config-set OPENAI_API_KEY to the codex child (overlay wins)", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-server-ambient";
+    try {
+      const env = await runCodexAndCaptureEnv({ OPENAI_API_KEY: "sk-agent-explicit" });
+      expect(env.OPENAI_API_KEY).toBe("sk-agent-explicit");
+    } finally {
+      if (prev === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prev;
+    }
+  });
+
+  it("an explicit empty config.env OPENAI_API_KEY suppresses the inherited one (overlay wins)", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-server-ambient";
+    try {
+      const env = await runCodexAndCaptureEnv({ OPENAI_API_KEY: "" });
+      expect(env.OPENAI_API_KEY).toBe("");
+    } finally {
+      if (prev === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prev;
     }
   });
 
