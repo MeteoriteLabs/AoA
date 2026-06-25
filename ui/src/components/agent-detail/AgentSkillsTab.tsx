@@ -84,7 +84,20 @@ export function AgentSkillsTab({
 
   if (isLoading) return <PageSkeleton variant="list" />;
 
-  if (!allSkills || allSkills.length === 0) {
+  const q = query.trim().toLowerCase();
+  const skills = allSkills ?? [];
+  const libraryKeys = new Set(skills.map((s) => s.key));
+  // Attached keys whose company skill no longer exists in the library. They'd
+  // otherwise be invisible (in neither list) yet still ride along in every PATCH,
+  // so surface them in Attached with a way to remove them — computed before the
+  // empty-library early return so an empty library can't hide them.
+  const orphanKeys = localKeys.filter(
+    (k) => !libraryKeys.has(k) && (!q || k.toLowerCase().includes(q)),
+  );
+
+  // Only the bare empty state when there's nothing to show at all (no library
+  // skills AND no orphaned keys to remove).
+  if (skills.length === 0 && orphanKeys.length === 0) {
     return (
       <div className="px-6 py-10 text-center text-sm text-muted-foreground">
         No skills available.{" "}
@@ -96,22 +109,14 @@ export function AgentSkillsTab({
     );
   }
 
-  const q = query.trim().toLowerCase();
   const matches = (s: CompanySkillListItem) =>
     !q ||
     s.name.toLowerCase().includes(q) ||
     s.key.toLowerCase().includes(q) ||
     (s.description ?? "").toLowerCase().includes(q);
-  const filtered = allSkills.filter(matches);
+  const filtered = skills.filter(matches);
   const attached = filtered.filter((s) => localKeys.includes(s.key));
   const available = filtered.filter((s) => !localKeys.includes(s.key));
-  // Attached keys whose company skill no longer exists in the library. They'd
-  // otherwise be invisible (in neither list) yet still ride along in every PATCH,
-  // so surface them in Attached with a way to remove them.
-  const libraryKeys = new Set(allSkills.map((s) => s.key));
-  const orphanKeys = localKeys.filter(
-    (k) => !libraryKeys.has(k) && (!q || k.toLowerCase().includes(q)),
-  );
 
   // While any toggle's PATCH is in flight, lock every row. Each request sends the
   // full skillKeys array and the server overwrites wholesale (last-write-wins), so

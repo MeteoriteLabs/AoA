@@ -143,4 +143,20 @@ describe("AgentSkillsTab — concurrency guard", () => {
     await waitFor(() => expect(row("Skill B")).toHaveAttribute("aria-pressed", "false"));
     expect(row("Skill A")).toHaveAttribute("aria-pressed", "true");
   });
+
+  // Codex P2: the empty-library early return must not hide orphaned keys — otherwise
+  // an agent with stale keys + an empty library has no row to toggle off.
+  it("surfaces orphaned keys even when the company library is empty", async () => {
+    vi.mocked(companySkillsApi.list).mockResolvedValueOnce([] as never); // empty library
+    vi.mocked(agentsApi.update).mockResolvedValue({} as never);
+
+    renderWithProviders(<AgentSkillsTab agentId="a1" companyId="c1" skillKeys={["ghost-skill"]} />);
+
+    // Not the bare "No skills available" state — the orphan is shown and removable.
+    expect(await screen.findByText("ghost-skill")).toBeInTheDocument();
+    expect(screen.getByText(/unavailable/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("ghost-skill").closest('[role="button"]') as HTMLElement);
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: [] }));
+  });
 });
