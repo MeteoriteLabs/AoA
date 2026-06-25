@@ -42,6 +42,16 @@ describe("resolve-crew-adapter (provider-switching fixes)", () => {
   it("backfill ignores a blank per-agent OPENAI_API_KEY (still flags)", () => {
     expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: "  " } })).toBe(true);
   });
+  // Persisted env is normalized to binding objects, NOT raw strings (Codex P2):
+  it("backfill does NOT flag an apikey codex row with a normalized plain-binding key", () => {
+    expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: { type: "plain", value: "sk-founder" } } })).toBe(false);
+  });
+  it("backfill does NOT flag an apikey codex row with a secret_ref-binding key", () => {
+    expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "sec-1", version: "latest" } } })).toBe(false);
+  });
+  it("backfill still flags a codex row with an empty plain-binding key", () => {
+    expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: { type: "plain", value: "" } } })).toBe(true);
+  });
 
   // Codex P2: a backfill rewrite must preserve the founder's per-agent settings —
   // only the resolved model (+ bypass flags from `next`) should change.

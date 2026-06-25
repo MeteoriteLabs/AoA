@@ -123,6 +123,24 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
  *    login. Backfill rewrites it to the validated default (`gpt-5.5`) so
  *    existing rows self-heal on boot.
  */
+/**
+ * Does the adapter config carry an agent-set OPENAI_API_KEY? The save path
+ * normalizes env entries to binding objects, so accept a raw string (legacy),
+ * a `{ type: "plain", value }` with a non-blank value, or a `{ type: "secret_ref",
+ * secretId }`. A blank/absent value is NOT a key.
+ */
+function hasOwnOpenAiKey(env: unknown): boolean {
+  if (typeof env !== "object" || env === null) return false;
+  const v = (env as Record<string, unknown>).OPENAI_API_KEY;
+  if (typeof v === "string") return v.trim().length > 0;
+  if (typeof v === "object" && v !== null) {
+    const b = v as { type?: unknown; value?: unknown; secretId?: unknown };
+    if (b.type === "plain") return typeof b.value === "string" && b.value.trim().length > 0;
+    if (b.type === "secret_ref") return typeof b.secretId === "string" && b.secretId.length > 0;
+  }
+  return false;
+}
+
 export function needsAdapterBackfill(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
@@ -145,12 +163,8 @@ export function needsAdapterBackfill(
     // A founder may intentionally run codex_local in api-key mode, where models
     // like gpt-5.3-codex are valid (see resolveModel's apikey branch). A per-agent
     // OPENAI_API_KEY signals that intent — don't "self-heal" (rewrite) such rows.
-    const env = adapterConfig?.env;
-    const hasOwnApiKey =
-      typeof env === "object" && env !== null &&
-      typeof (env as Record<string, unknown>).OPENAI_API_KEY === "string" &&
-      ((env as Record<string, unknown>).OPENAI_API_KEY as string).trim().length > 0;
-    if (hasOwnApiKey) return false;
+    // Persisted env is normalized to binding objects, so check those forms too.
+    if (hasOwnOpenAiKey(adapterConfig?.env)) return false;
     const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
     // A persisted codex model that a ChatGPT login would reject needs rewriting.
     return model.length > 0 && !isCodexCompatibleModel(model);
