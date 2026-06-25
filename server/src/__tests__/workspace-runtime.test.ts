@@ -26,6 +26,10 @@ import type { WorkspaceOperationRecorder } from "../services/workspace-operation
 const execFileAsync = promisify(execFile);
 const leasedRunIds = new Set<string>();
 
+async function expectSameRealPath(actual: string, expected: string): Promise<void> {
+  await expect(fs.realpath(actual)).resolves.toBe(await fs.realpath(expected));
+}
+
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
@@ -326,7 +330,7 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(workspace.created).toBe(false);
     expect(workspace.branchName).toBe(branchName);
-    expect(path.resolve(workspace.cwd)).toBe(path.resolve(worktreePath));
+    await expectSameRealPath(workspace.cwd, worktreePath);
     expect(operations.filter((command) => command.includes("git worktree add"))).toHaveLength(1);
 
     const currentBranch = (

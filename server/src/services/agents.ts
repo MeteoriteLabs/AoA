@@ -19,7 +19,11 @@ import { isUuidLike, normalizeAgentUrlKey } from "@armyofagents/shared";
 import type { UnifiedOrgNode } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
-import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
+import {
+  deduplicateAgentName,
+  findAgentShortnameCollision,
+  hasAgentShortnameCollision,
+} from "./agent-shortnames.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { orgHierarchyService, type EntityType } from "./org-hierarchy.js";
 
@@ -193,7 +197,11 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   return patch;
 }
 
-export { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
+export {
+  deduplicateAgentName,
+  findAgentShortnameCollision,
+  hasAgentShortnameCollision,
+} from "./agent-shortnames.js";
 
 const USER_ROLE_PRIORITY: Record<string, number> = { founder: 3, team_lead: 2, team_member: 1 };
 
@@ -240,14 +248,26 @@ export function agentService(db: Db) {
         id: agents.id,
         name: agents.name,
         status: agents.status,
+        kind: agents.kind,
       })
       .from(agents)
       .where(eq(agents.companyId, companyId));
 
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
-    if (hasCollision) {
+    const collision = findAgentShortnameCollision(candidateName, existingAgents, options);
+    if (collision) {
+      // Org and AoA-crew agents share one shortname namespace (so @shortname
+      // references stay unambiguous). The crew agents live under the AoA Team
+      // tab and are NOT shown in the Agents tab, so a bare "already in use"
+      // error reads as a phantom conflict. Name the conflict explicitly.
+      if (collision.kind === "aoa") {
+        throw conflict(
+          `The name "${candidateName}" is already used by a built-in AoA crew agent ` +
+            `("${collision.name}", shown under the AoA Team tab). Choose a different name.`,
+        );
+      }
       throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
+        `The name "${candidateName}" is already used by another agent ("${collision.name}") ` +
+          `in this company. Choose a different name.`,
       );
     }
   }
