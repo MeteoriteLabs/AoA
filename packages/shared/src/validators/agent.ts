@@ -51,7 +51,10 @@ function modelFamily(model: string): "claude" | "openai" | "gemini" | "unknown" 
 const ADAPTER_FAMILY: Record<string, "claude" | "openai" | "gemini"> = {
   claude_local: "claude",
   codex_local: "openai",
-  opencode_local: "openai",
+  // opencode_local is intentionally NOT family-pinned: OpenCode is multi-provider
+  // (provider/model slash ids, e.g. anthropic/claude-..., google/gemini-...).
+  // Compatibility is validated by OpenCode's own ensureOpenCodeModelConfiguredAndAvailable
+  // (run on create/hire/patch); shell-safety still applies via isShellSafeModelId.
   gemini_local: "gemini",
 };
 

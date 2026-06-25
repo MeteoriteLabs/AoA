@@ -66,4 +66,10 @@ describe("agent schema adapter↔model cross-family + shell-safety", () => {
   it("rejects an opencode slash model with a shell-unsafe first segment", () => {
     expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "ev&il/gpt-5.5" } }).success).toBe(false);
   });
+  it("allows opencode_local + anthropic/claude model (multi-provider, the ① fix)", () => {
+    expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "anthropic/claude-sonnet-4-5" } }).success).toBe(true);
+  });
+  it("allows opencode_local + google/gemini model (multi-provider)", () => {
+    expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "google/gemini-2.0-flash" } }).success).toBe(true);
+  });
 });
