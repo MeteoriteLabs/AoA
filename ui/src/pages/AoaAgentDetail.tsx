@@ -252,9 +252,16 @@ export function AoaAgentDetail() {
         ? ((agent.adapterConfig as Record<string, unknown>).model as string)
         : undefined,
   };
+  // /aoa-runs returns at most a capped page (default 50), so the fetched length is the
+  // recent-run count, not a true total — label it honestly and show "50+" at the cap.
+  const recentRunCount = (aoaRunsForKpi ?? []).length;
   const heroKpis: HeroKpi[] = [
     { key: "role", label: "Role", value: roleLabels[agent.role] ?? agent.role },
-    { key: "total-runs", label: "Total runs", value: (aoaRunsForKpi ?? []).length },
+    {
+      key: "recent-runs",
+      label: "Recent runs",
+      value: recentRunCount >= 50 ? "50+" : recentRunCount,
+    },
   ];
 
   return (
