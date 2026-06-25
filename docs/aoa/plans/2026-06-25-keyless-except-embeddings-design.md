@@ -199,6 +199,24 @@ Then add `OPENAI_API_KEY` (or Settings `llm:openai`):
 
 ---
 
+## Follow-ups / Deferred
+
+Known gaps and deferred work from the shipped implementation. Not blocking merge.
+
+1. **Crew-tool extractors still use `callLLM` (hosted fallback).** The three crew/Adjutant extractors in `extraction.ts` — `extractMemoryCandidates` and its two sibling callers — go through `callLLM` (the hosted provider path) as their fallback. They are not routed through the new selectable CLI engine. Autonomous discussion extraction IS keyless (the main `resolveExtractionEngine` path); the thread-native / Adjutant crew path is not yet converted.
+
+2. **`reconcileNullVectors` / `reindexCompany` cover `memory_items` only.** The reconciliation sweep that enqueues null-vector rows does not yet handle `discussions.summary_embedding` or `discussion_extracted_items.embedding`. Those two columns remain unreconciled. Deferred to a follow-up sweep expansion.
+
+3. **`detectCliTool` runs an `execSync` probe on every extraction.** There is no caching of the CLI availability result between requests. On busy instances this is an unnecessary repeated process spawn. A short-lived in-process cache (or a startup probe + periodic refresh) would eliminate the per-extraction overhead.
+
+4. **`FOR UPDATE SKIP LOCKED` claim uses a raw-SQL CTE.** The embedding worker's atomic claim is exercised against real PostgreSQL in the pgvector integration/CI lane. Unit tests use a mock fallback path that does not exercise the SQL. Ensure the integration test lane (Linux CI) covers this path; do not rely on unit tests alone to validate the locking behavior.
+
+5. **Codex one-shot uses a shared managed `CODEX_HOME`.** This is correct for the current single-tenant desktop deployment. If AoA moves to a multi-tenant server model, each company should have a per-company `CODEX_HOME` suffix to avoid cross-company config bleed.
+
+6. **Local/offline embeddings (drop the OpenAI key entirely).** Running a local embedding model (e.g., via Ollama) would make AoA fully keyless end-to-end. Deferred to a future phase — the `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the single swap point when this becomes viable.
+
+---
+
 ## 9. Revisions from review (Codex + self) — folded into the plan
 
 Both reviewers reached **needs-revisions**. Corrections, now authoritative:

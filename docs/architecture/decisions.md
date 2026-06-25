@@ -796,3 +796,66 @@ The plugin worker sandbox (`server/src/services/plugin-sandbox.ts`,
 [#197]: https://github.com/MeteoriteLabs/AoA/pull/197
 [#198]: https://github.com/MeteoriteLabs/AoA/issues/198
 [#203]: https://github.com/MeteoriteLabs/AoA/pull/203
+
+---
+
+## Decision #104 — Keyless-except-embeddings: selectable extraction engine + embedding resilience (2026-06-26)
+
+**Status:** Locked 2026-06-26.
+
+**Principle:** The only hosted API key AoA needs at runtime is for **embeddings** (`text-embedding-3-small` via OpenAI). Every other runtime operation — agent execution, Commander, and **discussion extraction** — runs keyless through the user's locally-installed CLI (Claude Code / Codex / Gemini CLI), authenticating against the subscription the user already has.
+
+### Extraction: selectable engine
+
+**Rule:** `resolveExtractionEngine(db, companyId)` runs **before** the old hosted-key precheck and returns one of `cli` | `api`:
+
+- `auto` (default): resolve `cli` when a local CLI is installed and authenticated; else resolve `api` when a hosted provider key is configured; else surface "no extraction engine available."
+- Desktop installs default-resolve to `cli` — keyless extraction.
+- The `api` engine (the old `callLLM` direct-API path) is retained **dormant** as the fallback and as the seed for a future "per-company provider keys for crew/org adapters" initiative. It is NOT deleted.
+
+**Why Option B (server-side one-shot, not crew-bridge):** Decision #100 (amended 2026-05-25) shelved the crew-CLI extraction path because (a) the MCP bridge is wired for `claude_local` only — codex/opencode have no bridge wiring — and (b) the `claude` headless `submit_extracted_items` handshake hangs in local/Windows dev, leaving entries stuck `processing`. Option B invokes the CLI headless (`claude --print` / `codex exec`), captures stdout, parses the JSON array, and writes rows itself — exactly today's server-side structure, transport swapped. No MCP bridge, no handshake, no Decision #100 blockers.
+
+**One-shot invocation:**
+- claude: `claude --print --output-format text --system-prompt-file <promptfile>` — entry text on **stdin** (never argv, avoiding Windows cmd.exe mangling).
+- codex: `codex exec --json -` — prompt on **stdin**, final assistant text extracted.
+- ~60s timeout + grace kill. `cwd` = tmpdir (never reads the project CLAUDE.md).
+
+**Windows prompt fix:** `cli-mode.ts` now delivers the user-content string via **stdin** for claude (not as an argv positional through cmd.exe). This fixes empty Commander turns on Windows and enables keyless claude extraction. The `--system-prompt-file` temp-file path is unchanged (already Windows-safe). No user/content string ever rides argv on Windows.
+
+**Key files:** `server/src/services/extraction-engine.ts` (`resolveExtractionEngine`), `server/src/services/extraction-cli.ts` (one-shot invoker), `server/src/services/codex-exec.ts`, `server/src/services/internal-agent/cli-mode.ts` (Windows stdin fix).
+
+### Embeddings: the sole hosted dependency
+
+**Per-company key resolution:** The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` resolves the key per company — Settings secret `llm:openai` first, then env `OPENAI_API_KEY`. No other runtime code path hits the OpenAI API for anything except embeddings.
+
+**Fake-embedder seam:** `AOA_E2E_FAKE_EMBEDDER=1` (env-gated at the `createOpenAiEmbedder` chokepoint) substitutes a deterministic hash-based embedder for CI, avoiding any OpenAI dependency in automated tests.
+
+**Resilience model:**
+
+| Error class | Examples | Handling |
+|-------------|----------|----------|
+| Transient | 429, 5xx, timeout, network | Exponential backoff + full jitter; honors `Retry-After`; `embedding_queue.next_retry_at` persisted |
+| Row-permanent | Malformed / oversized input | Dead-letter fast → `failed` row |
+| Systemic | No key / invalid key / `insufficient_quota` | Per-company circuit breaker: pause worker for that company, leave rows `pending` (not `failed`) so the backlog auto-drains when a valid key is added |
+
+Claim: `SELECT … FOR UPDATE SKIP LOCKED` (per-company circuit breaker prevents burning a keyless backlog to `failed`).
+
+**Backfill / catch-up:** On key-add and via a periodic reconciliation sweep, `reconcileNullVectors` enqueues every `memory_items` row with a null vector and no live queue row. Manual re-index endpoints for individual items and all failed items.
+
+**New `embedding_queue` columns:** `company_id uuid` (nullable, populated on new enqueues), `next_retry_at timestamptz` (null = ready immediately).
+
+### Memory write → RAG unification
+
+Every memory write path — `memory.create()`, `memory.approve()`, crew `write_memory` tool, MCP `memory.write` / `memory.retain` / `suggest-memory` / `propose_memory_from_thread` — enqueues an embedding via `writeMemoryAndIndex` / `enqueueMemoryEmbedding` (status-agnostic, deduped). Closes a pre-existing gap where `memory.create()` never enqueued.
+
+### Status model
+
+Per-item `indexStatus` is derived (not stored): `indexed` (vector column not null), `pending` (live queue row pending/processing), `failed` (latest queue row failed), `not_indexed` / `no_key` (no vector, no live row). Surfaced as badges on memory card/row/table. A dismissible no-key banner shows on the Memory page when `semanticAvailable` is false. Extraction-engine status shown in Settings. Actionable failure copy shown in DiscussionDetail on CLI errors.
+
+### New endpoints
+
+- `GET /companies/:cid/extraction/engine-status` — returns resolved engine, CLI availability, and failure details. Auth: `founder` | `team_lead`.
+- `POST /companies/:cid/memory/:id/reindex` — enqueues a single memory item for re-embedding. Auth: `founder` | `team_lead`. Logs activity.
+- `POST /companies/:cid/memory/reindex-failed` — enqueues all `failed` queue rows for this company. Auth: `founder` | `team_lead`. Logs activity.
+
+**Reference:** `server/src/services/extraction-engine.ts`, `extraction-cli.ts`, `codex-exec.ts`, `embeddings.ts`, `memory-write.ts`, `server/src/routes/extraction.ts`, `server/src/routes/memory.ts`. Design: `docs/aoa/plans/2026-06-25-keyless-except-embeddings-design.md`.

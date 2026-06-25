@@ -19,15 +19,16 @@ You are reading this as context for working on the AoA codebase. This applies wh
 ## Critical Rules
 
 1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files.
-2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
-3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
-4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
-5. **MCP inbound with authenticated write permission may create tasks directly.** `debrief-push` remains for unstructured content requiring extraction. Anonymous MCP input must route through Discussion. (Decision #14, revised 2026-04-21)
-6. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. Team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
-7. **Artifact versions are immutable.** Once created, never modified. Changes = new version. Founder picks winner for branching — no auto-merge. (Decisions #43, #45)
-8. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
-9. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
-10. **Consult `docs/architecture/decisions.md` before making architectural choices.** 90+ locked decisions exist. Do not relitigate.
+2. **The only runtime hosted API key is for embeddings.** Agents, Commander, and discussion extraction run keyless via locally-installed CLIs. Embeddings use OpenAI `text-embedding-3-small`; per-company key = Settings secret `llm:openai` → env `OPENAI_API_KEY`. The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the sole caller. Do not add new hosted-API calls outside this chokepoint. (Decision #104)
+3. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
+4. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
+5. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
+6. **MCP inbound with authenticated write permission may create tasks directly.** `debrief-push` remains for unstructured content requiring extraction. Anonymous MCP input must route through Discussion. (Decision #14, revised 2026-04-21)
+7. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. Team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
+8. **Artifact versions are immutable.** Once created, never modified. Changes = new version. Founder picks winner for branching — no auto-merge. (Decisions #43, #45)
+9. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
+10. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
+11. **Consult `docs/architecture/decisions.md` before making architectural choices.** 90+ locked decisions exist. Do not relitigate.
 
 ---
 
@@ -116,7 +117,7 @@ Registered in `server/src/adapters/registry.ts`. All agent execution is CLI-only
 | `process` | Generic shell process |
 | `http` | HTTP webhook |
 
-API-mode adapters (`claude_api`, `openai_api`, `gemini_api`) were removed per Decision #91 and must not be re-added. The Provider SDK utilities in `server/src/services/internal-agent/providers/` remain for extraction + embedding only — not in the adapter registry.
+API-mode adapters (`claude_api`, `openai_api`, `gemini_api`) were removed per Decision #91 and must not be re-added. The Provider SDK utilities in `server/src/services/internal-agent/providers/` remain for **embeddings only** — extraction is now handled by the selectable engine (see Discussion Pipeline below), not the provider SDK. Not in the adapter registry.
 
 ---
 
@@ -150,6 +151,8 @@ Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter ex
 
 **Memory feedback:** `memory_feedback_patterns` table detects recurring founder edits on agent work. Suggests memory items after ≥3 occurrences. Grouped by agent.
 
+**Memory write → RAG indexing:** every write path (`memory.create`, `memory.approve`, crew `write_memory`, MCP `memory.write`/`retain`/`suggest-memory`/`propose_memory_from_thread`) enqueues an embedding via `writeMemoryAndIndex` / `enqueueMemoryEmbedding` (status-agnostic, deduped). Key files: `server/src/services/memory-write.ts`. (Decision #104)
+
 See `docs/architecture/memory.md` for UI layout, semantic retrieval configuration, and feedback detector details.
 
 ### Discussion Pipeline
@@ -160,7 +163,8 @@ Flow: Discussion entry → LLM extraction → `discussion_extracted_items` → f
 
 - Polymorphic scope: department / project / goal. Entry-level scope overrides thread-level scope.
 - Inline annotations on entries (anchorStart/anchorEnd character offsets).
-- Extraction failure: entry marked `failed`, founder notified via `notifications` table. Can retry or manually create.
+- **Extraction engine (Decision #104):** `resolveExtractionEngine` selects `cli` (default — keyless, uses installed Claude/Codex CLI, no API key) or `api` (dormant fallback — requires hosted provider key). Resolution runs before the hosted-key precheck. CLI engine is Option B server-side one-shot (`--print` / `exec`): no MCP bridge, no `submit_extracted_items` handshake, no Decision #100 crew-CLI blockers. Windows prompt delivery: user content is sent via **stdin** to claude (never argv), fixing empty Commander turns.
+- Extraction failure: entry marked `failed`, founder notified via `notifications` table. Can retry or manually create. Failure type classified (`not_installed` / `not_authed` / `timeout` / `nonzero_exit` / `unparseable`) with actionable UX copy in DiscussionDetail. Engine status shown in Settings.
 
 ### Artifacts
 
@@ -447,6 +451,7 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | Table | Purpose |
 |-------|---------|
 | `file_import_jobs` | Background file import job tracking |
+| `embedding_queue` | Write-behind outbox for pgvector embeddings. Key columns: `company_id` (per-company key resolution), `next_retry_at` (backoff persistence), `status` (pending/processing/failed). Worker uses `FOR UPDATE SKIP LOCKED`; per-company circuit breaker leaves rows `pending` on systemic key errors. `AOA_E2E_FAKE_EMBEDDER=1` substitutes a hash-based embedder at the `createOpenAiEmbedder` chokepoint for CI. |
 | `approvals`, `approval_comments` | Approval workflow |
 | `suggestions` | Suggestion engine output. `category` (8 types + agent_proposal), `actionPayload`, `evidence`, `status` |
 
