@@ -29,6 +29,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Cheap change-detector: decides whether the heavy suite needs to run.
+  # docs-only (code=false) iff EVERY changed file is under docs/ or is a
+  # ROOT-LEVEL *.md (README/CLAUDE/AGENTS). Any .github/** file, any nested
+  # *.md (runtime assets like server/src/onboarding-assets/**/*.md, fixtures,
+  # package READMEs), or any other path => code=true => full CI. Uses
+  # --no-renames so a code file moved into docs/ still classifies its (deleted)
+  # source as code. On push (main) code is always true. Skips on draft.
+  changes:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Detect non-doc changes
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "push event -> code=true"
+            exit 0
+          fi
+          changed="$(git diff --no-renames --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          if [ -z "$changed" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "empty diff -> code=true (fail safe)"
+            exit 0
+          fi
+          code=false
+          if printf '%s\n' "$changed" | grep -qE '^\.github/'; then
+            code=true        # any .github/** file (incl .github/*.md) => full CI
+          elif printf '%s\n' "$changed" | grep -qEv '^docs/|^[^/]+\.md$'; then
+            code=true        # anything not under docs/ and not a ROOT-LEVEL *.md
+                             # (nested .md may be runtime assets/fixtures => code)
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "changed files:"; printf '%s\n' "$changed"
+          echo "=> code=$code"
+
   policy:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
@@ -315,7 +358,8 @@ jobs:
   # to pass for merge — that's the right gate, not a pipeline dependency.
   verify:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 20
 
     steps:
@@ -352,7 +396,8 @@ jobs:
   # in-PR scope expansions. Once a platform stabilizes, flip its matrix
   # entry to required by adding it to branch protection rules.
   verify-cross-platform:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
@@ -390,7 +435,8 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 30
 
     steps:
@@ -481,7 +527,8 @@ jobs:
   # can hang after download on hosted macOS/Windows, and CI runs headless. The
   # required Linux e2e job keeps the full fallback path.
   e2e-cross-platform:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
@@ -570,7 +617,8 @@ jobs:
   # caught it pre-merge).
   migrations:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 15
 
     services:
@@ -688,3 +736,54 @@ jobs:
               f"{checked} snapshots chain-checked, all SQL files present"
           )
           PYEOF
+
+  # Single required status check. Branch protection requires ONLY this job.
+  # Runs ALWAYS (`!cancelled()`), even when upstream jobs fail or skip, and
+  # computes the verdict explicitly so a `skipped` job cannot silently pass —
+  # closing the Phase 1 skip-success class. On a draft PR `changes` is skipped,
+  # so this gate goes RED (drafts are unmergeable; a passing required check
+  # there would be the footgun). Marking ready re-runs everything for real.
+  ci-required:
+    needs: [changes, policy, brand-check, verify, e2e, migrations]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Evaluate required gate
+        env:
+          R_CODE: ${{ needs.changes.outputs.code }}
+          R_CHANGES: ${{ needs.changes.result }}
+          R_POLICY: ${{ needs.policy.result }}
+          R_BRAND: ${{ needs['brand-check'].result }}
+          R_VERIFY: ${{ needs.verify.result }}
+          R_E2E: ${{ needs.e2e.result }}
+          R_MIGRATIONS: ${{ needs.migrations.result }}
+        run: |
+          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY e2e=$R_E2E migrations=$R_MIGRATIONS"
+          fail=0
+          # Detector must have succeeded. Skipped (draft) => red, by design.
+          if [ "$R_CHANGES" != "success" ]; then
+            echo "::error::changes detector not success ($R_CHANGES) — draft or detector failure"
+            fail=1
+          fi
+          # Always-on cheap gates must pass.
+          for kv in "policy=$R_POLICY" "brand-check=$R_BRAND"; do
+            name="${kv%%=*}"; res="${kv#*=}"
+            [ "$res" = "success" ] || { echo "::error::$name=$res (required)"; fail=1; }
+          done
+          # Fail closed on an unexpected detector output (defense in depth):
+          # if changes succeeded, code MUST be exactly true or false.
+          if [ "$R_CHANGES" = "success" ] && [ "$R_CODE" != "true" ] && [ "$R_CODE" != "false" ]; then
+            echo "::error::invalid changes.outputs.code ($R_CODE)"
+            fail=1
+          fi
+          # Heavy jobs required to pass ONLY when code changed. On a docs-only
+          # PR (code=false) they are skipped, which is allowed.
+          if [ "$R_CODE" = "true" ]; then
+            for kv in "verify=$R_VERIFY" "e2e=$R_E2E" "migrations=$R_MIGRATIONS"; do
+              name="${kv%%=*}"; res="${kv#*=}"
+              [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
+            done
+          fi
+          [ "$fail" = "0" ] && echo "ci-required: PASS"
+          exit $fail

@@ -286,6 +286,18 @@ Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR
   (it silently ran zero checks on stacked/feature PRs), and do NOT add a
   `paths:`/`paths-ignore:` filter to `pr.yml` (a skipped required check leaves
   PRs stuck on "Expected — Waiting for status").
+- **Single required check (Phase 1.1):** branch protection requires only
+  `ci-required` — an always-running (`if: !cancelled()`) aggregator that computes
+  pass/fail from `needs.*.result` + `changes.outputs.code`. The heavy jobs
+  (`verify`/`e2e`/`migrations` + cross-platform) are non-required and **skip on
+  docs-only PRs** (every changed file under `docs/` or a root-level `*.md` like
+  README/CLAUDE/AGENTS), detected by the `changes` job (`--no-renames`; nested
+  `*.md` such as runtime prompt assets count as code). Drafts skip all real jobs and `ci-required`
+  goes red (zero CI; honest "not validated"). Do NOT make an individual job a
+  required check again, and do NOT add a `paths-ignore` trigger filter — route
+  conditional execution through `ci-required` (a skipped required check passes
+  silently; the aggregator computes the verdict instead). Required human review
+  + CODEOWNERS are deferred until a second committer with write access exists.
 
 | Platform | Verify | E2E |
 |----------|--------|-----|
