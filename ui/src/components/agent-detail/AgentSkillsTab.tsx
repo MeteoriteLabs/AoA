@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search } from "lucide-react";
@@ -31,6 +31,13 @@ export function AgentSkillsTab({
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Freshest server-known attached set, tracked even while a toggle is in
+  // flight, so a failed PATCH can roll back to it rather than to a pre-toggle
+  // snapshot that a mid-save refetch may have superseded.
+  const latestSkillKeys = useRef(initialSkillKeys);
+  useEffect(() => {
+    latestSkillKeys.current = initialSkillKeys;
+  }, [initialSkillKeys]);
 
   // Resync when the agent refetches / navigation changes the attached set —
   // but never while a toggle is in flight, or an unrelated refetch landing
@@ -61,8 +68,10 @@ export function AgentSkillsTab({
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
     } catch (e) {
-      // Failed PATCH must not leave the optimistic change in place.
-      setLocalKeys(prev);
+      // Failed PATCH must not leave the optimistic change in place. Roll back to
+      // the freshest server-known set (not the pre-toggle snapshot) so a change
+      // that landed while this toggle was in flight isn't lost.
+      setLocalKeys(latestSkillKeys.current);
       setError(e instanceof Error ? e.message : "Failed to update skills");
     } finally {
       setPendingKey(null);

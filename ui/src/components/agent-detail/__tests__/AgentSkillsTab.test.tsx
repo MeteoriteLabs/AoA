@@ -75,4 +75,30 @@ describe("AgentSkillsTab — concurrency guard", () => {
 
     await waitFor(() => expect(row("Skill A")).toHaveAttribute("aria-pressed", "true"));
   });
+
+  it("rolls a failed toggle back to the freshest server state, not a stale snapshot", async () => {
+    // PATCH we can reject on demand.
+    let reject!: (e: unknown) => void;
+    vi.mocked(agentsApi.update).mockReturnValue(
+      new Promise((_, r) => { reject = r; }) as never,
+    );
+
+    const { rerender } = renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} />,
+    );
+    await screen.findByText("Skill A");
+
+    fireEvent.click(row("Skill A")); // optimistic [skill-a], in flight
+    await waitFor(() => expect(row("Skill A")).toHaveAttribute("aria-pressed", "true"));
+
+    // An external change lands mid-save (agent now has skill-b, set elsewhere).
+    rerender(<AgentSkillsTab agentId="a1" companyId="c1" skillKeys={["skill-b"]} />);
+    expect(row("Skill A")).toHaveAttribute("aria-pressed", "true"); // guard holds during flight
+
+    // The PATCH now fails: rollback must land on the fresh server state ([skill-b]),
+    // not the stale pre-toggle snapshot ([]).
+    reject(new Error("boom"));
+    await waitFor(() => expect(row("Skill B")).toHaveAttribute("aria-pressed", "true"));
+    expect(row("Skill A")).toHaveAttribute("aria-pressed", "false");
+  });
 });
