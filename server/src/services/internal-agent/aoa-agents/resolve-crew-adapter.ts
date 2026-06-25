@@ -142,6 +142,15 @@ export function needsAdapterBackfill(
   // consumer rewrite path (resolveCrewAdapterForCompany + mergeAdapterConfig)
   // now yields DEFAULT_CODEX_CHAT_MODEL (gpt-5.5) for codex rows.
   if (adapterType === "codex_local") {
+    // A founder may intentionally run codex_local in api-key mode, where models
+    // like gpt-5.3-codex are valid (see resolveModel's apikey branch). A per-agent
+    // OPENAI_API_KEY signals that intent — don't "self-heal" (rewrite) such rows.
+    const env = adapterConfig?.env;
+    const hasOwnApiKey =
+      typeof env === "object" && env !== null &&
+      typeof (env as Record<string, unknown>).OPENAI_API_KEY === "string" &&
+      ((env as Record<string, unknown>).OPENAI_API_KEY as string).trim().length > 0;
+    if (hasOwnApiKey) return false;
     const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
     // A persisted codex model that a ChatGPT login would reject needs rewriting.
     return model.length > 0 && !isCodexCompatibleModel(model);
@@ -150,20 +159,16 @@ export function needsAdapterBackfill(
 }
 
 /**
- * Merge a resolved crew adapter into an existing adapter_config, preserving
- * any `instructions*` fields (those are managed by seedRoleInstructionBundle
- * and re-running this would clobber them).
+ * Merge a resolved crew adapter into an existing adapter_config. Preserve ALL of
+ * the founder's existing per-agent config (env, cwd, command, extraArgs,
+ * instructions*, …) and override only the fields the resolved adapter sets (model
+ * + bypass/skip flags). Previously this kept only `instructions*` and dropped the
+ * rest, clobbering valid per-agent settings on a backfill rewrite (Codex P2).
  */
 export function mergeAdapterConfig(
   existing: Record<string, unknown> | null | undefined,
   next: Record<string, unknown>,
 ): Record<string, unknown> {
   const base = existing ?? {};
-  return {
-    ...next,
-    ...(base.instructionsFilePath ? { instructionsFilePath: base.instructionsFilePath } : {}),
-    ...(base.instructionsRootPath ? { instructionsRootPath: base.instructionsRootPath } : {}),
-    ...(base.instructionsEntryFile ? { instructionsEntryFile: base.instructionsEntryFile } : {}),
-    ...(base.instructionsBundleMode ? { instructionsBundleMode: base.instructionsBundleMode } : {}),
-  };
+  return { ...base, ...next };
 }
