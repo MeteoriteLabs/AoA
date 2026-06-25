@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
+import { enqueueMemoryEmbedding } from "./memory-write.js";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
@@ -227,7 +228,15 @@ export function memoryService(db: Db) {
         values.embedding = null;
       }
       return buildMemoryInsert((tx ?? db) as Db, values, caps.hasVectorSupport).then(
-        (rows) => rows[0],
+        async (rows) => {
+          const row = rows[0];
+          // Status-agnostic: enqueue immediately regardless of pending/approved.
+          // Dedup guard in enqueueMemoryEmbedding ensures no double-insert.
+          if (row) {
+            await enqueueMemoryEmbedding(db, companyId, row, tx as unknown as Db | undefined);
+          }
+          return row;
+        },
       );
     },
 
@@ -245,7 +254,15 @@ export function memoryService(db: Db) {
         .set(setData)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection(caps.hasVectorSupport))
-        .then((rows) => rows[0] ?? null);
+        .then(async (rows) => {
+          const row = rows[0] ?? null;
+          // Re-index when content/title changed — dedup guard prevents
+          // double-insert if the item is already pending in the queue.
+          if (row && hasContentChange) {
+            await enqueueMemoryEmbedding(db, companyId, row);
+          }
+          return row;
+        });
     },
 
     remove: (companyId: string, id: string) =>
@@ -261,7 +278,16 @@ export function memoryService(db: Db) {
         .set({ status: "approved", updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection())
-        .then((rows) => rows[0] ?? null),
+        .then(async (rows) => {
+          const row = rows[0] ?? null;
+          // Enqueue (deduped) — covers items that were created on installs
+          // where the create-enqueue was skipped (e.g. no pgvector at create
+          // time, or items that pre-date this wiring).
+          if (row) {
+            await enqueueMemoryEmbedding(db, companyId, row);
+          }
+          return row;
+        }),
 
     reject: (companyId: string, id: string) =>
       db

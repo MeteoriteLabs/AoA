@@ -22,6 +22,7 @@ import { eq } from "drizzle-orm";
 import { memoryItems, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildAddScopeItemIdempotencyKey } from "./thread-action-keys.js";
+import { enqueueMemoryEmbedding } from "../../memory-write.js";
 
 const PRIVATE_THREAD_ALLOWED_LAYERS = new Set(["working", "active_context"]);
 const VALID_LAYERS = new Set(["identity", "domain", "active_context", "working"]);
@@ -292,19 +293,12 @@ export const proposeMemoryFromThreadTool: AgentTool = {
       };
     }
 
-    // Best-effort embedding enqueue — non-fatal. Failing to enqueue should
-    // not block the proposal because the founder can approve a pending item
-    // without an embedding (retrieval just won't surface it semantically).
+    // Best-effort embedding enqueue via the shared helper — non-fatal,
+    // deduped, company-scoped. enqueueMemoryEmbedding already catches its own
+    // errors internally, but guard here too so any unexpected throw (e.g. from
+    // mocks in tests) never blocks the proposal returning success.
     try {
-      const enqueue = ctx.services?.embeddings?.enqueue;
-      if (typeof enqueue === "function") {
-        await enqueue({
-          targetTable: "memory_items",
-          targetId: item.id,
-          targetColumn: "embedding",
-          inputText: content,
-        });
-      }
+      await enqueueMemoryEmbedding(ctx.db, ctx.companyId, { id: item.id, title: defaultedTitle, content });
     } catch {
       /* non-fatal — see note above */
     }
