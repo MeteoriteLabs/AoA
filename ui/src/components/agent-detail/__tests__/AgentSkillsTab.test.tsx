@@ -120,4 +120,27 @@ describe("AgentSkillsTab — concurrency guard", () => {
     fireEvent.click(screen.getByText("ghost-skill").closest('[role="button"]') as HTMLElement);
     await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: ["skill-a"] }));
   });
+
+  // Codex P2: after a successful toggle, the rollback baseline must advance to the
+  // saved set — otherwise a later failed toggle (before the refetch lands) rolls back
+  // to the stale initial value and drops the earlier success.
+  it("keeps an earlier successful toggle when a later toggle fails before refetch", async () => {
+    vi.mocked(agentsApi.update)
+      .mockResolvedValueOnce({} as never) // toggle A succeeds
+      .mockRejectedValueOnce(new Error("boom")); // toggle B fails
+
+    renderWithProviders(<AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} />);
+    await screen.findByText("Skill A");
+
+    fireEvent.click(row("Skill A"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(row("Skill A")).toHaveAttribute("aria-pressed", "true"));
+
+    fireEvent.click(row("Skill B"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(2));
+
+    // B's failure rolls back to the confirmed-saved set ([skill-a]), not the stale [].
+    await waitFor(() => expect(row("Skill B")).toHaveAttribute("aria-pressed", "false"));
+    expect(row("Skill A")).toHaveAttribute("aria-pressed", "true");
+  });
 });

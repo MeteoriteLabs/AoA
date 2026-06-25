@@ -65,6 +65,10 @@ export function AgentSkillsTab({
     setError(null);
     try {
       await agentsApi.update(agentId, { skillKeys: next } as never);
+      // Advance the rollback baseline to the just-confirmed set, so a later toggle
+      // that fails before this save's refetch lands rolls back to here (keeping this
+      // change) rather than to the now-stale initial prop value.
+      latestSkillKeys.current = next;
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
     } catch (e) {
