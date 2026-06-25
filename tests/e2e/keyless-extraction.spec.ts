@@ -1,0 +1,222 @@
+import { test, expect, type APIRequestContext } from "@playwright/test";
+import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+import {
+  clearFakeClaudeInvocations,
+  readFakeClaudeInvocations,
+  writeFakeClaudeExtractionControl,
+} from "./helpers/fake-claude";
+
+/**
+ * E2E — Keyless extraction happy path.
+ *
+ * The keyless feature (Task 5/6) routes discussion extraction through the
+ * one-shot CLI extractor (server/src/services/extraction-cli.ts) when the
+ * fake `claude` binary is on PATH (as it always is in the e2e webServer env,
+ * via the playwright.config.ts PATH prepend).
+ *
+ * This spec proves:
+ *   1. A company with NO hosted OpenAI key still extracts successfully.
+ *   2. The CLI extractor spawns `claude --print --system-prompt-file <f>
+ *      --output-format text` and delivers the entry content over stdin —
+ *      NOT as an argv positional (W1 Windows fix).
+ *   3. The extracted item appears in the discussion detail (entry status
+ *      "completed", extracted item of kind "task").
+ *   4. Approving the item via API creates a Task (issue row).
+ *
+ * No pgvector is required — extraction writes discussion_extracted_items rows,
+ * not vectors. The fake embedder (always active in e2e) handles any incidental
+ * embedding enqueue without blocking.
+ *
+ * All assertions are against the API or the DiscussionDetail page — no
+ * MemoryIndexBadge or vector-dependent assertions here.
+ */
+
+const EXTRACTION_ITEM = [
+  {
+    kind: "task",
+    title: "Implement the keyless extraction happy path",
+    description: "Prove that CLI-mode extraction creates a real task item.",
+    priority: "medium",
+  },
+];
+
+async function createDiscussion(
+  request: APIRequestContext,
+  companyId: string,
+  title: string,
+): Promise<{ id: string }> {
+  const res = await request.post(`/api/companies/${companyId}/discussions`, {
+    data: { title },
+  });
+  if (!res.ok()) {
+    const body = await res.text().catch(() => "(no body)");
+    throw new Error(`createDiscussion failed: ${res.status()} ${body}`);
+  }
+  return res.json() as Promise<{ id: string }>;
+}
+
+async function createEntry(
+  request: APIRequestContext,
+  companyId: string,
+  discussionId: string,
+  content: string,
+): Promise<{ id: string }> {
+  const res = await request.post(
+    `/api/companies/${companyId}/discussions/${discussionId}/entries`,
+    { data: { content, inputType: "write" } },
+  );
+  if (!res.ok()) {
+    const body = await res.text().catch(() => "(no body)");
+    throw new Error(`createEntry failed: ${res.status()} ${body}`);
+  }
+  return res.json() as Promise<{ id: string }>;
+}
+
+/** Poll the discussion until every entry reaches a terminal extraction status. */
+async function waitForExtraction(
+  request: APIRequestContext,
+  companyId: string,
+  discussionId: string,
+  entryId: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<{ extractionStatus: string; extractedItems: Array<{ id: string; kind: string; title: string; status: string }> }> {
+  const { timeoutMs = 30_000, pollMs = 500 } = opts;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await request.get(
+      `/api/companies/${companyId}/discussions/${discussionId}`,
+    );
+    if (!res.ok()) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      continue;
+    }
+    const discussion = (await res.json()) as {
+      entries: Array<{
+        id: string;
+        extractionStatus: string;
+        extractedItems: Array<{ id: string; kind: string; title: string; status: string }>;
+      }>;
+    };
+    const entry = discussion.entries.find((e) => e.id === entryId);
+    if (
+      entry &&
+      entry.extractionStatus !== "pending" &&
+      entry.extractionStatus !== "processing"
+    ) {
+      return { extractionStatus: entry.extractionStatus, extractedItems: entry.extractedItems };
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  throw new Error(
+    `Timed out waiting for extraction on entry ${entryId} in discussion ${discussionId}`,
+  );
+}
+
+test.describe("keyless extraction — happy path", () => {
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request, /^E2E-Keyless-/);
+    clearFakeClaudeInvocations();
+    // Prime the control file for extraction mode: a JSON array with one task item.
+    writeFakeClaudeExtractionControl({
+      extractionText: JSON.stringify(EXTRACTION_ITEM),
+    });
+  });
+
+  test(
+    "CLI extractor runs without a hosted key, entry completes, extracted task item appears",
+    async ({ request }) => {
+      const company = await seedCompany(request, `E2E-Keyless-${Date.now()}`);
+
+      // The e2e instance has OPENAI_API_KEY=placeholder in the webServer env,
+      // but the company itself has NO per-company OpenAI secret stored in
+      // company_secrets — so resolveSemanticAvailable() returns false.
+      // The extraction engine still resolves to "cli" (fake-claude on PATH).
+
+      const discussion = await createDiscussion(
+        request,
+        company.id,
+        `Keyless extraction test ${Date.now()}`,
+      );
+
+      // Clear invocations just before the triggering action so the assertion
+      // is scoped to this extraction spawn only.
+      clearFakeClaudeInvocations();
+
+      const entry = await createEntry(
+        request,
+        company.id,
+        discussion.id,
+        "We need to implement the keyless extraction feature and make sure it creates proper task items.",
+      );
+
+      // Poll until extraction completes (or fails — we assert "completed" below).
+      const result = await waitForExtraction(
+        request,
+        company.id,
+        discussion.id,
+        entry.id,
+      );
+
+      // The entry must have completed, not skipped (keyless = still runs the CLI).
+      expect(result.extractionStatus).toBe("completed");
+
+      // At least one extracted item of kind "task" from our scripted payload.
+      const taskItem = result.extractedItems.find((i) => i.kind === "task");
+      expect(taskItem).toBeTruthy();
+      expect(taskItem!.title).toBe(EXTRACTION_ITEM[0].title);
+
+      // --- Invocation contract assertions ---
+      // The fake-claude shim records every spawn: we prove the CLI was actually
+      // invoked in extraction mode (--output-format text), content was on stdin
+      // (not in argv positionals), and no raw entry content leaked into argv.
+      const invocations = readFakeClaudeInvocations();
+      // At least one spawn happened for this extraction.
+      expect(invocations.length).toBeGreaterThanOrEqual(1);
+
+      const lastInvocation = invocations[invocations.length - 1];
+      // Extraction mode: --output-format text (NOT stream-json).
+      expect(lastInvocation.argv).toContain("--output-format");
+      expect(lastInvocation.argv).toContain("text");
+      expect(lastInvocation.argv).not.toContain("stream-json");
+      // The --print flag is always present.
+      expect(lastInvocation.argv).toContain("--print");
+      // Content was NOT in argv (stdin delivery, W1 Windows fix).
+      // The raw entry text must NOT appear anywhere in the argv array.
+      const argvJoined = lastInvocation.argv.join(" ");
+      expect(argvJoined).not.toContain("keyless extraction feature");
+      // Content must have arrived on stdin.
+      expect(lastInvocation.stdin).toContain("keyless extraction feature");
+
+      // --- Approve the item and assert a Task is created ---
+      // POST /companies/:cid/discussions/:did/approve
+      // Body: { items: [{ itemId, action: "approved" }] }
+      // Returns: { approved, rejected, tasksCreated: string[], memoryItemsCreated: string[] }
+      const approveRes = await request.post(
+        `/api/companies/${company.id}/discussions/${discussion.id}/approve`,
+        {
+          data: {
+            items: [{ itemId: taskItem!.id, action: "approved" }],
+          },
+        },
+      );
+      expect(approveRes.ok()).toBe(true);
+      const approveBody = (await approveRes.json()) as {
+        approved: number;
+        rejected: number;
+        tasksCreated: string[];
+        memoryItemsCreated: string[];
+      };
+      expect(approveBody.tasksCreated.length).toBeGreaterThan(0);
+      const taskId = approveBody.tasksCreated[0];
+      expect(taskId).toBeTruthy();
+
+      // Confirm the issue exists.
+      const issueRes = await request.get(
+        `/api/companies/${company.id}/issues/${taskId}`,
+      );
+      expect(issueRes.ok()).toBe(true);
+      const issue = (await issueRes.json()) as { id: string; title: string };
+      expect(issue.id).toBe(taskId);
+    },
+  );
+});

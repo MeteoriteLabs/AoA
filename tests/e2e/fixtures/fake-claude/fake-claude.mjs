@@ -1,7 +1,25 @@
 #!/usr/bin/env node
 // Deterministic fake `claude` CLI for the Commander viewer e2e
-// (tests/e2e/commander-viewer.spec.ts).
+// (tests/e2e/commander-viewer.spec.ts) AND for the keyless extraction e2e
+// (tests/e2e/keyless-extraction.spec.ts).
 //
+// ── EXTRACTION MODE (keyless path, Task 16) ───────────────────────────────
+// server/src/services/extraction-cli.ts invokes claude as:
+//   claude --print --system-prompt-file <f> --output-format text
+// and delivers the entry content over stdin. It expects PLAIN TEXT stdout
+// (a JSON array of extracted items that parseExtractedItems can consume).
+//
+// Detection: if argv does NOT contain "--output-format stream-json" (i.e.
+// this is NOT a Commander chat spawn), we are in extraction mode. The control
+// file for extraction mode uses the `extractionText` field:
+//   { "extractionText": "[{\"kind\":\"task\",\"title\":\"...\"}]" }
+//   { "extractionText": "not json at all" }   ← forces unparseable failure
+//   { "fail": "exit" }                         ← nonzero exit (forces failure)
+//
+// In extraction mode the shim writes the extractionText (or nothing on fail)
+// to stdout and exits 0 (or 1 on { fail: "exit" }).
+//
+// ── COMMANDER / CHAT MODE (existing behavior) ─────────────────────────────
 // Commander's cli-mode (server/src/services/internal-agent/cli-mode.ts)
 // resolves the literal binary name "claude" from PATH (`which`/`where`) and
 // spawns it with `--print --output-format stream-json …` — one process per
@@ -114,6 +132,32 @@ function readControl() {
     // unexpected spawn (e.g. a background Commander run) never crashes.
   }
   return { toolCalls: [], text: "Fake claude: no control file found." };
+}
+
+// ── Extraction mode detection ─────────────────────────────────────────────
+// The extraction-cli spawns: claude --print --system-prompt-file <f>
+//   --output-format text
+// Commander chat spawns:     claude --print --output-format stream-json …
+// Distinguishing factor: extraction mode has "--output-format text" (or
+// simply NOT "--output-format stream-json").
+const IS_EXTRACTION_MODE = !argv.includes("stream-json");
+
+async function mainExtraction() {
+  const control = readControl();
+
+  // Forced nonzero exit — simulates CLI crash / auth failure so the extractor
+  // marks the entry as "failed".
+  if (control.fail === "exit") {
+    process.stderr.write("fake-claude: forced nonzero exit for extraction failure test\n");
+    recordInvocation();
+    process.exit(1);
+  }
+
+  // Write the scripted extraction payload to stdout (a JSON array string or
+  // any string the caller wants — may be intentionally unparseable).
+  const payload =
+    typeof control.extractionText === "string" ? control.extractionText : "[]";
+  process.stdout.write(payload + "\n");
 }
 
 async function main() {
@@ -233,7 +277,8 @@ async function main() {
   });
 }
 
-main().then(
+const runner = IS_EXTRACTION_MODE ? mainExtraction() : main();
+runner.then(
   () => {
     recordInvocation();
     process.exit(0);
