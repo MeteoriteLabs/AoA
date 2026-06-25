@@ -1157,3 +1157,6 @@ if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
     void shutdown("SIGTERM");
   });
 }
+
+// ci 1.1 smoke (delete me): intentional type error to prove ci-required blocks
+export const ci11Broken: number = "definitely a string";
