@@ -58,6 +58,24 @@ const ADAPTER_FAMILY: Record<string, "claude" | "openai" | "gemini"> = {
   gemini_local: "gemini",
 };
 
+// Pure family-compatibility check, shared by the schema refinement (create / hire /
+// update) and the route's adapter-only PATCH guard so the rule lives in ONE place.
+// Returns a human-readable reason string on a genuine cross-family mismatch, else null.
+// Returns null when adapterType/model is absent, the model family is unknown, or the
+// adapter has no pinned family (opencode_local is intentionally exempt — see ADAPTER_FAMILY).
+export function adapterModelFamilyMismatch(
+  adapterType: string | undefined,
+  model: string | undefined,
+): string | null {
+  if (!adapterType || typeof model !== "string" || model.length === 0) return null;
+  const fam = modelFamily(model);
+  const expected = ADAPTER_FAMILY[adapterType];
+  if (expected && fam !== "unknown" && fam !== expected) {
+    return `Model "${model}" (${fam}) does not match adapter ${adapterType} (${expected}).`;
+  }
+  return null;
+}
+
 // `val` is loosely typed because this refinement runs across the create / hire /
 // (partial) update shapes — all of which carry adapterType + adapterConfig.
 function refineAdapterModel(
@@ -77,13 +95,12 @@ function refineAdapterModel(
     return;
   }
 
-  const fam = modelFamily(model);
-  const expected = ADAPTER_FAMILY[at];
-  if (expected && fam !== "unknown" && fam !== expected) {
+  const mismatch = adapterModelFamilyMismatch(at, model);
+  if (mismatch) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["adapterConfig", "model"],
-      message: `Model "${model}" (${fam}) does not match adapter ${at} (${expected}).`,
+      message: mismatch,
     });
   }
 }

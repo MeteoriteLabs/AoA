@@ -654,6 +654,7 @@ export {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  adapterModelFamilyMismatch,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,

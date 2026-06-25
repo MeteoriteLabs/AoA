@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createAgentSchema, createAgentHireSchema, updateAgentSchema } from "./agent.js";
+import { createAgentSchema, createAgentHireSchema, updateAgentSchema, adapterModelFamilyMismatch } from "./agent.js";
 
 describe("agent schema adapter↔model cross-family + shell-safety", () => {
   it("rejects claude_local + a gpt model (cross-family)", () => {
@@ -71,5 +71,32 @@ describe("agent schema adapter↔model cross-family + shell-safety", () => {
   });
   it("allows opencode_local + google/gemini model (multi-provider)", () => {
     expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "google/gemini-2.0-flash" } }).success).toBe(true);
+  });
+});
+
+describe("adapterModelFamilyMismatch (shared family check reused by route + schema)", () => {
+  it("flags claude_local + gpt", () => {
+    expect(adapterModelFamilyMismatch("claude_local", "gpt-5.5")).toMatch(/does not match adapter claude_local/);
+  });
+  it("passes codex_local + gpt", () => {
+    expect(adapterModelFamilyMismatch("codex_local", "gpt-5.5")).toBeNull();
+  });
+  it("flags gemini_local + claude", () => {
+    expect(adapterModelFamilyMismatch("gemini_local", "claude-sonnet-4-5")).toBeTruthy();
+  });
+  it("flags codex_local + claude", () => {
+    expect(adapterModelFamilyMismatch("codex_local", "claude-sonnet-4-5")).toBeTruthy();
+  });
+  it("exempts opencode_local + anthropic/claude (multi-provider)", () => {
+    expect(adapterModelFamilyMismatch("opencode_local", "anthropic/claude-sonnet-4-5")).toBeNull();
+  });
+  it("passes when adapterType is absent", () => {
+    expect(adapterModelFamilyMismatch(undefined, "gpt-5.5")).toBeNull();
+  });
+  it("passes when model is absent", () => {
+    expect(adapterModelFamilyMismatch("claude_local", undefined)).toBeNull();
+  });
+  it("passes claude_local + claude model", () => {
+    expect(adapterModelFamilyMismatch("claude_local", "claude-sonnet-4-5")).toBeNull();
   });
 });
