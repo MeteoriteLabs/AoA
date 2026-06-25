@@ -25,6 +25,7 @@ import { logger } from "../middleware/logger.js";
 import {
   createEmbeddingService,
   createOpenAiEmbedder,
+  type CircuitEntry,
   type EmbeddingService,
 } from "./embeddings.js";
 
@@ -101,6 +102,12 @@ export function startEmbeddingWorker(
 
   const service = createEmbeddingService(db, baselineEmbedder);
 
+  // Per-company circuit breaker map. Lives on the worker handle so it persists
+  // across ticks: a systemic error (bad/expired key, quota exhausted) opens the
+  // circuit for CIRCUIT_TTL_MS and suppresses that company's rows without
+  // burning them to 'failed'. The map is passed into processQueue each tick.
+  const circuit = new Map<string, CircuitEntry>();
+
   let stopped = false;
   let nextTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -110,6 +117,7 @@ export function startEmbeddingWorker(
       const result = await service.processQueue({
         batchSize,
         resolveCompanyKey: config.resolveCompanyKey,
+        circuit,
       });
       // Don't spam logs on quiet ticks. Only log on activity or failure.
       if (result.failed > 0) {
@@ -119,6 +127,7 @@ export function startEmbeddingWorker(
             failed: result.failed,
             skipped: result.skipped,
             remaining: result.remaining,
+            openCircuits: circuit.size,
           },
           "embedding worker tick produced failures",
         );

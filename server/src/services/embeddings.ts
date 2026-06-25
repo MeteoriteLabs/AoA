@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import OpenAI from "openai";
 import type { Db } from "@armyofagents/db";
 import {
@@ -226,6 +226,99 @@ export async function invalidateEmbedding(db: Db, itemId: string): Promise<void>
 // (table, id, column) tuples so writers anywhere in the system can enqueue
 // an embedding job without coupling the writer to embedding semantics.
 
+// ─── Resilience helpers (Task 11) ─────────────────────────────────────────────
+
+export type EmbeddingErrorClass = "transient" | "row_permanent" | "systemic";
+
+/**
+ * Classify an embedding error into one of three categories:
+ *
+ *   - "systemic"      — bad API key, exhausted quota, 401/403. The whole
+ *                       company's key is broken; a circuit breaker should
+ *                       pause that company's rows so we don't burn their
+ *                       backlog to 'failed'.
+ *   - "row_permanent" — the input is fundamentally bad (400/422). Retrying
+ *                       will never help; mark the row failed immediately.
+ *   - "transient"     — rate-limit (429), server error (5xx), network
+ *                       timeout, or unknown. Retry with exponential backoff.
+ */
+export function classifyEmbeddingError(err: unknown): EmbeddingErrorClass {
+  const status = (err as Record<string, unknown>)?.status as number | undefined;
+  const type = (
+    (err as Record<string, unknown>)?.error as Record<string, unknown>
+  )?.type as string | undefined;
+  const code = (
+    (err as Record<string, unknown>)?.error as Record<string, unknown>
+  )?.code as string | undefined;
+  const message =
+    (err instanceof Error ? err.message : String(err)) ?? "";
+
+  // Systemic: auth failure or quota exhausted
+  if (status === 401 || status === 403) return "systemic";
+  if (type === "insufficient_quota") return "systemic";
+  if (code === "insufficient_quota") return "systemic";
+  if (
+    typeof message === "string" &&
+    message.toLowerCase().includes("insufficient_quota")
+  )
+    return "systemic";
+
+  // Row-permanent: bad input that will always fail for this row
+  if (status === 400 || status === 422) return "row_permanent";
+
+  // Transient: rate-limit, server errors, network failures
+  if (status === 429) return "transient";
+  if (typeof status === "number" && status >= 500) return "transient";
+  if (type === "rate_limit_exceeded") return "transient";
+  if (code === "rate_limit_exceeded") return "transient";
+  if (typeof message === "string") {
+    const lower = message.toLowerCase();
+    if (
+      lower.includes("econnreset") ||
+      lower.includes("etimedout") ||
+      lower.includes("fetch failed") ||
+      lower.includes("network") ||
+      lower.includes("timeout")
+    )
+      return "transient";
+  }
+
+  // Unknown → treat as transient (bounded by maxAttempts)
+  return "transient";
+}
+
+/** Exponential backoff base in ms. */
+export const BACKOFF_BASE_MS = 2000;
+/** Exponential backoff cap in ms (5 minutes). */
+export const BACKOFF_CAP_MS = 300_000;
+
+/**
+ * Full-jitter exponential backoff.
+ *
+ *   raw = min(CAP, BASE * 2^(attempt-1))
+ *   result = floor(rng() * raw)   // uniform in [0, raw)
+ *
+ * @param attempt  1-based attempt number (1 = first retry after first failure).
+ * @param rng      Random number generator in [0,1). Defaults to Math.random.
+ */
+export function computeBackoffMs(
+  attempt: number,
+  rng: () => number = Math.random,
+): number {
+  const raw = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * Math.pow(2, attempt - 1));
+  return Math.floor(rng() * raw);
+}
+
+/** Circuit-breaker state for a single company. */
+export interface CircuitEntry {
+  reason: string;
+  /** Absolute epoch-ms when the circuit resets (auto-closes). */
+  until: number;
+}
+
+/** TTL for an open circuit breaker (60 seconds). */
+export const CIRCUIT_TTL_MS = 60_000;
+
 const queueLog = logger.child({ service: "embedding-queue" });
 
 export interface LlmEmbedder {
@@ -293,6 +386,16 @@ export interface ProcessQueueOpts {
    * `llm` embedder (the one passed to `createEmbeddingService`).
    */
   resolveCompanyKey?: (companyId: string | null) => Promise<string | null>;
+  /**
+   * Per-company circuit breaker map. Owned by the caller (typically
+   * `startEmbeddingWorker`) and persisted across ticks so a systemic error
+   * (bad key / quota exhausted) suppresses that company's rows for CIRCUIT_TTL_MS
+   * without marking them 'failed'. Tests can inject their own empty Map.
+   *
+   * When omitted, a fresh Map is created per processQueue() call (safe for
+   * single-tick / test scenarios).
+   */
+  circuit?: Map<string, CircuitEntry>;
 }
 
 export interface ProcessQueueResult {
@@ -301,6 +404,25 @@ export interface ProcessQueueResult {
   remaining: number;
   /** Rows skipped because no key was resolved for their company. */
   skipped: number;
+}
+
+/**
+ * Parse an optional `Retry-After` header from an API error's response headers.
+ * Returns milliseconds to wait, or 0 if the header is absent / unparseable.
+ * Supports both delta-seconds ("30") and HTTP-date formats.
+ */
+function parseRetryAfterHeader(headers: Record<string, string>): number {
+  const raw =
+    headers?.["retry-after"] ?? headers?.["Retry-After"] ?? "";
+  if (!raw) return 0;
+  const seconds = Number(raw);
+  if (!Number.isNaN(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
+  // HTTP-date format
+  const date = new Date(raw);
+  if (!Number.isNaN(date.getTime())) {
+    return Math.max(0, date.getTime() - Date.now());
+  }
+  return 0;
 }
 
 const TARGET_TABLE_MAP = {
@@ -405,27 +527,105 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
      *   company has no key are LEFT PENDING — attempts are NOT bumped — so
      *   they'll be picked up again on the next tick once a key is configured.
      *
-     * Worker loop guarantees:
-     *   - Per-row: marks row 'processing' before embedding so a concurrent
-     *     worker reading the same batch will not double-process it. (The
-     *     'processing' marker is the single concurrency primitive — pair
-     *     with a SELECT FOR UPDATE SKIP LOCKED in a future hardening pass
-     *     if multiple workers are deployed.)
-     *   - Per-batch: returns counts so callers can log/observe backpressure.
+     * Resilience (Task 11):
+     *   - Eligibility filter: only picks rows where next_retry_at IS NULL OR
+     *     next_retry_at <= now(). Rows in backoff delay are naturally skipped.
+     *   - Atomic claim: uses SELECT FOR UPDATE SKIP LOCKED (via raw SQL) so
+     *     concurrent worker instances don't double-process the same row.
+     *   - Per-error classification: transient → backoff+retry; row_permanent →
+     *     immediate 'failed'; systemic → circuit-break (restore row to pending
+     *     without bumping attempts, skip remaining company rows this tick).
+     *   - Circuit breaker: systemic errors open a per-company circuit for
+     *     CIRCUIT_TTL_MS. Rows for open-circuit companies are left pending
+     *     without embedding attempts until the TTL expires.
      */
     async processQueue(opts: ProcessQueueOpts = {}): Promise<ProcessQueueResult> {
       const batchSize = opts.batchSize ?? 50;
-      const maxAttempts = opts.maxAttempts ?? 3;
+      const maxAttempts = opts.maxAttempts ?? 6;
       const resolveCompanyKey = opts.resolveCompanyKey;
+      // Circuit map: persisted across ticks when caller provides it; fresh per
+      // call otherwise (safe for single-tick / legacy / test scenarios).
+      const circuit = opts.circuit ?? new Map<string, CircuitEntry>();
       let processed = 0;
       let failed = 0;
       let skipped = 0;
 
-      const pending = await db
-        .select()
-        .from(embeddingQueue)
-        .where(eq(embeddingQueue.status, "pending"))
-        .limit(batchSize);
+      // Claim eligible rows atomically. We use a raw SQL CTE so that
+      // SELECT FOR UPDATE SKIP LOCKED and the WHERE on next_retry_at are
+      // expressed as a single statement — Drizzle's query builder does not
+      // expose SKIP LOCKED natively, so we fall back to sql.raw here.
+      //
+      // Pattern:
+      //   WITH claimed AS (
+      //     SELECT id FROM embedding_queue
+      //     WHERE status = 'pending'
+      //       AND (next_retry_at IS NULL OR next_retry_at <= now())
+      //     ORDER BY created_at
+      //     LIMIT $batchSize
+      //     FOR UPDATE SKIP LOCKED
+      //   )
+      //   UPDATE embedding_queue
+      //   SET status = 'processing', updated_at = now()
+      //   WHERE id IN (SELECT id FROM claimed)
+      //   RETURNING *
+      //
+      // This is an atomic claim: the rows are marked 'processing' in the same
+      // round-trip that selects them, so two concurrent workers cannot both
+      // claim the same row. Workers that read a 'processing' row on a normal
+      // SELECT will skip it via the WHERE status='pending' filter.
+      let pending: Array<typeof embeddingQueue.$inferSelect>;
+      // True when rows were already marked 'processing' by the atomic CTE claim.
+      // False when the fallback plain-select was used — in that case the loop must
+      // mark each row 'processing' before embedding (and must NOT issue a restore
+      // update for skipped/circuit rows, since they're still 'pending').
+      let rowsAlreadyClaimed = false;
+      try {
+        const rows = await db.execute(sql.raw(`
+          WITH claimed AS (
+            SELECT id FROM embedding_queue
+            WHERE status = 'pending'
+              AND (next_retry_at IS NULL OR next_retry_at <= now())
+            ORDER BY created_at
+            LIMIT ${batchSize}
+            FOR UPDATE SKIP LOCKED
+          )
+          UPDATE embedding_queue
+          SET status = 'processing', updated_at = now()
+          WHERE id IN (SELECT id FROM claimed)
+          RETURNING *
+        `));
+        // Drizzle's db.execute returns an iterable result; the raw rows are
+        // accessible via the array itself (RowList is array-like).
+        pending = (rows as unknown as Array<typeof embeddingQueue.$inferSelect>);
+        rowsAlreadyClaimed = true;
+      } catch (skipLockedErr) {
+        // Fallback for test environments / mocked DBs that don't support
+        // raw SQL execution: degrade gracefully to a plain select with
+        // the eligibility filter. The per-row mark-processing step inside
+        // the loop handles single-worker correctness in those scenarios.
+        queueLog.debug(
+          { err: skipLockedErr },
+          "SKIP LOCKED claim failed — falling back to plain select (expected in mocked test environments)",
+        );
+        pending = await db
+          .select()
+          .from(embeddingQueue)
+          .where(
+            and(
+              eq(embeddingQueue.status, "pending"),
+              or(
+                isNull(embeddingQueue.nextRetryAt),
+                lte(embeddingQueue.nextRetryAt, new Date()),
+              ),
+            ),
+          )
+          .limit(batchSize) as Array<typeof embeddingQueue.$inferSelect>;
+        // rowsAlreadyClaimed remains false: loop will mark processing + skip without restore
+      }
+
+      if (pending.length === 0) {
+        return { processed, failed, remaining: 0, skipped };
+      }
 
       // Per-tick embedder cache: key → LlmEmbedder.
       // Avoids rebuilding the OpenAI SDK (+ keepalive agent) for each row when
@@ -434,23 +634,64 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
       // Track which companyIds have been logged "no key" this tick so we
       // don't spam the log for every row in the batch.
       const loggedNoKey = new Set<string>();
+      // Companies that tripped the circuit breaker this tick — their remaining
+      // rows are skipped without embedding.
+      const circuitOpenedThisTick = new Set<string>();
 
       for (const item of pending) {
+        const companyKey = item.companyId ?? "__null__";
+
+        // ── Circuit breaker: skip if company's circuit is open ────────────
+        const circuitEntry = circuit.get(companyKey);
+        if (circuitEntry && circuitEntry.until > Date.now()) {
+          if (rowsAlreadyClaimed) {
+            // Row was claimed as 'processing' by the CTE; restore to 'pending'.
+            await db
+              .update(embeddingQueue)
+              .set({ status: "pending", updatedAt: new Date() })
+              .where(eq(embeddingQueue.id, item.id));
+          }
+          // If fallback plain-select path: row is still 'pending' — just skip it.
+          skipped++;
+          continue;
+        } else if (circuitEntry) {
+          // TTL expired — remove stale entry so the next attempt proceeds.
+          circuit.delete(companyKey);
+        }
+
+        // Also skip if this company tripped the circuit earlier in this tick
+        if (circuitOpenedThisTick.has(companyKey)) {
+          if (rowsAlreadyClaimed) {
+            await db
+              .update(embeddingQueue)
+              .set({ status: "pending", updatedAt: new Date() })
+              .where(eq(embeddingQueue.id, item.id));
+          }
+          skipped++;
+          continue;
+        }
+
         // ── Per-company key resolution ────────────────────────────────────
         let embedder: LlmEmbedder;
         if (resolveCompanyKey) {
           const key = await resolveCompanyKey(item.companyId ?? null);
           if (!key) {
             // No key for this company — leave the row pending this tick.
-            const logId = item.companyId ?? "__null__";
-            if (!loggedNoKey.has(logId)) {
-              loggedNoKey.add(logId);
+            // CTE path: row is 'processing' → restore to 'pending'.
+            // Fallback path: row is still 'pending' → no update needed.
+            if (rowsAlreadyClaimed) {
+              await db
+                .update(embeddingQueue)
+                .set({ status: "pending", updatedAt: new Date() })
+                .where(eq(embeddingQueue.id, item.id));
+            }
+            if (!loggedNoKey.has(companyKey)) {
+              loggedNoKey.add(companyKey);
               queueLog.warn(
                 { companyId: item.companyId, queueId: item.id },
                 "no OpenAI key resolved for company — leaving queue rows pending (configure llm:openai in Settings or set OPENAI_API_KEY)",
               );
             }
-            // Reset status to pending (it hasn't been marked processing yet).
             skipped++;
             continue;
           }
@@ -467,16 +708,20 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           embedder = llm;
         }
 
-        try {
-          // Mark processing so concurrent workers don't pick it up.
+        // ── Mark processing (fallback plain-select path only) ─────────────
+        // In the CTE path rows are already 'processing'. In the fallback path
+        // we mark here — after key resolution — so skipped (no-key) rows never
+        // get marked processing, preserving the T10 contract of zero updates
+        // for keyless-skipped rows.
+        if (!rowsAlreadyClaimed) {
           await db
             .update(embeddingQueue)
-            .set({
-              status: "processing",
-              updatedAt: new Date(),
-            })
+            .set({ status: "processing", updatedAt: new Date() })
             .where(eq(embeddingQueue.id, item.id));
+        }
 
+        // ── Embed + write vector ──────────────────────────────────────────
+        try {
           if (!isValidTargetTable(item.targetTable)) {
             throw new Error(`Unknown target table: ${item.targetTable}`);
           }
@@ -493,39 +738,108 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
 
           await db
             .update(embeddingQueue)
-            .set({
-              status: "completed",
-              updatedAt: new Date(),
-            })
+            .set({ status: "completed", updatedAt: new Date() })
             .where(eq(embeddingQueue.id, item.id));
           processed++;
         } catch (err) {
-          const nextAttempts = (item.attempts ?? 0) + 1;
-          const finalFailed = nextAttempts >= maxAttempts;
-          await db
-            .update(embeddingQueue)
-            .set({
-              status: finalFailed ? "failed" : "pending",
-              attempts: nextAttempts,
-              error: err instanceof Error ? err.message : String(err),
-              updatedAt: new Date(),
-            })
-            .where(eq(embeddingQueue.id, item.id));
-          if (finalFailed) failed++;
-          queueLog.warn(
-            {
-              queueId: item.id,
-              targetTable: item.targetTable,
-              targetId: item.targetId,
-              attempts: nextAttempts,
-              maxAttempts,
-              finalFailed,
-              error: err instanceof Error ? err.message : String(err),
-            },
-            finalFailed
-              ? "embedding queue row marked failed after exhausting attempts"
-              : "embedding queue row re-queued for retry",
-          );
+          const errClass = classifyEmbeddingError(err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const currentAttempts = (item.attempts ?? 0);
+
+          if (errClass === "systemic") {
+            // Open the circuit for this company — don't burn rows to 'failed'.
+            // Restore this row to pending WITHOUT bumping attempts.
+            const reason = errMsg;
+            circuit.set(companyKey, {
+              reason,
+              until: Date.now() + CIRCUIT_TTL_MS,
+            });
+            circuitOpenedThisTick.add(companyKey);
+            await db
+              .update(embeddingQueue)
+              .set({
+                status: "pending",
+                error: errMsg,
+                updatedAt: new Date(),
+              })
+              .where(eq(embeddingQueue.id, item.id));
+            queueLog.warn(
+              {
+                queueId: item.id,
+                companyId: item.companyId,
+                error: errMsg,
+                circuitUntil: new Date(circuit.get(companyKey)!.until).toISOString(),
+              },
+              "systemic embedding error — circuit opened for company, row restored to pending",
+            );
+          } else if (errClass === "row_permanent") {
+            // Bad input — will never succeed. Mark failed immediately.
+            await db
+              .update(embeddingQueue)
+              .set({
+                status: "failed",
+                attempts: currentAttempts + 1,
+                error: errMsg,
+                updatedAt: new Date(),
+              })
+              .where(eq(embeddingQueue.id, item.id));
+            failed++;
+            queueLog.warn(
+              {
+                queueId: item.id,
+                targetTable: item.targetTable,
+                targetId: item.targetId,
+                error: errMsg,
+              },
+              "row_permanent embedding error — row marked failed immediately (bad input)",
+            );
+          } else {
+            // transient — retry with exponential backoff + jitter.
+            const nextAttempts = currentAttempts + 1;
+            const finalFailed = nextAttempts >= maxAttempts;
+
+            // Honor Retry-After header if the error carries one.
+            const retryAfterMs =
+              typeof (err as Record<string, unknown>)?.headers === "object"
+                ? parseRetryAfterHeader(
+                    (err as Record<string, unknown>).headers as Record<string, string>,
+                  )
+                : 0;
+            const backoffMs = Math.max(
+              computeBackoffMs(nextAttempts),
+              retryAfterMs,
+            );
+            const nextRetryAt = finalFailed
+              ? null
+              : new Date(Date.now() + backoffMs);
+
+            await db
+              .update(embeddingQueue)
+              .set({
+                status: finalFailed ? "failed" : "pending",
+                attempts: nextAttempts,
+                nextRetryAt,
+                error: errMsg,
+                updatedAt: new Date(),
+              })
+              .where(eq(embeddingQueue.id, item.id));
+            if (finalFailed) failed++;
+            queueLog.warn(
+              {
+                queueId: item.id,
+                targetTable: item.targetTable,
+                targetId: item.targetId,
+                attempts: nextAttempts,
+                maxAttempts,
+                finalFailed,
+                backoffMs: finalFailed ? null : backoffMs,
+                error: errMsg,
+              },
+              finalFailed
+                ? "embedding queue row marked failed after exhausting attempts"
+                : "embedding queue row re-queued with backoff",
+            );
+          }
         }
       }
 
