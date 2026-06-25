@@ -159,4 +159,21 @@ describe("AgentSkillsTab — concurrency guard", () => {
     fireEvent.click(screen.getByText("ghost-skill").closest('[role="button"]') as HTMLElement);
     await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: [] }));
   });
+
+  // Codex P2: the server rejects ANY unknown key, so a toggle's payload must exclude
+  // ALL orphans (not just the one clicked) or the whole save 422s.
+  it("excludes every orphan key from the payload, not just the one removed", async () => {
+    vi.mocked(agentsApi.update).mockResolvedValue({} as never);
+
+    renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={["ghost-1", "ghost-2", "skill-a"]} />,
+    );
+    await screen.findByText("Skill A");
+    expect(screen.getByText("ghost-1")).toBeInTheDocument();
+    expect(screen.getByText("ghost-2")).toBeInTheDocument();
+
+    // Removing one orphan PATCHes with only the valid key — no orphan survives to 422.
+    fireEvent.click(screen.getByText("ghost-1").closest('[role="button"]') as HTMLElement);
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: ["skill-a"] }));
+  });
 });

@@ -57,9 +57,17 @@ export function AgentSkillsTab({
 
   async function handleToggle(skillKey: string) {
     const prev = localKeys;
-    const next = prev.includes(skillKey)
-      ? prev.filter((k) => k !== skillKey)
-      : [...prev, skillKey];
+    // Build the payload from in-library keys only. The server's resolveSkillKeys
+    // rejects ANY unknown key, so an orphaned key (deleted from the library) in the
+    // array would 422 the whole save. Excluding them means every toggle — attach,
+    // detach, or removing an orphan — also clears all orphans in one valid request.
+    const library = new Set((allSkills ?? []).map((s) => s.key));
+    const validAttached = prev.filter((k) => library.has(k));
+    const next = validAttached.includes(skillKey)
+      ? validAttached.filter((k) => k !== skillKey)
+      : library.has(skillKey)
+        ? [...validAttached, skillKey]
+        : validAttached;
     setLocalKeys(next);
     setPendingKey(skillKey);
     setError(null);
@@ -69,7 +77,9 @@ export function AgentSkillsTab({
       // that fails before this save's refetch lands rolls back to here (keeping this
       // change) rather than to the now-stale initial prop value.
       latestSkillKeys.current = next;
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+      // Invalidate the detail PREFIX so both the uuid- and urlKey-keyed agent queries
+      // refetch — the worker page may be opened by urlKey.
+      void queryClient.invalidateQueries({ queryKey: ["agents", "detail"] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
     } catch (e) {
       // Failed PATCH must not leave the optimistic change in place. Roll back to
