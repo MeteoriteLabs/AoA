@@ -46,11 +46,12 @@ export function MemoryExplorer() {
   const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();
 
   // Rail counts — derived from the flat items list (same query key as MemoryTree; cache hit).
-  const { data: allItems } = useQuery({
+  const { data: _listResponse } = useQuery({
     queryKey: queryKeys.memory.list(selectedCompanyId ?? ""),
     queryFn: () => memoryApi.list(selectedCompanyId!, {}),
     enabled: Boolean(selectedCompanyId),
   });
+  const allItems = _listResponse?.items;
   const railCounts = useMemo(() => deriveMemoryCounts(allItems ?? []), [allItems]);
   const activeRailKind = activeRailKindFromUrl({ folderPath, departmentId, layer: layer ?? null });
 

@@ -11,10 +11,13 @@ vi.mock("@/lib/router", async () => {
 
 vi.mock("../api/memory", () => ({
   memoryApi: {
-    list: vi.fn(async () => [
-      { id: "i-1", title: "Auth strategy", category: "decision", folderPath: "Engineering/Decisions", departmentId: "d-eng" },
-      { id: "i-2", title: "Brand voice", category: "reference", folderPath: "Marketing/Brand", departmentId: "d-mkt" },
-    ]),
+    list: vi.fn(async () => ({
+      items: [
+        { id: "i-1", title: "Auth strategy", category: "decision", folderPath: "Engineering/Decisions", departmentId: "d-eng" },
+        { id: "i-2", title: "Brand voice", category: "reference", folderPath: "Marketing/Brand", departmentId: "d-mkt" },
+      ],
+      semanticAvailable: true,
+    })),
   },
 }));
 vi.mock("../api/memoryAssets", () => ({

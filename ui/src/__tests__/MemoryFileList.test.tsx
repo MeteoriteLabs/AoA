@@ -21,35 +21,38 @@ vi.mock("@/lib/router", async () => {
 
 vi.mock("../api/memory", () => ({
   memoryApi: {
-    list: vi.fn(async () => [
-      {
-        id: "i-pinned",
-        title: "Pinned item",
-        category: "decision",
-        status: "approved",
-        updatedAt: "2026-05-01T00:00:00Z",
-        folderPath: "engineering/Decisions",
-        founderPinnedToTop: true,
-      },
-      {
-        id: "i-pending",
-        title: "Pending item",
-        category: "reference",
-        status: "pending",
-        updatedAt: "2026-05-02T00:00:00Z",
-        folderPath: "marketing/Brand",
-        founderPinnedToTop: false,
-      },
-      {
-        id: "i-other",
-        title: "Other item",
-        category: "context",
-        status: "approved",
-        updatedAt: "2026-04-29T00:00:00Z",
-        folderPath: "engineering/Decisions",
-        founderPinnedToTop: false,
-      },
-    ]),
+    list: vi.fn(async () => ({
+      items: [
+        {
+          id: "i-pinned",
+          title: "Pinned item",
+          category: "decision",
+          status: "approved",
+          updatedAt: "2026-05-01T00:00:00Z",
+          folderPath: "engineering/Decisions",
+          founderPinnedToTop: true,
+        },
+        {
+          id: "i-pending",
+          title: "Pending item",
+          category: "reference",
+          status: "pending",
+          updatedAt: "2026-05-02T00:00:00Z",
+          folderPath: "marketing/Brand",
+          founderPinnedToTop: false,
+        },
+        {
+          id: "i-other",
+          title: "Other item",
+          category: "context",
+          status: "approved",
+          updatedAt: "2026-04-29T00:00:00Z",
+          folderPath: "engineering/Decisions",
+          founderPinnedToTop: false,
+        },
+      ],
+      semanticAvailable: true,
+    })),
   },
 }));
 vi.mock("../api/memoryAssets", () => ({
@@ -176,19 +179,22 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
     // metadata is displayed in the item detail panel on selection. This test
     // verifies the item itself appears in list mode.
     const { memoryApi } = await import("../api/memory");
-    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      {
-        id: "i-active",
-        title: "Active item",
-        category: "context",
-        status: "approved",
-        layer: "active_context",
-        updatedAt: "2026-05-01T00:00:00Z",
-        folderPath: "engineering/Decisions",
-        founderPinnedToTop: false,
-        expiresAt: "2026-05-08T12:00:00Z",
-      },
-    ]);
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      items: [
+        {
+          id: "i-active",
+          title: "Active item",
+          category: "context",
+          status: "approved",
+          layer: "active_context",
+          updatedAt: "2026-05-01T00:00:00Z",
+          folderPath: "engineering/Decisions",
+          founderPinnedToTop: false,
+          expiresAt: "2026-05-08T12:00:00Z",
+        },
+      ],
+      semanticAvailable: true,
+    });
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-05-03T12:00:00Z"));
     renderList({
@@ -203,35 +209,38 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
     const { memoryApi } = await import("../api/memory");
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-05-03T00:00:00Z"));
-    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      {
-        id: "i-recent",
-        title: "Recent item",
-        category: "decision",
-        status: "approved",
-        updatedAt: "2026-05-01T00:00:00Z",
-        folderPath: "any",
-        founderPinnedToTop: false,
-      },
-      {
-        id: "i-archived",
-        title: "Archived item",
-        category: "decision",
-        status: "archived",
-        updatedAt: "2026-05-02T00:00:00Z",
-        folderPath: "any",
-        founderPinnedToTop: false,
-      },
-      {
-        id: "i-old",
-        title: "Old item",
-        category: "context",
-        status: "approved",
-        updatedAt: "2026-03-01T00:00:00Z",
-        folderPath: "any",
-        founderPinnedToTop: false,
-      },
-    ]);
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      items: [
+        {
+          id: "i-recent",
+          title: "Recent item",
+          category: "decision",
+          status: "approved",
+          updatedAt: "2026-05-01T00:00:00Z",
+          folderPath: "any",
+          founderPinnedToTop: false,
+        },
+        {
+          id: "i-archived",
+          title: "Archived item",
+          category: "decision",
+          status: "archived",
+          updatedAt: "2026-05-02T00:00:00Z",
+          folderPath: "any",
+          founderPinnedToTop: false,
+        },
+        {
+          id: "i-old",
+          title: "Old item",
+          category: "context",
+          status: "approved",
+          updatedAt: "2026-03-01T00:00:00Z",
+          folderPath: "any",
+          founderPinnedToTop: false,
+        },
+      ],
+      semanticAvailable: true,
+    });
     renderList({ folderPath: "__recent", departmentId: null });
     await waitFor(() =>
       expect(screen.getByText("Recent item")).toBeInTheDocument(),
@@ -243,26 +252,29 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
 
   it("__archived shows only items with status=archived", async () => {
     const { memoryApi } = await import("../api/memory");
-    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      {
-        id: "i-archived",
-        title: "Archived item",
-        category: "decision",
-        status: "archived",
-        updatedAt: "2026-04-10T00:00:00Z",
-        folderPath: "any",
-        founderPinnedToTop: false,
-      },
-      {
-        id: "i-approved",
-        title: "Approved item",
-        category: "reference",
-        status: "approved",
-        updatedAt: "2026-05-01T00:00:00Z",
-        folderPath: "any",
-        founderPinnedToTop: false,
-      },
-    ]);
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      items: [
+        {
+          id: "i-archived",
+          title: "Archived item",
+          category: "decision",
+          status: "archived",
+          updatedAt: "2026-04-10T00:00:00Z",
+          folderPath: "any",
+          founderPinnedToTop: false,
+        },
+        {
+          id: "i-approved",
+          title: "Approved item",
+          category: "reference",
+          status: "approved",
+          updatedAt: "2026-05-01T00:00:00Z",
+          folderPath: "any",
+          founderPinnedToTop: false,
+        },
+      ],
+      semanticAvailable: true,
+    });
     renderList({ folderPath: "__archived", departmentId: null });
     await waitFor(() =>
       expect(screen.getByText("Archived item")).toBeInTheDocument(),
@@ -272,28 +284,31 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
 
   it("layer-only URL (no folder, no dept) filters by layer", async () => {
     const { memoryApi } = await import("../api/memory");
-    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      {
-        id: "i-domain",
-        title: "Domain item",
-        category: "reference",
-        status: "approved",
-        layer: "domain",
-        updatedAt: "2026-05-01T00:00:00Z",
-        folderPath: "",
-        founderPinnedToTop: false,
-      },
-      {
-        id: "i-identity",
-        title: "Identity item",
-        category: "decision",
-        status: "approved",
-        layer: "identity",
-        updatedAt: "2026-05-01T00:00:00Z",
-        folderPath: "",
-        founderPinnedToTop: false,
-      },
-    ]);
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      items: [
+        {
+          id: "i-domain",
+          title: "Domain item",
+          category: "reference",
+          status: "approved",
+          layer: "domain",
+          updatedAt: "2026-05-01T00:00:00Z",
+          folderPath: "",
+          founderPinnedToTop: false,
+        },
+        {
+          id: "i-identity",
+          title: "Identity item",
+          category: "decision",
+          status: "approved",
+          layer: "identity",
+          updatedAt: "2026-05-01T00:00:00Z",
+          folderPath: "",
+          founderPinnedToTop: false,
+        },
+      ],
+      semanticAvailable: true,
+    });
     renderList({ folderPath: "", departmentId: null, layer: "domain" });
     await waitFor(() =>
       expect(screen.getByText("Domain item")).toBeInTheDocument(),
@@ -310,30 +325,33 @@ describe("MemoryFileList — Phase 6.2f folder-first", () => {
 
   it("dept-only URL shows subfolders + items at dept root", async () => {
     const { memoryApi } = await import("../api/memory");
-    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      {
-        id: "i-root",
-        title: "Engineering charter",
-        category: "decision",
-        status: "approved",
-        layer: "domain",
-        departmentId: "d-eng",
-        folderPath: "engineering", // root-level item
-        founderPinnedToTop: false,
-        updatedAt: "2026-05-01T00:00:00Z",
-      },
-      {
-        id: "i-nested",
-        title: "Auth strategy",
-        category: "decision",
-        status: "approved",
-        layer: "domain",
-        departmentId: "d-eng",
-        folderPath: "engineering/Decisions", // nested
-        founderPinnedToTop: false,
-        updatedAt: "2026-05-02T00:00:00Z",
-      },
-    ]);
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      items: [
+        {
+          id: "i-root",
+          title: "Engineering charter",
+          category: "decision",
+          status: "approved",
+          layer: "domain",
+          departmentId: "d-eng",
+          folderPath: "engineering", // root-level item
+          founderPinnedToTop: false,
+          updatedAt: "2026-05-01T00:00:00Z",
+        },
+        {
+          id: "i-nested",
+          title: "Auth strategy",
+          category: "decision",
+          status: "approved",
+          layer: "domain",
+          departmentId: "d-eng",
+          folderPath: "engineering/Decisions", // nested
+          founderPinnedToTop: false,
+          updatedAt: "2026-05-02T00:00:00Z",
+        },
+      ],
+      semanticAvailable: true,
+    });
     renderList({ folderPath: "", departmentId: "d-eng" });
     await waitFor(() =>
       expect(screen.getByText("Engineering charter")).toBeInTheDocument(),
@@ -358,19 +376,22 @@ describe("MemoryFileList — Phase 6.2f folder-first", () => {
 
   it("subfolder shows aggregated item count (descendants too)", async () => {
     const { memoryApi } = await import("../api/memory");
-    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      {
-        id: "i-1",
-        title: "X",
-        category: "decision",
-        status: "approved",
-        layer: "domain",
-        departmentId: "d-eng",
-        folderPath: "engineering/Decisions",
-        founderPinnedToTop: false,
-        updatedAt: "2026-05-01T00:00:00Z",
-      },
-    ]);
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      items: [
+        {
+          id: "i-1",
+          title: "X",
+          category: "decision",
+          status: "approved",
+          layer: "domain",
+          departmentId: "d-eng",
+          folderPath: "engineering/Decisions",
+          founderPinnedToTop: false,
+          updatedAt: "2026-05-01T00:00:00Z",
+        },
+      ],
+      semanticAvailable: true,
+    });
     renderList({ folderPath: "", departmentId: "d-eng" });
     await waitFor(() => screen.getByText("Decisions"));
     // The Decisions folder tile should show "1 item"

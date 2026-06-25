@@ -93,7 +93,7 @@ function renderAssetViewer(record: MemoryAssetRecord) {
 describe("MemoryViewer asset routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(memoryApi.list).mockResolvedValue([]);
+    vi.mocked(memoryApi.list).mockResolvedValue({ items: [], semanticAvailable: true });
     vi.mocked(memoryAssetsApi.list).mockResolvedValue([]);
   });
 
@@ -128,30 +128,33 @@ describe("MemoryViewer collection tabs", () => {
   });
 
   it("renders recent memories with real recents data", async () => {
-    vi.mocked(memoryApi.list).mockResolvedValue([
-      {
-        id: "mem-1",
-        companyId: "co-1",
-        title: "Pricing memo",
-        content: "Seat pricing notes",
-        status: "approved",
-        category: "decision",
-        layer: "domain",
-        visibility: "shared",
-        departmentId: null,
-        projectId: null,
-        goalId: null,
-        taskId: null,
-        sourceArtifactId: null,
-        agentId: null,
-        folderPath: "Company/Decisions",
-        tags: [],
-        embedding: null,
-        createdBy: "founder@example.com",
-        createdAt: "2026-06-02T00:00:00.000Z",
-        updatedAt: "2026-06-02T10:00:00.000Z",
-      },
-    ] as never);
+    vi.mocked(memoryApi.list).mockResolvedValue({
+      items: [
+        {
+          id: "mem-1",
+          companyId: "co-1",
+          title: "Pricing memo",
+          content: "Seat pricing notes",
+          status: "approved",
+          category: "decision",
+          layer: "domain",
+          visibility: "shared",
+          departmentId: null,
+          projectId: null,
+          goalId: null,
+          taskId: null,
+          sourceArtifactId: null,
+          agentId: null,
+          folderPath: "Company/Decisions",
+          tags: [],
+          embedding: null,
+          createdBy: "founder@example.com",
+          createdAt: "2026-06-02T00:00:00.000Z",
+          updatedAt: "2026-06-02T10:00:00.000Z",
+        },
+      ],
+      semanticAvailable: true,
+    } as never);
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const tabs: MemoryTab[] = [{ id: "recent", kind: "collection", title: "Recent" }];

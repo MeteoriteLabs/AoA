@@ -1,7 +1,8 @@
 import { FileText, Image as ImageIcon, Film, type LucideIcon } from "lucide-react";
-import type { MemoryItemCategory, MemoryItemStatus } from "@armyofagents/shared";
+import type { MemoryItemCategory, MemoryItemStatus, MemoryIndexStatus } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { MemoryChip } from "./MemoryChip";
+import { MemoryIndexBadge } from "./MemoryIndexBadge";
 import {
   pickIconKind,
   pickSnippet,
@@ -21,12 +22,15 @@ export interface MemoryItemRowData {
   modifiedAt: string;
   content?: string | null;
   extractedText?: string | null;
+  /** Embedding index status. Only relevant for memory_item kind. */
+  indexStatus?: MemoryIndexStatus | null;
 }
 
 interface Props {
   row: MemoryItemRowData;
   active: boolean;
   onSelect: (id: string, kind: "memory_item" | "asset") => void;
+  onReindex?: (id: string) => void;
 }
 
 const ICON_FOR_KIND: Record<IconKind, LucideIcon> = {
@@ -38,7 +42,7 @@ const ICON_FOR_KIND: Record<IconKind, LucideIcon> = {
   generic: FileText,
 };
 
-export function MemoryItemRow({ row, active, onSelect }: Props) {
+export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
   const kind = pickIconKind(row);
   const snippet = pickSnippet(row);
   const Icon = ICON_FOR_KIND[kind];
@@ -90,6 +94,13 @@ export function MemoryItemRow({ row, active, onSelect }: Props) {
 
           {row.kind === "asset" && row.mimeType && (
             <MemoryChip label={row.mimeType} />
+          )}
+
+          {row.indexStatus && (
+            <MemoryIndexBadge
+              status={row.indexStatus}
+              onReindex={onReindex ? () => onReindex(row.id) : undefined}
+            />
           )}
 
           <span className="text-[10px] tabular-nums text-very-dim shrink-0">

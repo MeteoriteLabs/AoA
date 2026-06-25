@@ -71,15 +71,18 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/memory", () => ({
   memoryApi: {
-    list: vi.fn(async () => [
-      { id: "i-id1", title: "Vision", layer: "identity", status: "approved", founderPinnedToTop: true },
-      { id: "i-d1", title: "Auth", layer: "domain", status: "approved", departmentId: "d-eng" },
-      { id: "i-d2", title: "API", layer: "domain", status: "pending", departmentId: "d-eng" },
-      // Phase 6.2f: archived domain item — should NOT count toward Domain or Engineering
-      { id: "i-d-arch", title: "Old extracted", layer: "domain", status: "archived", departmentId: "d-eng" },
-      { id: "i-a1", title: "Ctx", layer: "active_context", status: "approved", goalId: "g-1" },
-      { id: "i-w1", title: "Work", layer: "working", status: "approved" },
-    ]),
+    list: vi.fn(async () => ({
+      items: [
+        { id: "i-id1", title: "Vision", layer: "identity", status: "approved", founderPinnedToTop: true },
+        { id: "i-d1", title: "Auth", layer: "domain", status: "approved", departmentId: "d-eng" },
+        { id: "i-d2", title: "API", layer: "domain", status: "pending", departmentId: "d-eng" },
+        // Phase 6.2f: archived domain item — should NOT count toward Domain or Engineering
+        { id: "i-d-arch", title: "Old extracted", layer: "domain", status: "archived", departmentId: "d-eng" },
+        { id: "i-a1", title: "Ctx", layer: "active_context", status: "approved", goalId: "g-1" },
+        { id: "i-w1", title: "Work", layer: "working", status: "approved" },
+      ],
+      semanticAvailable: true,
+    })),
   },
 }));
 

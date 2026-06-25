@@ -24,6 +24,7 @@ import {
   Sparkles,
   ChevronLeft,
   Upload,
+  AlertCircle,
 } from "lucide-react";
 import {
   MEMORY_ITEM_CATEGORIES,
@@ -44,6 +45,7 @@ import {
   type Issue,
 } from "@armyofagents/shared";
 import { memoryApi } from "../api/memory";
+import type { MemoryListResponse } from "../api/memory";
 import { fileImportApi } from "../api/fileImport";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
@@ -58,6 +60,7 @@ import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { MemoryIndexBadge } from "../components/memory/MemoryIndexBadge";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -262,11 +265,16 @@ export function Memory() {
     return f;
   }, [categoryFilter, statusFilter, departmentFilter, layerFilter, search]);
 
-  const { data: items, isLoading } = useQuery({
+  const [semanticBannerDismissed, setSemanticBannerDismissed] = useState(false);
+
+  const { data: listResponse, isLoading } = useQuery<MemoryListResponse>({
     queryKey: [...queryKeys.memory.list(selectedCompanyId!), filters],
     queryFn: () => memoryApi.list(selectedCompanyId!, filters),
     enabled: !!selectedCompanyId,
   });
+
+  const items = listResponse?.items;
+  const semanticAvailable = listResponse?.semanticAvailable ?? true;
 
   const { data: pendingQueue } = useQuery({
     queryKey: queryKeys.memory.pending(selectedCompanyId!),
@@ -297,6 +305,17 @@ export function Memory() {
   }, [items, setSubtitle]);
 
   const invalidateMemoryQueries = useInvalidateMemory(selectedCompanyId);
+
+  const reindexItemMutation = useMutation({
+    mutationFn: (id: string) => memoryApi.reindexItem(selectedCompanyId!, id),
+    onSuccess: () => {
+      invalidateMemoryQueries();
+      pushToast({ title: "Re-index queued", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to queue re-index", tone: "error" });
+    },
+  });
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => memoryApi.approve(selectedCompanyId!, id),
@@ -356,6 +375,31 @@ export function Memory() {
           Company knowledge — decisions, preferences, context, and reference material your agents remember.
         </p>
       </div>
+
+      {/* No-key semantic search banner — shown to founder/team_lead only */}
+      {!semanticAvailable && !semanticBannerDismissed && permissions.canEditIdentityMemory && (
+        <div
+          data-testid="no-llm-key-banner"
+          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/[0.08] px-4 py-3 text-sm"
+        >
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-500" aria-hidden />
+          <div className="flex-1 text-muted-foreground">
+            <span className="font-medium text-foreground">Semantic search is off</span>
+            {" — "}
+            add an OpenAI key in{" "}
+            <span className="font-medium text-foreground">Settings → LLM Providers</span>
+            {" "}to enable meaning-based memory recall.
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setSemanticBannerDismissed(true)}
+            className="ml-2 shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
 
       {/* Search bar + view mode toggle */}
       <div className="flex items-center gap-2">
@@ -555,6 +599,7 @@ export function Memory() {
               onSelectItem={setSelectedItemId}
               onApprove={(id) => approveMutation.mutate(id)}
               onReject={(id) => rejectMutation.mutate(id)}
+              onReindex={(id) => reindexItemMutation.mutate(id)}
               canEditIdentityMemory={permissions.canEditIdentityMemory}
             />
           ) : (
@@ -565,6 +610,7 @@ export function Memory() {
               onSelectItem={setSelectedItemId}
               onApprove={(id) => approveMutation.mutate(id)}
               onReject={(id) => rejectMutation.mutate(id)}
+              onReindex={(id) => reindexItemMutation.mutate(id)}
               canEditIdentityMemory={permissions.canEditIdentityMemory}
             />
           )}
@@ -625,6 +671,7 @@ function LayerView({
   onSelectItem,
   onApprove,
   onReject,
+  onReindex,
   canEditIdentityMemory,
 }: {
   items: MemoryItem[];
@@ -633,6 +680,7 @@ function LayerView({
   onSelectItem: (id: string | null) => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  onReindex?: (id: string) => void;
   canEditIdentityMemory: boolean;
 }) {
   const grouped = useMemo(() => {
@@ -666,6 +714,7 @@ function LayerView({
           onSelectItem={onSelectItem}
           onApprove={onApprove}
           onReject={onReject}
+          onReindex={onReindex}
           canEditIdentityMemory={canEditIdentityMemory}
         />
       ))}
@@ -707,6 +756,7 @@ function LayerSection({
   onSelectItem,
   onApprove,
   onReject,
+  onReindex,
   canEditIdentityMemory,
 }: {
   layer: MemoryItemLayer;
@@ -716,6 +766,7 @@ function LayerSection({
   onSelectItem: (id: string | null) => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  onReindex?: (id: string) => void;
   canEditIdentityMemory: boolean;
 }) {
   const [open, setOpen] = useState(true);
@@ -778,6 +829,7 @@ function LayerSection({
                   onSelect={() => onSelectItem(selectedItemId === item.id ? null : item.id)}
                   onApprove={() => onApprove(item.id)}
                   onReject={() => onReject(item.id)}
+                  onReindex={onReindex}
                   canEditIdentityMemory={canEditIdentityMemory}
                 />
               ))}
@@ -798,6 +850,7 @@ function FlatView({
   onSelectItem,
   onApprove,
   onReject,
+  onReindex,
   canEditIdentityMemory,
 }: {
   items: MemoryItem[];
@@ -806,6 +859,7 @@ function FlatView({
   onSelectItem: (id: string | null) => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  onReindex?: (id: string) => void;
   canEditIdentityMemory: boolean;
 }) {
   return (
@@ -819,6 +873,7 @@ function FlatView({
           onSelect={() => onSelectItem(selectedItemId === item.id ? null : item.id)}
           onApprove={() => onApprove(item.id)}
           onReject={() => onReject(item.id)}
+          onReindex={onReindex}
           canEditIdentityMemory={canEditIdentityMemory}
           showLayer
         />
@@ -836,6 +891,7 @@ function MemoryCard({
   onSelect,
   onApprove,
   onReject,
+  onReindex,
   canEditIdentityMemory,
   showLayer,
 }: {
@@ -845,6 +901,7 @@ function MemoryCard({
   onSelect: () => void;
   onApprove: () => void;
   onReject: () => void;
+  onReindex?: (id: string) => void;
   canEditIdentityMemory: boolean;
   showLayer?: boolean;
 }) {
@@ -931,6 +988,12 @@ function MemoryCard({
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
+            )}
+            {item.indexStatus && (
+              <MemoryIndexBadge
+                status={item.indexStatus}
+                onReindex={onReindex ? () => onReindex(item.id) : undefined}
+              />
             )}
           </div>
 

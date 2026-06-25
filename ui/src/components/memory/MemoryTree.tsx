@@ -119,11 +119,12 @@ export function MemoryTree({
     queryFn: () => projectsApi.list(companyId),
   });
 
-  const { data: items } = useQuery({
+  const { data: _listResponse } = useQuery({
     queryKey: queryKeys.memory.list(companyId),
     queryFn: () => memoryApi.list(companyId, {}),
     enabled: Boolean(companyId),
   });
+  const items = _listResponse?.items;
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(companyId),

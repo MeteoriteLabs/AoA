@@ -16,12 +16,13 @@ export function MemoryFolderSummary({
   folderPath,
   departmentId,
 }: MemoryFolderSummaryProps) {
-  const itemsQuery = useQuery({
+  const _itemsQuery = useQuery({
     queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
     queryFn: () =>
       memoryApi.list(companyId, departmentId ? { departmentId } : {}),
     enabled: Boolean(folderPath),
   });
+  const itemsQuery = { ..._itemsQuery, data: _itemsQuery.data?.items };
 
   const assetsQuery = useQuery({
     queryKey: queryKeys.memory.assets.list(companyId, {

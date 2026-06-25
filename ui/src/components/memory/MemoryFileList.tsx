@@ -165,12 +165,13 @@ export function MemoryFileList({
     return projects?.find((p) => p.id === departmentId)?.urlKey ?? null;
   }, [projects, departmentId]);
 
-  const itemsQuery = useQuery({
+  const _itemsQuery = useQuery({
     queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
     queryFn: () =>
       memoryApi.list(companyId, departmentId ? { departmentId } : {}),
     enabled: Boolean(folderPath) || isLayerOnly || isDeptOnly,
   });
+  const itemsQuery = { ..._itemsQuery, data: _itemsQuery.data?.items };
 
   // Phase 6.2f follow-up: in dept-only mode, the items list filters strictly
   // by `folderPath === deptSlug`. Match the same filter for assets so the
