@@ -19,16 +19,16 @@ You are reading this as context for working on the AoA codebase. This applies wh
 ## Critical Rules
 
 1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files.
-2. **The only runtime hosted API key is for embeddings.** Agents, Commander, and discussion extraction run keyless via locally-installed CLIs. Embeddings use OpenAI `text-embedding-3-small`; per-company key = Settings secret `llm:openai` → env `OPENAI_API_KEY`. The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the sole caller. Do not add new hosted-API calls outside this chokepoint. (Decision #104)
-3. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
-4. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
-5. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
-6. **MCP inbound with authenticated write permission may create tasks directly.** `debrief-push` remains for unstructured content requiring extraction. Anonymous MCP input must route through Discussion. (Decision #14, revised 2026-04-21)
-7. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. Team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
-8. **Artifact versions are immutable.** Once created, never modified. Changes = new version. Founder picks winner for branching — no auto-merge. (Decisions #43, #45)
-9. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
-10. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
-11. **Consult `docs/architecture/decisions.md` before making architectural choices.** 90+ locked decisions exist. Do not relitigate.
+2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
+3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
+4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
+5. **MCP inbound with authenticated write permission may create tasks directly.** `debrief-push` remains for unstructured content requiring extraction. Anonymous MCP input must route through Discussion. (Decision #14, revised 2026-04-21)
+6. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. Team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
+7. **Artifact versions are immutable.** Once created, never modified. Changes = new version. Founder picks winner for branching — no auto-merge. (Decisions #43, #45)
+8. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
+9. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
+10. **Consult `docs/architecture/decisions.md` before making architectural choices.** 90+ locked decisions exist. Do not relitigate.
+11. **The only runtime hosted API key is for embeddings.** Agents, Commander, and discussion extraction run keyless via locally-installed CLIs. Embeddings use OpenAI `text-embedding-3-small`; per-company key = Settings secret `llm:openai` → env `OPENAI_API_KEY`. The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the sole caller. Do not add new hosted-API calls outside this chokepoint. (Decision #104)
 
 ---
 
