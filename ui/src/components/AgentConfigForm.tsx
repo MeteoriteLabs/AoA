@@ -77,6 +77,9 @@ type AgentConfigFormProps = {
   sectionLayout?: "inline" | "cards";
   /** When set (cards/edit), only this section's card renders — drives the two-pane settings nav. */
   activeSection?: "identity" | "adapter" | "permissions" | "runPolicy" | "context";
+  /** Reports the effective (draft-aware) adapter type so the parent nav can show/hide
+   *  local-only sections before a save. Fires on mount and whenever it changes. */
+  onAdapterTypeChange?: (adapterType: string) => void;
 } & (
   | {
       mode: "create";
@@ -359,6 +362,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "gemini_local" ||
     adapterType === "cursor";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+
+  // Report the effective (draft-aware) adapter type up so the parent's section nav
+  // can reflect an unsaved adapter switch (e.g. process → claude_local exposing the
+  // local-only "Permissions & config" section before save).
+  const onAdapterTypeChange = props.onAdapterTypeChange;
+  useEffect(() => {
+    onAdapterTypeChange?.(adapterType);
+  }, [adapterType, onAdapterTypeChange]);
 
   // Fetch adapter models for the effective adapter type
   const {

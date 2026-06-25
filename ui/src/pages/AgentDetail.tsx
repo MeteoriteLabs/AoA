@@ -974,7 +974,11 @@ function AgentConfigurePage({
   const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
   const navPanelRef = useRef<PanelImperativeHandle>(null);
-  const isLocal = ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "cursor"].includes(agent.adapterType);
+  // Track the form's effective (draft-aware) adapter type so the nav reflects an
+  // unsaved adapter switch — otherwise switching e.g. process → claude_local would
+  // hide "Permissions & config" until the change is saved.
+  const [draftAdapterType, setDraftAdapterType] = useState<string>(agent.adapterType);
+  const isLocal = ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "cursor"].includes(draftAdapterType);
   type FormKey = "identity" | "adapter" | "permissions" | "runPolicy" | "context";
   type NavKey = FormKey | "apikeys" | "perms" | "revisions";
   const formKeys: FormKey[] = ["identity", "adapter", "permissions", "runPolicy", "context"];
@@ -1020,6 +1024,7 @@ function AgentConfigurePage({
           onCancelActionChange={onCancelActionChange}
           onSavingChange={onSavingChange}
           companyId={companyId}
+          onAdapterTypeChange={setDraftAdapterType}
         />
       ) : (
       <div className="h-[calc(100vh-15rem)] min-h-[460px]">
@@ -1125,6 +1130,7 @@ function AgentConfigurePage({
                 onSavingChange={onSavingChange}
                 companyId={companyId}
                 activeSection={formSection}
+                onAdapterTypeChange={setDraftAdapterType}
               />
             </div>
             {section === "apikeys" && (
@@ -1314,6 +1320,7 @@ function ConfigurationTab({
   onCancelActionChange,
   onSavingChange,
   activeSection,
+  onAdapterTypeChange,
 }: {
   agent: Agent;
   companyId?: string;
@@ -1322,6 +1329,7 @@ function ConfigurationTab({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
   activeSection?: "identity" | "adapter" | "permissions" | "runPolicy" | "context";
+  onAdapterTypeChange?: (adapterType: string) => void;
 }) {
   const queryClient = useQueryClient();
 
@@ -1360,6 +1368,7 @@ function ConfigurationTab({
       hideInlineSave
       sectionLayout="cards"
       activeSection={activeSection}
+      onAdapterTypeChange={onAdapterTypeChange}
     />
   );
 }
