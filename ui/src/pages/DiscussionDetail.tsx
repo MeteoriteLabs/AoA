@@ -88,9 +88,97 @@ function humanLayer(layer: string | null | undefined) {
   return (layer ?? "domain").replaceAll("_", " ");
 }
 
+/** CLI error kinds written by the server's CLI extraction path. */
+type CliExtractionErrorKind =
+  | "not_installed"
+  | "not_authed"
+  | "timeout"
+  | "nonzero_exit"
+  | "unparseable";
+
+const CLI_ERROR_KINDS = new Set<string>([
+  "not_installed",
+  "not_authed",
+  "timeout",
+  "nonzero_exit",
+  "unparseable",
+]);
+
+/**
+ * Extract the human-readable error message from a discussion entry's sourceInfo.
+ * The server stores extractionError as either:
+ *   - a plain string (legacy API/provider path)
+ *   - an object { kind, message } (CLI path, T7a)
+ */
 function getExtractionError(sourceInfo: Record<string, unknown> | null): string | null {
-  if (!sourceInfo || typeof sourceInfo.extractionError !== "string") return null;
-  return sourceInfo.extractionError;
+  if (!sourceInfo) return null;
+  const raw = sourceInfo.extractionError;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && "message" in raw && typeof (raw as Record<string, unknown>).message === "string") {
+    return (raw as Record<string, unknown>).message as string;
+  }
+  return null;
+}
+
+/**
+ * Extract the error kind from sourceInfo, if the server wrote a CLI-path
+ * structured error ({ kind, message }). Returns null for legacy string errors.
+ */
+function getExtractionErrorKind(sourceInfo: Record<string, unknown> | null): CliExtractionErrorKind | null {
+  if (!sourceInfo) return null;
+  const raw = sourceInfo.extractionError;
+  if (raw && typeof raw === "object" && "kind" in raw) {
+    const kind = (raw as Record<string, unknown>).kind;
+    if (typeof kind === "string" && CLI_ERROR_KINDS.has(kind)) {
+      return kind as CliExtractionErrorKind;
+    }
+  }
+  return null;
+}
+
+/**
+ * Pure helper: returns actionable copy for an extraction failure.
+ * CLI kinds get specific guidance; legacy/unknown kinds fall through.
+ * Exported for unit testing.
+ */
+export function extractionFailureMessage(
+  kind: CliExtractionErrorKind | null,
+  message: string | null,
+): { primary: string; showSettings: boolean } {
+  switch (kind) {
+    case "not_installed":
+      return {
+        primary: "Claude CLI not detected. Install it and run `claude login`.",
+        showSettings: false,
+      };
+    case "not_authed":
+      return {
+        primary: "Claude CLI is not logged in. Run `claude login`.",
+        showSettings: false,
+      };
+    case "timeout":
+      return {
+        primary: "Extraction timed out. Try Reprocess.",
+        showSettings: false,
+      };
+    case "nonzero_exit":
+    case "unparseable":
+      return {
+        primary: `Extraction failed — try Reprocess.${message ? ` ${message}` : ""}`,
+        showSettings: false,
+      };
+    default: {
+      // Legacy/unknown: keep existing provider-hint behaviour.
+      const mentionsProvider = message
+        ? message.toLowerCase().includes("api key") ||
+          message.toLowerCase().includes("provider")
+        : false;
+      return {
+        primary: message ?? "Extraction failed.",
+        showSettings: mentionsProvider,
+      };
+    }
+  }
 }
 
 
@@ -663,9 +751,8 @@ function ThreadEntryRow({
   );
 
   const extractionError = getExtractionError(entry.sourceInfo);
-  const errorMentionsProvider = extractionError
-    ? extractionError.toLowerCase().includes("api key") || extractionError.toLowerCase().includes("provider")
-    : false;
+  const extractionErrorKind = getExtractionErrorKind(entry.sourceInfo);
+  const failureCopy = extractionFailureMessage(extractionErrorKind, extractionError);
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -786,23 +873,24 @@ function ThreadEntryRow({
           )}
 
           {entry.extractionStatus === "failed" && (
-            <div className="flex flex-col gap-1 rounded-md bg-red-50 dark:bg-red-950/30 p-3">
+            <div
+              data-testid="extraction-failure-banner"
+              className="flex flex-col gap-1 rounded-md bg-red-50 dark:bg-red-950/30 p-3"
+            >
               <div className="flex items-center gap-2">
                 <XCircle className="h-4 w-4 text-red-600 shrink-0" />
                 <span className="text-sm text-red-700 dark:text-red-400">
                   Extraction failed
                 </span>
               </div>
-              {extractionError && (
-                <p className="text-xs text-red-600/80 dark:text-red-400/80 ml-6">
-                  {extractionError}
-                  {errorMentionsProvider ? (
-                    <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
-                      Go to Settings
-                    </Link>
-                  ) : null}
-                </p>
-              )}
+              <p className="text-xs text-red-600/80 dark:text-red-400/80 ml-6">
+                {failureCopy.primary}
+                {failureCopy.showSettings ? (
+                  <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
+                    Go to Settings
+                  </Link>
+                ) : null}
+              </p>
             </div>
           )}
 
@@ -814,10 +902,10 @@ function ThreadEntryRow({
                   Extraction skipped
                 </span>
               </div>
-              {extractionError && (
+              {(extractionError || extractionErrorKind) && (
                 <p className="text-xs text-amber-600/80 dark:text-amber-400/80 ml-6">
-                  {extractionError}
-                  {errorMentionsProvider ? (
+                  {failureCopy.primary}
+                  {failureCopy.showSettings ? (
                     <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
                       Go to Settings
                     </Link>

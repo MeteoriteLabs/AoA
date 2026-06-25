@@ -238,6 +238,10 @@ export const queryKeys = {
     experimental: ["instance-settings", "experimental"] as const,
     schedulerHeartbeats: ["instance-settings", "scheduler-heartbeats"] as const,
   },
+  extraction: {
+    engineStatus: (companyId: string) =>
+      ["extraction", "engine-status", companyId] as const,
+  },
   feedback: {
     exports: (limit: number) => ["feedback", "exports", limit] as const,
   },
