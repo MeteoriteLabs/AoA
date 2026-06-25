@@ -555,20 +555,24 @@ export function agentRoutes(db: Db) {
         // the probe tests reality. Best-effort detection; shell-unsafe is a hard 422.
         let probeAdapterConfig: Record<string, unknown> = runtimeAdapterConfig;
         if (ADAPTER_CONSTRAINT_TYPES.has(type)) {
-          const reqModel = runtimeAdapterConfig.model;
-          if (typeof reqModel === "string" && reqModel.length > 0) {
-            try {
-              const status = await getProviderStatus(type, { companyId, adapterConfig: runtimeAdapterConfig }, realProviderStatusDeps);
-              const resolved = resolveModel(type, reqModel, status);
-              probeAdapterConfig = { ...runtimeAdapterConfig };
-              if (resolved.omitModelFlag) delete probeAdapterConfig.model;
-              else probeAdapterConfig.model = resolved.model;
-            } catch (resolveErr) {
-              if (resolveErr instanceof ShellUnsafeModelError) {
-                throw unprocessable(`Unsafe model identifier: ${String(reqModel)}`);
-              }
-              logger.warn({ err: resolveErr }, "adapter-test: model resolution failed (best-effort, using requested model)");
+          // Codex finding P2-1: resolve the model even when it's EMPTY (the UI
+          // default-model path). resolveModel maps an empty codex model to the
+          // gpt-5.5 default, omits the flag for gemini/claude/opencode — exactly
+          // what a real run does. Skipping the empty case made codex probes run
+          // with the CLI default instead of gpt-5.5, falsely failing on a ChatGPT
+          // login even though the saved run would be corrected.
+          const reqModel = typeof runtimeAdapterConfig.model === "string" ? runtimeAdapterConfig.model : "";
+          try {
+            const status = await getProviderStatus(type, { companyId, adapterConfig: runtimeAdapterConfig }, realProviderStatusDeps);
+            const resolved = resolveModel(type, reqModel, status);
+            probeAdapterConfig = { ...runtimeAdapterConfig };
+            if (resolved.omitModelFlag) delete probeAdapterConfig.model;
+            else probeAdapterConfig.model = resolved.model;
+          } catch (resolveErr) {
+            if (resolveErr instanceof ShellUnsafeModelError) {
+              throw unprocessable(`Unsafe model identifier: ${String(reqModel)}`);
             }
+            logger.warn({ err: resolveErr }, "adapter-test: model resolution failed (best-effort, using requested model)");
           }
         }
 
