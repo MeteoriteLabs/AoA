@@ -242,9 +242,6 @@ export function AoaAgentDetail() {
           <span className="hidden sm:inline">Pause</span>
         </Button>
       )}
-      <span className="hidden sm:inline">
-        <StatusBadge status={agent.status} />
-      </span>
     </>
   ) : undefined;
 

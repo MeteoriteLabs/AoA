@@ -474,7 +474,6 @@ export function AgentDetail() {
           <span className="hidden sm:inline">Pause</span>
         </Button>
       )}
-      <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
       {mobileLiveRun && (
         <Link
           to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
