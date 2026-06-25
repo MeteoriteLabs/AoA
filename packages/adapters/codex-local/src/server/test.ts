@@ -201,6 +201,16 @@ export async function testEnvironment(
       // Materialize auth.json into a managed per-company home dir before the probe.
       // On Windows, the shell trap variant is not supported (Issue #114); we fall back
       // to a bare probe — API-key auth may return 401 on Codex 0.122+ in that case.
+      //
+      // SCOPE NOTE (env-strip / Codex finding 3): the "no ambient OPENAI_API_KEY
+      // reaches Codex" invariant is enforced for AGENT RUNS (execute.ts), NOT for
+      // this user-initiated diagnostic probe. The probe DELIBERATELY uses whatever
+      // auth is available — it falls back to the host process.env.OPENAI_API_KEY
+      // (below) and materializes it into the managed auth.json — and on Windows
+      // falls back to a bare probe that relies on env auth (Issue #114). This is an
+      // intentional operator-diagnostic exception, NOT a closed leak: stripping here
+      // would make "Test environment" lie about whether Codex can authenticate.
+      // Do NOT add unsetEnvKeys to this probe spawn.
       const configuredOpenAiApiKey =
         typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
           ? env.OPENAI_API_KEY.trim()
