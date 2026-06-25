@@ -277,7 +277,7 @@ expect(deriveIndexStatus({ vector: null, queue: null })).toBe("not_indexed");
 - [ ] **Step 1: Failing test** — badge renders icon+text per state; `failed` shows a Re-index button wired to the API; banner shows only when `!semanticAvailable`.
 - [ ] **Step 2: Run — FAIL.**
 - [ ] **Step 3: Implement** badge (● indexed / ◐ pending / ⚠ failed+Re-index / ○ not_indexed), render in card/row/table, page banner (role-gated, dismissible), api calls. Mirror existing memory component styling + design system.
-- [ ] **Step 4: Run — PASS** (`pnpm --filter @armyofagents/ui test memory`).
+- [ ] **Step 4: Run — PASS** (`pnpm test:run memory`).
 - [ ] **Step 5:** Commit. `git commit -am "feat(ui): memory index-status badges, no-key banner, re-index actions"`
 
 ---
@@ -322,7 +322,7 @@ expect(deriveIndexStatus({ vector: null, queue: null })).toBe("not_indexed");
 
 ### Task 18: Full verification + re-review
 
-- [ ] `pnpm --filter @armyofagents/server test` green; `pnpm --filter @armyofagents/ui test` green; e2e green on Linux.
+- [ ] `pnpm test:run` (server + ui) green; e2e green on Linux.
 - [ ] Run the acceptance scenario (design §8) on a desktop instance (no keys → CLI extraction + no-key banner + Commander-on-Windows; add key → drain; kill key → pause-not-fail).
 - [ ] Codex re-review of the diff (expect previous P0/P1 resolved); then open the PR.
 
