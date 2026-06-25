@@ -449,7 +449,7 @@ export function extractionService(db: Db) {
           ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
           : entry.rawContent;
 
-        let extractedItems: ExtractedItem[];
+        let extractedItems: ExtractedItem[] = [];
 
         if (engine === "cli") {
           // ── Keyless CLI extraction ────────────────────────────────────
@@ -458,37 +458,70 @@ export function extractionService(db: Db) {
           const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
           log.info({ cliTool }, "Using CLI engine for extraction (keyless)");
 
-          try {
-            extractedItems = await extractViaCli(cliTool, prompt, userContent, {
-              codexModel: agentConfig?.model ?? null,
-            });
-          } catch (cliErr) {
-            if (cliErr instanceof CliExtractionError) {
-              // Terminalize as `failed` (NOT `skipped`) — a CLI was chosen but
-              // the run itself failed (missing/not-authed/timeout/crash/parse).
-              // Record kind + message so Task 7's failure UX can surface it.
-              const failPayload = JSON.stringify({
-                kind: cliErr.kind,
-                message: cliErr.message,
-              });
-              log.error({ kind: cliErr.kind, err: cliErr }, "CLI extraction failed");
-              await db
-                .update(discussionEntries)
-                .set({
-                  extractionStatus: "failed",
-                  sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${failPayload}::jsonb)`,
-                })
-                .where(eq(discussionEntries.id, entryId));
+          // Bounded retry for transient timeout failures (up to 3 attempts total).
+          // Only `timeout` errors are retried — structural errors (not_installed,
+          // not_authed, nonzero_exit, unparseable) terminalize immediately.
+          const MAX_CLI_ATTEMPTS = 3;
+          const CLI_RETRY_DELAY_MS = 500;
+          let lastCliErr: CliExtractionError | undefined;
 
-              publishLiveEvent({
-                companyId,
-                type: "discussion.extraction.failed",
-                payload: { discussionId, entryId, error: cliErr.message },
+          for (let attempt = 1; attempt <= MAX_CLI_ATTEMPTS; attempt++) {
+            try {
+              extractedItems = await extractViaCli(cliTool, prompt, userContent, {
+                codexModel: agentConfig?.model ?? null,
               });
-              return;
+              lastCliErr = undefined; // success — clear any prior transient error
+              break; // exit retry loop
+            } catch (cliErr) {
+              if (!(cliErr instanceof CliExtractionError)) {
+                // Non-CLI error (e.g. DB, network): rethrow into the outer catch.
+                throw cliErr;
+              }
+
+              if (cliErr.kind !== "timeout") {
+                // Structural failure (not_installed, not_authed, nonzero_exit,
+                // unparseable) — no point retrying, terminalize immediately.
+                lastCliErr = cliErr;
+                break;
+              }
+
+              // Transient timeout — retry if we have attempts left.
+              lastCliErr = cliErr;
+              if (attempt < MAX_CLI_ATTEMPTS) {
+                log.warn(
+                  { attempt, maxAttempts: MAX_CLI_ATTEMPTS, kind: cliErr.kind },
+                  "CLI extraction timed out — retrying",
+                );
+                await new Promise<void>((resolve) => setTimeout(resolve, CLI_RETRY_DELAY_MS));
+              }
             }
-            // Non-CLI error: rethrow into the outer catch (terminalizes failed).
-            throw cliErr;
+          }
+
+          if (lastCliErr !== undefined) {
+            // All attempts exhausted (or non-retryable error) — terminalize failed.
+            // Record kind + message so the failure UX can surface actionable guidance.
+            const failPayload = JSON.stringify({
+              kind: lastCliErr.kind,
+              message: lastCliErr.message,
+            });
+            log.error(
+              { kind: lastCliErr.kind, err: lastCliErr },
+              "CLI extraction failed (all attempts exhausted)",
+            );
+            await db
+              .update(discussionEntries)
+              .set({
+                extractionStatus: "failed",
+                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${failPayload}::jsonb)`,
+              })
+              .where(eq(discussionEntries.id, entryId));
+
+            publishLiveEvent({
+              companyId,
+              type: "discussion.extraction.failed",
+              payload: { discussionId, entryId, error: lastCliErr.message },
+            });
+            return;
           }
         } else {
           // ── Hosted API extraction ─────────────────────────────────────

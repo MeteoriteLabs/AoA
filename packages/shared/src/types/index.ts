@@ -1,5 +1,10 @@
 export type { Company } from "./company.js";
 export type {
+  ExtractionEngineStatus,
+  ExtractionEngineCliStatus,
+  ExtractionEngineStatusResponse,
+} from "./extraction-engine.js";
+export type {
   Agent,
   AgentPermissions,
   AgentKeyCreated,
