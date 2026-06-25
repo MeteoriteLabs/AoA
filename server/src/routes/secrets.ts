@@ -18,6 +18,10 @@ import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { runtimeProviderKeyService } from "../services/runtime-provider-keys.js";
+import { reindexCompany } from "../services/embeddings-backfill.js";
+import { logger } from "../middleware/logger.js";
+
+const secretsLog = logger.child({ service: "secrets-routes" });
 
 export function secretRoutes(db: Db) {
   const router = Router();
@@ -244,6 +248,13 @@ export function secretRoutes(db: Db) {
       details: { name: created.name, provider: created.provider },
     });
 
+    // When the OpenAI embedding key is added, drain the backlog best-effort.
+    if (created.key === "llm:openai") {
+      void reindexCompany(db, companyId).catch((err: unknown) =>
+        secretsLog.warn({ err, companyId }, "reindexCompany after secret.created: non-fatal"),
+      );
+    }
+
     res.status(201).json(created);
   });
 
@@ -277,6 +288,14 @@ export function secretRoutes(db: Db) {
       entityId: rotated.id,
       details: { version: rotated.latestVersion },
     });
+
+    // When the OpenAI embedding key is rotated, drain the backlog best-effort
+    // (a rotation may have unblocked stalled pending rows if the old key was invalid).
+    if (existing.key === "llm:openai") {
+      void reindexCompany(db, rotated.companyId).catch((err: unknown) =>
+        secretsLog.warn({ err, companyId: rotated.companyId }, "reindexCompany after secret.rotated: non-fatal"),
+      );
+    }
 
     res.json(rotated);
   });

@@ -25,6 +25,8 @@ import { makeTableProxy } from "./helpers/drizzle-mock.js";
 vi.mock("@armyofagents/db", () => ({
   __esModule: true,
   default: {},
+  embeddingQueue: makeTableProxy("embedding_queue"),
+  memoryItems: makeTableProxy("memory_items"),
   ...new Proxy(
     {},
     {
@@ -54,9 +56,20 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn().mockResolvedValue(undefined),
 }));
 
+// memory.ts (Task W4) imports these — mock to avoid pulling in unregistered db exports.
+vi.mock("../services/embeddings-backfill.js", () => ({
+  reindexCompany: vi.fn().mockResolvedValue({ requeuedFailed: 0, enqueuedMissing: 0 }),
+}));
+
+vi.mock("../services/memory-write.js", () => ({
+  enqueueMemoryEmbedding: vi.fn().mockResolvedValue(undefined),
+  writeMemoryAndIndex: vi.fn(),
+}));
+
 vi.mock("../middleware/rbac.js", () => ({
   assertMemoryAccess: mockAssertMemoryAccess,
   assertMemoryApproval: mockAssertMemoryApproval,
+  assertRole: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../middleware/validate.js", () => ({

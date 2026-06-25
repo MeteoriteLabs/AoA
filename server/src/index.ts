@@ -52,7 +52,7 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
-import { backfillQueueCompanyIds } from "./services/embeddings-backfill.js";
+import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
 import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
 import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
 import { initThreadEventListener } from "./services/thread-events.js";
@@ -908,6 +908,26 @@ void backfillQueueCompanyIds(db as any)
   .catch((err: unknown) =>
     logger.warn({ err }, "embedding_queue company_id backfill failed"),
   );
+
+// Periodic reconciliation sweep (Task W4, keyless-except-embeddings).
+// Finds null-vector memory_items that were never enqueued (e.g. created before
+// the write-path hook was wired) and enqueues them. Belt-and-suspenders.
+// 10-minute cadence is frequent enough to catch stragglers without adding load.
+// Best-effort — a failure here must NOT block any other functionality.
+const RECONCILE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const reconcileTimer = setInterval(() => {
+  void reconcileNullVectors(db as any)
+    .then((res) => {
+      if (res.enqueued > 0) {
+        logger.info({ enqueued: res.enqueued }, "reconcileNullVectors: enqueued missing embeddings");
+      }
+    })
+    .catch((err: unknown) =>
+      logger.warn({ err }, "reconcileNullVectors sweep failed (non-fatal)"),
+    );
+}, RECONCILE_INTERVAL_MS);
+process.once("SIGTERM", () => clearInterval(reconcileTimer));
+process.once("SIGINT", () => clearInterval(reconcileTimer));
 
 // Write-behind embedding queue worker (Task B1 + Task 10, Decision D2).
 // Drains rows from `embedding_queue` and UPDATEs the target row's vector

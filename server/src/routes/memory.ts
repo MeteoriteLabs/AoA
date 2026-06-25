@@ -17,8 +17,12 @@ import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
+import { assertMemoryAccess, assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
+import { reindexCompany } from "../services/embeddings-backfill.js";
+import { enqueueMemoryEmbedding } from "../services/memory-write.js";
+import { eq, and, inArray } from "drizzle-orm";
+import { embeddingQueue } from "@armyofagents/db";
 
 function resolveAgentRequestId(
   req: Parameters<typeof getActorInfo>[0],
@@ -1036,6 +1040,135 @@ export function memoryRoutes(db: Db) {
       }
     },
   );
+
+  // ── Embedding re-index routes (Task W4, keyless-except-embeddings) ─────────
+
+  /**
+   * POST /companies/:companyId/memory/:id/reindex
+   *
+   * Re-index one memory item:
+   *   - If the item has a `failed` queue row, reset it to `pending` (clears
+   *     next_retry_at, attempts, error) so the worker will retry it.
+   *   - Otherwise, enqueue the item via the standard dedup-guarded path.
+   *
+   * RBAC: founder or team_lead only.
+   */
+  router.post("/companies/:companyId/memory/:id/reindex", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder", "team_lead");
+
+    const item = await svc.getById(companyId, id);
+    if (!item) {
+      res.status(404).json({ error: "Memory item not found" });
+      return;
+    }
+
+    // Check for an existing failed queue row for this item.
+    const failedRows = await (db as any)
+      .select({ id: embeddingQueue.id })
+      .from(embeddingQueue)
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          eq(embeddingQueue.targetTable, "memory_items"),
+          eq(embeddingQueue.targetId, id),
+          eq(embeddingQueue.targetColumn, "embedding"),
+          eq(embeddingQueue.status, "failed"),
+        ),
+      )
+      .limit(1);
+
+    if (failedRows.length > 0) {
+      // Reset failed row → pending so the worker retries it.
+      await (db as any)
+        .update(embeddingQueue)
+        .set({ status: "pending", nextRetryAt: null, attempts: 0, error: null })
+        .where(
+          and(
+            eq(embeddingQueue.companyId, companyId),
+            eq(embeddingQueue.targetTable, "memory_items"),
+            eq(embeddingQueue.targetId, id),
+            eq(embeddingQueue.targetColumn, "embedding"),
+            eq(embeddingQueue.status, "failed"),
+          ),
+        );
+    } else {
+      // No failed row — enqueue via the standard dedup-guarded path.
+      await enqueueMemoryEmbedding(db, companyId, item);
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.reindex",
+      entityType: "memory_item",
+      entityId: id,
+      details: { title: item.title, hadFailedRow: failedRows.length > 0 },
+    });
+
+    res.json({ reindexed: true });
+  });
+
+  /**
+   * POST /companies/:companyId/memory/reindex-failed
+   *
+   * Reset ALL `failed` embedding_queue rows for this company back to `pending`,
+   * clearing next_retry_at, attempts, and error so the worker drains the backlog.
+   *
+   * Returns { requeued: N } where N is the number of rows reset.
+   * RBAC: founder or team_lead only.
+   */
+  router.post("/companies/:companyId/memory/reindex-failed", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder", "team_lead");
+
+    // SELECT failed rows first so we can return a count.
+    const failedRows = await (db as any)
+      .select({ id: embeddingQueue.id })
+      .from(embeddingQueue)
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          eq(embeddingQueue.status, "failed"),
+        ),
+      );
+
+    const requeued = failedRows.length;
+
+    if (requeued > 0) {
+      await (db as any)
+        .update(embeddingQueue)
+        .set({ status: "pending", nextRetryAt: null, attempts: 0, error: null })
+        .where(
+          and(
+            eq(embeddingQueue.companyId, companyId),
+            eq(embeddingQueue.status, "failed"),
+          ),
+        );
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.reindex_failed",
+      entityType: "company",
+      entityId: companyId,
+      details: { requeued },
+    });
+
+    res.json({ requeued });
+  });
 
   return router;
 }

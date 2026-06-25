@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
 
 /**
- * Unit tests for backfillQueueCompanyIds (Task 4, keyless-except-embeddings).
+ * Unit tests for embeddings-backfill.ts (Task 4 + Task W4, keyless-except-embeddings).
+ *
+ * Covers:
+ *   - backfillQueueCompanyIds (Task 4): stamps company_id on pre-keyless queue rows
+ *   - reindexCompany (Task W4): requeues failed + enqueues missing for a company
+ *   - reconcileNullVectors (Task W4): global sweep for null-vector rows
  *
  * Mocking strategy: follows the same pattern as embedding-retry-persistence.test.ts —
  * Proxy-based table stubs to avoid ESM drizzle-orm circular deps, sequence-based mock
@@ -18,6 +23,27 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+
+// ── Mocks for new imports in embeddings-backfill.ts ──────────────────────────
+
+const mockGetDbCapabilities = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/db-capabilities.js", () => ({
+  getDbCapabilities: mockGetDbCapabilities,
+}));
+
+const mockEnqueueMemoryEmbedding = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("../services/memory-write.js", () => ({
+  enqueueMemoryEmbedding: mockEnqueueMemoryEmbedding,
+  writeMemoryAndIndex: vi.fn(),
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    child: () => ({ info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() }),
+  },
+}));
 
 // ---------------------------------------------------------------------------
 // Sequence-based mock DB with per-operation tracking
@@ -70,7 +96,7 @@ function createSequenceDb(config: {
 }
 
 // Import after mocks are registered
-import { backfillQueueCompanyIds } from "../services/embeddings-backfill.js";
+import { backfillQueueCompanyIds, reindexCompany, reconcileNullVectors } from "../services/embeddings-backfill.js";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -189,5 +215,277 @@ describe("backfillQueueCompanyIds", () => {
     const result = await backfillQueueCompanyIds(db as any);
     expect(result).toEqual({ updated: 3 });
     expect(db.setCalls.length).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reindexCompany (Task W4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a mock DB for reindexCompany/reconcileNullVectors.
+ *
+ * select calls are returned in order. The function needs:
+ *   - select #0 (reindexCompany): failed rows for the company
+ *   - select #1 (reindexCompany): live (pending|processing) queue rows
+ *   - select #2 (reindexCompany): missing-embedding memory_items
+ *
+ * For reconcileNullVectors:
+ *   - select #0: live queue rows (global)
+ *   - select #1: missing-embedding memory_items (global)
+ */
+function createReindexDb(config: {
+  selects?: MockRow[][];
+} = {}) {
+  let selectIdx = 0;
+  const selects = config.selects ?? [];
+  const setCalls: Array<Record<string, unknown>> = [];
+
+  function makeSelectChain(): Record<string, unknown> {
+    const result = selects[selectIdx++] ?? [];
+    const chain: Record<string, unknown> = {};
+    for (const m of ["from", "innerJoin", "leftJoin", "where", "orderBy", "limit"]) {
+      chain[m] = () => chain;
+    }
+    chain.then = (resolve: (v: MockRow[]) => unknown) =>
+      Promise.resolve(resolve(result));
+    return chain;
+  }
+
+  function makeUpdateChain() {
+    const chain: Record<string, unknown> = {};
+    chain.set = (val: Record<string, unknown>) => {
+      setCalls.push(val);
+      return chain;
+    };
+    chain.where = () => chain;
+    chain.then = (resolve: (v: unknown) => unknown) =>
+      Promise.resolve(resolve([]));
+    return chain;
+  }
+
+  return {
+    select: () => makeSelectChain(),
+    update: () => makeUpdateChain(),
+    insert: () => {
+      const c: Record<string, unknown> = {};
+      for (const m of ["values", "returning", "onConflictDoNothing"]) {
+        c[m] = () => c;
+      }
+      c.then = (resolve: (v: unknown) => unknown) => Promise.resolve(resolve([]));
+      return c;
+    },
+    setCalls,
+  };
+}
+
+describe("reindexCompany", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: pgvector present
+    mockGetDbCapabilities.mockReturnValue({ hasVectorSupport: true });
+    mockEnqueueMemoryEmbedding.mockResolvedValue(undefined);
+  });
+
+  it("returns zeros without touching DB when pgvector is absent", async () => {
+    mockGetDbCapabilities.mockReturnValue({ hasVectorSupport: false });
+    const db = createReindexDb();
+
+    const result = await reindexCompany(db as any, "c-1");
+    expect(result).toEqual({ requeuedFailed: 0, enqueuedMissing: 0 });
+    expect(db.setCalls.length).toBe(0);
+    expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("requeues failed rows: sets status=pending, attempts=0, error=null", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: 2 failed rows
+        [{ id: "q-1" }, { id: "q-2" }],
+        // select #1: no live queue rows
+        [],
+        // select #2: no missing-embedding items
+        [],
+      ],
+    });
+
+    const result = await reindexCompany(db as any, "c-company");
+
+    expect(result.requeuedFailed).toBe(2);
+    // The update call's set payload should reset to pending
+    expect(db.setCalls.length).toBe(1);
+    expect(db.setCalls[0]).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      error: null,
+    });
+    expect(result.enqueuedMissing).toBe(0);
+    expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("enqueues null-vector memory_items lacking a live queue row", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: no failed rows
+        [],
+        // select #1: no live queue rows
+        [],
+        // select #2: 2 items with null embedding
+        [
+          { id: "mi-1", title: "A", content: "aa" },
+          { id: "mi-2", title: "B", content: "bb" },
+        ],
+      ],
+    });
+
+    const result = await reindexCompany(db as any, "c-company");
+
+    expect(result.requeuedFailed).toBe(0);
+    expect(result.enqueuedMissing).toBe(2);
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledTimes(2);
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(),
+      "c-company",
+      expect.objectContaining({ id: "mi-1" }),
+    );
+  });
+
+  it("skips items that have a live queue row (dedup)", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: no failed rows
+        [],
+        // select #1: 1 live queue row — notInArray will exclude mi-1
+        [{ targetId: "mi-1" }],
+        // select #2: only mi-2 returned (notInArray excluded mi-1)
+        [{ id: "mi-2", title: "B", content: "bb" }],
+      ],
+    });
+
+    const result = await reindexCompany(db as any, "c-company");
+
+    expect(result.enqueuedMissing).toBe(1);
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(),
+      "c-company",
+      expect.objectContaining({ id: "mi-2" }),
+    );
+  });
+
+  it("handles both requeue and missing enqueue in one call", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: 1 failed row
+        [{ id: "q-failed" }],
+        // select #1: no live queue rows
+        [],
+        // select #2: 1 missing item
+        [{ id: "mi-3", title: "C", content: "cc" }],
+      ],
+    });
+
+    const result = await reindexCompany(db as any, "c-company");
+
+    expect(result.requeuedFailed).toBe(1);
+    expect(result.enqueuedMissing).toBe(1);
+    expect(db.setCalls.length).toBe(1);
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileNullVectors (Task W4)
+// ---------------------------------------------------------------------------
+
+describe("reconcileNullVectors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDbCapabilities.mockReturnValue({ hasVectorSupport: true });
+    mockEnqueueMemoryEmbedding.mockResolvedValue(undefined);
+  });
+
+  it("returns { enqueued: 0 } without touching DB when pgvector is absent", async () => {
+    mockGetDbCapabilities.mockReturnValue({ hasVectorSupport: false });
+    const db = createReindexDb();
+
+    const result = await reconcileNullVectors(db as any);
+    expect(result).toEqual({ enqueued: 0 });
+    expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("returns { enqueued: 0 } when all items already have embeddings", async () => {
+    const db = createReindexDb({
+      selects: [
+        [], // select #0: no live queue rows
+        [], // select #1: no missing items
+      ],
+    });
+
+    const result = await reconcileNullVectors(db as any);
+    expect(result).toEqual({ enqueued: 0 });
+    expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("enqueues null-vector rows across all companies", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: no live queue rows
+        [],
+        // select #1: 3 items from 2 companies
+        [
+          { id: "mi-1", companyId: "c-A", title: "T1", content: "c1" },
+          { id: "mi-2", companyId: "c-A", title: "T2", content: "c2" },
+          { id: "mi-3", companyId: "c-B", title: "T3", content: "c3" },
+        ],
+      ],
+    });
+
+    const result = await reconcileNullVectors(db as any);
+    expect(result).toEqual({ enqueued: 3 });
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledTimes(3);
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(), "c-A", expect.objectContaining({ id: "mi-1" }),
+    );
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(), "c-B", expect.objectContaining({ id: "mi-3" }),
+    );
+  });
+
+  it("skips items that have a live queue row (idempotent dedup)", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: mi-1 has a live queue row
+        [{ targetId: "mi-1" }],
+        // select #1: only mi-2 returned (notInArray excluded mi-1)
+        [{ id: "mi-2", companyId: "c-A", title: "T2", content: "c2" }],
+      ],
+    });
+
+    const result = await reconcileNullVectors(db as any);
+    expect(result).toEqual({ enqueued: 1 });
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(), "c-A", expect.objectContaining({ id: "mi-2" }),
+    );
+  });
+
+  it("skips orphaned rows with no companyId", async () => {
+    const db = createReindexDb({
+      selects: [
+        [], // no live rows
+        [
+          { id: "mi-orphan", companyId: null, title: "Orphan", content: "x" },
+          { id: "mi-ok", companyId: "c-A", title: "OK", content: "y" },
+        ],
+      ],
+    });
+
+    const result = await reconcileNullVectors(db as any);
+    expect(result).toEqual({ enqueued: 1 }); // orphaned row skipped
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(), "c-A", expect.objectContaining({ id: "mi-ok" }),
+    );
   });
 });

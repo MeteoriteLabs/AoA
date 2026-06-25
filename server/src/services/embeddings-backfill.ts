@@ -1,4 +1,4 @@
-import { eq, isNull, and, sql } from "drizzle-orm";
+import { eq, isNull, and, inArray, notInArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   embeddingQueue,
@@ -7,6 +7,9 @@ import {
   discussionEntries,
   discussionExtractedItems,
 } from "@armyofagents/db";
+import { getDbCapabilities } from "./db-capabilities.js";
+import { enqueueMemoryEmbedding } from "./memory-write.js";
+import { logger } from "../middleware/logger.js";
 
 type Db = NodePgDatabase<Record<string, never>>;
 
@@ -112,4 +115,167 @@ export async function backfillQueueCompanyIds(db: Db): Promise<{ updated: number
   totalUpdated += deiRows.length;
 
   return { updated: totalUpdated };
+}
+
+const log = logger.child({ service: "embeddings-backfill" });
+
+/** Status values that represent a "live" (in-flight) queue row. */
+const LIVE_STATUSES = ["pending", "processing"] as const;
+
+/**
+ * Re-index a single company's embedding queue:
+ *   1. Reset all `failed` rows for the company back to `pending` (clear
+ *      next_retry_at, attempts, error) so the worker will retry them.
+ *   2. Enqueue memory_items that have no embedding and no live queue row.
+ *
+ * Returns counts of what was done. No-op (returns zeros) when pgvector is
+ * not available. Idempotent: safe to call multiple times.
+ */
+export async function reindexCompany(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  companyId: string,
+): Promise<{ requeuedFailed: number; enqueuedMissing: number }> {
+  if (!getDbCapabilities().hasVectorSupport) {
+    return { requeuedFailed: 0, enqueuedMissing: 0 };
+  }
+
+  // --- 1. Requeue failed rows ------------------------------------------------
+  // SELECT the failed rows for this company first so we know the count.
+  const failedRows = await db
+    .select({ id: embeddingQueue.id })
+    .from(embeddingQueue)
+    .where(
+      and(
+        eq(embeddingQueue.companyId, companyId),
+        eq(embeddingQueue.status, "failed"),
+      ),
+    );
+
+  const requeuedFailed = failedRows.length;
+
+  if (requeuedFailed > 0) {
+    await db
+      .update(embeddingQueue)
+      .set({
+        status: "pending",
+        nextRetryAt: null,
+        attempts: 0,
+        error: null,
+      })
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          eq(embeddingQueue.status, "failed"),
+        ),
+      );
+  }
+
+  // --- 2. Enqueue missing memory_items --------------------------------------
+  // Find memory_items for this company where embedding IS NULL and there is
+  // no live (pending|processing) queue row already.
+  const liveQueueRows = await db
+    .select({ targetId: embeddingQueue.targetId })
+    .from(embeddingQueue)
+    .where(
+      and(
+        eq(embeddingQueue.companyId, companyId),
+        eq(embeddingQueue.targetTable, "memory_items"),
+        eq(embeddingQueue.targetColumn, "embedding"),
+        inArray(embeddingQueue.status, [...LIVE_STATUSES]),
+      ),
+    );
+
+  const liveTargetIds = liveQueueRows.map((r: { targetId: string }) => r.targetId);
+
+  // Build the WHERE clause for null-embedding items excluding live targets.
+  const missingEmbeddingFilter =
+    liveTargetIds.length > 0
+      ? and(
+          eq(memoryItems.companyId, companyId),
+          isNull((memoryItems as any).embedding),
+          notInArray(memoryItems.id, liveTargetIds),
+        )
+      : and(
+          eq(memoryItems.companyId, companyId),
+          isNull((memoryItems as any).embedding),
+        );
+
+  const missingItems = await db
+    .select({ id: memoryItems.id, title: memoryItems.title, content: memoryItems.content })
+    .from(memoryItems)
+    .where(missingEmbeddingFilter);
+
+  let enqueuedMissing = 0;
+  for (const item of missingItems) {
+    await enqueueMemoryEmbedding(db, companyId, item);
+    enqueuedMissing++;
+  }
+
+  return { requeuedFailed, enqueuedMissing };
+}
+
+/**
+ * Global reconciliation sweep: find null-vector memory_items across ALL
+ * companies that lack a live queue row and enqueue them.
+ *
+ * Belt-and-suspenders for rows that were never enqueued (e.g. created before
+ * the write-path hook was wired, or inserted via a migration). Idempotent:
+ * the dedup guard in `enqueueMemoryEmbedding` ensures no double-inserts.
+ *
+ * No-op when pgvector is not available.
+ */
+export async function reconcileNullVectors(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+): Promise<{ enqueued: number }> {
+  if (!getDbCapabilities().hasVectorSupport) {
+    return { enqueued: 0 };
+  }
+
+  // Find all live queue rows for memory_items so we can exclude them.
+  const liveRows = await db
+    .select({ targetId: embeddingQueue.targetId })
+    .from(embeddingQueue)
+    .where(
+      and(
+        eq(embeddingQueue.targetTable, "memory_items"),
+        eq(embeddingQueue.targetColumn, "embedding"),
+        inArray(embeddingQueue.status, [...LIVE_STATUSES]),
+      ),
+    );
+
+  const liveTargetIds = liveRows.map((r: { targetId: string }) => r.targetId);
+
+  const missingFilter =
+    liveTargetIds.length > 0
+      ? and(
+          isNull((memoryItems as any).embedding),
+          notInArray(memoryItems.id, liveTargetIds),
+        )
+      : isNull((memoryItems as any).embedding);
+
+  // Fetch items with their companyId so we can enqueue per-company.
+  const missingItems = await db
+    .select({
+      id: memoryItems.id,
+      companyId: memoryItems.companyId,
+      title: memoryItems.title,
+      content: memoryItems.content,
+    })
+    .from(memoryItems)
+    .where(missingFilter);
+
+  let enqueued = 0;
+  for (const item of missingItems) {
+    if (!item.companyId) continue; // orphaned row — skip
+    await enqueueMemoryEmbedding(db, item.companyId, item);
+    enqueued++;
+  }
+
+  if (enqueued > 0) {
+    log.info({ enqueued }, "reconcileNullVectors: enqueued missing embeddings");
+  }
+
+  return { enqueued };
 }
