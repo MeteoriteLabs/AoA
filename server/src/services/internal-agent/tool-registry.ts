@@ -46,6 +46,8 @@ import { extractReferencesTool } from "./tools/memory-extract-references.js";
 import { findSimilarMemoryHnswTool } from "./tools/memory-find-similar.js";
 import { proposeMemoryFromThreadTool } from "./tools/memory-propose.js";
 import { archiveStaleMemoryTool } from "./tools/memory-archive-stale.js";
+// Task 9 W3 — write_memory crew tool (write + RAG-index, status=pending, Critical Rule #6)
+import { writeMemoryTool } from "./tools/memory-write.js";
 // Task C2 batch 4 — agent.dispatch (T15)
 // Lower-level sibling to delegate_to_subagent. Inserts wakeup rows with
 // dedup + hop-count cap. Kept alongside delegate_to_subagent — they target
@@ -137,6 +139,9 @@ export function createToolRegistry(): AgentTool[] {
     findSimilarMemoryHnswTool,
     proposeMemoryFromThreadTool,
     archiveStaleMemoryTool,
+    // Task 9 W3 — write_memory: unified write+RAG-index crew tool (status=pending,
+    // Critical Rule #6 — agents cannot self-approve; founder approves identity/domain).
+    writeMemoryTool,
     // Task C2 batch 4 — agent.dispatch (T15)
     // Coordination-category tool that queues a wakeup row for a target AoA
     // agent with hop-count cap + dedup. Added to the Adjutant allowlist so

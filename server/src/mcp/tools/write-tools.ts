@@ -7,6 +7,7 @@ import {
 } from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
 import { enqueueInboxItem } from "../../services/inbox-producer.js";
+import { writeMemoryAndIndex } from "../../services/memory-write.js";
 import {
   type ToolContext,
   type ToolHandler,
@@ -572,6 +573,133 @@ async function handleMemoryRetain(
   return ok({ id: item.id, status: finalStatus, agentId: item.agentId });
 }
 
+/**
+ * Task 9 W3 — memory.write.
+ *
+ * Board/MCP/commander-only write path that creates a memory item via the shared
+ * `writeMemoryAndIndex` service, guaranteeing RAG embedding coverage. Unlike
+ * `memory.retain`, this tool:
+ *
+ *   - Always creates with status='pending' (no auto-approve path) — the founder
+ *     must review every item written through this tool (Critical Rule #6 /
+ *     Decisions #15, #52).
+ *   - Accepts a superset of `suggest-memory`'s fields plus `sourceContext`
+ *     (required — the caller must explain where the memory came from).
+ *   - Sets source='mcp' for bearer-token callers and source='agent' for agent
+ *     actors, so the Knowledge Base UI can distinguish origins.
+ *
+ * Actor gating: board + mcp + commander. Worker agents (source='agent') are NOT
+ * excluded from calling this tool via the HTTP endpoint (memory.retain is the
+ * canonical agent path, but memory.write is intentionally all-actors since a
+ * commander or MCP script may want the richer `sourceContext` field). The
+ * isPersonalScope auto-approve of memory.retain is NOT present here — every
+ * write through this tool goes to pending regardless of scopeToSelf.
+ */
+async function handleMemoryWrite(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const parsed = z
+    .object({
+      title: z.string().min(1),
+      content: z.string().min(1),
+      category: z.string().min(1),
+      layer: z.enum(MEMORY_ITEM_LAYERS),
+      sourceContext: z.string().min(1),
+      tags: z.array(z.string()).optional(),
+      departmentId: z.string().uuid().nullable().optional(),
+      projectId: z.string().uuid().nullable().optional(),
+      goalId: z.string().uuid().nullable().optional(),
+      taskId: z.string().uuid().nullable().optional(),
+    })
+    .parse(args);
+
+  assertScopedProjectAccess(ctx.scope, parsed.departmentId ?? null, "Department");
+  assertScopedProjectAccess(ctx.scope, parsed.projectId ?? null, "Project");
+  await assertScopedGoalAccess(ctx.db, ctx.scope, parsed.goalId ?? null);
+
+  // Validate linked entities belong to this company (A-M2 / tenant isolation).
+  if (parsed.taskId) {
+    const task = await ctx.services.issuesSvc.getById(parsed.taskId);
+    if (!task || task.companyId !== ctx.companyId) {
+      return notFoundResult("Task not found");
+    }
+    assertScopedProjectAccess(ctx.scope, task.projectId, "Task");
+  }
+  if (parsed.goalId) {
+    const goal = await ctx.services.goalsSvc.getById(parsed.goalId);
+    if (!goal || goal.companyId !== ctx.companyId) {
+      return notFoundResult("Goal not found");
+    }
+  }
+  if (parsed.projectId) {
+    const project = await ctx.services.projectsSvc.getById(parsed.projectId);
+    if (!project || project.companyId !== ctx.companyId) {
+      return notFoundResult("Project not found");
+    }
+  }
+  if (parsed.departmentId) {
+    const department = await ctx.services.projectsSvc.getById(parsed.departmentId);
+    if (!department || department.companyId !== ctx.companyId) {
+      return notFoundResult("Department not found");
+    }
+  }
+
+  const isAgentActor = ctx.actor.source === "agent";
+  const memoryDepartmentId = parsed.departmentId ?? parsed.projectId ?? null;
+  const canCreateMemory = await ctx.services.permissionsSvc.canAccessMemory(
+    ctx.companyId,
+    ctx.actor.userId,
+    "create",
+    {
+      layer: parsed.layer,
+      departmentId: memoryDepartmentId,
+      visibility: "scoped",
+    },
+  );
+  if (!canCreateMemory) {
+    return forbiddenResult("Insufficient permissions for memory create");
+  }
+
+  const item = await writeMemoryAndIndex(ctx.db, ctx.companyId, {
+    title: parsed.title,
+    content: parsed.content,
+    category: parsed.category,
+    layer: parsed.layer,
+    source: isAgentActor ? "agent" : "mcp",
+    sourceContext: parsed.sourceContext,
+    createdBy: ctx.actor.userId,
+    status: "pending",
+    visibility: "scoped",
+    priority: 0,
+    tags: parsed.tags ?? null,
+    departmentId: parsed.departmentId ?? null,
+    projectId: parsed.projectId ?? null,
+    goalId: parsed.goalId ?? null,
+    taskId: parsed.taskId ?? null,
+  });
+
+  await logActivity(ctx.db, {
+    companyId: ctx.companyId,
+    actorType: isAgentActor ? "agent" : "user",
+    actorId: ctx.actor.userId,
+    agentId: isAgentActor ? (ctx.actor.agentId ?? null) : null,
+    runId: ctx.actor.runId ?? null,
+    action: "memory.created",
+    entityType: "memory_item",
+    entityId: item.id,
+    details: {
+      title: item.title,
+      source: item.source,
+      status: item.status,
+      layer: parsed.layer,
+      via: "memory.write",
+    },
+  });
+
+  return ok({ id: item.id, status: item.status });
+}
+
 export const writeToolHandlers: Record<string, ToolHandler> = {
   "debrief-push": handleDebriefPush,
   "suggest-memory": handleSuggestMemory,
@@ -582,4 +710,6 @@ export const writeToolHandlers: Record<string, ToolHandler> = {
   "attach-artifact-version": handleAttachArtifactVersion,
   // V2.6
   "memory.retain": handleMemoryRetain,
+  // Task 9 W3 — write+RAG-index (status always pending, Critical Rule #6)
+  "memory.write": handleMemoryWrite,
 };

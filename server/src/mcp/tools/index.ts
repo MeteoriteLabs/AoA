@@ -49,6 +49,10 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   "memory.search": ALL_ACTORS,
   "memory.get": ALL_ACTORS,
   "memory.retain": ALL_ACTORS,
+  // memory.write is all-actors: board/mcp/commander/agent may call it.
+  // Unlike memory.retain there is NO auto-approve path — every write is pending.
+  // (Critical Rule #6: founders approve identity/domain; this tool never bypasses that.)
+  "memory.write": ALL_ACTORS,
   "use_skill": ["board", "commander"],  // HTTP MCP endpoint gate only: founder (board) + commander; worker agents + mcp excluded (skill markdown may contain company IP). Commander's CLI bridge dispatches via tool-registry and does NOT consult this map.
 };
 
@@ -202,6 +206,32 @@ export const TOOL_DEFINITIONS = [
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"],
+    },
+  },
+  // Task 9 W3 — memory.write: unified write+RAG-index (always pending, no auto-approve).
+  {
+    name: "memory.write",
+    description:
+      "Create a memory item and immediately enqueue it for RAG embedding. Always creates with " +
+      "status='pending' — the founder must approve before the item enters the Knowledge Base " +
+      "(Critical Rule #6: agents/MCP cannot self-approve identity or domain memory). " +
+      "Use this when you have structured knowledge to persist; use debrief-push for " +
+      "unstructured content that needs LLM extraction first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        content: { type: "string" },
+        category: { type: "string" },
+        layer: { type: "string", enum: ["identity", "domain", "active_context", "working"] },
+        sourceContext: { type: "string" },
+        tags: { type: "array", items: { type: "string" } },
+        departmentId: { type: "string" },
+        projectId: { type: "string" },
+        goalId: { type: "string" },
+        taskId: { type: "string" },
+      },
+      required: ["title", "content", "category", "layer", "sourceContext"],
     },
   },
   {

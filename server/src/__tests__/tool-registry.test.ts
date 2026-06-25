@@ -50,8 +50,10 @@ describe("Tool Registry", () => {
       // remember_working_context, update_working_context, forget_working_context.
       // Task 10 (Commander Viewer P1) added 1 query tool:
       // query_company_artifacts (company-wide artifact listing, ctx.companyId-scoped).
+      // Task 9 W3 added 1 memory tool:
+      // write_memory (unified write+RAG-index, status=pending, Critical Rule #6).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(72);
+      expect(tools).toHaveLength(73);
     });
 
     it("every tool has required fields", () => {
