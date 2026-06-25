@@ -62,6 +62,13 @@ vi.mock("@armyofagents/db", () => {
     agents: makeTable("agents"),
     internalAgentRuns: makeTable("internal_agent_runs"),
     discussionEntries: makeTable("discussion_entries"),
+    memoryItems: makeTable("memory_items"),
+    discussions: makeTable("discussions"),
+    discussionExtractedItems: makeTable("discussion_extracted_items"),
+    embeddingQueue: makeTable("embedding_queue"),
+    memoryItemVersions: makeTable("memory_item_versions"),
+    memoryRetrievals: makeTable("memory_retrievals"),
+    suggestions: makeTable("suggestions"),
   };
 });
 

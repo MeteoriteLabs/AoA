@@ -12,13 +12,16 @@ vi.mock("@/lib/router", async () => {
 
 vi.mock("../api/memory", () => ({
   memoryApi: {
-    list: vi.fn(async () => [
-      { id: "i-id1", title: "Vision", layer: "identity", status: "approved" },
-      { id: "i-d1", title: "Auth strategy", layer: "domain", status: "approved" },
-      { id: "i-d2", title: "API standards", layer: "domain", status: "pending" },
-      { id: "i-a1", title: "Q3 context", layer: "active_context", status: "approved" },
-      { id: "i-w1", title: "Working note", layer: "working", status: "approved" },
-    ]),
+    list: vi.fn(async () => ({
+      items: [
+        { id: "i-id1", title: "Vision", layer: "identity", status: "approved" },
+        { id: "i-d1", title: "Auth strategy", layer: "domain", status: "approved" },
+        { id: "i-d2", title: "API standards", layer: "domain", status: "pending" },
+        { id: "i-a1", title: "Q3 context", layer: "active_context", status: "approved" },
+        { id: "i-w1", title: "Working note", layer: "working", status: "approved" },
+      ],
+      semanticAvailable: true,
+    })),
   },
 }));
 

@@ -59,7 +59,7 @@ const {
 vi.mock("drizzle-orm", () => ({ and: (...a: unknown[]) => ({ and: a }), eq: (a: unknown, b: unknown) => ({ eq: [a, b] }) }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) => new Proxy({}, { get: (_x, p) => (typeof p === "string" ? Symbol(`${n}.${p}`) : undefined) });
-  return { agents: t("a"), internalAgentRuns: t("iar"), discussionEntries: t("de"), issues: t("i") };
+  return { agents: t("a"), internalAgentRuns: t("iar"), discussionEntries: t("de"), issues: t("i"), memoryItems: t("mi"), discussions: t("disc"), discussionExtractedItems: t("dei"), embeddingQueue: t("eq"), memoryItemVersions: t("miv"), memoryRetrievals: t("mr"), suggestions: t("sug") };
 });
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));

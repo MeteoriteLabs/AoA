@@ -10,11 +10,14 @@ vi.mock("@/lib/router", async () => {
 
 vi.mock("../api/memory", () => ({
   memoryApi: {
-    list: vi.fn(async () => [
-      { id: "i-1", title: "Extract one", status: "approved", importJobId: "j-1", folderPath: "Engineering/Decisions" },
-      { id: "i-2", title: "Extract two", status: "pending", importJobId: "j-1" },
-      { id: "i-3", title: "Other item", status: "approved", importJobId: "j-99" },
-    ]),
+    list: vi.fn(async () => ({
+      items: [
+        { id: "i-1", title: "Extract one", status: "approved", importJobId: "j-1", folderPath: "Engineering/Decisions" },
+        { id: "i-2", title: "Extract two", status: "pending", importJobId: "j-1" },
+        { id: "i-3", title: "Other item", status: "approved", importJobId: "j-99" },
+      ],
+      semanticAvailable: true,
+    })),
   },
 }));
 
