@@ -32,9 +32,14 @@ export function AgentSkillsTab({
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
-  // Resync when the agent refetches / navigation changes the attached set.
+  // Resync when the agent refetches / navigation changes the attached set —
+  // but never while a toggle is in flight, or an unrelated refetch landing
+  // mid-save would clobber the optimistic state. The post-save invalidate
+  // refetches and resyncs once pendingKey clears.
   useEffect(() => {
+    if (pendingKey !== null) return;
     setLocalKeys(initialSkillKeys);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSkillKeys]);
 
   const { data: allSkills, isLoading } = useQuery({
@@ -88,20 +93,27 @@ export function AgentSkillsTab({
   const attached = filtered.filter((s) => localKeys.includes(s.key));
   const available = filtered.filter((s) => !localKeys.includes(s.key));
 
+  // While any toggle's PATCH is in flight, lock every row. Each request sends the
+  // full skillKeys array and the server overwrites wholesale (last-write-wins), so
+  // overlapping toggles could resolve out of order and silently drop a change.
+  // Serializing to one in-flight update at a time makes that impossible.
+  const busy = pendingKey !== null;
+
   const renderRow = (skill: CompanySkillListItem) => {
     const isAttached = localKeys.includes(skill.key);
-    const pending = pendingKey === skill.key;
+    const updating = pendingKey === skill.key;
     return (
       <div
         key={skill.id}
         role="button"
-        tabIndex={0}
+        tabIndex={busy ? -1 : 0}
         aria-pressed={isAttached}
-        onClick={() => { if (!pending) handleToggle(skill.key); }}
-        onKeyDown={(e) => { if (!pending && (e.key === " " || e.key === "Enter")) { e.preventDefault(); handleToggle(skill.key); } }}
+        aria-disabled={busy}
+        onClick={() => { if (!busy) handleToggle(skill.key); }}
+        onKeyDown={(e) => { if (!busy && (e.key === " " || e.key === "Enter")) { e.preventDefault(); handleToggle(skill.key); } }}
         className={cn(
-          "flex items-center gap-3 px-3.5 py-3 border-b border-border last:border-b-0 cursor-pointer transition-colors hover:bg-accent/20",
-          pending && "opacity-60 cursor-wait",
+          "flex items-center gap-3 px-3.5 py-3 border-b border-border last:border-b-0 transition-colors",
+          updating ? "opacity-60 cursor-wait" : busy ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-accent/20",
         )}
       >
         <div className="min-w-0 flex-1">
