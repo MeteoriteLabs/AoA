@@ -228,10 +228,14 @@ export function memoryService(db: Db) {
         rows.map((r) => (r as Record<string, unknown>).id as string),
       );
       return rows.map((item) => ({
-        ...(item as Record<string, unknown>),
+        // Spread the TYPED row (not a Record<string,unknown> cast) so the base
+        // MemoryItem fields survive in the result type — object spread drops a
+        // spread source's index signature, which would erase layer/status/etc.
+        ...item,
         indexStatus: deriveIndexStatus({
           hasVector: rowHasVector(item as Record<string, unknown>),
-          queueStatus: queueStatuses.get((item as Record<string, unknown>).id as string) ?? null,
+          queueStatus:
+            queueStatuses.get((item as { id: string }).id) ?? null,
         }),
       }));
     },
@@ -269,7 +273,8 @@ export function memoryService(db: Db) {
       // Enrich with per-item indexStatus (Task W5 — additive field, same outer shape).
       const queueStatuses = await batchFetchQueueStatuses(db, [id]);
       return {
-        ...(row as Record<string, unknown>),
+        // Spread the TYPED row (see list() note) so base fields survive.
+        ...row,
         indexStatus: deriveIndexStatus({
           hasVector: rowHasVector(row as Record<string, unknown>),
           queueStatus: queueStatuses.get(id) ?? null,
