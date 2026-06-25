@@ -146,6 +146,27 @@ describe("AgentConfigForm codex model picker default label", () => {
   });
 });
 
+describe("AgentConfigForm codex default option writes the explicit default model (P2-3)", () => {
+  it("choosing 'Default → gpt-5.5' for codex selects gpt-5.5 explicitly, not an empty model", async () => {
+    renderEditForm({
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.3-codex" },
+    });
+
+    // Open the model picker (trigger currently shows the explicit model).
+    await userEvent.click(await screen.findByRole("button", { name: /gpt-5\.3-codex/i }));
+    // Pick the default option.
+    await userEvent.click(await screen.findByRole("button", { name: /Default → gpt-5\.5/i }));
+
+    // P2-3: the default option must write the real default (gpt-5.5), so the
+    // trigger now reflects an explicit gpt-5.5 selection — NOT the empty
+    // "Default → gpt-5.5" placeholder, which would run the codex CLI default
+    // instead of gpt-5.5 on an edited agent.
+    expect(screen.queryByRole("button", { name: /Default → gpt-5\.5/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^gpt-5\.5/i })).toBeInTheDocument();
+  });
+});
+
 describe("AgentConfigForm adapter type switch defaults model to gpt-5.5", () => {
   it("switching to codex_local in create mode sets model to DEFAULT_CODEX_LOCAL_MODEL (gpt-5.5)", async () => {
     const onChange = vi.fn();

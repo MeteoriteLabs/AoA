@@ -846,6 +846,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 required={adapterType === "opencode_local"}
                 groupByProvider={adapterType === "opencode_local"}
                 defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
+                defaultValue={adapterType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""}
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
@@ -1491,6 +1492,7 @@ function ModelDropdown({
   required,
   groupByProvider,
   defaultLabel,
+  defaultValue,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1501,6 +1503,10 @@ function ModelDropdown({
   required: boolean;
   groupByProvider: boolean;
   defaultLabel?: string;
+  /** Value written when the "Default" option is chosen. Codex passes its real
+   *  default (gpt-5.5) so an edited agent doesn't persist an empty model that
+   *  runs the CLI default instead (Codex P2-3). Others omit → empty. */
+  defaultValue?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const selected = models.find((m) => m.id === value);
@@ -1575,7 +1581,7 @@ function ModelDropdown({
                   !value && "bg-accent",
                 )}
                 onClick={() => {
-                  onChange("");
+                  onChange(defaultValue ?? "");
                   onOpenChange(false);
                 }}
               >
