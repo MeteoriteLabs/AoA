@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { toast } from "@/lib/toast";
+import { useToast } from "@/context/ToastContext";
 import {
   Dialog,
   DialogBody,
@@ -73,6 +73,7 @@ export function AgentInstructionsTab({
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
+  const { pushToast } = useToast();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
   const [draft, setDraft] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<{
@@ -178,9 +179,7 @@ export function AgentInstructionsTab({
     },
     onError: (err) => {
       setAwaitingRefresh(false);
-      toast.error("Couldn't save instructions", {
-        description: err instanceof Error ? err.message : undefined,
-      });
+      pushToast({ title: "Couldn't save instructions", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -197,9 +196,7 @@ export function AgentInstructionsTab({
     },
     onError: (err) => {
       setAwaitingRefresh(false);
-      toast.error("Couldn't save file", {
-        description: err instanceof Error ? err.message : undefined,
-      });
+      pushToast({ title: "Couldn't save file", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -207,7 +204,7 @@ export function AgentInstructionsTab({
     mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
     onMutate: () => setAwaitingRefresh(true),
     onSuccess: (_, relativePath) => {
-      toast.success("File deleted");
+      pushToast({ title: "File deleted", tone: "success" });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
@@ -215,9 +212,7 @@ export function AgentInstructionsTab({
     },
     onError: (err) => {
       setAwaitingRefresh(false);
-      toast.error("Couldn't delete file", {
-        description: err instanceof Error ? err.message : undefined,
-      });
+      pushToast({ title: "Couldn't delete file", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 

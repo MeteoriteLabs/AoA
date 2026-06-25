@@ -11,12 +11,8 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
-vi.mock("@/lib/toast", () => ({
-  toast: {
-    success: vi.fn(),
-    error: vi.fn(),
-    warning: vi.fn(),
-  },
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("@/api/secrets", () => ({

@@ -71,7 +71,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { toast } from "@/lib/toast";
+import { useToast } from "@/context/ToastContext";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@armyofagents/shared";
@@ -194,6 +194,7 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToast();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
@@ -320,9 +321,7 @@ export function AgentDetail() {
         navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
       }
       if (action === "terminate") {
-        toast.success(`${agent?.name ?? "Agent"} terminated`, {
-          description: "The agent was stopped and removed from the roster.",
-        });
+        pushToast({ title: `${agent?.name ?? "Agent"} terminated`, body: "The agent was stopped and removed from the roster.", tone: "success" });
         navigate("/agents");
       }
     },
@@ -330,7 +329,7 @@ export function AgentDetail() {
       const message = err instanceof Error ? err.message : "Action failed";
       setActionError(message);
       if (action === "terminate") {
-        toast.error("Failed to terminate agent", { description: message });
+        pushToast({ title: "Failed to terminate agent", body: message, tone: "error" });
       }
     },
   });
@@ -351,16 +350,14 @@ export function AgentDetail() {
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       setActionError(null);
-      toast.success("Agent session reset", {
-        description: "The next run starts a fresh session (no resumed context).",
-      });
+      pushToast({ title: "Agent session reset", body: "The next run starts a fresh session (no resumed context).", tone: "success" });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agentLookupRef) });
     },
     onError: (err) => {
       const message = err instanceof Error ? err.message : "Failed to reset session";
       setActionError(message);
-      toast.error("Failed to reset session", { description: message });
+      pushToast({ title: "Failed to reset session", body: message, tone: "error" });
     },
   });
 
@@ -508,7 +505,7 @@ export function AgentDetail() {
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
               navigator.clipboard.writeText(agent.id);
-              toast.success("Agent ID copied");
+              pushToast({ title: "Agent ID copied", tone: "success" });
               setMoreOpen(false);
             }}
           >

@@ -16,11 +16,8 @@ vi.mock("@/api/secrets", () => ({
   },
 }));
 
-vi.mock("@/lib/toast", () => ({
-  toast: {
-    success: vi.fn(),
-    error: vi.fn(),
-  },
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
 }));
 
 const providerConfig: CompanySecretProviderConfig = {
