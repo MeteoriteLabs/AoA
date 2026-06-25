@@ -197,6 +197,7 @@ export {
   envBindingSecretRefSchema,
   envBindingSchema,
   envConfigSchema,
+  readEnvBindingValue,
   createSecretSchema,
   rotateSecretSchema,
   updateSecretSchema,

@@ -28,6 +28,29 @@ export const envBindingSchema = z.union([
 
 export const envConfigSchema = z.record(envBindingSchema);
 
+/**
+ * Extract the effective value of an env binding for PRESENCE / auth-mode detection.
+ * Adapter env entries are normalized to binding objects on save, so a raw-string
+ * check alone misses a key the founder configured through the UI. Handles the three
+ * persisted shapes (matching {@link envBindingSchema}); returns null when blank/absent.
+ *   - legacy raw string               → the string (if non-blank)
+ *   - { type: "plain", value }        → value (if non-blank)
+ *   - { type: "secret_ref", secretId} → secretId (a presence marker — the real value
+ *                                       is resolved later, but the api-key INTENT is
+ *                                       already signaled by a bound secret)
+ * Used by codex auth-mode detection (provider-status) and the crew backfill guard so
+ * the binding-awareness lives in ONE place.
+ */
+export function readEnvBindingValue(value: unknown): string | null {
+  if (typeof value === "string") return value.trim().length > 0 ? value : null;
+  if (typeof value === "object" && value !== null) {
+    const b = value as { type?: unknown; value?: unknown; secretId?: unknown };
+    if (b.type === "plain" && typeof b.value === "string" && b.value.trim().length > 0) return b.value;
+    if (b.type === "secret_ref" && typeof b.secretId === "string" && b.secretId.length > 0) return b.secretId;
+  }
+  return null;
+}
+
 export const createSecretSchema = z.object({
   name: z.string().min(1),
   key: z.string().min(1).optional().nullable(),

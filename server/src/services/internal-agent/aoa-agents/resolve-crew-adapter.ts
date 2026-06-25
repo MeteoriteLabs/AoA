@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig } from "@armyofagents/db";
+import { readEnvBindingValue } from "@armyofagents/shared";
 import { DEFAULT_CODEX_CHAT_MODEL, isCodexCompatibleModel } from "../codex-model.js";
 
 /**
@@ -131,14 +132,9 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
  */
 function hasOwnOpenAiKey(env: unknown): boolean {
   if (typeof env !== "object" || env === null) return false;
-  const v = (env as Record<string, unknown>).OPENAI_API_KEY;
-  if (typeof v === "string") return v.trim().length > 0;
-  if (typeof v === "object" && v !== null) {
-    const b = v as { type?: unknown; value?: unknown; secretId?: unknown };
-    if (b.type === "plain") return typeof b.value === "string" && b.value.trim().length > 0;
-    if (b.type === "secret_ref") return typeof b.secretId === "string" && b.secretId.length > 0;
-  }
-  return false;
+  // Binding-aware (string / {type:"plain"} / {type:"secret_ref"}) via the shared
+  // helper, the same one codex auth-mode detection uses (provider-status).
+  return readEnvBindingValue((env as Record<string, unknown>).OPENAI_API_KEY) != null;
 }
 
 export function needsAdapterBackfill(

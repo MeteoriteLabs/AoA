@@ -1,3 +1,5 @@
+import { readEnvBindingValue } from "@armyofagents/shared";
+
 export type ProviderAuthMode = "subscription" | "chatgpt" | "apikey" | "unknown";
 
 export interface ProviderStatus {
@@ -42,7 +44,10 @@ export async function getProviderStatus(
 ): Promise<ProviderStatus> {
   if (adapterType === "codex_local") {
     const env = (ctx.adapterConfig.env ?? {}) as Record<string, unknown>;
-    const agentEnvApiKey = typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY : null;
+    // Codex P2: env entries are normalized to binding objects on save, so a raw
+    // string check misses a UI-configured per-agent key. readEnvBindingValue is
+    // binding-aware (string / {type:"plain"} / {type:"secret_ref"}).
+    const agentEnvApiKey = readEnvBindingValue(env.OPENAI_API_KEY);
     const home = deps.resolveManagedCodexHomeDir(process.env, ctx.companyId);
     const authJson = await deps.readAuthJson(home);
     const authMode = parseCodexAuthMode({ agentEnvApiKey, authJson });

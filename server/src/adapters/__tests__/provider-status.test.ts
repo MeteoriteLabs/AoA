@@ -52,6 +52,23 @@ describe("getProviderStatus (codex)", () => {
       { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: "sk-agent" } } }, deps);
     expect(s.authMode).toBe("apikey");
   });
+  it("a per-agent OPENAI_API_KEY stored as a normalized plain binding flips to apikey (Codex P2)", async () => {
+    // Saved adapter env entries are normalized to binding objects, so a raw-string
+    // check misses a UI-configured per-agent key → false managed-auth fallback.
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: { type: "plain", value: "sk-agent" } } } }, deps);
+    expect(s.authMode).toBe("apikey");
+  });
+  it("a per-agent OPENAI_API_KEY stored as a secret_ref binding flips to apikey (Codex P2)", async () => {
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" } } } }, deps);
+    expect(s.authMode).toBe("apikey");
+  });
+  it("a blank plain-binding OPENAI_API_KEY does NOT flip to apikey", async () => {
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: { type: "plain", value: "" } } } }, deps);
+    expect(s.authMode).toBe("chatgpt");
+  });
   it("propagates apikey auth_mode from the managed auth.json through to authenticated", async () => {
     const apikeyDeps = { ...deps, readAuthJson: async () => ({ auth_mode: "apikey" } as Record<string, unknown>) };
     const s = await getProviderStatus("codex_local",
