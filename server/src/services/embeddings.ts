@@ -1,4 +1,5 @@
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import fs from "node:fs";
 import OpenAI from "openai";
 import type { Db } from "@armyofagents/db";
 import {
@@ -328,10 +329,79 @@ export interface LlmEmbedder {
 const DEFAULT_EMBED_MODEL = "text-embedding-3-small";
 
 /**
+ * Check whether the fake embedder seam is active.
+ *
+ * Active iff ALL of:
+ *   - AOA_E2E_FAKE_EMBEDDER === "1"   (explicit opt-in)
+ *   - NODE_ENV !== "production"        (defense-in-depth: NEVER active in prod)
+ *
+ * Mirrors the pattern in fake-crew-llm.ts (isFakeCrewLlmEnabled).
+ */
+export function isFakeEmbedderEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AOA_E2E_FAKE_EMBEDDER === "1" && env.NODE_ENV !== "production";
+}
+
+/**
+ * Build the fake LlmEmbedder for CI/e2e use.
+ *
+ * Success path: returns a deterministic 1536-length vector derived from
+ * the text (no network call, no API key needed).
+ *
+ * Forced-error path: reads an optional JSON control file at
+ * AOA_E2E_FAKE_EMBEDDER_CONTROL. If it contains { fail: "systemic" },
+ * { fail: "transient" }, or { fail: "row_permanent" }, throws an error
+ * shaped so that classifyEmbeddingError returns the matching class.
+ *
+ * @internal — exported for the unit test only; callers should use
+ *   createOpenAiEmbedder (which returns this automatically when the guard fires).
+ */
+export function createFakeEmbedder(env: NodeJS.ProcessEnv = process.env): LlmEmbedder {
+  return {
+    async embed(text: string): Promise<number[]> {
+      // Read optional control file
+      const controlPath = env.AOA_E2E_FAKE_EMBEDDER_CONTROL;
+      if (controlPath) {
+        try {
+          const raw = fs.readFileSync(controlPath, "utf8");
+          const ctrl = JSON.parse(raw) as { fail?: string };
+          if (ctrl.fail === "systemic") {
+            throw Object.assign(new Error("fake systemic embedding error"), { status: 401 });
+          }
+          if (ctrl.fail === "transient") {
+            throw Object.assign(new Error("fake transient embedding error"), { status: 429 });
+          }
+          if (ctrl.fail === "row_permanent") {
+            throw Object.assign(new Error("fake row_permanent embedding error"), { status: 400 });
+          }
+        } catch (err: unknown) {
+          // Re-throw controlled errors; swallow file-read / JSON parse errors
+          const e = err as { status?: number };
+          if (typeof e.status === "number") throw err;
+        }
+      }
+
+      // Success: deterministic 1536-dim vector.
+      // Each element is a small value derived from the char code at that position
+      // (wrapping with modulo so all 1536 slots are filled). All values are finite
+      // floats — ranking quality is irrelevant in e2e, we only assert the vector
+      // is stored as a non-null row.
+      const vector = new Array<number>(EMBEDDING_DIMENSIONS);
+      const len = text.length || 1;
+      for (let i = 0; i < EMBEDDING_DIMENSIONS; i++) {
+        vector[i] = (text.charCodeAt(i % len) / 256) * (1 / (i + 1));
+      }
+      return vector;
+    },
+  };
+}
+
+/**
  * Single chokepoint for creating an OpenAI-backed LlmEmbedder.
  *
  * All production embedder creation (worker + sync path) goes through here.
- * Task T15 will inject a fake at this seam for testing without real API calls.
+ * Task T15: if the fake-embedder seam is active (AOA_E2E_FAKE_EMBEDDER=1 and
+ * NODE_ENV !== "production"), returns a deterministic fake that never touches
+ * the network, making embedding flows fully deterministic in CI/e2e.
  *
  * The OpenAI SDK constructor throws on a blank key, so we pass a placeholder
  * when `apiKey` is empty/missing — the auth error will surface at embed time
@@ -339,6 +409,11 @@ const DEFAULT_EMBED_MODEL = "text-embedding-3-small";
  * a key" boot behavior in the worker.
  */
 export function createOpenAiEmbedder(apiKey: string): LlmEmbedder {
+  // T15: fake embedder seam — active iff env opt-in AND not production.
+  if (isFakeEmbedderEnabled()) {
+    return createFakeEmbedder();
+  }
+
   const openai = new OpenAI({ apiKey: apiKey || "missing-openai-api-key" });
   return {
     async embed(text: string): Promise<number[]> {
