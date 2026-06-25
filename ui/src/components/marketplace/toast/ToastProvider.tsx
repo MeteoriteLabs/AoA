@@ -1,27 +1,21 @@
-import { createContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { createContext, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { useOperationStatus } from "@/hooks/useOperationStatus";
+import { useToast, type ToastTone } from "@/context/ToastContext";
 
-export interface ToastState {
-  id: number;
-  status: "installing" | "success" | "failure";
+export type InstallToastStatus = "installing" | "success" | "failure";
+
+export interface InstallToastInput {
+  status: InstallToastStatus;
   message: string;
   detail?: string;
   actionLabel?: string;
   actionTo?: string;
 }
 
-interface ToastContextValue {
-  toast: ToastState | null;
-  show: (toast: Omit<ToastState, "id">) => number;
-  update: (id: number, patch: Partial<Omit<ToastState, "id">>) => void;
-  trackOperation: (operation: InstallToastOperation) => void;
-  dismiss: () => void;
-}
-
 export interface InstallToastOperation {
-  toastId: number;
+  toastId: string;
   companyId: string;
   operationId: string;
   itemName: string;
@@ -32,82 +26,141 @@ export interface InstallToastOperation {
   startedAfter?: Date;
 }
 
-export const ToastContext = createContext<ToastContextValue | null>(null);
+interface InstallToastContextValue {
+  show: (input: InstallToastInput) => string;
+  update: (id: string, patch: Partial<InstallToastInput>) => void;
+  trackOperation: (operation: InstallToastOperation) => void;
+  dismiss: () => void;
+}
 
-let nextId = 1;
+export const InstallToastContext = createContext<InstallToastContextValue | null>(null);
 
-export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toast, setToast] = useState<ToastState | null>(null);
-  const [trackedOperation, setTrackedOperation] = useState<InstallToastOperation | null>(null);
-  const queryClient = useQueryClient();
+function statusToTone(status: InstallToastStatus): ToastTone {
+  return status === "installing" ? "loading" : status === "success" ? "success" : "error";
+}
 
-  const { data: operationStatus } = useOperationStatus({
-    companyId: trackedOperation?.companyId ?? null,
-    operationId: trackedOperation?.operationId ?? null,
-    startedAfter: trackedOperation?.startedAfter,
+function toAction(input: { actionLabel?: string; actionTo?: string }) {
+  return input.actionLabel && input.actionTo
+    ? { label: input.actionLabel, href: input.actionTo }
+    : undefined;
+}
+
+/**
+ * One tracker per active operation. Calling useOperationStatus inside a dedicated
+ * child (keyed by toastId) lets N concurrent installs each poll and resolve their
+ * OWN sticky loading toast. A single shared poll could only ever track one
+ * operation, leaving the others' loading toasts spinning forever.
+ */
+function OperationTracker({
+  operation,
+  onResolve,
+}: {
+  operation: InstallToastOperation;
+  onResolve: (operation: InstallToastOperation, patch: Partial<InstallToastInput>) => void;
+}) {
+  const { data } = useOperationStatus({
+    companyId: operation.companyId,
+    operationId: operation.operationId,
+    startedAfter: operation.startedAfter,
   });
-
-  const show = useCallback((next: Omit<ToastState, "id">) => {
-    const id = nextId++;
-    setToast({ id, ...next });
-    return id;
-  }, []);
-
-  const update = useCallback((id: number, patch: Partial<Omit<ToastState, "id">>) => {
-    setToast((prev) => (prev && prev.id === id ? { ...prev, ...patch } : prev));
-  }, []);
-
-  const trackOperation = useCallback((operation: InstallToastOperation) => {
-    setTrackedOperation(operation);
-  }, []);
-
-  const dismiss = useCallback(() => setToast(null), []);
+  const resolvedRef = useRef(false);
 
   useEffect(() => {
-    if (!trackedOperation || !operationStatus) return;
-    if (operationStatus.status === "success") {
-      update(trackedOperation.toastId, {
+    if (!data || resolvedRef.current) return;
+    if (data.status === "success") {
+      resolvedRef.current = true;
+      onResolve(operation, {
         status: "success",
-        message: trackedOperation.successMessage ?? `Installed ${trackedOperation.itemName}`,
+        message: operation.successMessage ?? `Installed ${operation.itemName}`,
       });
-    } else if (operationStatus.status === "requested") {
-      update(trackedOperation.toastId, {
+    } else if (data.status === "requested") {
+      resolvedRef.current = true;
+      onResolve(operation, {
         status: "success",
         message:
-          trackedOperation.requestedMessage ??
-          `Request submitted - a founder will review ${trackedOperation.itemName}`,
+          operation.requestedMessage ??
+          `Request submitted - a founder will review ${operation.itemName}`,
       });
-    } else if (operationStatus.status === "failure") {
-      update(trackedOperation.toastId, {
+    } else if (data.status === "failure") {
+      resolvedRef.current = true;
+      onResolve(operation, {
         status: "failure",
-        message: trackedOperation.failureMessage ?? `Failed to install ${trackedOperation.itemName}`,
-        detail: operationStatus.errorMessage ?? "Unknown error",
-      });
-    } else {
-      return;
-    }
-
-    if (trackedOperation.invalidate === "plugins") {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-    } else if (trackedOperation.invalidate === "companySkills") {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.companySkills.list(trackedOperation.companyId),
+        message: operation.failureMessage ?? `Failed to install ${operation.itemName}`,
+        detail: data.errorMessage ?? "Unknown error",
       });
     }
-    setTrackedOperation(null);
-  }, [operationStatus, queryClient, trackedOperation, update]);
+  }, [data, onResolve, operation]);
 
-  // Auto-dismiss success/failure after 3s
-  useEffect(() => {
-    if (!toast) return;
-    if (toast.status === "installing") return;
-    const t = setTimeout(() => setToast(null), 3000);
-    return () => clearTimeout(t);
-  }, [toast]);
+  return null;
+}
+
+export function InstallToastProvider({ children }: { children: ReactNode }) {
+  const { pushToast, updateToast, dismissToast } = useToast();
+  const [operations, setOperations] = useState<InstallToastOperation[]>([]);
+  const lastIdRef = useRef<string | null>(null);
+  const queryClient = useQueryClient();
+
+  const show = useCallback(
+    (input: InstallToastInput) => {
+      const id =
+        pushToast({
+          tone: statusToTone(input.status),
+          title: input.message,
+          body: input.detail,
+          action: toAction(input),
+        }) ?? "";
+      lastIdRef.current = id;
+      return id;
+    },
+    [pushToast],
+  );
+
+  const update = useCallback(
+    (id: string, patch: Partial<InstallToastInput>) => {
+      updateToast(id, {
+        ...(patch.status ? { tone: statusToTone(patch.status) } : {}),
+        ...(patch.message !== undefined ? { title: patch.message } : {}),
+        ...(patch.detail !== undefined ? { body: patch.detail } : {}),
+        ...(patch.actionLabel && patch.actionTo ? { action: toAction(patch) } : {}),
+      });
+    },
+    [updateToast],
+  );
+
+  const trackOperation = useCallback((operation: InstallToastOperation) => {
+    setOperations((prev) => [
+      ...prev.filter((o) => o.toastId !== operation.toastId),
+      operation,
+    ]);
+  }, []);
+
+  // Dismisses the most-recently shown install toast (matches the old single-toast
+  // dismiss intent; each toast also carries its own close button).
+  const dismiss = useCallback(() => {
+    if (lastIdRef.current) dismissToast(lastIdRef.current);
+  }, [dismissToast]);
+
+  const handleResolve = useCallback(
+    (operation: InstallToastOperation, patch: Partial<InstallToastInput>) => {
+      update(operation.toastId, patch);
+      if (operation.invalidate === "plugins") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
+      } else if (operation.invalidate === "companySkills") {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.list(operation.companyId),
+        });
+      }
+      setOperations((prev) => prev.filter((o) => o.toastId !== operation.toastId));
+    },
+    [queryClient, update],
+  );
 
   return (
-    <ToastContext.Provider value={{ toast, show, update, trackOperation, dismiss }}>
+    <InstallToastContext.Provider value={{ show, update, trackOperation, dismiss }}>
       {children}
-    </ToastContext.Provider>
+      {operations.map((op) => (
+        <OperationTracker key={op.toastId} operation={op} onResolve={handleResolve} />
+      ))}
+    </InstallToastContext.Provider>
   );
 }
