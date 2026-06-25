@@ -30,9 +30,12 @@ concurrency:
 
 jobs:
   # Cheap change-detector: decides whether the heavy suite needs to run.
-  # docs-only (code=false) iff EVERY changed file is under docs/ or is a *.md
-  # OUTSIDE .github/. Any .github/** file, or any other path, => code=true =>
-  # full CI. On push (main) code is always true. Skips on draft (zero CI).
+  # docs-only (code=false) iff EVERY changed file is under docs/ or is a
+  # ROOT-LEVEL *.md (README/CLAUDE/AGENTS). Any .github/** file, any nested
+  # *.md (runtime assets like server/src/onboarding-assets/**/*.md, fixtures,
+  # package READMEs), or any other path => code=true => full CI. Uses
+  # --no-renames so a code file moved into docs/ still classifies its (deleted)
+  # source as code. On push (main) code is always true. Skips on draft.
   changes:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
@@ -52,7 +55,7 @@ jobs:
             echo "push event -> code=true"
             exit 0
           fi
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          changed="$(git diff --no-renames --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if [ -z "$changed" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "empty diff -> code=true (fail safe)"
@@ -61,8 +64,9 @@ jobs:
           code=false
           if printf '%s\n' "$changed" | grep -qE '^\.github/'; then
             code=true        # any .github/** file (incl .github/*.md) => full CI
-          elif printf '%s\n' "$changed" | grep -qEv '^docs/|\.md$'; then
-            code=true        # any file that is not under docs/ and not a *.md
+          elif printf '%s\n' "$changed" | grep -qEv '^docs/|^[^/]+\.md$'; then
+            code=true        # anything not under docs/ and not a ROOT-LEVEL *.md
+                             # (nested .md may be runtime assets/fixtures => code)
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "changed files:"; printf '%s\n' "$changed"
