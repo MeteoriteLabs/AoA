@@ -310,6 +310,26 @@ export async function ensureCommandResolvable(command: string, cwd: string, env:
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+/**
+ * Build a child-process environment from the parent env + an overlay, with an
+ * opt-in strip of inherited keys. A key in `unsetEnvKeys` is removed from the
+ * result ONLY if the overlay did not set it — so an agent's own value (even an
+ * explicit empty string) survives while an ambient (server-process) value is
+ * dropped. Used to keep the AoA server's OPENAI_API_KEY out of agent runs
+ * (codex opts in); default behavior (no `unsetEnvKeys`) is unchanged.
+ */
+export function mergeChildEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  overlayEnv: Record<string, string>,
+  unsetEnvKeys?: string[],
+): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...parentEnv, ...overlayEnv };
+  for (const key of unsetEnvKeys ?? []) {
+    if (!Object.prototype.hasOwnProperty.call(overlayEnv, key)) delete merged[key];
+  }
+  return merged;
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -329,12 +349,14 @@ export async function runChildProcess(
      */
     onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
     shell?: boolean;
+    /** Keys to strip from the inherited parent env (unless `env` set them). */
+    unsetEnvKeys?: string[];
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
