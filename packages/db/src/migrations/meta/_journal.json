@@ -1051,6 +1051,13 @@
       "when": 1782046965724,
       "tag": "0149_fresh_warlock",
       "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1782379063143,
+      "tag": "0150_sloppy_whizzer",
+      "breakpoints": true
     }
   ]
 }

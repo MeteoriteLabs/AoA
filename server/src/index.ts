@@ -52,6 +52,7 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { backfillQueueCompanyIds } from "./services/embeddings-backfill.js";
 import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
 import { initThreadEventListener } from "./services/thread-events.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
@@ -893,6 +894,19 @@ setInterval(() => {
 }, WORKER_INTERVAL_MS);
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
+
+// Idempotent backfill: stamp company_id onto pre-keyless embedding_queue rows
+// so the per-company key resolver (Task 10) can look up the right key.
+// Best-effort — a failure here must NOT block server startup.
+void backfillQueueCompanyIds(db as any)
+  .then((res) => {
+    if (res.updated > 0) {
+      logger.info({ updated: res.updated }, "embedding_queue company_id backfill complete");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "embedding_queue company_id backfill failed"),
+  );
 
 // Write-behind embedding queue worker (Task B1, Decision D2).
 // Drains rows from `embedding_queue` and UPDATEs the target row's vector
