@@ -167,7 +167,7 @@ export const findSimilarThreadsTool: AgentTool = {
 
     let vector: number[];
     try {
-      vector = await embedSync(text);
+      vector = await embedSync(text, ctx.companyId);
     } catch (err: any) {
       return {
         success: false,

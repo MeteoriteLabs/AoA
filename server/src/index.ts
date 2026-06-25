@@ -53,6 +53,7 @@ import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
 import { backfillQueueCompanyIds } from "./services/embeddings-backfill.js";
+import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
 import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
 import { initThreadEventListener } from "./services/thread-events.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
@@ -908,13 +909,26 @@ void backfillQueueCompanyIds(db as any)
     logger.warn({ err }, "embedding_queue company_id backfill failed"),
   );
 
-// Write-behind embedding queue worker (Task B1, Decision D2).
+// Write-behind embedding queue worker (Task B1 + Task 10, Decision D2).
 // Drains rows from `embedding_queue` and UPDATEs the target row's vector
-// column. The worker tolerates a missing OPENAI_API_KEY (warns but stays
-// registered so any queued rows surface as auth errors via the normal
-// retry path). 2-second tick is fast enough to keep find-similar staleness
-// to a few seconds for typical traffic.
-const embeddingWorker = startEmbeddingWorker(db as any, { intervalMs: 2000 });
+// column. Per-company key resolution: each row's companyId is used to look
+// up the company's `llm:openai` Settings secret, falling back to the env
+// OPENAI_API_KEY. Rows with no resolvable key are left pending (not failed)
+// until a key is configured. 2-second tick is fast enough to keep
+// find-similar staleness to a few seconds for typical traffic.
+const embeddingWorker = startEmbeddingWorker(db as any, {
+  intervalMs: 2000,
+  resolveCompanyKey: async (companyId: string | null): Promise<string | null> => {
+    if (companyId) {
+      try {
+        return await getProviderApiKey(db as any, companyId, "openai");
+      } catch {
+        // No key in company_secrets — fall through to env fallback.
+      }
+    }
+    return process.env.OPENAI_API_KEY ?? null;
+  },
+});
 // Best-effort stop on SIGTERM/SIGINT — the shared shutdown handlers below
 // already exit the process, but this lets the in-flight tick log cleanly.
 process.once("SIGTERM", () => embeddingWorker.stop());

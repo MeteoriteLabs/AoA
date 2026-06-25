@@ -1,5 +1,4 @@
 // server/src/services/internal-agent/service-container.ts
-import OpenAI from "openai";
 import type { Db } from "@armyofagents/db";
 import type { ServiceContainer } from "./types.js";
 import { issueService } from "../issues.js";
@@ -21,9 +20,13 @@ import { taskOutputService } from "../task-outputs.js";
 import { companyService } from "../companies.js";
 import {
   createEmbeddingService,
+  createOpenAiEmbedder,
   type EmbeddingService,
 } from "../embeddings.js";
+import { getProviderApiKey } from "./providers/index.js";
 import { logger } from "../../middleware/logger.js";
+
+const serviceLog = logger.child({ service: "service-container" });
 
 /**
  * Embedding model used for the synchronous `embedSync` path. Matches the
@@ -32,7 +35,7 @@ import { logger } from "../../middleware/logger.js";
  * — the same shape the `discussions.summary_embedding` and
  * `memory_items.embedding` columns store.
  */
-const SYNC_EMBEDDING_MODEL = "text-embedding-3-small";
+// SYNC_EMBEDDING_MODEL is now encapsulated inside createOpenAiEmbedder (DEFAULT_EMBED_MODEL).
 
 /**
  * Lazily-built embedding service used to back `ctx.services.embeddings` in
@@ -42,6 +45,12 @@ const SYNC_EMBEDDING_MODEL = "text-embedding-3-small";
  * so synchronous `embedSync` calls succeed; the write-behind queue is
  * separately drained by the worker.
  *
+ * Per-company key resolution (Task 10):
+ *   `embedSync(text, companyId)` resolves the key for `companyId` via
+ *   `getProviderApiKey(db, companyId, "openai")` (Settings llm:openai →
+ *   env OPENAI_API_KEY). When no key resolves, the call returns null/throws
+ *   and callers surface EMBEDDINGS_UNAVAILABLE gracefully.
+ *
  * Why a per-db Map instead of a single module-level singleton:
  *   - Tests build multiple ServiceContainer instances against different
  *     mock `db` handles. A single singleton would alias them.
@@ -49,53 +58,121 @@ const SYNC_EMBEDDING_MODEL = "text-embedding-3-small";
  *     practice — no memory pressure.
  *
  * Why memoize at all instead of building per-request:
- *   - Each `new OpenAI(...)` allocates an HTTP keepalive agent + parses
- *     config. ServiceContainer is built per request in `routes/internal-
- *     agent.ts`, so building a fresh service per request would churn.
+ *   - The service handle itself is cheap; the per-company embedder is built
+ *     lazily at `embedSync` time and cached by resolved key. ServiceContainer
+ *     is built per request in `routes/internal-agent.ts`, so building a fresh
+ *     service per request is fine — the embedder cache inside it handles
+ *     the real work.
  *
- * Returns `undefined` when `OPENAI_API_KEY` is missing — tools then surface
- * `EMBEDDINGS_UNAVAILABLE` gracefully (matches the test/dev environment
- * behavior that batch 1 was designed against).
+ * Returns `undefined` when `OPENAI_API_KEY` is missing AND `db` is unavailable
+ * for company-secret lookup — tools then surface `EMBEDDINGS_UNAVAILABLE`
+ * gracefully (matches the test/dev environment behavior).
  */
 const embeddingServiceCache = new WeakMap<Db, EmbeddingService>();
 let warnedMissingKey = false;
+
+/**
+ * Build an EmbeddingService whose `embedSync` resolves a per-company OpenAI
+ * key at call time, using Settings `llm:openai` → env `OPENAI_API_KEY`.
+ *
+ * The returned service's `embedSync(text, companyId)` will:
+ *   1. Try `getProviderApiKey(db, companyId, "openai")` (Settings secret).
+ *   2. Fall back to `process.env.OPENAI_API_KEY`.
+ *   3. Throw if neither is set — callers catch and surface EMBEDDINGS_UNAVAILABLE.
+ *
+ * Embedders are cached by resolved key within the service instance lifetime
+ * so repeated calls from the same company don't re-allocate the OpenAI SDK.
+ */
+function buildPerCompanyEmbeddingService(db: Db): EmbeddingService {
+  // Cache of apiKey → LlmEmbedder. Built lazily at embedSync time.
+  const embedderByKey = new Map<string, ReturnType<typeof createOpenAiEmbedder>>();
+
+  // A placeholder LlmEmbedder injected into createEmbeddingService. The base
+  // service's `llm` is only used when `embedSync` is called WITHOUT a companyId
+  // (legacy callers). In practice all callers pass companyId in T10+.
+  const fallbackEmbedder = {
+    async embed(text: string): Promise<number[]> {
+      const key = process.env.OPENAI_API_KEY;
+      if (!key) {
+        throw new Error(
+          "No OpenAI API key available. Configure llm:openai in Settings → LLM Providers or set OPENAI_API_KEY.",
+        );
+      }
+      let embedder = embedderByKey.get(key);
+      if (!embedder) {
+        embedder = createOpenAiEmbedder(key);
+        embedderByKey.set(key, embedder);
+      }
+      return embedder.embed(text);
+    },
+  };
+
+  const base = createEmbeddingService(db, fallbackEmbedder);
+
+  // Wrap embedSync to resolve per-company key.
+  return {
+    ...base,
+    async embedSync(text: string, companyId?: string | null): Promise<number[]> {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        throw new Error("Cannot generate embedding for empty text");
+      }
+
+      let apiKey: string | null = null;
+
+      if (companyId) {
+        try {
+          apiKey = await getProviderApiKey(db, companyId, "openai");
+        } catch {
+          // No key in company_secrets; fall through to env fallback below.
+        }
+      }
+
+      if (!apiKey) {
+        // Env fallback (covers both no-companyId path and missing-secret path).
+        apiKey = process.env.OPENAI_API_KEY ?? null;
+      }
+
+      if (!apiKey) {
+        throw new Error(
+          "No OpenAI API key available. Configure llm:openai in Settings → LLM Providers or set OPENAI_API_KEY.",
+        );
+      }
+
+      let embedder = embedderByKey.get(apiKey);
+      if (!embedder) {
+        embedder = createOpenAiEmbedder(apiKey);
+        embedderByKey.set(apiKey, embedder);
+      }
+
+      return embedder.embed(trimmed);
+    },
+  };
+}
 
 function getOrCreateEmbeddingService(db: Db): EmbeddingService | undefined {
   const cached = embeddingServiceCache.get(db);
   if (cached) return cached;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    if (!warnedMissingKey) {
-      // Log once per process lifetime to avoid spamming the log on every
-      // request. Tools that need the service will surface
-      // EMBEDDINGS_UNAVAILABLE; this log explains why.
-      logger
-        .child({ service: "service-container" })
-        .warn(
-          "OPENAI_API_KEY is not set — services.embeddings unavailable. " +
-            "find_similar_threads + find_similar_memory_hnsw will return EMBEDDINGS_UNAVAILABLE. " +
-            "Set OPENAI_API_KEY to enable semantic search from tools.",
-        );
-      warnedMissingKey = true;
-    }
-    return undefined;
+  // Check whether ANY key is available (env only; company secrets are resolved
+  // at embedSync time). If neither env key nor company secrets path could ever
+  // work, log once and return undefined so tools get EMBEDDINGS_UNAVAILABLE.
+  // We can't know at construction time whether a company has a secret, so we
+  // always build the service and let embedSync throw if no key resolves.
+  const hasEnvKey = Boolean(process.env.OPENAI_API_KEY);
+  if (!hasEnvKey && !warnedMissingKey) {
+    // Log once per process lifetime to avoid spamming the log on every request.
+    // If a company has configured llm:openai in Settings, embedSync will still
+    // succeed even without the env key. This is just an advisory log.
+    serviceLog.warn(
+      "OPENAI_API_KEY is not set — find_similar_threads + find_similar_memory_hnsw will " +
+        "use per-company Settings keys (llm:openai). If no company has configured a key, " +
+        "those tools will return EMBEDDINGS_UNAVAILABLE.",
+    );
+    warnedMissingKey = true;
   }
 
-  const openai = new OpenAI({ apiKey });
-  const service = createEmbeddingService(db, {
-    async embed(text: string) {
-      const r = await openai.embeddings.create({
-        model: SYNC_EMBEDDING_MODEL,
-        input: text,
-      });
-      const embedding = r.data[0]?.embedding;
-      if (!embedding) {
-        throw new Error("OpenAI returned no embedding data");
-      }
-      return embedding as number[];
-    },
-  });
+  const service = buildPerCompanyEmbeddingService(db);
   embeddingServiceCache.set(db, service);
   return service;
 }

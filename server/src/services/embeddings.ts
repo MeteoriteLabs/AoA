@@ -1,4 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
+import OpenAI from "openai";
 import type { Db } from "@armyofagents/db";
 import {
   memoryItems,
@@ -231,6 +232,36 @@ export interface LlmEmbedder {
   embed(text: string): Promise<number[]>;
 }
 
+const DEFAULT_EMBED_MODEL = "text-embedding-3-small";
+
+/**
+ * Single chokepoint for creating an OpenAI-backed LlmEmbedder.
+ *
+ * All production embedder creation (worker + sync path) goes through here.
+ * Task T15 will inject a fake at this seam for testing without real API calls.
+ *
+ * The OpenAI SDK constructor throws on a blank key, so we pass a placeholder
+ * when `apiKey` is empty/missing — the auth error will surface at embed time
+ * rather than at construction time. This preserves the "register even without
+ * a key" boot behavior in the worker.
+ */
+export function createOpenAiEmbedder(apiKey: string): LlmEmbedder {
+  const openai = new OpenAI({ apiKey: apiKey || "missing-openai-api-key" });
+  return {
+    async embed(text: string): Promise<number[]> {
+      const r = await openai.embeddings.create({
+        model: DEFAULT_EMBED_MODEL,
+        input: text,
+      });
+      const embedding = r.data[0]?.embedding;
+      if (!embedding) {
+        throw new Error("OpenAI returned no embedding data");
+      }
+      return embedding as number[];
+    },
+  };
+}
+
 export type EmbeddingTargetTable =
   | "memory_items"
   | "discussions"
@@ -242,17 +273,34 @@ export interface EnqueueParams {
   /** snake_case vector column name, e.g. 'embedding' or 'summary_embedding' */
   targetColumn: string;
   inputText: string;
+  /** Company that owns this row — used by the worker to resolve a per-company key. */
+  companyId?: string | null;
 }
 
 export interface ProcessQueueOpts {
   batchSize?: number;
   maxAttempts?: number;
+  /**
+   * Per-company key resolver. Called once per unique company per processQueue()
+   * tick. Resolution order: company Settings secret `llm:openai` → env
+   * `OPENAI_API_KEY` → null.
+   *
+   * When null is returned for a company, all rows for that company are LEFT
+   * PENDING (not failed, attempts not bumped). This preserves the row for the
+   * next tick when a key may have been configured.
+   *
+   * When omitted (legacy / test path), `processQueue` falls back to a single
+   * `llm` embedder (the one passed to `createEmbeddingService`).
+   */
+  resolveCompanyKey?: (companyId: string | null) => Promise<string | null>;
 }
 
 export interface ProcessQueueResult {
   processed: number;
   failed: number;
   remaining: number;
+  /** Rows skipped because no key was resolved for their company. */
+  skipped: number;
 }
 
 const TARGET_TABLE_MAP = {
@@ -305,8 +353,15 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
      * Cost note: each call costs one OpenAI API request. Callers should
      * avoid calling this in hot loops; for batch use cases, batch via
      * `generateEmbeddingsBatch` directly.
+     *
+     * @param text       - Query text to embed.
+     * @param _companyId - Company context (used by service-container to resolve
+     *                     the right per-company key before calling embed). The
+     *                     base service ignores this because `llm` is already
+     *                     bound to the correct key by the caller. Present here
+     *                     so the interface is uniform with the container wrapper.
      */
-    async embedSync(text: string): Promise<number[]> {
+    async embedSync(text: string, _companyId?: string | null): Promise<number[]> {
       const trimmed = text.trim();
       if (!trimmed) {
         throw new Error("Cannot generate embedding for empty text");
@@ -330,6 +385,7 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           targetId: params.targetId,
           targetColumn: params.targetColumn,
           inputText: params.inputText,
+          companyId: params.companyId ?? null,
           status: "pending",
         })
         .returning({ id: embeddingQueue.id });
@@ -340,6 +396,14 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
      * Pull a batch of pending rows, embed each, and UPDATE the target
      * vector column. Failures bump `attempts` and either re-queue or mark
      * 'failed' once `maxAttempts` is reached.
+     *
+     * Per-company key resolution (Task 10):
+     *   When `opts.resolveCompanyKey` is provided, this function resolves a
+     *   key for each row's `companyId` before embedding. Embedders are
+     *   built and cached per resolved key within a single tick (i.e., two
+     *   rows from the same company share one OpenAI SDK instance). Rows whose
+     *   company has no key are LEFT PENDING — attempts are NOT bumped — so
+     *   they'll be picked up again on the next tick once a key is configured.
      *
      * Worker loop guarantees:
      *   - Per-row: marks row 'processing' before embedding so a concurrent
@@ -352,8 +416,10 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
     async processQueue(opts: ProcessQueueOpts = {}): Promise<ProcessQueueResult> {
       const batchSize = opts.batchSize ?? 50;
       const maxAttempts = opts.maxAttempts ?? 3;
+      const resolveCompanyKey = opts.resolveCompanyKey;
       let processed = 0;
       let failed = 0;
+      let skipped = 0;
 
       const pending = await db
         .select()
@@ -361,7 +427,46 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
         .where(eq(embeddingQueue.status, "pending"))
         .limit(batchSize);
 
+      // Per-tick embedder cache: key → LlmEmbedder.
+      // Avoids rebuilding the OpenAI SDK (+ keepalive agent) for each row when
+      // multiple rows from the same company land in the same batch.
+      const embedderByKey = new Map<string, LlmEmbedder>();
+      // Track which companyIds have been logged "no key" this tick so we
+      // don't spam the log for every row in the batch.
+      const loggedNoKey = new Set<string>();
+
       for (const item of pending) {
+        // ── Per-company key resolution ────────────────────────────────────
+        let embedder: LlmEmbedder;
+        if (resolveCompanyKey) {
+          const key = await resolveCompanyKey(item.companyId ?? null);
+          if (!key) {
+            // No key for this company — leave the row pending this tick.
+            const logId = item.companyId ?? "__null__";
+            if (!loggedNoKey.has(logId)) {
+              loggedNoKey.add(logId);
+              queueLog.warn(
+                { companyId: item.companyId, queueId: item.id },
+                "no OpenAI key resolved for company — leaving queue rows pending (configure llm:openai in Settings or set OPENAI_API_KEY)",
+              );
+            }
+            // Reset status to pending (it hasn't been marked processing yet).
+            skipped++;
+            continue;
+          }
+          // Cache by resolved key (not companyId) so two companies with the
+          // same env-fallback key share one SDK instance.
+          let cached = embedderByKey.get(key);
+          if (!cached) {
+            cached = createOpenAiEmbedder(key);
+            embedderByKey.set(key, cached);
+          }
+          embedder = cached;
+        } else {
+          // Legacy path: use the single llm embedder injected at construction.
+          embedder = llm;
+        }
+
         try {
           // Mark processing so concurrent workers don't pick it up.
           await db
@@ -376,7 +481,7 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
             throw new Error(`Unknown target table: ${item.targetTable}`);
           }
 
-          const vector = await llm.embed(item.inputText);
+          const vector = await embedder.embed(item.inputText);
 
           await updateVectorColumn(
             db,
@@ -427,7 +532,8 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
       return {
         processed,
         failed,
-        remaining: pending.length - processed - failed,
+        remaining: pending.length - processed - failed - skipped,
+        skipped,
       };
     },
   };

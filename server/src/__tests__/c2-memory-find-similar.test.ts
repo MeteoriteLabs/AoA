@@ -67,7 +67,7 @@ describe("find_similar_memory_hnsw tool (C2 batch 3)", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual(rows);
     expect(embedSync).toHaveBeenCalledOnce();
-    expect(embedSync).toHaveBeenCalledWith("billing config");
+    expect(embedSync).toHaveBeenCalledWith("billing config", "co-1");
     expect(result.summary).toContain("2");
   });
 
