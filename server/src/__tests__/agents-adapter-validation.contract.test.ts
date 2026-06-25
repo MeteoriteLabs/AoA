@@ -118,8 +118,9 @@ vi.mock("@armyofagents/adapter-cursor-local", () => ({
   DEFAULT_CURSOR_LOCAL_MODEL: "claude-sonnet-4-20250514",
 }));
 
+const mockEnsureOpenCode = vi.hoisted(() => vi.fn());
 vi.mock("@armyofagents/adapter-opencode-local/server", () => ({
-  ensureOpenCodeModelConfiguredAndAvailable: vi.fn(),
+  ensureOpenCodeModelConfiguredAndAvailable: mockEnsureOpenCode,
 }));
 
 // ── Route + error-handler imports (after all mocks) ───────────────────────────
@@ -178,6 +179,8 @@ describe("agents PATCH — auth-mismatch soft-warn contract (Unit C)", () => {
       authMode: "chatgpt",
       defaultModelResolved: "gpt-5.5",
     });
+    // OpenCode's own validation passes by default; per-test overrides reject.
+    mockEnsureOpenCode.mockResolvedValue([]);
   });
 
   it("200 with warnings[] when model would be corrected for chatgpt auth mode", async () => {
@@ -237,5 +240,104 @@ describe("agents PATCH — auth-mismatch soft-warn contract (Unit C)", () => {
     expect(res.status).toBe(400);
     // Response should carry a validation error hint
     expect(res.body.error).toBeDefined();
+  });
+
+  // ── Codex finding ②: adapter/model family mismatch on PATCH (route hard-block) ──
+  // The schema can't catch these (no model in the body, or no adapterType in the body),
+  // so the route must validate the EFFECTIVE (new adapter + existing/effective model).
+
+  it("422 — adapterType-only switch to claude_local leaves a persisted gpt model", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterType: "claude_local" });
+    expect(res.status).toBe(422);
+    expect(String(res.body.error)).toMatch(/does not match adapter claude_local/i);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("422 — adapterType-only switch to gemini_local leaves a persisted gpt model", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterType: "gemini_local" });
+    expect(res.status).toBe(422);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("422 — model-only PATCH to a claude model against the existing codex adapter", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterConfig: { model: "claude-sonnet-4-5" } });
+    expect(res.status).toBe(422);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("200 — switch to claude_local WITH a compatible claude model (update called)", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    mockAgentService.update.mockResolvedValue({
+      ...existingCodexAgent,
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-4-5" },
+    });
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-5" } });
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
+  });
+
+  it("not 422 — switch to claude_local with adapterConfig:{} (clears the old model)", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    mockAgentService.update.mockResolvedValue({
+      ...existingCodexAgent,
+      adapterType: "claude_local",
+      adapterConfig: {},
+    });
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterType: "claude_local", adapterConfig: {} });
+    expect(res.status).not.toBe(422);
+  });
+
+  it("not 422 — model-only PATCH to a compatible gpt model (guard does not overblock)", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    mockAgentService.update.mockResolvedValue({
+      ...existingCodexAgent,
+      adapterConfig: { model: "gpt-5.6" },
+    });
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterConfig: { model: "gpt-5.6" } });
+    expect(res.status).not.toBe(422);
+  });
+
+  // ── Codex finding ①: OpenCode is multi-provider at the route level ──
+  it("not 422 — switch to opencode_local + anthropic/claude reaches OpenCode's own check", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    mockEnsureOpenCode.mockResolvedValue([]);
+    mockAgentService.update.mockResolvedValue({
+      ...existingCodexAgent,
+      adapterType: "opencode_local",
+      adapterConfig: { model: "anthropic/claude-sonnet-4-5" },
+    });
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterType: "opencode_local", adapterConfig: { model: "anthropic/claude-sonnet-4-5" } });
+    expect(res.status).not.toBe(422);
+    expect(mockEnsureOpenCode).toHaveBeenCalled();
+  });
+
+  it("422 — opencode_local model that OpenCode rejects surfaces OpenCode's error", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCodexAgent);
+    mockEnsureOpenCode.mockRejectedValue(
+      new Error("Configured OpenCode model is unavailable: anthropic/claude-x"),
+    );
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterType: "opencode_local", adapterConfig: { model: "anthropic/claude-x" } });
+    expect(res.status).toBe(422);
+    expect(String(res.body.error)).toMatch(/opencode/i);
   });
 });

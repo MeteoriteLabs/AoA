@@ -18,6 +18,7 @@ import {
   upsertAgentInstructionsFileSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  adapterModelFamilyMismatch,
   type InstanceSchedulerHeartbeatAgent,
   type WakeAgent,
 } from "@armyofagents/shared";
@@ -1420,6 +1421,19 @@ export function agentRoutes(db: Db) {
         rawEffectiveAdapterConfig,
         { strictMode: strictSecretsMode },
       );
+      // Codex finding ②: the schema's cross-family refinement can't see the EFFECTIVE
+      // model on an adapter-only PATCH (no model in the body) or a model-only PATCH
+      // (no adapterType in the body). Hard-block a persisted-model/new-adapter mismatch
+      // here so we never persist e.g. claude_local + a gpt model. (opencode_local is
+      // exempt — adapterModelFamilyMismatch returns null for it.)
+      const familyMismatch = adapterModelFamilyMismatch(
+        requestedAdapterType,
+        asNonEmptyString(effectiveAdapterConfig.model) ?? undefined,
+      );
+      if (familyMismatch) {
+        res.status(422).json({ error: familyMismatch });
+        return;
+      }
       adapterWarnings = await assertAdapterConfigConstraints(
         existing.companyId,
         requestedAdapterType,
