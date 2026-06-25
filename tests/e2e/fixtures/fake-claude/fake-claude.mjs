@@ -71,28 +71,38 @@ function emit(obj) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Drain stdin so the parent's writable end closes cleanly; the content is
-// captured for the invocation record. Must happen synchronously before the
-// async main() so recording completes even if main() exits early.
+// Capture argv + stdin for the invocation record WITHOUT blocking. The real
+// cli-mode spawns claude one-shot per turn but does NOT always close claude's
+// stdin (today the prompt rides argv and the stdin pipe is left open), so a
+// synchronous readFileSync(0) would DEADLOCK here: the parent waits for our
+// stdout before it would ever close stdin, and we'd be waiting for stdin EOF.
+// Accumulate stdin asynchronously instead and write the record just before exit.
+const argv = process.argv.slice(2);
 let stdinContent = "";
 try {
-  stdinContent = fs.readFileSync(0, "utf8");
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    stdinContent += chunk;
+  });
+  process.stdin.on("error", () => {
+    /* stdin may not be readable — fine */
+  });
 } catch {
   /* no stdin attached — fine */
 }
 
-const argv = process.argv.slice(2);
-
-// Record the invocation so specs can assert the real cli-mode contract.
-// Best-effort, never fatal.
-try {
-  fs.appendFileSync(
-    INVOCATIONS_PATH,
-    JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd() }) + "\n",
-    "utf8",
-  );
-} catch {
-  /* recording is best-effort */
+// Best-effort, never fatal. Called right before exit so any stdin the parent
+// piped in (the prompt, post-stdin-delivery) has been received during the turn.
+function recordInvocation() {
+  try {
+    fs.appendFileSync(
+      INVOCATIONS_PATH,
+      JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd() }) + "\n",
+      "utf8",
+    );
+  } catch {
+    /* recording is best-effort */
+  }
 }
 
 function readControl() {
@@ -224,8 +234,12 @@ async function main() {
 }
 
 main().then(
-  () => process.exit(0),
+  () => {
+    recordInvocation();
+    process.exit(0);
+  },
   (err) => {
+    recordInvocation();
     process.stderr.write(`fake-claude failed: ${err?.stack ?? err}\n`);
     process.exit(1);
   },
