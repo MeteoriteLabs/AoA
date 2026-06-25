@@ -101,4 +101,23 @@ describe("AgentSkillsTab — concurrency guard", () => {
     await waitFor(() => expect(row("Skill B")).toHaveAttribute("aria-pressed", "true"));
     expect(row("Skill A")).toHaveAttribute("aria-pressed", "false");
   });
+
+  // Codex P2: an attached key whose library skill was deleted must stay visible and
+  // removable — otherwise it's invisible but rides along in every PATCH.
+  it("surfaces an attached skill key missing from the library and lets it be removed", async () => {
+    vi.mocked(agentsApi.update).mockResolvedValue({} as never);
+
+    renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={["ghost-skill", "skill-a"]} />,
+    );
+    await screen.findByText("Skill A");
+
+    // The orphan key is shown (by key) with an "unavailable" marker.
+    expect(screen.getByText("ghost-skill")).toBeInTheDocument();
+    expect(screen.getByText(/unavailable/i)).toBeInTheDocument();
+
+    // Toggling it off PATCHes without the orphan key (drops it from the agent).
+    fireEvent.click(screen.getByText("ghost-skill").closest('[role="button"]') as HTMLElement);
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: ["skill-a"] }));
+  });
 });

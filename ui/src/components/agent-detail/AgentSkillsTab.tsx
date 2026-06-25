@@ -101,6 +101,13 @@ export function AgentSkillsTab({
   const filtered = allSkills.filter(matches);
   const attached = filtered.filter((s) => localKeys.includes(s.key));
   const available = filtered.filter((s) => !localKeys.includes(s.key));
+  // Attached keys whose company skill no longer exists in the library. They'd
+  // otherwise be invisible (in neither list) yet still ride along in every PATCH,
+  // so surface them in Attached with a way to remove them.
+  const libraryKeys = new Set(allSkills.map((s) => s.key));
+  const orphanKeys = localKeys.filter(
+    (k) => !libraryKeys.has(k) && (!q || k.toLowerCase().includes(q)),
+  );
 
   // While any toggle's PATCH is in flight, lock every row. Each request sends the
   // full skillKeys array and the server overwrites wholesale (last-write-wins), so
@@ -159,6 +166,41 @@ export function AgentSkillsTab({
     );
   };
 
+  // Attached key with no matching library skill — render by key with a remove toggle.
+  const renderOrphanRow = (key: string) => {
+    const updating = pendingKey === key;
+    return (
+      <div
+        key={`orphan:${key}`}
+        role="button"
+        tabIndex={busy ? -1 : 0}
+        aria-pressed
+        aria-disabled={busy}
+        onClick={() => { if (!busy) handleToggle(key); }}
+        onKeyDown={(e) => { if (!busy && (e.key === " " || e.key === "Enter")) { e.preventDefault(); handleToggle(key); } }}
+        className={cn(
+          "flex items-center gap-3 px-3.5 py-3 border-b border-border last:border-b-0 transition-colors",
+          updating ? "opacity-60 cursor-wait" : busy ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-accent/20",
+        )}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium font-mono">{key}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-200 uppercase tracking-wide">
+              unavailable
+            </span>
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            No longer in the company library — toggle off to remove.
+          </div>
+        </div>
+        <div className="relative w-9 h-5 rounded-full shrink-0 transition-colors bg-green-500">
+          <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all right-0.5" />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="py-2 space-y-4 max-w-[1400px]">
       <p className="text-sm text-muted-foreground">
@@ -177,12 +219,15 @@ export function AgentSkillsTab({
 
       <div>
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
-          Attached · {attached.length}
+          Attached · {attached.length + orphanKeys.length}
         </div>
-        {attached.length === 0 ? (
+        {attached.length + orphanKeys.length === 0 ? (
           <p className="text-sm text-muted-foreground">No skills attached.</p>
         ) : (
-          <div className="border border-border rounded-lg overflow-hidden">{attached.map(renderRow)}</div>
+          <div className="border border-border rounded-lg overflow-hidden">
+            {attached.map(renderRow)}
+            {orphanKeys.map(renderOrphanRow)}
+          </div>
         )}
       </div>
 
