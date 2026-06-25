@@ -48,6 +48,14 @@ const CONTROL_PATH =
   process.env.AOA_E2E_FAKE_CLAUDE_CONTROL ||
   path.join(os.tmpdir(), "aoa-e2e-fake-claude-control.json");
 
+// Invocation record: every spawn appends a JSON line describing HOW
+// Commander actually invoked claude, so specs can PROVE the real cli-mode
+// contract (argv flags, prompt-over-stdin, cwd) rather than trusting the
+// shim's own defaulting. Mirrors the same pattern in fake-codex.mjs.
+const INVOCATIONS_PATH =
+  process.env.AOA_E2E_FAKE_CLAUDE_INVOCATIONS ||
+  path.join(os.tmpdir(), "aoa-e2e-fake-claude-invocations.jsonl");
+
 // If the parent closes our stdout mid-turn (Stop button kills the CLI
 // session, or the server shuts down), exit quietly instead of crashing with
 // an unhandled EPIPE 'error' event.
@@ -62,6 +70,30 @@ function emit(obj) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Drain stdin so the parent's writable end closes cleanly; the content is
+// captured for the invocation record. Must happen synchronously before the
+// async main() so recording completes even if main() exits early.
+let stdinContent = "";
+try {
+  stdinContent = fs.readFileSync(0, "utf8");
+} catch {
+  /* no stdin attached — fine */
+}
+
+const argv = process.argv.slice(2);
+
+// Record the invocation so specs can assert the real cli-mode contract.
+// Best-effort, never fatal.
+try {
+  fs.appendFileSync(
+    INVOCATIONS_PATH,
+    JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd() }) + "\n",
+    "utf8",
+  );
+} catch {
+  /* recording is best-effort */
+}
 
 function readControl() {
   try {

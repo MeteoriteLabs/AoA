@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
-import { FAKE_CLAUDE_CONTROL_PATH } from "./helpers/fake-claude";
+import { FAKE_CLAUDE_CONTROL_PATH, FAKE_CLAUDE_INVOCATIONS_PATH } from "./helpers/fake-claude";
 import { FAKE_CODEX_CONTROL_PATH, FAKE_CODEX_INVOCATIONS_PATH } from "./helpers/fake-codex";
 
 // Windows runner can't start embedded-postgres because GitHub's Windows
@@ -109,6 +109,7 @@ export default defineConfig({
           // false means the single global control/invocations files are race-free.
           PATH: `${FAKE_CLAUDE_BIN_DIR}${path.delimiter}${FAKE_CODEX_BIN_DIR}${path.delimiter}${process.env.PATH ?? ""}`,
           AOA_E2E_FAKE_CLAUDE_CONTROL: FAKE_CLAUDE_CONTROL_PATH,
+          AOA_E2E_FAKE_CLAUDE_INVOCATIONS: FAKE_CLAUDE_INVOCATIONS_PATH,
           AOA_E2E_FAKE_CODEX_CONTROL: FAKE_CODEX_CONTROL_PATH,
           AOA_E2E_FAKE_CODEX_INVOCATIONS: FAKE_CODEX_INVOCATIONS_PATH,
         },

@@ -22,6 +22,45 @@ export const FAKE_CLAUDE_CONTROL_PATH = path.join(
 );
 
 /**
+ * Invocation record: the fake-claude shim appends one JSON line per spawn
+ * describing HOW Commander actually invoked claude, so specs can PROVE the
+ * real cli-mode contract (argv flags, prompt-over-stdin, cwd) rather than
+ * trusting the shim's own defaulting. Mirrors fake-codex.ts FAKE_CODEX_INVOCATIONS_PATH.
+ */
+export const FAKE_CLAUDE_INVOCATIONS_PATH = path.join(
+  os.tmpdir(),
+  "aoa-e2e-fake-claude-invocations.jsonl",
+);
+
+export interface FakeClaudeInvocation {
+  argv: string[];
+  stdin: string;
+  cwd: string;
+}
+
+/** Read all recorded invocations (oldest first). Empty if none yet. */
+export function readFakeClaudeInvocations(): FakeClaudeInvocation[] {
+  try {
+    return fs
+      .readFileSync(FAKE_CLAUDE_INVOCATIONS_PATH, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as FakeClaudeInvocation);
+  } catch {
+    return [];
+  }
+}
+
+/** Clear the invocation log — call before a send to scope assertions to it. */
+export function clearFakeClaudeInvocations(): void {
+  try {
+    fs.rmSync(FAKE_CLAUDE_INVOCATIONS_PATH, { force: true });
+  } catch {
+    /* nothing to clear */
+  }
+}
+
+/**
  * Structural mirror of CommanderOutputRef (packages/shared/src/
  * commander-output-refs.ts). Re-declared locally so the e2e tree doesn't
  * depend on workspace package resolution.
