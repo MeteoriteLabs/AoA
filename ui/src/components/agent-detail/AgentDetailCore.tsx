@@ -32,6 +32,9 @@ export interface AgentDetailCoreProps {
   heroBadges?: { adapter?: string; model?: string };
   /** Header-error line rendered under the hero card */
   headerError?: string | null;
+  /** Intercept a hero KPI deep-link click (e.g. unsaved-changes guard); return
+   *  true to cancel default navigation. */
+  onHeroNavigate?: (to: string) => boolean;
   /** Render the content for the active tab */
   renderTab: (view: string) => React.ReactNode;
 }
@@ -60,6 +63,7 @@ export function AgentDetailCore({
   heroKpis,
   heroBadges,
   headerError,
+  onHeroNavigate,
   renderTab,
 }: AgentDetailCoreProps) {
   const showActionBar = actionBar?.show ?? false;
@@ -74,6 +78,7 @@ export function AgentDetailCore({
         actions={headerActions}
         onIconChange={onIconChange}
         error={headerError}
+        onNavigate={onHeroNavigate}
       />
 
       {/* Floating Save/Cancel (desktop) */}

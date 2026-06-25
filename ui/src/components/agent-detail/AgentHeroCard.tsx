@@ -27,6 +27,9 @@ export interface AgentHeroCardProps {
   onIconChange?: (icon: string) => void;
   /** header-error line rendered under the card (actionError / lifecycleError). */
   error?: string | null;
+  /** Intercept a KPI deep-link click (e.g. to run the unsaved-changes guard).
+   *  Return true to cancel the default navigation. */
+  onNavigate?: (to: string) => boolean;
 }
 
 function MonoBadge({ children }: { children: ReactNode }) {
@@ -49,6 +52,7 @@ export function AgentHeroCard({
   actions,
   onIconChange,
   error,
+  onNavigate,
 }: AgentHeroCardProps) {
   const icon = <AgentIcon icon={agent.icon} className="h-6 w-6" />;
 
@@ -112,6 +116,9 @@ export function AgentHeroCard({
                   key={kpi.key}
                   to={kpi.to}
                   data-testid={`hero-kpi-${kpi.key}`}
+                  onClick={(e) => {
+                    if (onNavigate?.(kpi.to!)) e.preventDefault();
+                  }}
                   className={cn(
                     "block rounded-md px-2 -mx-2 hover:bg-accent/40 transition-colors",
                   )}

@@ -598,6 +598,16 @@ export function AgentDetail() {
         heroKpis={heroKpis}
         heroBadges={{ adapter: agent.adapterType, model: heroModel }}
         headerError={actionError}
+        onHeroNavigate={(to) => {
+          // Route hero KPI deep-links through the unsaved-changes guard too —
+          // otherwise clicking e.g. "Last run" with a dirty Config/Instructions
+          // tab would navigate away and silently drop the draft.
+          if (configDirty || instrDirty) {
+            setPendingNav(to);
+            return true;
+          }
+          return false;
+        }}
         actionBar={{
           show: showActionBar,
           saving: activeSaving,
