@@ -154,9 +154,11 @@ describe("classifyEmbeddingError", () => {
 // ── computeBackoffMs ─────────────────────────────────────────────────────────
 
 describe("computeBackoffMs", () => {
-  it("returns 0 for a deterministic rng of 0", () => {
+  it("returns >= 1 even for a deterministic rng of 0 (P2-2 clamp)", () => {
+    // P2-2: computeBackoffMs clamps to >= 1ms so a rng()===0 never produces
+    // an immediately-eligible row (zero-delay retry pin-ball).
     const result = computeBackoffMs(1, () => 0);
-    expect(result).toBe(0);
+    expect(result).toBeGreaterThanOrEqual(1);
   });
 
   it("returns raw-1 for a deterministic rng of just-below-1", () => {
@@ -184,13 +186,13 @@ describe("computeBackoffMs", () => {
     }
   });
 
-  it("jitter keeps result within [0, raw)", () => {
+  it("jitter keeps result within [1, raw] (P2-2 clamp applies at lower bound)", () => {
     for (const attempt of [1, 2, 3, 4, 5]) {
       const raw = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * Math.pow(2, attempt - 1));
-      // With rng=0 → 0, rng=0.9999 → just below raw
-      expect(computeBackoffMs(attempt, () => 0)).toBe(0);
+      // P2-2: rng=0 now returns 1 (not 0), rng=0.9999 → just below raw
+      expect(computeBackoffMs(attempt, () => 0)).toBeGreaterThanOrEqual(1);
       expect(computeBackoffMs(attempt, () => 0.9999)).toBeLessThan(raw);
-      expect(computeBackoffMs(attempt, () => 0.9999)).toBeGreaterThanOrEqual(0);
+      expect(computeBackoffMs(attempt, () => 0.9999)).toBeGreaterThanOrEqual(1);
     }
   });
 

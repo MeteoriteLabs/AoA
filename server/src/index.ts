@@ -52,6 +52,7 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { resetStaleProcessing } from "./services/embeddings.js";
 import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
 import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
 import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
@@ -896,6 +897,20 @@ setInterval(() => {
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
 
+// P1-2: Recover embedding_queue rows that were stuck in 'processing' by a
+// previous worker crash. Rows that have been 'processing' for >5 minutes are
+// reset to 'pending' so the next tick can pick them up. Best-effort — a
+// failure here must NOT block server startup.
+void resetStaleProcessing(db as any)
+  .then((res) => {
+    if (res.reset > 0) {
+      logger.info({ reset: res.reset }, "startup: recovered stale processing embedding rows");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "resetStaleProcessing on startup failed (non-fatal)"),
+  );
+
 // Idempotent backfill: stamp company_id onto pre-keyless embedding_queue rows
 // so the per-company key resolver (Task 10) can look up the right key.
 // Best-effort — a failure here must NOT block server startup.
@@ -916,6 +931,18 @@ void backfillQueueCompanyIds(db as any)
 // Best-effort — a failure here must NOT block any other functionality.
 const RECONCILE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const reconcileTimer = setInterval(() => {
+  // P1-2: Reset any rows that got stuck in 'processing' since the last tick
+  // (e.g. from a worker crash). Run before reconcileNullVectors so recovered
+  // rows are immediately eligible for the upcoming enqueue sweep.
+  void resetStaleProcessing(db as any)
+    .then((res) => {
+      if (res.reset > 0) {
+        logger.info({ reset: res.reset }, "periodic sweep: recovered stale processing embedding rows");
+      }
+    })
+    .catch((err: unknown) =>
+      logger.warn({ err }, "resetStaleProcessing sweep failed (non-fatal)"),
+    );
   void reconcileNullVectors(db as any)
     .then((res) => {
       if (res.enqueued > 0) {

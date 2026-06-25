@@ -31,8 +31,14 @@ function toVectorString(embedding: number[]): string {
 }
 
 /**
- * Generate an embedding vector for the given text using OpenAI text-embedding-3-small.
- * Returns a 1536-dimension number array, or null if the API key is not configured.
+ * Generate an embedding vector for the given text.
+ *
+ * P1-1: Delegates to `createOpenAiEmbedder` so that the fake-embedder seam
+ * (T15 / AOA_E2E_FAKE_EMBEDDER) intercepts query-time calls in the same way
+ * it intercepts write-behind queue calls. Previously this function made a
+ * direct `fetch` call, bypassing the seam.
+ *
+ * Public signature is unchanged — callers in memory.ts pass `(text, apiKey)`.
  */
 export async function generateEmbedding(
   text: string,
@@ -42,40 +48,18 @@ export async function generateEmbedding(
   if (!trimmed) {
     throw new Error("Cannot generate embedding for empty text");
   }
-
-  const response = await fetch(EMBEDDING_API_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      input: trimmed,
-      model: EMBEDDING_MODEL,
-      dimensions: EMBEDDING_DIMENSIONS,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI Embeddings API error ${response.status}: ${body}`);
-  }
-
-  const result = (await response.json()) as {
-    data?: Array<{ embedding: number[] }>;
-  };
-
-  const embedding = result.data?.[0]?.embedding;
-  if (!embedding || embedding.length !== EMBEDDING_DIMENSIONS) {
-    throw new Error("Invalid embedding response from OpenAI");
-  }
-
-  return embedding;
+  return createOpenAiEmbedder(apiKey).embed(trimmed);
 }
 
 /**
- * Generate embeddings for multiple texts in a single API call.
- * Returns an array of 1536-dimension vectors in the same order as inputs.
+ * Generate embeddings for multiple texts.
+ *
+ * P1-1: Routes through the fake-embedder seam when active. When the fake is
+ * enabled, each text is embedded individually via the fake embedder (no batch
+ * network call). When the fake is disabled, makes a single batched OpenAI API
+ * call (preserved behavior).
+ *
+ * Public signature is unchanged.
  */
 export async function generateEmbeddingsBatch(
   texts: string[],
@@ -83,6 +67,12 @@ export async function generateEmbeddingsBatch(
 ): Promise<number[][]> {
   const trimmed = texts.map((t) => t.trim()).filter(Boolean);
   if (trimmed.length === 0) return [];
+
+  // P1-1: fake-embedder seam intercepts batch as well as single-embed calls.
+  if (isFakeEmbedderEnabled()) {
+    const fake = createFakeEmbedder();
+    return Promise.all(trimmed.map((t) => fake.embed(t)));
+  }
 
   const response = await fetch(EMBEDDING_API_URL, {
     method: "POST",
@@ -213,6 +203,58 @@ export async function invalidateEmbedding(db: Db, itemId: string): Promise<void>
     .where(eq(memoryItems.id, itemId));
 }
 
+// ─── Stale-processing reaper (P1-2 / Codex fix) ──────────────────────────────
+//
+// If the worker crashes after the atomic CTE claims a row as 'processing' but
+// before it can write a terminal status (completed / failed / pending), that row
+// is stranded: future claims skip it (WHERE status='pending'), and the
+// reconciler ignores it (not 'failed'). Without this reaper the row is stuck
+// until a manual DB fix.
+//
+// Reset window: 5 minutes. Any row that has been 'processing' for longer than
+// `leaseMs` almost certainly belongs to a dead worker instance and is safe to
+// reset. We do NOT bump `attempts` — the crash was not a failure of the
+// embedding logic itself — and we clear `next_retry_at` so the row is
+// immediately eligible for the next tick.
+
+/**
+ * Reset embedding_queue rows that have been stuck in `status='processing'`
+ * for longer than `leaseMs` milliseconds (default 5 minutes) back to
+ * `status='pending'` so they are re-picked by the next worker tick.
+ *
+ * Safe to call multiple times; each call is idempotent (only affects rows
+ * that are currently 'processing' AND older than the lease window).
+ *
+ * @param db      - Drizzle database instance.
+ * @param leaseMs - Staleness threshold in milliseconds (default 5 min).
+ * @returns       Promise resolving to the number of rows reset.
+ */
+export async function resetStaleProcessing(
+  db: Db,
+  leaseMs = 5 * 60 * 1000,
+): Promise<{ reset: number }> {
+  const threshold = new Date(Date.now() - leaseMs);
+  const updated = await db
+    .update(embeddingQueue)
+    .set({
+      status: "pending",
+      nextRetryAt: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(embeddingQueue.status, "processing"),
+        lte(embeddingQueue.updatedAt, threshold),
+      ),
+    )
+    .returning({ id: embeddingQueue.id });
+  const reset = updated.length;
+  if (reset > 0) {
+    log.warn({ reset, leaseMs }, "resetStaleProcessing: recovered stranded processing rows");
+  }
+  return { reset };
+}
+
 // ─── Write-behind queue (Task B1, Decision D2) ───────────────────────────────
 //
 // `createEmbeddingService` is the pure factory used by the write-behind queue.
@@ -307,7 +349,10 @@ export function computeBackoffMs(
   rng: () => number = Math.random,
 ): number {
   const raw = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * Math.pow(2, attempt - 1));
-  return Math.floor(rng() * raw);
+  // P2-2: clamp to >= 1ms so rng()===0 never produces an immediately-eligible
+  // row (which would make the retry indistinguishable from a fresh attempt and
+  // could pin-ball a bad row in a tight loop).
+  return Math.max(1, Math.floor(rng() * raw));
 }
 
 /** Circuit-breaker state for a single company. */
@@ -615,7 +660,10 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
      *     without embedding attempts until the TTL expires.
      */
     async processQueue(opts: ProcessQueueOpts = {}): Promise<ProcessQueueResult> {
-      const batchSize = opts.batchSize ?? 50;
+      // P2-3: clamp batchSize to a safe positive integer before interpolating
+      // it into the raw SQL LIMIT. This prevents a caller-injected float or
+      // negative number from producing invalid SQL.
+      const batchSize = Math.max(1, Math.floor(opts.batchSize ?? 50));
       const maxAttempts = opts.maxAttempts ?? 6;
       const resolveCompanyKey = opts.resolveCompanyKey;
       // Circuit map: persisted across ticks when caller provides it; fresh per
@@ -669,9 +717,11 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           WHERE id IN (SELECT id FROM claimed)
           RETURNING *
         `));
-        // Drizzle's db.execute returns an iterable result; the raw rows are
-        // accessible via the array itself (RowList is array-like).
-        pending = (rows as unknown as Array<typeof embeddingQueue.$inferSelect>);
+        // P2-1: node-postgres drivers may return either an array-like RowList
+        // or an object with a `rows` property depending on the adapter version.
+        // Normalise before iterating so both shapes work correctly.
+        const rawRows = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+        pending = rawRows as Array<typeof embeddingQueue.$inferSelect>;
         rowsAlreadyClaimed = true;
       } catch (skipLockedErr) {
         // Fallback for test environments / mocked DBs that don't support
