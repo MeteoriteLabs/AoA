@@ -19,6 +19,11 @@ vi.mock("@armyofagents/db", () => {
     userRoles: makeTable(),
     projectGoals: makeTable(),
     agentProjects: makeTable(),
+    // Required by write-tools.ts → memory-write.ts / embeddings.ts → @armyofagents/db
+    memoryItems: makeTable(),
+    embeddingQueue: makeTable(),
+    discussions: makeTable(),
+    discussionExtractedItems: makeTable(),
   };
 });
 
