@@ -349,9 +349,7 @@ TDD steps:
   });
   ```
   > The second test is intentionally conservative: it asserts the `date_trunc` guard always matches (the real proof) and only documents — without flaking — that the naked `eq` can miss. The first and third tests are the load-bearing regression + conflict proofs.
-- [ ] **Run, expect FAIL (Linux) / SKIP (Windows):** `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.integration.test.ts`. On Windows the suite self-skips (collects 0 run). On Linux, the first/third tests fail **before** the date_trunc guard is in place (a naked `eq` would 409 the first edit), proving the regression is real. (If running locally on Windows, note in the commit that Linux CI is the gating run — this matches the repo's existing integration-test posture.)
-- [ ] **Implement REAL code:** none new — the `date_trunc` guard from **Task 2 step B** is what turns these tests green. (If Task 2 is already merged, this task is purely additive test coverage.)
-- [ ] **Run, expect PASS (Linux):** same command → green; Windows skips.
+- [ ] **Run, expect PASS (Linux) / SKIP (Windows):** `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.integration.test.ts`. No new implementation is needed here — Task 2 step B's `date_trunc` guard is what makes these pass, so this task is purely additive coverage. On Linux they pass; on Windows the suite self-skips (collects 0 run). The regression they encode is conceptual: a naked `eq(agents.updatedAt, …)` guard would 409 the first edit of a freshly-created (`defaultNow()` microsecond-precision) row — to see the failure, temporarily swap the guard back to `eq`, watch the first test fail, then restore `date_trunc`. (On Windows, note in the commit that Linux CI is the gating run — matches the repo's existing integration-test posture.)
 - [ ] **Commit:** `test(agents): real-DB integration proof for ms-precision optimistic-concurrency token`.
 
 ---
