@@ -102,3 +102,5 @@ These are deferred from the current build — backend may exist, UI does not.
 | Windows e2e CI parity (Issue #114) | Deferred |
 | `anthropic/aoa` Docker image rename | Deferred (auto-resolves via `${{ github.repository }}`) |
 | Canary-on-push auto-wiring | Deferred |
+
+<!-- ci 1.1 smoke (delete me) -->
