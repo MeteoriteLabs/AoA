@@ -266,6 +266,39 @@ Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR
 
 ### CI Platform Status
 
+**Triggers (2026-06-24 redesign):**
+
+- `pr.yml` (the gate suite) runs on **every** pull request — no base-branch
+  filter — plus `push` to `main`. Required checks: `verify`, `e2e`,
+  `migrations`, `policy`, `brand-check`. Cross-platform lanes stay advisory.
+- **Draft PRs are gated:** each `pr.yml` job carries
+  `if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}`,
+  and the `pull_request` trigger lists `ready_for_review`. Draft PRs show the
+  gate jobs as `skipped`; marking a PR ready re-runs them for real before merge.
+  (Safe despite skip-as-success: drafts can't be merged, and `ready_for_review`
+  re-runs the jobs. Do NOT add `edited` to chase retarget re-runs — on a
+  *mergeable* PR a title/body edit would skip the required jobs into a success
+  and bypass branch protection. Retarget + `paths-ignore` need the aggregator
+  gate pattern, tracked for 1.1.)
+- `release.yml` / `docker.yml` run on `push` to `main` (Docker also on `v*`
+  tags). The porting-era branch allow-list is gone.
+- Do NOT re-introduce a `branches:` filter on `pr.yml`'s `pull_request` trigger
+  (it silently ran zero checks on stacked/feature PRs), and do NOT add a
+  `paths:`/`paths-ignore:` filter to `pr.yml` (a skipped required check leaves
+  PRs stuck on "Expected — Waiting for status").
+- **Single required check (Phase 1.1):** branch protection requires only
+  `ci-required` — an always-running (`if: !cancelled()`) aggregator that computes
+  pass/fail from `needs.*.result` + `changes.outputs.code`. The heavy jobs
+  (`verify`/`e2e`/`migrations` + cross-platform) are non-required and **skip on
+  docs-only PRs** (every changed file under `docs/` or a root-level `*.md` like
+  README/CLAUDE/AGENTS), detected by the `changes` job (`--no-renames`; nested
+  `*.md` such as runtime prompt assets count as code). Drafts skip all real jobs and `ci-required`
+  goes red (zero CI; honest "not validated"). Do NOT make an individual job a
+  required check again, and do NOT add a `paths-ignore` trigger filter — route
+  conditional execution through `ci-required` (a skipped required check passes
+  silently; the aggregator computes the verdict instead). Required human review
+  + CODEOWNERS are deferred until a second committer with write access exists.
+
 | Platform | Verify | E2E |
 |----------|--------|-----|
 | Linux | Required gate | Required gate |

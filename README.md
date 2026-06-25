@@ -5,25 +5,26 @@
 </p>
 
 <p align="center">
-  Run your business with a hybrid team of AI agents and human teammates — coordinated, budgeted, and governed from one dashboard.
+  Run a <strong>hybrid workforce</strong> of AI agents and human teammates from one control room — coordinated, budgeted, and governed.<br/>
+  <em>Agents extend your team; they don't replace it.</em>
 </p>
 
 <p align="center">
   <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
-  <a href="https://armyofagents.org"><strong>Website</strong></a> &middot;
-  <a href="https://github.com/MeteoriteLabs/aoa"><strong>GitHub</strong></a> &middot;
-  <a href="#aoa-marketplace"><strong>Marketplace</strong></a>
+  <a href="#aoa-marketplace"><strong>Marketplace</strong></a> &middot;
+  <a href="#development"><strong>Development</strong></a> &middot;
+  <a href="https://github.com/MeteoriteLabs/aoa"><strong>GitHub</strong></a>
 </p>
 
 <br/>
 
 ## What is AoA?
 
-**If OpenClaw is an _employee_, AoA is the _company_.**
+**If an agent is an _employee_, AoA is the _company_.**
 
-AoA is a Node.js server and React UI that orchestrates a hybrid team — AI agents alongside humans — to run a business. Bring your own agents, invite your teammates, assign goals, and track work and costs from one dashboard.
+AoA is a **Hybrid Workforce Operating System** — a Node.js server and React UI that runs AI agents alongside humans to operate a business. Built for founding teams of any size, from solo founders to small teams: bring your own agents, invite your teammates, assign goals, and track work and budget from Home.
 
-It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, and agent coordination.
+It looks like a task manager — but under the hood it has Team structure, budgets, governance, goal alignment, and agent coordination.
 
 **Manage business goals, not pull requests.**
 
@@ -31,7 +32,7 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 | ------ | --------------- | ------------------------------------------------------------------ |
 | **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
 | **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — agents, humans, or both. |
-| **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from the dashboard.  |
+| **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from Home.  |
 
 <br/>
 
@@ -65,13 +66,12 @@ If your runtime isn't listed, the adapter SDK lets you wire it up.
 
 ## AoA is right for you if
 
-- You want to run a business with a **hybrid team** of AI agents and human teammates
+- You want to run a business with a **hybrid workforce** of AI agents and human teammates
 - You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
-- You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
+- You have **20 simultaneous Claude Code terminals** open and lose track of who's doing what
 - You want agents running **24/7**, but still want to audit work and chime in when needed
-- You want to **monitor costs** and enforce budgets
-- You want a process for managing your team that **feels like using a task manager**
-- You want to manage your team — agents and humans — **from your phone**
+- You want to **monitor spend** and enforce budgets
+- You want managing your team to **feel like using a task manager** — from one local control room
 
 <br/>
 
@@ -81,7 +81,7 @@ If your runtime isn't listed, the adapter SDK lets you wire it up.
 <tr>
 <td align="center" width="33%">
 <h3>Bring Your Own Agent</h3>
-Any agent, any runtime, one org chart. If it can receive a heartbeat, it's hired.
+Any agent, any runtime, one Team chart. If it can receive a heartbeat, it's hired.
 </td>
 <td align="center" width="33%">
 <h3>Goal Alignment</h3>
@@ -89,13 +89,13 @@ Every task traces back to the company mission. Your team — agents and humans �
 </td>
 <td align="center" width="33%">
 <h3>Heartbeats</h3>
-Agents wake on a schedule, check work, and act. Delegation flows up and down the org chart.
+Agents wake on a schedule, check work, and act. Delegation flows up and down the Team chart.
 </td>
 </tr>
 <tr>
 <td align="center">
 <h3>Cost Control</h3>
-Monthly budgets per agent. When they hit the limit, they stop. No runaway costs.
+Monthly budgets per agent. When they hit the limit, they stop. No runaway spend.
 </td>
 <td align="center">
 <h3>Multi-Company</h3>
@@ -112,12 +112,12 @@ Every conversation traced. Every decision explained. Full tool-call tracing and 
 You're the board. Approve hires, override strategy, pause or terminate any agent — at any time.
 </td>
 <td align="center">
-<h3>Org Chart</h3>
+<h3>Team Chart</h3>
 Hierarchies, roles, reporting lines. Your team has bosses, titles, and job descriptions.
 </td>
 <td align="center">
-<h3>Mobile Ready</h3>
-Monitor and manage your team from anywhere.
+<h3>Workspace Ready</h3>
+Run coding agents in isolated per-task workspaces.
 </td>
 </tr>
 <tr>
@@ -144,7 +144,7 @@ Always-on AI assistant for coordination, proactive monitoring, and workflow mana
 | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                                 | Tasks are ticket-based, conversations are threaded, sessions persist across reboots.                                                   |
 | You manually gather context from several places to remind your bot what you're actually doing.                                        | Context flows from the task up through the project and company goals — your team always knows what to do and why.                      |
-| Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents.    | AoA gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts.          |
+| Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents.    | AoA gives you Team charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts.          |
 | Runaway loops waste hundreds of dollars of tokens and max your quota before you even know what happened.                              | Cost tracking surfaces token budgets and throttles agents when they're out. Management prioritizes with budgets.                       |
 | You have recurring jobs (customer support, social, reports) and have to remember to manually kick them off.                           | Heartbeats handle regular work on a schedule. Management supervises.                                                                   |
 | You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                   | Add a task in AoA. Your coding agent works on it until it's done. Management reviews their work.                                       |
@@ -174,7 +174,7 @@ AoA handles the hard orchestration details correctly.
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                            |
 | **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                          |
-| **Not a workflow builder.**  | No drag-and-drop pipelines. AoA models companies — with org charts, goals, budgets, and governance.            |
+| **Not a workflow builder.**  | No drag-and-drop pipelines. AoA models companies — with Team charts, goals, budgets, and governance.            |
 | **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. AoA manages the organization they work in.               |
 | **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need AoA. If you have twenty — you definitely do. |
 | **Not a code review tool.**  | AoA orchestrates work, not pull requests. Bring your own review process.                                       |
@@ -206,12 +206,14 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 ## AoA Marketplace
 
-Browse and install full company configurations — org charts, agent roles, skills, and governance templates — and import them into your AoA instance in minutes.
+Browse the catalog for agents, skills, teams, and packages that extend your AoA instance — AoA-curated and community-contributed.
 
-Supporting projects:
+Related projects:
 
-- [aoa-marketplace-cdn](https://github.com/MeteoriteLabs/aoa-marketplace-cdn) — CDN for marketplace asset distribution and versioned content.
-- [aoa-community](https://github.com/MeteoriteLabs/aoa-community) — community-contributed templates, discussions, and shared resources.
+- [aoa-marketplace](https://github.com/MeteoriteLabs/aoa-marketplace) — source-of-truth monorepo: catalog infrastructure plus all AoA-curated plugins, skills, agents, and teams.
+- [aoa-marketplace-cdn](https://github.com/MeteoriteLabs/aoa-marketplace-cdn) — public CDN that serves the catalog to every AoA instance.
+- [AoA-Skills](https://github.com/MeteoriteLabs/AoA-Skills) — canonical Commander skills and instruction files (Brainstorm, Sprint Planning, Team Design, and more).
+- [aoa-community](https://github.com/MeteoriteLabs/aoa-community) — community-contributed templates, teams, and discussion.
 
 <br/>
 
@@ -226,10 +228,10 @@ If you're a solo founder you can use Tailscale to access AoA on the go. Then lat
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
 
 **How is AoA different from agents like OpenClaw or Claude Code?**
-AoA _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability — and brings your human teammates into the same workspace.
+AoA _uses_ those agents. It orchestrates them into a company — with Team charts, budgets, goals, governance, and accountability — and brings your human teammates into the same workspace.
 
 **Why should I use AoA instead of just pointing my OpenClaw to Asana or Trello?**
-Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitor costs, and establish governance — AoA does this for you.
+Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitor spend, and establish governance — AoA does this for you.
 
 (Bring-your-own-ticket-system is on the Roadmap.)
 
@@ -257,7 +259,7 @@ pnpm db:migrate       # Apply migrations
 
 - Easier OpenClaw onboarding
 - Cloud agents (Cursor / e2b)
-- AoA Marketplace — buy and sell entire agent companies
+- Marketplace package curation, updates, and admin polish
 - Easier agent configuration
 - Better support for harness engineering
 - Plugin system (knowledgebase, custom tracing, queues, etc.)
@@ -267,9 +269,10 @@ pnpm db:migrate       # Apply migrations
 
 ## Resources
 
-- [armyofagents.org](https://armyofagents.org) — official website
-- [GitHub Issues](https://github.com/MeteoriteLabs/aoa/issues) — bugs and feature requests
-- [aoa-community](https://github.com/MeteoriteLabs/aoa-community) — community templates and discussion
+- `docs/start/quickstart.md` — local setup guide
+- `CLAUDE.md` — current architecture baseline for agents and engineers
+- `docs/architecture/decisions.md` — locked product and architecture decisions
+- [GitHub Issues](https://github.com/MeteoriteLabs/aoa/issues) — report bugs and request features
 
 <br/>
 

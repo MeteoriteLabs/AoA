@@ -4,26 +4,77 @@ permissions:
   contents: read
 
 on:
+  # No branches: filter — every PR into ANY base branch is gated. This is the
+  # fix for the porting-era allow-list that silently ran zero checks on
+  # stacked / feature-to-feature PRs. `ready_for_review` is listed so that
+  # marking a draft PR ready re-fires the workflow and the draft-guarded jobs
+  # (see each job's `if:`) run for real before merge.
+  #
+  # NOTE: `edited` is deliberately NOT listed. Adding it would re-run on
+  # title/body edits too, and skipping the jobs there produces skipped-success
+  # required checks (GitHub treats a skipped required job as passing) that can
+  # satisfy branch protection without real CI. Retarget re-runs are a Phase 1.1
+  # follow-up via the aggregator-gate pattern. Until then, push a commit (or
+  # "Update branch") after retargeting to re-trigger the gate.
   pull_request:
-    branches:
-      - master
-      - main
-      - Porting1.1
-      - feat/v1-combined
+    types: [opened, synchronize, reopened, ready_for_review]
+  # push only on main: post-merge signal + warms the pnpm cache. Feature
+  # branches get their signal from the PR run, not a duplicate push run.
   push:
     branches:
-      - master
       - main
-      - Porting1.1
-      - feat/v1-combined
 
 concurrency:
   group: pr-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Cheap change-detector: decides whether the heavy suite needs to run.
+  # docs-only (code=false) iff EVERY changed file is under docs/ or is a
+  # ROOT-LEVEL *.md (README/CLAUDE/AGENTS). Any .github/** file, any nested
+  # *.md (runtime assets like server/src/onboarding-assets/**/*.md, fixtures,
+  # package READMEs), or any other path => code=true => full CI. Uses
+  # --no-renames so a code file moved into docs/ still classifies its (deleted)
+  # source as code. On push (main) code is always true. Skips on draft.
+  changes:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Detect non-doc changes
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "push event -> code=true"
+            exit 0
+          fi
+          changed="$(git diff --no-renames --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          if [ -z "$changed" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "empty diff -> code=true (fail safe)"
+            exit 0
+          fi
+          code=false
+          if printf '%s\n' "$changed" | grep -qE '^\.github/'; then
+            code=true        # any .github/** file (incl .github/*.md) => full CI
+          elif printf '%s\n' "$changed" | grep -qEv '^docs/|^[^/]+\.md$'; then
+            code=true        # anything not under docs/ and not a ROOT-LEVEL *.md
+                             # (nested .md may be runtime assets/fixtures => code)
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "changed files:"; printf '%s\n' "$changed"
+          echo "=> code=$code"
+
   policy:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 5
 
     steps:
@@ -33,7 +84,7 @@ jobs:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
-        if: github.event_name == 'pull_request' && github.head_ref != 'chore/refresh-lockfile'
+        if: github.event_name == 'pull_request'
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
@@ -109,6 +160,7 @@ jobs:
   brand-check:
     needs: [policy]
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 10
 
     steps:
@@ -306,6 +358,8 @@ jobs:
   # to pass for merge — that's the right gate, not a pipeline dependency.
   verify:
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 20
 
     steps:
@@ -342,6 +396,8 @@ jobs:
   # in-PR scope expansions. Once a platform stabilizes, flip its matrix
   # entry to required by adding it to branch protection rules.
   verify-cross-platform:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
@@ -379,6 +435,8 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 30
 
     steps:
@@ -463,17 +521,20 @@ jobs:
   #   - config file generation uses `shell: bash` for HEREDOC support
   #     (Windows runners ship Git Bash and provide bash as a shell option)
   #
-  # timeout-minutes is set to 12 (down from 35) so a cdn.playwright.dev stall
-  # fails fast instead of burning 35 min. The required Linux e2e job uses a
-  # Google Chrome-for-Testing storage fallback that avoids CDN stalls entirely;
-  # generalizing that fallback to mac/win is tracked for 1.1.
+  # timeout-minutes stays bounded so a cdn.playwright.dev stall fails fast, but
+  # hosted macOS/Windows runners can spend more than 12 min on install + build.
+  # Install only Chromium's headless shell here; full Chrome-for-Testing archives
+  # can hang after download on hosted macOS/Windows, and CI runs headless. The
+  # required Linux e2e job keeps the full fallback path.
   e2e-cross-platform:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 25
     continue-on-error: true
 
     steps:
@@ -502,9 +563,13 @@ jobs:
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright
-        run: npx playwright install chromium
+        id: install-playwright
+        timeout-minutes: 5
+        continue-on-error: true
+        run: npx playwright install --only-shell chromium
 
       - name: Generate Paperclip config
+        if: steps.install-playwright.outcome == 'success'
         shell: bash
         run: |
           mkdir -p ~/.aoa/instances/default
@@ -528,14 +593,14 @@ jobs:
         # rest of the matrix (checkout/install/build/playwright-install)
         # still runs as parity. Re-enable when Issue #114's postgres-
         # container approach lands.
-        if: matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
         env:
           # Gates LLM-dependent e2e specs only; server keyless-boot safety is handled by the embedding-worker fix, not this flag.
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
-        if: matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report-${{ matrix.os }}
@@ -552,6 +617,8 @@ jobs:
   # caught it pre-merge).
   migrations:
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 15
 
     services:
@@ -669,3 +736,54 @@ jobs:
               f"{checked} snapshots chain-checked, all SQL files present"
           )
           PYEOF
+
+  # Single required status check. Branch protection requires ONLY this job.
+  # Runs ALWAYS (`!cancelled()`), even when upstream jobs fail or skip, and
+  # computes the verdict explicitly so a `skipped` job cannot silently pass —
+  # closing the Phase 1 skip-success class. On a draft PR `changes` is skipped,
+  # so this gate goes RED (drafts are unmergeable; a passing required check
+  # there would be the footgun). Marking ready re-runs everything for real.
+  ci-required:
+    needs: [changes, policy, brand-check, verify, e2e, migrations]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Evaluate required gate
+        env:
+          R_CODE: ${{ needs.changes.outputs.code }}
+          R_CHANGES: ${{ needs.changes.result }}
+          R_POLICY: ${{ needs.policy.result }}
+          R_BRAND: ${{ needs['brand-check'].result }}
+          R_VERIFY: ${{ needs.verify.result }}
+          R_E2E: ${{ needs.e2e.result }}
+          R_MIGRATIONS: ${{ needs.migrations.result }}
+        run: |
+          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY e2e=$R_E2E migrations=$R_MIGRATIONS"
+          fail=0
+          # Detector must have succeeded. Skipped (draft) => red, by design.
+          if [ "$R_CHANGES" != "success" ]; then
+            echo "::error::changes detector not success ($R_CHANGES) — draft or detector failure"
+            fail=1
+          fi
+          # Always-on cheap gates must pass.
+          for kv in "policy=$R_POLICY" "brand-check=$R_BRAND"; do
+            name="${kv%%=*}"; res="${kv#*=}"
+            [ "$res" = "success" ] || { echo "::error::$name=$res (required)"; fail=1; }
+          done
+          # Fail closed on an unexpected detector output (defense in depth):
+          # if changes succeeded, code MUST be exactly true or false.
+          if [ "$R_CHANGES" = "success" ] && [ "$R_CODE" != "true" ] && [ "$R_CODE" != "false" ]; then
+            echo "::error::invalid changes.outputs.code ($R_CODE)"
+            fail=1
+          fi
+          # Heavy jobs required to pass ONLY when code changed. On a docs-only
+          # PR (code=false) they are skipped, which is allowed.
+          if [ "$R_CODE" = "true" ]; then
+            for kv in "verify=$R_VERIFY" "e2e=$R_E2E" "migrations=$R_MIGRATIONS"; do
+              name="${kv%%=*}"; res="${kv#*=}"
+              [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
+            done
+          fi
+          [ "$fail" = "0" ] && echo "ci-required: PASS"
+          exit $fail

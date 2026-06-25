@@ -5,7 +5,7 @@ import path from "node:path";
 import { isDockerAvailable } from "@armyofagents/adapter-utils";
 import { execute } from "../adapters/process/execute.js";
 
-const dockerAvailable = await isDockerAvailable().catch(() => false);
+const dockerAvailable = process.platform !== "win32" && await isDockerAvailable().catch(() => false);
 const dockerIt = dockerAvailable ? it : it.skip;
 
 describe("process adapter sandbox-docker execution target", () => {

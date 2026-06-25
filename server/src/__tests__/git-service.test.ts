@@ -31,6 +31,10 @@ const execFileAsync = promisify(execFile);
 // Helpers
 // ---------------------------------------------------------------------------
 
+async function expectSameRealPath(actual: string, expected: string): Promise<void> {
+  await expect(fs.realpath(actual)).resolves.toBe(await fs.realpath(expected));
+}
+
 async function git(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
@@ -135,8 +139,7 @@ describe("resolveGitRoot", () => {
     const repo = await setup();
     const root = await resolveGitRoot(repo);
     expect(root).toBeTruthy();
-    // Normalize for Windows
-    expect(path.resolve(root!)).toBe(path.resolve(repo));
+    await expectSameRealPath(root!, repo);
   });
 
   it("returns null for a non-repo directory", async () => {

@@ -6,6 +6,10 @@ import { execute } from "./execute.js";
 import type { AdapterInvocationMeta } from "@armyofagents/adapter-utils";
 import { resetOpenCodeModelsCacheForTests } from "./models.js";
 
+async function expectSameRealPath(actual: string, expected: string): Promise<void> {
+  await expect(fs.realpath(actual)).resolves.toBe(await fs.realpath(expected));
+}
+
 async function writeFakeOpenCodeCommand(commandPath: string): Promise<string> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -121,7 +125,7 @@ describe("opencode execute target", () => {
         prompt: string;
         env: Record<string, string>;
       };
-      expect(capture.cwd).toBe(workspace);
+      await expectSameRealPath(capture.cwd, workspace);
       expect(capture.argv).toEqual(expect.arrayContaining(["run", "--format", "json", "--model", "test/provider"]));
       expect(capture.prompt).toBe("Prompt for agent-1 in run-opencode-target.");
       expect(capture.env).toMatchObject({
