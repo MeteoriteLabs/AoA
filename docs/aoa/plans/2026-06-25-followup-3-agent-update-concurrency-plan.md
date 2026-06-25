@@ -4,7 +4,9 @@
 
 **Goal:** Add OPTIONAL optimistic concurrency to agent updates so two concurrent editors can't silently clobber each other. The token is the existing `updatedAt` (no DB migration). When the client sends `expectedUpdatedAt` and the row changed underneath, the write returns HTTP **409** (with the current `updatedAt` in the body so the client can refetch). When `expectedUpdatedAt` is absent, behavior is unchanged last-write-wins (full back-compat). Scope is the whole `agents` row.
 
-**Architecture:** Token = `agents.updatedAt` (`timestamptz`, stamped on every write — no version column, no migration). The check is a **race-free atomic guarded UPDATE**: `where(and(eq(agents.id, id), eq(agents.updatedAt, expected)))`. Zero rows returned *while the row still exists* → throw `conflict()` (the existing 409 `HttpError`, with `details: { currentUpdatedAt }`); zero rows with no row → 404 (unchanged `null` return). A pre-read compare is explicitly rejected — that is TOCTOU; the guard lives in the WHERE clause. This follows the locked precedent in `server/src/services/issues.ts` `checkout` (atomic conditional UPDATE → re-read → conflict). The token rides in the PATCH body (`expectedUpdatedAt`, optional ISO datetime) through the shared zod validator; the route's existing error propagation maps the thrown 409 automatically via `middleware/error-handler.ts`. UI opts in first in Skills + Config: each caller captures `agent.updatedAt` from the query cache, sends it, and on 409 invalidates/refetches + toasts "changed elsewhere".
+**Architecture:** Token = `agents.updatedAt` (`timestamptz`, stamped on every write — no version column, no migration). The check is a **race-free atomic guarded UPDATE**, but the equality must be **millisecond-precision-safe** (see below): `where(and(eq(agents.id, id), sql\`date_trunc('milliseconds', ${agents.updatedAt}) = ${new Date(expected)}\`))`. Zero rows returned *while the row still exists* → throw `conflict()` (the existing 409 `HttpError`, with `details: { currentUpdatedAt }`); zero rows with no row → 404 (unchanged `null` return). A pre-read compare is explicitly rejected — that is TOCTOU; the guard lives in the WHERE clause. This follows the locked precedent in `server/src/services/issues.ts` `checkout` (atomic conditional UPDATE → re-read → conflict). The token rides in the PATCH body (`expectedUpdatedAt`, optional ISO datetime) through the shared zod validator; the route's existing error propagation maps the thrown 409 automatically via `middleware/error-handler.ts`. UI opts in first in Skills + Config: each caller captures `agent.updatedAt` from the query cache, sends it, and on 409 invalidates/refetches + toasts "changed elsewhere".
+
+**⚠️ Timestamp precision is the load-bearing correctness detail (do NOT use a naked `eq`).** The token does **not** "round-trip losslessly." `agents.updatedAt` is `timestamptz` with **microsecond** resolution in PostgreSQL — and `agentService.create` (~line 436) inserts the row **without setting `updatedAt`**, so the column takes `defaultNow()` = a full-microsecond value (e.g. `…:00.123456Z`). The client token, however, is a JS `Date` serialized via `toISOString()`, which has only **millisecond** resolution (e.g. `…:00.123Z`). A naked `eq(agents.updatedAt, new Date(expected))` compares millisecond-truncated `…123.000µs` against the stored `…123.456µs` and **never matches** → a spurious **409 on the very first edit of a never-updated (freshly-created) agent**. Worse, the client retries by resending the *same* truncated token, so it **loops** (409 → refetch → re-send truncated token → 409). The fix is to truncate **both sides to milliseconds** in the WHERE clause: `date_trunc('milliseconds', agents.updatedAt) = <ms-precision token>`. This keeps `updatedAt` as the token (no version column, no migration) while making the comparison robust against the microsecond/millisecond mismatch. Because this is a real-DB precision behavior, the **mock-style unit tests cannot exercise it** (the drizzle operators are no-ops under the Proxy mock, so the WHERE clause that *is* the guard is never evaluated) — it is proven by a Linux-gated / Windows-skipped real-DB integration test (Task 2b).
 
 **Tech Stack:** TypeScript, Drizzle ORM (PostgreSQL), Express 5, zod (shared validators), React + @tanstack/react-query, Vitest. Drizzle ORM only — no raw SQL. AoA is not open source — no OSS headers. Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
@@ -17,9 +19,10 @@ Files touched (exact paths):
 ```
 packages/shared/src/validators/agent.ts                       # add expectedUpdatedAt to updateAgentSchema
 packages/shared/src/__tests__/agent-validators.test.ts        # NEW — validator contract test (or extend if present)
-server/src/services/agents.ts                                 # thread expectedUpdatedAt → guarded UPDATE → conflict()
-server/src/__tests__/agents-update-concurrency.test.ts        # NEW — service guarded-update + 409/404/back-compat
-server/src/routes/agents.ts                                   # forward expectedUpdatedAt to svc.update (no new mapping needed)
+server/src/services/agents.ts                                 # thread expectedUpdatedAt → ms-precision guarded UPDATE → conflict() (add `sql` to drizzle-orm import)
+server/src/__tests__/agents-update-concurrency.test.ts        # NEW — service guarded-update + 409/404/back-compat (mock-style)
+server/src/__tests__/agents-update-concurrency.integration.test.ts  # NEW — real-DB ms-precision proof (Linux-gated / Windows-skipped)
+server/src/routes/agents.ts                                   # destructure expectedUpdatedAt OUT of patchData; forward only via svc.update options
 server/src/__tests__/agents-update-concurrency-route.test.ts  # NEW — route maps thrown 409 / passes token through
 ui/src/api/agents.ts                                          # (no signature change — body passthrough; documented)
 ui/src/components/agent-detail/AgentSkillsTab.tsx             # optional expectedUpdatedAt prop + 409 branch in catch
@@ -33,6 +36,7 @@ docs/architecture/decisions.md                                # NEW Decision #10
 
 **Test commands (verified against repo):**
 - Server suite (single file): `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.test.ts`
+- Server integration (single file, Linux-gated / Windows self-skips): `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.integration.test.ts`
 - Server suite (all): `pnpm --filter @armyofagents/server exec vitest run`
 - Shared suite (single file): `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/agent-validators.test.ts`
 - UI suite (single file): `pnpm --filter @armyofagents/ui exec vitest run src/components/agent-detail/__tests__/AgentSkillsTab.test.tsx`
@@ -98,7 +102,9 @@ TDD steps:
       // Optimistic-concurrency token. OPTIONAL: when present, the update is
       // guarded against `agents.updatedAt` (atomic conditional UPDATE → 409 on
       // mismatch). When absent, the write is last-write-wins (full back-compat).
-      // Token = the agent row's `updatedAt`, round-tripped as an ISO string.
+      // Token = the agent row's `updatedAt` as a millisecond-precision ISO string.
+      // The server compares it at ms precision (date_trunc) because the stored
+      // column is microsecond-precision — see Decision #104.
       expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
     });
   ```
@@ -129,7 +135,8 @@ TDD steps:
 
 TDD steps:
 
-- [ ] **Write failing test.** Create `server/src/__tests__/agents-update-concurrency.test.ts`. Use the existing `createAgentDb` sequence-DB helper (`./helpers/mock-db.js`) + the table/operator mocks (`./helpers/drizzle-mock.js`), matching the pattern in `agents-lifecycle-routes.test.ts`. The service's `updateAgent` issues, in order: (1) a `select` for `getById(id)` → existing row; (2) the guarded `update`; on zero-row results when a token was supplied, (3) a second `select` for the re-read. Sequence the mock results to drive each branch.
+- [ ] **Write failing test (mock-style — branch coverage, NOT precision).** Create `server/src/__tests__/agents-update-concurrency.test.ts`. Use the existing `createAgentDb` sequence-DB helper (`./helpers/mock-db.js`) + the table/operator mocks (`./helpers/drizzle-mock.js`), matching the pattern in `agents-lifecycle-routes.test.ts`. The service's `updateAgent` issues, in order: (1) a `select` for `getById(id)` → existing row; (2) the guarded `update`; on zero-row results when a token was supplied, (3) a second `select` for the re-read. Sequence the mock results to drive each branch.
+  > **Scope note:** under the Proxy mock, `drizzle-orm` operators (`and`/`eq`/`sql`) are no-ops, so the WHERE clause — including the `date_trunc('milliseconds', …)` guard — is **never evaluated**. These mock tests therefore prove the *branching* (no-token → success, supplied-token-then-zero-rows → 409 vs 404, return-shape, no-revision-on-clobber) but **cannot** prove the millisecond-precision fix. That regression (a freshly-`defaultNow()` row's token succeeding on first guarded update) is proven by the real-DB integration test in **Task 2b**. The mock here simulates conflict by returning zero rows from the `update` (`updates: [[]]`), independent of the actual comparison.
   ```ts
   import { describe, it, expect, beforeEach, vi } from "vitest";
   import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
@@ -223,13 +230,22 @@ TDD steps:
     expectedUpdatedAt?: string;
   }
   ```
-- [ ] **Implement REAL code — step B: guarded UPDATE + conflict.** Replace the write at lines 343-348:
+- [ ] **Implement REAL code — step B0: import `sql`.** `agents.ts` line 2 imports `import { and, desc, eq, inArray, isNull, isNotNull, ne } from "drizzle-orm";` — it does **not** include `sql`. Add it: `import { and, desc, eq, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";`. (`agents.ts` does not currently use `sql` anywhere else; this is a new import.)
+- [ ] **Implement REAL code — step B: ms-precision guarded UPDATE + conflict.** Replace the write at lines 343-348. The guard compares `date_trunc('milliseconds', agents.updatedAt)` against the **millisecond-precision** token — `new Date(expected)` is already ms-precision, and `date_trunc` strips the stored value's sub-millisecond microseconds so a freshly-created `defaultNow()` row matches its own ISO token (see the precision note in **Architecture**):
   ```ts
   const expectedAt =
     options?.expectedUpdatedAt != null ? new Date(options.expectedUpdatedAt) : null;
   const guard =
     expectedAt != null
-      ? and(eq(agents.id, id), eq(agents.updatedAt, expectedAt))
+      ? and(
+          eq(agents.id, id),
+          // Millisecond-precision compare. `agents.updatedAt` is stored at
+          // Postgres microsecond resolution (defaultNow() on never-updated rows);
+          // the client token is a ms-precision ISO string. A naked
+          // `eq(agents.updatedAt, expectedAt)` would never match a freshly-created
+          // row → spurious 409 + retry loop. date_trunc both sides to ms.
+          sql`date_trunc('milliseconds', ${agents.updatedAt}) = ${expectedAt}`,
+        )
       : eq(agents.id, id);
 
   const updated = await db
@@ -249,18 +265,94 @@ TDD steps:
     if (current) {
       throw conflict(
         "This agent was changed by someone else. Reload and re-apply your change.",
-        { currentUpdatedAt: current.updatedAt },
+        { currentUpdatedAt: current.updatedAt.toISOString() },
       );
     }
     return null; // row vanished concurrently → caller/route maps to 404
   }
   ```
-  > `current.updatedAt` is a JS `Date`. `HttpError.details` is serialized to JSON by `middleware/error-handler.ts` (line 34: `...(err.details ? { details: err.details } : {})`), and `JSON.stringify(Date)` yields the ISO string — matching the test's `{ currentUpdatedAt: T1.toISOString() }`. Keep it a `Date` in the service; the JSON boundary stringifies it.
+  > **Throw the ISO string, not the `Date`.** `current.updatedAt` is a JS `Date`, but `errorHandler` only stringifies dates at the HTTP JSON boundary (`middleware/error-handler.ts` line 34 spreads `err.details` verbatim — no recursive `Date`→ISO coercion inside the raw `HttpError`). A **service-level** test that inspects the thrown error sees `details.currentUpdatedAt` exactly as passed. To make the service test, the route test, and the live JSON all agree, pass `current.updatedAt.toISOString()` (a `string`) — then `details.currentUpdatedAt === T1.toISOString()` holds at every layer.
   >
   > Leave the existing `recordRevision` block (lines 350-367) untouched — it already keys off `normalizedUpdated`, which is `null` on a conflict-miss return, so no revision is recorded for a clobbered write. Good.
 - [ ] **Run, expect PASS:** same command → all four cases green.
 - [ ] **Typecheck:** `pnpm --filter @armyofagents/server exec tsc --noEmit` → clean.
 - [ ] **Commit:** `feat(agents): guard agent update with optional expectedUpdatedAt token (409 on conflict)`.
+
+---
+
+## Task 2b — Real-DB integration proof: ms-precision token vs `defaultNow()` microseconds
+
+**Why this task exists:** The mock-style tests in Task 2 cannot exercise the WHERE clause (drizzle operators are no-ops under the Proxy mock), so the millisecond-precision fix — the regression Codex flagged — is **unproven** by them. This task adds a real-DB integration test against an embedded Postgres that genuinely stamps `agents.updatedAt` at microsecond resolution via `defaultNow()`, then proves a ms-precision client token still matches on the first guarded update (and that a stale token 409s). It is **Linux-gated / Windows-skipped** per the locked repo convention (embedded-postgres can't start on the CI Windows runner — see CLAUDE.md § CI Platform Status and `checkout-race.integration.test.ts`).
+
+**Files:**
+- `server/src/__tests__/agents-update-concurrency.integration.test.ts` — NEW. Model the embedded-postgres scaffold **verbatim** on `server/src/__tests__/checkout-race.integration.test.ts` (lines 1-135): `EmbeddedPostgres` boot in `beforeAll` with `if (process.platform === "win32") return;`, `applyPendingMigrations`, `createDb`, `setupError` capture, `afterAll` teardown, and a top-level `describe.skipIf(process.platform === "win32")(...)`. Seed a company, then create an agent through `agentService(db).create(...)` so the row's `updatedAt` is a genuine `defaultNow()` microsecond value (do NOT insert `updatedAt` by hand — the whole point is to reproduce the sub-millisecond stored value).
+
+TDD steps:
+
+- [ ] **Write failing test.** Inside the `describe.skipIf(...)`:
+  ```ts
+  import { and, eq, sql } from "drizzle-orm";
+  import { agents } from "@armyofagents/db";
+  import { agentService } from "../services/agents.js";
+
+  it("freshly-created (defaultNow) agent: a ms-precision token succeeds on the FIRST guarded update", async () => {
+    if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+    const svc = agentService(db);
+    const created = await svc.create(companyId, { name: "Fresh Agent", role: "general" });
+
+    // Sanity: the stored value really does carry sub-millisecond microseconds at
+    // least some of the time. We assert the GUARD works regardless — the token is
+    // the ms-precision ISO string the UI would send.
+    const token = new Date(created!.updatedAt).toISOString(); // ms precision
+
+    const updated = await svc.update(created!.id, { role: "specialist" }, { expectedUpdatedAt: token });
+    expect(updated).not.toBeNull();        // first edit of a never-updated row must NOT 409
+    expect(updated!.role).toBe("specialist");
+  });
+
+  it("a naked-eq comparison would have failed here (documents the bug the date_trunc guard fixes)", async () => {
+    if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+    const svc = agentService(db);
+    const created = await svc.create(companyId, { name: "Naked Eq Agent", role: "general" });
+    const token = new Date(created!.updatedAt).toISOString();
+
+    // Demonstrate the precision mismatch directly against the DB: a naked
+    // `updatedAt = <ms token>` matches 0 rows when the stored value has microseconds,
+    // whereas the date_trunc('milliseconds', …) guard the service uses matches 1.
+    const nakedMatch = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, created!.id), eq(agents.updatedAt, new Date(token))));
+    const truncMatch = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, created!.id), sql`date_trunc('milliseconds', ${agents.updatedAt}) = ${new Date(token)}`));
+    // The date_trunc guard ALWAYS matches; the naked eq matches only when the
+    // stored microseconds happen to be .000 (flaky), so we only assert the guard.
+    expect(truncMatch.length).toBe(1);
+    // Document the bug without flaking on the rare .000-microsecond case:
+    expect(nakedMatch.length).toBeLessThanOrEqual(1);
+  });
+
+  it("stale token → 409 conflict (real DB)", async () => {
+    if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+    const svc = agentService(db);
+    const created = await svc.create(companyId, { name: "Stale Token Agent", role: "general" });
+    const staleToken = new Date(created!.updatedAt).toISOString();
+
+    // First edit advances updatedAt.
+    await svc.update(created!.id, { role: "specialist" }, { expectedUpdatedAt: staleToken });
+    // Second edit re-sends the ORIGINAL (now stale) token → must 409.
+    await expect(
+      svc.update(created!.id, { role: "lead" }, { expectedUpdatedAt: staleToken }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+  ```
+  > The second test is intentionally conservative: it asserts the `date_trunc` guard always matches (the real proof) and only documents — without flaking — that the naked `eq` can miss. The first and third tests are the load-bearing regression + conflict proofs.
+- [ ] **Run, expect FAIL (Linux) / SKIP (Windows):** `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.integration.test.ts`. On Windows the suite self-skips (collects 0 run). On Linux, the first/third tests fail **before** the date_trunc guard is in place (a naked `eq` would 409 the first edit), proving the regression is real. (If running locally on Windows, note in the commit that Linux CI is the gating run — this matches the repo's existing integration-test posture.)
+- [ ] **Implement REAL code:** none new — the `date_trunc` guard from **Task 2 step B** is what turns these tests green. (If Task 2 is already merged, this task is purely additive test coverage.)
+- [ ] **Run, expect PASS (Linux):** same command → green; Windows skips.
+- [ ] **Commit:** `test(agents): real-DB integration proof for ms-precision optimistic-concurrency token`.
 
 ---
 
@@ -276,15 +368,15 @@ TDD steps:
 TDD steps:
 
 - [ ] **Write failing test.** Create `server/src/__tests__/agents-update-concurrency-route.test.ts`, modeled on `agents-lifecycle-routes.test.ts` (mount `agentRoutes` on an express app with an injected board actor + `errorHandler`, mock `agentService` via `vi.mock("../services/index.js", ...)`). Assert:
-  1. **Token forwarded:** when the body carries `expectedUpdatedAt`, the mocked `svc.update` is called with that value in its options object.
-  2. **409 propagation:** when `svc.update` rejects with `conflict("…", { currentUpdatedAt })`, the response is `409` and the JSON body is `{ error, details: { currentUpdatedAt } }`.
+  1. **Token forwarded via OPTIONS only (Codex P1 #1):** when the body carries `expectedUpdatedAt`, the mocked `svc.update` is called with that value in its **third** (options) arg AND its **second** (patch) arg does **not** contain `expectedUpdatedAt` — the route must destructure it out of `patchData` so it never reaches Drizzle `.set()`.
+  2. **409 propagation:** when `svc.update` rejects with `conflict("…", { currentUpdatedAt })` where `currentUpdatedAt` is an **ISO string** (matching what the service throws), the response is `409` and the JSON body is `{ error, details: { currentUpdatedAt } }`.
   3. **404 on vanished row:** when `svc.update` resolves `null` (token-miss on a deleted row), the response is `404` (existing branch).
   4. **Back-compat:** a PATCH with no token still 200s and calls `svc.update` with options that have no `expectedUpdatedAt`.
   ```ts
   // ... (mock scaffolding mirrors agents-lifecycle-routes.test.ts) ...
   import { conflict } from "../errors.js";
 
-  it("forwards expectedUpdatedAt into svc.update options", async () => {
+  it("forwards expectedUpdatedAt ONLY via the options object — never in the patch", async () => {
     mockAgentService.getById.mockResolvedValue({ id: AGENT_ID, companyId: "company-A" });
     mockAgentService.update.mockResolvedValue({ id: AGENT_ID, companyId: "company-A", title: "X" });
     const iso = new Date("2026-06-25T12:00:00.000Z").toISOString();
@@ -292,26 +384,37 @@ TDD steps:
       .patch(`/api/agents/${AGENT_ID}`)
       .send({ title: "X", expectedUpdatedAt: iso });
     expect(res.status).toBe(200);
+    // The token must ride in the THIRD arg (options), not the SECOND (patch) —
+    // otherwise it flows into `.set({ ...normalizedPatch, updatedAt })` in the
+    // service and Drizzle attempts to write a non-column field.
     expect(mockAgentService.update).toHaveBeenCalledWith(
       AGENT_ID,
       expect.objectContaining({ title: "X" }),
       expect.objectContaining({ expectedUpdatedAt: iso }),
     );
+    const [, patchArg, optionsArg] = mockAgentService.update.mock.calls.at(-1)!;
+    // CRITICAL (Codex P1 #1): the patch object passed to svc.update must NOT carry
+    // the transport-only token, or it would reach `.set()` as a phantom column.
+    expect(patchArg).not.toHaveProperty("expectedUpdatedAt");
+    expect(optionsArg).toHaveProperty("expectedUpdatedAt", iso);
   });
 
-  it("maps a service conflict to 409 with currentUpdatedAt", async () => {
+  it("maps a service conflict to 409 with currentUpdatedAt (ISO string)", async () => {
     mockAgentService.getById.mockResolvedValue({ id: AGENT_ID, companyId: "company-A" });
-    const t1 = new Date("2026-06-25T12:05:00.000Z");
+    // The service throws `currentUpdatedAt` as an ISO STRING (it calls
+    // `current.updatedAt.toISOString()` — errorHandler does NOT coerce Dates inside
+    // the raw HttpError). Mirror that exact shape here so the mock matches reality.
+    const t1Iso = new Date("2026-06-25T12:05:00.000Z").toISOString();
     mockAgentService.update.mockRejectedValue(
       conflict("This agent was changed by someone else. Reload and re-apply your change.", {
-        currentUpdatedAt: t1,
+        currentUpdatedAt: t1Iso,
       }),
     );
     const res = await request(makeApp(companyAActor))
       .patch(`/api/agents/${AGENT_ID}`)
       .send({ title: "X", expectedUpdatedAt: "2026-06-25T12:00:00.000Z" });
     expect(res.status).toBe(409);
-    expect(res.body.details.currentUpdatedAt).toBe(t1.toISOString());
+    expect(res.body.details.currentUpdatedAt).toBe(t1Iso);
   });
 
   it("back-compat: no token still updates (200, no token in options)", async () => {
@@ -358,10 +461,10 @@ TDD steps:
 **Payload-test reconciliation decision (RESOLVED):** Make the token **conditional on having a cached `updatedAt`**, threaded via a new **optional** prop `expectedUpdatedAt?: string`.
 - When the prop is **absent** (the prop's default in the existing tests, which render `<AgentSkillsTab ... />` with no `expectedUpdatedAt`), the payload stays exactly `{ skillKeys: [...] }` — so the three existing payload assertions **pass unchanged**.
 - When the prop is **present** (production: parents pass `agent.updatedAt`), the payload becomes `{ skillKeys: [...], expectedUpdatedAt }`.
-- One **new** test renders with the prop and asserts the token is included + the 409 branch. This keeps the public-payload contract test stable while exercising the opt-in path. (Chosen over "always send the token" because that would force rewriting 3 stable assertions for no behavioral gain — and the prop-absent default is exactly what those tests render.)
+- **New** tests render with the prop and assert: (a) the token is included; (b) the 409 branch rolls back + toasts; (c) two sequential toggles send the **fresh** token on the second call (Codex P1 #4 — the stale-token ref). This keeps the public-payload contract test stable while exercising the opt-in path. (Chosen over "always send the token" because that would force rewriting 3 stable assertions for no behavioral gain — and the prop-absent default is exactly what those tests render.)
 
 **Files:**
-- `ui/src/components/agent-detail/AgentSkillsTab.tsx` — props (17-28), `handleToggle` (58-93), the `catch` (84-92).
+- `ui/src/components/agent-detail/AgentSkillsTab.tsx` — props (17-28), the `latestSkillKeys` ref + resync effect (37-50, mirror for the new `latestExpectedUpdatedAt` ref), `handleToggle` (58-93), the `catch` (84-92).
 - `ui/src/components/agent-detail/__tests__/AgentSkillsTab.test.tsx`.
 - `ui/src/lib/toast.ts` — `toast.error(title, { description })` (verified signature).
 - `ui/src/api/client.ts` — `ApiError` has `.status` (line 10) and `.body` (line 11); a 409 is `error instanceof ApiError && error.status === 409`.
@@ -409,8 +512,39 @@ TDD steps:
     fireEvent.click(row("Skill A"));
     await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: ["skill-a"] }));
   });
+
+  it("two sequential toggles before any refetch send the FRESH token on the second call (no self-409)", async () => {
+    // First update returns an ADVANCED updatedAt; the component must send THAT on
+    // the next toggle, not the stale prop, so it can't 409 against its own write.
+    vi.mocked(agentsApi.update)
+      .mockResolvedValueOnce({ updatedAt: "2026-06-25T12:00:01.000Z" } as never)
+      .mockResolvedValueOnce({ updatedAt: "2026-06-25T12:00:02.000Z" } as never);
+    renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} expectedUpdatedAt="2026-06-25T12:00:00.000Z" />,
+    );
+    await screen.findByText("Skill A");
+    await screen.findByText("Skill B");
+
+    // First toggle: sends the prop token.
+    fireEvent.click(row("Skill A"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(1));
+    expect(agentsApi.update).toHaveBeenNthCalledWith(1, "a1", {
+      skillKeys: ["skill-a"],
+      expectedUpdatedAt: "2026-06-25T12:00:00.000Z",
+    });
+
+    // Second toggle (the prop has NOT been refreshed yet — no refetch landed):
+    // must send the token advanced from the first response, not the stale prop.
+    fireEvent.click(row("Skill B"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(2));
+    expect(agentsApi.update).toHaveBeenNthCalledWith(2, "a1", {
+      skillKeys: ["skill-a", "skill-b"],
+      expectedUpdatedAt: "2026-06-25T12:00:01.000Z",
+    });
+  });
   ```
-- [ ] **Run, expect FAIL:** `pnpm --filter @armyofagents/ui exec vitest run src/components/agent-detail/__tests__/AgentSkillsTab.test.tsx` → the three new tests fail (prop unknown / token not sent / no 409 branch).
+  > The two-toggle test renders with **two** library skills (`Skill A`, `Skill B`) — the existing fixture for this suite already provides them (it asserts both `Skill A` and `Skill B` rows elsewhere). The second `expectedUpdatedAt` (`…01.000Z`) is the `updatedAt` from the **first** mocked response, proving the ref advanced from the server response rather than re-sending the stale prop (`…00.000Z`).
+- [ ] **Run, expect FAIL:** `pnpm --filter @armyofagents/ui exec vitest run src/components/agent-detail/__tests__/AgentSkillsTab.test.tsx` → the four new tests fail (prop unknown / token not sent / no 409 branch / second toggle sends the stale prop token instead of the advanced one).
 - [ ] **Implement REAL code.** In `AgentSkillsTab.tsx`:
   - Add the optional prop to the signature (17-28):
     ```ts
@@ -439,13 +573,36 @@ TDD steps:
     import { ApiError } from "../../api/client";
     import { toast } from "../../lib/toast";
     ```
-  - In `handleToggle`, build the payload conditionally and add the 409 branch inside the existing `catch` (84-92):
+  - **Add a `latestExpectedUpdatedAt` ref (Codex P1 #4 — defeat the stale-token self-409).** The post-success `invalidateQueries` refetch is async; a user who toggles twice in quick succession would, on the second toggle, re-send the **prop's** now-stale `expectedUpdatedAt` (the refetch that would bump the prop hasn't landed) → a self-inflicted 409 against their *own* prior write. Track the freshest token the same way `latestSkillKeys` already tracks the freshest attached set: seed it from the prop, advance it from each **successful** `agentsApi.update` response's `updatedAt`. Add this next to the existing `latestSkillKeys` ref (lines 37-40):
+    ```ts
+    // Freshest optimistic-concurrency token. Like `latestSkillKeys`, this is
+    // advanced from the SUCCESSFUL update response so a second toggle fired before
+    // the post-success refetch lands sends the up-to-date token (not the stale prop)
+    // and doesn't self-409 against this component's own prior write. (Decision #104)
+    const latestExpectedUpdatedAt = useRef(expectedUpdatedAt);
+    useEffect(() => {
+      latestExpectedUpdatedAt.current = expectedUpdatedAt;
+    }, [expectedUpdatedAt]);
+    ```
+  - In `handleToggle`, send the **ref** value (not the raw prop), capture the returned agent to advance the ref, and add the 409 branch inside the existing `catch` (84-92):
     ```ts
     try {
       const payload: Record<string, unknown> = { skillKeys: next };
-      if (expectedUpdatedAt) payload.expectedUpdatedAt = expectedUpdatedAt;
-      await agentsApi.update(agentId, payload as never);
+      // Send the FRESHEST token (ref), not the prop — guards against a second
+      // toggle that fires before the post-success refetch updates the prop.
+      const tokenToSend = latestExpectedUpdatedAt.current;
+      if (tokenToSend) payload.expectedUpdatedAt = tokenToSend;
+      const updatedAgent = await agentsApi.update(agentId, payload as never);
       latestSkillKeys.current = next;
+      // Advance the token from the server's response so the NEXT toggle (which may
+      // fire before the invalidate refetch lands) guards against the value we just
+      // wrote — not the stale prop. `updatedAt` arrives as a Date or ISO string;
+      // normalize to ISO. Only advance when the prop-driven token feature is active.
+      if (latestExpectedUpdatedAt.current && (updatedAgent as { updatedAt?: string | Date } | undefined)?.updatedAt) {
+        latestExpectedUpdatedAt.current = new Date(
+          (updatedAgent as { updatedAt: string | Date }).updatedAt,
+        ).toISOString();
+      }
       void queryClient.invalidateQueries({ queryKey: ["agents", "detail"] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
     } catch (e) {
@@ -465,8 +622,8 @@ TDD steps:
       setPendingKey(null);
     }
     ```
-    > The prop-absent branch keeps `payload === { skillKeys: next }` (a plain object literal, not a superset) so the three existing `toHaveBeenCalledWith("a1", { skillKeys: [...] })` assertions still match exactly.
-- [ ] **Run, expect PASS:** same command → all AgentSkillsTab tests green (the three original payload assertions + the three new ones).
+    > The prop-absent branch keeps `payload === { skillKeys: next }` (a plain object literal, not a superset — `latestExpectedUpdatedAt.current` is `undefined`, so the key is never added) so the three existing `toHaveBeenCalledWith("a1", { skillKeys: [...] })` assertions still match exactly. `agentsApi.update` already returns the updated agent (its result was previously ignored — verified at `AgentSkillsTab.tsx:75`); capturing it here is the only behavioral change to the success path.
+- [ ] **Run, expect PASS:** same command → all AgentSkillsTab tests green (the three original payload assertions + the four new ones).
 - [ ] **Wire the parents to pass the token.** No new tests required for these one-line prop additions (covered by the component test + the page smoke tests), but make the edits:
   - `ui/src/pages/AgentDetail.tsx:677-681`:
     ```tsx
@@ -590,20 +747,34 @@ Steps (no test — docs):
   - **Optional / opt-in.** `updateAgentSchema` gains `expectedUpdatedAt?` (ISO
     datetime). Absent → last-write-wins (full back-compat; no caller breaks).
     Present → enforced.
+  - **Millisecond-precision guard (load-bearing).** `agents.updatedAt` is stored at
+    Postgres **microsecond** resolution (`defaultNow()` on never-updated rows), while
+    the client token is a **millisecond**-precision ISO string. A naked
+    `eq(agents.updatedAt, expected)` would spuriously 409 (then loop) on the FIRST
+    edit of a freshly-created agent. The guard therefore truncates **both sides to
+    milliseconds**:
+    `where(and(eq(agents.id, id), sql\`date_trunc('milliseconds', ${agents.updatedAt}) = ${new Date(expected)}\`))`.
+    The token does **not** round-trip losslessly — this `date_trunc` is what makes it safe.
   - **Race-free atomic guard.** The check lives in the WHERE clause of the UPDATE —
-    `where(and(eq(agents.id, id), eq(agents.updatedAt, expected)))` — never a
-    pre-read compare (that is TOCTOU). Zero rows matched **while the row still
-    exists** → `conflict()` (HTTP **409**) with `details.currentUpdatedAt` so the
-    client can refetch. Zero rows + row gone → `null` → 404. Precedent: the atomic
-    conditional UPDATE in `issues.ts` `checkout`.
+    never a pre-read compare (that is TOCTOU). Zero rows matched **while the row still
+    exists** → `conflict()` (HTTP **409**) with `details.currentUpdatedAt` (an **ISO
+    string** — the service calls `.toISOString()`, since `errorHandler` doesn't coerce
+    raw-`HttpError` `Date`s) so the client can refetch. Zero rows + row gone → `null` →
+    404. Precedent: the atomic conditional UPDATE in `issues.ts` `checkout`. Proven
+    against a real embedded Postgres (Linux-gated / Windows-skipped) because the
+    mock-style unit tests can't evaluate the WHERE clause.
   - **Scope = whole row.** The token guards the entire `agents` row (Skills vs
     Config conflicts included). False-positive 409s on non-overlapping fields are
     acceptable — a refetch resolves them. Field-level reconciliation via
     `agent_config_revisions.changedKeys` is a possible v2, not now.
   - **UI opt-in (first wave):** Skills tab + Config save send `agent.updatedAt`
     from the query cache; on 409 they invalidate/refetch and toast "changed
-    elsewhere — reloaded, please redo." Other editors can opt in later by passing
-    the token.
+    elsewhere — reloaded, please redo." The Skills tab advances a
+    `latestExpectedUpdatedAt` ref from each successful update response (mirroring its
+    `latestSkillKeys` ref) so back-to-back toggles before the refetch lands don't
+    self-409 on a stale token. The transport-only token is destructured out on the
+    route so it never reaches Drizzle `.set()`. Other editors can opt in later by
+    passing the token.
 
   Refs: `packages/shared/src/validators/agent.ts`, `server/src/services/agents.ts`,
   `server/src/routes/agents.ts`, `ui/src/components/agent-detail/AgentSkillsTab.tsx`,
@@ -623,7 +794,7 @@ Steps (no test — docs):
 - [ ] **Shared suite (all):** `pnpm --filter @armyofagents/shared exec vitest run` → green.
 - [ ] **UI suite (all):** `pnpm --filter @armyofagents/ui exec vitest run` → green.
 - [ ] **Workspace typecheck:** `pnpm typecheck` → clean.
-- [ ] **Self-review the diff:** `git diff main...HEAD` — confirm: no raw SQL, no schema/migration files, no OSS headers, every commit has the Co-Authored-By trailer, the token is optional everywhere (no caller is forced to send it), and the three original `AgentSkillsTab` payload assertions are untouched.
+- [ ] **Self-review the diff:** `git diff main...HEAD` — confirm: **no raw SQL migration files** and no schema changes (the parameterized `sql\`date_trunc('milliseconds', …) = ${…}\`` fragment in the guarded UPDATE is a Drizzle `sql` template with bound params, not a raw-SQL file — the same construct `issues.ts` already uses; this is allowed and is **not** a migration), no OSS headers, every commit has the Co-Authored-By trailer, the token is optional everywhere (no caller is forced to send it), the transport-only `expectedUpdatedAt` never reaches Drizzle `.set()` (destructured out on the route), and the three original `AgentSkillsTab` payload assertions are untouched.
 - [ ] **Use superpowers:finishing-a-development-branch** to open the PR off `main` (own branch `feat/agent-update-optimistic-concurrency`). PR body ends with the `🤖 Generated with [Claude Code]` line; verify `ci-required` is green.
 
 ---
@@ -631,9 +802,10 @@ Steps (no test — docs):
 ## Definition of done
 
 - [ ] `updateAgentSchema` accepts an optional ISO `expectedUpdatedAt`; an invalid value is rejected; an absent value parses (back-compat). (Task 1)
-- [ ] `agentService.update`: no token → last-write-wins; matching token → succeeds; stale token (row exists) → throws 409 `conflict()` carrying `currentUpdatedAt`; token + vanished row → returns `null` (404). The guard is the atomic WHERE, not a pre-read compare. (Task 2)
-- [ ] `PATCH /api/agents/:id` forwards `expectedUpdatedAt` into `svc.update` options; a thrown conflict surfaces as HTTP 409 with `{ details: { currentUpdatedAt } }` via the existing error middleware; the vanished-row null still 404s; no-token PATCH still 200s. (Task 3)
-- [ ] Skills tab sends the token only when the `expectedUpdatedAt` prop is provided, handles 409 (rollback + refetch + toast), and the three pre-existing exact-payload assertions still pass unchanged. (Task 4)
+- [ ] `agentService.update`: no token → last-write-wins; matching token → succeeds; stale token (row exists) → throws 409 `conflict()` carrying `currentUpdatedAt` **as an ISO string**; token + vanished row → returns `null` (404). The guard is the atomic, **millisecond-precision** WHERE (`date_trunc('milliseconds', …)`), not a naked `eq` and not a pre-read compare. (Task 2)
+- [ ] **Real-DB integration proof:** a freshly-created (`defaultNow()`) agent's ms-precision token succeeds on its FIRST guarded update (the precision regression), and a stale token 409s — Linux-gated / Windows-skipped. (Task 2b)
+- [ ] `PATCH /api/agents/:id` forwards `expectedUpdatedAt` **only via the options object** (destructured out of `patchData` so it never reaches Drizzle `.set()` — asserted by test); a thrown conflict surfaces as HTTP 409 with `{ details: { currentUpdatedAt } }` (ISO string) via the existing error middleware; the vanished-row null still 404s; no-token PATCH still 200s. (Task 3)
+- [ ] Skills tab sends the token only when the `expectedUpdatedAt` prop is provided, advances a `latestExpectedUpdatedAt` ref from each successful update response so back-to-back toggles don't self-409 (asserted by test), handles 409 (rollback + refetch + toast), and the three pre-existing exact-payload assertions still pass unchanged. (Task 4)
 - [ ] Config save injects the token from `agent.updatedAt`; both worker + AoA `updateAgent` mutations handle 409 (refetch + toast). (Task 5)
 - [ ] **Decision #104** recorded in `docs/architecture/decisions.md`. (Task 6)
 - [ ] Server + shared + UI suites green; `pnpm typecheck` clean; back-compat (no-token) path tested at every layer. (Task 7)
@@ -642,6 +814,10 @@ Steps (no test — docs):
 
 ## Self-review
 
-- **Race-safety:** the only correctness-critical line is the guarded WHERE (`and(eq(id), eq(updatedAt, expected))`). I verified `and`/`eq` are already imported in `agents.ts` and that `conflict()` already yields a 409 `HttpError` whose `details` the error middleware serializes — so no route try/catch and no new error plumbing is required (the existing `conflict("Terminated agents cannot be resumed")` calls already propagate the same way). The re-read after a zero-row miss only *classifies* 409-vs-404; it is not the concurrency check.
-- **Back-compat is load-bearing and tested at all four layers** (validator absent-token, service no-token, route no-token-in-options, UI prop-absent payload). The `AgentSkillsTab` payload-test question is resolved by an **optional prop** whose absent default is exactly what the three existing tests render — so they stay byte-identical; a new prop-present test covers the opt-in. This avoids churning stable assertions.
-- **Things to double-check during execution:** (1) `createAgentDb`'s FIFO `selects` ordering for the dual-select sequence (initial `getById` + post-conflict re-read) — if it fights the helper, drop to a small inline sequence-DB (sanctioned by the repo). (2) Whether a page-level test for `AgentDetail`/`AoaAgentDetail` asserts an exact config-save payload — if so it needs the same `expect.objectContaining` relaxation (grep before Task 5's broad run). (3) The `@/lib/toast` vs `../../lib/toast` import alias must match each file's existing convention (Skills tab uses relative `../..`; pages may use `@/`). (4) `z.string().datetime({ offset: true })` must accept the exact form `new Date().toISOString()` emits — confirm in the validator test (it does: `…Z` is offset-compatible).
+- **Race-safety + precision (Codex P1 #2 — the load-bearing fix):** the only correctness-critical line is the guarded WHERE, which is `and(eq(agents.id, id), sql\`date_trunc('milliseconds', ${agents.updatedAt}) = ${new Date(expected)}\`)` — **not** a naked `eq(agents.updatedAt, expected)`. `agents.updatedAt` is stored at Postgres microsecond resolution (`defaultNow()` on never-updated rows from `create()`, which doesn't set `updatedAt`), while the client token is ms-precision ISO; a naked `eq` would spuriously 409 the FIRST edit and loop. `agents.ts` line 2 must add `sql` to its `drizzle-orm` import. `conflict()` already yields a 409 `HttpError` whose `details` the error middleware serializes — so no route try/catch and no new error plumbing is required (existing `conflict(...)` calls propagate the same way). The re-read after a zero-row miss only *classifies* 409-vs-404; it is not the concurrency check.
+- **Mock tests can't prove precision → real-DB integration test (Task 2b):** under the Proxy mock the drizzle operators are no-ops, so the `date_trunc` WHERE is never evaluated. The precision regression (freshly-created agent's ms token succeeding on the first guarded update) is proven only by a Linux-gated / Windows-skipped embedded-postgres integration test that creates the agent through `agentService.create` (genuine `defaultNow()` microseconds).
+- **Date vs ISO consistency (Codex P1 #3):** the service throws `conflict("…", { currentUpdatedAt: current.updatedAt.toISOString() })` — a **string**, because `errorHandler` spreads `err.details` verbatim and does NOT coerce a raw-`HttpError` `Date` to ISO (it only stringifies at the JSON boundary for objects that reach `res.json`). Both the service test and the route test assert the ISO string; the route test's mock rejects with the ISO-string shape to match reality.
+- **Transport token never reaches `.set()` (Codex P1 #1):** the route destructures `const { expectedUpdatedAt, ...bodyRest } = req.body` and builds `patchData` from `bodyRest`, forwarding the token **only** in the `svc.update` options object (alongside `recordRevision`). A route test asserts the patch (arg 2) does NOT contain `expectedUpdatedAt` while the options (arg 3) does — otherwise it would flow into `.set({ ...normalizedPatch, updatedAt })` as a phantom column.
+- **Stale-token self-409 defeated in the UI (Codex P1 #4):** `AgentSkillsTab` advances a `latestExpectedUpdatedAt` ref from each **successful** `agentsApi.update` response's `updatedAt` (mirroring the existing `latestSkillKeys` ref) and sends the ref — not the prop. A test fires two sequential toggles before any refetch and asserts the second call carries the token advanced from the first response (no self-409). `agentsApi.update` already returns the `Agent` (verified `ui/src/api/agents.ts:109-110`), so capturing it is the only success-path change.
+- **Back-compat is load-bearing and tested at all four layers** (validator absent-token, service no-token, route no-token-in-options, UI prop-absent payload). The `AgentSkillsTab` payload-test question is resolved by an **optional prop** whose absent default is exactly what the three existing tests render — so they stay byte-identical; new prop-present tests cover the opt-in. The ref starts as `undefined` when the prop is absent, so the prop-absent payload is still exactly `{ skillKeys: [...] }`.
+- **Things to double-check during execution:** (1) `createAgentDb`'s FIFO `selects` ordering for the dual-select sequence (initial `getById` + post-conflict re-read) — if it fights the helper, drop to a small inline sequence-DB (sanctioned by the repo). (2) Whether a page-level test for `AgentDetail`/`AoaAgentDetail` asserts an exact config-save payload — if so it needs the same `expect.objectContaining` relaxation (grep before Task 5's broad run). (3) The `@/lib/toast` vs `../../lib/toast` import alias must match each file's existing convention (Skills tab uses relative `../..`; pages may use `@/`). (4) `z.string().datetime({ offset: true })` must accept the exact form `new Date().toISOString()` emits — confirm in the validator test (it does: `…Z` is offset-compatible). (5) The embedded-postgres integration test only runs on Linux; running it locally on Windows self-skips — rely on CI for the gating run, per the repo's posture.

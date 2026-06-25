@@ -4,7 +4,7 @@
 
 **Goal:** Replace the AoA agent's capped `"50+"` run KPI with a true total-ever count. Add a `count(*)` `total` to the `/aoa-runs` response, fix BOTH the hero KPI and the Overview "Total runs" stat to read that true total, and relabel the hero KPI from "Recent runs" → "Total runs". Semantics: total ever.
 
-**Architecture:** `GET /companies/:companyId/agents/:id/aoa-runs` (in `server/src/routes/agents.ts`) currently reads `internal_agent_runs`, caps rows at `min(limit ?? 50, 200)`, and returns a **bare array**. We change it to return `{ runs, total, limit }` — mirroring the proven same-table precedent at `server/src/routes/internal-agent.ts:861-895` (a `count(*)::int` aggregate query alongside the paginated query). The count is index-backed by `ia_runs_agent_idx` on `(companyId, agentId)` (`packages/db/src/schema/internal_agent.ts:322`) — no schema change. All UI consumers (`getAoaRuns` client + `AoaRunsPanel` + the hero query + the Overview query) read `.runs` for lists and `.total` for the count. `/aoa-runs` is internal (only our own UI consumes it), so the array→object shape change is safe within this one PR provided all consumers are updated atomically.
+**Architecture:** `GET /companies/:companyId/agents/:id/aoa-runs` (in `server/src/routes/agents.ts`) currently reads `internal_agent_runs`, caps rows at `min(limit ?? 50, 200)`, and returns a **bare array**. We change it to return `{ runs, total, limit }` — mirroring the proven same-table precedent at `server/src/routes/internal-agent.ts:861-895`, which computes the total with `sql<number>\`count(*)::int\`` (the exact idiom at `internal-agent.ts:864`) alongside the paginated query. We use `sql` (already imported by the routes that share this table's contract tests) rather than drizzle's `count` helper, because the existing `agentRoutes` route tests (`server/src/__tests__/agents-keys-routes.test.ts`, `server/src/__tests__/aoa-budget-autopause.test.ts`) mock `drizzle-orm` and provide a `sql` stub but **no `count` export** — importing/calling `count` would resolve to `undefined` and break them. The count is index-backed by `ia_runs_agent_idx` on `(companyId, agentId)` (`packages/db/src/schema/internal_agent.ts:322`) — no schema change. All UI consumers (`getAoaRuns` client + `AoaRunsPanel` + the hero query + the Overview query) read `.runs` for lists and `.total` for the count. `/aoa-runs` is internal (only our own UI consumes it), so the array→object shape change is safe within this one PR provided all consumers are updated atomically.
 
 **Tech Stack:** Express 5 + Drizzle ORM (server), React + TanStack Query + Vitest/Testing-Library (UI). Drizzle ORM only — no raw SQL, no schema/migration change. AoA is not open source — no OSS license headers. This is its own PR/branch off `main`.
 
@@ -14,7 +14,7 @@
 
 | File | Create/Modify | Responsibility |
 |------|---------------|----------------|
-| `server/src/routes/agents.ts` | Modify | Add `count` to the `drizzle-orm` import; change the `/aoa-runs` handler to run a `count(*)` query + the existing capped page query, and return `{ runs, total, limit }` instead of a bare array. |
+| `server/src/routes/agents.ts` | Modify | Add `sql` to the `drizzle-orm` import; change the `/aoa-runs` handler to run a `sql<number>\`count(*)::int\`` query + the existing capped page query, and return `{ runs, total, limit }` instead of a bare array. (Use `sql`, not drizzle's `count` helper — the existing `agentRoutes` route tests mock `drizzle-orm` with a `sql` stub but no `count` export, so `count` would break them.) |
 | `server/src/__tests__/aoa-runs-total.test.ts` | Create | Unit/contract test: invoke the `/aoa-runs` route handler with a sequence-mock DB (count call returns a number beyond the cap; page call returns ≤ limit rows); assert the response is `{ runs, total, limit }` with `total` > `runs.length`. |
 | `ui/src/api/agents.ts` | Modify | Change `getAoaRuns` return type from `unknown[]` to a new `AoaRunsResponse` (`{ runs: unknown[]; total: number; limit: number }`). |
 | `ui/src/components/agent-detail/AoaRunsPanel.tsx` | Modify | Read `data.runs` instead of treating `data` as the array. |
@@ -51,7 +51,9 @@ Current import (verified, `server/src/routes/agents.ts:6`):
 import { and, desc, eq } from "drizzle-orm";
 ```
 
-Precedent to mirror (verified, `server/src/routes/internal-agent.ts:862-895`): a `count(*)::int` aggregate `select` over the same conditions, then the paginated `select`, then `res.json({ runs, total, limit, offset, aggregates })`. We need only `{ runs, total, limit }` (no offset/aggregates for this endpoint).
+Precedent to mirror (verified, `server/src/routes/internal-agent.ts:862-895`): a `sql<number>\`count(*)::int\`` aggregate `select` over the same conditions (exact idiom at `internal-agent.ts:864`), then the paginated `select`, then `res.json({ runs, total, limit, offset, aggregates })`. We need only `{ runs, total, limit }` (no offset/aggregates for this endpoint).
+
+**Why `sql`, not `count`:** the existing `agentRoutes` route tests — `server/src/__tests__/agents-keys-routes.test.ts` (mock at lines 6-23) and `server/src/__tests__/aoa-budget-autopause.test.ts` (mock at lines 23-41) — `vi.mock("drizzle-orm", …)` and provide a `sql` Proxy stub but **no `count` export** (verified). Adding `count` to the import and calling `count()` in the route would resolve to `undefined()` and crash router construction / handler execution in both files. Both mocks already export `sql` (a Proxy that returns `{ sql: true }` for any tag/template usage), so mirroring the `internal-agent.ts` `sql\`count(*)::int\`` template needs **zero changes** to those existing mocks. The new test in this task (below) also exports `sql` from its `drizzle-orm` mock.
 
 ### Steps
 
@@ -69,11 +71,17 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   desc: vi.fn((c: unknown) => ({ desc: c })),
-  count: vi.fn(() => "count"),
-  sql: Object.assign(
-    vi.fn((strings: unknown, ...values: unknown[]) => ({ sql: strings, values })),
-    { raw: vi.fn((i: unknown) => i) },
-  ),
+  // The route computes the total with sql<number>`count(*)::int` (mirroring
+  // internal-agent.ts:864). The mock DB's select() ignores the field map and
+  // returns the pre-queued rows, so this stub just needs to not throw — match
+  // the existing agentRoutes tests' Proxy sql stub. NOTE: no `count` export —
+  // the route intentionally uses `sql`, not drizzle's `count` helper, because
+  // the sibling agentRoutes mocks (agents-keys-routes.test.ts /
+  // aoa-budget-autopause.test.ts) export `sql` but not `count`.
+  sql: new Proxy(() => ({ sql: true }), {
+    get: () => () => ({ sql: true }),
+    apply: () => ({ sql: true }),
+  }),
 }));
 
 vi.mock("@armyofagents/db", () => {
@@ -209,7 +217,7 @@ pnpm --filter @armyofagents/server exec vitest run src/__tests__/aoa-runs-total.
 
 Expected: assertions on `body.total` / `body.runs` fail (the response is an array, not `{ runs, total, limit }`).
 
-- [ ] Add `count` to the `drizzle-orm` import in `server/src/routes/agents.ts`. Change line 6 from:
+- [ ] Add `sql` to the `drizzle-orm` import in `server/src/routes/agents.ts` (NOT `count` — `count` would break the sibling `agentRoutes` mocks that export `sql` but not `count`). Change line 6 from:
 
 ```ts
 import { and, desc, eq } from "drizzle-orm";
@@ -218,7 +226,7 @@ import { and, desc, eq } from "drizzle-orm";
 to:
 
 ```ts
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 ```
 
 - [ ] Rewrite the `/aoa-runs` handler body (`server/src/routes/agents.ts:552-564`) to run a count query alongside the capped page query and return the object shape. Replace:
@@ -251,11 +259,14 @@ with:
       eq(internalAgentRuns.companyId, companyId),
       eq(internalAgentRuns.agentId, agentId),
     );
-    // True total (count(*)) — index-backed by ia_runs_agent_idx on
+    // True total (count(*)::int) — index-backed by ia_runs_agent_idx on
     // (companyId, agentId), so it stays cheap. Returned alongside the capped
     // page so the UI shows a real "Total runs" count, not the page length.
+    // Use sql`count(*)::int` (the internal-agent.ts:864 idiom), NOT drizzle's
+    // count() helper — the agentRoutes route tests mock drizzle-orm with `sql`
+    // but no `count` export, so `count()` would break them.
     const [{ total } = { total: 0 }] = await db
-      .select({ total: count() })
+      .select({ total: sql<number>`count(*)::int` })
       .from(internalAgentRuns)
       .where(where);
     const runs = await db
@@ -664,7 +675,7 @@ Expected: only `server/src/routes/agents.ts`, `server/src/__tests__/aoa-runs-tot
 
 This plan implements **only** the "Follow-up #4 — True AoA run count" section of `docs/aoa/plans/2026-06-25-agent-page-followups-design.md`, and covers every point in it:
 
-- **Server (count + shape):** Task 1 adds `count` to the `drizzle-orm` import (was `{ and, desc, eq }`) and changes `/aoa-runs` from a bare array to `{ runs, total, limit }`, with `total = count(*)` over `(companyId, agentId)` — mirroring the verified precedent at `internal-agent.ts:861-895`. Index-backed by `ia_runs_agent_idx` (verified at `internal_agent.ts:322`); no schema change. Semantics: total ever.
+- **Server (count + shape):** Task 1 adds `sql` to the `drizzle-orm` import (was `{ and, desc, eq }`) and changes `/aoa-runs` from a bare array to `{ runs, total, limit }`, with `total = sql<number>\`count(*)::int\`` over `(companyId, agentId)` — mirroring the verified precedent at `internal-agent.ts:864`. We deliberately use `sql`, **not** drizzle's `count` helper: the sibling `agentRoutes` route tests (`agents-keys-routes.test.ts`, `aoa-budget-autopause.test.ts`) `vi.mock("drizzle-orm")` with a `sql` Proxy stub but no `count` export (verified), so importing/calling `count` would resolve to `undefined()` and break them, whereas `sql` is already stubbed in both — zero mock changes needed (Codex P1 fix). Index-backed by `ia_runs_agent_idx` (verified at `internal_agent.ts:322`); no schema change. Semantics: total ever.
 - **Blast radius (complete, verified by grep):** client `getAoaRuns` (Task 2), `AoaRunsPanel` (Task 3), hero query at `AoaAgentDetail.tsx:189-193` + KPI at `:255-265` (Task 4), Overview query/stat at `:363-400` (Task 4), and the test mock in `AoaAgentDetail.test.tsx` (Task 5). Nothing else consumes `getAoaRuns`.
 - **Relabel:** hero KPI "Recent runs" → "Total runs" (key `recent-runs` → `total-runs`), cap logic removed (Task 4). Overview already says "Total runs"; it now reads the true `total` (Task 4).
 - **Testing (per spec):** server test seeds count > page cap and asserts `total` and `runs.length === 50` (Task 1); UI test asserts KPI shows the real number under the "Total runs" label, replacing the old `"50+"` assertion (Task 5).
@@ -672,6 +683,6 @@ This plan implements **only** the "Follow-up #4 — True AoA run count" section 
 
 **Things a reviewer should double-check:**
 1. **Route-handler extraction in the server test.** The test pulls the `/aoa-runs` handler off `router.stack` and calls it directly with a fake `req`/`res`. This is a slight extension of the repo's existing source-grep contract pattern (`aoa-agents-api.test.ts` does not invoke handlers). It avoids needing the embedded-postgres real-DB harness (which is Windows-skipped). The `vi.mock("../services/index.js", ...)` stub list mirrors the real import at `agents.ts:25-36`; if `agentRoutes` imports another module at construction time that the stubs miss, the import may need one more `vi.mock`. A reviewer should run the file once to confirm the router builds under the mocks. An alternative the reviewer may prefer: a real-DB integration test mirroring `agents-list-excludes-platform.integration.test.ts` (seed >50 runs, assert `total`), Linux-gated — heavier but exercises the actual `count()` SQL.
-2. **`count()` mock.** The test stubs drizzle's `count` to a string sentinel; the real `count()` returns an aggregate the DB resolves to a number under `total`. The mock proves the route *shape and wiring* (two queries, object response), not the SQL semantics — the integration alternative in note 1 would prove the SQL. This matches how the repo's other contract tests trade SQL-fidelity for portability.
+2. **`sql\`count(*)::int\`` mock (Codex P1 fix).** The route uses `sql<number>\`count(*)::int\`` (the `internal-agent.ts:864` idiom), and the test stubs drizzle's `sql` with the same Proxy the existing `agentRoutes` mocks use — the mock DB's `select()` ignores the field map and returns the pre-queued rows, so the stub only needs to not throw. The original draft used drizzle's `count()` helper and added `count` to the import; that would have broken `agents-keys-routes.test.ts` and `aoa-budget-autopause.test.ts`, whose `drizzle-orm` mocks export `sql` but not `count` (calling `count()` → `undefined()` at router build / handler run). Switching to `sql` means those two existing mocks need **no edit**. The mock proves the route *shape and wiring* (two queries, object response), not the SQL semantics — the integration alternative in note 1 would prove the SQL. This matches how the repo's other contract tests trade SQL-fidelity for portability.
 3. **`mockResolvedValue([])` → object shape in all three `beforeEach` blocks.** If any `beforeEach` is missed, the hero KPI reads `undefined?.total ?? 0` (renders `0`, harmless) but it's cleaner to update all three; the find-and-replace-all in Task 5 covers them. Confirm the count of replacements is 3.
 4. **`AoaRunsResponse.runs` typed as `unknown[]`.** This matches the existing untyped pattern (the client returned `unknown[]` before; consumers cast locally to `AoaRun[]`). A reviewer wanting stronger typing could import/define a shared run type, but that's out of scope for this minimal-change follow-up.

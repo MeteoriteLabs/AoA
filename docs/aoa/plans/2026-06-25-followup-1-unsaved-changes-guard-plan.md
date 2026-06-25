@@ -29,6 +29,8 @@ ui/src/
   components/agent-detail/
     AgentDetailCore.tsx                     ← MODIFY (remove onHeroNavigate prop)
     AgentHeroCard.tsx                       ← MODIFY (remove onNavigate prop + onClick interception)
+    __tests__/
+      AgentHeroCard.test.tsx               ← MODIFY (replace the stale onNavigate-fires test with a plain-<Link> render test)
   __tests__/
     AoaAgentDetail.test.tsx                 ← MODIFY (drop the mocked-router guard assumptions if any break; add dirty-nav parity if feasible)
 ```
@@ -304,6 +306,7 @@ Replace `AgentDetail`'s bespoke per-page guard with one `useUnsavedChanges(...)`
   - lines 687–701: the `<ConfirmDialog open={!!pendingNav} … title="Discard unsaved changes?" …>` → **DELETE** (now centralized in the provider). The terminate `<ConfirmDialog>` (702–713) stays.
 - `ui/src/components/agent-detail/AgentDetailCore.tsx` (remove `onHeroNavigate` prop)
 - `ui/src/components/agent-detail/AgentHeroCard.tsx` (remove `onNavigate` prop + its onClick interception)
+- `ui/src/components/agent-detail/__tests__/AgentHeroCard.test.tsx` (replace the stale `onNavigate`-fires test with a plain-`<Link>` render test — see step below; same task as the prop deletion)
 
 ### Steps
 
@@ -338,7 +341,43 @@ Replace `AgentDetail`'s bespoke per-page guard with one `useUnsavedChanges(...)`
   - **Delete** the `onHeroNavigate={…}` prop (601–610) from `<AgentDetailCore>`. Hero KPI deep-links (`/issues?...`, `/agents/<ref>/runs/<id>`) are cross-path and will be blocked by the provider automatically.
   - **Delete** the `pendingNav` `<ConfirmDialog>` (687–701) entirely. Leave the terminate `<ConfirmDialog>` (702–713) intact.
 - [ ] **Edit `AgentDetailCore.tsx`:** remove the `onHeroNavigate?: (to: string) => boolean;` prop (lines 35–37 of the interface), remove it from the destructure (line 66), and remove `onNavigate={onHeroNavigate}` from `<AgentHeroCard>` (line 81).
-- [ ] **Edit `AgentHeroCard.tsx`:** remove the `onNavigate?: (to: string) => boolean;` prop (lines 30–32 of `AgentHeroCardProps`), remove it from the destructure (line 55), and remove the `onClick={(e) => { if (onNavigate?.(kpi.to!)) e.preventDefault(); }}` handler from the KPI `<Link>` (lines 119–121). The KPI `<Link>` keeps its `to`, `data-testid`, and className.
+- [ ] **Edit `AgentHeroCard.tsx`:** remove the `onNavigate?: (to: string) => boolean;` prop (lines 30–32 of `AgentHeroCardProps`), remove it from the destructure (line 55), and remove the `onClick={(e) => { if (onNavigate?.(kpi.to!)) e.preventDefault(); }}` handler from the KPI `<Link>` (lines 119–121). The KPI `<Link>` keeps its `to`, `data-testid`, and className. After this edit the KPI link is a plain navigation `<Link>` again — the discard-confirm now happens globally via the provider's `useBlocker`, not via an inline per-Link interception.
+- [ ] **UPDATE the existing `AgentHeroCard` test to match the deleted prop** at `ui/src/components/agent-detail/__tests__/AgentHeroCard.test.tsx`. The current file has a test (lines 65–78) that asserts the now-deleted `onNavigate` callback fires:
+    ```tsx
+    // Codex P2: KPI deep-links must run through the unsaved-changes guard so they
+    // don't navigate away (and drop a dirty draft) without the discard-confirm.
+    it("routes KPI deep-link clicks through onNavigate", () => {
+      const onNavigate = vi.fn().mockReturnValue(true);
+      renderWithProviders(
+        <AgentHeroCard
+          agent={agent}
+          onNavigate={onNavigate}
+          kpis={[{ key: "last-run", label: "Last run", value: "1m", to: "/agents/x/runs/r1" }]}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("hero-kpi-last-run"));
+      expect(onNavigate).toHaveBeenCalledWith("/agents/x/runs/r1");
+    });
+    ```
+    The `onNavigate` prop no longer exists, so this assertion is stale (it would also typecheck-fail on the unknown `onNavigate` prop). **Delete that whole `it(...)` block (lines 65–78, including the two-line `// Codex P2:` comment above it) and replace it** with a plain-`<Link>` rendering/navigation test — the hero KPI must still render a real link to the right route, but no longer intercept the click. The blocking behavior now lives in the provider/router tests (Task 2's `useUnsavedChanges.test.tsx` + Task 3's `AgentDetailGuard` spec), NOT the hero card. Replacement block:
+    ```tsx
+    // The KPI deep-link is now a plain navigation <Link> — the discard-confirm
+    // is handled globally by UnsavedChangesProvider's useBlocker, not by an
+    // inline onClick on the hero card. (Blocking behavior is covered in
+    // useUnsavedChanges.test.tsx + the AgentDetail guard spec.)
+    it("renders a KPI deep-link as a plain <Link> to its route", () => {
+      renderWithProviders(
+        <AgentHeroCard
+          agent={agent}
+          kpis={[{ key: "last-run", label: "Last run", value: "1m", to: "/agents/x/runs/r1" }]}
+        />,
+      );
+      const lastRun = screen.getByTestId("hero-kpi-last-run");
+      expect(lastRun.tagName).toBe("A");
+      expect(lastRun.getAttribute("href")).toContain("/agents/x/runs/r1");
+    });
+    ```
+    > NOTE: `renderWithProviders` (from `../../../__tests__/test-utils`) already mounts a `MemoryRouter`, so the `@/lib/router` `Link` resolves and renders an `<a>` with a company-prefixed `href` ending in `/agents/x/runs/r1` — hence `toContain` (not strict equality) on the href. The unused `fireEvent` import (line 2) can stay (the file's other tests don't use it after this change, but leaving it is harmless; if `pnpm typecheck`/lint flags an unused import, drop `fireEvent` from the line-2 destructure: `import { screen } from "@testing-library/react";`). `vi` is still used by other tests in the file (e.g. `onIconChange={vi.fn()}`), so keep it.
 - [ ] **Run the test, confirm it PASSES.** Run the full UI suite to catch fallout: `pnpm --filter @armyofagents/ui test:run`.
 - [ ] Run typecheck: `pnpm --filter @armyofagents/ui typecheck`.
 - [ ] **Commit:** `refactor(ui): route AgentDetail through global unsaved-changes guard; remove bespoke pendingNav plumbing`.
@@ -460,7 +499,7 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 - [ ] Run build clean: `pnpm --filter @armyofagents/ui build`.
 - [ ] Manually re-verify (gstack `/browse`, on the running app) the four parity behaviors end-to-end with the REAL provider (not the spike): (1) dirty + sidebar `<Link>` → dialog; (2) dirty + browser Back → dialog; (3) clean nav → no dialog; (4) dirty + agent tab switch / hero KPI deep-link → dialog. Confirm "Discard & leave" proceeds and "Cancel" stays.
 - [ ] Confirm `useBeforeUnload` still fires on tab-close/refresh in both `AgentDetail` and `AoaAgentDetail` (the dialog won't show — the browser's native beforeunload prompt does).
-- [ ] Grep to confirm the bespoke plumbing is gone: `pendingNav`, `onHeroNavigate`, `onNavigate` (in AgentHeroCard) should no longer appear; `useUnsavedChanges` should appear in both detail pages.
+- [ ] Grep to confirm the bespoke plumbing is gone: `pendingNav` and `onHeroNavigate` should no longer appear anywhere; `onNavigate` should no longer appear in `AgentHeroCard.tsx` **or its test** (`AgentHeroCard.test.tsx` — the stale `onNavigate`-fires assertion must be replaced, not left dangling). Note: `onNavigate` legitimately remains in UNRELATED components (`RoutineCard.tsx`, `LobbySidebar.tsx`, `LobbyShell.tsx`, `TaskOutputViewer.tsx`'s `onNavigateToTask`) — those are different props and must NOT be touched. `useUnsavedChanges` should appear in both detail pages.
 
 ---
 
@@ -471,6 +510,7 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 - [ ] `UnsavedChangesProvider` (one `useBlocker` + centralized "Discard unsaved changes?" `ConfirmDialog`) is mounted inside the router; `useUnsavedChanges(isDirty)` hook exists.
 - [ ] `AgentDetail` + `AoaAgentDetail` register via `useUnsavedChanges`; both KEEP `useBeforeUnload`.
 - [ ] Bespoke guard DELETED from `AgentDetail` (`pendingNav` state, the `pendingNav`-setting `handleViewChange` branch, `onHeroNavigate` prop + handler, the `pendingNav` `<ConfirmDialog>`) and the now-dead props removed from `AgentDetailCore` (`onHeroNavigate`) and `AgentHeroCard` (`onNavigate`).
+- [ ] **The stale `AgentHeroCard.test.tsx` `onNavigate`-fires test is replaced** (same task as the prop deletion, Task 3) with a plain-`<Link>` render test; no test still references the deleted `onNavigate` / `onHeroNavigate` / `pendingNav` / `handleViewChange` symbols.
 - [ ] **The four parity behaviors are proven by tests** (Task 2 unit + Task 3 integration): dirty + sidebar nav → dialog; dirty + Back → dialog (unit-shimmed + spike-proven); clean nav → no dialog; existing tab/hero guard still fires.
 - [ ] **UI suite green**, **typecheck clean**, **build clean**.
 - [ ] Ships as its own PR off `main`; commit messages carry the `Co-Authored-By` trailer.
@@ -479,6 +519,7 @@ Apply the real router migration (the spike is reverted). The `<Routes>` tree in 
 
 ## Self-review
 
+- **Codex review fix (2026-06-25, [P1] resolved):** the original plan deleted the `onNavigate` prop from `AgentHeroCard` but left the existing test (`AgentHeroCard.test.tsx` lines 65–78, `"routes KPI deep-link clicks through onNavigate"`) asserting that the now-removed callback fires — that test would fail to compile (unknown prop) and fail at runtime. Task 3 now carries an explicit, concrete step to **delete that `it(...)` block and replace it** with a plain-`<Link>` rendering/navigation test (KPI still renders an `<a>` whose `href` contains the route), with the unsaved-changes *blocking* coverage living in the provider/router tests (Task 2 `useUnsavedChanges.test.tsx` + the Task 3 `AgentDetailGuard` spec) where it belongs. Consistency pass: grepped all `ui/src` test files for `onHeroNavigate` / `onNavigate` / `pendingNav` / `handleViewChange` — `AgentHeroCard.test.tsx` was the ONLY test referencing a deleted symbol; the other `onNavigate` hits (`RoutineCard`, `LobbySidebar`, `LobbyShell`, `TaskOutputViewer`) are unrelated props and are explicitly left untouched.
 - **The spike (Task 1) is the single gating risk.** Everything downstream assumes `useBlocker` fires for navigations that originate from a descendant `<Routes>` mounted under a `path: "*"` catch-all. This is the documented "incremental migration" bridge for react-router v7, and the design doc locked Option A on it — but it is explicitly the one thing not provable by reading, hence the manual `/browse` proof BEFORE any real code. If it fails, do not proceed; re-open the design.
 - **Things I want the reviewer / Codex to scrutinize:**
   1. **`useBlocker` + catch-all nesting.** Confirm a single `useBlocker` in the provider (outside `<Routes>`, inside the router) actually intercepts navigations triggered from inside `<Routes>` and from the browser Back button under the `path: "*"` element. This is the spike's job; reviewers should still sanity-check the assumption.
