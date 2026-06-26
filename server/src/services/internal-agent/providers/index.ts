@@ -15,7 +15,7 @@ const PROVIDER_ENV_KEYS: Record<string, string> = {
 };
 
 /** Secret names used by the UI's LLM Providers settings */
-const PROVIDER_SECRET_NAMES: Record<string, string[]> = {
+export const PROVIDER_SECRET_NAMES: Record<string, string[]> = {
   anthropic: ["llm:anthropic", "ANTHROPIC_API_KEY"],
   openai: ["llm:openai", "OPENAI_API_KEY"],
   google: ["llm:google", "GOOGLE_AI_API_KEY"],

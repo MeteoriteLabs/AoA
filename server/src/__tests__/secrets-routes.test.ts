@@ -28,10 +28,15 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockReindexCompany = vi.hoisted(() => vi.fn().mockResolvedValue({ requeuedFailed: 0, enqueuedMissing: 0 }));
 
 vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+}));
+
+vi.mock("../services/embeddings-backfill.js", () => ({
+  reindexCompany: mockReindexCompany,
 }));
 
 const companyAActor = {
@@ -73,6 +78,45 @@ describe("secret routes", () => {
     expect(routePaths).toContain("/secrets/:id/access-events");
     expect(routePaths).toContain("/companies/:companyId/secrets/remote-import/preview");
     expect(routePaths).toContain("/companies/:companyId/secrets/remote-import");
+  });
+
+  describe("reindex-on-key-add (P2)", () => {
+    it("triggers reindexCompany when an OpenAI secret (name=llm:openai) is created", async () => {
+      // secretService normalizes `key` to LLM_OPENAI but preserves name; the
+      // trigger must match on name, which is what the provider resolver uses.
+      mockSecretService.create.mockResolvedValue({
+        id: "secret-oa",
+        companyId: "company-A",
+        name: "llm:openai",
+        key: "LLM_OPENAI",
+        provider: "openai",
+      });
+
+      const res = await request(makeApp())
+        .post("/api/companies/company-A/secrets")
+        .send({ name: "llm:openai", value: "sk-test" });
+
+      expect(res.status).toBe(201);
+      expect(mockReindexCompany).toHaveBeenCalledTimes(1);
+      expect(mockReindexCompany).toHaveBeenCalledWith(expect.anything(), "company-A");
+    });
+
+    it("does NOT trigger reindexCompany for a non-OpenAI secret", async () => {
+      mockSecretService.create.mockResolvedValue({
+        id: "secret-an",
+        companyId: "company-A",
+        name: "llm:anthropic",
+        key: "LLM_ANTHROPIC",
+        provider: "anthropic",
+      });
+
+      const res = await request(makeApp())
+        .post("/api/companies/company-A/secrets")
+        .send({ name: "llm:anthropic", value: "sk-test" });
+
+      expect(res.status).toBe(201);
+      expect(mockReindexCompany).not.toHaveBeenCalled();
+    });
   });
 
   it("blocks cross-company secret access before listing audit events", async () => {
