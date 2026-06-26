@@ -1,4 +1,4 @@
-import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import fs from "node:fs";
 import OpenAI from "openai";
 import type { Db } from "@armyofagents/db";
@@ -542,9 +542,17 @@ export interface ProcessQueueResult {
  * Returns milliseconds to wait, or 0 if the header is absent / unparseable.
  * Supports both delta-seconds ("30") and HTTP-date formats.
  */
-function parseRetryAfterHeader(headers: Record<string, string>): number {
-  const raw =
-    headers?.["retry-after"] ?? headers?.["Retry-After"] ?? "";
+function parseRetryAfterHeader(headers: unknown): number {
+  let raw = "";
+  // The OpenAI SDK exposes error headers as a `Headers` instance (P2, Codex),
+  // NOT a plain object — bracket lookups silently miss `retry-after`. Use
+  // `.get()` for Headers, fall back to record-style access otherwise.
+  if (headers && typeof (headers as { get?: unknown }).get === "function") {
+    raw = (headers as { get: (k: string) => string | null }).get("retry-after") ?? "";
+  } else if (headers && typeof headers === "object") {
+    const rec = headers as Record<string, string>;
+    raw = rec["retry-after"] ?? rec["Retry-After"] ?? "";
+  }
   if (!raw) return 0;
   const seconds = Number(raw);
   if (!Number.isNaN(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
@@ -917,6 +925,34 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
 
           const vector = await embedder.embed(item.inputText);
 
+          // Stale-write guard (P2, Codex): if a NEWER queue row exists for this
+          // target (the item was edited + re-enqueued after this row was
+          // claimed), do NOT write — the newer row will produce the current
+          // vector. With multi-worker SKIP LOCKED this older in-flight row could
+          // otherwise finish last and clobber the up-to-date embedding. Mark this
+          // row completed without writing so it doesn't linger.
+          const newerRows = await db
+            .select({ id: embeddingQueue.id })
+            .from(embeddingQueue)
+            .where(
+              and(
+                eq(embeddingQueue.targetTable, item.targetTable),
+                eq(embeddingQueue.targetId, item.targetId),
+                eq(embeddingQueue.targetColumn, item.targetColumn),
+                gt(embeddingQueue.createdAt, item.createdAt as Date),
+              ),
+            )
+            .limit(1);
+
+          if (newerRows.length > 0) {
+            await db
+              .update(embeddingQueue)
+              .set({ status: "completed", updatedAt: new Date() })
+              .where(eq(embeddingQueue.id, item.id));
+            skipped++;
+            continue;
+          }
+
           await updateVectorColumn(
             db,
             item.targetTable,
@@ -990,13 +1026,11 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
             const nextAttempts = currentAttempts + 1;
             const finalFailed = nextAttempts >= maxAttempts;
 
-            // Honor Retry-After header if the error carries one.
-            const retryAfterMs =
-              typeof (err as Record<string, unknown>)?.headers === "object"
-                ? parseRetryAfterHeader(
-                    (err as Record<string, unknown>).headers as Record<string, string>,
-                  )
-                : 0;
+            // Honor Retry-After header if the error carries one (handles both a
+            // Headers instance and a plain record).
+            const retryAfterMs = parseRetryAfterHeader(
+              (err as Record<string, unknown>)?.headers,
+            );
             const backoffMs = Math.max(
               computeBackoffMs(nextAttempts),
               retryAfterMs,

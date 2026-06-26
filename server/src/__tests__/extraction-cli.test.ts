@@ -171,6 +171,13 @@ describe("extractViaCli — claude happy path", () => {
     expect(call).toBeDefined();
     expect(call!.args).toContain("--print");
     expect(call!.args).toContain("--system-prompt-file");
+    // SECURITY (P1): built-in tools MUST be disabled — `--tools` followed by the
+    // empty value ("" on POSIX). Otherwise a prompt-injected entry could run
+    // Read/Bash against the server user's home/temp/env.
+    const toolsIdx = call!.args.indexOf("--tools");
+    expect(toolsIdx).toBeGreaterThanOrEqual(0);
+    // Disable-all sentinel: "" on POSIX, '""' (empty-quoted token) on Windows.
+    expect(["", '""']).toContain(call!.args[toolsIdx + 1]);
     expect(call!.stdinWrites.join("")).toContain("do the thing");
     expect(call!.stdinEnded).toBe(true);
   });

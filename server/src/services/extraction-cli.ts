@@ -175,8 +175,17 @@ async function extractViaClaude(
   // timeout, or spawn error — so company-context artifacts don't accumulate in
   // the shared OS temp dir. Everything from the spawn onward runs inside the try.
   try {
+  // SECURITY (P1, Codex): extraction feeds ARBITRARY discussion text into claude
+  // as the prompt. Without restricting tools, a prompt-injected entry could make
+  // the local claude profile run Read/Bash against the server user's
+  // home/temp/env (and exfiltrate creds) and fold the result into the extraction
+  // output. Extraction only needs text generation, so disable ALL built-in tools
+  // (`--tools ""`). On Windows the value rides through cmd.exe (shell:true), so
+  // pass a literal empty-quoted token; on POSIX a bare empty arg is correct.
   const args = [
     "--print",
+    "--tools",
+    isWin ? '""' : "",
     "--system-prompt-file",
     safeSystemPromptPath,
     "--output-format",
