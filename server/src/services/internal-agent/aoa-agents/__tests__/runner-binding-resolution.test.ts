@@ -44,3 +44,24 @@ describe("crew runner resolves env bindings before provider-status/model-resolut
     expect(src).toMatch(/applyModelResolutionToConfig\(\s*agent\.adapterType,\s*runtimeBaseConfig/);
   });
 });
+
+describe("crew runner releases a checked-out task on a mid-run failure (Codex P2)", () => {
+  // A throw between issueService.checkout and adapter.execute (e.g. secret
+  // resolution failure) must not strand the task 'in_progress'. The outer catch
+  // must release the lock back to 'todo', guarded by executionRunId===runId.
+  const iCatch = src.indexOf("} catch (err) {");
+  const iFinally = src.indexOf("} finally {", iCatch);
+  const catchBlock = iCatch > -1 && iFinally > iCatch ? src.slice(iCatch, iFinally) : "";
+
+  it("has a failure-path catch followed by a finally", () => {
+    expect(iCatch).toBeGreaterThan(-1);
+    expect(iFinally).toBeGreaterThan(iCatch);
+  });
+  it("releases the checked-out task back to todo inside the catch", () => {
+    expect(catchBlock).toMatch(/status:\s*"todo"/);
+    expect(catchBlock).toMatch(/executionRunId:\s*null/);
+  });
+  it("guards the release on executionRunId===runId (never clobbers a re-claimed task)", () => {
+    expect(catchBlock).toMatch(/eq\(issues\.executionRunId,\s*releaseRunId\)/);
+  });
+});

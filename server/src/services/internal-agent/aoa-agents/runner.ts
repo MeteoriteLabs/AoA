@@ -727,6 +727,36 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           .where(eq(internalAgentRuns.id, runId));
       } catch { /* swallow */ }
     }
+    // Release a TASK this run checked out if a mid-run failure terminated the run
+    // BEFORE the success-path release guard (e.g. runtime secret resolution, a
+    // shell-unsafe model, a context/bundle error — all of which throw between
+    // issueService.checkout and adapter.execute). Without this the task stays
+    // stuck 'in_progress' + locked forever, blocking retry/redispatch. Symmetric
+    // to the discussion-entry terminalizer below and the silent-stuck release in
+    // the success path: only clear the lock when the task is still 'in_progress'
+    // AND still owned by THIS run (executionRunId===runId), so a concurrently
+    // re-claimed task is never clobbered. Entirely best-effort — never escape the
+    // run boundary (consistent with the catch's swallow style).
+    if (payload.issueId && runId) {
+      const releaseRunId = runId;
+      try {
+        const { issueService } = await import("../../issues.js");
+        const task = await issueService(db).getById(payload.issueId);
+        if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === releaseRunId) {
+          await db.update(issues)
+            .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
+            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, releaseRunId)));
+          log.warn({ issueId: payload.issueId }, "crew run failed before execute — released checked-out task to todo");
+          try {
+            publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+          } catch (publishErr) {
+            log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on failed-run task release (best-effort, ignored)");
+          }
+        }
+      } catch (releaseErr) {
+        log.warn({ err: releaseErr, issueId: payload.issueId }, "failed-run task release failed (best-effort, ignored)");
+      }
+    }
     // FX1/B1: a failed extraction RUN must terminalize the entry it claimed —
     // otherwise the entry is stuck 'processing' forever (silent permanent
     // loss). Mirrors extraction.ts:639-659's failure branch VERBATIM (status
