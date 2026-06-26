@@ -23,13 +23,13 @@ import { clearFakeEmbedderControl, writeFakeEmbedderControl } from "./helpers/fa
  *    (a) the button click is accepted (no navigation error),
  *    (b) a subsequent GET /memory returns indexStatus "pending" (not "failed").
  *
- * The vector-flip-to-indexed assertion — confirming the queue row eventually
- * becomes "indexed" — is gated behind `AOA_E2E_PGVECTOR=1` because embedded-pg
- * in standard CI has no pgvector extension and the embedding worker cannot write
- * to the vector column.
- *
- * Non-pgvector CI still exercises the full "failed → re-index request → pending"
- * round-trip, which is the contract the re-index button exists to fulfil.
+ * BOTH tests are gated behind `AOA_E2E_PGVECTOR=1`. The embedding pipeline is
+ * pgvector-dependent end to end: enqueueMemoryEmbedding (memory-write.ts) is a
+ * no-op without vector support, so on standard CI embedded-pg (no pgvector) no
+ * queue row is ever created and an item can never reach "failed" — there is
+ * nothing for the re-index flow to act on. The failed→reindex→pending
+ * round-trip and the pending→indexed flip therefore only run under pgvector.
+ * (The badge/button rendering itself is unit-tested in MemoryIndexBadge.test.tsx.)
  */
 
 const PGVECTOR_AVAILABLE = process.env.AOA_E2E_PGVECTOR === "1";
@@ -116,6 +116,17 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
   test(
     "row-permanent embedder failure → failed badge + reindex-button visible → reindex request resets to pending",
     async ({ page, request }) => {
+      // Gated behind pgvector: enqueueMemoryEmbedding is a no-op when pgvector
+      // is absent (memory-write.ts Guard 1 — the embedding column only exists on
+      // a vector-capable PG), so without pgvector NO queue row is ever created
+      // and the item can never reach "failed". The standard CI embedded-pg has
+      // no pgvector, so this whole failed→reindex→pending round-trip is only
+      // exercisable under AOA_E2E_PGVECTOR=1.
+      test.skip(
+        !PGVECTOR_AVAILABLE,
+        "Requires pgvector — enqueueMemoryEmbedding no-ops without vector support",
+      );
+
       const company = await seedCompany(request, `E2E-Reindex-${Date.now()}`);
 
       // Force a row-permanent embed failure: fake embedder throws { status: 400 }.

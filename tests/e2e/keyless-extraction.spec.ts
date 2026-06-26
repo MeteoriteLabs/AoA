@@ -20,7 +20,7 @@ import {
  *      --output-format text` and delivers the entry content over stdin —
  *      NOT as an argv positional (W1 Windows fix).
  *   3. The extracted item appears in the discussion detail (entry status
- *      "completed", extracted item of kind "task").
+ *      "completed", extracted item of type "task").
  *   4. Approving the item via API creates a Task (issue row).
  *
  * No pgvector is required — extraction writes discussion_extracted_items rows,
@@ -33,7 +33,7 @@ import {
 
 const EXTRACTION_ITEM = [
   {
-    kind: "task",
+    type: "task",
     title: "Implement the keyless extraction happy path",
     description: "Prove that CLI-mode extraction creates a real task item.",
     priority: "medium",
@@ -101,7 +101,7 @@ async function waitForExtraction(
   discussionId: string,
   entryId: string,
   opts: { timeoutMs?: number; pollMs?: number } = {},
-): Promise<{ extractionStatus: string; extractedItems: Array<{ id: string; kind: string; title: string; status: string }> }> {
+): Promise<{ extractionStatus: string; extractedItems: Array<{ id: string; type: string; title: string; status: string }> }> {
   const { timeoutMs = 30_000, pollMs = 500 } = opts;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -116,7 +116,7 @@ async function waitForExtraction(
       entries: Array<{
         id: string;
         extractionStatus: string;
-        extractedItems: Array<{ id: string; kind: string; title: string; status: string }>;
+        extractedItems: Array<{ id: string; type: string; title: string; status: string }>;
       }>;
     };
     const entry = discussion.entries.find((e) => e.id === entryId);
@@ -185,8 +185,11 @@ test.describe("keyless extraction — happy path", () => {
       // The entry must have completed, not skipped (keyless = still runs the CLI).
       expect(result.extractionStatus).toBe("completed");
 
-      // At least one extracted item of kind "task" from our scripted payload.
-      const taskItem = result.extractedItems.find((i) => i.kind === "task");
+      // At least one extracted item of type "task" from our scripted payload.
+      // NOTE: discussion_extracted_items uses `type` (not `kind`), and the
+      // parser (extraction-parser.ts) reads `obj.type` — the scripted payload
+      // and this assertion must both use `type`.
+      const taskItem = result.extractedItems.find((i) => i.type === "task");
       expect(taskItem).toBeTruthy();
       expect(taskItem!.title).toBe(EXTRACTION_ITEM[0].title);
 
