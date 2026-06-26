@@ -523,6 +523,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 immediate
                 className={inputClass}
                 placeholder="Agent name"
+                data-testid="agent-config-name-input"
               />
             </Field>
             <Field label="Title" hint={help.title}>
