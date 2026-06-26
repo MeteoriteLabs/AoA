@@ -450,6 +450,12 @@ export function extractionService(db: Db) {
           : entry.rawContent;
 
         let extractedItems: ExtractedItem[] = [];
+        // Whether to run the hosted-API extraction path. Starts true only when the
+        // engine router chose "api", but the CLI branch can flip it on when an
+        // installed-but-unusable CLI (not_authed/not_installed) fails AND a hosted
+        // provider key is available — so a logged-out CLI on PATH never blocks
+        // extraction for users who have an API key (P2, Codex).
+        let useApiPath = engine === "api";
 
         if (engine === "cli") {
           // ── Keyless CLI extraction ────────────────────────────────────
@@ -498,6 +504,33 @@ export function extractionService(db: Db) {
           }
 
           if (lastCliErr !== undefined) {
+            // CLI→API fallback (P2, Codex): the engine router picks "cli" purely
+            // from a PATH probe, so an installed-but-logged-out CLI lands here as
+            // not_authed/not_installed. If a hosted provider key IS configured,
+            // fall back to the API path instead of terminalizing — a broken CLI
+            // binary on PATH must not block extraction for users who have a key.
+            if (
+              lastCliErr.kind === "not_authed" ||
+              lastCliErr.kind === "not_installed"
+            ) {
+              try {
+                await resolveAvailableProvider(
+                  db,
+                  companyId,
+                  agentConfig?.provider ?? undefined,
+                );
+                log.warn(
+                  { kind: lastCliErr.kind },
+                  "CLI extraction unusable — falling back to hosted API provider",
+                );
+                useApiPath = true;
+              } catch {
+                // No hosted key either — fall through to terminalize below.
+              }
+            }
+          }
+
+          if (lastCliErr !== undefined && !useApiPath) {
             // All attempts exhausted (or non-retryable error) — terminalize failed.
             // Record kind + message so the failure UX can surface actionable guidance.
             const failPayload = JSON.stringify({
@@ -523,11 +556,14 @@ export function extractionService(db: Db) {
             });
             return;
           }
-        } else {
+        }
+
+        if (useApiPath) {
           // ── Hosted API extraction ─────────────────────────────────────
-          // The provider precheck lives here, on the api path ONLY. With no
-          // hosted key this previously short-circuited the whole function; now
-          // it is unreachable on the cli path, so keyless extraction proceeds.
+          // Runs when the engine router chose "api", OR when the CLI branch fell
+          // back here because an installed-but-unusable CLI failed and a hosted
+          // provider key is available. The provider precheck lives here, on the
+          // api path ONLY, so keyless CLI extraction never reaches it.
           let resolvedProvider: { provider: string; apiKey: string; model: string };
           try {
             resolvedProvider = await resolveAvailableProvider(

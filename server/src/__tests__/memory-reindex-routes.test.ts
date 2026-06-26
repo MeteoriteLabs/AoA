@@ -225,7 +225,7 @@ describe("POST /companies/:companyId/memory/:id/reindex", () => {
     mockAssertMemoryAccess.mockResolvedValue(undefined);
   });
 
-  it("resets a failed queue row to pending and logs activity", async () => {
+  it("re-indexes CURRENT content (no stale failed-row reset) when a failed queue row exists", async () => {
     const item = { id: ITEM_ID, title: "Test item", content: "content", companyId: COMPANY_ID, layer: "domain" };
     mockMemoryService.getById.mockResolvedValueOnce(item);
 
@@ -238,17 +238,17 @@ describe("POST /companies/:companyId/memory/:id/reindex", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ reindexed: true });
 
-    // The update chain was called (reset to pending)
-    expect(db._lastSet.value).toMatchObject({
-      status: "pending",
-      attempts: 0,
-      error: null,
-    });
+    // P2 (Codex): the stale failed row is NOT reset in place (its inputText may
+    // be pre-edit and would clobber the current vector). Instead we enqueue the
+    // item's CURRENT content via enqueueMemoryEmbedding.
+    expect(db._lastSet.value).toBeUndefined();
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      expect.anything(),
+      COMPANY_ID,
+      expect.objectContaining({ id: ITEM_ID }),
+    );
 
-    // enqueueMemoryEmbedding was NOT called (we used the reset path)
-    expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
-
-    // Activity was logged
+    // Activity was logged (still records that a failed row existed)
     expect(mockLogActivity).toHaveBeenCalledOnce();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

@@ -236,4 +236,52 @@ describe("extractFromDiscussionEntry — keyless CLI path", () => {
       expect.objectContaining({ type: "discussion.extraction.failed" }),
     );
   });
+
+  it("falls back to the hosted API path when CLI is not_authed AND a provider key exists (P2)", async () => {
+    const { db, selectQueue, capturedInserts, capturedUpdates } = createMockDb();
+    selectQueue.push(
+      [createMockEntry()],
+      [createMockDiscussion()],
+      [{ id: "cfg-1", companyId: "company-1", cliTool: "claude_cli", model: null }],
+      [],
+      [],
+    );
+
+    // CLI is installed but logged out.
+    mockExtractViaCli.mockRejectedValueOnce(
+      new CliExtractionError("claude CLI is not authenticated", "not_authed"),
+    );
+    // A hosted provider IS configured → the not_authed CLI must NOT terminalize
+    // the entry; it should fall back to the API path. (Called twice: once in the
+    // fallback check, once in the API path itself — both must resolve.)
+    mockResolveAvailableProvider.mockResolvedValue({
+      provider: "anthropic",
+      apiKey: "sk-test",
+      model: "claude-sonnet-4-6",
+    });
+    mockCreateProvider.mockReturnValueOnce({
+      chat: async function* () {
+        yield {
+          type: "text",
+          delta: JSON.stringify([{ type: "task", title: "From API fallback" }]),
+        };
+      },
+    });
+
+    await extractionService(db as any).extractFromDiscussionEntry("company-1", "entry-1");
+
+    // CLI was attempted, failed not_authed, then fell back to the hosted API.
+    expect(mockExtractViaCli).toHaveBeenCalledTimes(1);
+    expect(mockResolveAvailableProvider).toHaveBeenCalled();
+    expect(mockCreateProvider).toHaveBeenCalled();
+
+    // Entry terminalized via the API path: completed, NOT failed.
+    const entryUpdates = capturedUpdates.filter((u) => u.table === "discussion_entries");
+    expect(entryUpdates.find((u) => u.set.extractionStatus === "completed")).toBeDefined();
+    expect(entryUpdates.find((u) => u.set.extractionStatus === "failed")).toBeUndefined();
+
+    // The API-extracted item was written.
+    const itemInserts = capturedInserts.filter((i) => i.table === "discussion_extracted_items");
+    expect(itemInserts[0]?.values[0]?.title).toBe("From API fallback");
+  });
 });

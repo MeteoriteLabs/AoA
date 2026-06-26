@@ -1084,24 +1084,15 @@ export function memoryRoutes(db: Db) {
       )
       .limit(1);
 
-    if (failedRows.length > 0) {
-      // Reset failed row → pending so the worker retries it.
-      await (db as any)
-        .update(embeddingQueue)
-        .set({ status: "pending", nextRetryAt: null, attempts: 0, error: null })
-        .where(
-          and(
-            eq(embeddingQueue.companyId, companyId),
-            eq(embeddingQueue.targetTable, "memory_items"),
-            eq(embeddingQueue.targetId, id),
-            eq(embeddingQueue.targetColumn, "embedding"),
-            eq(embeddingQueue.status, "failed"),
-          ),
-        );
-    } else {
-      // No failed row — enqueue via the standard dedup-guarded path.
-      await enqueueMemoryEmbedding(db, companyId, item);
-    }
+    // Re-index the item's CURRENT content (P2, Codex). We deliberately do NOT
+    // reset the stale failed row in place: if the item was edited and re-indexed
+    // after the earlier failure, that failed row carries pre-edit inputText and
+    // requeuing it would overwrite the current vector with obsolete content.
+    // enqueueMemoryEmbedding composes inputText from the item's current
+    // title+content and dedups against any live pending row, so the latest
+    // content is always what gets embedded (matches the bulk reindex path's
+    // superseding-row protection). The old failed row is left as harmless history.
+    await enqueueMemoryEmbedding(db, companyId, item);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
