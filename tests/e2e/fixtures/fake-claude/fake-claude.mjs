@@ -97,16 +97,30 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Accumulate stdin asynchronously instead and write the record just before exit.
 const argv = process.argv.slice(2);
 let stdinContent = "";
+// Resolves when stdin reaches EOF (the parent closed the pipe). Extraction mode
+// awaits this so the invocation record captures the piped prompt — the keyless
+// extractor (extraction-cli.ts extractViaClaude) writes the content to stdin
+// then closes it, and extraction mode otherwise exits before the async 'data'
+// events fire (it has no streaming delays like chat mode does). Chat mode never
+// awaits this (cli-mode may leave stdin open), so there is no deadlock risk.
+let resolveStdinEnd;
+const stdinEnded = new Promise((resolve) => {
+  resolveStdinEnd = resolve;
+});
 try {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
     stdinContent += chunk;
   });
+  process.stdin.on("end", () => resolveStdinEnd());
+  process.stdin.on("close", () => resolveStdinEnd());
   process.stdin.on("error", () => {
     /* stdin may not be readable — fine */
+    resolveStdinEnd();
   });
 } catch {
   /* no stdin attached — fine */
+  resolveStdinEnd();
 }
 
 // Best-effort, never fatal. Called right before exit so any stdin the parent
@@ -143,6 +157,12 @@ function readControl() {
 const IS_EXTRACTION_MODE = !argv.includes("stream-json");
 
 async function mainExtraction() {
+  // Wait for the parent to finish piping the prompt over stdin (and close it)
+  // before recording the invocation / emitting output. Bounded by a 2s safety
+  // race so a never-closed stdin can't hang the shim. extractViaClaude always
+  // closes stdin, so in practice this resolves immediately on EOF.
+  await Promise.race([stdinEnded, sleep(2000)]);
+
   const control = readControl();
 
   // Forced nonzero exit — simulates CLI crash / auth failure so the extractor
