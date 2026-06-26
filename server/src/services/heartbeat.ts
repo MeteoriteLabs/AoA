@@ -3581,18 +3581,26 @@ export function heartbeatService(db: Db) {
       // and strip any inherited company OPENAI_API_KEY before spawn. Runs AFTER the
       // cheap-model swaps above (edge #5) so we resolve the model that will run.
       // Best-effort detection; a failure falls back to authMode "unknown".
+      //
+      // Auth detection + the env-strip must see ONLY the agent's OWN adapter env
+      // (agentEnvRecord = the pre-merge mergedConfig.env). runScopedConfig.env is
+      // the project→environment→agent MERGE, so a project/environment
+      // OPENAI_API_KEY (meant for the app being built) would otherwise be misread
+      // as the agent opting into codex api-key auth — preserving api-key-only
+      // models and leaking that non-agent key to the codex CLI (Codex P2). The
+      // contract: only adapterConfig.env.OPENAI_API_KEY opts the agent into apikey.
       let providerStatus: ProviderStatus;
       try {
         providerStatus = await getProviderStatus(
           agent.adapterType,
-          { companyId: agent.companyId, adapterConfig: runScopedConfig },
+          { companyId: agent.companyId, adapterConfig: { ...runScopedConfig, env: agentEnvRecord } },
           realProviderStatusDeps,
         );
       } catch (statusErr) {
         logger.warn({ err: statusErr, companyId: agent.companyId, agentId: agent.id, runId: run.id }, "[heartbeat] provider status detection failed (best-effort fallback to unknown)");
         providerStatus = { adapterType: agent.adapterType, installed: true, authenticated: false, authMode: "unknown", defaultModelResolved: null };
       }
-      runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null });
+      runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null, agentOwnEnv: agentEnvRecord });
 
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
       const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {

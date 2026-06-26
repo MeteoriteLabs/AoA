@@ -87,4 +87,23 @@ describe("heartbeat wiring — edge #5 source-order guard", () => {
     expect(iResolve).toBeGreaterThan(iCheapSwap);
     expect(iContext).toBeGreaterThan(iResolve);
   });
+
+  // Codex P2: runScopedConfig.env is the project→environment→agent MERGE, so a
+  // project/environment OPENAI_API_KEY would be misread as the agent opting into
+  // codex api-key auth (wrong model preservation + non-agent key leaked to the
+  // CLI). Detection + env-strip must see the agent's OWN env (agentEnvRecord).
+  it("provider-status detection + env-strip use the agent's OWN env (agentEnvRecord), not the merged env", async () => {
+    const src = await readFile(new URL("../services/heartbeat.ts", import.meta.url), "utf8");
+    // getProviderStatus receives the agent-only env, not the merged runScopedConfig.env.
+    expect(
+      src,
+      "getProviderStatus must be passed the agent-only env (agentEnvRecord), not the merged runScopedConfig",
+    ).toContain("adapterConfig: { ...runScopedConfig, env: agentEnvRecord }");
+    // resolveRunScopedModel receives agentOwnEnv so the codex env-strip can tell
+    // the agent's own key from an inherited project/environment key.
+    expect(
+      src,
+      "resolveRunScopedModel must be passed agentOwnEnv: agentEnvRecord for the env-strip contract",
+    ).toContain("agentOwnEnv: agentEnvRecord");
+  });
 });
