@@ -12,9 +12,8 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Toaster } from "@/components/ui/toaster";
-import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
-import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ToastViewport } from "@/components/ToastViewport";
+import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { UnsavedChangesProvider } from "./context/UnsavedChangesProvider";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initPluginBridge } from "./plugins/bridge-init";
@@ -54,15 +53,14 @@ function RouterShell() {
       <BreadcrumbProviderWithCompany>
         <SidebarProvider>
           <DialogProvider>
-            <MarketplaceToastProvider>
+            <InstallToastProvider>
               <UnsavedChangesProvider>
                 <ErrorBoundary>
                   <App />
                 </ErrorBoundary>
-                <InstallToastSlot />
-                <Toaster />
+                <ToastViewport />
               </UnsavedChangesProvider>
-            </MarketplaceToastProvider>
+            </InstallToastProvider>
           </DialogProvider>
         </SidebarProvider>
       </BreadcrumbProviderWithCompany>

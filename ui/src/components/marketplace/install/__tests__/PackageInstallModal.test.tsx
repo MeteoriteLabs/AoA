@@ -7,8 +7,9 @@ import { useState } from "react";
 import { PackageInstallModal } from "../PackageInstallModal";
 import { marketplaceApi } from "@/api/marketplace";
 import { useCompany } from "@/context/CompanyContext";
-import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
-import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ToastProvider } from "@/context/ToastContext";
+import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
+import { ToastViewport } from "@/components/ToastViewport";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
@@ -58,8 +59,10 @@ function wrap(ui: React.ReactElement) {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <ToastProvider>
-          {ui}
-          <InstallToastSlot />
+          <InstallToastProvider>
+            {ui}
+            <ToastViewport />
+          </InstallToastProvider>
         </ToastProvider>
       </MemoryRouter>
     </QueryClientProvider>,

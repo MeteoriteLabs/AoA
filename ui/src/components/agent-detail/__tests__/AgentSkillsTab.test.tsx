@@ -5,11 +5,12 @@ import { AgentSkillsTab } from "../AgentSkillsTab";
 import { agentsApi } from "../../../api/agents";
 import { companySkillsApi } from "../../../api/companySkills";
 import { ApiError } from "../../../api/client";
-import { toast } from "../../../lib/toast";
 
 vi.mock("../../../api/agents", () => ({ agentsApi: { update: vi.fn() } }));
 vi.mock("../../../api/companySkills", () => ({ companySkillsApi: { list: vi.fn() } }));
-vi.mock("../../../lib/toast", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+
+const { pushToast } = vi.hoisted(() => ({ pushToast: vi.fn() }));
+vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ pushToast }) }));
 
 const skills = [
   { id: "s-a", key: "skill-a", name: "Skill A", description: "first" },
@@ -204,7 +205,7 @@ describe("AgentSkillsTab — concurrency guard", () => {
     );
     await screen.findByText("Skill A");
     fireEvent.click(row("Skill A"));
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    await waitFor(() => expect(pushToast).toHaveBeenCalled());
     // optimistic toggle rolled back
     expect(row("Skill A")).toHaveAttribute("aria-pressed", "false");
   });

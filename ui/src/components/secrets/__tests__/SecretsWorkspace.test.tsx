@@ -16,6 +16,10 @@ import {
   providerLabel,
 } from "@/components/secrets/secret-ui";
 
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+}));
+
 vi.mock("@/api/secrets", () => ({
   secretsApi: {
     list: vi.fn(),

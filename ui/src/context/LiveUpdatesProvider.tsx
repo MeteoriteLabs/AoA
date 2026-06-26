@@ -266,6 +266,7 @@ function buildActivityToast(
       body: issue.title ? truncate(issue.title, 96) : undefined,
       tone: "success",
       action: { label: `View ${issue.ref}`, href: issue.href },
+      meta: { ref: issue.ref },
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
@@ -288,6 +289,7 @@ function buildActivityToast(
       body: truncate(body, 100),
       tone: "info",
       action: { label: `View ${issue.ref}`, href: issue.href },
+      meta: { ref: issue.ref },
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
@@ -316,6 +318,7 @@ function buildActivityToast(
     body: body ? truncate(body, 96) : undefined,
     tone: "info",
     action: { label: `View ${issue.ref}`, href: issue.href },
+    meta: { ref: issue.ref },
     dedupeKey: `activity:${action}:${entityId}:${commentId ?? "na"}`,
   };
 }
@@ -406,6 +409,7 @@ function buildRunStatusToast(
     tone,
     ttlMs: status === "succeeded" ? 5000 : 7000,
     action: { label: "View run", href: `/agents/${agentId}/runs/${runId}` },
+    meta: { ref: `run ${shortId(runId)}` },
     dedupeKey: `run-status:${runId}:${status}`,
   };
 }

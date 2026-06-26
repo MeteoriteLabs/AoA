@@ -20,7 +20,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
 import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
 import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
-import { toast } from "@/lib/toast";
+import { useToast } from "@/context/ToastContext";
 import { ApiError } from "../api/client";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
@@ -486,6 +486,7 @@ function AoaConfigurePage({
   onSavingChange: (saving: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: adapterModels } = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, agent.adapterType),
@@ -509,8 +510,10 @@ function AoaConfigurePage({
         if (agent.urlKey) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
         }
-        toast.error("This agent changed elsewhere", {
-          description: "Reloaded the latest version — please redo your change.",
+        pushToast({
+          title: "This agent changed elsewhere",
+          body: "Reloaded the latest version — please redo your change.",
+          tone: "error",
         });
       }
     },

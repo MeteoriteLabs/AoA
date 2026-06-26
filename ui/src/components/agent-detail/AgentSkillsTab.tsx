@@ -9,7 +9,7 @@ import { companySkillsApi } from "../../api/companySkills";
 import { queryKeys } from "../../lib/queryKeys";
 import { PageSkeleton } from "../PageSkeleton";
 import { ApiError } from "../../api/client";
-import { toast } from "../../lib/toast";
+import { useToast } from "@/context/ToastContext";
 
 /**
  * Shared Skills tab for both the worker (AgentDetail) and AoA (AoaAgentDetail)
@@ -37,6 +37,7 @@ export function AgentSkillsTab({
   expectedUpdatedAt?: string;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [localKeys, setLocalKeys] = useState<string[]>(initialSkillKeys);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,8 +127,10 @@ export function AgentSkillsTab({
         // Concurrent edit: the agent changed under us. Refetch + tell the user
         // to redo their toggle against the reloaded state (Decision #104).
         void queryClient.invalidateQueries({ queryKey: ["agents", "detail"] });
-        toast.error("This agent changed elsewhere", {
-          description: "Reloaded the latest version — please redo your change.",
+        pushToast({
+          title: "This agent changed elsewhere",
+          body: "Reloaded the latest version — please redo your change.",
+          tone: "error",
         });
       } else {
         setError(e instanceof Error ? e.message : "Failed to update skills");
