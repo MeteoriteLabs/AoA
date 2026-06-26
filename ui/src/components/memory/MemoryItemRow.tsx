@@ -48,11 +48,18 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
   const Icon = ICON_FOR_KIND[kind];
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(row.id, row.kind)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(row.id, row.kind);
+        }
+      }}
       className={cn(
-        "relative flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors",
+        "relative flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors cursor-pointer",
         active ? "bg-brand/[0.08]" : "hover:bg-white/[0.04]",
       )}
     >
@@ -126,6 +133,6 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
           className="pointer-events-none absolute right-2.5 top-3 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
         />
       )}
-    </button>
+    </div>
   );
 }

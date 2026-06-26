@@ -54,10 +54,17 @@ export function MemoryItemCard({ row, active, onSelect, onReindex }: Props) {
   );
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(row.id, row.kind)}
-      className={outerClasses}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(row.id, row.kind);
+        }
+      }}
+      className={cn(outerClasses, "cursor-pointer")}
     >
       {active && (
         <span
@@ -75,7 +82,7 @@ export function MemoryItemCard({ row, active, onSelect, onReindex }: Props) {
       ) : (
         <GenericVariant row={row} active={active} kind={kind} />
       )}
-    </button>
+    </div>
   );
 }
 

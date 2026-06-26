@@ -418,6 +418,8 @@ export function EntryRow({
         taskCount={taskCount}
         memCount={memCount}
         pendingCount={pendingCount}
+        extractionError={extractionError}
+        errorMentionsProvider={errorMentionsProvider}
         onOpenArtifact={onOpenArtifact}
       />
     );
@@ -443,12 +445,16 @@ function MeBubble({
   taskCount,
   memCount,
   pendingCount,
+  extractionError,
+  errorMentionsProvider,
   onOpenArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
   memCount: number;
   pendingCount: number;
+  extractionError?: string | null;
+  errorMentionsProvider?: boolean;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   return (
@@ -494,8 +500,8 @@ function MeBubble({
             memCount={memCount}
             pendingCount={pendingCount}
             extractionStatus={entry.extractionStatus}
-            extractionError={null}
-            errorMentionsProvider={false}
+            extractionError={extractionError ?? null}
+            errorMentionsProvider={errorMentionsProvider ?? false}
           />
           <ReplyCountToggle count={entry.replyCount ?? 0} />
         </div>
