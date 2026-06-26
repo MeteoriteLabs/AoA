@@ -90,10 +90,17 @@ export async function enqueueMemoryEmbedding(
       .limit(1);
 
     if (existingPending.length > 0) {
+      // Refreshing the input means this row now represents NEW content, so give
+      // it a fresh retry budget (P2, Codex): if the row was mid transient-retry
+      // (nonzero attempts + old error), keeping that count would make the worker
+      // dead-letter the new text after a single further failure. Reset attempts
+      // + error + nextRetryAt so the edited content gets full retries.
       await (handle as any)
         .update(embeddingQueue)
         .set({
           inputText,
+          attempts: 0,
+          error: null,
           nextRetryAt: null,
           updatedAt: new Date(),
         })

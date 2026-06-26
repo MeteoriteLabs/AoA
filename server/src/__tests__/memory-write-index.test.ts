@@ -78,6 +78,7 @@ import { enqueueMemoryEmbedding } from "../services/memory-write.js";
 
 function makeEnqueueDb(opts: { existingRows?: Array<{ id: string }> } = {}) {
   const insertedValues: Array<Record<string, unknown>> = [];
+  const updatedValues: Array<Record<string, unknown>> = [];
   let selectCallCount = 0;
 
   const db: any = {
@@ -97,9 +98,15 @@ function makeEnqueueDb(opts: { existingRows?: Array<{ id: string }> } = {}) {
         return Promise.resolve([]);
       },
     }),
+    update: (_table: unknown) => ({
+      set: (vals: Record<string, unknown>) => {
+        updatedValues.push(vals);
+        return { where: (_cond: unknown) => Promise.resolve([]) };
+      },
+    }),
   };
 
-  return { db, insertedValues, getSelectCallCount: () => selectCallCount };
+  return { db, insertedValues, updatedValues, getSelectCallCount: () => selectCallCount };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -186,7 +193,7 @@ describe("enqueueMemoryEmbedding", () => {
   });
 
   it("dedup: skips insert when a live 'pending' row already exists for the target", async () => {
-    const { db, insertedValues } = makeEnqueueDb({
+    const { db, insertedValues, updatedValues } = makeEnqueueDb({
       existingRows: [{ id: "q-existing" }],
     });
 
@@ -196,8 +203,33 @@ describe("enqueueMemoryEmbedding", () => {
       content: "C",
     });
 
-    // Dedup guard fires — no new insert
+    // Dedup guard fires — no new insert; the pending row is refreshed instead.
     expect(insertedValues).toHaveLength(0);
+    expect(updatedValues).toHaveLength(1);
+  });
+
+  it("refreshing a pending row resets the retry budget (attempts/error/nextRetryAt) — P2 re-review", async () => {
+    // A memory edit while the row is mid transient-retry must NOT inherit the
+    // stale attempts count, or the worker would dead-letter the NEW content after
+    // a single further failure instead of giving it a fresh retry budget.
+    const { db, insertedValues, updatedValues } = makeEnqueueDb({
+      existingRows: [{ id: "q-retrying" }],
+    });
+
+    await enqueueMemoryEmbedding(db, "co-1", {
+      id: "item-edited",
+      title: "New Title",
+      content: "New content",
+    });
+
+    expect(insertedValues).toHaveLength(0);
+    expect(updatedValues).toHaveLength(1);
+    expect(updatedValues[0]).toMatchObject({
+      inputText: "New Title\nNew content",
+      attempts: 0,
+      error: null,
+      nextRetryAt: null,
+    });
   });
 
   it("dedup: two sequential enqueues on the same item — only the first inserts", async () => {
