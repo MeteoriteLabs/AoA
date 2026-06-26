@@ -44,8 +44,10 @@ vi.mock("@armyofagents/db", () => {
     memoryItems: makeTable(),
     issues: makeTable(),
     userRoles: makeTable(),
+    projects: makeTable(),
     projectGoals: makeTable(),
     agentProjects: makeTable(),
+    goals: makeTable(),
     memoryRetrievals: makeTable(),
     discussions: makeTable(),
   };
@@ -98,6 +100,18 @@ import type { ToolContext } from "../services/internal-agent/types.js";
 // Helpers
 // ============================================================================
 
+// Minimal chainable db mock for the crew tool's scope-ownership validation
+// (`select().from().where().limit()`). `scopeFound: false` makes the lookup
+// return no rows so the tool rejects an out-of-company departmentId/goalId.
+function makeDb(opts: { scopeFound?: boolean } = {}) {
+  const rows = opts.scopeFound === false ? [] : [{ id: "scope-ok" }];
+  const chain: any = {};
+  chain.from = () => chain;
+  chain.where = () => chain;
+  chain.limit = () => Promise.resolve(rows);
+  return { select: () => chain } as any;
+}
+
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     companyId: "co-test",
@@ -105,7 +119,7 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     userRole: "team_member",
     enabledCapabilities: ["memory_management"],
     agentId: "agent-worker",
-    db: {} as any,
+    db: makeDb(),
     services: {} as any,
     ...overrides,
   } as unknown as ToolContext;
@@ -256,6 +270,24 @@ describe("write_memory crew tool — happy path", () => {
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
     expect(callArgs.departmentId).toBe("dept-eng");
     expect(callArgs.goalId).toBe("goal-q3");
+  });
+
+  it("rejects a departmentId/goalId that does not belong to the company (tenant isolation)", async () => {
+    // Scope lookup returns no rows → the ID is not in this company.
+    const ctx = makeCtx({ db: makeDb({ scopeFound: false }) });
+    const r = await writeMemoryTool.execute(
+      {
+        title: "T",
+        content: "x",
+        layer: "domain",
+        departmentId: "dept-from-another-tenant",
+      },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    // Must NOT have attempted the insert.
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
   });
 
   it("defaults category to 'context' when omitted", async () => {

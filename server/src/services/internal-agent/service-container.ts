@@ -24,6 +24,7 @@ import {
   type EmbeddingService,
 } from "../embeddings.js";
 import { getProviderApiKey } from "./providers/index.js";
+import { getDbCapabilities } from "../db-capabilities.js";
 import { logger } from "../../middleware/logger.js";
 
 const serviceLog = logger.child({ service: "service-container" });
@@ -153,6 +154,16 @@ function buildPerCompanyEmbeddingService(db: Db): EmbeddingService {
 function getOrCreateEmbeddingService(db: Db): EmbeddingService | undefined {
   const cached = embeddingServiceCache.get(db);
   if (cached) return cached;
+
+  // Gate on pgvector (P2, Codex): without vector support the embedding columns
+  // (memory_items.embedding / discussions.summary_embedding) don't exist, so
+  // find_similar_memory_hnsw / find_similar_threads would run SQL against
+  // missing columns and error once a company has an llm:openai key — turning a
+  // documented graceful degradation into a tool failure. Withhold the service so
+  // those tools return EMBEDDINGS_UNAVAILABLE and the enqueue path no-ops.
+  if (!getDbCapabilities().hasVectorSupport) {
+    return undefined;
+  }
 
   // Check whether ANY key is available (env only; company secrets are resolved
   // at embedSync time). If neither env key nor company secrets path could ever

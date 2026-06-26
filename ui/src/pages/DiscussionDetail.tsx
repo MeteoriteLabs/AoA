@@ -147,13 +147,17 @@ export function extractionFailureMessage(
 ): { primary: string; showSettings: boolean } {
   switch (kind) {
     case "not_installed":
+      // Prefer the server's CLI-specific message (e.g. "codex CLI not found")
+      // so codex-configured companies aren't told to fix Claude (P3, Codex).
       return {
-        primary: "Claude CLI not detected. Install it and run `claude login`.",
+        primary:
+          message ?? "Extraction CLI not detected. Install your configured CLI and sign in.",
         showSettings: false,
       };
     case "not_authed":
       return {
-        primary: "Claude CLI is not logged in. Run `claude login`.",
+        primary:
+          message ?? "Extraction CLI is not logged in. Run its login flow.",
         showSettings: false,
       };
     case "timeout":

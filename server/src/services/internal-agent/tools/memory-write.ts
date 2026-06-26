@@ -18,6 +18,8 @@
 // No confirmation gate — crew tools execute in the agent loop which already
 // has the task context.
 
+import { and, eq } from "drizzle-orm";
+import { projects, goals } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { writeMemoryAndIndex } from "../../memory-write.js";
 
@@ -120,6 +122,42 @@ export const writeMemoryTool: AgentTool = {
 
     const resolvedCategory =
       category && VALID_CATEGORIES.has(category) ? category : "context";
+
+    // Tenant isolation (P2, Codex): a scoped/compromised agent must not be able
+    // to link a memory row to another company's project/goal by passing a known
+    // UUID. Verify any provided departmentId/goalId belongs to ctx.companyId
+    // before insert (the MCP memory.write path does the equivalent via scope
+    // assertions; the crew tool has no ctx.scope, so check ownership directly).
+    if (departmentId) {
+      const [proj] = await ctx.db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.id, departmentId), eq(projects.companyId, ctx.companyId)))
+        .limit(1);
+      if (!proj) {
+        return {
+          success: false,
+          data: null,
+          summary: "departmentId not found in this company",
+          error: "INVALID_PARAMS",
+        };
+      }
+    }
+    if (goalId) {
+      const [goal] = await ctx.db
+        .select({ id: goals.id })
+        .from(goals)
+        .where(and(eq(goals.id, goalId), eq(goals.companyId, ctx.companyId)))
+        .limit(1);
+      if (!goal) {
+        return {
+          success: false,
+          data: null,
+          summary: "goalId not found in this company",
+          error: "INVALID_PARAMS",
+        };
+      }
+    }
 
     // memoryService.create rejects agent-sourced memory without a non-empty
     // sourceContext (memory.ts). Use the caller's note when provided, else

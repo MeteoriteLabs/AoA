@@ -12,23 +12,32 @@ import { extractionFailureMessage } from "../DiscussionDetail";
 
 describe("extractionFailureMessage", () => {
   describe("CLI kind: not_installed", () => {
-    it("returns install guidance copy", () => {
+    it("returns CLI-agnostic install guidance when no message is stored", () => {
       const result = extractionFailureMessage("not_installed", null);
-      expect(result.primary).toContain("Claude CLI not detected");
-      expect(result.primary).toContain("claude login");
+      expect(result.primary).toContain("CLI not detected");
+      // Must NOT hardcode Claude — codex companies would be misdirected.
+      expect(result.primary).not.toContain("Claude CLI");
       expect(result.showSettings).toBe(false);
     });
 
-    it("does not show Settings link", () => {
-      expect(extractionFailureMessage("not_installed", "some msg").showSettings).toBe(false);
+    it("prefers the server's CLI-specific message (e.g. codex)", () => {
+      const result = extractionFailureMessage("not_installed", "codex CLI not found");
+      expect(result.primary).toBe("codex CLI not found");
+      expect(result.showSettings).toBe(false);
     });
   });
 
   describe("CLI kind: not_authed", () => {
-    it("returns login guidance copy", () => {
+    it("returns CLI-agnostic login guidance when no message is stored", () => {
       const result = extractionFailureMessage("not_authed", null);
       expect(result.primary).toContain("not logged in");
-      expect(result.primary).toContain("claude login");
+      expect(result.primary).not.toContain("claude login");
+      expect(result.showSettings).toBe(false);
+    });
+
+    it("prefers the server's CLI-specific message", () => {
+      const result = extractionFailureMessage("not_authed", "codex not authenticated");
+      expect(result.primary).toBe("codex not authenticated");
       expect(result.showSettings).toBe(false);
     });
   });
