@@ -25,6 +25,7 @@ import { getProviderStatus } from "../../../adapters/provider-status.js";
 import type { ProviderStatus } from "../../../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
 import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
+import { secretService } from "../../secrets.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
@@ -390,11 +391,26 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // RESOLUTION still hard-fails on shell-unsafe input — that throw comes from
     // applyModelResolutionToConfig below, outside this guard, and is recorded as a
     // failed run by the outer catch.
+    // Crew path MUST resolve env bindings (secret_ref/plain → string) BEFORE
+    // provider detection + model resolution + spawn. Saved env entries are
+    // normalized to binding objects, and codex-local copies only STRING env into
+    // the child — so an unresolved per-agent OPENAI_API_KEY would be detected as
+    // apikey here yet never reach the codex child, breaking the run. Mirror the
+    // org (heartbeat) + probe paths. resolveEnvBindings no-ops to {} for agents
+    // with no env; a missing secret throws → recorded as a failed run by the
+    // outer catch (correct — the run can't proceed without the configured key).
+    // (Codex P2.)
+    const runtimeBaseConfig = await secretService(db).resolveAdapterConfigForRuntime(
+      agent.companyId,
+      baseConfig,
+      { consumerType: "agent", consumerId: agent.id, actorType: "agent", actorId: agent.id },
+    );
+
     let providerStatus: ProviderStatus;
     try {
       providerStatus = await getProviderStatus(
         agent.adapterType,
-        { companyId: agent.companyId, adapterConfig: baseConfig },
+        { companyId: agent.companyId, adapterConfig: runtimeBaseConfig },
         realProviderStatusDeps,
       );
     } catch (statusErr) {
@@ -409,7 +425,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     }
     const resolvedBaseConfig = applyModelResolutionToConfig(
       agent.adapterType,
-      baseConfig,
+      runtimeBaseConfig,
       providerStatus,
       { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null },
     );
