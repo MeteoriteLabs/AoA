@@ -32,6 +32,22 @@ export type ExtractionEngine = "cli" | "api";
 /** Default CLI tool when a company has no configured Commander CLI tool. */
 export const DEFAULT_EXTRACTION_CLI_TOOL = "claude_cli";
 
+/**
+ * CLI tools that the one-shot extractor (`extraction-cli.ts`) can actually
+ * drive — i.e. have a real extractor implementation. `detectCliTool` also
+ * recognizes `opencode` (and future tools) for Commander CHAT, but
+ * `extractViaCli` has no extractor for them. Without this allow-list an
+ * opencode-configured company would resolve to "cli", then every extraction
+ * would throw "Unsupported CLI tool" AND the hosted-API fallback would be
+ * skipped (engine already committed to "cli"). Keep this in sync with
+ * `extraction-cli.ts`'s CLI_BINARY_MAP.
+ */
+export const EXTRACTION_SUPPORTED_CLI_TOOLS = new Set([
+  "claude_cli",
+  "claude",
+  "codex",
+]);
+
 export interface ProbeExtractionCliResult {
   available: boolean;
   /** The CLI tool key that was probed (e.g. "claude_cli", "codex"). */
@@ -113,8 +129,17 @@ export async function resolveExtractionEngine(
     cliAvailable = opts.cliAvailable;
   } else {
     const cliTool = await resolveCompanyCliTool(db, companyId);
-    const probe = await probeExtractionCli(cliTool);
-    cliAvailable = probe.available;
+    // Only probe CLIs that extraction can actually drive. An unsupported
+    // extraction CLI (e.g. opencode, which detectCliTool recognizes for chat)
+    // must NOT report available — otherwise we'd commit to "cli" and skip the
+    // hosted-API fallback, then fail every extraction. Treat it as unavailable
+    // so resolution falls through to "api" (or the no-engine guidance).
+    if (!EXTRACTION_SUPPORTED_CLI_TOOLS.has(cliTool)) {
+      cliAvailable = false;
+    } else {
+      const probe = await probeExtractionCli(cliTool);
+      cliAvailable = probe.available;
+    }
   }
 
   if (cliAvailable) {

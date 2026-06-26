@@ -365,6 +365,17 @@ export interface CircuitEntry {
 /** TTL for an open circuit breaker (60 seconds). */
 export const CIRCUIT_TTL_MS = 60_000;
 
+/**
+ * Backoff applied to a queue row whose company has no resolvable OpenAI key
+ * (5 minutes). Without it, a keyless company with ≥batchSize old pending rows
+ * would re-claim the same oldest rows every tick (ORDER BY created_at) and
+ * starve newer rows from companies that DO have a key. Setting nextRetryAt
+ * makes the no-key rows ineligible for a while so other companies' rows reach
+ * the claimed batch. When a key is later added, reindexCompany() resets these
+ * rows to pending with nextRetryAt=null, so they become eligible immediately.
+ */
+export const NO_KEY_BACKOFF_MS = 300_000;
+
 const queueLog = logger.child({ service: "embedding-queue" });
 
 export interface LlmEmbedder {
@@ -715,12 +726,31 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           UPDATE embedding_queue
           SET status = 'processing', updated_at = now()
           WHERE id IN (SELECT id FROM claimed)
-          RETURNING *
+          RETURNING
+            id,
+            company_id AS "companyId",
+            target_table AS "targetTable",
+            target_id AS "targetId",
+            target_column AS "targetColumn",
+            input_text AS "inputText",
+            status,
+            attempts,
+            error,
+            next_retry_at AS "nextRetryAt",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
         `));
         // P2-1: node-postgres drivers may return either an array-like RowList
         // or an object with a `rows` property depending on the adapter version.
         // Normalise before iterating so both shapes work correctly.
         const rawRows = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+        // P1 (Codex): `db.execute(sql.raw(...))` returns RAW database column
+        // names (snake_case), NOT Drizzle's camelCase property names — that
+        // mapping only happens through the query builder. With a bare
+        // `RETURNING *`, the loop below would read `item.targetTable`,
+        // `item.inputText`, `item.companyId` as undefined and every row would
+        // fail/skip in production Postgres. The aliased RETURNING above emits
+        // quoted camelCase identifiers so the rows match $inferSelect exactly.
         pending = rawRows as Array<typeof embeddingQueue.$inferSelect>;
         rowsAlreadyClaimed = true;
       } catch (skipLockedErr) {
@@ -801,13 +831,20 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
         if (resolveCompanyKey) {
           const key = await resolveCompanyKey(item.companyId ?? null);
           if (!key) {
-            // No key for this company — leave the row pending this tick.
-            // CTE path: row is 'processing' → restore to 'pending'.
-            // Fallback path: row is still 'pending' → no update needed.
+            // No key for this company — restore the row to pending AND push its
+            // nextRetryAt out (P2, Codex): otherwise a keyless company with a
+            // large backlog re-claims the same oldest rows every tick and
+            // starves keyed companies' newer rows. CTE path: row is 'processing'
+            // → restore. Fallback path: row is still 'pending' → no update
+            // needed (test-only path; the starvation risk is the production CTE).
             if (rowsAlreadyClaimed) {
               await db
                 .update(embeddingQueue)
-                .set({ status: "pending", updatedAt: new Date() })
+                .set({
+                  status: "pending",
+                  nextRetryAt: new Date(Date.now() + NO_KEY_BACKOFF_MS),
+                  updatedAt: new Date(),
+                })
                 .where(eq(embeddingQueue.id, item.id));
             }
             if (!loggedNoKey.has(companyKey)) {

@@ -66,6 +66,14 @@ export const writeMemoryTool: AgentTool = {
         type: "string",
         description: "Optional goal id to scope the memory item",
       },
+      sourceContext: {
+        type: "string",
+        description:
+          "Optional short note on why/where this was learned (e.g. the task or " +
+          "decision it came from). Required by the memory service for " +
+          "agent-sourced items; a default is derived from the agent context " +
+          "when omitted.",
+      },
     },
     required: ["title", "content", "layer"],
   },
@@ -73,15 +81,16 @@ export const writeMemoryTool: AgentTool = {
   requiredRole: "team_member",
   requiresConfirmation: false,
   async execute(params, ctx) {
-    const { title, content, layer, category, departmentId, goalId } = (params ??
-      {}) as {
-      title?: string;
-      content?: string;
-      layer?: string;
-      category?: string;
-      departmentId?: string;
-      goalId?: string;
-    };
+    const { title, content, layer, category, departmentId, goalId, sourceContext } =
+      (params ?? {}) as {
+        title?: string;
+        content?: string;
+        layer?: string;
+        category?: string;
+        departmentId?: string;
+        goalId?: string;
+        sourceContext?: string;
+      };
 
     // --- Validation ---
     if (!title || typeof title !== "string" || title.trim().length === 0) {
@@ -112,6 +121,15 @@ export const writeMemoryTool: AgentTool = {
     const resolvedCategory =
       category && VALID_CATEGORIES.has(category) ? category : "context";
 
+    // memoryService.create rejects agent-sourced memory without a non-empty
+    // sourceContext (memory.ts). Use the caller's note when provided, else
+    // derive a default from the agent context so a bare write_memory call still
+    // succeeds instead of failing with INSERT_FAILED (P2, Codex).
+    const resolvedSourceContext =
+      sourceContext && sourceContext.trim().length > 0
+        ? sourceContext.trim()
+        : `Captured by ${ctx.agentId ?? "crew agent"} during task execution`;
+
     // --- Write + index ---
     // Critical Rule #6 + Decisions #15/#52: agent-sourced memory is always pending.
     // The status is hard-coded here and CANNOT be overridden by the caller.
@@ -123,6 +141,7 @@ export const writeMemoryTool: AgentTool = {
         layer,
         category: resolvedCategory,
         source: "agent",
+        sourceContext: resolvedSourceContext,
         status: "pending",
         visibility: "scoped",
         priority: 0,
