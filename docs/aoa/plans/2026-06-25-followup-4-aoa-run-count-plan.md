@@ -829,7 +829,7 @@ test.describe("AoA run-count KPI", () => {
 });
 ```
 
-> Reviewer note — Overview-stat locator. The Overview stat has no testid; the spec scopes to it by the label text "Total runs". The hero KPI also contains the words "Total runs", so `getByText("Total runs", { exact: true })` may match more than one node — `.first()` + the `div has=label` card scope is the disambiguator. If this proves flaky at implementation time, the cheapest hardening is to add `data-testid="aoa-overview-total-runs"` to the stat value span in `AoaOverview` (`AoaAgentDetail.tsx:400`) and assert that directly; that is a one-line, behaviour-neutral addition the implementer may make if the text-scoped locator is brittle. Document the choice in the commit.
+> Reviewer note — Overview-stat locator. The e2e asserts the Overview stat via `data-testid="aoa-overview-total-runs"`, which Task 4 adds to the stat value span (`AoaAgentDetail.tsx:400`). This is **required**, not optional: the hero KPI is also labelled "Total runs" now, so a label-text locator (`getByText("Total runs")`) would match the hero, not Overview, and prove nothing about the Overview stat (Codex P1). The unit Overview-stat test stays label/selector-scoped (`{ selector: "span.text-xs" }`) because there the hero is mocked.
 
 - [ ] Run the new e2e spec in isolation — expect **PASS** on Linux/macOS, **skipped** on the embedded-postgres Windows runner:
 

@@ -90,7 +90,7 @@ TDD steps:
     });
   });
   ```
-- [ ] **Run, expect FAIL:** `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/agent-validators.test.ts` → fails (the `.parse` either errors on an unknown key or the type field doesn't exist yet — depending on `.passthrough()`; either way the "rejects a non-datetime token" case will not yet behave correctly because there is no field to validate).
+- [ ] **Run, expect FAIL:** `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/agent-validators.test.ts` → both new cases fail today because `updateAgentSchema` is a Zod object that **strips** the unknown `expectedUpdatedAt` key (Zod's default — there is no `.passthrough()`): the "preserves a valid token" case fails because the key is stripped from the parsed result, and the "rejects a non-datetime token" case fails because `safeParse` *succeeds* (the bad value is stripped, so validation passes) while the test asserts `success === false`. Adding the field fixes both.
 - [ ] **Implement REAL code.** In `packages/shared/src/validators/agent.ts`, extend `updateAgentSchema` (lines 55-64). The field is an **optional ISO datetime string**:
   ```ts
   export const updateAgentSchema = createAgentSchema
@@ -219,7 +219,7 @@ TDD steps:
   });
   ```
   > If `createAgentDb` ordering proves awkward for the dual-select sequence (initial `getById` + post-conflict re-read), declare a small local sequence-DB inline (the repo sanctions per-test local DBs — see the note in `helpers/drizzle-mock.ts`). Keep the assertions identical.
-- [ ] **Run, expect FAIL:** `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.test.ts` → the stale-token and back-compat tests fail (the service ignores the token today and the WHERE is id-only).
+- [ ] **Run, expect FAIL:** `pnpm --filter @armyofagents/server exec vitest run src/__tests__/agents-update-concurrency.test.ts` → the **stale-token** test fails (today the service ignores the token and the WHERE is id-only, so the update succeeds and returns the row instead of null/409). The **no-token back-compat** test already **passes** against the current service — that's expected: it's a guard test documenting that token-less updates keep working, not a red one.
 - [ ] **Implement REAL code — step A: extend options.** Lines 90-92:
   ```ts
   interface UpdateAgentOptions {
