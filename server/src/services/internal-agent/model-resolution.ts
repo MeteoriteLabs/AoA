@@ -61,9 +61,19 @@ export function resolveModel(
     // In apikey mode, codex-family/API-key-only models (e.g. gpt-5.3-codex) are
     // valid — pass the (already shell-safe-checked) model through; no correction.
     if (status.authMode === "apikey") {
-      // An EXPLICIT api-key model request wins — api-key users may legitimately
-      // run gpt-*-codex variants. `m` was shell-safety-checked at the top.
-      if (m) return { model: m, omitModelFlag: false };
+      // An EXPLICIT api-key model must still be an OpenAI/Codex-family identifier
+      // (incl. gpt-*-codex). `m` was shell-safety-checked at the top, but a
+      // shell-safe NON-OpenAI value — a slash/opencode-style id (openai/gpt-5.5),
+      // a claude-…/gemini-… alias, or an unknown alias — must NOT be passed to
+      // `codex --model`; correct it to the safe default (Codex P2).
+      if (m) {
+        if (isOpenAiFamilyModel(m)) return { model: m, omitModelFlag: false };
+        return {
+          model: DEFAULT_CODEX_CHAT_MODEL,
+          omitModelFlag: false,
+          note: `"${m}" is not an OpenAI/Codex model; using ${DEFAULT_CODEX_CHAT_MODEL}.`,
+        };
+      }
       // No explicit model: the fallback comes from the shared ~/.codex/config.toml,
       // which is untrusted. (a) Reject a shell-unsafe value loudly, surfacing the
       // broken config rather than running it. (b) Constrain to an OpenAI/Codex-family

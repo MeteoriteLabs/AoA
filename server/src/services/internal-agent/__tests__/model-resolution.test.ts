@@ -74,5 +74,21 @@ describe("resolveModel", () => {
   it("apikey mode: an EXPLICIT gpt-*-codex request is preserved even when the config default is non-OpenAI", () => {
     const r = resolveModel("codex_local", "gpt-5.3-codex", { authMode: "apikey", defaultModelResolved: "claude-sonnet-4-5-20250929" });
     expect(r.model).toBe("gpt-5.3-codex");
+    expect(r.note).toBeUndefined();
+  });
+
+  // Codex P2: an EXPLICIT apikey model must also be OpenAI/Codex-family — a
+  // shell-safe slash/opencode-style id or a non-OpenAI/unknown alias must not be
+  // passed to `codex --model`; correct it to the safe default.
+  it("apikey mode: an explicit opencode-style slash model is corrected to DEFAULT (+ note)", () => {
+    const r = resolveModel("codex_local", "openai/gpt-5.5", { authMode: "apikey", defaultModelResolved: "gpt-5.5" });
+    expect(r.model).toBe(DEFAULT_CODEX_CHAT_MODEL);
+    expect(r.note).toMatch(/not an OpenAI\/Codex model/i);
+  });
+  it("apikey mode: an explicit non-OpenAI alias (claude/gemini) is corrected to DEFAULT", () => {
+    expect(resolveModel("codex_local", "claude-sonnet-4-5-20250929", { authMode: "apikey", defaultModelResolved: "gpt-5.5" }).model)
+      .toBe(DEFAULT_CODEX_CHAT_MODEL);
+    expect(resolveModel("codex_local", "gemini-2.5-pro", { authMode: "apikey", defaultModelResolved: "gpt-5.5" }).model)
+      .toBe(DEFAULT_CODEX_CHAT_MODEL);
   });
 });
