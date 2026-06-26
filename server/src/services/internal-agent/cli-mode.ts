@@ -733,6 +733,14 @@ export function cliModeService(db: Db) {
             cwd: tmpdir(),
           });
 
+          // Swallow stdin stream errors (P1, Codex): if the CLI exits before
+          // reading stdin (auth/flag/config error) and the assembled prompt
+          // exceeds the OS pipe buffer, the write below (turn 1 and every
+          // subsequent persistent-session turn) raises EPIPE. Without an `error`
+          // listener that is an unhandled stream error that crashes the server;
+          // the dead process is otherwise handled by the stream-end / cleanup path.
+          cliProcess.stdin?.on("error", () => {});
+
           session = {
             cliProcess,
             mcpProcess: null,
@@ -1013,6 +1021,12 @@ async function* runCodexTurn(
       shell: args.isWin,
       cwd: tmpdir(),
     });
+
+    // Swallow stdin stream errors (P1, Codex): an early CLI exit + a prompt
+    // larger than the OS pipe buffer makes the write below raise EPIPE; without
+    // an `error` listener that's an unhandled stream error that crashes the
+    // server. The early exit is captured by the close/exit handling instead.
+    proc.stdin?.on("error", () => {});
 
     // codex reads the prompt from stdin (the `-` PROMPT arg) until EOF, so
     // the stream MUST be closed for the one-shot turn to proceed. Raw

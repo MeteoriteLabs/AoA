@@ -670,7 +670,7 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     proc.stderr = new EventEmitter();
     // W1 stdin fix: claude writes the prompt to stdin then closes it, so the
     // fake stdin must expose both write + end.
-    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn() };
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn(), on: vi.fn() };
     proc.kill = vi.fn();
     // Drive the stream helper to completion once the chat attaches its
     // stdout/exit listeners (streamProcessOutput registers them lazily).
@@ -888,7 +888,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     const proc: any = new EventEmitter();
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
-    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn() };
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn(), on: vi.fn() };
     proc.kill = vi.fn();
     let driven = false;
     const drive = () => {
@@ -916,7 +916,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
     // W1 stdin fix: claude writes the prompt to stdin then closes it.
-    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn() };
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn(), on: vi.fn() };
     proc.kill = vi.fn();
     proc.feed = (text: string) => {
       setImmediate(() => proc.stdout.emit("data", Buffer.from(text)));
