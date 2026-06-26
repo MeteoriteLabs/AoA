@@ -25,7 +25,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -64,24 +64,6 @@ export interface RunCodexExecJsonResult {
 }
 
 /**
- * Per-extraction managed CODEX_HOME. Headless: it carries ONLY auth.json (no
- * MCP config.toml — the extractor needs no tools). A stable name keeps the dir
- * reusable across runs (auth is copied each time, idempotently).
- */
-function extractionCodexHomeDir(): string {
-  return join(tmpdir(), "aoa-codex-extract");
-}
-
-// Dedicated EMPTY working directory for the sandboxed codex run. It is a SIBLING
-// of the CODEX_HOME credential dir (not a parent), so the read-only sandbox —
-// whose readable root is the cwd/workspace — cannot reach
-// `aoa-codex-extract/auth.json`. This stops a prompt-injected entry from having
-// codex read the OpenAI token and emit it in the extraction output (P1, Codex).
-function extractionCodexCwd(): string {
-  return join(tmpdir(), "aoa-codex-extract-run");
-}
-
-/**
  * Run a single `codex exec --json -` turn with the prompt on stdin and return
  * the final assistant TEXT. No MCP, no resume, no streaming.
  *
@@ -102,19 +84,23 @@ export async function runCodexExecJson(
     parseCodexJsonl,
   } = await import("@armyofagents/adapter-codex-local/server");
 
-  // Managed home: auth only (no MCP). Provision auth.json from the shared
-  // ~/.codex so `codex exec` is authenticated (no-op if the user has no login).
-  // mode 0o700: the dir holds auth.json (the OpenAI/ChatGPT token); both dirs
-  // live under a predictable name in the shared OS temp dir, so without owner-
-  // only perms another local user could pre-create or read them (audit follow-up).
-  const codexHomeDir = extractionCodexHomeDir();
-  await mkdir(codexHomeDir, { recursive: true, mode: 0o700 });
+  // Per-run, UNGUESSABLE credential + cwd dirs (P2, Codex re-review): a stable
+  // predictable name in the shared OS temp dir is unsafe — mkdir(mode:0o700)
+  // does NOT re-permission an ALREADY-existing dir, so a local user could
+  // pre-create `/tmp/aoa-codex-extract` world-readable and then read the
+  // copied auth.json. mkdtemp creates a fresh random-suffixed dir (mode 0o700)
+  // each run that no other user can predict; both are removed in `finally`.
+  //   - codexHomeDir holds auth.json (no MCP config.toml — the extractor needs
+  //     no tools).
+  //   - codexCwd is an EMPTY working dir, SIBLING of the home (not a parent), so
+  //     the read-only sandbox's readable workspace can't reach the credential
+  //     dir (a prompt-injected entry can't have codex read + emit the token).
+  const codexHomeDir = await mkdtemp(join(tmpdir(), "aoa-codex-extract-"));
+  const codexCwd = await mkdtemp(join(tmpdir(), "aoa-codex-extract-run-"));
+  try {
+  // Provision auth.json from the shared ~/.codex so `codex exec` is
+  // authenticated (no-op if the user has no login).
   await ensureCodexAuthInHome(codexHomeDir);
-
-  // Dedicated empty cwd (sibling of CODEX_HOME) so the read-only sandbox's
-  // readable workspace does not include the credential dir (P1, Codex).
-  const codexCwd = extractionCodexCwd();
-  await mkdir(codexCwd, { recursive: true, mode: 0o700 });
 
   // Model: same layered, validated resolution as the chat path so a claude
   // default / GPT-Codex / shell-unsafe value can never reach codex.
@@ -145,14 +131,16 @@ export async function runCodexExecJson(
   // cwd = a dedicated EMPTY dir (not tmpdir, not CODEX_HOME): keeps the
   // subprocess from reading project CLAUDE.md / AGENTS.md AND keeps the codex
   // credential dir outside the read-only sandbox's readable workspace (P1, Codex).
-  // env: scrubbed of the server's own secrets (embeddings OPENAI_API_KEY only
-  // re-added below for codex's own api-key auth path; GITHUB_PAT, DATABASE_URL,
-  // AOA_*, ANTHROPIC_API_KEY are withheld) — defense-in-depth alongside the
-  // read-only sandbox so a prompt-injected entry can't read them (audit follow-up).
+  // env: FULLY scrubbed of the server's own secrets — including the embeddings
+  // OPENAI_API_KEY (P1, Codex re-review). Keyless codex extraction authenticates
+  // via the copied auth.json (CODEX_HOME), NOT the server's OpenAI key, so
+  // re-adding that hosted key would hand it to an untrusted-prompt subprocess
+  // that could print its env and exfiltrate it. GITHUB_PAT / DATABASE_URL /
+  // AOA_* / ANTHROPIC_API_KEY are likewise withheld.
   const proc = spawn("codex", args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
-      ...buildScrubbedCliEnv(["OPENAI_API_KEY"]),
+      ...buildScrubbedCliEnv(),
       CODEX_HOME: codexHomeDir,
     },
     shell: isWin,
@@ -221,4 +209,10 @@ export async function runCodexExecJson(
     spawnError,
     resolvedModel,
   };
+  } finally {
+    // Always remove the per-run credential + cwd dirs (they hold the copied
+    // auth.json) — on success, parse failure, timeout, or spawn error.
+    await rm(codexHomeDir, { recursive: true, force: true }).catch(() => {});
+    await rm(codexCwd, { recursive: true, force: true }).catch(() => {});
+  }
 }

@@ -444,15 +444,23 @@ describe("POST /companies/:companyId/memory/reindex-failed", () => {
     );
   });
 
-  it("RBAC: lower role is rejected with 403", async () => {
-    mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder, team_lead"));
+  it("RBAC: non-founder is rejected with 403 (bulk reindex is founder-only)", async () => {
+    mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder"));
 
     const res = await request(makeApp(memberActor))
       .post(`/api/companies/${COMPANY_ID}/memory/reindex-failed`)
       .send();
 
     expect(res.status).toBe(403);
+    // Bulk re-index spans all departments + identity, so it is FOUNDER-only
+    // (Codex re-review P2) — a team_lead must not pass this gate.
     expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "founder",
+    );
+    expect(mockAssertRole).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
       COMPANY_ID,
@@ -472,7 +480,6 @@ describe("POST /companies/:companyId/memory/reindex-failed", () => {
       expect.anything(),
       COMPANY_ID,
       "founder",
-      "team_lead",
     );
   });
 });

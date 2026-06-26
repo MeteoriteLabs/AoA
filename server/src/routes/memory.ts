@@ -1132,14 +1132,19 @@ export function memoryRoutes(db: Db) {
    * clearing next_retry_at, attempts, and error so the worker drains the backlog.
    *
    * Returns { requeued: N } where N is the number of rows reset.
-   * RBAC: founder or team_lead only.
+   *
+   * RBAC: FOUNDER only (P2, Codex re-review). This is a company-wide bulk
+   * operation that re-embeds failed rows across ALL departments + the identity
+   * layer; a team_lead (scoped to one department) would otherwise mutate other
+   * departments' memory. Department-scoped re-index is available per-item via
+   * POST /memory/:id/reindex (which gates on the item's department).
    */
   router.post("/companies/:companyId/memory/reindex-failed", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
     assertBoard(req);
-    await assertRole(db, req, companyId, "founder", "team_lead");
+    await assertRole(db, req, companyId, "founder");
 
     // Only requeue NON-STALE failed rows (P2, Codex): skip any failed row whose
     // target already has a completed/live (pending|processing) sibling — that

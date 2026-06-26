@@ -322,31 +322,45 @@ function codexJsonl(text: string): string {
 
 describe("extractViaCli — codex", () => {
   it("parses items from the codex assistant summary", async () => {
-    const items = [
-      { type: "decision", title: "Use stdin delivery", description: "Windows-safe." },
-    ];
-    nextSpawn = { stdout: [codexJsonl(JSON.stringify(items))], exitCode: 0 };
+    const prev = { ...process.env };
+    process.env.OPENAI_API_KEY = "sk-embeddings";
+    process.env.AOA_AGENT_JWT_SECRET = "jwt";
+    process.env.ANTHROPIC_API_KEY = "sk-anthropic";
+    try {
+      const items = [
+        { type: "decision", title: "Use stdin delivery", description: "Windows-safe." },
+      ];
+      nextSpawn = { stdout: [codexJsonl(JSON.stringify(items))], exitCode: 0 };
 
-    const { extractViaCli } = await import("../services/extraction-cli.ts");
-    const result = await extractViaCli("codex", "SYSTEM", "content");
+      const { extractViaCli } = await import("../services/extraction-cli.ts");
+      const result = await extractViaCli("codex", "SYSTEM", "content");
 
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ type: "decision", title: "Use stdin delivery" });
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "decision", title: "Use stdin delivery" });
 
-    // codex spawned with `exec --json ... -` and prompt over stdin (closed).
-    const call = spawnCalls.find((c) => c.command === "codex");
-    expect(call).toBeDefined();
-    expect(call!.args).toContain("exec");
-    expect(call!.args).toContain("--json");
-    expect(call!.args[call!.args.length - 1]).toBe("-");
-    expect(call!.stdinEnded).toBe(true);
-    // SECURITY (audit): scrubbed env — CODEX_HOME set, codex's own auth (OPENAI)
-    // preserved, but ANTHROPIC + AOA internals withheld.
-    const env = call!.options?.env as NodeJS.ProcessEnv;
-    expect(env).toBeDefined();
-    expect(typeof env.CODEX_HOME).toBe("string");
-    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(env.AOA_AGENT_JWT_SECRET).toBeUndefined();
+      // codex spawned with `exec --json ... -` and prompt over stdin (closed).
+      const call = spawnCalls.find((c) => c.command === "codex");
+      expect(call).toBeDefined();
+      expect(call!.args).toContain("exec");
+      expect(call!.args).toContain("--json");
+      expect(call!.args[call!.args.length - 1]).toBe("-");
+      expect(call!.stdinEnded).toBe(true);
+      // SECURITY (Codex re-review P1): scrubbed env — CODEX_HOME set (codex
+      // authenticates via the copied auth.json), but the server's OWN secrets are
+      // withheld, INCLUDING the embeddings OPENAI_API_KEY (must not reach an
+      // untrusted-prompt subprocess), plus ANTHROPIC + AOA internals.
+      const env = call!.options?.env as NodeJS.ProcessEnv;
+      expect(env).toBeDefined();
+      expect(typeof env.CODEX_HOME).toBe("string");
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.AOA_AGENT_JWT_SECRET).toBeUndefined();
+    } finally {
+      for (const k of ["OPENAI_API_KEY", "AOA_AGENT_JWT_SECRET", "ANTHROPIC_API_KEY"]) {
+        if (!(k in prev)) delete process.env[k];
+        else process.env[k] = prev[k];
+      }
+    }
   });
 
   it("unparseable codex summary → CliExtractionError kind 'unparseable'", async () => {

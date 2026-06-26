@@ -66,10 +66,12 @@ describe("buildScrubbedCliEnv", () => {
     expect(env.OPENAI_API_KEY).toBeUndefined();
   });
 
-  it("re-adds only the vendor auth key the caller keeps (codex keeps OPENAI)", () => {
+  it("re-adds only the explicitly-kept vendor auth key, dropping the rest", () => {
     process.env.OPENAI_API_KEY = "sk-openai";
     process.env.ANTHROPIC_API_KEY = "sk-anthropic";
 
+    // The keep mechanism is generic; only the named key survives. (codex
+    // extraction now keeps NONE — it authenticates via the copied auth.json.)
     const env = buildScrubbedCliEnv(["OPENAI_API_KEY"]);
     expect(env.OPENAI_API_KEY).toBe("sk-openai");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
