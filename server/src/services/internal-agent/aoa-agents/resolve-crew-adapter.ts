@@ -140,6 +140,7 @@ function hasOwnOpenAiKey(env: unknown): boolean {
 export function needsAdapterBackfill(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
+  opts?: { isApiKeyAuth?: boolean },
 ): boolean {
   // Case 1: legacy process rows without a command.
   if (adapterType === "process") {
@@ -157,10 +158,13 @@ export function needsAdapterBackfill(
   // now yields DEFAULT_CODEX_CHAT_MODEL (gpt-5.5) for codex rows.
   if (adapterType === "codex_local") {
     // A founder may intentionally run codex_local in api-key mode, where models
-    // like gpt-5.3-codex are valid (see resolveModel's apikey branch). A per-agent
-    // OPENAI_API_KEY signals that intent — don't "self-heal" (rewrite) such rows.
-    // Persisted env is normalized to binding objects, so check those forms too.
-    if (hasOwnOpenAiKey(adapterConfig?.env)) return false;
+    // like gpt-5.3-codex / codex-mini-latest are valid (see resolveModel's apikey
+    // branch) — don't "self-heal" (rewrite) such rows. Api-key auth comes from
+    // EITHER a per-agent OPENAI_API_KEY (hasOwnOpenAiKey; persisted env is
+    // normalized to binding objects, handled) OR the shared ~/.codex/auth.json,
+    // which only the caller can detect via getProviderStatus → opts.isApiKeyAuth
+    // (Codex P2: shared-apikey codex models were wrongly rewritten to gpt-5.5).
+    if (opts?.isApiKeyAuth || hasOwnOpenAiKey(adapterConfig?.env)) return false;
     const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
     // A persisted codex model that a ChatGPT login would reject needs rewriting.
     return model.length > 0 && !isCodexCompatibleModel(model);

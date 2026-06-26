@@ -53,6 +53,18 @@ describe("resolve-crew-adapter (provider-switching fixes)", () => {
     expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: { type: "plain", value: "" } } })).toBe(true);
   });
 
+  // Codex P2: api-key auth can come from the SHARED ~/.codex/auth.json (no per-agent
+  // env key). The caller detects it (getProviderStatus) and passes opts.isApiKeyAuth
+  // so an explicit api-key-only codex model is preserved, not self-healed to gpt-5.5.
+  it("backfill does NOT flag an apikey codex row via opts.isApiKeyAuth (shared auth.json, no per-agent key)", () => {
+    expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: {} }, { isApiKeyAuth: true })).toBe(false);
+    expect(needsAdapterBackfill("codex_local", { model: "codex-mini-latest", env: {} }, { isApiKeyAuth: true })).toBe(false);
+  });
+  it("backfill STILL flags a bad codex row when NOT apikey (subscription) + no per-agent key", () => {
+    expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: {} }, { isApiKeyAuth: false })).toBe(true);
+    expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: {} })).toBe(true); // no opts → unchanged old behavior
+  });
+
   // Codex P2: a backfill rewrite must preserve the founder's per-agent settings —
   // only the resolved model (+ bypass flags from `next`) should change.
   it("mergeAdapterConfig preserves per-agent env/cwd/command/extraArgs while rewriting the model", () => {

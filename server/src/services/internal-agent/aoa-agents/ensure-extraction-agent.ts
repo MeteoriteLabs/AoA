@@ -8,6 +8,7 @@ import {
   needsAdapterBackfill,
   mergeAdapterConfig,
 } from "./resolve-crew-adapter.js";
+import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
 
 /** Legacy name — kept for one-time rename migration. New name is "Scribe". */
 export const LEGACY_EXTRACTION_AGENT_NAME = "Discussion Extraction";
@@ -82,7 +83,9 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       .from(agents)
       .where(eq(agents.id, existing.id))
       .limit(1);
-    const needsAdapter = current ? needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null) : false;
+    const currentCfg = current ? (current.adapterConfig as Record<string, unknown> | null) : null;
+    const isApiKeyAuth = current?.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, currentCfg) : false;
+    const needsAdapter = current ? needsAdapterBackfill(current.adapterType, currentCfg, { isApiKeyAuth }) : false;
 
     if (needsAllowlist || needsRename || needsAdapter) {
       const updates: Record<string, unknown> = { updatedAt: new Date() };

@@ -8,6 +8,7 @@ import {
   needsAdapterBackfill,
   mergeAdapterConfig,
 } from "./resolve-crew-adapter.js";
+import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
 
 export const COMMANDER_AGENT_NAME = "Commander";
 
@@ -137,9 +138,13 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
       .from(agents)
       .where(eq(agents.id, agentId))
       .limit(1);
-    if (current && needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null)) {
-      updates.adapterType = crewAdapter.adapterType;
-      updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+    if (current) {
+      const cfg = current.adapterConfig as Record<string, unknown> | null;
+      const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
+      if (needsAdapterBackfill(current.adapterType, cfg, { isApiKeyAuth })) {
+        updates.adapterType = crewAdapter.adapterType;
+        updates.adapterConfig = mergeAdapterConfig(cfg, crewAdapter.adapterConfig);
+      }
     }
 
     if (Object.keys(updates).length > 0) {
