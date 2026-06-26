@@ -15,6 +15,22 @@ describe("redactSecretsInString", () => {
     expect(out).not.toContain(jwt);
     expect(out).toContain("***REDACTED***");
   });
+  // Codex P2: a JWT adjacent to punctuation (token=…, Authorization:…) is missed
+  // by the whitespace-tokenized anchored pass — must be redacted in context.
+  it("redacts a JWT embedded in punctuation (token=…, Authorization:…)", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    for (const ctx of [`token=${jwt}`, `Authorization:${jwt}`, `(${jwt})`, `"${jwt}"`]) {
+      const out = redactSecretsInString(`probe error: ${ctx} rejected`);
+      expect(out).not.toContain(jwt);
+      expect(out).toContain("***REDACTED***");
+    }
+  });
+  it("does NOT over-redact a punctuation-adjacent dotted non-JWT (eyJ-anchored precision)", () => {
+    // A generic in-context x.y.z matcher would redact `config=1.2.3`; the
+    // eyJ anchor keeps non-JWT dotted values intact (and the token-wise pass
+    // can't match it either — the `config=` prefix breaks the anchored regex).
+    expect(redactSecretsInString("set config=1.2.3 then run")).toBe("set config=1.2.3 then run");
+  });
   it("redacts an ENTIRE PEM private key block — header + base64 body + footer (Codex P2)", () => {
     const pem =
       "-----BEGIN RSA PRIVATE KEY-----\n" +

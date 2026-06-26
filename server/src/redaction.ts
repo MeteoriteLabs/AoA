@@ -1,6 +1,13 @@
 const SECRET_PAYLOAD_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth|bearer|secret|passwd|password|credential|jwt|private|cookie|signing|webhook|npm|connection)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+// Free-form JWT matcher (UNanchored). A JWT adjacent to punctuation
+// (`token=eyJ…`, `Authorization:eyJ…`) is missed by the whitespace-tokenized
+// anchored pass, leaking the raw token (Codex P2). Anchor on the `eyJ` header
+// prefix — every JWT header is a JSON object starting with `{"`, which
+// base64url-encodes to `eyJ` — so this stays precise (no semver / a.b.c false
+// positives) while catching JWTs anywhere in the string.
+const JWT_IN_CONTEXT_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/g;
 // H4: redact string VALUES that look like a secret even when the key name is
 // innocuous (DATABASE_URL, STRIPE_LIVE, DSN, …). Previously only JWT-shaped
 // values were caught, so a connection string / provider key bound to a
@@ -81,9 +88,10 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
  * error details). Reuses the same value patterns as the object-level redactor so
  * there is a single source of truth. Used to scrub adapter test-connection output
  * before returning it to a client (Unit D — provider-switching).
- * Note: JWT-shaped tokens are matched token-wise (whitespace-delimited), so a JWT
- * embedded without surrounding whitespace (e.g. "Authorization:eyJ...") may not be
- * redacted. API-key-style secrets use word-boundary patterns and are caught in context.
+ * Note: JWTs are redacted both in context (the `eyJ…` matcher catches tokens
+ * embedded in punctuation, e.g. "Authorization:eyJ...") and token-wise (any
+ * JWT-shaped whitespace-delimited token). API-key-style secrets use word-boundary
+ * patterns and are caught in context.
  */
 export function redactSecretsInString(value: string): string {
   // Redact whole PEM private-key blocks first — the generic header-only pattern
@@ -92,7 +100,11 @@ export function redactSecretsInString(value: string): string {
   for (const re of SECRET_VALUE_PATTERNS) {
     out = out.replace(new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g"), REDACTED_EVENT_VALUE);
   }
-  // JWT_VALUE_RE is anchored (^...$) for whole-value matching; apply it token-wise.
+  // Redact JWTs embedded in punctuation (token=eyJ…, Authorization:eyJ…) that the
+  // anchored token-wise pass below misses (Codex P2).
+  out = out.replace(JWT_IN_CONTEXT_RE, REDACTED_EVENT_VALUE);
+  // JWT_VALUE_RE is anchored (^...$) for whole-value matching; apply it token-wise
+  // to also catch non-eyJ JWT-shaped whole tokens.
   out = out
     .split(/(\s+)/)
     .map((tok) => (JWT_VALUE_RE.test(tok) ? REDACTED_EVENT_VALUE : tok))

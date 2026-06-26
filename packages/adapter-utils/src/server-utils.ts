@@ -277,8 +277,24 @@ export function mergeChildEnv(
   unsetEnvKeys?: string[],
 ): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...parentEnv, ...overlayEnv };
+  // Windows env var names are case-insensitive: deleting only the exact-cased
+  // `OPENAI_API_KEY` would leave a differently-cased ambient value (e.g.
+  // `OpenAI_API_KEY`) in place, so the codex child still inherits the server key
+  // and the api-key auth/billing leak this strip prevents returns (Codex P2).
+  // Match case-insensitively on Windows, exact elsewhere (POSIX env IS
+  // case-sensitive — don't drop a legitimately distinct var there).
+  const caseInsensitive = process.platform === "win32";
+  const sameKey = (a: string, b: string) =>
+    caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
   for (const key of unsetEnvKeys ?? []) {
-    if (!Object.prototype.hasOwnProperty.call(overlayEnv, key)) delete merged[key];
+    // The exact key(s) the overlay set itself survive (an agent's own key — even
+    // an explicit empty string — wins). Any OTHER matching-cased key is an
+    // ambient (server-process) value and is dropped. Deleting the differently-
+    // cased ambient key matters on Windows, where it is the SAME variable.
+    const overlayKeys = new Set(Object.keys(overlayEnv).filter((k) => sameKey(k, key)));
+    for (const mergedKey of Object.keys(merged)) {
+      if (sameKey(mergedKey, key) && !overlayKeys.has(mergedKey)) delete merged[mergedKey];
+    }
   }
   return merged;
 }
