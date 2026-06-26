@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import type { MemoryItem, MemoryAssetRecord, MemoryFolderRecord } from "@armyofagents/shared";
+import type {
+  MemoryItem,
+  MemoryAssetRecord,
+  MemoryFolderRecord,
+  MemoryIndexStatus,
+} from "@armyofagents/shared";
 import { Plus, Search, X } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
@@ -47,6 +52,7 @@ interface ListRow {
   name: string;
   category?: string | null;
   status?: string | null;
+  indexStatus?: MemoryIndexStatus | null;
   mimeType?: string | null;
   modifiedAt: string;
   raw: MemoryItem | MemoryAssetRecord;
@@ -89,6 +95,7 @@ function toRowData(row: ListRow): MemoryItemRowData & MemoryItemTableRowData & M
     title: row.name,
     category: row.category ?? null,
     status: row.status ?? null,
+    indexStatus: row.indexStatus ?? null,
     mimeType: row.mimeType ?? null,
     modifiedAt: row.modifiedAt,
     layer: raw.layer ?? null,
@@ -121,6 +128,19 @@ export function MemoryFileList({
   const companyPrefix = selectedCompany?.issuePrefix ?? "";
 
   const { mode, setMode } = useMemoryViewMode();
+  const queryClient = useQueryClient();
+
+  // Re-index action for the primary Memory explorer rows (P2, Codex): the
+  // pending/failed/not-indexed badges + retry were previously only wired on the
+  // legacy /memory page. Thread the same reindex-single-item flow here.
+  const reindexMutation = useMutation({
+    mutationFn: (id: string) => memoryApi.reindexItem(companyId, id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
+    },
+  });
+  const handleReindex = (id: string) => reindexMutation.mutate(id);
+
   const [sortBy, setSortBy] = useState<MemoryTableSortColumn>("modifiedAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [searchOpen, setSearchOpen] = useState(Boolean(searchQuery?.trim()));
@@ -206,6 +226,7 @@ export function MemoryFileList({
         founderPinnedToTop?: boolean;
         layer?: string | null;
         status?: string;
+        indexStatus?: MemoryIndexStatus | null;
       }
     >;
 
@@ -234,6 +255,7 @@ export function MemoryFileList({
         name: it.title,
         category: it.category,
         status: it.status,
+        indexStatus: it.indexStatus ?? null,
         modifiedAt:
           typeof it.updatedAt === "string"
             ? it.updatedAt
@@ -491,6 +513,7 @@ export function MemoryFileList({
                       const row = displayRows.find((x) => x.id === id && x.kind === kind);
                       if (row) selectRow(row);
                     }}
+                    onReindex={handleReindex}
                   />
                 ))}
                 {mode === "table" && (
@@ -504,6 +527,7 @@ export function MemoryFileList({
                     sortBy={sortBy}
                     sortDir={sortDir}
                     onSortChange={handleSortChange}
+                    onReindex={handleReindex}
                   />
                 )}
                 {mode === "cards" && (
@@ -514,6 +538,7 @@ export function MemoryFileList({
                       const row = displayRows.find((x) => x.id === id && x.kind === kind);
                       if (row) selectRow(row);
                     }}
+                    onReindex={handleReindex}
                   />
                 )}
               </div>

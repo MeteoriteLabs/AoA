@@ -380,10 +380,19 @@ export function EntryRow({
     (i) => i.status === "pending" || i.status === "edited",
   ).length;
 
+  // extractionError may be a plain string (legacy / API path) OR the CLI path's
+  // structured { kind, message } object (extraction.ts). Surface the human
+  // message from either shape so the failure chip's tooltip shows the actionable
+  // guidance (e.g. "run claude login") instead of a generic message (P2, Codex).
+  const rawExtractionError = (entry.sourceInfo as Record<string, unknown> | null)?.extractionError;
   const extractionError =
-    typeof (entry.sourceInfo as Record<string, unknown> | null)?.extractionError === "string"
-      ? ((entry.sourceInfo as Record<string, unknown>).extractionError as string)
-      : null;
+    typeof rawExtractionError === "string"
+      ? rawExtractionError
+      : rawExtractionError &&
+          typeof rawExtractionError === "object" &&
+          typeof (rawExtractionError as { message?: unknown }).message === "string"
+        ? ((rawExtractionError as { message: string }).message)
+        : null;
   const errorMentionsProvider = extractionError
     ? /api key|provider/i.test(extractionError)
     : false;
