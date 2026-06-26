@@ -37,29 +37,15 @@ describe("applyModelResolutionToConfig", () => {
     expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBeUndefined();
   });
 
-  // Codex P2 (org/heartbeat path): baseConfig.env is the project→environment→agent
-  // MERGE. A project/environment OPENAI_API_KEY (meant for the app being built)
-  // must NOT count as the agent's own key, and must be stripped from the codex
-  // spawn. The caller passes agentOwnEnv (the agent's pre-merge adapterConfig.env).
-  it("strips a project/environment OPENAI_API_KEY from the merged env when the agent set none (agentOwnEnv)", () => {
+  // Codex P2: a project/environment-supplied OPENAI_API_KEY (present in the merged
+  // runtime env on the org/heartbeat path) is intended for the app/test suite and
+  // must be PRESERVED here — only the AMBIENT server key is stripped, by the codex
+  // adapter spawn (execute.ts unsetEnvKeys). This helper must not delete a key that
+  // is present in the runtime env, even when an ambient key also exists.
+  it("PRESERVES a runtime-env OPENAI_API_KEY (project/environment) for the workspace", () => {
     const cfg = applyModelResolutionToConfig("codex_local",
-      { model: "gpt-5.3-codex", env: { OPENAI_API_KEY: "sk-project" } }, status,
-      { agentOwnEnv: {} });
-    // agent has no own key → detection-side stays non-apikey (model corrected)…
-    expect(cfg.model).toBe("gpt-5.5");
-    // …and the non-agent key never reaches the CLI.
-    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBeUndefined();
-  });
-  it("KEEPS the agent's OWN key even when the merged env also carries it (agentOwnEnv has the key)", () => {
-    const cfg = applyModelResolutionToConfig("codex_local",
-      { model: "gpt-5.5", env: { OPENAI_API_KEY: "sk-agent" } }, status,
-      { agentOwnEnv: { OPENAI_API_KEY: "sk-agent" }, inheritedEnvOpenAiKey: "sk-company" });
-    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBe("sk-agent");
-  });
-  it("treats a binding-object agentOwnEnv key as agent-set (preserves the merged key)", () => {
-    const cfg = applyModelResolutionToConfig("codex_local",
-      { model: "gpt-5.5", env: { OPENAI_API_KEY: "sk-resolved" } }, status,
-      { agentOwnEnv: { OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" } } });
-    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBe("sk-resolved");
+      { model: "gpt-5.5", env: { OPENAI_API_KEY: "sk-project" } }, status,
+      { inheritedEnvOpenAiKey: "sk-company" });
+    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBe("sk-project");
   });
 });

@@ -11,7 +11,7 @@ export function resolveRunScopedModel(
   adapterType: string,
   runScopedConfig: Record<string, unknown>,
   status: ResolveModelStatus,
-  opts: { inheritedEnvOpenAiKey?: string | null; agentOwnEnv?: Record<string, unknown> | null } = {},
+  opts: { inheritedEnvOpenAiKey?: string | null } = {},
 ): Record<string, unknown> {
   return applyModelResolutionToConfig(adapterType, runScopedConfig, status, opts);
 }

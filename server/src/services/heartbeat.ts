@@ -3577,18 +3577,19 @@ export function heartbeatService(db: Db) {
         );
       }
 
-      // Provider-switching (org/heartbeat): resolve the model auth-aware + shell-safe,
-      // and strip any inherited company OPENAI_API_KEY before spawn. Runs AFTER the
-      // cheap-model swaps above (edge #5) so we resolve the model that will run.
-      // Best-effort detection; a failure falls back to authMode "unknown".
+      // Provider-switching (org/heartbeat): resolve the model auth-aware + shell-safe.
+      // Runs AFTER the cheap-model swaps above (edge #5) so we resolve the model that
+      // will run. Best-effort detection; a failure falls back to authMode "unknown".
       //
-      // Auth detection + the env-strip must see ONLY the agent's OWN adapter env
-      // (agentEnvRecord = the pre-merge mergedConfig.env). runScopedConfig.env is
-      // the project→environment→agent MERGE, so a project/environment
-      // OPENAI_API_KEY (meant for the app being built) would otherwise be misread
-      // as the agent opting into codex api-key auth — preserving api-key-only
-      // models and leaking that non-agent key to the codex CLI (Codex P2). The
-      // contract: only adapterConfig.env.OPENAI_API_KEY opts the agent into apikey.
+      // Auth DETECTION must see ONLY the agent's OWN adapter env (agentEnvRecord =
+      // the pre-merge mergedConfig.env). runScopedConfig.env is the
+      // project→environment→agent MERGE, so a project/environment OPENAI_API_KEY
+      // (supplied for the app/test suite, not for codex auth) must NOT be misread as
+      // the agent opting into codex api-key billing — only adapterConfig.env
+      // .OPENAI_API_KEY does that (Codex P2). The merged runtime env is left intact:
+      // that project/environment key still reaches the workspace, and the codex
+      // adapter strips only the AMBIENT server key from the spawn (execute.ts
+      // unsetEnvKeys) — so we do NOT strip the merged key here (Codex P2).
       let providerStatus: ProviderStatus;
       try {
         providerStatus = await getProviderStatus(
@@ -3600,7 +3601,7 @@ export function heartbeatService(db: Db) {
         logger.warn({ err: statusErr, companyId: agent.companyId, agentId: agent.id, runId: run.id }, "[heartbeat] provider status detection failed (best-effort fallback to unknown)");
         providerStatus = { adapterType: agent.adapterType, installed: true, authenticated: false, authMode: "unknown", defaultModelResolved: null };
       }
-      runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null, agentOwnEnv: agentEnvRecord });
+      runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null });
 
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
       const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {
