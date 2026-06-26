@@ -1,6 +1,16 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// memory.write delegates to writeMemoryAndIndex (not ctx.services.memory.create),
+// so mock it to assert the handler reaches the write for an agent actor.
+const { mockWriteMemoryAndIndex } = vi.hoisted(() => ({
+  mockWriteMemoryAndIndex: vi.fn(),
+}));
+vi.mock("../services/memory-write.js", () => ({
+  writeMemoryAndIndex: mockWriteMemoryAndIndex,
+  enqueueMemoryEmbedding: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -93,6 +103,7 @@ function buildApp(options?: {
     actor: { agentId?: string; userId?: string },
   ) => Promise<any>;
   memoryCreate?: ReturnType<typeof vi.fn>;
+  canAccessMemory?: ReturnType<typeof vi.fn>;
 }) {
   const app = express();
   app.use(express.json());
@@ -213,7 +224,8 @@ function buildApp(options?: {
         canAccessEntity:
           options?.canAccessEntity ??
           vi.fn().mockResolvedValue(true),
-        canAccessMemory: vi.fn().mockResolvedValue(true),
+        canAccessMemory:
+          options?.canAccessMemory ?? vi.fn().mockResolvedValue(true),
       } as any,
       agentsSvc: {
         list: vi.fn().mockResolvedValue([]),
@@ -707,6 +719,67 @@ describe("MCP write tools", () => {
       const payload = JSON.parse(res.body.result.content[0].text);
       expect(payload.id).toBeTruthy();
       expect(memoryCreate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("memory.write — agent actor RBAC bypass (P2)", () => {
+    beforeEach(() => {
+      mockWriteMemoryAndIndex.mockReset();
+    });
+
+    const agentActor = {
+      type: "agent",
+      source: "agent",
+      userId: "agent-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    } as const;
+
+    it("an agent actor can write memory even when user-RBAC denies (item is pending)", async () => {
+      mockWriteMemoryAndIndex.mockResolvedValue({
+        id: "mem-agent-1",
+        status: "pending",
+        source: "agent",
+        title: "Learned X",
+      });
+      // canAccessMemory checks USER roles; for an agent actor userId is the agent
+      // id with no roles, so it would deny — the handler must bypass it.
+      const denyMemory = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({ actor: agentActor, canAccessMemory: denyMemory });
+
+      const res = await callTool(app, "memory.write", {
+        title: "Learned X",
+        content: "during the task",
+        category: "context",
+        layer: "domain",
+        sourceContext: "task run",
+      });
+
+      expect(res.status).toBe(200);
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload.status).toBe("pending");
+      expect(mockWriteMemoryAndIndex).toHaveBeenCalledTimes(1);
+      // RBAC must NOT have been consulted for the agent actor.
+      expect(denyMemory).not.toHaveBeenCalled();
+    });
+
+    it("a non-agent (mcp) actor is still 403'd when user-RBAC denies", async () => {
+      mockWriteMemoryAndIndex.mockResolvedValue({ id: "mem-2", status: "pending" });
+      const denyMemory = vi.fn().mockResolvedValue(false);
+      // Default actor is an mcp_key actor (not an agent).
+      const { app } = buildApp({ canAccessMemory: denyMemory });
+
+      const res = await callTool(app, "memory.write", {
+        title: "Learned X",
+        content: "during the task",
+        category: "context",
+        layer: "domain",
+        sourceContext: "task run",
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
     });
   });
 });

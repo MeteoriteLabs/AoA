@@ -646,19 +646,26 @@ async function handleMemoryWrite(
   }
 
   const isAgentActor = ctx.actor.source === "agent";
-  const memoryDepartmentId = parsed.departmentId ?? parsed.projectId ?? null;
-  const canCreateMemory = await ctx.services.permissionsSvc.canAccessMemory(
-    ctx.companyId,
-    ctx.actor.userId,
-    "create",
-    {
-      layer: parsed.layer,
-      departmentId: memoryDepartmentId,
-      visibility: "scoped",
-    },
-  );
-  if (!canCreateMemory) {
-    return forbiddenResult("Insufficient permissions for memory create");
+  // Agent actors are explicitly allowed by toolAllowedActors and their writes are
+  // ALWAYS stored as pending (founder approval is the safety gate). For an agent,
+  // `ctx.actor.userId` is the agent id — it has no user roles, so canAccessMemory
+  // would always return false and 403 the advertised tool (P2, Codex). Skip the
+  // user-RBAC create check for agents; human/MCP actors still go through it.
+  if (!isAgentActor) {
+    const memoryDepartmentId = parsed.departmentId ?? parsed.projectId ?? null;
+    const canCreateMemory = await ctx.services.permissionsSvc.canAccessMemory(
+      ctx.companyId,
+      ctx.actor.userId,
+      "create",
+      {
+        layer: parsed.layer,
+        departmentId: memoryDepartmentId,
+        visibility: "scoped",
+      },
+    );
+    if (!canCreateMemory) {
+      return forbiddenResult("Insufficient permissions for memory create");
+    }
   }
 
   const item = await writeMemoryAndIndex(ctx.db, ctx.companyId, {

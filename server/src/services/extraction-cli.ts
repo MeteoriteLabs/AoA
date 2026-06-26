@@ -20,7 +20,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { writeFile, rm } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -164,12 +164,17 @@ async function extractViaClaude(
 
   // Write the system prompt to a temp file — multi-line markdown can't ride a
   // cmd.exe inline arg (newline-truncated). --system-prompt-file sidesteps it.
+  // mode 0o600: the file holds company-specific prompt context (P2, Codex).
   const systemPromptPath = join(tmpdir(), `aoa-extract-sys-${randomUUID()}.txt`);
-  await writeFile(systemPromptPath, systemPrompt, "utf8");
+  await writeFile(systemPromptPath, systemPrompt, { encoding: "utf8", mode: 0o600 });
   const safeSystemPromptPath = isWin
     ? `"${systemPromptPath.replace(/"/g, '""')}"`
     : systemPromptPath;
 
+  // Always remove the temp prompt file (P2, Codex) — on success, parse failure,
+  // timeout, or spawn error — so company-context artifacts don't accumulate in
+  // the shared OS temp dir. Everything from the spawn onward runs inside the try.
+  try {
   const args = [
     "--print",
     "--system-prompt-file",
@@ -249,6 +254,10 @@ async function extractViaClaude(
       `claude extraction output was not parseable: ${(err as Error)?.message ?? "unknown"}`,
       "unparseable",
     );
+  }
+  } finally {
+    // Best-effort cleanup — never mask the real result/error.
+    await rm(systemPromptPath, { force: true }).catch(() => {});
   }
 }
 
