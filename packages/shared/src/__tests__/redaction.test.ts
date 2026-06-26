@@ -6,6 +6,7 @@ import {
   shouldRedactSecretValue,
   redactEnvForLogs,
 } from "../redaction.js";
+import * as sharedBarrel from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures shared across the suites below.
@@ -168,5 +169,15 @@ describe("redactEnvForLogs", () => {
     expect(out.DATABASE_URL).toBe("***REDACTED***");
     expect(out.NODE_ENV).toBe("production");
     expect(out.AOA_API_URL).toBe("http://localhost:3100");
+  });
+});
+
+describe("shared barrel re-export", () => {
+  it("exposes the redaction members from the package root", () => {
+    expect(typeof sharedBarrel.redactEnvForLogs).toBe("function");
+    expect(typeof sharedBarrel.looksLikeSecretValue).toBe("function");
+    expect(typeof sharedBarrel.shouldRedactSecretValue).toBe("function");
+    expect(sharedBarrel.SENSITIVE_ENV_KEY).toBeInstanceOf(RegExp);
+    expect(Array.isArray(sharedBarrel.SENSITIVE_ENV_VALUE_PATTERNS)).toBe(true);
   });
 });
