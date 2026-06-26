@@ -36,8 +36,13 @@ const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 // Shell-safety consistent with the server's isShellSafeModel (Unit B): a model
 // may be a provider/model slash id (opencode); validate EACH segment and cap at 2.
 function isShellSafeModelId(model: string): boolean {
+  // Validate EACH slash segment for shell-safety, with NO segment-count cap:
+  // OpenCode ids can carry a nested provider namespace (e.g.
+  // openrouter/anthropic/claude-sonnet-4), which the adapter's own discovery
+  // validates. Each segment must still be a plain identifier (SAFE_MODEL_RE), so
+  // the joined id stays shell-safe. Keep in sync with codex-model.ts isShellSafeModel.
   const segments = model.split("/");
-  return segments.length <= 2 && segments.every((s) => SAFE_MODEL_RE.test(s));
+  return segments.every((s) => SAFE_MODEL_RE.test(s));
 }
 
 function modelFamily(model: string): "claude" | "openai" | "gemini" | "unknown" {

@@ -72,6 +72,14 @@ describe("agent schema adapter↔model cross-family + shell-safety", () => {
   it("allows opencode_local + google/gemini model (multi-provider)", () => {
     expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "google/gemini-2.0-flash" } }).success).toBe(true);
   });
+  // Codex P2: OpenCode ids can carry a nested provider namespace; the shell-safety
+  // check must validate each segment WITHOUT a 2-segment cap.
+  it("allows opencode_local + a NESTED-namespace model (openrouter/anthropic/...)", () => {
+    expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4" } }).success).toBe(true);
+  });
+  it("still rejects a nested opencode model with a shell-unsafe segment", () => {
+    expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "openrouter/anthropic/cla;ude" } }).success).toBe(false);
+  });
 });
 
 describe("adapterModelFamilyMismatch (shared family check reused by route + schema)", () => {

@@ -67,9 +67,11 @@ export function isOpenAiFamilyModel(model: string | null | undefined): boolean {
  * individually (cap at 2 segments) against {@link SAFE_MODEL_RE}. */
 export function isShellSafeModel(model: string | null | undefined): boolean {
   if (!model) return false;
-  // opencode uses provider/model slash format; validate each segment.
+  // opencode uses a provider/model slash id, possibly with a nested provider
+  // namespace (e.g. openrouter/anthropic/claude-sonnet-4) — validate EACH segment
+  // for shell-safety, NO segment-count cap. Keep in sync with agent.ts isShellSafeModelId.
   const segments = model.trim().split("/");
-  return segments.length <= 2 && segments.every((s) => SAFE_MODEL_RE.test(s));
+  return segments.every((s) => SAFE_MODEL_RE.test(s));
 }
 
 /**

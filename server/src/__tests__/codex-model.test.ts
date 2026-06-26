@@ -4,9 +4,27 @@ import {
   resolveCodexChatModel,
   isCodexCompatibleModel,
   isOpenAiFamilyModel,
+  isShellSafeModel,
   DEFAULT_CODEX_CHAT_MODEL,
   COMMANDER_CODEX_REASONING_EFFORT,
 } from "../services/internal-agent/codex-model.js";
+
+describe("isShellSafeModel", () => {
+  it("accepts bare ids, provider/model, AND nested-namespace opencode ids (no segment cap) — Codex P2", () => {
+    expect(isShellSafeModel("gpt-5.5")).toBe(true);
+    expect(isShellSafeModel("openai/gpt-5.2-codex")).toBe(true);
+    expect(isShellSafeModel("openrouter/anthropic/claude-sonnet-4")).toBe(true); // 3 segments — was wrongly rejected
+    expect(isShellSafeModel("  anthropic/claude-3.5-sonnet  ")).toBe(true); // trims
+  });
+  it("rejects shell-unsafe segments, empty segments, and empty input", () => {
+    expect(isShellSafeModel("gpt-5.5; rm -rf /")).toBe(false);
+    expect(isShellSafeModel("a/b && calc")).toBe(false);
+    expect(isShellSafeModel("a//b")).toBe(false); // empty middle segment
+    expect(isShellSafeModel("/leading")).toBe(false);
+    expect(isShellSafeModel("")).toBe(false);
+    expect(isShellSafeModel(null)).toBe(false);
+  });
+});
 
 describe("isOpenAiFamilyModel", () => {
   it("accepts OpenAI/Codex-family identifiers INCLUDING codex-* and *-codex (api-key-valid)", () => {
