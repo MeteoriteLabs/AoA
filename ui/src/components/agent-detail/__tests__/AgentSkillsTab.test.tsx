@@ -4,9 +4,12 @@ import { renderWithProviders } from "../../../__tests__/test-utils";
 import { AgentSkillsTab } from "../AgentSkillsTab";
 import { agentsApi } from "../../../api/agents";
 import { companySkillsApi } from "../../../api/companySkills";
+import { ApiError } from "../../../api/client";
+import { toast } from "../../../lib/toast";
 
 vi.mock("../../../api/agents", () => ({ agentsApi: { update: vi.fn() } }));
 vi.mock("../../../api/companySkills", () => ({ companySkillsApi: { list: vi.fn() } }));
+vi.mock("../../../lib/toast", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 const skills = [
   { id: "s-a", key: "skill-a", name: "Skill A", description: "first" },
@@ -175,5 +178,72 @@ describe("AgentSkillsTab — concurrency guard", () => {
     // Removing one orphan PATCHes with only the valid key — no orphan survives to 422.
     fireEvent.click(screen.getByText("ghost-1").closest('[role="button"]') as HTMLElement);
     await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: ["skill-a"] }));
+  });
+
+  // Follow-up #3: optimistic-concurrency token (Decision #104).
+  it("includes expectedUpdatedAt in the payload when the prop is provided", async () => {
+    vi.mocked(agentsApi.update).mockResolvedValue({} as never);
+    renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} expectedUpdatedAt="2026-06-25T12:00:00.000Z" />,
+    );
+    await screen.findByText("Skill A");
+    fireEvent.click(row("Skill A"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(1));
+    expect(agentsApi.update).toHaveBeenCalledWith("a1", {
+      skillKeys: ["skill-a"],
+      expectedUpdatedAt: "2026-06-25T12:00:00.000Z",
+    });
+  });
+
+  it("on a 409, rolls back and toasts 'changed elsewhere'", async () => {
+    vi.mocked(agentsApi.update).mockRejectedValue(
+      new ApiError("changed", 409, { error: "changed", details: { currentUpdatedAt: "…" } }),
+    );
+    renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} expectedUpdatedAt="2026-06-25T12:00:00.000Z" />,
+    );
+    await screen.findByText("Skill A");
+    fireEvent.click(row("Skill A"));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // optimistic toggle rolled back
+    expect(row("Skill A")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("back-compat: no expectedUpdatedAt prop → payload omits the token", async () => {
+    vi.mocked(agentsApi.update).mockResolvedValue({} as never);
+    renderWithProviders(<AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} />);
+    await screen.findByText("Skill A");
+    fireEvent.click(row("Skill A"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledWith("a1", { skillKeys: ["skill-a"] }));
+  });
+
+  it("two sequential toggles before any refetch send the FRESH token on the second call (no self-409)", async () => {
+    // First update returns an ADVANCED updatedAt; the component must send THAT on
+    // the next toggle, not the stale prop, so it can't 409 against its own write.
+    vi.mocked(agentsApi.update)
+      .mockResolvedValueOnce({ updatedAt: "2026-06-25T12:00:01.000Z" } as never)
+      .mockResolvedValueOnce({ updatedAt: "2026-06-25T12:00:02.000Z" } as never);
+    renderWithProviders(
+      <AgentSkillsTab agentId="a1" companyId="c1" skillKeys={[]} expectedUpdatedAt="2026-06-25T12:00:00.000Z" />,
+    );
+    await screen.findByText("Skill A");
+    await screen.findByText("Skill B");
+
+    // First toggle: sends the prop token.
+    fireEvent.click(row("Skill A"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(1));
+    expect(agentsApi.update).toHaveBeenNthCalledWith(1, "a1", {
+      skillKeys: ["skill-a"],
+      expectedUpdatedAt: "2026-06-25T12:00:00.000Z",
+    });
+
+    // Second toggle (the prop has NOT been refreshed yet — no refetch landed):
+    // must send the token advanced from the first response, not the stale prop.
+    fireEvent.click(row("Skill B"));
+    await waitFor(() => expect(agentsApi.update).toHaveBeenCalledTimes(2));
+    expect(agentsApi.update).toHaveBeenNthCalledWith(2, "a1", {
+      skillKeys: ["skill-a", "skill-b"],
+      expectedUpdatedAt: "2026-06-25T12:00:01.000Z",
+    });
   });
 });

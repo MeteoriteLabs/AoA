@@ -323,6 +323,7 @@ export function AoaAgentDetail() {
               agentId={agent.id}
               companyId={resolvedCompanyId}
               skillKeys={(agent as any).skillKeys ?? []}
+              expectedUpdatedAt={agent.updatedAt ? new Date(agent.updatedAt).toISOString() : undefined}
             />
           );
         }
