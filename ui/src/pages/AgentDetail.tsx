@@ -988,7 +988,12 @@ function AgentConfigurePage({
 
   const rollbackConfig = useMutation({
     mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Rollback also bumps updatedAt — cache the returned row so a follow-up
+      // save uses the fresh optimistic-concurrency token, not the pre-rollback
+      // one (which would 409 the user against their own rollback). (Decision #104)
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
@@ -1326,7 +1331,14 @@ function ConfigurationTab({
 
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Write the saved row (incl. its fresh updatedAt) into the cache
+      // synchronously so a quick repeat save uses the up-to-date
+      // optimistic-concurrency token, not the stale pre-save one (which would
+      // 409 the user against their own just-completed save). The invalidate
+      // below still refetches for eventual consistency. (Decision #104)
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });

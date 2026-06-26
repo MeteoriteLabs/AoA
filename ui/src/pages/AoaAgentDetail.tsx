@@ -497,7 +497,13 @@ function AoaConfigurePage({
 
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Cache the saved row (incl. fresh updatedAt) synchronously so a quick
+      // repeat save uses the up-to-date optimistic-concurrency token, not the
+      // stale pre-save one (which would 409 the user against their own save).
+      // The invalidate still refetches for eventual consistency. (Decision #104)
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
+      if (agent.urlKey) queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       if (agent.urlKey) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
