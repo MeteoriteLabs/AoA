@@ -52,9 +52,14 @@ export function NewAoaAgentDialog({
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       agentsApi.create(companyId, data),
-    onSuccess: () => {
+    onSuccess: (result) => {
       onSuccess();
       pushToast({ title: "AoA agent created", tone: "success" });
+      if (result.warnings?.length) {
+        // Server corrected the provider/model (e.g. an incompatible codex model
+        // resolved to gpt-5.5). The dialog closes on success, so surface as a toast.
+        pushToast({ title: "Model adjusted", body: result.warnings.join(" "), tone: "warn" });
+      }
       handleOpenChange(false);
     },
     onError: (error) => {

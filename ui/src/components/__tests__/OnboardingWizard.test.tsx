@@ -20,6 +20,7 @@ import {
   OnboardingWizard,
   providerToAdapter,
 } from "../OnboardingWizard";
+import { ToastProvider } from "../../context/ToastContext";
 
 // ── Context + API mocks ─────────────────────────────────────────────────────
 const closeOnboarding = vi.fn();
@@ -114,7 +115,9 @@ function renderWizard() {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <OnboardingWizard />
+        <ToastProvider>
+          <OnboardingWizard />
+        </ToastProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   );
