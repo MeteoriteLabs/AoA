@@ -8,6 +8,7 @@
 import {
   isShellSafeModel,
   isCodexCompatibleModel,
+  isOpenAiFamilyModel,
   resolveCodexChatModel,
   DEFAULT_CODEX_CHAT_MODEL,
 } from "./codex-model.js";
@@ -60,15 +61,18 @@ export function resolveModel(
     // In apikey mode, codex-family/API-key-only models (e.g. gpt-5.3-codex) are
     // valid — pass the (already shell-safe-checked) model through; no correction.
     if (status.authMode === "apikey") {
-      // `m` (the requested model) was shell-safety-checked above; the config
-      // fallback (status.defaultModelResolved) was NOT. TRIM + validate it so an
-      // unsafe ~/.codex/config.toml alias — or a value with surrounding spaces
-      // (isShellSafeModel trims internally, so " x " would validate yet return
-      // with spaces) — can't reach --model. Unsafe → throw (same as the gate
-      // above), surfacing the broken config rather than silently running it.
-      const fallback = (m || status.defaultModelResolved || DEFAULT_CODEX_CHAT_MODEL).trim();
-      if (fallback && !isShellSafeModel(fallback)) throw new ShellUnsafeModelError(fallback);
-      return { model: fallback, omitModelFlag: false };
+      // An EXPLICIT api-key model request wins — api-key users may legitimately
+      // run gpt-*-codex variants. `m` was shell-safety-checked at the top.
+      if (m) return { model: m, omitModelFlag: false };
+      // No explicit model: the fallback comes from the shared ~/.codex/config.toml,
+      // which is untrusted. (a) Reject a shell-unsafe value loudly, surfacing the
+      // broken config rather than running it. (b) Constrain to an OpenAI/Codex-family
+      // model — a shell-safe NON-OpenAI alias (e.g. claude-…, gemini-…) must NOT be
+      // passed to `codex --model` with an OpenAI key (it would fail); fall back to
+      // the safe default instead (Codex P2).
+      const shared = (status.defaultModelResolved ?? "").trim();
+      if (shared && !isShellSafeModel(shared)) throw new ShellUnsafeModelError(shared);
+      return { model: isOpenAiFamilyModel(shared) ? shared : DEFAULT_CODEX_CHAT_MODEL, omitModelFlag: false };
     }
     // Otherwise (chatgpt/subscription/unknown): validate against ChatGPT
     // compatibility and fall back to the safe default, with a note if corrected.

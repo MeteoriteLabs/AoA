@@ -44,6 +44,20 @@ export function isCodexCompatibleModel(model: string | null | undefined): boolea
   );
 }
 
+/**
+ * OpenAI/Codex-FAMILY model (gpt-*, o<N>-*, chatgpt-*), shell-safe. UNLIKE
+ * {@link isCodexCompatibleModel} this INCLUDES the API-key-only GPT-Codex
+ * variants (…-codex), because they are valid for API-key codex users. Used to
+ * constrain the API-key-mode fallback so a shell-safe NON-OpenAI alias from a
+ * shared ~/.codex/config.toml (e.g. `claude-…`, `gemini-…`) is never passed to
+ * `codex --model` with an OpenAI key.
+ */
+export function isOpenAiFamilyModel(model: string | null | undefined): boolean {
+  if (!model) return false;
+  const m = model.trim();
+  return SAFE_MODEL_RE.test(m) && CODEX_FAMILY_RE.test(m);
+}
+
 /** True when `model` is non-empty and contains only shell-safe characters.
  * opencode uses a `provider/model` slash format; each segment is validated
  * individually (cap at 2 segments) against {@link SAFE_MODEL_RE}. */

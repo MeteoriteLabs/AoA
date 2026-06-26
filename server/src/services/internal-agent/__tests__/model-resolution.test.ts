@@ -60,4 +60,19 @@ describe("resolveModel", () => {
     const r = resolveModel("codex_local", "", { authMode: "apikey", defaultModelResolved: "  gpt-5.3-codex  " });
     expect(r.model).toBe("gpt-5.3-codex");
   });
+
+  // Codex P2: in apikey mode a blank requested model falls back to the shared
+  // ~/.codex/config.toml default after only a shell-safety check. A shell-safe
+  // NON-OpenAI alias there (claude-…/gemini-…) would be passed to `codex --model`
+  // with an OpenAI key and fail — constrain the fallback to OpenAI/Codex-family.
+  it("apikey mode: a shell-safe NON-OpenAI config default is NOT passed to --model → DEFAULT", () => {
+    expect(resolveModel("codex_local", "", { authMode: "apikey", defaultModelResolved: "claude-sonnet-4-5-20250929" }).model)
+      .toBe(DEFAULT_CODEX_CHAT_MODEL);
+    expect(resolveModel("codex_local", "", { authMode: "apikey", defaultModelResolved: "gemini-2.5-pro" }).model)
+      .toBe(DEFAULT_CODEX_CHAT_MODEL);
+  });
+  it("apikey mode: an EXPLICIT gpt-*-codex request is preserved even when the config default is non-OpenAI", () => {
+    const r = resolveModel("codex_local", "gpt-5.3-codex", { authMode: "apikey", defaultModelResolved: "claude-sonnet-4-5-20250929" });
+    expect(r.model).toBe("gpt-5.3-codex");
+  });
 });
