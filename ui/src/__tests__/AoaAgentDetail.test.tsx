@@ -37,6 +37,10 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 
+// The page now calls useUnsavedChanges (global guard); this test mounts it
+// without the provider, so stub the hook to a no-op.
+vi.mock("@/hooks/useUnsavedChanges", () => ({ useUnsavedChanges: vi.fn() }));
+
 // Founder gate source — mirrors TeamPage's useTeamAccess(...).role === "founder".
 const mockTeamAccess: { role: string | null } = { role: "founder" };
 vi.mock("../hooks/useTeamAccess", () => ({

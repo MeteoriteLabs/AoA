@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useBeforeUnload } from "@/lib/router";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
@@ -145,6 +146,10 @@ export function AoaAgentDetail() {
       [configDirty, instrDirty],
     ),
   );
+
+  // Global cross-page guard (sidebar <Link> + browser Back/Forward + tab switch).
+  // Tab-close/refresh stays covered by useBeforeUnload above (useBlocker can't).
+  useUnsavedChanges(configDirty || instrDirty);
 
   // Update icon mutation
   const updateIcon = useMutation({
