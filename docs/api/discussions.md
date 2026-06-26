@@ -359,20 +359,17 @@ Response:
 ```json
 {
   "engine": "cli",
-  "cliTool": "claude",
-  "available": true,
-  "failureType": null,
-  "failureDetail": null
+  "cli": { "available": true, "tool": "claude_cli" },
+  "apiKey": false
 }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `engine` | Resolved engine: `"cli"` \| `"api"` \| `"none"` |
-| `cliTool` | Detected CLI tool: `"claude"` \| `"codex"` \| `null` |
-| `available` | `true` if the resolved engine can accept extraction requests |
-| `failureType` | `"not_installed"` \| `"not_authed"` \| `"timeout"` \| `"nonzero_exit"` \| `"unparseable"` \| `null` |
-| `failureDetail` | Human-readable detail string for the failure, or `null` |
+| `cli.available` | `true` if an extraction-capable CLI binary is on PATH |
+| `cli.tool` | The probed CLI tool key, e.g. `"claude_cli"` \| `"codex"` |
+| `apiKey` | `true` if at least one hosted provider key resolves for the company |
 
 ## Memory Re-index Endpoints
 

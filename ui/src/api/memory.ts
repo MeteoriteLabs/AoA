@@ -221,5 +221,5 @@ export const memoryApi = {
 
   /** Re-index all failed embeddings for the company. */
   reindexFailed: (companyId: string) =>
-    api.post<{ queued: number }>(`/companies/${companyId}/memory/reindex-failed`, {}),
+    api.post<{ requeued: number }>(`/companies/${companyId}/memory/reindex-failed`, {}),
 };
