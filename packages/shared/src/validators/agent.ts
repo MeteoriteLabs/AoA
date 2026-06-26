@@ -43,7 +43,10 @@ function isShellSafeModelId(model: string): boolean {
 function modelFamily(model: string): "claude" | "openai" | "gemini" | "unknown" {
   const m = model.includes("/") ? model.split("/").pop()! : model; // opencode openai/<id>
   if (/^claude-/i.test(m)) return "claude";
-  if (/^(gpt-|o\d|chatgpt)/i.test(m)) return "openai";
+  // gpt-*, o<N>, chatgpt-*, AND codex-* (api-key-only Codex models). Mirrors
+  // codex-model.ts CODEX_FAMILY_RE so the save-side family guard rejects a Codex
+  // model on a non-OpenAI adapter (e.g. claude_local + codex-mini-latest).
+  if (/^(gpt-|o\d|chatgpt|codex)/i.test(m)) return "openai";
   if (/^gemini-|^auto$/i.test(m)) return "gemini";
   return "unknown";
 }

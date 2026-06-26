@@ -99,4 +99,12 @@ describe("adapterModelFamilyMismatch (shared family check reused by route + sche
   it("passes claude_local + claude model", () => {
     expect(adapterModelFamilyMismatch("claude_local", "claude-sonnet-4-5")).toBeNull();
   });
+  // Codex P2: codex-* (api-key-only Codex models) are OpenAI-family — block them
+  // on non-OpenAI adapters at save time, allow them on codex_local.
+  it("flags claude_local + a codex-* model (codex is OpenAI-family)", () => {
+    expect(adapterModelFamilyMismatch("claude_local", "codex-mini-latest")).toMatch(/does not match adapter claude_local/);
+  });
+  it("passes codex_local + a codex-* model", () => {
+    expect(adapterModelFamilyMismatch("codex_local", "codex-mini-latest")).toBeNull();
+  });
 });
