@@ -252,15 +252,16 @@ export function AoaAgentDetail() {
         ? ((agent.adapterConfig as Record<string, unknown>).model as string)
         : undefined,
   };
-  // /aoa-runs returns at most a capped page (default 50), so the fetched length is the
-  // recent-run count, not a true total — label it honestly and show "50+" at the cap.
-  const recentRunCount = (aoaRunsForKpi ?? []).length;
+  // /aoa-runs now returns { runs, total } — `total` is the true count(*) over
+  // all runs for this agent (not the capped page length), so the KPI shows the
+  // real total-ever.
+  const totalRunCount = aoaRunsForKpi?.total ?? 0;
   const heroKpis: HeroKpi[] = [
     { key: "role", label: "Role", value: roleLabels[agent.role] ?? agent.role },
     {
-      key: "recent-runs",
-      label: "Recent runs",
-      value: recentRunCount >= 50 ? "50+" : recentRunCount,
+      key: "total-runs",
+      label: "Total runs",
+      value: totalRunCount,
     },
   ];
 
@@ -366,7 +367,8 @@ function AoaOverview({
     enabled: Boolean(companyId),
   });
 
-  const runList = (runs ?? []) as Array<{
+  const totalRuns = runs?.total ?? 0;
+  const runList = (runs?.runs ?? []) as Array<{
     id: string;
     triggerType?: string;
     summary?: string | null;
@@ -397,7 +399,7 @@ function AoaOverview({
         </div>
         <div className="border border-border rounded-lg p-4">
           <span className="text-xs text-muted-foreground block">Total runs</span>
-          <span className="text-2xl font-semibold block mt-1">{runList.length}</span>
+          <span data-testid="aoa-overview-total-runs" className="text-2xl font-semibold block mt-1">{totalRuns}</span>
         </div>
       </div>
 

@@ -25,12 +25,12 @@ export function AoaRunsPanel({
   agentId: string;
   companyId: string;
 }) {
-  const { data: runs, isLoading } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["aoa-runs", agentId, companyId],
     queryFn: () => agentsApi.getAoaRuns(agentId, companyId),
   });
 
-  const runList = (runs ?? []) as AoaRun[];
+  const runList = (data?.runs ?? []) as AoaRun[];
 
   if (isLoading) {
     return (
