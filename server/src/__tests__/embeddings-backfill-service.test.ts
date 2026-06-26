@@ -409,15 +409,14 @@ describe("reindexCompany", () => {
     expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
   });
 
-  it("does NOT requeue a stale failed row whose target already has a completed sibling (P2)", async () => {
+  it("does NOT requeue a stale failed row when a NEWER completed sibling exists (P2)", async () => {
     const db = createReindexDb({
       selects: [
-        // select #0: 1 failed row for mi-stale (old inputText)
-        [{ id: "q-stale", targetTable: "memory_items", targetId: "mi-stale", targetColumn: "embedding" }],
-        // select #1: superseding rows — a COMPLETED row for the same target means
-        // mi-stale was already re-indexed by a newer row; requeuing q-stale would
-        // clobber the current vector with obsolete content.
-        [{ targetTable: "memory_items", targetId: "mi-stale", targetColumn: "embedding" }],
+        // select #0: failed row created EARLIER (stale pre-edit content)
+        [{ id: "q-stale", targetTable: "memory_items", targetId: "mi-stale", targetColumn: "embedding", createdAt: "2026-06-01T00:00:00Z" }],
+        // select #1: a NEWER completed sibling → mi-stale was re-indexed after the
+        // failure; requeuing q-stale would clobber the current vector.
+        [{ targetTable: "memory_items", targetId: "mi-stale", targetColumn: "embedding", createdAt: "2026-06-02T00:00:00Z" }],
         // select #2: no live queue rows (step 2)
         [],
         // select #3: no missing items (step 2)
@@ -431,6 +430,30 @@ describe("reindexCompany", () => {
     // Only the unconditional step-1b backoff-clear should have run (no failed requeue).
     expect(db.setCalls.length).toBe(1);
     expect(db.setCalls[0]).toEqual({ nextRetryAt: null });
+  });
+
+  it("DOES requeue the newest failed row even when an OLDER completed sibling exists (P2 recency)", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: failed row created LATER (the latest edit's attempt failed)
+        [{ id: "q-newest", targetTable: "memory_items", targetId: "mi-x", targetColumn: "embedding", createdAt: "2026-06-02T00:00:00Z" }],
+        // select #1: an OLDER completed sibling (pre-edit content) — must NOT
+        // suppress the newer failed row, or the stored vector stays stale.
+        [{ targetTable: "memory_items", targetId: "mi-x", targetColumn: "embedding", createdAt: "2026-06-01T00:00:00Z" }],
+        // select #2: no live queue rows (step 2)
+        [],
+        // select #3: no missing items (step 2)
+        [],
+      ],
+    });
+
+    const result = await reindexCompany(db as any, "c-company");
+
+    expect(result.requeuedFailed).toBe(1);
+    // [0] requeue-failed (the newest stale-vector row), [1] step-1b backoff-clear.
+    expect(db.setCalls.length).toBe(2);
+    expect(db.setCalls[0]).toMatchObject({ status: "pending", attempts: 0, error: null });
+    expect(db.setCalls[1]).toEqual({ nextRetryAt: null });
   });
 });
 

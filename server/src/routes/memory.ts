@@ -1135,6 +1135,7 @@ export function memoryRoutes(db: Db) {
         targetTable: embeddingQueue.targetTable,
         targetId: embeddingQueue.targetId,
         targetColumn: embeddingQueue.targetColumn,
+        createdAt: embeddingQueue.createdAt,
       })
       .from(embeddingQueue)
       .where(
@@ -1149,6 +1150,7 @@ export function memoryRoutes(db: Db) {
         targetTable: embeddingQueue.targetTable,
         targetId: embeddingQueue.targetId,
         targetColumn: embeddingQueue.targetColumn,
+        createdAt: embeddingQueue.createdAt,
       })
       .from(embeddingQueue)
       .where(
@@ -1158,18 +1160,38 @@ export function memoryRoutes(db: Db) {
         ),
       );
 
-    const superseded = new Set(
-      supersedingRows.map(
-        (r: { targetTable: string; targetId: string; targetColumn: string }) =>
-          `${r.targetTable} ${r.targetId} ${r.targetColumn}`,
-      ),
-    );
-    const requeueableIds = failedRows
-      .filter(
-        (r: { targetTable: string; targetId: string; targetColumn: string }) =>
-          !superseded.has(`${r.targetTable} ${r.targetId} ${r.targetColumn}`),
-      )
-      .map((r: { id: string }) => r.id);
+    // Recency-aware suppression (P2, Codex): a failed row is stale only if a
+    // completed/live sibling is NEWER than it. The newest failed attempt for a
+    // target must still be requeued even if an OLDER completed row exists.
+    const tkey = (r: { targetTable: string; targetId: string; targetColumn: string }) =>
+      `${r.targetTable} ${r.targetId} ${r.targetColumn}`;
+    const tms = (v: unknown) => (v ? new Date(v as string | Date).getTime() : 0);
+    const newestSibling = new Map<string, number>();
+    for (const s of supersedingRows as Array<{
+      targetTable: string;
+      targetId: string;
+      targetColumn: string;
+      createdAt: unknown;
+    }>) {
+      const k = tkey(s);
+      const t = tms(s.createdAt);
+      const prev = newestSibling.get(k);
+      if (prev === undefined || t > prev) newestSibling.set(k, t);
+    }
+    const requeueableIds = (
+      failedRows as Array<{
+        id: string;
+        targetTable: string;
+        targetId: string;
+        targetColumn: string;
+        createdAt: unknown;
+      }>
+    )
+      .filter((r) => {
+        const sib = newestSibling.get(tkey(r));
+        return sib === undefined || tms(r.createdAt) >= sib;
+      })
+      .map((r) => r.id);
 
     const requeued = requeueableIds.length;
 
