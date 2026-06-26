@@ -34,12 +34,12 @@ void _typeCheck;
 
 describe("getProviderStatus (codex)", () => {
   const deps = {
-    resolveManagedCodexHomeDir: () => "/managed/home",
+    resolveSharedCodexHomeDir: () => "/shared/home",
     readAuthJson: async () => ({ auth_mode: "chatgpt" } as Record<string, unknown>),
     readSharedCodexModel: async () => "gpt-5.5",
     isInstalled: async () => true,
   };
-  it("reports chatgpt + defaultModelResolved from the SHARED config, managed home for auth", async () => {
+  it("reports chatgpt + defaultModelResolved from the SHARED config, shared home for auth", async () => {
     const s = await getProviderStatus("codex_local",
       { companyId: "c1", adapterConfig: { env: {} } }, deps);
     expect(s.authMode).toBe("chatgpt");
@@ -68,6 +68,22 @@ describe("getProviderStatus (codex)", () => {
     const s = await getProviderStatus("codex_local",
       { companyId: "c1", adapterConfig: { env: { OPENAI_API_KEY: { type: "plain", value: "" } } } }, deps);
     expect(s.authMode).toBe("chatgpt");
+  });
+  it("reads the SHARED codex home (run auth source), not an empty per-company managed home (Codex P2)", async () => {
+    // First crew run of a company with shared API-key auth: the per-company
+    // managed home doesn't exist yet (the run will copy the shared auth.json
+    // into it). Status must reflect the shared source — else apikey-only models
+    // get wrongly rewritten to gpt-5.5 on the first run.
+    const sharedDeps = {
+      resolveSharedCodexHomeDir: () => "/shared/home",
+      readAuthJson: async (home: string) =>
+        home === "/shared/home" ? ({ auth_mode: "apikey" } as Record<string, unknown>) : null,
+      readSharedCodexModel: async () => "gpt-5.5",
+      isInstalled: async () => true,
+    };
+    const s = await getProviderStatus("codex_local",
+      { companyId: "first-run-co", adapterConfig: { env: {} } }, sharedDeps);
+    expect(s.authMode).toBe("apikey");
   });
   it("propagates apikey auth_mode from the managed auth.json through to authenticated", async () => {
     const apikeyDeps = { ...deps, readAuthJson: async () => ({ auth_mode: "apikey" } as Record<string, unknown>) };

@@ -31,7 +31,13 @@ export function parseCodexAuthMode(inputs: CodexAuthInputs): ProviderAuthMode {
 }
 
 export interface ProviderStatusDeps {
-  resolveManagedCodexHomeDir: (env: NodeJS.ProcessEnv, companyId: string) => string;
+  // Codex P2: the SHARED codex home is the run's auth SOURCE — execute.ts'
+  // prepareManagedCodexHome copies <sharedHome>/auth.json into the per-company
+  // managed home on EVERY run (or writes a per-agent api-key, or removes stale
+  // auth). So status detection must read the shared home, not the per-company
+  // managed home (empty on a first run / stale after a re-login) to match what
+  // the run will actually use.
+  resolveSharedCodexHomeDir: (env: NodeJS.ProcessEnv) => string;
   readAuthJson: (homeDir: string) => Promise<Record<string, unknown> | null>;
   readSharedCodexModel: () => Promise<string | null>;
   isInstalled: (adapterType: string) => Promise<boolean>;
@@ -48,7 +54,9 @@ export async function getProviderStatus(
     // string check misses a UI-configured per-agent key. readEnvBindingValue is
     // binding-aware (string / {type:"plain"} / {type:"secret_ref"}).
     const agentEnvApiKey = readEnvBindingValue(env.OPENAI_API_KEY);
-    const home = deps.resolveManagedCodexHomeDir(process.env, ctx.companyId);
+    // Read the SHARED home (the run's copy source), not the per-company managed
+    // home — see ProviderStatusDeps. Per-agent api-key still wins above this.
+    const home = deps.resolveSharedCodexHomeDir(process.env);
     const authJson = await deps.readAuthJson(home);
     const authMode = parseCodexAuthMode({ agentEnvApiKey, authJson });
     const installed = await deps.isInstalled(adapterType);

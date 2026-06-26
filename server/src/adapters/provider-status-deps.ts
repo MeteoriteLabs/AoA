@@ -6,7 +6,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveManagedCodexHomeDir, readSharedCodexModel } from "@armyofagents/adapter-codex-local/server";
+import { resolveSharedCodexHomeDir, readSharedCodexModel } from "@armyofagents/adapter-codex-local/server";
 import type { ProviderStatusDeps } from "./provider-status.js";
 
 /**
@@ -29,7 +29,8 @@ async function readAuthJson(homeDir: string): Promise<Record<string, unknown> | 
  * provider-switching engine (Phase 1). A real probe lands with Unit D.
  */
 export const realProviderStatusDeps: ProviderStatusDeps = {
-  resolveManagedCodexHomeDir,
+  // Read the shared codex home (the run's auth source) — see ProviderStatusDeps.
+  resolveSharedCodexHomeDir,
 
   readAuthJson,
 
