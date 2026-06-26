@@ -163,6 +163,13 @@ export async function runCodexExecJson(
     appendCapped(stderrBuf, d, MAX_CLI_STDERR_BYTES);
   });
 
+  // Swallow stdin stream errors (P1, Codex): if codex exits before reading stdin
+  // (auth/model/config error) and the prompt exceeds the OS pipe buffer, the
+  // write raises EPIPE. Without an `error` listener that is an unhandled stream
+  // error that crashes the process; the early exit is captured by the
+  // close/error handler below and classified as a CLI failure instead.
+  proc.stdin?.on("error", () => {});
+
   // codex reads the prompt from stdin (the `-` PROMPT arg) until EOF, so the
   // stream MUST be closed for the one-shot turn to proceed (raw content — codex
   // never sees a shell).

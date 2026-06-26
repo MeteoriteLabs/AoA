@@ -245,6 +245,13 @@ async function extractViaClaude(
     appendCapped(stderrBuf, d, MAX_CLI_STDERR_BYTES);
   });
 
+  // Swallow stdin stream errors (P1, Codex): if claude exits before reading
+  // stdin (auth failure / unsupported flag) and the entry exceeds the OS pipe
+  // buffer, the write raises EPIPE. Without an `error` listener that is an
+  // unhandled stream error that crashes the process; the early exit is captured
+  // by the close/error handler above and classified as a CLI failure instead.
+  proc.stdin?.on("error", () => {});
+
   // Prompt over stdin (raw, unescaped — stdin never passes through cmd.exe),
   // then close: claude --print is one-shot (reads to EOF, answers, exits).
   if (proc.stdin?.writable) {

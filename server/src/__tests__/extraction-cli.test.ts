@@ -17,6 +17,8 @@ interface SpawnScript {
   exitCode?: number;
   /** spawn error (e.g. { code: "ENOENT" }) — emits "error" instead of close. */
   error?: NodeJS.ErrnoException;
+  /** stdin stream error (e.g. EPIPE) — emitted on child.stdin before close. */
+  stdinError?: NodeJS.ErrnoException;
 }
 
 interface SpawnCall {
@@ -52,7 +54,11 @@ vi.mock("node:child_process", async (importOriginal) => {
       const child = new EventEmitter() as EventEmitter & {
         stdout: EventEmitter;
         stderr: EventEmitter;
-        stdin: { writable: boolean; write: (s: string) => void; end: () => void };
+        stdin: EventEmitter & {
+          writable: boolean;
+          write: (s: string) => void;
+          end: () => void;
+        };
         kill: (sig?: string) => void;
         exitCode: number | null;
         signalCode: string | null;
@@ -64,13 +70,21 @@ vi.mock("node:child_process", async (importOriginal) => {
       child.kill = vi.fn(() => {
         call.killCount += 1;
       });
-      child.stdin = {
-        writable: true,
-        write: (s: string) => call.stdinWrites.push(s),
-        end: () => {
-          call.stdinEnded = true;
-        },
+      // stdin is an EventEmitter so production code can attach an `error`
+      // listener (EPIPE handling); .write/.end are stubbed to record activity.
+      const stdin = new EventEmitter() as EventEmitter & {
+        writable: boolean;
+        write: (s: string) => void;
+        end: () => void;
       };
+      stdin.writable = true;
+      stdin.write = (s: string) => {
+        call.stdinWrites.push(s);
+      };
+      stdin.end = () => {
+        call.stdinEnded = true;
+      };
+      child.stdin = stdin;
 
       // Drive the scripted behavior on the next microtask so the caller has
       // attached its listeners + written stdin first.
@@ -79,6 +93,12 @@ vi.mock("node:child_process", async (importOriginal) => {
         if (script.error) {
           child.emit("error", script.error);
           return;
+        }
+        // Simulate the CLI exiting before reading stdin: the stdin write raises
+        // EPIPE. Production must have an `error` listener or this would be an
+        // unhandled stream error that crashes the process.
+        if (script.stdinError) {
+          child.stdin.emit("error", script.stdinError);
         }
         for (const chunk of script.stdout ?? []) {
           child.stdout.emit("data", Buffer.from(chunk));
@@ -289,6 +309,22 @@ describe("extractViaCli — claude error paths", () => {
       kind: "not_authed",
     });
   });
+
+  it("stdin EPIPE on early exit → classified failure, not an unhandled crash (P1)", async () => {
+    // claude exits before reading stdin (auth fail) → stdin write raises EPIPE.
+    // Without the stdin `error` handler this would be an unhandled stream error;
+    // with it, the run resolves to a classified CLI failure via the close path.
+    nextSpawn = {
+      stdinError: Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+      stdout: [""],
+      stderr: ["Error: not logged in"],
+      exitCode: 1,
+    };
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    await expect(extractViaCli("claude", "SYSTEM", "content")).rejects.toMatchObject({
+      kind: "not_authed",
+    });
+  });
 });
 
 // ── extractViaCli (codex) ────────────────────────────────────────────────────
@@ -380,6 +416,22 @@ describe("extractViaCli — codex", () => {
     const { extractViaCli } = await import("../services/extraction-cli.ts");
     await expect(extractViaCli("codex", "SYSTEM", "content")).rejects.toMatchObject({
       kind: "nonzero_exit",
+    });
+  });
+
+  it("codex stdin EPIPE on early exit → classified failure, not a crash (P1)", async () => {
+    // codex exits before reading stdin (auth/config error) → stdin write raises
+    // EPIPE. The stdin `error` handler must swallow it so the run is classified
+    // via the close path instead of crashing the process.
+    nextSpawn = {
+      stdinError: Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+      stdout: [""],
+      stderr: ["stream error: unauthorized"],
+      exitCode: 1,
+    };
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    await expect(extractViaCli("codex", "SYSTEM", "content")).rejects.toMatchObject({
+      kind: "not_authed",
     });
   });
 
