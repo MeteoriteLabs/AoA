@@ -42,7 +42,11 @@ describe("agentService.update — optimistic concurrency (expectedUpdatedAt)", (
     expect(res?.title).toBe("X");
   });
 
-  it("matching token → update succeeds", async () => {
+  // NOTE: the Proxy mock ignores the WHERE clause, so this asserts only that the
+  // token-supplied path returns the row without throwing — NOT that the guard's
+  // ms-precision date_trunc comparison matched. That real-DB behaviour is proven
+  // in agents-update-concurrency.integration.test.ts.
+  it("token supplied → update passes through (real guard match proven in integration test)", async () => {
     const db = createAgentDb({
       selects: [[existing]],
       updates: [[{ ...existing, title: "X", updatedAt: T1 }]],

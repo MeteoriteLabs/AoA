@@ -12,6 +12,9 @@ import { useUnsavedChanges } from "../useUnsavedChanges";
 // AbortSignal". (Blocked navs never build a Request, which is why they're fine.)
 // Provide a lenient Request that exposes the fields RR reads without validating
 // the signal, so navigations complete and we can assert the no-block paths.
+// Fidelity caveat: RR behaviour that depends on a real Request/AbortSignal
+// (e.g. abort-on-supersede) is therefore NOT exercised here — the real
+// popstate/navigation path is covered by tests/e2e/agent-unsaved-guard.spec.ts.
 class TestRequest {
   url: string;
   method: string;

@@ -283,6 +283,7 @@ export function AoaAgentDetail() {
       headerError={lifecycleError}
       activeView={activeView}
       onViewChange={(v) => {
+        if (v === activeView) return; // parity with AgentDetail: no redundant same-path nav
         const target =
           v === "overview"
             ? `/team/aoa/${aoaRouteRef}`
@@ -541,101 +542,3 @@ function AoaConfigurePage({
   );
 }
 
-/* ---- AoA Skills Tab ---- */
-
-function AoaSkillsTab({
-  agentId,
-  companyId,
-  skillKeys: initialSkillKeys,
-}: {
-  agentId: string;
-  companyId: string;
-  skillKeys: string[];
-}) {
-  const queryClient = useQueryClient();
-  const [localKeys, setLocalKeys] = useState<string[]>(initialSkillKeys);
-  const [saving, setSaving] = useState(false);
-
-  const { data: allSkills, isLoading } = useQuery({
-    queryKey: queryKeys.companySkills.list(companyId),
-    queryFn: () => companySkillsApi.list(companyId),
-    enabled: Boolean(companyId),
-  });
-
-  async function handleToggle(skillKey: string) {
-    const next = localKeys.includes(skillKey)
-      ? localKeys.filter((k) => k !== skillKey)
-      : [...localKeys, skillKey];
-    setLocalKeys(next);
-    setSaving(true);
-    try {
-      await agentsApi.update(agentId, { skillKeys: next } as any);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (isLoading) return <PageSkeleton variant="list" />;
-
-  if (!allSkills || allSkills.length === 0) {
-    return (
-      <div className="px-6 py-10 text-center text-sm text-muted-foreground">
-        No skills available.{" "}
-        <Link to="/skills" className="underline">
-          Create or import skills
-        </Link>{" "}
-        first.
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-6 py-4">
-      <p className="text-sm text-muted-foreground mb-4">
-        Skills injected into this agent's context on every run.
-      </p>
-      <div className="space-y-2">
-        {allSkills.map((skill: CompanySkillListItem) => {
-          const attached = localKeys.includes(skill.key);
-          return (
-            <div
-              key={skill.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                if (!saving) handleToggle(skill.key);
-              }}
-              onKeyDown={(e) => {
-                if (!saving && (e.key === " " || e.key === "Enter")) {
-                  e.preventDefault();
-                  handleToggle(skill.key);
-                }
-              }}
-              className={cn(
-                "flex items-start gap-3 rounded-md border border-border p-3 cursor-pointer transition-colors",
-                attached ? "bg-accent/30 border-foreground/20" : "hover:bg-accent/10",
-                saving && "opacity-60 cursor-wait",
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={attached}
-                readOnly
-                className="mt-0.5 h-4 w-4 rounded border-border pointer-events-none"
-              />
-              <div className="min-w-0">
-                <div className="text-sm font-medium">{skill.name}</div>
-                {skill.description && (
-                  <div className="text-xs text-muted-foreground mt-0.5">{skill.description}</div>
-                )}
-                <div className="text-xs text-muted-foreground mt-1 font-mono">{skill.key}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}

@@ -104,6 +104,17 @@ test.describe("global unsaved-changes guard", () => {
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(page).toHaveURL(new RegExp(`/agents/${ref}/configure`));
     await expect(nameInput).toHaveValue("Back-button dirty edit");
+
+    // Now exercise the popstate-PROCEED path (proceeding a POP is handled
+    // differently by React Router than a PUSH, and is where the historical
+    // duplicate-entry bug interacted). The edit is still dirty, so a second
+    // browser Back re-raises the dialog; "Discard & leave" must traverse Back to
+    // Overview.
+    await page.evaluate(() => window.history.back());
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
+    await dialog.getByRole("button", { name: "Discard & leave" }).click();
+    await expect(page).toHaveURL(new RegExp(`/agents/${ref}(?:$|\\?)`), { timeout: 5_000 });
+    await expect(page).not.toHaveURL(/\/configure/);
   });
 
   test("clean (no edits) + sidebar nav → no dialog, navigates immediately", async ({ page, request }) => {

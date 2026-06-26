@@ -68,6 +68,11 @@ function RouterShell() {
   );
 }
 
+// INTENTIONAL single catch-all: the whole app rides as a descendant <Routes>
+// tree inside <App/>, so the lone UnsavedChangesProvider/useBlocker in
+// <RouterShell/> is always mounted and sees every navigation. Do NOT add sibling
+// top-level data routes or migrate App's <Routes> into this config without moving
+// the guard accordingly — a route outside this splat would bypass the blocker.
 const router = createBrowserRouter([{ path: "*", element: <RouterShell /> }]);
 
 createRoot(document.getElementById("root")!).render(

@@ -46,7 +46,17 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   // Stable fn (no deps) — it reads the ref each call, so it never goes stale.
   const blocker = useBlocker(
     useCallback<BlockerFunction>(({ currentLocation, nextLocation }) => {
-      if (currentLocation.pathname === nextLocation.pathname) return false;
+      // Allow only a genuine no-op (identical location). A change to the path,
+      // query, OR hash is a real navigation that can discard form state, so any
+      // of them while dirty must be confirmed — comparing pathname alone would
+      // let a same-path `?query`/`#hash` nav slip past and silently lose edits.
+      if (
+        currentLocation.pathname === nextLocation.pathname &&
+        currentLocation.search === nextLocation.search &&
+        currentLocation.hash === nextLocation.hash
+      ) {
+        return false;
+      }
       for (const dirty of registrantsRef.current.values()) {
         if (dirty) return true;
       }
