@@ -19,6 +19,7 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   adapterModelFamilyMismatch,
+  isShellSafeModelId,
   type InstanceSchedulerHeartbeatAgent,
   type WakeAgent,
 } from "@armyofagents/shared";
@@ -67,6 +68,21 @@ const ADAPTER_CONSTRAINT_TYPES = new Set([
   "codex_local",
   "claude_local",
   "gemini_local",
+]);
+
+// Adapter types that pass adapterConfig.model through to a CLI as `--model`
+// (each has `--model` in its execute.ts). A model-only PATCH on any of these
+// must be shell-safety validated even when the type is OUTSIDE
+// ADAPTER_CONSTRAINT_TYPES (cursor/grok/pi) — without an adapterType in the body
+// the schema's refine early-returns, so the route is the only gate (Codex P2).
+const MODEL_AWARE_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "opencode_local",
+  "pi_local",
 ]);
 
 // Unit D: per-company concurrency cap for the adapter test-connection probe.
@@ -1434,6 +1450,25 @@ export function agentRoutes(db: Db) {
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
     let adapterWarnings: string[] = [];
+    // Codex P2: a model-only PATCH carries no adapterType in the body, so the
+    // schema's refineAdapterModel early-returns; and the ADAPTER_CONSTRAINT_TYPES
+    // path below only covers four types. So an unsafe model on another model-aware
+    // adapter (cursor/grok_local/pi_local — all spawn `--model`) would persist and
+    // fail at runtime. Hard-block a shell-unsafe EFFECTIVE model for EVERY
+    // model-aware adapter, using the SAME rule (isShellSafeModelId) the schema
+    // applies, so the route and schema can never diverge.
+    if (touchesAdapterConfiguration && requestedAdapterType != null && MODEL_AWARE_ADAPTER_TYPES.has(requestedAdapterType)) {
+      const effectiveModel = asNonEmptyString(
+        (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+          ? asRecord(patchData.adapterConfig)
+          : asRecord(existing.adapterConfig)
+        )?.model,
+      );
+      if (effectiveModel && !isShellSafeModelId(effectiveModel)) {
+        res.status(422).json({ error: `Unsafe model identifier: ${effectiveModel}` });
+        return;
+      }
+    }
     if (touchesAdapterConfiguration && requestedAdapterType != null && ADAPTER_CONSTRAINT_TYPES.has(requestedAdapterType)) {
       const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})

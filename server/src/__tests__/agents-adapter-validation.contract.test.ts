@@ -167,6 +167,16 @@ const existingCodexAgent = {
   permissions: { can_create_agents: false },
 };
 
+// A cursor agent: model-aware (spawns `--model`) but OUTSIDE
+// ADAPTER_CONSTRAINT_TYPES, so a model-only PATCH on it relies on the route's
+// standalone shell-safety gate (Codex P2).
+const existingCursorAgent = {
+  ...existingCodexAgent,
+  adapterType: "cursor" as const,
+  adapterConfig: { model: "claude-sonnet-4-20250514" },
+  name: "Test Cursor Agent",
+};
+
 describe("agents PATCH — auth-mismatch soft-warn contract (Unit C)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -339,5 +349,32 @@ describe("agents PATCH — auth-mismatch soft-warn contract (Unit C)", () => {
       .send({ adapterType: "opencode_local", adapterConfig: { model: "anthropic/claude-x" } });
     expect(res.status).toBe(422);
     expect(String(res.body.error)).toMatch(/opencode/i);
+  });
+
+  // ── Codex P2: model-only PATCH shell-safety for a model-aware adapter OUTSIDE
+  // ADAPTER_CONSTRAINT_TYPES (cursor). No adapterType in the body → the schema's
+  // refineAdapterModel early-returns, so the route's standalone gate is the only
+  // thing standing between an unsafe model and runtime `--model` injection. ──
+  it("422 — model-only PATCH with a shell-UNSAFE model on a cursor agent", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCursorAgent);
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterConfig: { model: "gpt-5.5; rm -rf /" } });
+    expect(res.status).toBe(422);
+    expect(String(res.body.error)).toMatch(/unsafe model/i);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("not 422 — model-only PATCH with a shell-safe model on a cursor agent (update called)", async () => {
+    mockAgentService.getById.mockResolvedValue(existingCursorAgent);
+    mockAgentService.update.mockResolvedValue({
+      ...existingCursorAgent,
+      adapterConfig: { model: "claude-opus-4-20250514" },
+    });
+    const res = await request(makeApp())
+      .patch(`/api/agents/${AGENT_ID}`)
+      .send({ adapterConfig: { model: "claude-opus-4-20250514" } });
+    expect(res.status).not.toBe(422);
+    expect(mockAgentService.update).toHaveBeenCalled();
   });
 });

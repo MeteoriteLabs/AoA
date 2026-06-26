@@ -34,8 +34,11 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 // Shell-safety consistent with the server's isShellSafeModel (Unit B): a model
-// may be a provider/model slash id (opencode); validate EACH segment and cap at 2.
-function isShellSafeModelId(model: string): boolean {
+// may be a provider/model slash id (opencode); validate EACH segment (no
+// segment-count cap). Exported so the route layer can reject a model-only PATCH
+// (no adapterType in the body → the schema refine below early-returns) with the
+// SAME rule the schema uses — route and schema must never diverge (Codex P2).
+export function isShellSafeModelId(model: string): boolean {
   // Validate EACH slash segment for shell-safety, with NO segment-count cap:
   // OpenCode ids can carry a nested provider namespace (e.g.
   // openrouter/anthropic/claude-sonnet-4), which the adapter's own discovery

@@ -655,6 +655,7 @@ export {
   createAgentHireSchema,
   updateAgentSchema,
   adapterModelFamilyMismatch,
+  isShellSafeModelId,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,

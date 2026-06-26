@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createAgentSchema, createAgentHireSchema, updateAgentSchema, adapterModelFamilyMismatch } from "./agent.js";
+import { createAgentSchema, createAgentHireSchema, updateAgentSchema, adapterModelFamilyMismatch, isShellSafeModelId } from "./agent.js";
 
 describe("agent schema adapter↔model cross-family + shell-safety", () => {
   it("rejects claude_local + a gpt model (cross-family)", () => {
@@ -79,6 +79,21 @@ describe("agent schema adapter↔model cross-family + shell-safety", () => {
   });
   it("still rejects a nested opencode model with a shell-unsafe segment", () => {
     expect(updateAgentSchema.safeParse({ adapterType: "opencode_local", adapterConfig: { model: "openrouter/anthropic/cla;ude" } }).success).toBe(false);
+  });
+});
+
+describe("isShellSafeModelId (exported for the route's model-only PATCH gate — Codex P2)", () => {
+  it("accepts plain ids, provider/model, and nested-namespace opencode ids", () => {
+    expect(isShellSafeModelId("gpt-5.5")).toBe(true);
+    expect(isShellSafeModelId("claude-sonnet-4-20250514")).toBe(true);
+    expect(isShellSafeModelId("openai/gpt-5.2-codex")).toBe(true);
+    expect(isShellSafeModelId("openrouter/anthropic/claude-sonnet-4")).toBe(true);
+  });
+  it("rejects shell-unsafe model strings", () => {
+    expect(isShellSafeModelId("gpt-5.5; rm -rf /")).toBe(false);
+    expect(isShellSafeModelId("gpt-5.5 && calc")).toBe(false);
+    expect(isShellSafeModelId("a/b`whoami`")).toBe(false);
+    expect(isShellSafeModelId("a//b")).toBe(false); // empty segment
   });
 });
 
