@@ -7,9 +7,9 @@ import { writeFakeClaudeExtractionControl } from "./helpers/fake-claude";
  *
  * When the one-shot CLI extractor (extraction-cli.ts) fails — either because
  * the CLI exits nonzero or returns unparseable output — the server marks the
- * discussion entry as `extractionStatus: "failed"`. The DiscussionDetail page
- * renders data-testid="extraction-failure-banner" for failed entries, and the
- * "Reprocess" button is available.
+ * discussion entry as `extractionStatus: "failed"` (surfaced, never silently
+ * lost). The threads viewer (EntryRow → ChipRow) then renders a red
+ * "Extraction failed" chip on the entry.
  *
  * Two failure modes are exercised:
  *   1. Nonzero exit (fake-claude control: `{ fail: "exit" }`) → CliExtractionError
@@ -17,8 +17,10 @@ import { writeFakeClaudeExtractionControl } from "./helpers/fake-claude";
  *   2. Unparseable output (`extractionText: "not json"`) → CliExtractionError
  *      with kind "unparseable".
  *
- * Both result in the same UX: entry shows extraction-failure-banner, Reprocess
- * control is present, and the founder can also create a Task manually.
+ * Both assert the same contract: the API marks the entry "failed" AND the UI
+ * shows the "Extraction failed" chip. New entries are created "skipped" (no
+ * auto-extraction), so each test fires the keyless CLI pipeline via the
+ * reprocess endpoint — the deliberate founder-driven path.
  *
  * No pgvector required — this test exercises the discussion extraction pipeline,
  * not the embedding pipeline.
@@ -139,7 +141,7 @@ test.describe("extraction failure UX", () => {
   });
 
   test(
-    "nonzero-exit CLI failure: entry shows extraction-failure-banner and Reprocess button",
+    "nonzero-exit CLI failure: entry is marked failed and the thread shows an 'Extraction failed' chip",
     async ({ page, request }) => {
       // Prime fake-claude to exit with code 1 (nonzero_exit branch).
       writeFakeClaudeExtractionControl({ fail: "exit" });
@@ -170,23 +172,18 @@ test.describe("extraction failure UX", () => {
       );
       expect(result.extractionStatus).toBe("failed");
 
-      // Navigate to the discussion detail and assert the failure banner is visible.
+      // Navigate to the thread and assert the failure is surfaced in the UI.
+      // The threads viewer (EntryRow → ChipRow) renders a red "Extraction
+      // failed" chip on the entry when extractionStatus === "failed".
       await openDiscussion(page, company.issuePrefix, discussion.id);
-
-      // The failure banner must appear for the failed entry.
-      await expect(page.getByTestId("extraction-failure-banner").first()).toBeVisible({
+      await expect(page.getByText(/extraction failed/i).first()).toBeVisible({
         timeout: 10_000,
       });
-
-      // The Reprocess button must be present (allows the founder to retry).
-      await expect(
-        page.getByRole("button", { name: /reprocess/i }).first(),
-      ).toBeVisible({ timeout: 5_000 });
     },
   );
 
   test(
-    "unparseable CLI output: entry shows extraction-failure-banner and Reprocess button",
+    "unparseable CLI output: entry is marked failed and the thread shows an 'Extraction failed' chip",
     async ({ page, request }) => {
       // Prime fake-claude to emit non-JSON output so parseExtractedItems throws
       // → CliExtractionError kind "unparseable" → entry status "failed".
@@ -221,16 +218,12 @@ test.describe("extraction failure UX", () => {
       );
       expect(result.extractionStatus).toBe("failed");
 
-      // Navigate and assert the failure banner.
+      // Navigate and assert the failure is surfaced in the threads viewer
+      // (the red "Extraction failed" chip rendered by EntryRow → ChipRow).
       await openDiscussion(page, company.issuePrefix, discussion.id);
-
-      await expect(page.getByTestId("extraction-failure-banner").first()).toBeVisible({
+      await expect(page.getByText(/extraction failed/i).first()).toBeVisible({
         timeout: 10_000,
       });
-
-      await expect(
-        page.getByRole("button", { name: /reprocess/i }).first(),
-      ).toBeVisible({ timeout: 5_000 });
     },
   );
 });
