@@ -64,4 +64,7 @@ describe("crew runner releases a checked-out task on a mid-run failure (Codex P2
   it("guards the release on executionRunId===runId (never clobbers a re-claimed task)", () => {
     expect(catchBlock).toMatch(/eq\(issues\.executionRunId,\s*releaseRunId\)/);
   });
+  it("guards the release UPDATE atomically on status='in_progress' (no clobber of a concurrent transition)", () => {
+    expect(catchBlock).toMatch(/eq\(issues\.status,\s*"in_progress"\)/);
+  });
 });

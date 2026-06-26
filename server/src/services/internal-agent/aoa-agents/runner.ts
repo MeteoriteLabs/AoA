@@ -551,8 +551,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === runId) {
         log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — releasing task to todo");
         await db.update(issues)
+          // Atomic status guard (Codex P2): a concurrent set_task_status between
+          // the getById read and this write keeps executionRunId (only checkoutRunId
+          // is cleared on leaving in_progress), so without status='in_progress' here
+          // this could revert an in_review/done task back to todo.
           .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId)));
+          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")));
         // Task 5.6: the silent-stuck release is a CREW status-MOVE
         // (in_progress → todo) that bypasses issueService.update. Publish
         // issue.status_changed (company-broadcast, R3) so the board reflects
@@ -744,8 +748,13 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         const task = await issueService(db).getById(payload.issueId);
         if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === releaseRunId) {
           await db.update(issues)
+            // Guard on status='in_progress' IN the UPDATE (not just the JS read):
+            // the issue update path clears checkoutRunId but keeps executionRunId
+            // when leaving in_progress, so a concurrent set_task_status between the
+            // getById read and this write could otherwise revert an in_review/done
+            // task back to todo (Codex P2). Atomic predicate prevents the clobber.
             .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, releaseRunId)));
+            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, releaseRunId), eq(issues.status, "in_progress")));
           log.warn({ issueId: payload.issueId }, "crew run failed before execute — released checked-out task to todo");
           try {
             publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
