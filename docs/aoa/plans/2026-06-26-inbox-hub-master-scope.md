@@ -221,7 +221,7 @@ pool. Works across all three roles (founder / team_lead / team_member).
   source, auto-closes the item. (Realtime: §11 L3.)
 
 **Edge-case guardrails (finalized in W1 design):**
-- **Owner always resolves** — reports-to enforcement (separate session, §13) +
+- **Owner always resolves** — reports-to enforcement (W6, §19) +
   fallback chain → founder; a deactivated user's items reassign up to their
   manager.
 - **Escalation ceiling = founder** (SLA there re-notifies, no higher hop); a
@@ -370,9 +370,10 @@ hub's **real-time + auto-resolve** (§7, §8) *are* L3. Sequence L2 early.
   patterns for the autonomy layer; `internal_agent_runtime_approvals` +
   `runtime_tool_trust` for the W5 seed; the adapter layer (`server/src/adapters/`)
   for W5 bridges.
-- **Assumes (separate session):** agents **cannot be created without a reports-to**
-  (a responsible human), which guarantees the ownership chain (§7) always
-  resolves; until it lands, the fallback chain (→ founder) applies.
+- **Org reporting (now in-scope — W6, §19):** human-at-top is enforced, the first
+  agent reports to the founder, and the operator is a real human — so the ownership
+  chain (§7) always resolves to a human; the owner-membership fallback remains as
+  belt-and-suspenders.
 - **Out of scope / deferred:** Mail/email integration (own session; IA reserves
   the lane), cross-company global hub (parked), agent-persona outbound email,
   Activity Log changes, **W5 per-adapter bridges** (likely a follow-up session;
@@ -398,6 +399,10 @@ hub's **real-time + auto-resolve** (§7, §8) *are* L3. Sequence L2 early.
   to all org-agent adapters; per-adapter permission/question bridges;
   autonomy-gated; poll-then-push relay; watchdog timeouts. *(Per-adapter bridges
   possibly a follow-up session; W1 reserves the item type.)*
+- **W6 — Org reporting prerequisite** (§19): enforce human-at-top, first-agent →
+  founder, picker enabled, real-human operator (incl. local_trusted), humans-report-
+  to-humans server-side, re-parent-on-removal, migration/backfill. **Foundational —
+  lands with W1a**; owner resolution + W5 depend on a guaranteed human.
 
 **Rough phasing (parallel where noted)**
 - **Phase 1 — Hub shell + registry foundation.** W1 three-pane + lanes + section
@@ -583,3 +588,65 @@ those dominate enterprise trust.
   single table makes realtime *easier* than fanning out N source streams.
 - **Bounded blocked-runs (W5)** — a separate scale axis, capped by the heartbeat
   concurrency clamp + watchdog, not a table concern.
+
+## 19. Organizational reporting & ownership resolution (brought in-scope — W6)
+
+A verified investigation (Claude + a prior session, confirmed against code) found
+the hub's owner resolution **cannot rely on a human existing above an agent**.
+Rather than fragment this across sessions, the required org-model fixes live in
+**this** initiative as workstream **W6** — the hub's ownership (§7) and W5 routing
+depend on them. (This supersedes the "separate session" framing in §13.)
+
+**Verified reality (today):**
+- Two fields: `agents.parentType`/`parentId` (polymorphic — parent is an `agent`
+  *or* `user`; the real pointer) + legacy `agents.reportsTo` (agent-only,
+  auto-synced). Humans carry `parentType`/`parentId` on `company_memberships`.
+- **No invariant guarantees a human above an agent:** the first agent auto-becomes
+  a rootless CXO; in `local_trusted` the operator is a synthetic `local-board`
+  (no real user row, hidden from the org tree by `innerJoin authUsers`); the chain
+  is **not** injected into the agent runtime prompt.
+
+**Decisions (locked):**
+1. First agent **auto-parents to the founding human** (not rootless).
+2. Reports-to **picker enabled** for the first agent.
+3. First-agent **CXO = editable default** (defaults to CXO; user can change role).
+4. **Enforce "human at the top" server-side** — a root org-agent must have a human
+   parent; agent-rooted chains are rejected.
+5. **Operator is a real human** — seed a real founding-human user + owner
+   membership at company create (incl. `local_trusted`). Login/signup wiring is
+   later; the real human record exists now.
+6. **Humans report only to humans — enforced server-side** (today UI-only).
+7. Keep the `reportsTo` ↔ `parentType`/`parentId` sync; the hub reads
+   `parentType`/`parentId`.
+
+**Two new fixes this surfaced:**
+- **Re-parent on removal, not orphan-to-root.** When a manager (human or agent) is
+  removed/terminated, hand their reports up to the next human (their manager, else
+  the owner). Today `orphanChildren()` nulls the pointer — which would break the
+  invariant.
+- **Migration/backfill on rollout** — re-parent existing rootless org-agents to the
+  founder; repair `local_trusted` companies; import validates human-at-top.
+
+**Hub ownership resolution (the integration with §7):**
+- **Owner of any item = the first human ancestor** up the `parentType`/`parentId`
+  chain. A standalone agent is a length-1 chain (`agent → human`); deeper chains
+  walk to the first human. Decision 4 guarantees one always exists.
+- **Ultimate fallback = the company owner-role membership** (always exists) if
+  resolution somehow finds no human.
+- **Key hub ownership + per-user state on the membership principal**
+  (`principalType` + `principalId`), not `authUsers.id` — robust for any
+  non-logged-in seat (belt-and-suspenders with decision 5).
+- **W5 resolves the human server-side** at block time; the agent never names its
+  manager.
+
+**Edge cases covered:** standalone agent (length-1 chain) · first/only agent
+(→ founder) · local_trusted (real human + seat-keying) · manager removed
+(re-parent, not orphan) · legacy/imported rootless agent (backfill + validate) ·
+no-human-somehow (owner fallback) · owner lacks authority (Owner≠Authority, §7) ·
+cycles (depth-50 check).
+
+**W6 — Org reporting prerequisite (new workstream).** Foundational: lands **with
+W1a** (the data + RBAC + audit core), because owner resolution and W5 depend on a
+guaranteed human. Touches the org subsystem (`agents`, `company_memberships`,
+`org-hierarchy.ts`, the org-tree route + picker), so it carries its own
+verification.
