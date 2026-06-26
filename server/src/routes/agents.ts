@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@armyofagents/db";
 import { agents as agentsTable, aoaAgentTriggers, companies, internalAgentRuns } from "@armyofagents/db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   createAgentKeySchema,
   createAgentHireSchema,
@@ -554,13 +554,27 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const agentId = req.params.id as string;
     const limit = Math.min(parseInt(String(req.query.limit ?? 50)), 200);
+    const where = and(
+      eq(internalAgentRuns.companyId, companyId),
+      eq(internalAgentRuns.agentId, agentId),
+    );
+    // True total (count(*)::int) — index-backed by ia_runs_agent_idx on
+    // (companyId, agentId), so it stays cheap. Returned alongside the capped
+    // page so the UI shows a real "Total runs" count, not the page length.
+    // Use sql`count(*)::int` (the internal-agent.ts:864 idiom), NOT drizzle's
+    // count() helper — the agentRoutes route tests mock drizzle-orm with `sql`
+    // but no `count` export, so `count()` would break them.
+    const [{ total } = { total: 0 }] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(internalAgentRuns)
+      .where(where);
     const runs = await db
       .select()
       .from(internalAgentRuns)
-      .where(and(eq(internalAgentRuns.companyId, companyId), eq(internalAgentRuns.agentId, agentId)))
+      .where(where)
       .orderBy(desc(internalAgentRuns.createdAt))
       .limit(limit);
-    res.json(runs);
+    res.json({ runs, total, limit });
   });
 
   router.get("/companies/:companyId/agents/:id/triggers", async (req, res) => {
