@@ -26,6 +26,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseExtractedItems, type ExtractedItem } from "./extraction-parser.js";
 import { runCodexExecJson } from "./internal-agent/codex-exec.js";
+import {
+  appendCapped,
+  buildScrubbedCliEnv,
+  MAX_CLI_STDERR_BYTES,
+  MAX_CLI_STDOUT_BYTES,
+  newCappedBuffer,
+} from "./cli-spawn-safety.js";
 
 export type CliErrorKind =
   | "not_installed"
@@ -182,10 +189,16 @@ async function extractViaClaude(
   // output. Extraction only needs text generation, so disable ALL built-in tools
   // (`--tools ""`). On Windows the value rides through cmd.exe (shell:true), so
   // pass a literal empty-quoted token; on POSIX a bare empty arg is correct.
+  //
+  // `--tools ""` only disables the BUILT-IN tool set; globally-configured MCP
+  // servers (~/.claude.json / user settings) would still load and expose their
+  // tools. `--strict-mcp-config` with NO `--mcp-config` ignores all filesystem
+  // MCP config, so the headless extractor loads zero MCP servers (audit follow-up).
   const args = [
     "--print",
     "--tools",
     isWin ? '""' : "",
+    "--strict-mcp-config",
     "--system-prompt-file",
     safeSystemPromptPath,
     "--output-format",
@@ -194,24 +207,32 @@ async function extractViaClaude(
 
   // cwd = tmpdir(): keep claude from reading project CLAUDE.md / AGENTS.md
   // (internal "Paperclip" details must not surface) — same as the chat spawns.
+  // env: scrubbed of the server's own secrets (embeddings OPENAI_API_KEY,
+  // GITHUB_PAT, AOA_*, …) — defense-in-depth so even a tool-bypass can't read
+  // them from the environment. Keep ANTHROPIC_API_KEY: claude's own auth path
+  // (the keyless OAuth login is unaffected; this only preserves a user who
+  // authed claude via the env var) (audit follow-up).
   const proc = spawn("claude", args, {
     shell: isWin,
     cwd: tmpdir(),
     stdio: ["pipe", "pipe", "pipe"],
+    env: buildScrubbedCliEnv(["ANTHROPIC_API_KEY"]),
   });
 
-  let stdout = "";
-  let stderr = "";
+  const stdoutBuf = newCappedBuffer();
+  const stderrBuf = newCappedBuffer();
   let timedOut = false;
   // Annotated via a holder so TS doesn't narrow it to `null` (the callback
   // assignment below is invisible to control-flow analysis across the await).
   const errBox: { value: NodeJS.ErrnoException | null } = { value: null };
 
   proc.stdout?.on("data", (d: Buffer) => {
-    stdout += d.toString();
+    // Bound buffered output: a prompt-injected/looping model could otherwise
+    // stream until the server OOMs. On overflow, kill the child and stop reading.
+    if (appendCapped(stdoutBuf, d, MAX_CLI_STDOUT_BYTES)) proc.kill();
   });
   proc.stderr?.on("data", (d: Buffer) => {
-    stderr += d.toString();
+    appendCapped(stderrBuf, d, MAX_CLI_STDERR_BYTES);
   });
 
   // Prompt over stdin (raw, unescaped — stdin never passes through cmd.exe),
@@ -247,17 +268,17 @@ async function extractViaClaude(
   if (spawnError || timedOut || (exitCode ?? 0) !== 0) {
     const kind = classifyCliError(
       spawnError ? { code: spawnError.code, timedOut } : { timedOut },
-      stderr,
+      stderrBuf.text,
       exitCode,
     );
     throw new CliExtractionError(
-      claudeFailureMessage(kind, exitCode, stderr),
+      claudeFailureMessage(kind, exitCode, stderrBuf.text),
       kind,
     );
   }
 
   try {
-    return parseExtractedItems(stdout);
+    return parseExtractedItems(stdoutBuf.text);
   } catch (err) {
     throw new CliExtractionError(
       `claude extraction output was not parseable: ${(err as Error)?.message ?? "unknown"}`,

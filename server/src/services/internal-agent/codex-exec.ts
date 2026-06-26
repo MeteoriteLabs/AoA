@@ -32,6 +32,13 @@ import {
   resolveCodexChatModel,
   COMMANDER_CODEX_REASONING_EFFORT,
 } from "./codex-model.js";
+import {
+  appendCapped,
+  buildScrubbedCliEnv,
+  MAX_CLI_STDERR_BYTES,
+  MAX_CLI_STDOUT_BYTES,
+  newCappedBuffer,
+} from "../cli-spawn-safety.js";
 
 export interface RunCodexExecJsonOptions {
   timeoutMs?: number;
@@ -97,14 +104,17 @@ export async function runCodexExecJson(
 
   // Managed home: auth only (no MCP). Provision auth.json from the shared
   // ~/.codex so `codex exec` is authenticated (no-op if the user has no login).
+  // mode 0o700: the dir holds auth.json (the OpenAI/ChatGPT token); both dirs
+  // live under a predictable name in the shared OS temp dir, so without owner-
+  // only perms another local user could pre-create or read them (audit follow-up).
   const codexHomeDir = extractionCodexHomeDir();
-  await mkdir(codexHomeDir, { recursive: true });
+  await mkdir(codexHomeDir, { recursive: true, mode: 0o700 });
   await ensureCodexAuthInHome(codexHomeDir);
 
   // Dedicated empty cwd (sibling of CODEX_HOME) so the read-only sandbox's
   // readable workspace does not include the credential dir (P1, Codex).
   const codexCwd = extractionCodexCwd();
-  await mkdir(codexCwd, { recursive: true });
+  await mkdir(codexCwd, { recursive: true, mode: 0o700 });
 
   // Model: same layered, validated resolution as the chat path so a claude
   // default / GPT-Codex / shell-unsafe value can never reach codex.
@@ -135,23 +145,32 @@ export async function runCodexExecJson(
   // cwd = a dedicated EMPTY dir (not tmpdir, not CODEX_HOME): keeps the
   // subprocess from reading project CLAUDE.md / AGENTS.md AND keeps the codex
   // credential dir outside the read-only sandbox's readable workspace (P1, Codex).
+  // env: scrubbed of the server's own secrets (embeddings OPENAI_API_KEY only
+  // re-added below for codex's own api-key auth path; GITHUB_PAT, DATABASE_URL,
+  // AOA_*, ANTHROPIC_API_KEY are withheld) — defense-in-depth alongside the
+  // read-only sandbox so a prompt-injected entry can't read them (audit follow-up).
   const proc = spawn("codex", args, {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CODEX_HOME: codexHomeDir },
+    env: {
+      ...buildScrubbedCliEnv(["OPENAI_API_KEY"]),
+      CODEX_HOME: codexHomeDir,
+    },
     shell: isWin,
     cwd: codexCwd,
   });
 
-  let stdout = "";
-  let stderr = "";
+  const stdoutBuf = newCappedBuffer();
+  const stderrBuf = newCappedBuffer();
   let timedOut = false;
   let spawnError: NodeJS.ErrnoException | null = null;
 
   proc.stdout?.on("data", (d: Buffer) => {
-    stdout += d.toString();
+    // Bound buffered JSONL: codex --json is verbose, and a looping/hostile turn
+    // could stream until the server OOMs. On overflow, kill and stop reading.
+    if (appendCapped(stdoutBuf, d, MAX_CLI_STDOUT_BYTES)) proc.kill();
   });
   proc.stderr?.on("data", (d: Buffer) => {
-    stderr += d.toString();
+    appendCapped(stderrBuf, d, MAX_CLI_STDERR_BYTES);
   });
 
   // codex reads the prompt from stdin (the `-` PROMPT arg) until EOF, so the
@@ -189,6 +208,8 @@ export async function runCodexExecJson(
 
   clearTimeout(timer);
 
+  const stdout = stdoutBuf.text;
+  const stderr = stderrBuf.text;
   const parsed = parseCodexJsonl(stdout);
 
   return {

@@ -85,8 +85,12 @@ export function LLMProvidersSection() {
     queryKey: queryKeys.extraction.engineStatus(selectedCompanyId!),
     queryFn: () => extractionApi.engineStatus(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    // Probe is cheap — refresh every 30s so CLI installs are reflected quickly.
+    // Probe is cheap. staleTime alone does NOT refetch a mounted query, so a CLI
+    // install / key change wouldn't reflect until remount (Codex #19). Poll every
+    // 30s so an out-of-band CLI install is picked up, and invalidate explicitly
+    // after key add/remove/rotate (below) so in-app changes reflect immediately.
     staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 
   // Filter to only LLM secrets (name starts with "llm:")
@@ -105,9 +109,14 @@ export function LLMProvidersSection() {
     [configuredProviderNames],
   );
 
-  function invalidateSecrets() {
+  function invalidateProviderState() {
     queryClient.invalidateQueries({
       queryKey: queryKeys.secrets.list(selectedCompanyId!),
+    });
+    // A key add/remove/rotate can flip the extraction engine (cli ↔ api ↔ none),
+    // so refresh the banner immediately instead of waiting for the poll (Codex #19).
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.extraction.engineStatus(selectedCompanyId!),
     });
   }
 
@@ -115,7 +124,7 @@ export function LLMProvidersSection() {
     mutationFn: (data: { name: string; value: string; description: string }) =>
       secretsApi.create(selectedCompanyId!, data),
     onSuccess: () => {
-      invalidateSecrets();
+      invalidateProviderState();
       setAddingProvider(null);
       setNewKey("");
       setShowNewKey(false);
@@ -133,7 +142,7 @@ export function LLMProvidersSection() {
     mutationFn: ({ id, value }: { id: string; value: string }) =>
       secretsApi.rotate(id, { value }),
     onSuccess: () => {
-      invalidateSecrets();
+      invalidateProviderState();
       setRotatingId(null);
       setRotateKey("");
       setShowRotateKey(false);
@@ -150,7 +159,7 @@ export function LLMProvidersSection() {
   const removeMutation = useMutation({
     mutationFn: (id: string) => secretsApi.remove(id),
     onSuccess: () => {
-      invalidateSecrets();
+      invalidateProviderState();
       pushToast({ title: "API key removed", tone: "success" });
     },
     onError: (err) => {

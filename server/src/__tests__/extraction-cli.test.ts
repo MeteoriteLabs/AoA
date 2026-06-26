@@ -24,6 +24,10 @@ interface SpawnCall {
   args: string[];
   stdinWrites: string[];
   stdinEnded: boolean;
+  /** spawn() options (env, cwd, …) — captured for env-scrub assertions. */
+  options: Record<string, unknown> | undefined;
+  /** number of times the fake child's kill() was invoked. */
+  killCount: number;
 }
 
 let nextSpawn: SpawnScript = { stdout: [], exitCode: 0 };
@@ -33,8 +37,16 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    spawn: vi.fn((command: string, args: string[]) => {
-      const call: SpawnCall = { command, args, stdinWrites: [], stdinEnded: false };
+    spawn: vi.fn(
+      (command: string, args: string[], options?: Record<string, unknown>) => {
+      const call: SpawnCall = {
+        command,
+        args,
+        stdinWrites: [],
+        stdinEnded: false,
+        options,
+        killCount: 0,
+      };
       spawnCalls.push(call);
 
       const child = new EventEmitter() as EventEmitter & {
@@ -49,7 +61,9 @@ vi.mock("node:child_process", async (importOriginal) => {
       child.stderr = new EventEmitter();
       child.exitCode = null;
       child.signalCode = null;
-      child.kill = vi.fn();
+      child.kill = vi.fn(() => {
+        call.killCount += 1;
+      });
       child.stdin = {
         writable: true,
         write: (s: string) => call.stdinWrites.push(s),
@@ -178,8 +192,52 @@ describe("extractViaCli — claude happy path", () => {
     expect(toolsIdx).toBeGreaterThanOrEqual(0);
     // Disable-all sentinel: "" on POSIX, '""' (empty-quoted token) on Windows.
     expect(["", '""']).toContain(call!.args[toolsIdx + 1]);
+    // SECURITY (audit): --tools "" disables only BUILT-IN tools; --strict-mcp-config
+    // (with no --mcp-config) ignores all filesystem MCP config so no MCP servers
+    // load for the untrusted-prompt extractor.
+    expect(call!.args).toContain("--strict-mcp-config");
     expect(call!.stdinWrites.join("")).toContain("do the thing");
     expect(call!.stdinEnded).toBe(true);
+  });
+
+  it("scrubs the server's secrets from the claude child env (keeps ANTHROPIC)", async () => {
+    const prev = { ...process.env };
+    process.env.OPENAI_API_KEY = "sk-embeddings";
+    process.env.GITHUB_PAT = "ghp_secret";
+    process.env.AOA_AGENT_JWT_SECRET = "jwt";
+    process.env.ANTHROPIC_API_KEY = "sk-anthropic";
+    try {
+      nextSpawn = { stdout: ["[]"], exitCode: 0 };
+      const { extractViaCli } = await import("../services/extraction-cli.ts");
+      await extractViaCli("claude", "SYSTEM", "content");
+
+      const call = spawnCalls.find((c) => c.command === "claude");
+      const env = call!.options?.env as NodeJS.ProcessEnv;
+      expect(env).toBeDefined();
+      // The embeddings OpenAI key / GitHub PAT / AOA internals must NOT leak.
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.GITHUB_PAT).toBeUndefined();
+      expect(env.AOA_AGENT_JWT_SECRET).toBeUndefined();
+      // claude's own auth var is preserved.
+      expect(env.ANTHROPIC_API_KEY).toBe("sk-anthropic");
+    } finally {
+      for (const k of ["OPENAI_API_KEY", "GITHUB_PAT", "AOA_AGENT_JWT_SECRET", "ANTHROPIC_API_KEY"]) {
+        if (!(k in prev)) delete process.env[k];
+        else process.env[k] = prev[k];
+      }
+    }
+  });
+
+  it("kills the child and fails when claude output exceeds the byte cap", async () => {
+    // One ~9 MiB chunk trips MAX_CLI_STDOUT_BYTES (8 MiB); the child is killed and
+    // the (capped/garbage) output fails to parse rather than OOMing the server.
+    const huge = "x".repeat(9 * 1024 * 1024);
+    nextSpawn = { stdout: [huge], exitCode: 0 };
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    await expect(extractViaCli("claude", "SYSTEM", "content")).rejects.toBeTruthy();
+
+    const call = spawnCalls.find((c) => c.command === "claude");
+    expect(call!.killCount).toBeGreaterThanOrEqual(1);
   });
 
   it("accepts both 'claude' and 'claude_cli' tool aliases", async () => {
@@ -282,6 +340,13 @@ describe("extractViaCli — codex", () => {
     expect(call!.args).toContain("--json");
     expect(call!.args[call!.args.length - 1]).toBe("-");
     expect(call!.stdinEnded).toBe(true);
+    // SECURITY (audit): scrubbed env — CODEX_HOME set, codex's own auth (OPENAI)
+    // preserved, but ANTHROPIC + AOA internals withheld.
+    const env = call!.options?.env as NodeJS.ProcessEnv;
+    expect(env).toBeDefined();
+    expect(typeof env.CODEX_HOME).toBe("string");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.AOA_AGENT_JWT_SECRET).toBeUndefined();
   });
 
   it("unparseable codex summary → CliExtractionError kind 'unparseable'", async () => {

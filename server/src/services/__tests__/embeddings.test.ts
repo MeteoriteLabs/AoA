@@ -57,6 +57,8 @@ vi.mock("../../adapters/api-common.js", () => ({
 
 import {
   createEmbeddingService,
+  withEmbedTimeout,
+  classifyEmbeddingError,
   type LlmEmbedder,
   type EmbeddingTargetTable,
 } from "../embeddings.js";
@@ -548,6 +550,36 @@ describe("createEmbeddingService", () => {
       // The last update is a retry (not a completion).
       const finalSet = db.updateCalls.at(-1)?.set as Record<string, unknown>;
       expect(finalSet.error).toContain("Unknown target table");
+    });
+  });
+
+  describe("withEmbedTimeout (audit: bound embed below stale lease)", () => {
+    it("passes through a value that resolves before the timeout", async () => {
+      const value = [1, 2, 3];
+      await expect(withEmbedTimeout(Promise.resolve(value), 1000)).resolves.toBe(
+        value,
+      );
+    });
+
+    it("rejects with a transient-classified 'timeout' error when exceeded", async () => {
+      vi.useFakeTimers();
+      try {
+        // A never-resolving embed → only the timeout branch settles the race.
+        const never = new Promise<number[]>(() => {});
+        const p = withEmbedTimeout(never, 1000);
+        // Attach the rejection handler BEFORE advancing so it isn't unhandled.
+        const assertion = expect(p).rejects.toThrow(/timeout/);
+        await vi.advanceTimersByTimeAsync(1001);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("a timeout error classifies as transient (so the row retries, not fails)", () => {
+      expect(
+        classifyEmbeddingError(new Error("embedding request exceeded 120000ms timeout")),
+      ).toBe("transient");
     });
   });
 });

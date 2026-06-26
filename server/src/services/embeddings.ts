@@ -376,6 +376,48 @@ export const CIRCUIT_TTL_MS = 60_000;
  */
 export const NO_KEY_BACKOFF_MS = 300_000;
 
+/**
+ * Hard timeout for a single `embedder.embed()` call (2 minutes).
+ *
+ * MUST stay below `resetStaleProcessing`'s lease (default 5 min): without it the
+ * OpenAI SDK could hang past the lease, the stale-processing reaper would flip
+ * the still-in-flight row back to `pending`, another worker would re-claim it,
+ * and the row would be embedded twice (and could stale-overwrite). Capping the
+ * embed below the lease guarantees a live worker always terminalizes its row
+ * (success or transient-retry) before the reaper considers it abandoned.
+ */
+export const EMBED_TIMEOUT_MS = 120_000;
+
+/**
+ * Race a promise against a timeout. The rejection message contains "timeout" so
+ * `classifyEmbeddingError` treats it as transient (retry with backoff). The
+ * underlying promise is left to settle into the void — harmless for a stateless
+ * embed request.
+ */
+export async function withEmbedTimeout<T>(
+  p: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`embedding request exceeded ${timeoutMs}ms timeout`),
+            ),
+          timeoutMs,
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const queueLog = logger.child({ service: "embedding-queue" });
 
 export interface LlmEmbedder {
@@ -588,15 +630,34 @@ async function updateVectorColumn(
   targetId: string,
   targetColumn: string,
   vector: number[],
+  claimedRowCreatedAt: Date,
 ): Promise<void> {
   const table = TARGET_TABLE_MAP[targetTable];
   if (!table) {
     throw new Error(`Unknown target table: ${targetTable}`);
   }
+  // Atomic stale-write guard (audit follow-up): the pre-write SELECT in the
+  // worker is a TOCTOU — a newer queue row for this target could be inserted
+  // between that check and this UPDATE. Re-evaluate "no newer queue row exists"
+  // INSIDE the UPDATE's WHERE so check-and-write is a single atomic statement:
+  // if the item was edited + re-enqueued after this row was claimed, the UPDATE
+  // matches zero rows and the up-to-date embedding is preserved. Params are
+  // bound (no interpolation), so there is no injection surface.
   await db
     .update(table)
     .set({ [targetColumn]: vector } as any)
-    .where(eq(table.id as any, targetId));
+    .where(
+      and(
+        eq(table.id as any, targetId),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${embeddingQueue}
+          WHERE ${embeddingQueue.targetTable} = ${targetTable}
+            AND ${embeddingQueue.targetId} = ${targetId}
+            AND ${embeddingQueue.targetColumn} = ${targetColumn}
+            AND ${embeddingQueue.createdAt} > ${claimedRowCreatedAt}
+        )`,
+      ),
+    );
 }
 
 export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
@@ -923,14 +984,22 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
             throw new Error(`Unknown target table: ${item.targetTable}`);
           }
 
-          const vector = await embedder.embed(item.inputText);
+          // Hard timeout (audit follow-up): bound the embed below the
+          // stale-processing lease so a hung request can't be reaped + double-
+          // processed mid-flight. A timeout classifies as transient → retried.
+          const vector = await withEmbedTimeout(
+            embedder.embed(item.inputText),
+            EMBED_TIMEOUT_MS,
+          );
 
           // Stale-write guard (P2, Codex): if a NEWER queue row exists for this
           // target (the item was edited + re-enqueued after this row was
           // claimed), do NOT write — the newer row will produce the current
           // vector. With multi-worker SKIP LOCKED this older in-flight row could
           // otherwise finish last and clobber the up-to-date embedding. Mark this
-          // row completed without writing so it doesn't linger.
+          // row completed without writing so it doesn't linger. This SELECT is the
+          // fast-path skip (correct counter); the atomic backstop lives in
+          // updateVectorColumn's WHERE (closes the SELECT→write TOCTOU).
           const newerRows = await db
             .select({ id: embeddingQueue.id })
             .from(embeddingQueue)
@@ -947,7 +1016,7 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           if (newerRows.length > 0) {
             await db
               .update(embeddingQueue)
-              .set({ status: "completed", updatedAt: new Date() })
+              .set({ status: "completed", error: null, updatedAt: new Date() })
               .where(eq(embeddingQueue.id, item.id));
             skipped++;
             continue;
@@ -959,11 +1028,14 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
             item.targetId,
             item.targetColumn,
             vector,
+            item.createdAt as Date,
           );
 
+          // Clear any prior transient error so a row that failed then succeeded
+          // doesn't carry stale error text on a completed row (audit follow-up).
           await db
             .update(embeddingQueue)
-            .set({ status: "completed", updatedAt: new Date() })
+            .set({ status: "completed", error: null, updatedAt: new Date() })
             .where(eq(embeddingQueue.id, item.id));
           processed++;
         } catch (err) {

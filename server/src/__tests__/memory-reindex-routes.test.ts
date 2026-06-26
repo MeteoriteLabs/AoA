@@ -354,6 +354,41 @@ describe("POST /companies/:companyId/memory/:id/reindex", () => {
       "team_lead",
     );
   });
+
+  it("department-scopes the FETCHED item (audit): a cross-department lead is rejected", async () => {
+    // company-wide assertRole passes, but the item belongs to a department the
+    // caller can't access → assertMemoryAccess('update', {item}) rejects → 403.
+    const item = {
+      id: ITEM_ID,
+      title: "Dept B item",
+      content: "C",
+      companyId: COMPANY_ID,
+      layer: "domain",
+      departmentId: "dept-B",
+      visibility: "department",
+    };
+    mockMemoryService.getById.mockResolvedValueOnce(item);
+    mockAssertMemoryAccess.mockRejectedValueOnce(
+      forbidden("Insufficient permissions for memory update"),
+    );
+
+    const res = await request(makeApp(founderActor))
+      .post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/reindex`)
+      .send();
+
+    expect(res.status).toBe(403);
+    // The dept-scope check ran against the fetched item's department/layer.
+    expect(mockAssertMemoryAccess).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "update",
+      expect.objectContaining({ departmentId: "dept-B", layer: "domain" }),
+    );
+    // It must short-circuit before doing any re-index work.
+    expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1073,6 +1073,17 @@ export function memoryRoutes(db: Db) {
       return;
     }
 
+    // Department-scope (audit follow-up): assertRole above is company-wide, so a
+    // team_lead of department A could otherwise re-index department B's item.
+    // Re-index mutates the embedding (an "update"), so gate on the FETCHED item's
+    // department/layer/visibility — the same department-aware check the sibling
+    // update/delete routes use.
+    await assertMemoryAccess(db, req, companyId, "update", {
+      layer: item.layer,
+      departmentId: item.departmentId,
+      visibility: item.visibility,
+    });
+
     // Check for an existing failed queue row for this item.
     const failedRows = await (db as any)
       .select({ id: embeddingQueue.id })
