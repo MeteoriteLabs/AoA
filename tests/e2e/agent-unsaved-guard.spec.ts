@@ -117,4 +117,23 @@ test.describe("global unsaved-changes guard", () => {
     await expect(page).toHaveURL(/\/issues(\b|\/|\?|$)/, { timeout: 5_000 });
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
   });
+
+  test("agent-detail tab nav pushes ONE history entry (browser Back returns in a single press)", async ({ page, request }) => {
+    // Regression: Radix Tabs' default activationMode="automatic" fired the tab's
+    // onValueChange on BOTH focus and click, so the tab's navigate() ran twice →
+    // a duplicate history entry → the browser Back button was a no-op on the first
+    // press (the unsaved-guard dialog only fired on the 2nd press). Fixed with
+    // activationMode="manual" on the agent-detail <Tabs>. Verified live via /browse.
+    // No unsaved edits here — this isolates the history-entry count from the guard.
+    const company = await seedCompany(request, `E2E-Guard-${Date.now()}`);
+    const agent = await seedWorkerAgent(request, company.id);
+    const ref = agent.urlKey ?? agent.id;
+    await page.goto(`/${company.issuePrefix}/agents/${ref}`); // Overview
+    await page.getByRole("tab", { name: "Config" }).click(); // → /configure (must be ONE entry)
+    await expect(page).toHaveURL(new RegExp(`/agents/${ref}/configure`));
+    // A single browser Back must return to Overview — not stay on a duplicate /configure.
+    await page.evaluate(() => window.history.back());
+    await expect(page).toHaveURL(new RegExp(`/agents/${ref}(?:$|\\?)`), { timeout: 5_000 });
+    await expect(page).not.toHaveURL(/\/configure/);
+  });
 });

@@ -142,6 +142,7 @@ export function AgentDetailCore({
       <Tabs
         value={activeView}
         onValueChange={onViewChange}
+        activationMode="manual"
       >
         <PageTabBar
           items={tabs}
