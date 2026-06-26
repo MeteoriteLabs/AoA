@@ -123,6 +123,14 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
  *    `gpt-5.3-codex`) persisted on a row 400s on a ChatGPT/subscription
  *    login. Backfill rewrites it to the validated default (`gpt-5.5`) so
  *    existing rows self-heal on boot.
+ *
+ * 4) **opencode_local crew agents pinned to the legacy bare codex model**
+ *    (provider-switching fix): the previous opencode crew default seeded a
+ *    BARE `gpt-5.3-codex` (an API-key-only id that 400s on a ChatGPT login).
+ *    OpenCode ids are slash-format `provider/model`; the corrected default is
+ *    `openai/gpt-5.2-codex`. Without a backfill case these legacy rows keep the
+ *    broken bare model after upgrade and never self-heal. Flag bare (no-slash)
+ *    ChatGPT-incompatible models; leave valid slash-format / founder models be.
  */
 /**
  * Does the adapter config carry an agent-set OPENAI_API_KEY? The save path
@@ -168,6 +176,16 @@ export function needsAdapterBackfill(
     const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
     // A persisted codex model that a ChatGPT login would reject needs rewriting.
     return model.length > 0 && !isCodexCompatibleModel(model);
+  }
+  // Case 4: opencode_local rows pinned to the legacy BARE codex model. OpenCode
+  // ids are slash-format `provider/model`; the previous crew default seeded a
+  // bare `gpt-5.3-codex` (API-key-only, 400s on a ChatGPT login). Flag bare
+  // (no-slash) ChatGPT-incompatible models so they self-heal to the corrected
+  // slash default (`openai/gpt-5.2-codex`); leave valid slash-format ids and
+  // ChatGPT-safe bare models (e.g. a founder's `gpt-5.5`) untouched.
+  if (adapterType === "opencode_local") {
+    const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
+    return model.length > 0 && !model.includes("/") && !isCodexCompatibleModel(model);
   }
   return false;
 }

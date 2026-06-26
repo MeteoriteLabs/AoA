@@ -65,6 +65,29 @@ describe("resolve-crew-adapter (provider-switching fixes)", () => {
     expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: {} })).toBe(true); // no opts → unchanged old behavior
   });
 
+  // Codex P2 (Case 4): the previous opencode crew default seeded a BARE
+  // `gpt-5.3-codex` (API-key-only, 400s on a ChatGPT login). The corrected
+  // default is the slash-format `openai/gpt-5.2-codex`. Existing rows must
+  // self-heal on boot, so the legacy bare model is flagged for backfill while
+  // valid slash-format / ChatGPT-safe models are left alone.
+  it("backfill flags a legacy bare codex model on an opencode_local row", () => {
+    expect(needsAdapterBackfill("opencode_local", { model: "gpt-5.3-codex" })).toBe(true);
+  });
+  it("backfill does NOT flag the corrected slash-format opencode default", () => {
+    expect(needsAdapterBackfill("opencode_local", { model: "openai/gpt-5.2-codex" })).toBe(false);
+  });
+  it("backfill leaves a founder's valid slash-format opencode model alone", () => {
+    expect(needsAdapterBackfill("opencode_local", { model: "anthropic/claude-sonnet-4-5" })).toBe(false);
+    expect(needsAdapterBackfill("opencode_local", { model: "google/gemini-2.5-pro" })).toBe(false);
+  });
+  it("backfill leaves a ChatGPT-safe bare opencode model (e.g. gpt-5.5) untouched", () => {
+    expect(needsAdapterBackfill("opencode_local", { model: "gpt-5.5" })).toBe(false);
+  });
+  it("backfill ignores an opencode_local row with no model set", () => {
+    expect(needsAdapterBackfill("opencode_local", {})).toBe(false);
+    expect(needsAdapterBackfill("opencode_local", null)).toBe(false);
+  });
+
   // Codex P2: a backfill rewrite must preserve the founder's per-agent settings —
   // only the resolved model (+ bypass flags from `next`) should change.
   it("mergeAdapterConfig preserves per-agent env/cwd/command/extraArgs while rewriting the model", () => {
