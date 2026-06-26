@@ -4,7 +4,12 @@ import { agents, embeddingQueue, memoryItems, memoryItemVersions, memoryRetrieva
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { enqueueMemoryEmbedding } from "./memory-write.js";
-import { resolveApiKey } from "../adapters/api-common.js";
+// Query-side key resolution MUST match the write-side worker + resolveSemanticAvailable:
+// getProviderApiKey resolves the per-company llm:openai secret AND falls back to env
+// OPENAI_API_KEY. The old resolveApiKey had no env fallback, so env-only installs
+// indexed vectors (worker) but could never embed the QUERY → semantic recall silently
+// fell back to keyword while the UI reported semantic available (P2, Codex).
+import { getProviderApiKey } from "./internal-agent/providers/index.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
@@ -402,7 +407,7 @@ export function memoryService(db: Db) {
       let apiKey: string | null = null;
       if (caps.hasVectorSupport) {
         try {
-          apiKey = await resolveApiKey(companyId, "openai");
+          apiKey = await getProviderApiKey(db, companyId, "openai");
         } catch {
           // No API key — fall back to text search
         }
@@ -588,7 +593,7 @@ export function memoryService(db: Db) {
 
         let apiKey: string | null = null;
         try {
-          apiKey = await resolveApiKey(companyId, "openai");
+          apiKey = await getProviderApiKey(db, companyId, "openai");
         } catch {
           return [];
         }
@@ -786,7 +791,7 @@ export function memoryService(db: Db) {
       let apiKey: string | null = null;
       if (caps.hasVectorSupport) {
         try {
-          apiKey = await resolveApiKey(scope.companyId, "openai");
+          apiKey = await getProviderApiKey(db, scope.companyId, "openai");
         } catch {
           // No API key — fall back to text search
         }

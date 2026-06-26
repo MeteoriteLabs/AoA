@@ -1133,9 +1133,18 @@ export function memoryRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
-    // SELECT failed rows first so we can return a count.
+    // Only requeue NON-STALE failed rows (P2, Codex): skip any failed row whose
+    // target already has a completed/live (pending|processing) sibling — that
+    // means a NEWER row re-indexed the (possibly edited) item, so this failed
+    // row's inputText is stale and requeuing it would clobber the current vector.
+    // Same predicate as embeddings-backfill.reindexCompany.
     const failedRows = await (db as any)
-      .select({ id: embeddingQueue.id })
+      .select({
+        id: embeddingQueue.id,
+        targetTable: embeddingQueue.targetTable,
+        targetId: embeddingQueue.targetId,
+        targetColumn: embeddingQueue.targetColumn,
+      })
       .from(embeddingQueue)
       .where(
         and(
@@ -1144,18 +1153,40 @@ export function memoryRoutes(db: Db) {
         ),
       );
 
-    const requeued = failedRows.length;
+    const supersedingRows = await (db as any)
+      .select({
+        targetTable: embeddingQueue.targetTable,
+        targetId: embeddingQueue.targetId,
+        targetColumn: embeddingQueue.targetColumn,
+      })
+      .from(embeddingQueue)
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          inArray(embeddingQueue.status, ["completed", "pending", "processing"]),
+        ),
+      );
+
+    const superseded = new Set(
+      supersedingRows.map(
+        (r: { targetTable: string; targetId: string; targetColumn: string }) =>
+          `${r.targetTable} ${r.targetId} ${r.targetColumn}`,
+      ),
+    );
+    const requeueableIds = failedRows
+      .filter(
+        (r: { targetTable: string; targetId: string; targetColumn: string }) =>
+          !superseded.has(`${r.targetTable} ${r.targetId} ${r.targetColumn}`),
+      )
+      .map((r: { id: string }) => r.id);
+
+    const requeued = requeueableIds.length;
 
     if (requeued > 0) {
       await (db as any)
         .update(embeddingQueue)
         .set({ status: "pending", nextRetryAt: null, attempts: 0, error: null })
-        .where(
-          and(
-            eq(embeddingQueue.companyId, companyId),
-            eq(embeddingQueue.status, "failed"),
-          ),
-        );
+        .where(inArray(embeddingQueue.id, requeueableIds));
     }
 
     const actor = getActorInfo(req);

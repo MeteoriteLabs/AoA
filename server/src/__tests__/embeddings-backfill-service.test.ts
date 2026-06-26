@@ -300,11 +300,16 @@ describe("reindexCompany", () => {
   it("requeues failed rows: sets status=pending, attempts=0, error=null", async () => {
     const db = createReindexDb({
       selects: [
-        // select #0: 2 failed rows
-        [{ id: "q-1" }, { id: "q-2" }],
-        // select #1: no live queue rows
+        // select #0: 2 failed rows (with target keys)
+        [
+          { id: "q-1", targetTable: "memory_items", targetId: "mi-1", targetColumn: "embedding" },
+          { id: "q-2", targetTable: "memory_items", targetId: "mi-2", targetColumn: "embedding" },
+        ],
+        // select #1: superseding (completed/live) rows — none, so both requeue
         [],
-        // select #2: no missing-embedding items
+        // select #2: no live queue rows (step 2)
+        [],
+        // select #3: no missing-embedding items (step 2)
         [],
       ],
     });
@@ -331,9 +336,11 @@ describe("reindexCompany", () => {
       selects: [
         // select #0: no failed rows
         [],
-        // select #1: no live queue rows
+        // select #1: superseding rows (none)
         [],
-        // select #2: 2 items with null embedding
+        // select #2: no live queue rows (step 2)
+        [],
+        // select #3: 2 items with null embedding (step 2)
         [
           { id: "mi-1", title: "A", content: "aa" },
           { id: "mi-2", title: "B", content: "bb" },
@@ -358,9 +365,11 @@ describe("reindexCompany", () => {
       selects: [
         // select #0: no failed rows
         [],
-        // select #1: 1 live queue row — notInArray will exclude mi-1
+        // select #1: superseding rows (none)
+        [],
+        // select #2: 1 live queue row — notInArray will exclude mi-1 (step 2)
         [{ targetId: "mi-1" }],
-        // select #2: only mi-2 returned (notInArray excluded mi-1)
+        // select #3: only mi-2 returned (notInArray excluded mi-1) (step 2)
         [{ id: "mi-2", title: "B", content: "bb" }],
       ],
     });
@@ -379,11 +388,13 @@ describe("reindexCompany", () => {
   it("handles both requeue and missing enqueue in one call", async () => {
     const db = createReindexDb({
       selects: [
-        // select #0: 1 failed row
-        [{ id: "q-failed" }],
-        // select #1: no live queue rows
+        // select #0: 1 failed row (with target keys)
+        [{ id: "q-failed", targetTable: "memory_items", targetId: "mi-x", targetColumn: "embedding" }],
+        // select #1: superseding rows (none)
         [],
-        // select #2: 1 missing item
+        // select #2: no live queue rows (step 2)
+        [],
+        // select #3: 1 missing item (step 2)
         [{ id: "mi-3", title: "C", content: "cc" }],
       ],
     });
@@ -396,6 +407,30 @@ describe("reindexCompany", () => {
     expect(db.setCalls.length).toBe(2);
     expect(db.setCalls[1]).toEqual({ nextRetryAt: null });
     expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT requeue a stale failed row whose target already has a completed sibling (P2)", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: 1 failed row for mi-stale (old inputText)
+        [{ id: "q-stale", targetTable: "memory_items", targetId: "mi-stale", targetColumn: "embedding" }],
+        // select #1: superseding rows — a COMPLETED row for the same target means
+        // mi-stale was already re-indexed by a newer row; requeuing q-stale would
+        // clobber the current vector with obsolete content.
+        [{ targetTable: "memory_items", targetId: "mi-stale", targetColumn: "embedding" }],
+        // select #2: no live queue rows (step 2)
+        [],
+        // select #3: no missing items (step 2)
+        [],
+      ],
+    });
+
+    const result = await reindexCompany(db as any, "c-company");
+
+    expect(result.requeuedFailed).toBe(0);
+    // Only the unconditional step-1b backoff-clear should have run (no failed requeue).
+    expect(db.setCalls.length).toBe(1);
+    expect(db.setCalls[0]).toEqual({ nextRetryAt: null });
   });
 });
 
