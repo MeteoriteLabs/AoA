@@ -79,6 +79,11 @@ export function AgentDetailCore({
       {/* Floating Save/Cancel (desktop) */}
       {!isMobile && actionBar && (
         <div
+          data-testid="agent-detail-action-bar"
+          // `data-dirty` mirrors showActionBar so tests can deterministically wait
+          // for the unsaved-changes state to arm (the bar stays mounted and only
+          // fades via opacity, which Playwright's visibility checks ignore).
+          data-dirty={showActionBar ? "true" : "false"}
           className={cn(
             "sticky top-6 z-10 float-right transition-opacity duration-150",
             showActionBar

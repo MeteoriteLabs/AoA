@@ -38,6 +38,11 @@ async function openDirtyConfig(page: Page, request: APIRequestContext) {
   await expect(nameInput).toBeVisible({ timeout: 15_000 });
   // Make the Config form dirty (immediate commit on each keystroke).
   await nameInput.fill("Guard E2E Agent EDITED");
+  // Wait until the unsaved-changes state has armed (the action bar reflects
+  // configDirty via data-dirty) before any navigation — the dirty flag
+  // propagates through a React effect that registers the global guard, so a
+  // navigation fired before it settles would slip past unblocked.
+  await expect(page.getByTestId("agent-detail-action-bar")).toHaveAttribute("data-dirty", "true");
   return { company, ref, nameInput };
 }
 
@@ -80,6 +85,10 @@ test.describe("global unsaved-changes guard", () => {
     const nameInput = page.getByTestId("agent-config-name-input");
     await expect(nameInput).toBeVisible({ timeout: 15_000 });
     await nameInput.fill("Back-button dirty edit");
+    // Wait until the guard is armed (see openDirtyConfig) before pressing Back —
+    // page.goBack() has no actionability wait, so without this the POP can race
+    // ahead of the dirty-registration effect and slip through unblocked.
+    await expect(page.getByTestId("agent-detail-action-bar")).toHaveAttribute("data-dirty", "true");
     // Press the real browser Back button.
     await page.goBack();
     const dialog = page.getByRole("alertdialog");

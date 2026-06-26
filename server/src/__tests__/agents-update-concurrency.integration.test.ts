@@ -118,13 +118,17 @@ describe.skipIf(process.platform === "win32")(
         .select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.id, created!.id), eq(agents.updatedAt, new Date(token))));
+      // Mirror the service guard EXACTLY: bind the ms-precision token as text and
+      // cast in-SQL. A raw JS Date in a sql`` fragment has no column type for
+      // Drizzle to encode against → node-postgres throws ERR_INVALID_ARG_TYPE on
+      // real Postgres (the very bug this guard's shape must avoid).
       const truncMatch = await db
         .select({ id: agents.id })
         .from(agents)
         .where(
           and(
             eq(agents.id, created!.id),
-            sql`date_trunc('milliseconds', ${agents.updatedAt}) = ${new Date(token)}`,
+            sql`date_trunc('milliseconds', ${agents.updatedAt}) = date_trunc('milliseconds', ${token}::timestamptz)`,
           ),
         );
       // The date_trunc guard ALWAYS matches; the naked eq matches only when the
