@@ -82,7 +82,11 @@ export async function hasProviderKey(
   const svc = secretService(db);
   for (const name of secretNames) {
     const row = await svc.getByName(companyId, name);
-    if (row) return true;
+    // Only an ACTIVE secret counts (P2, Codex): getByName returns any non-deleted
+    // row, but the real resolver rejects non-active (disabled/archived) secrets,
+    // so counting them here would falsely report availability for a key that
+    // query embedding + the worker cannot actually use.
+    if (row && row.status === "active") return true;
   }
   const envKey = PROVIDER_ENV_KEYS[provider] ?? `${provider.toUpperCase()}_API_KEY`;
   return Boolean(process.env[envKey]);

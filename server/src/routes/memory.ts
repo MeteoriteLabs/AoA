@@ -17,7 +17,7 @@ import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
 import { resolveSemanticAvailable } from "../services/memory-index-status.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryAccess, assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
 import { reindexCompany } from "../services/embeddings-backfill.js";
@@ -1061,6 +1061,10 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    // Board-only (P2, Codex): assertRole is a no-op for agent actors (rbac.ts
+    // returns early for type==="agent"), so without assertBoard any company agent
+    // key could drive re-index. This is a founder/team_lead UI action.
+    assertBoard(req);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     const item = await svc.getById(companyId, id);
@@ -1122,6 +1126,8 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/reindex-failed", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
+    assertBoard(req);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     // Only requeue NON-STALE failed rows (P2, Codex): skip any failed row whose

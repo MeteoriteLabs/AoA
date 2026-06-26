@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   assertRole: vi.fn<() => Promise<void>>(),
   resolveCompanyCliTool: vi.fn<() => Promise<string>>(),
   probeExtractionCli: vi.fn<() => Promise<{ available: boolean; tool: string; error?: string }>>(),
-  resolveAvailableProvider: vi.fn<() => Promise<unknown>>(),
+  hasProviderKey: vi.fn<() => Promise<boolean>>(),
 }));
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ vi.mock("../services/extraction-engine.js", () => ({
 }));
 
 vi.mock("../services/internal-agent/providers/index.js", () => ({
-  resolveAvailableProvider: mocks.resolveAvailableProvider,
+  hasProviderKey: mocks.hasProviderKey,
 }));
 
 // ── Import subject after mocks ────────────────────────────────────────────────
@@ -98,11 +98,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("returns engine='cli' when CLI is available", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("claude_cli");
     mocks.probeExtractionCli.mockResolvedValue({ available: true, tool: "claude_cli" });
-    mocks.resolveAvailableProvider.mockResolvedValue({
-      provider: "anthropic",
-      apiKey: "sk-test",
-      model: "claude-sonnet-4-6",
-    });
+    mocks.hasProviderKey.mockResolvedValue(true);
 
     const res = await request(makeApp(founderActor)).get(STATUS_URL);
 
@@ -117,11 +113,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("returns engine='api' when CLI not available but a key is configured", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("claude_cli");
     mocks.probeExtractionCli.mockResolvedValue({ available: false, tool: "claude_cli" });
-    mocks.resolveAvailableProvider.mockResolvedValue({
-      provider: "openai",
-      apiKey: "sk-openai-test",
-      model: "gpt-4o",
-    });
+    mocks.hasProviderKey.mockResolvedValue(true);
 
     const res = await request(makeApp(founderActor)).get(STATUS_URL);
 
@@ -136,7 +128,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("returns engine='none' when neither CLI nor key is available", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("claude_cli");
     mocks.probeExtractionCli.mockResolvedValue({ available: false, tool: "claude_cli" });
-    mocks.resolveAvailableProvider.mockRejectedValue(new Error("No API key configured"));
+    mocks.hasProviderKey.mockResolvedValue(false);
 
     const res = await request(makeApp(founderActor)).get(STATUS_URL);
 
@@ -151,9 +143,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("apiKey=false when provider resolver throws", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("codex");
     mocks.probeExtractionCli.mockResolvedValue({ available: false, tool: "codex" });
-    mocks.resolveAvailableProvider.mockRejectedValue(
-      new Error("No API key configured for provider"),
-    );
+    mocks.hasProviderKey.mockResolvedValue(false);
 
     const res = await request(makeApp(founderActor)).get(STATUS_URL);
 
@@ -165,7 +155,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("forwards the configured tool name in the cli field", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("codex");
     mocks.probeExtractionCli.mockResolvedValue({ available: true, tool: "codex" });
-    mocks.resolveAvailableProvider.mockRejectedValue(new Error("no key"));
+    mocks.hasProviderKey.mockResolvedValue(false);
 
     const res = await request(makeApp(founderActor)).get(STATUS_URL);
 
@@ -180,7 +170,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("calls assertCompanyAccess with the correct companyId", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("claude_cli");
     mocks.probeExtractionCli.mockResolvedValue({ available: true, tool: "claude_cli" });
-    mocks.resolveAvailableProvider.mockRejectedValue(new Error("no key"));
+    mocks.hasProviderKey.mockResolvedValue(false);
 
     await request(makeApp(founderActor)).get(STATUS_URL);
 
@@ -190,7 +180,7 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
   it("calls assertRole with founder and team_lead", async () => {
     mocks.resolveCompanyCliTool.mockResolvedValue("claude_cli");
     mocks.probeExtractionCli.mockResolvedValue({ available: false, tool: "claude_cli" });
-    mocks.resolveAvailableProvider.mockRejectedValue(new Error("no key"));
+    mocks.hasProviderKey.mockResolvedValue(false);
 
     await request(makeApp(founderActor)).get(STATUS_URL);
 

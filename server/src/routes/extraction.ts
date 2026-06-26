@@ -20,7 +20,7 @@ import {
   probeExtractionCli,
   EXTRACTION_SUPPORTED_CLI_TOOLS,
 } from "../services/extraction-engine.js";
-import { resolveAvailableProvider } from "../services/internal-agent/providers/index.js";
+import { hasProviderKey } from "../services/internal-agent/providers/index.js";
 
 export function extractionRoutes(db: Db) {
   const router = Router();
@@ -54,15 +54,18 @@ export function extractionRoutes(db: Db) {
         ? await probeExtractionCli(tool)
         : { available: false, tool };
 
-      // Step 2: check whether at least one hosted provider key is reachable.
-      // resolveAvailableProvider throws when no key exists anywhere — catch that.
-      let apiKey = false;
-      try {
-        await resolveAvailableProvider(db, companyId);
-        apiKey = true;
-      } catch {
-        // No key configured — apiKey stays false.
-      }
+      // Step 2: check whether at least one hosted provider key EXISTS. This is a
+      // passive status probe (the Settings panel polls it), so use the
+      // non-resolving existence check — resolving the value would write a
+      // secretAccessEvents audit row + bump lastResolvedAt on every view (P2,
+      // Codex). hasProviderKey checks active secret rows + env, no decrypt.
+      const apiKey = (
+        await Promise.all([
+          hasProviderKey(db, companyId, "anthropic"),
+          hasProviderKey(db, companyId, "openai"),
+          hasProviderKey(db, companyId, "google"),
+        ])
+      ).some(Boolean);
 
       // Step 3: derive the active engine (same priority order as
       // resolveExtractionEngine, but without throwing — "none" is valid here).

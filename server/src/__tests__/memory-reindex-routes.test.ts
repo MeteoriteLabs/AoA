@@ -143,6 +143,14 @@ const memberActor = {
   isInstanceAdmin: false,
 };
 
+const agentActor = {
+  type: "agent" as const,
+  source: "agent" as const,
+  userId: "agent-1",
+  companyId: COMPANY_ID,
+  agentId: "agent-1",
+};
+
 // ── DB mock factories ─────────────────────────────────────────────────────────
 
 /**
@@ -313,6 +321,18 @@ describe("POST /companies/:companyId/memory/:id/reindex", () => {
       "founder",
       "team_lead",
     );
+    expect(mockMemoryService.getById).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent actors (board-only) before any role check (P2)", async () => {
+    // assertRole is a no-op for agent actors, so assertBoard must reject them
+    // first — otherwise any company agent key could drive re-index.
+    const res = await request(makeApp(agentActor))
+      .post(`/api/companies/${COMPANY_ID}/memory/${ITEM_ID}/reindex`)
+      .send();
+
+    expect(res.status).toBe(403);
+    expect(mockAssertRole).not.toHaveBeenCalled();
     expect(mockMemoryService.getById).not.toHaveBeenCalled();
   });
 
