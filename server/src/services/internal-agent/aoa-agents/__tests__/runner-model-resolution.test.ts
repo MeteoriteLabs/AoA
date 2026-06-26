@@ -17,6 +17,20 @@ describe("applyModelResolutionToConfig", () => {
       { inheritedEnvOpenAiKey: "sk-company" });
     expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toBe("sk-agent");
   });
+  it("KEEPS a per-agent OPENAI_API_KEY stored as a normalized plain binding (Codex P2)", () => {
+    // Saved env entries are normalized to binding objects; a string-only check
+    // would treat the agent's own key as absent and strip it.
+    const cfg = applyModelResolutionToConfig("codex_local",
+      { model: "gpt-5.5", env: { OPENAI_API_KEY: { type: "plain", value: "sk-agent" } } }, status,
+      { inheritedEnvOpenAiKey: "sk-company" });
+    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toEqual({ type: "plain", value: "sk-agent" });
+  });
+  it("KEEPS a per-agent OPENAI_API_KEY stored as a secret_ref binding (Codex P2)", () => {
+    const cfg = applyModelResolutionToConfig("codex_local",
+      { model: "gpt-5.5", env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" } } }, status,
+      { inheritedEnvOpenAiKey: "sk-company" });
+    expect((cfg.env as Record<string, unknown>).OPENAI_API_KEY).toEqual({ type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" });
+  });
   it("sets env to {} (no inherited key leaks) when the codex config has no env field", () => {
     const cfg = applyModelResolutionToConfig("codex_local", { model: "gpt-5.5" }, status,
       { inheritedEnvOpenAiKey: "sk-company" });
