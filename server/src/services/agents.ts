@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, isNull, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -89,6 +89,13 @@ interface RevisionMetadata {
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
+  /**
+   * Optimistic-concurrency token (the agent row's `updatedAt`, as an ISO
+   * string). When present, the write is an atomic conditional UPDATE guarded
+   * against `agents.updatedAt`; a mismatch (row changed underneath, while it
+   * still exists) throws `conflict()` (409). When absent, last-write-wins.
+   */
+  expectedUpdatedAt?: string;
 }
 
 interface AgentShortnameCollisionOptions {
@@ -340,12 +347,43 @@ export function agentService(db: Db) {
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
+    const expectedAt =
+      options?.expectedUpdatedAt != null ? new Date(options.expectedUpdatedAt) : null;
+    const guard =
+      expectedAt != null
+        ? and(
+            eq(agents.id, id),
+            // Millisecond-precision compare. `agents.updatedAt` is stored at
+            // Postgres microsecond resolution (defaultNow() on never-updated rows);
+            // the client token is a ms-precision ISO string. A naked
+            // `eq(agents.updatedAt, expectedAt)` would never match a freshly-created
+            // row → spurious 409 + retry loop. date_trunc both sides to ms.
+            sql`date_trunc('milliseconds', ${agents.updatedAt}) = ${expectedAt}`,
+          )
+        : eq(agents.id, id);
+
     const updated = await db
       .update(agents)
       .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
+      .where(guard)
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    // Optimistic-concurrency: a token was supplied but the guarded write matched
+    // no row. Distinguish "row changed underneath" (409) from "row gone" (404):
+    // re-read by id. A pre-read compare would be TOCTOU — the guard above is the
+    // atomic check; this re-read only classifies the miss. (Precedent: issues.ts
+    // `checkout`.)
+    if (!updated && expectedAt != null) {
+      const current = await getById(id);
+      if (current) {
+        throw conflict(
+          "This agent was changed by someone else. Reload and re-apply your change.",
+          { currentUpdatedAt: current.updatedAt.toISOString() },
+        );
+      }
+      return null; // row vanished concurrently → caller/route maps to 404
+    }
     const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
