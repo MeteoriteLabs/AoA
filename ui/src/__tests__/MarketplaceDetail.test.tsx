@@ -8,8 +8,9 @@ import MarketplaceDetail from "@/pages/MarketplaceDetail";
 import { marketplaceApi } from "@/api/marketplace";
 import { pluginsApi } from "@/api/plugins";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
-import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
-import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ToastProvider } from "@/context/ToastContext";
+import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
+import { ToastViewport } from "@/components/ToastViewport";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
@@ -52,10 +53,12 @@ function wrap(initialPath: string) {
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
         <ToastProvider>
-          <Routes>
-            <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
-          </Routes>
-          <InstallToastSlot />
+          <InstallToastProvider>
+            <Routes>
+              <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+            </Routes>
+            <ToastViewport />
+          </InstallToastProvider>
         </ToastProvider>
       </MemoryRouter>
     </QueryClientProvider>,

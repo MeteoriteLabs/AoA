@@ -6,8 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { SnapshotInstallModal } from "../SnapshotInstallModal";
-import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
-import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ToastProvider } from "@/context/ToastContext";
+import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
+import { ToastViewport } from "@/components/ToastViewport";
 import {
   CODE_REVIEW_SKILL,
   ENGINEER_AGENT,
@@ -53,8 +54,10 @@ function wrap(node: ReactNode) {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <ToastProvider>
-          {node}
-          <InstallToastSlot />
+          <InstallToastProvider>
+            {node}
+            <ToastViewport />
+          </InstallToastProvider>
         </ToastProvider>
       </MemoryRouter>
     </QueryClientProvider>,

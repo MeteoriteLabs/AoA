@@ -216,6 +216,12 @@
   --border-soft: hsl(20 8% 92%);
   --border-strong: hsl(20 8% 78%);
 
+  /* Toast (unified) */
+  --toast-bg: color-mix(in oklch, var(--card-2) 80%, transparent);
+  --toast-border: color-mix(in srgb, var(--text) 12%, transparent);
+  --toast-highlight: rgba(255, 255, 255, 0.6);
+  --toast-loading: #0e9bb3;
+
   /* Sizing tokens */
   --row-compact: 32px; /* denser than --row-data for high-frequency session lists */
 
@@ -306,6 +312,12 @@
   --border: hsl(0 0% 14%);
   --border-soft: hsl(0 0% 11%);
   --border-strong: hsl(0 0% 22%);
+
+  /* Toast (unified) */
+  --toast-bg: color-mix(in oklch, var(--card-2) 55%, transparent);
+  --toast-border: color-mix(in srgb, white 11%, transparent);
+  --toast-highlight: rgba(255, 255, 255, 0.06);
+  --toast-loading: #37c2d4;
 
   /* Component tokens (dark) */
   --secondary-sidebar-bg: oklch(0.155 0.005 30);
@@ -832,4 +844,39 @@ a.aoa-skill-mention-chip {
 .aoa-mdxeditor [class*="_toolbarButtonDropdownContainer_"],
 .aoa-mdxeditor [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
+}
+
+/* Unified toast glass surface */
+.toast-glass {
+  background: var(--toast-bg);
+  border: 1px solid var(--toast-border);
+  -webkit-backdrop-filter: blur(17px) saturate(1.35);
+  backdrop-filter: blur(17px) saturate(1.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), inset 0 1px 0 var(--toast-highlight);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .toast-glass {
+    background: var(--card-2);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Indeterminate loading rail */
+@keyframes toastRail {
+  0% { left: -44%; }
+  100% { left: 100%; }
+}
+.toast-rail {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 44%;
+  border-radius: 2px;
+  background: var(--toast-loading);
+  animation: toastRail 1.25s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-rail { animation: none; left: 0; width: 100%; opacity: 0.5; }
 }

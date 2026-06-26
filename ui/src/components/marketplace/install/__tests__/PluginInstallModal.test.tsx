@@ -6,8 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { PluginInstallModal } from "../PluginInstallModal";
-import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
-import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ToastProvider } from "@/context/ToastContext";
+import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
+import { ToastViewport } from "@/components/ToastViewport";
 import { SLACK_PLUGIN } from "@/__tests__/__fixtures__/marketplace-catalog";
 import { marketplaceApi } from "@/api/marketplace";
 
@@ -32,8 +33,10 @@ function wrap(node: ReactNode) {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <ToastProvider>
-          {node}
-          <InstallToastSlot />
+          <InstallToastProvider>
+            {node}
+            <ToastViewport />
+          </InstallToastProvider>
         </ToastProvider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -148,8 +151,10 @@ describe("PluginInstallModal", () => {
       <QueryClientProvider client={qc}>
         <MemoryRouter>
           <ToastProvider>
-            <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />
-            <InstallToastSlot />
+            <InstallToastProvider>
+              <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />
+              <ToastViewport />
+            </InstallToastProvider>
           </ToastProvider>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -165,8 +170,10 @@ describe("PluginInstallModal", () => {
       <QueryClientProvider client={qc}>
         <MemoryRouter>
           <ToastProvider>
-            <PluginInstallModal item={SLACK_PLUGIN} open={false} onOpenChange={onOpenChange} />
-            <InstallToastSlot />
+            <InstallToastProvider>
+              <PluginInstallModal item={SLACK_PLUGIN} open={false} onOpenChange={onOpenChange} />
+              <ToastViewport />
+            </InstallToastProvider>
           </ToastProvider>
         </MemoryRouter>
       </QueryClientProvider>,

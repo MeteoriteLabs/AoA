@@ -12,9 +12,8 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Toaster } from "@/components/ui/toaster";
-import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
-import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
+import { ToastViewport } from "@/components/ToastViewport";
+import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { runStorageMigrations } from "./lib/storage-migrations";
@@ -55,13 +54,12 @@ createRoot(document.getElementById("root")!).render(
                   <BreadcrumbProviderWithCompany>
                     <SidebarProvider>
                       <DialogProvider>
-                        <MarketplaceToastProvider>
+                        <InstallToastProvider>
                           <ErrorBoundary>
                             <App />
                           </ErrorBoundary>
-                          <InstallToastSlot />
-                          <Toaster />
-                        </MarketplaceToastProvider>
+                          <ToastViewport />
+                        </InstallToastProvider>
                       </DialogProvider>
                     </SidebarProvider>
                   </BreadcrumbProviderWithCompany>
