@@ -13,7 +13,7 @@
 import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import type { ExtractionEngineStatusResponse } from "@armyofagents/shared";
-import { assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import {
   resolveCompanyCliTool,
@@ -41,6 +41,11 @@ export function extractionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      // Board-only (P2, Codex): assertRole no-ops for agent actors, so without
+      // assertBoard any company agent key could probe whether hosted provider
+      // keys exist + which CLI is installed. This is a founder/team_lead settings
+      // read (same gate as the re-index routes).
+      assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
       // Step 1: resolve the CLI tool configured for this company and probe it.

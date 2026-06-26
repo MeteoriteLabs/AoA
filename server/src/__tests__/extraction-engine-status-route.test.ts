@@ -23,6 +23,7 @@ import { errorHandler } from "../middleware/index.js";
 
 const mocks = vi.hoisted(() => ({
   assertCompanyAccess: vi.fn(),
+  assertBoard: vi.fn(),
   assertRole: vi.fn<() => Promise<void>>(),
   resolveCompanyCliTool: vi.fn<() => Promise<string>>(),
   probeExtractionCli: vi.fn<() => Promise<{ available: boolean; tool: string; error?: string }>>(),
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../routes/authz.js", () => ({
   assertCompanyAccess: mocks.assertCompanyAccess,
+  assertBoard: mocks.assertBoard,
 }));
 
 vi.mock("../middleware/rbac.js", () => ({
@@ -203,6 +205,20 @@ describe("GET /companies/:companyId/extraction/engine-status", () => {
 
     expect(res.status).toBe(403);
     // No downstream calls after the authz gate.
+    expect(mocks.resolveCompanyCliTool).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when assertBoard rejects (agent key) before the role check (P2)", async () => {
+    const { forbidden } = await import("../errors.js");
+    mocks.assertBoard.mockImplementation(() => {
+      throw forbidden("Board access required");
+    });
+
+    const res = await request(makeApp(founderActor)).get(STATUS_URL);
+
+    expect(res.status).toBe(403);
+    // The board gate runs before assertRole and the probes.
+    expect(mocks.assertRole).not.toHaveBeenCalled();
     expect(mocks.resolveCompanyCliTool).not.toHaveBeenCalled();
   });
 
