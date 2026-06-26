@@ -367,6 +367,44 @@ describe("per-company embedding key resolution (Task 10)", () => {
       // The baseline is built in startEmbeddingWorker, not here, so count should be 1.
       expect(openaiInstanceCount).toBe(1);
     });
+
+    it("calls resolveCompanyKey ONCE per company per tick, not once per row (P2)", async () => {
+      const OpenAIMock = OpenAI as unknown as ReturnType<typeof vi.fn>;
+      OpenAIMock.mockImplementation(() => ({
+        embeddings: {
+          create: vi.fn().mockResolvedValue({
+            data: [{ embedding: Array.from({ length: 1536 }, () => 0.1) }],
+          }),
+        },
+      }));
+
+      const db = createSequenceDb({
+        selects: [
+          [
+            { id: "q-1", targetTable: "memory_items", targetId: "m-1", targetColumn: "embedding", inputText: "t1", status: "pending", attempts: 0, companyId: "company-A" },
+            { id: "q-2", targetTable: "memory_items", targetId: "m-2", targetColumn: "embedding", inputText: "t2", status: "pending", attempts: 0, companyId: "company-A" },
+            { id: "q-3", targetTable: "memory_items", targetId: "m-3", targetColumn: "embedding", inputText: "t3", status: "pending", attempts: 0, companyId: "company-B" },
+          ],
+        ],
+        updates: Array.from({ length: 9 }, () => []),
+      });
+
+      // resolveCompanyKey goes through getProviderApiKey in production (decrypt +
+      // audit write), so it must be cached per company per tick.
+      const resolveCompanyKey = vi.fn(async (companyId: string | null) =>
+        companyId === "company-B" ? "sk-key-B" : "sk-key-A",
+      );
+
+      const svc = createEmbeddingService(db as any, { embed: vi.fn() });
+      const result = await svc.processQueue({ resolveCompanyKey });
+
+      expect(result.processed).toBe(3);
+      // 3 rows across 2 companies → exactly 2 key resolutions (one per company),
+      // not 3 (one per row).
+      expect(resolveCompanyKey).toHaveBeenCalledTimes(2);
+      const resolvedCompanyIds = resolveCompanyKey.mock.calls.map((c) => c[0]).sort();
+      expect(resolvedCompanyIds).toEqual(["company-A", "company-B"]);
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────────────

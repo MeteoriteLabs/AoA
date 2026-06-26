@@ -97,10 +97,20 @@ export async function runCodexExecJson(
   const sharedCodexModel = await readSharedCodexModel();
   const resolvedModel = resolveCodexChatModel(codexModel, sharedCodexModel);
 
+  // SECURITY (P1, Codex): extraction feeds ARBITRARY discussion text into codex
+  // as the prompt, so it must NOT run with the approvals/sandbox bypass — a
+  // prompt-injection entry could otherwise make codex execute host commands as
+  // the server user. Extraction only needs the model to read the prompt and emit
+  // JSON; it needs no shell/tool access. Run with the most restrictive sandbox
+  // (read-only) and never auto-approve escalations (non-interactive, so it can't
+  // hang waiting for one either).
   const args = [
     "exec",
     "--json",
-    "--dangerously-bypass-approvals-and-sandbox",
+    "--sandbox",
+    "read-only",
+    "--ask-for-approval",
+    "never",
     "--model",
     resolvedModel,
     "-c",

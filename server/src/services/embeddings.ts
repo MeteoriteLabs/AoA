@@ -786,6 +786,12 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
       // Avoids rebuilding the OpenAI SDK (+ keepalive agent) for each row when
       // multiple rows from the same company land in the same batch.
       const embedderByKey = new Map<string, LlmEmbedder>();
+      // Per-tick company-key resolution cache: companyKey → resolved key | null
+      // (P2, Codex). resolveCompanyKey goes through getProviderApiKey, which can
+      // decrypt / call an external secret provider AND write secret-access audit
+      // rows, so it must run ONCE per unique company per tick — not once per row
+      // (a 50-row backlog would otherwise do 50 decrypts + 50 audit writes).
+      const resolvedKeyByCompany = new Map<string, string | null>();
       // Track which companyIds have been logged "no key" this tick so we
       // don't spam the log for every row in the batch.
       const loggedNoKey = new Set<string>();
@@ -841,10 +847,16 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           continue;
         }
 
-        // ── Per-company key resolution ────────────────────────────────────
+        // ── Per-company key resolution (cached once per company per tick) ──
         let embedder: LlmEmbedder;
         if (resolveCompanyKey) {
-          const key = await resolveCompanyKey(item.companyId ?? null);
+          let key: string | null;
+          if (resolvedKeyByCompany.has(companyKey)) {
+            key = resolvedKeyByCompany.get(companyKey) ?? null;
+          } else {
+            key = await resolveCompanyKey(item.companyId ?? null);
+            resolvedKeyByCompany.set(companyKey, key);
+          }
           if (!key) {
             // No key for this company — restore the row to pending AND push its
             // nextRetryAt out (P2, Codex): otherwise a keyless company with a
