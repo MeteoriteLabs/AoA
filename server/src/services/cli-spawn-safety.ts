@@ -40,8 +40,16 @@ const VENDOR_AUTH_KEYS = new Set([
   "GOOGLE_GENERATIVE_AI_API_KEY",
 ]);
 
-/** Generic secret-ish names (covers app/plugin secrets we don't enumerate). */
-const SECRETISH_RE = /(secret|password|passwd|private[_-]?key)/i;
+/**
+ * Generic credential-style names (covers app/plugin/infra secrets we don't
+ * enumerate by exact name). Broadened (P1, Codex re-review) to deny ALL
+ * token/api-key/access-key/credential/cookie/auth names so vars like NPM_TOKEN,
+ * SENTRY_AUTH_TOKEN, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, *_API_KEY never
+ * reach an untrusted-prompt extraction child. Vendor auth the CLI genuinely
+ * needs is re-added via `keep` (checked before this regex).
+ */
+const SECRETISH_RE =
+  /(secret|password|passwd|passphrase|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|auth)/i;
 
 /**
  * Build a scrubbed copy of `process.env` for an untrusted-prompt CLI child.

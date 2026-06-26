@@ -45,6 +45,28 @@ describe("buildScrubbedCliEnv", () => {
     expect(env.SOME_PASSWORD).toBeUndefined();
   });
 
+  it("drops generic token / api-key / access-key / credential-style vars (P1 re-review)", () => {
+    process.env.NPM_TOKEN = "npm_x";
+    process.env.SENTRY_AUTH_TOKEN = "sentry_x";
+    process.env.AWS_ACCESS_KEY_ID = "AKIA...";
+    process.env.AWS_SECRET_ACCESS_KEY = "wJal...";
+    process.env.SLACK_API_KEY = "xoxb-...";
+    process.env.SESSION_COOKIE = "abc";
+    process.env.SOME_CREDENTIAL = "c";
+
+    const env = buildScrubbedCliEnv();
+    expect(env.NPM_TOKEN).toBeUndefined();
+    expect(env.SENTRY_AUTH_TOKEN).toBeUndefined();
+    expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(env.SLACK_API_KEY).toBeUndefined();
+    expect(env.SESSION_COOKIE).toBeUndefined();
+    expect(env.SOME_CREDENTIAL).toBeUndefined();
+    // …but benign operational env the CLI needs survives.
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/home/aoa");
+  });
+
   it("drops ALL vendor auth keys by default", () => {
     process.env.OPENAI_API_KEY = "sk-openai";
     process.env.ANTHROPIC_API_KEY = "sk-anthropic";

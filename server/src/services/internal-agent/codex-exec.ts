@@ -57,6 +57,8 @@ export interface RunCodexExecJsonResult {
   exitCode: number | null;
   /** Set true when the run was killed by the timeout. */
   timedOut: boolean;
+  /** Set true when the run was killed because stdout exceeded the size cap. */
+  outputCapped: boolean;
   /** Spawn error (e.g. ENOENT) when the binary could not launch. */
   spawnError: NodeJS.ErrnoException | null;
   /** Resolved model used for the invocation (provenance). */
@@ -206,6 +208,7 @@ export async function runCodexExecJson(
     stderr,
     exitCode,
     timedOut,
+    outputCapped: stdoutBuf.capped,
     spawnError,
     resolvedModel,
   };

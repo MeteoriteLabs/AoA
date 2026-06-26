@@ -234,7 +234,11 @@ describe("extractViaCli — claude happy path", () => {
     const huge = "x".repeat(9 * 1024 * 1024);
     nextSpawn = { stdout: [huge], exitCode: 0 };
     const { extractViaCli } = await import("../services/extraction-cli.ts");
-    await expect(extractViaCli("claude", "SYSTEM", "content")).rejects.toBeTruthy();
+    // Killing on overflow makes close report a null exit; the run must still FAIL
+    // (not be coalesced to success) (P2 re-review).
+    await expect(extractViaCli("claude", "SYSTEM", "content")).rejects.toMatchObject({
+      kind: "nonzero_exit",
+    });
 
     const call = spawnCalls.find((c) => c.command === "claude");
     expect(call!.killCount).toBeGreaterThanOrEqual(1);
@@ -377,5 +381,22 @@ describe("extractViaCli — codex", () => {
     await expect(extractViaCli("codex", "SYSTEM", "content")).rejects.toMatchObject({
       kind: "nonzero_exit",
     });
+  });
+
+  it("capped codex output fails even with a valid JSON prefix (P2 re-review)", async () => {
+    // Valid JSONL answer followed by spam that trips MAX_CLI_STDOUT_BYTES (8 MiB).
+    // The child is killed (close → null exit), so the run must FAIL rather than
+    // parse the buffered prefix and mark the entry completed.
+    const validPrefix = codexJsonl(JSON.stringify([{ type: "task", title: "T" }]));
+    const spam = "x".repeat(9 * 1024 * 1024);
+    nextSpawn = { stdout: [validPrefix, spam], exitCode: 0 };
+
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    await expect(extractViaCli("codex", "SYSTEM", "content")).rejects.toMatchObject({
+      kind: "nonzero_exit",
+    });
+
+    const call = spawnCalls.find((c) => c.command === "codex");
+    expect(call!.killCount).toBeGreaterThanOrEqual(1);
   });
 });

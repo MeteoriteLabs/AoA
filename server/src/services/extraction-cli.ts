@@ -119,6 +119,16 @@ export async function extractViaCli(
     const prompt = `${systemPrompt}\n\n${content}`;
     const result = await runCodexExecJson(prompt, { timeoutMs, codexModel });
 
+    // Capped output is a runaway/looping failure: killing the child makes `close`
+    // report a null exit code, so without this a prompt-injected `[]` + spam that
+    // trips the cap could be parsed and marked completed (P2, Codex).
+    if (result.outputCapped) {
+      throw new CliExtractionError(
+        "codex extraction output exceeded the safety size cap (runaway/looping output)",
+        "nonzero_exit",
+      );
+    }
+
     // Map codex spawn/exit failures to the same CliErrorKind taxonomy.
     if (result.spawnError || result.timedOut || (result.exitCode ?? 0) !== 0) {
       const kind = classifyCliError(
@@ -274,6 +284,17 @@ async function extractViaClaude(
     throw new CliExtractionError(
       claudeFailureMessage(kind, exitCode, stderrBuf.text),
       kind,
+    );
+  }
+
+  // Capped output is a runaway/looping failure even though killing the child
+  // makes `close` report a null exit code (which `(exitCode ?? 0)` above treats
+  // as success): a prompt-injected `[]` + spam could trip the cap yet parse
+  // clean. Fail explicitly so the truncated prefix is never accepted (P2, Codex).
+  if (stdoutBuf.capped) {
+    throw new CliExtractionError(
+      "claude extraction output exceeded the safety size cap (runaway/looping output)",
+      "nonzero_exit",
     );
   }
 
