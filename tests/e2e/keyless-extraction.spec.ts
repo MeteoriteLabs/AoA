@@ -238,10 +238,10 @@ test.describe("keyless extraction — happy path", () => {
       const taskId = approveBody.tasksCreated[0];
       expect(taskId).toBeTruthy();
 
-      // Confirm the issue exists.
-      const issueRes = await request.get(
-        `/api/companies/${company.id}/issues/${taskId}`,
-      );
+      // Confirm the issue exists. The single-issue GET is mounted at
+      // /api/issues/:id (NOT company-prefixed — only issue sub-resources like
+      // context-package/memory-retrievals carry the /companies/:cid prefix).
+      const issueRes = await request.get(`/api/issues/${taskId}`);
       expect(issueRes.ok()).toBe(true);
       const issue = (await issueRes.json()) as { id: string; title: string };
       expect(issue.id).toBe(taskId);
