@@ -17,6 +17,11 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
   /-----BEGIN[A-Z ]*PRIVATE KEY-----/,
 ];
+// Whole PEM private-key block: the header-only pattern above leaves the base64
+// body + footer in free-form output. Redact the FULL block (header → footer).
+// [\s\S] spans newlines; non-greedy stops at the first END marker.
+const PEM_PRIVATE_KEY_BLOCK_RE =
+  /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g;
 function looksLikeSecretValue(value: string): boolean {
   return JWT_VALUE_RE.test(value) || SECRET_VALUE_PATTERNS.some((re) => re.test(value));
 }
@@ -81,7 +86,9 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
  * redacted. API-key-style secrets use word-boundary patterns and are caught in context.
  */
 export function redactSecretsInString(value: string): string {
-  let out = value;
+  // Redact whole PEM private-key blocks first — the generic header-only pattern
+  // would otherwise leave the key body + footer in the output (Codex P2).
+  let out = value.replace(PEM_PRIVATE_KEY_BLOCK_RE, REDACTED_EVENT_VALUE);
   for (const re of SECRET_VALUE_PATTERNS) {
     out = out.replace(new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g"), REDACTED_EVENT_VALUE);
   }
