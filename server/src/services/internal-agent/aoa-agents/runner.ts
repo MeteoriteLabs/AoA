@@ -549,25 +549,29 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       const { issueService } = await import("../../issues.js");
       const task = await issueService(db).getById(payload.issueId);
       if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === runId) {
-        log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — releasing task to todo");
-        await db.update(issues)
+        const released = await db.update(issues)
           // Atomic status guard (Codex P2): a concurrent set_task_status between
           // the getById read and this write keeps executionRunId (only checkoutRunId
           // is cleared on leaving in_progress), so without status='in_progress' here
           // this could revert an in_review/done task back to todo.
           .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")));
-        // Task 5.6: the silent-stuck release is a CREW status-MOVE
-        // (in_progress → todo) that bypasses issueService.update. Publish
-        // issue.status_changed (company-broadcast, R3) so the board reflects
-        // the card dropping back to todo live. Best-effort — must not mask the
-        // loud throw below (which terminalizes the run).
-        try {
-          publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
-        } catch (publishErr) {
-          log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")))
+          .returning({ id: issues.id });
+        // Only publish + throw if the guarded UPDATE actually released the row. A
+        // ZERO-row result means set_task_status won the race and already moved the
+        // task — the agent DID move it, so the run is NOT a failure (Codex P2).
+        if (released.length > 0) {
+          log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — released task to todo");
+          // Task 5.6: this is a CREW status-MOVE (in_progress → todo) that bypasses
+          // issueService.update; publish issue.status_changed so the board reflects
+          // the card dropping back to todo. Best-effort — must not mask the throw.
+          try {
+            publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+          } catch (publishErr) {
+            log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+          }
+          throw new Error("crew task run completed without moving the task (no set_task_status call)");
         }
-        throw new Error("crew task run completed without moving the task (no set_task_status call)");
       }
     }
 
@@ -747,19 +751,24 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         const { issueService } = await import("../../issues.js");
         const task = await issueService(db).getById(payload.issueId);
         if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === releaseRunId) {
-          await db.update(issues)
+          const released = await db.update(issues)
             // Guard on status='in_progress' IN the UPDATE (not just the JS read):
             // the issue update path clears checkoutRunId but keeps executionRunId
             // when leaving in_progress, so a concurrent set_task_status between the
             // getById read and this write could otherwise revert an in_review/done
             // task back to todo (Codex P2). Atomic predicate prevents the clobber.
             .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, releaseRunId), eq(issues.status, "in_progress")));
-          log.warn({ issueId: payload.issueId }, "crew run failed before execute — released checked-out task to todo");
-          try {
-            publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
-          } catch (publishErr) {
-            log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on failed-run task release (best-effort, ignored)");
+            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, releaseRunId), eq(issues.status, "in_progress")))
+            .returning({ id: issues.id });
+          // Only log/publish when the guarded UPDATE actually released the row; a
+          // zero-row result means a concurrent set_task_status already moved it.
+          if (released.length > 0) {
+            log.warn({ issueId: payload.issueId }, "crew run failed before execute — released checked-out task to todo");
+            try {
+              publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+            } catch (publishErr) {
+              log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on failed-run task release (best-effort, ignored)");
+            }
           }
         }
       } catch (releaseErr) {

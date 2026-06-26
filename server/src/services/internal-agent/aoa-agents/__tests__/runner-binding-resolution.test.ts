@@ -67,4 +67,8 @@ describe("crew runner releases a checked-out task on a mid-run failure (Codex P2
   it("guards the release UPDATE atomically on status='in_progress' (no clobber of a concurrent transition)", () => {
     expect(catchBlock).toMatch(/eq\(issues\.status,\s*"in_progress"\)/);
   });
+  it("only publishes the release when the guarded UPDATE actually moved a row (.returning + released.length)", () => {
+    expect(catchBlock).toMatch(/\.returning\(/);
+    expect(catchBlock).toMatch(/released\.length/);
+  });
 });
