@@ -3,9 +3,33 @@ import { describe, it, expect } from "vitest";
 import {
   resolveCodexChatModel,
   isCodexCompatibleModel,
+  isOpenAiFamilyModel,
   DEFAULT_CODEX_CHAT_MODEL,
   COMMANDER_CODEX_REASONING_EFFORT,
 } from "../services/internal-agent/codex-model.js";
+
+describe("isOpenAiFamilyModel", () => {
+  it("accepts OpenAI/Codex-family identifiers INCLUDING codex-* and *-codex (api-key-valid)", () => {
+    expect(isOpenAiFamilyModel("gpt-5.5")).toBe(true);
+    expect(isOpenAiFamilyModel("gpt-5.3-codex")).toBe(true);
+    expect(isOpenAiFamilyModel("o3-mini")).toBe(true);
+    expect(isOpenAiFamilyModel("chatgpt-4o")).toBe(true);
+    expect(isOpenAiFamilyModel("codex-mini-latest")).toBe(true); // the fix — was wrongly rejected
+    expect(isOpenAiFamilyModel("  codex-mini  ")).toBe(true); // trims
+  });
+  it("rejects non-OpenAI families, slash/opencode ids, and empty", () => {
+    expect(isOpenAiFamilyModel("claude-sonnet-4-5-20250929")).toBe(false);
+    expect(isOpenAiFamilyModel("gemini-2.5-pro")).toBe(false);
+    expect(isOpenAiFamilyModel("openai/gpt-5.5")).toBe(false); // slash rejected by SAFE_MODEL_RE
+    expect(isOpenAiFamilyModel("")).toBe(false);
+    expect(isOpenAiFamilyModel(null)).toBe(false);
+  });
+  it("widening CODEX_FAMILY_RE does NOT loosen isCodexCompatibleModel — codex-* stays ChatGPT-INcompatible", () => {
+    expect(isCodexCompatibleModel("codex-mini-latest")).toBe(false);
+    expect(isCodexCompatibleModel("gpt-5.3-codex")).toBe(false);
+    expect(isCodexCompatibleModel("gpt-5.5")).toBe(true);
+  });
+});
 
 describe("isCodexCompatibleModel", () => {
   it("accepts ChatGPT-account openai chat families", () => {

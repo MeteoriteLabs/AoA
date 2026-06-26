@@ -26,8 +26,12 @@ export const COMMANDER_CODEX_REASONING_EFFORT = "high";
 // a plain model identifier. Full-string anchor (NOT a prefix test).
 // Mirrored (intentionally duplicated) in packages/shared/src/validators/agent.ts — keep in sync.
 export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-// OpenAI chat families usable on a ChatGPT/subscription codex account.
-const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt)/i;
+// OpenAI/Codex NAMING families: gpt-*, o<N>*, chatgpt*, AND codex-* (the latter
+// are API-key-only — see CODEX_INCOMPATIBLE_RE). This is the broad "is this an
+// OpenAI/Codex identifier" gate used by isOpenAiFamilyModel; ChatGPT-subscription
+// compatibility is further restricted by CODEX_INCOMPATIBLE_RE in
+// isCodexCompatibleModel (which still excludes every codex-* / *-codex value).
+const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt|codex)/i;
 // GPT-Codex variants (…-codex / codex-…) require an API key, NOT a ChatGPT
 // login → they 400 on subscription accounts (this is the exact bug). Deny
 // them so a stray config/shared value can never reintroduce the 400.

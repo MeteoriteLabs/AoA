@@ -91,4 +91,11 @@ describe("resolveModel", () => {
     expect(resolveModel("codex_local", "gemini-2.5-pro", { authMode: "apikey", defaultModelResolved: "gpt-5.5" }).model)
       .toBe(DEFAULT_CODEX_CHAT_MODEL);
   });
+  // Codex P2: codex-* models are API-key-only but VALID; an apikey user that
+  // explicitly requests one must keep it (not get rewritten to gpt-5.5).
+  it("apikey mode: an explicit codex-prefixed model (codex-mini-latest) is preserved", () => {
+    const r = resolveModel("codex_local", "codex-mini-latest", { authMode: "apikey", defaultModelResolved: "gpt-5.5" });
+    expect(r.model).toBe("codex-mini-latest");
+    expect(r.note).toBeUndefined();
+  });
 });
