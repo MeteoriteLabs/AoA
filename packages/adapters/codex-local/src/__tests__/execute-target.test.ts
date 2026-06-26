@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "../server/execute.js";
+import { testEnvironment } from "../server/test.js";
 import type { AdapterInvocationMeta, AdapterProviderSandboxRunInput } from "@armyofagents/adapter-utils";
 
 async function expectSameRealPath(actual: string, expected: string): Promise<void> {
@@ -42,7 +43,7 @@ console.log(JSON.stringify({
 
   if (process.platform === "win32") {
     const cmdPath = commandPath + ".cmd";
-    await fs.writeFile(cmdPath, `@node "%~dp0agent.js" %*\r\n`, "utf8");
+    await fs.writeFile(cmdPath, `@node "%~dp0${path.basename(jsPath)}" %*\r\n`, "utf8");
     return cmdPath;
   }
 
@@ -353,5 +354,47 @@ describe("codex execute target", () => {
       }
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("codex testEnvironment probe env-strip (Codex P2)", () => {
+  async function runProbeAndCaptureEnv(configEnv: Record<string, string>): Promise<Record<string, string | undefined>> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-probe-env-"));
+    const workspace = path.join(root, "workspace");
+    const capturePath = path.join(root, "capture.json");
+    const codexHome = path.join(root, "codex-home"); // no auth.json
+    await fs.mkdir(workspace, { recursive: true });
+    // The probe only spawns when the command basename looks like `codex`
+    // (commandLooksLike); name the fake accordingly so the hello probe runs.
+    const commandPath = await writeFakeCodexCommand(path.join(root, "codex"));
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    try {
+      process.env.CODEX_HOME = codexHome;
+      // Ambient server key present (the leak condition).
+      process.env.OPENAI_API_KEY = "sk-ambient-probe-canary-should-be-stripped";
+      await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: { command: commandPath, cwd: workspace, env: { AOA_TEST_CAPTURE_PATH: capturePath, ...configEnv } },
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf8")) as { env: Record<string, string | undefined> };
+      return captured.env;
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousCodexHome;
+      if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousOpenAiKey;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("strips the ambient server OPENAI_API_KEY from the probe child (no per-agent key)", async () => {
+    const env = await runProbeAndCaptureEnv({});
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("keeps a per-agent OPENAI_API_KEY the agent set in its own config env", async () => {
+    const env = await runProbeAndCaptureEnv({ OPENAI_API_KEY: "sk-agent-own-key" });
+    expect(env.OPENAI_API_KEY).toBe("sk-agent-own-key");
   });
 });

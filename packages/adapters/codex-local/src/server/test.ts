@@ -250,6 +250,13 @@ export async function testEnvironment(
           args,
           cwd,
           env: probeEnv,
+          // Strip the ambient server OPENAI_API_KEY from the probe child too, so
+          // the diagnostic uses the SAME auth a real run does (per-agent key in
+          // probeEnv survives — mergeChildEnv keeps overlay-set keys; only the
+          // inherited process.env key is removed). Without this the probe could
+          // authenticate with the ambient key and pass while real runs strip it
+          // and fail (Codex P2). Matches execute.ts' unsetEnvKeys.
+          unsetEnvKeys: ["OPENAI_API_KEY"],
           runtimeCommandSpec,
           timeoutSec: 45,
           graceSec: 5,
