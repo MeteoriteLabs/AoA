@@ -191,6 +191,29 @@ export function needsAdapterBackfill(
 }
 
 /**
+ * Decide whether a crew agent row must be rewritten to the company's CURRENTLY
+ * resolved crew adapter. Two triggers:
+ *
+ *  1. **Provider switch** — the company changed `internal_agent_config.provider`,
+ *     so `resolveCrewAdapterForCompany` now yields a DIFFERENT CLI adapter than
+ *     the row uses. A perfectly "healthy" old-provider row (e.g. `claude_local`
+ *     with `dangerouslySkipPermissions`, or `codex_local` with `gpt-5.5`) passes
+ *     needsAdapterBackfill, so without this check provider switching would never
+ *     migrate existing Commander/crew/Scribe agents — they'd keep running the old
+ *     CLI (Codex P1).
+ *  2. **Broken/stale same-provider row** — delegates to needsAdapterBackfill.
+ */
+export function shouldRewriteCrewAdapter(
+  currentAdapterType: string | null | undefined,
+  currentAdapterConfig: Record<string, unknown> | null | undefined,
+  targetAdapterType: string,
+  opts?: { isApiKeyAuth?: boolean },
+): boolean {
+  if (currentAdapterType !== targetAdapterType) return true;
+  return needsAdapterBackfill(currentAdapterType, currentAdapterConfig, opts);
+}
+
+/**
  * Merge a resolved crew adapter into an existing adapter_config. Preserve ALL of
  * the founder's existing per-agent config (env, cwd, command, extraArgs,
  * instructions*, …) and override only the fields the resolved adapter sets (model

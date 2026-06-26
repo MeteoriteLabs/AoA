@@ -5,7 +5,7 @@ import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import {
   resolveCrewAdapterForCompany,
-  needsAdapterBackfill,
+  shouldRewriteCrewAdapter,
   mergeAdapterConfig,
 } from "./resolve-crew-adapter.js";
 import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
@@ -213,7 +213,7 @@ export async function seedCrewAgent(
     if (current) {
       const cfg = current.adapterConfig as Record<string, unknown> | null;
       const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
-      if (needsAdapterBackfill(current.adapterType, cfg, { isApiKeyAuth })) {
+      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
         updates.adapterType = crewAdapter.adapterType;
         updates.adapterConfig = mergeAdapterConfig(cfg, crewAdapter.adapterConfig);
       }

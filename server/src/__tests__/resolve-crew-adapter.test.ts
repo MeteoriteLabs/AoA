@@ -7,7 +7,7 @@
 // Companion to resolve-crew-adapter-opencode.test.ts (same import/mock pattern).
 
 import { describe, it, expect } from "vitest";
-import { resolveCrewAdapterFor, needsAdapterBackfill, mergeAdapterConfig } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
+import { resolveCrewAdapterFor, needsAdapterBackfill, shouldRewriteCrewAdapter, mergeAdapterConfig } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
 
 describe("resolve-crew-adapter (provider-switching fixes)", () => {
@@ -106,5 +106,42 @@ describe("resolve-crew-adapter (provider-switching fixes)", () => {
     const merged = mergeAdapterConfig({ instructionsFilePath: "/i.md", model: "old" }, { model: "gpt-5.5" });
     expect(merged.instructionsFilePath).toBe("/i.md");
     expect(merged.model).toBe("gpt-5.5");
+  });
+});
+
+// Codex P1: a company that switches internal_agent_config.provider must migrate
+// EXISTING crew agents, not just broken ones — a healthy old-provider row would
+// otherwise keep running the old CLI forever.
+describe("shouldRewriteCrewAdapter — provider-switch migration", () => {
+  it("migrates a HEALTHY old-provider row when the resolved adapter differs (provider switch)", () => {
+    // claude_local crew row is perfectly healthy (has dangerouslySkipPermissions)
+    // but the company switched provider → target is codex_local → must rewrite.
+    expect(
+      shouldRewriteCrewAdapter("claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }, "codex_local"),
+    ).toBe(true);
+    // codex_local row with a ChatGPT-safe model is healthy, but the company
+    // switched to anthropic → target claude_local → must rewrite.
+    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.5" }, "claude_local")).toBe(true);
+  });
+  it("does NOT rewrite a healthy row already on the target adapter (no provider change)", () => {
+    expect(
+      shouldRewriteCrewAdapter("claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }, "claude_local"),
+    ).toBe(false);
+    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.5" }, "codex_local")).toBe(false);
+  });
+  it("still rewrites a broken SAME-adapter row (delegates to needsAdapterBackfill)", () => {
+    // codex subscription row pinned to an API-key-only model → backfill.
+    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.3-codex", env: {} }, "codex_local")).toBe(true);
+  });
+  it("preserves a founder's api-key codex row on the same adapter (opts.isApiKeyAuth)", () => {
+    expect(
+      shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.3-codex", env: {} }, "codex_local", { isApiKeyAuth: true }),
+    ).toBe(false);
+  });
+  it("is consistent with needsAdapterBackfill when the adapter is unchanged", () => {
+    const cfg = { model: "gpt-5.3-codex", env: {} };
+    expect(shouldRewriteCrewAdapter("codex_local", cfg, "codex_local")).toBe(
+      needsAdapterBackfill("codex_local", cfg),
+    );
   });
 });

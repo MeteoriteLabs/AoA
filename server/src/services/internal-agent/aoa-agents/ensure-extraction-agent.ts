@@ -5,7 +5,7 @@ import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import {
   resolveCrewAdapterForCompany,
-  needsAdapterBackfill,
+  shouldRewriteCrewAdapter,
   mergeAdapterConfig,
 } from "./resolve-crew-adapter.js";
 import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
@@ -85,7 +85,7 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       .limit(1);
     const currentCfg = current ? (current.adapterConfig as Record<string, unknown> | null) : null;
     const isApiKeyAuth = current?.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, currentCfg) : false;
-    const needsAdapter = current ? needsAdapterBackfill(current.adapterType, currentCfg, { isApiKeyAuth }) : false;
+    const needsAdapter = current ? shouldRewriteCrewAdapter(current.adapterType, currentCfg, crewAdapter.adapterType, { isApiKeyAuth }) : false;
 
     if (needsAllowlist || needsRename || needsAdapter) {
       const updates: Record<string, unknown> = { updatedAt: new Date() };

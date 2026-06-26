@@ -5,7 +5,7 @@ import { agentInstructionsService } from "../../agent-instructions.js";
 import { seedCommanderInstructionBundle } from "./seed-commander-bundle.js";
 import {
   resolveCrewAdapterForCompany,
-  needsAdapterBackfill,
+  shouldRewriteCrewAdapter,
   mergeAdapterConfig,
 } from "./resolve-crew-adapter.js";
 import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
@@ -141,7 +141,7 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     if (current) {
       const cfg = current.adapterConfig as Record<string, unknown> | null;
       const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
-      if (needsAdapterBackfill(current.adapterType, cfg, { isApiKeyAuth })) {
+      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
         updates.adapterType = crewAdapter.adapterType;
         updates.adapterConfig = mergeAdapterConfig(cfg, crewAdapter.adapterConfig);
       }
