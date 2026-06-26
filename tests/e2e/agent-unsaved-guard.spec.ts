@@ -6,7 +6,7 @@ import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
  *
  * Proves the ONE global UnsavedChangesProvider/useBlocker in a real browser:
  *  - dirty + sidebar <Link> → "Discard unsaved changes?" dialog; Cancel stays, Discard leaves
- *  - dirty + browser Back (page.goBack) → the same dialog (the jsdom-impossible case)
+ *  - dirty + browser Back (history.back) → the same dialog (the jsdom-impossible case)
  *  - clean nav → no dialog, navigates immediately
  *
  * Self-skips on Windows-without-DATABASE_URL via the config's testMatch
@@ -85,12 +85,18 @@ test.describe("global unsaved-changes guard", () => {
     const nameInput = page.getByTestId("agent-config-name-input");
     await expect(nameInput).toBeVisible({ timeout: 15_000 });
     await nameInput.fill("Back-button dirty edit");
-    // Wait until the guard is armed (see openDirtyConfig) before pressing Back —
-    // page.goBack() has no actionability wait, so without this the POP can race
-    // ahead of the dirty-registration effect and slip through unblocked.
+    // Wait until the guard is armed before navigating (the dirty flag registers
+    // through a React effect; see openDirtyConfig).
     await expect(page.getByTestId("agent-detail-action-bar")).toHaveAttribute("data-dirty", "true");
-    // Press the real browser Back button.
-    await page.goBack();
+    // Simulate the browser BACK BUTTON via history.back(): it fires the same
+    // History-API popstate traversal the real button does, which the SPA's
+    // single useBlocker intercepts. Playwright's page.goBack() instead drives a
+    // CDP-level navigation that bypasses the popstate path, so the in-app blocker
+    // never sees it. Verified live via /browse against a real instance:
+    // history.back() raises the dialog AND holds the URL on /configure;
+    // page.goBack() does neither. (Cancel keeps the edit; "Discard & leave"
+    // proceeds to Overview — both confirmed live.)
+    await page.evaluate(() => window.history.back());
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toBeVisible({ timeout: 5_000 });
     await expect(dialog.getByText("Discard unsaved changes?")).toBeVisible();
