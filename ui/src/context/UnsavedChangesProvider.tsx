@@ -1,5 +1,5 @@
 import { type ReactNode, createContext, useCallback, useContext, useMemo, useRef } from "react";
-import { useBlocker } from "@/lib/router";
+import { useBlocker, type BlockerFunction } from "@/lib/router";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 interface UnsavedChangesContextValue {
@@ -45,7 +45,7 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   // Block only cross-path navigations while at least one registrant is dirty.
   // Stable fn (no deps) — it reads the ref each call, so it never goes stale.
   const blocker = useBlocker(
-    useCallback(({ currentLocation, nextLocation }) => {
+    useCallback<BlockerFunction>(({ currentLocation, nextLocation }) => {
       if (currentLocation.pathname === nextLocation.pathname) return false;
       for (const dirty of registrantsRef.current.values()) {
         if (dirty) return true;
