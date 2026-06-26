@@ -150,8 +150,13 @@ export async function runCodexExecJson(
   }, timeoutMs);
   timer.unref?.();
 
+  // Wait for "close" (NOT "exit"): Node can emit `exit` before stdout/stderr are
+  // fully flushed/closed, so parsing on `exit` can see truncated/empty JSONL and
+  // make codex extraction intermittently return an empty/unparseable response.
+  // `close` fires only after all stdio streams have ended, so `stdout` is whole
+  // by the time we parse. (The claude one-shot path waits for `close` too.)
   const exitCode = await new Promise<number | null>((resolveExit) => {
-    proc.on("exit", (code) => resolveExit(code));
+    proc.on("close", (code) => resolveExit(code));
     proc.on("error", (err: NodeJS.ErrnoException) => {
       spawnError = err;
       resolveExit(null);

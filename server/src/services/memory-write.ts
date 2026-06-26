@@ -14,7 +14,7 @@
  * it calls `memoryService(db).create(...)` then enqueues, returning the row.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { embeddingQueue, memoryItems } from "@armyofagents/db";
 import { getDbCapabilities } from "./db-capabilities.js";
@@ -64,15 +64,19 @@ export async function enqueueMemoryEmbedding(
       return;
     }
 
-    // Guard 3: dedup — if a live queue row already exists for this target,
-    // REFRESH its inputText instead of inserting a duplicate (P2, Codex).
-    // A memory title/content edit while a row is still pending/processing would
-    // otherwise leave the row's inputText at the pre-edit content — and since
+    // Guard 3: dedup against a PENDING row only (P2, Codex).
+    // A memory title/content edit while a row is still queued would otherwise
+    // leave the row's inputText at the pre-edit content — and since
     // memoryService.update nulls the stored embedding and relies on this helper
-    // for re-indexing, the worker would complete with a stale vector and no new
-    // row would ever be created. Update the live row's text and reset it to
-    // pending (clearing any backoff) so the latest content is what gets embedded.
-    const existing = await (handle as any)
+    // for re-indexing, the worker would complete with a stale vector.
+    //   - A 'pending' row hasn't been claimed yet, so we can safely REFRESH its
+    //     inputText in place (no duplicate, latest content wins).
+    //   - A 'processing' row has ALREADY been claimed: the worker copied the old
+    //     inputText and will unconditionally write that vector and mark the row
+    //     'completed'. Refreshing it would be lost. So we DON'T dedupe against
+    //     processing rows — we insert a fresh 'pending' row, which the worker
+    //     picks up after the in-flight embed finishes, re-embedding the new text.
+    const existingPending = await (handle as any)
       .select({ id: embeddingQueue.id })
       .from(embeddingQueue)
       .where(
@@ -80,25 +84,25 @@ export async function enqueueMemoryEmbedding(
           eq(embeddingQueue.targetTable, "memory_items"),
           eq(embeddingQueue.targetId, item.id),
           eq(embeddingQueue.targetColumn, "embedding"),
-          inArray(embeddingQueue.status, ["pending", "processing"]),
+          eq(embeddingQueue.status, "pending"),
         ),
       )
       .limit(1);
 
-    if (existing.length > 0) {
+    if (existingPending.length > 0) {
       await (handle as any)
         .update(embeddingQueue)
         .set({
           inputText,
-          status: "pending",
           nextRetryAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(embeddingQueue.id, existing[0].id));
+        .where(eq(embeddingQueue.id, existingPending[0].id));
       return;
     }
 
-    // Insert the queue row.
+    // No pending row (none at all, or only an in-flight 'processing' one) —
+    // insert a fresh pending row so the latest content is embedded.
     await (handle as any)
       .insert(embeddingQueue)
       .values({
