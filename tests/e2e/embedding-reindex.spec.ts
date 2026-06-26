@@ -44,7 +44,8 @@ async function createMemoryItem(
       title: opts.title,
       content: opts.content,
       layer: "domain",
-      category: "process",
+      category: "procedure",
+      source: "founder",
       status: "approved",
     },
   });
@@ -113,17 +114,19 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
   });
 
   test(
-    "systemic embedder failure → failed badge + reindex-button visible → reindex request resets to pending",
+    "row-permanent embedder failure → failed badge + reindex-button visible → reindex request resets to pending",
     async ({ page, request }) => {
       const company = await seedCompany(request, `E2E-Reindex-${Date.now()}`);
 
-      // Force a systemic embed failure: fake embedder throws { status: 401 }.
-      // classifyEmbeddingError maps this to "systemic" → after one attempt,
-      // the worker exhausts retries and marks the row "failed".
-      writeFakeEmbedderControl({ fail: "systemic" });
+      // Force a row-permanent embed failure: fake embedder throws { status: 400 }.
+      // classifyEmbeddingError maps this to "row_permanent" → the worker marks
+      // the row "failed" immediately (one attempt; will never succeed). A
+      // "systemic" (401) error would instead trip the per-company circuit breaker
+      // and restore the row to "pending", which is NOT the state this test needs.
+      writeFakeEmbedderControl({ fail: "row_permanent" });
 
       // Create a memory item — this enqueues an embedding row. The fake embedder
-      // immediately returns a systemic error on the worker's next poll cycle.
+      // returns a row-permanent error on the worker's next poll cycle.
       const item = await createMemoryItem(request, company.id, {
         title: "E2E: reindex test item",
         content: "This item is expected to fail embedding due to forced systemic error.",
@@ -201,8 +204,9 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
       );
       expect(secretRes.ok()).toBe(true);
 
-      // Force a systemic failure first so the item reaches "failed" status.
-      writeFakeEmbedderControl({ fail: "systemic" });
+      // Force a row-permanent failure first so the item reaches "failed" status
+      // immediately (a "systemic" error would circuit-break to "pending" instead).
+      writeFakeEmbedderControl({ fail: "row_permanent" });
       const item = await createMemoryItem(request, company.id, {
         title: "E2E: pgvector reindex test item",
         content: "Should reach indexed after re-index button clicked.",

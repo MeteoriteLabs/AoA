@@ -41,7 +41,8 @@ async function createMemoryItem(
       title: opts.title,
       content: opts.content,
       layer: opts.layer ?? "domain",
-      category: "process",
+      category: "procedure",
+      source: "founder",
       status: "approved",
     },
   });

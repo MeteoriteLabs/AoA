@@ -53,13 +53,35 @@ async function createEntry(
 ): Promise<{ id: string }> {
   const res = await request.post(
     `/api/companies/${companyId}/discussions/${discussionId}/entries`,
-    { data: { content, inputType: "write" } },
+    { data: { rawContent: content, inputType: "write" } },
   );
   if (!res.ok()) {
     const body = await res.text().catch(() => "(no body)");
     throw new Error(`createEntry failed: ${res.status()} ${body}`);
   }
   return res.json() as Promise<{ id: string }>;
+}
+
+/**
+ * Trigger extraction for an entry. New entries are created with
+ * extractionStatus="skipped" (discuss-phase entries are NOT auto-extracted —
+ * see discussions.ts addEntry). The reprocess endpoint resets the entry to
+ * "pending" and fires the (keyless CLI) extraction pipeline, which is exactly
+ * the deliberate path the founder uses to run extraction.
+ */
+async function reprocessEntry(
+  request: APIRequestContext,
+  companyId: string,
+  discussionId: string,
+  entryId: string,
+): Promise<void> {
+  const res = await request.post(
+    `/api/companies/${companyId}/discussions/${discussionId}/entries/${entryId}/reprocess`,
+  );
+  if (!res.ok()) {
+    const body = await res.text().catch(() => "(no body)");
+    throw new Error(`reprocessEntry failed: ${res.status()} ${body}`);
+  }
 }
 
 /** Poll discussion until the given entry reaches a terminal extraction status. */
@@ -135,6 +157,10 @@ test.describe("extraction failure UX", () => {
         "This entry triggers a CLI failure to test the failure UX.",
       );
 
+      // New entries are created "skipped"; reprocess fires the keyless CLI
+      // extraction pipeline (which the primed fake-claude makes fail).
+      await reprocessEntry(request, company.id, discussion.id, entry.id);
+
       // Wait for the server to mark the entry as failed (API level).
       const result = await waitForExtractionTerminal(
         request,
@@ -180,6 +206,11 @@ test.describe("extraction failure UX", () => {
         discussion.id,
         "This entry triggers an unparseable response to test the failure UX.",
       );
+
+      // New entries are created "skipped"; reprocess fires the keyless CLI
+      // extraction pipeline (which the primed fake-claude makes return
+      // unparseable output).
+      await reprocessEntry(request, company.id, discussion.id, entry.id);
 
       // Wait for the server to mark the entry as failed.
       const result = await waitForExtractionTerminal(
