@@ -14,6 +14,13 @@ describe("parseCodexAuthMode", () => {
     expect(parseCodexAuthMode({ agentEnvApiKey: null, authJson: { OPENAI_API_KEY: "sk-x" } }))
       .toBe("apikey");
   });
+  it("returns 'unknown' when auth.json OPENAI_API_KEY is blank/whitespace (no usable key) — Codex P3", () => {
+    // A stale/malformed shared auth.json with a blank key has nothing to copy
+    // into the managed home; reporting apikey would preserve api-key-only codex
+    // models and fail the run instead of falling back to the ChatGPT-safe default.
+    expect(parseCodexAuthMode({ agentEnvApiKey: null, authJson: { OPENAI_API_KEY: "" } })).toBe("unknown");
+    expect(parseCodexAuthMode({ agentEnvApiKey: null, authJson: { OPENAI_API_KEY: "   " } })).toBe("unknown");
+  });
   it("returns 'unknown' for an empty/missing auth.json", () => {
     expect(parseCodexAuthMode({ agentEnvApiKey: null, authJson: null })).toBe("unknown");
   });
@@ -84,6 +91,13 @@ describe("getProviderStatus (codex)", () => {
     const s = await getProviderStatus("codex_local",
       { companyId: "first-run-co", adapterConfig: { env: {} } }, sharedDeps);
     expect(s.authMode).toBe("apikey");
+  });
+  it("a blank shared auth.json OPENAI_API_KEY does NOT report apikey (Codex P3)", async () => {
+    const blankKeyDeps = { ...deps, readAuthJson: async () => ({ OPENAI_API_KEY: "  " } as Record<string, unknown>) };
+    const s = await getProviderStatus("codex_local",
+      { companyId: "c1", adapterConfig: { env: {} } }, blankKeyDeps);
+    expect(s.authMode).toBe("unknown");
+    expect(s.authenticated).toBe(false);
   });
   it("propagates apikey auth_mode from the managed auth.json through to authenticated", async () => {
     const apikeyDeps = { ...deps, readAuthJson: async () => ({ auth_mode: "apikey" } as Record<string, unknown>) };

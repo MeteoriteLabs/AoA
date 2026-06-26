@@ -25,7 +25,13 @@ export function parseCodexAuthMode(inputs: CodexAuthInputs): ProviderAuthMode {
   if (typeof (j as { auth_mode?: unknown }).auth_mode === "string") {
     return ((j as { auth_mode: string }).auth_mode === "apikey") ? "apikey" : "chatgpt";
   }
-  if (typeof (j as { OPENAI_API_KEY?: unknown }).OPENAI_API_KEY === "string") return "apikey";
+  // Mirror the per-agent trim+non-empty guard above: a stale/malformed shared
+  // auth.json with a blank/whitespace OPENAI_API_KEY has no usable key to copy
+  // into the managed home, so it must NOT report apikey — otherwise model
+  // resolution + crew backfill preserve api-key-only codex models and the run
+  // fails instead of falling back to the ChatGPT-safe default.
+  const sharedKey = (j as { OPENAI_API_KEY?: unknown }).OPENAI_API_KEY;
+  if (typeof sharedKey === "string" && sharedKey.trim().length > 0) return "apikey";
   // serverEnvApiKey intentionally unused — company-level key must never influence auth mode.
   return "unknown";
 }
