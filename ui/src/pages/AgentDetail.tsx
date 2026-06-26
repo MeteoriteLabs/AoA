@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
@@ -72,7 +73,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { toast } from "@/lib/toast";
+import { useToast } from "@/context/ToastContext";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@armyofagents/shared";
@@ -195,11 +196,11 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToast();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
   // Pending in-app navigation held back by the unsaved-changes guard.
-  const [pendingNav, setPendingNav] = useState<string | null>(null);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
@@ -321,9 +322,7 @@ export function AgentDetail() {
         navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
       }
       if (action === "terminate") {
-        toast.success(`${agent?.name ?? "Agent"} terminated`, {
-          description: "The agent was stopped and removed from the roster.",
-        });
+        pushToast({ title: `${agent?.name ?? "Agent"} terminated`, body: "The agent was stopped and removed from the roster.", tone: "success" });
         navigate("/agents");
       }
     },
@@ -331,7 +330,7 @@ export function AgentDetail() {
       const message = err instanceof Error ? err.message : "Action failed";
       setActionError(message);
       if (action === "terminate") {
-        toast.error("Failed to terminate agent", { description: message });
+        pushToast({ title: "Failed to terminate agent", body: message, tone: "error" });
       }
     },
   });
@@ -352,16 +351,14 @@ export function AgentDetail() {
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       setActionError(null);
-      toast.success("Agent session reset", {
-        description: "The next run starts a fresh session (no resumed context).",
-      });
+      pushToast({ title: "Agent session reset", body: "The next run starts a fresh session (no resumed context).", tone: "success" });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agentLookupRef) });
     },
     onError: (err) => {
       const message = err instanceof Error ? err.message : "Failed to reset session";
       setActionError(message);
-      toast.error("Failed to reset session", { description: message });
+      pushToast({ title: "Failed to reset session", body: message, tone: "error" });
     },
   });
 
@@ -410,26 +407,24 @@ export function AgentDetail() {
     }, [configDirty, instrDirty]),
   );
 
+  // Global cross-page guard (sidebar <Link> + browser Back/Forward + any in-app
+  // navigate). Tab-close/refresh stays covered by useBeforeUnload above
+  // (useBlocker can't catch it).
+  useUnsavedChanges(configDirty || instrDirty);
+
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
   const isPendingApproval = agent.status === "pending_approval";
   const showActionBar = (activeView === "configure" && configDirty) || (activeView === "instructions" && instrDirty);
 
-  // Tab/in-page navigation guard: if the Config or Instructions tab has unsaved
-  // edits, hold the navigation and confirm before discarding. (Browser-level
-  // refresh/close is covered separately by useBeforeUnload above. Cross-page
-  // sidebar/<Link> nav isn't guarded — that needs a data router + useBlocker.)
+  // Tab navigation is a plain navigate now — a dirty cross-tab switch (each tab
+  // is a distinct pathname) is intercepted by the global UnsavedChangesProvider.
   const viewPath = (v: string) =>
     v === "overview" ? `/agents/${canonicalAgentRef}` : `/agents/${canonicalAgentRef}/${v}`;
   const handleViewChange = (v: string) => {
     if (v === activeView) return;
-    const target = viewPath(v);
-    if (configDirty || instrDirty) {
-      setPendingNav(target);
-      return;
-    }
-    navigate(target);
+    navigate(viewPath(v));
   };
   const activeSaving = activeView === "instructions" ? instrSaving : configSaving;
   const activeSaveRef = activeView === "instructions" ? saveInstrActionRef : saveConfigActionRef;
@@ -509,7 +504,7 @@ export function AgentDetail() {
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
               navigator.clipboard.writeText(agent.id);
-              toast.success("Agent ID copied");
+              pushToast({ title: "Agent ID copied", tone: "success" });
               setMoreOpen(false);
             }}
           >
@@ -599,16 +594,6 @@ export function AgentDetail() {
         heroKpis={heroKpis}
         heroBadges={{ adapter: agent.adapterType, model: heroModel }}
         headerError={actionError}
-        onHeroNavigate={(to) => {
-          // Route hero KPI deep-links through the unsaved-changes guard too —
-          // otherwise clicking e.g. "Last run" with a dirty Config/Instructions
-          // tab would navigate away and silently drop the draft.
-          if (configDirty || instrDirty) {
-            setPendingNav(to);
-            return true;
-          }
-          return false;
-        }}
         actionBar={{
           show: showActionBar,
           saving: activeSaving,
@@ -679,25 +664,11 @@ export function AgentDetail() {
                 agentId={agent.id}
                 companyId={resolvedCompanyId}
                 skillKeys={(agent as any).skillKeys ?? []}
+                expectedUpdatedAt={agent.updatedAt ? new Date(agent.updatedAt).toISOString() : undefined}
               />
             );
           }
           return null;
-        }}
-      />
-      <ConfirmDialog
-        open={!!pendingNav}
-        onOpenChange={(open) => { if (!open) setPendingNav(null); }}
-        title="Discard unsaved changes?"
-        description="You have unsaved edits on this tab. Leaving will discard them."
-        confirmLabel="Discard & leave"
-        destructive
-        onConfirm={() => {
-          const target = pendingNav;
-          setConfigDirty(false);
-          setInstrDirty(false);
-          setPendingNav(null);
-          if (target) navigate(target);
         }}
       />
       <ConfirmDialog
@@ -1018,7 +989,12 @@ function AgentConfigurePage({
 
   const rollbackConfig = useMutation({
     mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Rollback also bumps updatedAt — cache the returned row so a follow-up
+      // save uses the fresh optimistic-concurrency token, not the pre-rollback
+      // one (which would 409 the user against their own rollback). (Decision #104)
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
@@ -1343,6 +1319,7 @@ function ConfigurationTab({
   onAdapterTypeChange?: (adapterType: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: adapterModels } = useQuery({
     queryKey:
@@ -1358,10 +1335,30 @@ function ConfigurationTab({
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
     onSuccess: (result) => {
+      // Write the saved row (incl. its fresh updatedAt) into the cache
+      // synchronously so a quick repeat save uses the up-to-date
+      // optimistic-concurrency token, not the stale pre-save one (which would
+      // 409 the user against their own just-completed save). The invalidate
+      // below still refetches for eventual consistency. (Decision #104)
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), result);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), result);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       setSaveWarnings(result.warnings ?? []);
+    },
+    onError: (err) => {
+      // Optimistic-concurrency conflict: someone else changed the agent. Refetch
+      // the latest and tell the user to redo their edit. (Decision #104)
+      if (err instanceof ApiError && err.status === 409) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+        pushToast({
+          title: "This agent changed elsewhere",
+          body: "Reloaded the latest version — please redo your change.",
+          tone: "error",
+        });
+      }
     },
   });
 

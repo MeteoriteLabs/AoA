@@ -28,7 +28,7 @@ import {
 import { StatusBadge } from "@/components/StatusBadge";
 import { secretsApi } from "@/api/secrets";
 import { queryKeys } from "@/lib/queryKeys";
-import { toast } from "@/lib/toast";
+import { useToast } from "@/context/ToastContext";
 
 export interface ImportFromVaultDialogProps {
   companyId: string;
@@ -60,6 +60,7 @@ export function ImportFromVaultDialog({
   onImportCommitted,
 }: ImportFromVaultDialogProps) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const importableConfigs = providerConfigs.filter(
     (config) => config.provider === "aws_secrets_manager" && config.status !== "disabled",
   );
@@ -114,9 +115,7 @@ export function ImportFromVaultDialog({
     },
     onError: (err, variables) => {
       if (variables.requestId !== previewRequestIdRef.current) return;
-      toast.error("Preview failed", {
-        description: err instanceof Error ? err.message : "Could not list remote secrets.",
-      });
+      pushToast({ title: "Preview failed", body: err instanceof Error ? err.message : "Could not list remote secrets.", tone: "error" });
     },
   });
 
@@ -137,12 +136,10 @@ export function ImportFromVaultDialog({
       setSelectedRefs(new Set());
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
       onImportCommitted?.();
-      toast.success("Secrets imported");
+      pushToast({ title: "Secrets imported", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Import failed", {
-        description: err instanceof Error ? err.message : "Could not import selected secrets.",
-      });
+      pushToast({ title: "Import failed", body: err instanceof Error ? err.message : "Could not import selected secrets.", tone: "error" });
     },
   });
 

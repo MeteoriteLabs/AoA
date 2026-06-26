@@ -13,7 +13,7 @@ import type { CreateRuntimeProviderKey, UpdateRuntimeProviderKey } from "@armyof
 import { Button } from "@/components/ui/button";
 import { ImportFromVaultDialog } from "@/pages/secrets/ImportFromVaultDialog";
 import { queryKeys } from "@/lib/queryKeys";
-import { toast } from "@/lib/toast";
+import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 import { AddSecretDialog } from "./AddSecretDialog";
 import { DeleteSecretDialog } from "./DeleteSecretDialog";
@@ -41,6 +41,7 @@ interface SecretsWorkspaceProps {
 
 export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [activeTab, setActiveTab] = useState<SecretsTab>("inventory");
   const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -101,10 +102,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providers(companyId) });
-      toast.success("Vault saved");
+      pushToast({ title: "Vault saved", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Vault save failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Vault save failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -115,10 +116,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(companyId) });
-      toast.success("Vault checked", { description: result.message ?? result.status });
+      pushToast({ title: "Vault checked", body: result.message ?? result.status, tone: "success" });
     },
     onError: (err) => {
-      toast.error("Vault check failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Vault check failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
     onSettled: () => {
       setCheckingVaultId(null);
@@ -162,7 +163,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
       setDeleteTarget(null);
       setSelectedSecretId(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
-      toast.success("Secret deleted");
+      pushToast({ title: "Secret deleted", tone: "success" });
     },
   });
 
@@ -170,10 +171,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     mutationFn: (input: CreateRuntimeProviderKey) => secretsApi.runtimeProviderKeys.create(companyId, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
-      toast.success("Provider key saved");
+      pushToast({ title: "Provider key saved", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Provider key save failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Provider key save failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -182,10 +183,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
       secretsApi.runtimeProviderKeys.update(id, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
-      toast.success("Provider key updated");
+      pushToast({ title: "Provider key updated", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Provider key update failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Provider key update failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -193,10 +194,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     mutationFn: (id: string) => secretsApi.runtimeProviderKeys.remove(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
-      toast.success("Provider key deleted");
+      pushToast({ title: "Provider key deleted", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Provider key delete failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Provider key delete failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -205,10 +206,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
       secretsApi.bindings.create(secretId, input),
     onSuccess: (_created, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.bindings(variables.secretId) });
-      toast.success("Binding created");
+      pushToast({ title: "Binding created", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Create binding failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Create binding failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -221,10 +222,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
           : current,
         );
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.bindings(variables.secretId) });
-      toast.success("Binding removed");
+      pushToast({ title: "Binding removed", tone: "success" });
     },
     onError: (err) => {
-      toast.error("Remove binding failed", { description: err instanceof Error ? err.message : undefined });
+      pushToast({ title: "Remove binding failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -413,12 +414,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
                 { id: secret.id, input: { status: "disabled" } },
                 {
                   onSuccess: () => {
-                    toast.success("Secret disabled");
+                    pushToast({ title: "Secret disabled", tone: "success" });
                   },
                   onError: (err) => {
-                    toast.error("Disable failed", {
-                      description: err instanceof Error ? err.message : undefined,
-                    });
+                    pushToast({ title: "Disable failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
                   },
                 },
               );
@@ -429,12 +428,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
                 { id: secret.id, input: { status: "active" } },
                 {
                   onSuccess: () => {
-                    toast.success("Secret enabled");
+                    pushToast({ title: "Secret enabled", tone: "success" });
                   },
                   onError: (err) => {
-                    toast.error("Enable failed", {
-                      description: err instanceof Error ? err.message : undefined,
-                    });
+                    pushToast({ title: "Enable failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
                   },
                 },
               );

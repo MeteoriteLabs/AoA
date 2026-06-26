@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import type { Agent } from "@armyofagents/shared";
 import { renderWithProviders, makeAgent } from "../../../__tests__/test-utils";
 import { AgentHeroCard } from "../AgentHeroCard";
@@ -62,18 +62,19 @@ describe("AgentHeroCard", () => {
     ).toBeInTheDocument();
   });
 
-  // Codex P2: KPI deep-links must run through the unsaved-changes guard so they
-  // don't navigate away (and drop a dirty draft) without the discard-confirm.
-  it("routes KPI deep-link clicks through onNavigate", () => {
-    const onNavigate = vi.fn().mockReturnValue(true);
+  // The KPI deep-link is now a plain navigation <Link> — the discard-confirm is
+  // handled globally by UnsavedChangesProvider's useBlocker, not an inline onClick
+  // on the hero card. (Blocking behavior is covered in useUnsavedChanges.test.tsx
+  // + the agent-unsaved-guard e2e.)
+  it("renders a KPI deep-link as a plain <Link> to its route", () => {
     renderWithProviders(
       <AgentHeroCard
         agent={agent}
-        onNavigate={onNavigate}
         kpis={[{ key: "last-run", label: "Last run", value: "1m", to: "/agents/x/runs/r1" }]}
       />,
     );
-    fireEvent.click(screen.getByTestId("hero-kpi-last-run"));
-    expect(onNavigate).toHaveBeenCalledWith("/agents/x/runs/r1");
+    const lastRun = screen.getByTestId("hero-kpi-last-run");
+    expect(lastRun.tagName).toBe("A");
+    expect(lastRun.getAttribute("href")).toContain("/agents/x/runs/r1");
   });
 });

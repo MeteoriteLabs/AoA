@@ -793,6 +793,59 @@ The plugin worker sandbox (`server/src/services/plugin-sandbox.ts`,
   patch and is explicitly **out of scope** for the in-process sandbox. Tracked as separate
   infra work.
 
+## Decision #104 — Optimistic concurrency for agent updates: optional `updatedAt` token → 409 (2026-06-25)
+
+Agent updates (`PATCH /api/agents/:id` → `agentService.update`) were pure
+last-write-wins (guarded by `id` only). Two concurrent human editors of the same
+agent (two tabs / two board members) silently clobbered each other. This is
+hardening, not a live fire — no MCP/automated path writes agents today — but the
+fix is cheap and aligns with **Decision #45** ("founder picks winner — surface
+conflicts, no auto-merge").
+
+**Locked pattern:**
+- **Token = the existing `agents.updatedAt`** (stamped on every write). No version
+  column, **no DB migration**.
+- **Optional / opt-in.** `updateAgentSchema` gains `expectedUpdatedAt?` (ISO
+  datetime). Absent → last-write-wins (full back-compat; no caller breaks).
+  Present → enforced.
+- **Millisecond-precision guard (load-bearing).** `agents.updatedAt` is stored at
+  Postgres **microsecond** resolution (`defaultNow()` on never-updated rows), while
+  the client token is a **millisecond**-precision ISO string. A naked
+  `eq(agents.updatedAt, expected)` would spuriously 409 (then loop) on the FIRST
+  edit of a freshly-created agent. The guard therefore truncates **both sides to
+  milliseconds**:
+
+  ```ts
+  where(and(eq(agents.id, id), sql`date_trunc('milliseconds', ${agents.updatedAt}) = ${new Date(expected)}`))
+  ```
+
+  The token does **not** round-trip losslessly — this `date_trunc` is what makes it safe.
+- **Race-free atomic guard.** The check lives in the WHERE clause of the UPDATE —
+  never a pre-read compare (that is TOCTOU). Zero rows matched **while the row still
+  exists** → `conflict()` (HTTP **409**) with `details.currentUpdatedAt` (an **ISO
+  string** — the service calls `.toISOString()`, since `errorHandler` doesn't coerce
+  raw-`HttpError` `Date`s) so the client can refetch. Zero rows + row gone → `null` →
+  404. Precedent: the atomic conditional UPDATE in `issues.ts` `checkout`. Proven
+  against a real embedded Postgres (Linux-gated / Windows-skipped) because the
+  mock-style unit tests can't evaluate the WHERE clause.
+- **Scope = whole row.** The token guards the entire `agents` row (Skills vs
+  Config conflicts included). False-positive 409s on non-overlapping fields are
+  acceptable — a refetch resolves them. Field-level reconciliation via
+  `agent_config_revisions.changedKeys` is a possible v2, not now.
+- **UI opt-in (first wave):** Skills tab + Config save send `agent.updatedAt`
+  from the query cache; on 409 they invalidate/refetch and toast "changed
+  elsewhere — reloaded, please redo." The Skills tab advances a
+  `latestExpectedUpdatedAt` ref from each successful update response (mirroring its
+  `latestSkillKeys` ref) so back-to-back toggles before the refetch lands don't
+  self-409 on a stale token. The transport-only token is destructured out on the
+  route so it never reaches Drizzle `.set()`. Other editors can opt in later by
+  passing the token.
+
+Refs: `packages/shared/src/validators/agent.ts`, `server/src/services/agents.ts`,
+`server/src/routes/agents.ts`, `ui/src/components/agent-detail/AgentSkillsTab.tsx`,
+`ui/src/components/AgentConfigForm.tsx`;
+`docs/aoa/plans/2026-06-25-agent-page-followups-design.md`.
+
 [#197]: https://github.com/MeteoriteLabs/AoA/pull/197
 [#198]: https://github.com/MeteoriteLabs/AoA/issues/198
 [#203]: https://github.com/MeteoriteLabs/AoA/pull/203

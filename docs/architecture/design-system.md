@@ -1026,7 +1026,7 @@ AoA's existing primitives in [`ui/src/components/ui/`](../../ui/src/components/)
 | `Tooltip` | Tooltip pattern (§9.10) |
 | `Tabs` | Tabs pattern (§9.12) |
 | `DropdownMenu` | Popover pattern (§9.5) |
-| `Toast` (sonner or own) | Toasts pattern (§9.7) |
+| `ToastViewport` + `useToast().pushToast` (`@/context/ToastContext`) | Toasts pattern (§9.7) — unified glass toast, bottom-right |
 
 ### 16.4 Existing files to update during overhaul
 

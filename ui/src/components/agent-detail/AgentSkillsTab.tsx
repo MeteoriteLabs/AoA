@@ -8,6 +8,8 @@ import { agentsApi } from "../../api/agents";
 import { companySkillsApi } from "../../api/companySkills";
 import { queryKeys } from "../../lib/queryKeys";
 import { PageSkeleton } from "../PageSkeleton";
+import { ApiError } from "../../api/client";
+import { useToast } from "@/context/ToastContext";
 
 /**
  * Shared Skills tab for both the worker (AgentDetail) and AoA (AoaAgentDetail)
@@ -19,14 +21,23 @@ export function AgentSkillsTab({
   companyId,
   skillKeys: initialSkillKeys,
   skillsRoute = "/skills",
+  expectedUpdatedAt,
 }: {
   agentId: string;
   companyId: string;
   skillKeys: string[];
   /** Route to the company skills page (varies by page chrome). */
   skillsRoute?: string;
+  /**
+   * Optimistic-concurrency token (the agent row's `updatedAt`, ISO string).
+   * When provided, each skill PATCH is guarded against concurrent edits and a
+   * 409 surfaces a "changed elsewhere" toast. When omitted, the save is
+   * last-write-wins (back-compat — and the payload omits the token).
+   */
+  expectedUpdatedAt?: string;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [localKeys, setLocalKeys] = useState<string[]>(initialSkillKeys);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +49,15 @@ export function AgentSkillsTab({
   useEffect(() => {
     latestSkillKeys.current = initialSkillKeys;
   }, [initialSkillKeys]);
+
+  // Freshest optimistic-concurrency token. Like `latestSkillKeys`, this is
+  // advanced from the SUCCESSFUL update response so a second toggle fired before
+  // the post-success refetch lands sends the up-to-date token (not the stale prop)
+  // and doesn't self-409 against this component's own prior write. (Decision #104)
+  const latestExpectedUpdatedAt = useRef(expectedUpdatedAt);
+  useEffect(() => {
+    latestExpectedUpdatedAt.current = expectedUpdatedAt;
+  }, [expectedUpdatedAt]);
 
   // Resync when the agent refetches / navigation changes the attached set —
   // but never while a toggle is in flight, or an unrelated refetch landing
@@ -72,11 +92,28 @@ export function AgentSkillsTab({
     setPendingKey(skillKey);
     setError(null);
     try {
-      await agentsApi.update(agentId, { skillKeys: next } as never);
+      const payload: Record<string, unknown> = { skillKeys: next };
+      // Send the FRESHEST token (ref), not the prop — guards against a second
+      // toggle that fires before the post-success refetch updates the prop.
+      const tokenToSend = latestExpectedUpdatedAt.current;
+      if (tokenToSend) payload.expectedUpdatedAt = tokenToSend;
+      const updatedAgent = await agentsApi.update(agentId, payload as never);
       // Advance the rollback baseline to the just-confirmed set, so a later toggle
       // that fails before this save's refetch lands rolls back to here (keeping this
       // change) rather than to the now-stale initial prop value.
       latestSkillKeys.current = next;
+      // Advance the token from the server's response so the NEXT toggle (which may
+      // fire before the invalidate refetch lands) guards against the value we just
+      // wrote — not the stale prop. `updatedAt` arrives as a Date or ISO string;
+      // normalize to ISO. Only advance when the prop-driven token feature is active.
+      if (
+        latestExpectedUpdatedAt.current &&
+        (updatedAgent as { updatedAt?: string | Date } | undefined)?.updatedAt
+      ) {
+        latestExpectedUpdatedAt.current = new Date(
+          (updatedAgent as { updatedAt: string | Date }).updatedAt,
+        ).toISOString();
+      }
       // Invalidate the detail PREFIX so both the uuid- and urlKey-keyed agent queries
       // refetch — the worker page may be opened by urlKey.
       void queryClient.invalidateQueries({ queryKey: ["agents", "detail"] });
@@ -86,7 +123,18 @@ export function AgentSkillsTab({
       // the freshest server-known set (not the pre-toggle snapshot) so a change
       // that landed while this toggle was in flight isn't lost.
       setLocalKeys(latestSkillKeys.current);
-      setError(e instanceof Error ? e.message : "Failed to update skills");
+      if (e instanceof ApiError && e.status === 409) {
+        // Concurrent edit: the agent changed under us. Refetch + tell the user
+        // to redo their toggle against the reloaded state (Decision #104).
+        void queryClient.invalidateQueries({ queryKey: ["agents", "detail"] });
+        pushToast({
+          title: "This agent changed elsewhere",
+          body: "Reloaded the latest version — please redo your change.",
+          tone: "error",
+        });
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to update skills");
+      }
     } finally {
       setPendingKey(null);
     }

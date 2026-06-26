@@ -37,6 +37,10 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 
+// The page now calls useUnsavedChanges (global guard); this test mounts it
+// without the provider, so stub the hook to a no-op.
+vi.mock("@/hooks/useUnsavedChanges", () => ({ useUnsavedChanges: vi.fn() }));
+
 // Founder gate source — mirrors TeamPage's useTeamAccess(...).role === "founder".
 const mockTeamAccess: { role: string | null } = { role: "founder" };
 vi.mock("../hooks/useTeamAccess", () => ({
@@ -176,7 +180,7 @@ describe("AoaAgentDetail", () => {
     mockCompanyContext.selectedCompanyId = "comp-1";
     mockAgentsGet.mockResolvedValue(aoaAgent);
     mockListTriggers.mockResolvedValue([]);
-    mockGetAoaRuns.mockResolvedValue([]);
+    mockGetAoaRuns.mockResolvedValue({ runs: [], total: 0, limit: 50 });
   });
 
   it("renders agent name in header", async () => {
@@ -200,14 +204,66 @@ describe("AoaAgentDetail", () => {
     });
   });
 
-  // Codex P2: /aoa-runs is capped (default 50), so labeling its length "Total runs"
-  // undercounts. It's now "Recent runs" and shows "50+" at the cap.
-  it("labels the run KPI 'Recent runs' and shows 50+ when the run list is capped", async () => {
-    mockGetAoaRuns.mockResolvedValue(Array.from({ length: 50 }, (_, i) => ({ id: `r${i}` })));
+  // Follow-up #4: /aoa-runs returns { runs, total } — `total` is count(*) over
+  // ALL runs, so the hero KPI shows the true total-ever (no "50+" cap), labelled
+  // "Total runs". NOTE: the testid here is `kpi-total-runs` because the
+  // AgentDetailCore MOCK in this file renders `data-testid={`kpi-${k.key}`}`
+  // (see the vi.mock for AgentDetailCore ~line 89). The REAL AgentHeroCard uses
+  // `hero-kpi-${key}` — that surface is exercised by the e2e spec (Task 6), not
+  // by this mocked unit test.
+  it("labels the run KPI 'Total runs' and shows the true total beyond the page cap", async () => {
+    mockGetAoaRuns.mockResolvedValue({
+      runs: Array.from({ length: 50 }, (_, i) => ({ id: `r${i}` })),
+      total: 137,
+      limit: 50,
+    });
     renderWithProviders(<AoaAgentDetail />);
     await waitFor(() => {
-      expect(screen.getByTestId("kpi-recent-runs")).toHaveTextContent("Recent runs: 50+");
+      expect(screen.getByTestId("kpi-total-runs")).toHaveTextContent("Total runs: 137");
     });
+  });
+
+  // total within the page (no cap hit): the KPI shows the real number, not "50+".
+  it("shows the exact run total when it is below the page cap", async () => {
+    mockGetAoaRuns.mockResolvedValue({
+      runs: Array.from({ length: 7 }, (_, i) => ({ id: `r${i}` })),
+      total: 7,
+      limit: 50,
+    });
+    renderWithProviders(<AoaAgentDetail />);
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-total-runs")).toHaveTextContent("Total runs: 7");
+    });
+  });
+
+  // Empty agent (never run): the KPI reads "Total runs: 0", not a blank/NaN/"50+".
+  it("shows 'Total runs: 0' when the agent has no runs", async () => {
+    mockGetAoaRuns.mockResolvedValue({ runs: [], total: 0, limit: 50 });
+    renderWithProviders(<AoaAgentDetail />);
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-total-runs")).toHaveTextContent("Total runs: 0");
+    });
+    // Belt-and-suspenders: the old capped label must be gone everywhere.
+    expect(screen.queryByTestId("kpi-recent-runs")).not.toBeInTheDocument();
+    expect(screen.queryByText(/50\+/)).not.toBeInTheDocument();
+  });
+
+  // Follow-up #4: the Overview "Total runs" stat reads `total` (count(*) over
+  // ALL runs), not the capped page length. Mock a page shorter than `total` to
+  // prove the stat is NOT derived from runs.length.
+  it("Overview 'Total runs' stat shows the true total, not the page length", async () => {
+    mockGetAoaRuns.mockResolvedValue({
+      runs: Array.from({ length: 50 }, (_, i) => ({ id: `r${i}` })),
+      total: 212,
+      limit: 50,
+    });
+    renderWithProviders(<AoaAgentDetail />);
+    // The Overview tab is the default view. Assert the dedicated stat testid
+    // renders the true total (212), not the page length (50).
+    await waitFor(() => {
+      expect(screen.getByTestId("aoa-overview-total-runs")).toHaveTextContent("212");
+    });
+    expect(screen.getByTestId("aoa-overview-total-runs")).not.toHaveTextContent("50");
   });
 });
 
@@ -233,7 +289,7 @@ describe("AoaAgentDetail — UUID routing (kind='aoa' excluded from urlKey resol
     mockParams.tab = undefined;
     mockCompanyContext.selectedCompanyId = "comp-1";
     mockListTriggers.mockResolvedValue([]);
-    mockGetAoaRuns.mockResolvedValue([]);
+    mockGetAoaRuns.mockResolvedValue({ runs: [], total: 0, limit: 50 });
     // Models the real server: by-id resolves any kind; by-slug 404s for kind='aoa'
     // (server resolveByReference is hardcoded eq(agents.kind,"org") — M1 / Decision #99).
     mockAgentsGet.mockImplementation(async (ref: string) => {
@@ -274,7 +330,7 @@ describe("AoaAgentDetail — founder lifecycle control (FX7)", () => {
     mockCompanyContext.selectedCompanyId = "comp-1";
     mockTeamAccess.role = "founder";
     mockListTriggers.mockResolvedValue([]);
-    mockGetAoaRuns.mockResolvedValue([]);
+    mockGetAoaRuns.mockResolvedValue({ runs: [], total: 0, limit: 50 });
     mockAgentsPause.mockResolvedValue({});
     mockAgentsResume.mockResolvedValue({});
     mockAgentsTerminate.mockResolvedValue({});
