@@ -130,33 +130,42 @@ export async function testEnvironment(
     });
   }
 
+  // Auth-presence assessment MUST mirror what a real run uses (Codex finding 3 /
+  // env-strip): a per-agent OPENAI_API_KEY in adapter config env, else the shared
+  // Codex auth.json. The ambient server process.env.OPENAI_API_KEY is STRIPPED
+  // from agent runs, so it must NOT be reported as usable auth — otherwise the
+  // probe passes while the saved agent immediately runs without auth.
   const configOpenAiKey = env.OPENAI_API_KEY;
   const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
-  if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
-    const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
+  const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+  const sharedAuthReady = await fs.stat(sharedAuthPath).then((stat) => stat.isFile()).catch(() => false);
+  if (isNonEmpty(configOpenAiKey)) {
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
-      detail: `Detected in ${source}.`,
+      detail: "Detected in adapter config env.",
+    });
+  } else if (sharedAuthReady) {
+    checks.push({
+      code: "codex_auth_json_present",
+      level: "info",
+      message: "Codex auth.json is available for local authentication.",
+    });
+  } else if (isNonEmpty(hostOpenAiKey)) {
+    checks.push({
+      code: "codex_openai_api_key_server_env_only",
+      level: "warn",
+      message: "OPENAI_API_KEY is set only in the server environment; agent runs do not use it.",
+      hint: "Set a per-agent OPENAI_API_KEY in the adapter config, or run `codex login`, so agent runs can authenticate.",
     });
   } else {
-    const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
-    const sharedAuthReady = await fs.stat(sharedAuthPath).then((stat) => stat.isFile()).catch(() => false);
-    if (sharedAuthReady) {
-      checks.push({
-        code: "codex_auth_json_present",
-        level: "info",
-        message: "Codex auth.json is available for local authentication.",
-      });
-    } else {
-      checks.push({
-        code: "codex_openai_api_key_missing",
-        level: "warn",
-        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or Codex auth configuration.",
-      });
-    }
+    checks.push({
+      code: "codex_openai_api_key_missing",
+      level: "warn",
+      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
+      hint: "Set a per-agent OPENAI_API_KEY in the adapter config, or run `codex login`.",
+    });
   }
 
   const canRunProbe =
@@ -202,21 +211,16 @@ export async function testEnvironment(
       // On Windows, the shell trap variant is not supported (Issue #114); we fall back
       // to a bare probe — API-key auth may return 401 on Codex 0.122+ in that case.
       //
-      // SCOPE NOTE (env-strip / Codex finding 3): the "no ambient OPENAI_API_KEY
-      // reaches Codex" invariant is enforced for AGENT RUNS (execute.ts), NOT for
-      // this user-initiated diagnostic probe. The probe DELIBERATELY uses whatever
-      // auth is available — it falls back to the host process.env.OPENAI_API_KEY
-      // (below) and materializes it into the managed auth.json — and on Windows
-      // falls back to a bare probe that relies on env auth (Issue #114). This is an
-      // intentional operator-diagnostic exception, NOT a closed leak: stripping here
-      // would make "Test environment" lie about whether Codex can authenticate.
-      // Do NOT add unsetEnvKeys to this probe spawn.
+      // AUTH ALIGNMENT (env-strip / Codex finding 3): use the SAME auth inputs a
+      // real run uses (execute.ts) — the per-agent OPENAI_API_KEY in adapter config
+      // env, else the shared Codex auth.json that prepareManagedCodexHome copies in.
+      // Do NOT fall back to the ambient process.env.OPENAI_API_KEY: agent runs strip
+      // that key, so materializing it here would let "Test environment" report a
+      // passing connection while the saved agent immediately runs without auth.
       const configuredOpenAiApiKey =
         typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
           ? env.OPENAI_API_KEY.trim()
-          : typeof process.env.OPENAI_API_KEY === "string" && process.env.OPENAI_API_KEY.trim().length > 0
-            ? process.env.OPENAI_API_KEY.trim()
-            : null;
+          : null;
 
       const managedCodexHome = targetIsRemote
         ? `${adapterExecutionTargetRemoteCwd(target, cwd).replace(/\/+$/, "")}/.aoa-codex-home`
