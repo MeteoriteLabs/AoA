@@ -19,6 +19,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
 import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
 import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
+import { toast } from "@/lib/toast";
+import { ApiError } from "../api/client";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -492,6 +494,19 @@ function AoaConfigurePage({
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       if (agent.urlKey) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
+    },
+    onError: (err) => {
+      // Optimistic-concurrency conflict: someone else changed the agent. Refetch
+      // the latest and tell the user to redo their edit. (Decision #104)
+      if (err instanceof ApiError && err.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+        if (agent.urlKey) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+        }
+        toast.error("This agent changed elsewhere", {
+          description: "Reloaded the latest version — please redo your change.",
+        });
       }
     },
   });

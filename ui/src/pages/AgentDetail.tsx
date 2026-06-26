@@ -1360,6 +1360,17 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
     },
+    onError: (err) => {
+      // Optimistic-concurrency conflict: someone else changed the agent. Refetch
+      // the latest and tell the user to redo their edit. (Decision #104)
+      if (err instanceof ApiError && err.status === 409) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+        toast.error("This agent changed elsewhere", {
+          description: "Reloaded the latest version — please redo your change.",
+        });
+      }
+    },
   });
 
   useEffect(() => {
