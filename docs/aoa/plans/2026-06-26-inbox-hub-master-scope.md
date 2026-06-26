@@ -148,12 +148,20 @@ actions:   type-specific primary/secondary + Snooze/Dismiss + "Open full →"
   is the UI face of the notifications Layer-2 registry (§11) — the two share the
   type definitions.
 
-**Unified item model (key architecture decision, design in W1).** Items live in
-6+ tables today (approvals, notifications, discussions, heartbeat_runs,
-join_requests, issues, suggestions) — plus runtime decisions (§10). The hub
-must present them as one feed. Decision to make: **query-and-merge at read time**
-vs. a **unified hub-item index** every source writes into. Sorting, paging,
-counts, claiming, and realtime all depend on this choice.
+**Unified item model (DECIDED — unified index, hybrid).** Items live in 6+ tables
+today (approvals, notifications, discussions, heartbeat_runs, join_requests,
+issues, suggestions) — plus runtime decisions (§10). **Decision: a unified
+`hub_items` index** every source emits into (this *is* the W2 Layer-2 single emit
+path) — **hybrid**: the index holds the pointer + a denormalized summary + the
+shared lifecycle; the **viewer loads full detail from the source on demand**.
+Result: single-table sort / page / count / realtime / grouping.
+
+**Hub-state model (two tables).** *Shared* lifecycle on `hub_items` (`status`
+open/resolved/archived, `priority`, `groupKey`, `slaAt`, ownership fields per §7).
+*Per-user* state in `hub_item_user_state` (`readAt`, `snoozedUntil`,
+`dismissedAt`) — mirrors `issue_read_states` / `inbox_dismissals` (the latter
+migrated in). Read/unread & snooze are per-user; resolve/archive & ownership are
+shared.
 
 **Action layer.** Each item type's actions execute against the *source's*
 existing API (Approve → approvals API, Retry → heartbeats, Reply → thread/run,
@@ -185,21 +193,44 @@ went-at-risk**, and **agent runtime decisions** (§10).
 - **SLA / escalation** — an item ignored too long re-notifies or escalates.
 - **Search** — across the hub and history.
 
-## 7. Multi-human, RBAC & claiming
+## 7. Multi-human: ownership, RBAC & assignment
 
-- **RBAC scoping** — every lane/item is permission-filtered (a hire approval is
-  founder/board; a team_lead sees their department's items). **Founder sees
-  everything** (with filters to narrow).
-- **Claiming** (design in W1; resolves the "no creator user-id" problem):
-  - Items default to **unassigned**; any RBAC-eligible member can **claim** one →
-    it shows "Sam is handling this"; founder can reassign; **auto-unclaim** if it
-    goes stale.
-  - Items with a **natural owner** (a mention of you, your own run) auto-route to
-    you.
-  - **Approvals** are a shared board pool any eligible member can claim + decide.
-- **Concurrency / auto-resolve** — when an item is handled (by another member, or
-  the agent resolves its own question), it **self-clears live** in everyone's
-  view; no stale action buttons. (Depends on real-time, §11 Layer 3.)
+**Accountability-first (enterprise-grade):** there is always a human accountable
+for the agents below them, so **every item has an Owner** — never a free-for-all
+pool. Works across all three roles (founder / team_lead / team_member).
+
+- **Owner vs Authority (the key split).**
+  - **Owner** = the responsible human who must get the item handled (shepherd it).
+    Any role. Auto-derived from the agent's **reports-to chain** (agent →
+    reports-to human → their lead → founder), or **natural-owner** (a mention of
+    you / your own run), or the **board pool** for authority-gated items.
+  - **Authority** = who may make the *final* decision (a property of the item
+    type, e.g. hire-approval = founder/board). Owner has it → they act; Owner
+    lacks it → they **Route/Escalate** to someone who does, while staying
+    accountable. (RACI: Owner = Responsible, approver = Accountable.)
+- **RBAC** — every lane/item/action permission-filtered; **action buttons gated by
+  Authority** (no dead buttons); **founder sees everything**.
+- **Assignment operations (locked wording):** **Claim/Release** (board-pool items
+  only), **Reassign to…** (a human hands it to a specific *eligible* person + a
+  note, audited), **Escalate** (up the chain; auto on SLA), **Delegate /
+  out-of-office** (standing coverage → my items auto-route to my delegate while
+  away), **Route** (system/Steward auto- or suggested-assignment, autonomy-gated).
+  All assignment changes are written to `activity_log`.
+- **Concurrency / auto-resolve** — claim/assign/decide are **atomic** (first write
+  wins; others self-clear live); agent resolving its own question, or a deleted
+  source, auto-closes the item. (Realtime: §11 L3.)
+
+**Edge-case guardrails (finalized in W1 design):**
+- **Owner always resolves** — reports-to enforcement (separate session, §13) +
+  fallback chain → founder; a deactivated user's items reassign up to their
+  manager.
+- **Escalation ceiling = founder** (SLA there re-notifies, no higher hop); a
+  member with no lead escalates straight to founder; mass-SLA escalations are
+  grouped + rate-limited.
+- **OOO never lowers authority and never loops** — a delegate receives only items
+  they're authorized for (the rest escalate to a real authority-holder); delegate
+  chains are depth-capped with founder as the floor; founder-OOO needs an
+  authority-equal delegate or those items wait.
 
 ## 8. AI-first behaviors
 
@@ -339,6 +370,9 @@ hub's **real-time + auto-resolve** (§7, §8) *are* L3. Sequence L2 early.
   patterns for the autonomy layer; `internal_agent_runtime_approvals` +
   `runtime_tool_trust` for the W5 seed; the adapter layer (`server/src/adapters/`)
   for W5 bridges.
+- **Assumes (separate session):** agents **cannot be created without a reports-to**
+  (a responsible human), which guarantees the ownership chain (§7) always
+  resolves; until it lands, the fallback chain (→ founder) applies.
 - **Out of scope / deferred:** Mail/email integration (own session; IA reserves
   the lane), cross-company global hub (parked), agent-persona outbound email,
   Activity Log changes, **W5 per-adapter bridges** (likely a follow-up session;
@@ -385,7 +419,6 @@ reserved item type + the autonomy layer.
 
 ## 15. Open questions / to-be-designed
 
-- **Unified item model** — query-and-merge vs. a unified hub-item index (W1).
 - Snooze mechanics & return-timing UI (W1).
 - Claiming / reassign / auto-unclaim rules; natural-owner routing (W1).
 - Viewer default/empty state on Home and with no item open; tab limits &
@@ -445,3 +478,108 @@ High test-priority, exercised **across autonomy levels and scenarios**:
   so two humans never double-act and no stale buttons remain.
 - **W5 relay correctness** — block/answer/relay and watchdog timeouts verified
   per adapter; no run hangs forever, no decision lost.
+
+## 18. Correctness & enterprise hardening (post office-hours / Codex review)
+
+An adversarial cross-model review (Claude premise-challenge + an independent Codex
+cold-read) found the three-pane UI is fine; the **correctness layer** of the
+`hub_items` control-plane was under-specified. Bottom line (Codex): *"the dangerous
+part is not the UI; it is making `hub_items` a trustworthy control-plane index
+under missed events, stale denormalization, RBAC, multi-human races, and blocked
+agent subprocesses."* These are now in scope.
+
+**Data-plane integrity (refines §5)**
+- **One store, not two — DECISION:** `hub_items` **evolves the `notifications`
+  table** into the single attention index; `notifications` becomes a compatibility
+  view / deprecated source with no independent UI reads. No parallel store. (Both
+  models flagged two parallel stores as a P1 divergence risk.)
+- **Idempotent emit:** unique `source_unique_key`
+  (`company_id + source_type + source_id + semantic_type + scope_key`) — upsert,
+  not insert.
+- **No silent drops:** emit in the **same DB transaction** as the source mutation,
+  or via a **durable outbox**; plus a **reconciliation sweeper** (sources = truth,
+  index = cache) that heals missed emits, stale summaries, permission drift, and
+  deleted sources. Test by simulating commit-then-emit-failure.
+- **Stale-summary contract:** define when the denormalized summary refreshes, that
+  the source is authoritative, how staleness is detected, and invalidation on
+  source delete / permission change.
+
+**Security (refines §7, §17)**
+- **RBAC at emit + query + action, not just render.** A denormalized summary can
+  leak (titles, paths, commands, customer names, secrets) even behind a gated
+  viewer. Store **redacted summaries by default**; carry source permission
+  revision; negative tests for cross-department / team-member visibility.
+- **Retention / privacy:** history + runtime prompts can persist secrets and
+  customer mail → retention windows, redact-at-write, audit redaction, hard-delete.
+
+**Action correctness (refines §5, §6)**
+- **Optimistic concurrency:** every action carries `hub_item.version` + source
+  revision; server rejects stale decisions with `409` (SSE/WS delivery is lossy on
+  reconnect — live self-clearing alone is insufficient).
+- **Action states:** pending / failed / partial + idempotency keys + retry +
+  user-facing recovery for "hub said approved but the source API failed."
+- **Bulk actions** across heterogeneous sources can't be one transaction → define
+  partial-failure semantics.
+- **Immutable decision record (audit):** canonical schema — actor, authority basis,
+  prior state, source revision, autonomy level, reason, undo deadline, irreversible
+  side-effects, relay result. **Audit lands before any auto-action** (manual
+  actions need it too).
+
+**Ownership hardening (refines §7)**
+- **Autonomy acts as a principal** with an explicit delegated authority grant —
+  never as "the system" (else invisible privilege escalation).
+- **Break-glass delegation** for founder-OOO on founder-only decisions (audited,
+  expiring) — "items wait" is a deadlock during an incident.
+- **Reassign anti-laundering:** eligibility check + required reason + source-visible
+  audit; four-eyes for sensitive item types.
+- **Owner vs pool:** a pool is not an owner — model `owner_user_id` nullable +
+  `owner_pool`; assign a steward before the SLA clock starts. Pick one fixed
+  meaning of "Accountable" — don't let it float between owner and authority-holder.
+- **Operationalize OOO/escalation:** exact algorithm — cycle detection, time-window
+  precedence, authority preservation, fallback event.
+
+**W5 hardening (refines §10) — highest-risk area**
+- **Per-adapter feasibility matrix before building** — "questions" ≠ "permission
+  prompts"; fewer CLIs expose resumable structured-question callbacks. Start with
+  **one adapter behind a feature flag.**
+- **Durable runtime-prompt table** (`created / shown / answered / relayed /
+  expired / cancelled / relay_failed`) — never memory-only.
+- **Relay integrity:** bind prompt + answer to `run_id` + adapter session +
+  **nonce** + source revision + actor + decision (anti-spoof, anti-stale).
+- **Per-prompt timeout policy:** deny / cancel run / park / continue-with-default /
+  escalate — auto-deny is wrong for substantive questions.
+- **Scoped allow-always:** by agent / command / path / network target / repo /
+  risk-class / **expiry** — never blanket "always allow shell."
+- **Blocked-run cost** is real (worktrees, heartbeat slots, locks) — watchdog +
+  concurrency clamp are load-bearing.
+
+**Phasing corrections (refines §14)**
+- **RBAC + the audit schema are day-1**, baked into the data model and emit path —
+  not deferred to Phase 2/3.
+- **Lock a shared item/notification type contract** before W1 and W2-L2 run in
+  parallel (else churn).
+- **Decompose W1** — it currently holds most of the product; split into sub-phases:
+  (a) data + RBAC + audit core, (b) lanes/viewer, (c) lifecycle, (d) grouping /
+  search / settings / mobile.
+- **W5 reserved type ≠ UI parity** until adapter contracts are proven.
+
+**Prototype gap:** add the *unhappy* states (permission-denied, stale,
+claimed-by-other live transition, failed action, snoozed-return, source-deleted) —
+those dominate enterprise trust.
+
+**Scalability (one indexed table stays fast at volume — the levers):**
+- **Hot set = open items only.** Partial indexes on `status='open'` so active-hub
+  queries touch a small working set regardless of lifetime row count.
+- **Sparse per-user state.** Write a `hub_item_user_state` row only when a user
+  *diverges* from the default (read / snooze / dismiss) — never pre-fan-out per
+  user×item (that's the M×N explosion Codex flagged).
+- **Maintained counters** for the bell / sidebar badge — incremented on
+  emit/resolve, not a `COUNT(*)` across snooze/dismiss/RBAC on every load.
+- **Company-scoped composite indexes** (`company_id` leading on every query);
+  partition by company / month if a single tenant gets huge.
+- **Retention / archival** (per Security above) caps lifetime growth; resolved /
+  archived rows leave the hot path entirely.
+- **Scoped, batched realtime** — one unified stream per company, RBAC-filtered. A
+  single table makes realtime *easier* than fanning out N source streams.
+- **Bounded blocked-runs (W5)** — a separate scale axis, capped by the heartbeat
+  concurrency clamp + watchdog, not a table concern.
