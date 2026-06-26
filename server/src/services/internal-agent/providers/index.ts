@@ -62,6 +62,32 @@ export async function getProviderApiKey(
   return envValue;
 }
 
+/**
+ * Non-resolving existence check: does a provider key EXIST for this company,
+ * via a configured Settings secret or an env var? Unlike getProviderApiKey this
+ * does NOT decrypt the secret value, so it has no side effects — no
+ * `secretAccessEvents` audit row, no `lastResolvedAt` bump. Use it for boolean
+ * "is semantic search available" probes that run on passive page views
+ * (resolveSemanticAvailable), so normal viewing doesn't mutate secret metadata
+ * or bloat the access-audit log (P2, Codex). Mirrors the same name candidates +
+ * env fallback as getProviderApiKey, so the boolean agrees with what a real
+ * resolution would find.
+ */
+export async function hasProviderKey(
+  db: Db,
+  companyId: string,
+  provider: string,
+): Promise<boolean> {
+  const secretNames = PROVIDER_SECRET_NAMES[provider] ?? [];
+  const svc = secretService(db);
+  for (const name of secretNames) {
+    const row = await svc.getByName(companyId, name);
+    if (row) return true;
+  }
+  const envKey = PROVIDER_ENV_KEYS[provider] ?? `${provider.toUpperCase()}_API_KEY`;
+  return Boolean(process.env[envKey]);
+}
+
 /** Default model per provider — used when falling back to a provider the caller
  *  didn't configure a model for. */
 const DEFAULT_MODELS: Record<string, string> = {

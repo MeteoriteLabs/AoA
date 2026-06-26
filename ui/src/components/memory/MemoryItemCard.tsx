@@ -59,6 +59,9 @@ export function MemoryItemCard({ row, active, onSelect, onReindex }: Props) {
       tabIndex={0}
       onClick={() => onSelect(row.id, row.kind)}
       onKeyDown={(e) => {
+        // Ignore keydowns bubbling from nested controls (e.g. the Re-index
+        // button) so keyboard activation of those doesn't also select the row.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onSelect(row.id, row.kind);

@@ -53,6 +53,10 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
       tabIndex={0}
       onClick={() => onSelect(row.id, row.kind)}
       onKeyDown={(e) => {
+        // Only act on keydowns that originated on the row itself — ignore those
+        // bubbling up from nested controls (e.g. the Re-index button) so a
+        // keyboard user activating those doesn't also select the row (P2, Codex).
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onSelect(row.id, row.kind);

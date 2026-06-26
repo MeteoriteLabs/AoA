@@ -75,14 +75,17 @@ vi.mock("../services/memory-write.js", () => ({
 }));
 
 // Key resolver for memory-index-status — mocked so tests control semanticAvailable.
+// resolveSemanticAvailable uses the NON-resolving existence check hasProviderKey
+// (no secret-value decrypt / audit side effects on passive reads).
 vi.mock("../services/internal-agent/providers/index.js", () => ({
   getProviderApiKey: vi.fn(),
+  hasProviderKey: vi.fn(),
 }));
 
 // ── Imports (after mocks) ─────────────────────────────────────────────────────
 
 import { deriveIndexStatus } from "../services/memory-index-status.js";
-import { getProviderApiKey } from "../services/internal-agent/providers/index.js";
+import { getProviderApiKey, hasProviderKey } from "../services/internal-agent/providers/index.js";
 import { getDbCapabilities } from "../services/db-capabilities.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,21 +287,32 @@ describe("list() enrichment — returns Item[] with per-item indexStatus", () =>
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("resolveSemanticAvailable — key-availability axis", () => {
+  const mockHasProviderKey = hasProviderKey as ReturnType<typeof vi.fn>;
   const mockGetProviderApiKey = getProviderApiKey as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns true when key resolves and pgvector is present", async () => {
-    mockGetProviderApiKey.mockResolvedValue("sk-test-key");
+  it("returns true when a key EXISTS and pgvector is present (no value resolution)", async () => {
+    mockHasProviderKey.mockResolvedValue(true);
     const { resolveSemanticAvailable } = await import("../services/memory-index-status.js");
     const result = await resolveSemanticAvailable({} as any, "co-1");
     expect(result).toBe(true);
+    // Must use the non-resolving existence check, NOT resolve the secret value.
+    expect(mockHasProviderKey).toHaveBeenCalledWith({}, "co-1", "openai");
+    expect(mockGetProviderApiKey).not.toHaveBeenCalled();
   });
 
-  it("returns false when key resolution throws", async () => {
-    mockGetProviderApiKey.mockRejectedValue(new Error("No API key configured"));
+  it("returns false when no key exists", async () => {
+    mockHasProviderKey.mockResolvedValue(false);
+    const { resolveSemanticAvailable } = await import("../services/memory-index-status.js");
+    const result = await resolveSemanticAvailable({} as any, "co-1");
+    expect(result).toBe(false);
+  });
+
+  it("returns false when the existence check throws", async () => {
+    mockHasProviderKey.mockRejectedValue(new Error("db error"));
     const { resolveSemanticAvailable } = await import("../services/memory-index-status.js");
     const result = await resolveSemanticAvailable({} as any, "co-1");
     expect(result).toBe(false);
@@ -314,7 +328,7 @@ describe("resolveSemanticAvailable — key-availability axis", () => {
 // separate vi.mock override in an isolated module scope via doMock/resetModules.
 
 describe("resolveSemanticAvailable — short-circuits when hasVectorSupport=false", () => {
-  it("returns false and never calls getProviderApiKey when pgvector is absent", async () => {
+  it("returns false and never calls the key check when pgvector is absent", async () => {
     // Reset module registry so we can inject fresh mocks.
     vi.resetModules();
 
@@ -335,9 +349,10 @@ describe("resolveSemanticAvailable — short-circuits when hasVectorSupport=fals
       probeDbCapabilities: () => Promise.resolve({ hasVectorSupport: false }),
     }));
 
-    const keyResolverMock = vi.fn().mockResolvedValue("sk-has-key");
+    const keyResolverMock = vi.fn().mockResolvedValue(true);
     vi.doMock("../services/internal-agent/providers/index.js", () => ({
-      getProviderApiKey: keyResolverMock,
+      getProviderApiKey: vi.fn(),
+      hasProviderKey: keyResolverMock,
     }));
 
     const { resolveSemanticAvailable } = await import("../services/memory-index-status.js");

@@ -16,7 +16,7 @@
 
 import type { MemoryIndexStatus } from "@armyofagents/shared";
 import { getDbCapabilities } from "./db-capabilities.js";
-import { getProviderApiKey } from "./internal-agent/providers/index.js";
+import { hasProviderKey } from "./internal-agent/providers/index.js";
 import type { Db } from "@armyofagents/db";
 
 export type { MemoryIndexStatus };
@@ -55,9 +55,11 @@ export async function resolveSemanticAvailable(
   companyId: string,
 ): Promise<boolean> {
   if (!getDbCapabilities().hasVectorSupport) return false;
+  // Existence check only — must NOT resolve the secret value here. This runs on
+  // every memory-list GET (passive page views), so resolving would write a
+  // secretAccessEvents audit row + bump lastResolvedAt on each view (P2, Codex).
   try {
-    await getProviderApiKey(db, companyId, "openai");
-    return true;
+    return await hasProviderKey(db, companyId, "openai");
   } catch {
     return false;
   }
