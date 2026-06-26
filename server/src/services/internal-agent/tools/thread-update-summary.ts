@@ -123,6 +123,12 @@ export const threadUpdateSummaryTool: AgentTool = {
     try {
       if (ctx.services?.embeddings?.enqueue) {
         await ctx.services.embeddings.enqueue({
+          // Stamp the owning company (P2, Codex): without it the row gets
+          // company_id = NULL and the per-company embedding worker can only
+          // resolve a key via the env fallback — so companies that configured
+          // only the Settings llm:openai key would leave these summary
+          // embeddings pending until an env key is added or a restart backfills.
+          companyId: ctx.companyId,
           targetTable: "discussions",
           targetId: threadId,
           targetColumn: "summary_embedding",

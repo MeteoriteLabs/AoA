@@ -312,13 +312,16 @@ describe("reindexCompany", () => {
     const result = await reindexCompany(db as any, "c-company");
 
     expect(result.requeuedFailed).toBe(2);
-    // The update call's set payload should reset to pending
-    expect(db.setCalls.length).toBe(1);
+    // Two updates now: [0] requeue-failed → pending, then [1] the unconditional
+    // backoff-clear (step 1b) that resets nextRetryAt for live pending rows so a
+    // key-add drains no-key/circuit-backed-off rows immediately.
+    expect(db.setCalls.length).toBe(2);
     expect(db.setCalls[0]).toMatchObject({
       status: "pending",
       attempts: 0,
       error: null,
     });
+    expect(db.setCalls[1]).toEqual({ nextRetryAt: null });
     expect(result.enqueuedMissing).toBe(0);
     expect(mockEnqueueMemoryEmbedding).not.toHaveBeenCalled();
   });
@@ -389,7 +392,9 @@ describe("reindexCompany", () => {
 
     expect(result.requeuedFailed).toBe(1);
     expect(result.enqueuedMissing).toBe(1);
-    expect(db.setCalls.length).toBe(1);
+    // [0] requeue-failed, [1] unconditional backoff-clear (step 1b).
+    expect(db.setCalls.length).toBe(2);
+    expect(db.setCalls[1]).toEqual({ nextRetryAt: null });
     expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledOnce();
   });
 });

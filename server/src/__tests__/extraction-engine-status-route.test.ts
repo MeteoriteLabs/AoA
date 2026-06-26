@@ -42,6 +42,9 @@ vi.mock("../middleware/rbac.js", () => ({
 vi.mock("../services/extraction-engine.js", () => ({
   resolveCompanyCliTool: mocks.resolveCompanyCliTool,
   probeExtractionCli: mocks.probeExtractionCli,
+  // The status route gates the probe on this allow-list (must mirror the real
+  // export). All tools the tests configure (claude_cli, codex) are supported.
+  EXTRACTION_SUPPORTED_CLI_TOOLS: new Set(["claude_cli", "claude", "codex"]),
 }));
 
 vi.mock("../services/internal-agent/providers/index.js", () => ({

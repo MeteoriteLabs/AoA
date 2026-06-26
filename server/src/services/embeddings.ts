@@ -800,10 +800,18 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
         const circuitEntry = circuit.get(companyKey);
         if (circuitEntry && circuitEntry.until > Date.now()) {
           if (rowsAlreadyClaimed) {
-            // Row was claimed as 'processing' by the CTE; restore to 'pending'.
+            // Row was claimed as 'processing' by the CTE; restore to 'pending'
+            // AND defer nextRetryAt to the circuit's reset time (P2, Codex).
+            // Without the deferral a company with a bad/expired key and a large
+            // backlog re-claims the same oldest rows every tick and starves
+            // newer rows from keyed companies until the circuit TTL expires.
             await db
               .update(embeddingQueue)
-              .set({ status: "pending", updatedAt: new Date() })
+              .set({
+                status: "pending",
+                nextRetryAt: new Date(circuitEntry.until),
+                updatedAt: new Date(),
+              })
               .where(eq(embeddingQueue.id, item.id));
           }
           // If fallback plain-select path: row is still 'pending' — just skip it.
@@ -817,9 +825,16 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
         // Also skip if this company tripped the circuit earlier in this tick
         if (circuitOpenedThisTick.has(companyKey)) {
           if (rowsAlreadyClaimed) {
+            // Defer to the circuit's reset time (same anti-starvation deferral
+            // as the open-circuit branch above; P2, Codex).
+            const until = circuit.get(companyKey)?.until ?? Date.now() + CIRCUIT_TTL_MS;
             await db
               .update(embeddingQueue)
-              .set({ status: "pending", updatedAt: new Date() })
+              .set({
+                status: "pending",
+                nextRetryAt: new Date(until),
+                updatedAt: new Date(),
+              })
               .where(eq(embeddingQueue.id, item.id));
           }
           skipped++;
@@ -910,17 +925,20 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
 
           if (errClass === "systemic") {
             // Open the circuit for this company — don't burn rows to 'failed'.
-            // Restore this row to pending WITHOUT bumping attempts.
+            // Restore this row to pending WITHOUT bumping attempts, and defer
+            // nextRetryAt to the circuit's reset time so this row (and the rest
+            // of the company's backlog) stays ineligible until the circuit
+            // reopens — otherwise it would be re-claimed every tick and starve
+            // keyed companies (P2, Codex).
             const reason = errMsg;
-            circuit.set(companyKey, {
-              reason,
-              until: Date.now() + CIRCUIT_TTL_MS,
-            });
+            const until = Date.now() + CIRCUIT_TTL_MS;
+            circuit.set(companyKey, { reason, until });
             circuitOpenedThisTick.add(companyKey);
             await db
               .update(embeddingQueue)
               .set({
                 status: "pending",
+                nextRetryAt: new Date(until),
                 error: errMsg,
                 updatedAt: new Date(),
               })

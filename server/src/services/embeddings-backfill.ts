@@ -1,4 +1,4 @@
-import { eq, isNull, and, inArray, notInArray } from "drizzle-orm";
+import { eq, isNull, isNotNull, and, inArray, notInArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   embeddingQueue,
@@ -170,6 +170,23 @@ export async function reindexCompany(
         ),
       );
   }
+
+  // --- 1b. Clear deferred backoff on live pending rows ----------------------
+  // No-key and open-circuit rows are left 'pending' with a FUTURE nextRetryAt
+  // (anti-starvation backoff). They are "live", so step 2 below excludes them
+  // and step 1 only touches 'failed' rows — without this they'd stay ineligible
+  // until the backoff expires even though a key was just added/rotated. Clear
+  // nextRetryAt so adding the key drains the backlog immediately (P3, Codex).
+  await db
+    .update(embeddingQueue)
+    .set({ nextRetryAt: null })
+    .where(
+      and(
+        eq(embeddingQueue.companyId, companyId),
+        eq(embeddingQueue.status, "pending"),
+        isNotNull(embeddingQueue.nextRetryAt),
+      ),
+    );
 
   // --- 2. Enqueue missing memory_items --------------------------------------
   // Find memory_items for this company where embedding IS NULL and there is

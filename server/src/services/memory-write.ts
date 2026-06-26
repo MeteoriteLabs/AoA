@@ -64,7 +64,14 @@ export async function enqueueMemoryEmbedding(
       return;
     }
 
-    // Guard 3: dedup — skip if a live queue row already exists for this target.
+    // Guard 3: dedup — if a live queue row already exists for this target,
+    // REFRESH its inputText instead of inserting a duplicate (P2, Codex).
+    // A memory title/content edit while a row is still pending/processing would
+    // otherwise leave the row's inputText at the pre-edit content — and since
+    // memoryService.update nulls the stored embedding and relies on this helper
+    // for re-indexing, the worker would complete with a stale vector and no new
+    // row would ever be created. Update the live row's text and reset it to
+    // pending (clearing any backoff) so the latest content is what gets embedded.
     const existing = await (handle as any)
       .select({ id: embeddingQueue.id })
       .from(embeddingQueue)
@@ -79,7 +86,16 @@ export async function enqueueMemoryEmbedding(
       .limit(1);
 
     if (existing.length > 0) {
-      return; // already queued — dedup, no-op
+      await (handle as any)
+        .update(embeddingQueue)
+        .set({
+          inputText,
+          status: "pending",
+          nextRetryAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(embeddingQueue.id, existing[0].id));
+      return;
     }
 
     // Insert the queue row.

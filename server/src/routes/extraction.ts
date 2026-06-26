@@ -15,7 +15,11 @@ import type { Db } from "@armyofagents/db";
 import type { ExtractionEngineStatusResponse } from "@armyofagents/shared";
 import { assertCompanyAccess } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
-import { resolveCompanyCliTool, probeExtractionCli } from "../services/extraction-engine.js";
+import {
+  resolveCompanyCliTool,
+  probeExtractionCli,
+  EXTRACTION_SUPPORTED_CLI_TOOLS,
+} from "../services/extraction-engine.js";
 import { resolveAvailableProvider } from "../services/internal-agent/providers/index.js";
 
 export function extractionRoutes(db: Db) {
@@ -40,8 +44,15 @@ export function extractionRoutes(db: Db) {
       await assertRole(db, req, companyId, "founder", "team_lead");
 
       // Step 1: resolve the CLI tool configured for this company and probe it.
+      // Only probe tools that extraction can actually drive — otherwise the
+      // status would report "Local CLI ready" for e.g. an opencode-configured
+      // company even though resolveExtractionEngine() treats it as unavailable
+      // and falls through to API/none (P3, Codex). Keep this gate in lockstep
+      // with resolveExtractionEngine.
       const tool = await resolveCompanyCliTool(db, companyId);
-      const cli = await probeExtractionCli(tool);
+      const cli = EXTRACTION_SUPPORTED_CLI_TOOLS.has(tool)
+        ? await probeExtractionCli(tool)
+        : { available: false, tool };
 
       // Step 2: check whether at least one hosted provider key is reachable.
       // resolveAvailableProvider throws when no key exists anywhere — catch that.
