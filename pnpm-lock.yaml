@@ -115,6 +115,10 @@ importers:
         version: 5.9.3
 
   packages/adapter-utils:
+    dependencies:
+      '@armyofagents/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: ^24.6.0

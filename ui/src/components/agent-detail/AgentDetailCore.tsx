@@ -32,9 +32,6 @@ export interface AgentDetailCoreProps {
   heroBadges?: { adapter?: string; model?: string };
   /** Header-error line rendered under the hero card */
   headerError?: string | null;
-  /** Intercept a hero KPI deep-link click (e.g. unsaved-changes guard); return
-   *  true to cancel default navigation. */
-  onHeroNavigate?: (to: string) => boolean;
   /** Render the content for the active tab */
   renderTab: (view: string) => React.ReactNode;
 }
@@ -63,7 +60,6 @@ export function AgentDetailCore({
   heroKpis,
   heroBadges,
   headerError,
-  onHeroNavigate,
   renderTab,
 }: AgentDetailCoreProps) {
   const showActionBar = actionBar?.show ?? false;
@@ -78,12 +74,16 @@ export function AgentDetailCore({
         actions={headerActions}
         onIconChange={onIconChange}
         error={headerError}
-        onNavigate={onHeroNavigate}
       />
 
       {/* Floating Save/Cancel (desktop) */}
       {!isMobile && actionBar && (
         <div
+          data-testid="agent-detail-action-bar"
+          // `data-dirty` mirrors showActionBar so tests can deterministically wait
+          // for the unsaved-changes state to arm (the bar stays mounted and only
+          // fades via opacity, which Playwright's visibility checks ignore).
+          data-dirty={showActionBar ? "true" : "false"}
           className={cn(
             "sticky top-6 z-10 float-right transition-opacity duration-150",
             showActionBar
@@ -142,6 +142,7 @@ export function AgentDetailCore({
       <Tabs
         value={activeView}
         onValueChange={onViewChange}
+        activationMode="manual"
       >
         <PageTabBar
           items={tabs}

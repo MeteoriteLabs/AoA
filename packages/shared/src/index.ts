@@ -1094,6 +1094,14 @@ export {
 } from "./project-mentions.js";
 
 export {
+  SENSITIVE_ENV_KEY,
+  SENSITIVE_ENV_VALUE_PATTERNS,
+  looksLikeSecretValue,
+  shouldRedactSecretValue,
+  redactEnvForLogs,
+} from "./redaction.js";
+
+export {
   paperclipConfigSchema,
   configMetaSchema,
   llmConfigSchema,

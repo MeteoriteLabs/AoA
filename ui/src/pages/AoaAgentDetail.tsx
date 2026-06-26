@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useBeforeUnload } from "@/lib/router";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
@@ -19,6 +20,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
 import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
 import { AgentSkillsTab } from "../components/agent-detail/AgentSkillsTab";
+import { useToast } from "@/context/ToastContext";
+import { ApiError } from "../api/client";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -144,6 +147,10 @@ export function AoaAgentDetail() {
     ),
   );
 
+  // Global cross-page guard (sidebar <Link> + browser Back/Forward + tab switch).
+  // Tab-close/refresh stays covered by useBeforeUnload above (useBlocker can't).
+  useUnsavedChanges(configDirty || instrDirty);
+
   // Update icon mutation
   const updateIcon = useMutation({
     mutationFn: (icon: string) =>
@@ -252,15 +259,16 @@ export function AoaAgentDetail() {
         ? ((agent.adapterConfig as Record<string, unknown>).model as string)
         : undefined,
   };
-  // /aoa-runs returns at most a capped page (default 50), so the fetched length is the
-  // recent-run count, not a true total — label it honestly and show "50+" at the cap.
-  const recentRunCount = (aoaRunsForKpi ?? []).length;
+  // /aoa-runs now returns { runs, total } — `total` is the true count(*) over
+  // all runs for this agent (not the capped page length), so the KPI shows the
+  // real total-ever.
+  const totalRunCount = aoaRunsForKpi?.total ?? 0;
   const heroKpis: HeroKpi[] = [
     { key: "role", label: "Role", value: roleLabels[agent.role] ?? agent.role },
     {
-      key: "recent-runs",
-      label: "Recent runs",
-      value: recentRunCount >= 50 ? "50+" : recentRunCount,
+      key: "total-runs",
+      label: "Total runs",
+      value: totalRunCount,
     },
   ];
 
@@ -275,6 +283,7 @@ export function AoaAgentDetail() {
       headerError={lifecycleError}
       activeView={activeView}
       onViewChange={(v) => {
+        if (v === activeView) return; // parity with AgentDetail: no redundant same-path nav
         const target =
           v === "overview"
             ? `/team/aoa/${aoaRouteRef}`
@@ -322,6 +331,7 @@ export function AoaAgentDetail() {
               agentId={agent.id}
               companyId={resolvedCompanyId}
               skillKeys={(agent as any).skillKeys ?? []}
+              expectedUpdatedAt={agent.updatedAt ? new Date(agent.updatedAt).toISOString() : undefined}
             />
           );
         }
@@ -366,7 +376,8 @@ function AoaOverview({
     enabled: Boolean(companyId),
   });
 
-  const runList = (runs ?? []) as Array<{
+  const totalRuns = runs?.total ?? 0;
+  const runList = (runs?.runs ?? []) as Array<{
     id: string;
     triggerType?: string;
     summary?: string | null;
@@ -397,7 +408,7 @@ function AoaOverview({
         </div>
         <div className="border border-border rounded-lg p-4">
           <span className="text-xs text-muted-foreground block">Total runs</span>
-          <span className="text-2xl font-semibold block mt-1">{runList.length}</span>
+          <span data-testid="aoa-overview-total-runs" className="text-2xl font-semibold block mt-1">{totalRuns}</span>
         </div>
       </div>
 
@@ -476,6 +487,7 @@ function AoaConfigurePage({
   onSavingChange: (saving: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: adapterModels } = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, agent.adapterType),
@@ -485,10 +497,31 @@ function AoaConfigurePage({
 
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Cache the saved row (incl. fresh updatedAt) synchronously so a quick
+      // repeat save uses the up-to-date optimistic-concurrency token, not the
+      // stale pre-save one (which would 409 the user against their own save).
+      // The invalidate still refetches for eventual consistency. (Decision #104)
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
+      if (agent.urlKey) queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       if (agent.urlKey) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
+    },
+    onError: (err) => {
+      // Optimistic-concurrency conflict: someone else changed the agent. Refetch
+      // the latest and tell the user to redo their edit. (Decision #104)
+      if (err instanceof ApiError && err.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+        if (agent.urlKey) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+        }
+        pushToast({
+          title: "This agent changed elsewhere",
+          body: "Reloaded the latest version — please redo your change.",
+          tone: "error",
+        });
       }
     },
   });
@@ -515,101 +548,3 @@ function AoaConfigurePage({
   );
 }
 
-/* ---- AoA Skills Tab ---- */
-
-function AoaSkillsTab({
-  agentId,
-  companyId,
-  skillKeys: initialSkillKeys,
-}: {
-  agentId: string;
-  companyId: string;
-  skillKeys: string[];
-}) {
-  const queryClient = useQueryClient();
-  const [localKeys, setLocalKeys] = useState<string[]>(initialSkillKeys);
-  const [saving, setSaving] = useState(false);
-
-  const { data: allSkills, isLoading } = useQuery({
-    queryKey: queryKeys.companySkills.list(companyId),
-    queryFn: () => companySkillsApi.list(companyId),
-    enabled: Boolean(companyId),
-  });
-
-  async function handleToggle(skillKey: string) {
-    const next = localKeys.includes(skillKey)
-      ? localKeys.filter((k) => k !== skillKey)
-      : [...localKeys, skillKey];
-    setLocalKeys(next);
-    setSaving(true);
-    try {
-      await agentsApi.update(agentId, { skillKeys: next } as any);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (isLoading) return <PageSkeleton variant="list" />;
-
-  if (!allSkills || allSkills.length === 0) {
-    return (
-      <div className="px-6 py-10 text-center text-sm text-muted-foreground">
-        No skills available.{" "}
-        <Link to="/skills" className="underline">
-          Create or import skills
-        </Link>{" "}
-        first.
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-6 py-4">
-      <p className="text-sm text-muted-foreground mb-4">
-        Skills injected into this agent's context on every run.
-      </p>
-      <div className="space-y-2">
-        {allSkills.map((skill: CompanySkillListItem) => {
-          const attached = localKeys.includes(skill.key);
-          return (
-            <div
-              key={skill.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                if (!saving) handleToggle(skill.key);
-              }}
-              onKeyDown={(e) => {
-                if (!saving && (e.key === " " || e.key === "Enter")) {
-                  e.preventDefault();
-                  handleToggle(skill.key);
-                }
-              }}
-              className={cn(
-                "flex items-start gap-3 rounded-md border border-border p-3 cursor-pointer transition-colors",
-                attached ? "bg-accent/30 border-foreground/20" : "hover:bg-accent/10",
-                saving && "opacity-60 cursor-wait",
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={attached}
-                readOnly
-                className="mt-0.5 h-4 w-4 rounded border-border pointer-events-none"
-              />
-              <div className="min-w-0">
-                <div className="text-sm font-medium">{skill.name}</div>
-                {skill.description && (
-                  <div className="text-xs text-muted-foreground mt-0.5">{skill.description}</div>
-                )}
-                <div className="text-xs text-muted-foreground mt-1 font-mono">{skill.key}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}

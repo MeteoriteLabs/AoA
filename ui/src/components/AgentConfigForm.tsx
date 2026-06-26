@@ -329,6 +329,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       Object.assign(patch, overlay.runtime);
     }
 
+    // Optimistic-concurrency token: guard this whole-row save against a concurrent
+    // edit. `agent.updatedAt` is the row version the user was editing. (Decision #104)
+    if (agent.updatedAt) {
+      patch.expectedUpdatedAt = new Date(agent.updatedAt).toISOString();
+    }
+
     props.onSave(patch);
   }
 
@@ -517,6 +523,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 immediate
                 className={inputClass}
                 placeholder="Agent name"
+                data-testid="agent-config-name-input"
               />
             </Field>
             <Field label="Title" hint={help.title}>

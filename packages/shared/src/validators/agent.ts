@@ -61,6 +61,13 @@ export const updateAgentSchema = createAgentSchema
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     skillKeys: z.array(z.string()).optional(),
     defaultEnvironmentId: z.string().uuid().optional().nullable(),
+    // Optimistic-concurrency token. OPTIONAL: when present, the update is
+    // guarded against `agents.updatedAt` (atomic conditional UPDATE → 409 on
+    // mismatch). When absent, the write is last-write-wins (full back-compat).
+    // Token = the agent row's `updatedAt` as a millisecond-precision ISO string.
+    // The server compares it at ms precision (date_trunc) because the stored
+    // column is microsecond-precision — see Decision #104.
+    expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
