@@ -1294,7 +1294,11 @@ export function agentRoutes(db: Db) {
       return;
     }
 
-    const patchData = { ...(req.body as Record<string, unknown>) };
+    // Destructure the transport-only optimistic-concurrency token OUT of the
+    // patch so it never reaches Drizzle `.set()` as a phantom column; it is
+    // forwarded only via the svc.update options object below.
+    const { expectedUpdatedAt, ...bodyRest } = req.body as Record<string, unknown>;
+    const patchData = { ...bodyRest };
     if (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -1350,6 +1354,7 @@ export function agentRoutes(db: Db) {
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         source: "patch",
       },
+      ...(typeof expectedUpdatedAt === "string" ? { expectedUpdatedAt } : {}),
     });
     if (agent && patchData.adapterConfig) {
       await secretsSvc.syncEnvBindingsForTarget(existing.companyId, {
