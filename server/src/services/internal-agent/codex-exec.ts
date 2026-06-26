@@ -65,6 +65,15 @@ function extractionCodexHomeDir(): string {
   return join(tmpdir(), "aoa-codex-extract");
 }
 
+// Dedicated EMPTY working directory for the sandboxed codex run. It is a SIBLING
+// of the CODEX_HOME credential dir (not a parent), so the read-only sandbox —
+// whose readable root is the cwd/workspace — cannot reach
+// `aoa-codex-extract/auth.json`. This stops a prompt-injected entry from having
+// codex read the OpenAI token and emit it in the extraction output (P1, Codex).
+function extractionCodexCwd(): string {
+  return join(tmpdir(), "aoa-codex-extract-run");
+}
+
 /**
  * Run a single `codex exec --json -` turn with the prompt on stdin and return
  * the final assistant TEXT. No MCP, no resume, no streaming.
@@ -92,6 +101,11 @@ export async function runCodexExecJson(
   await mkdir(codexHomeDir, { recursive: true });
   await ensureCodexAuthInHome(codexHomeDir);
 
+  // Dedicated empty cwd (sibling of CODEX_HOME) so the read-only sandbox's
+  // readable workspace does not include the credential dir (P1, Codex).
+  const codexCwd = extractionCodexCwd();
+  await mkdir(codexCwd, { recursive: true });
+
   // Model: same layered, validated resolution as the chat path so a claude
   // default / GPT-Codex / shell-unsafe value can never reach codex.
   const sharedCodexModel = await readSharedCodexModel();
@@ -118,14 +132,14 @@ export async function runCodexExecJson(
     "-",
   ];
 
-  // cwd = tmpdir(): keep the subprocess from reading project CLAUDE.md /
-  // AGENTS.md (internal "Paperclip" details must not surface) — same reasoning
-  // as the chat spawns.
+  // cwd = a dedicated EMPTY dir (not tmpdir, not CODEX_HOME): keeps the
+  // subprocess from reading project CLAUDE.md / AGENTS.md AND keeps the codex
+  // credential dir outside the read-only sandbox's readable workspace (P1, Codex).
   const proc = spawn("codex", args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, CODEX_HOME: codexHomeDir },
     shell: isWin,
-    cwd: tmpdir(),
+    cwd: codexCwd,
   });
 
   let stdout = "";
