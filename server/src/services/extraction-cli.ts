@@ -219,14 +219,16 @@ async function extractViaClaude(
   // (internal "Paperclip" details must not surface) — same as the chat spawns.
   // env: scrubbed of the server's own secrets (embeddings OPENAI_API_KEY,
   // GITHUB_PAT, AOA_*, …) — defense-in-depth so even a tool-bypass can't read
-  // them from the environment. Keep ANTHROPIC_API_KEY: claude's own auth path
-  // (the keyless OAuth login is unaffected; this only preserves a user who
-  // authed claude via the env var) (audit follow-up).
+  // them from the environment. KEEP claude's OWN auth env vars so the scrub does
+  // not break keyless auth: ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN (the
+  // headless subscription-OAuth token — both would otherwise be dropped by the
+  // generic api-key/token denylist). File-based OAuth (~/.claude) rides via HOME
+  // and is unaffected either way (self-review follow-up).
   const proc = spawn("claude", args, {
     shell: isWin,
     cwd: tmpdir(),
     stdio: ["pipe", "pipe", "pipe"],
-    env: buildScrubbedCliEnv(["ANTHROPIC_API_KEY"]),
+    env: buildScrubbedCliEnv(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]),
   });
 
   const stdoutBuf = newCappedBuffer();

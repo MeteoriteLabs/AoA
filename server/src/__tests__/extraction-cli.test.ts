@@ -220,12 +220,13 @@ describe("extractViaCli — claude happy path", () => {
     expect(call!.stdinEnded).toBe(true);
   });
 
-  it("scrubs the server's secrets from the claude child env (keeps ANTHROPIC)", async () => {
+  it("scrubs the server's secrets from the claude child env (keeps claude's own auth)", async () => {
     const prev = { ...process.env };
     process.env.OPENAI_API_KEY = "sk-embeddings";
     process.env.GITHUB_PAT = "ghp_secret";
     process.env.AOA_AGENT_JWT_SECRET = "jwt";
     process.env.ANTHROPIC_API_KEY = "sk-anthropic";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-tok";
     try {
       nextSpawn = { stdout: ["[]"], exitCode: 0 };
       const { extractViaCli } = await import("../services/extraction-cli.ts");
@@ -238,10 +239,17 @@ describe("extractViaCli — claude happy path", () => {
       expect(env.OPENAI_API_KEY).toBeUndefined();
       expect(env.GITHUB_PAT).toBeUndefined();
       expect(env.AOA_AGENT_JWT_SECRET).toBeUndefined();
-      // claude's own auth var is preserved.
+      // claude's OWN auth env survives the scrub (else keyless auth breaks).
       expect(env.ANTHROPIC_API_KEY).toBe("sk-anthropic");
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-tok");
     } finally {
-      for (const k of ["OPENAI_API_KEY", "GITHUB_PAT", "AOA_AGENT_JWT_SECRET", "ANTHROPIC_API_KEY"]) {
+      for (const k of [
+        "OPENAI_API_KEY",
+        "GITHUB_PAT",
+        "AOA_AGENT_JWT_SECRET",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+      ]) {
         if (!(k in prev)) delete process.env[k];
         else process.env[k] = prev[k];
       }
