@@ -172,14 +172,13 @@ export function extractionFailureMessage(
         showSettings: false,
       };
     default: {
-      // Legacy/unknown: keep existing provider-hint behaviour.
-      const mentionsProvider = message
-        ? message.toLowerCase().includes("api key") ||
-          message.toLowerCase().includes("provider")
-        : false;
+      // Legacy/unknown kind. Extraction is CLI-only (Decision #104, amended
+      // 2026-06-27) — it never reads a hosted key, so failures never point at
+      // a provider key / Settings. Surface the raw message with no Settings
+      // escape hatch; the CLI kinds above carry the actionable guidance.
       return {
         primary: message ?? "Extraction failed.",
-        showSettings: mentionsProvider,
+        showSettings: false,
       };
     }
   }
@@ -889,11 +888,6 @@ function ThreadEntryRow({
               </div>
               <p className="text-xs text-red-600/80 dark:text-red-400/80 ml-6">
                 {failureCopy.primary}
-                {failureCopy.showSettings ? (
-                  <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
-                    Go to Settings
-                  </Link>
-                ) : null}
               </p>
             </div>
           )}
@@ -909,11 +903,6 @@ function ThreadEntryRow({
               {(extractionError || extractionErrorKind) && (
                 <p className="text-xs text-amber-600/80 dark:text-amber-400/80 ml-6">
                   {failureCopy.primary}
-                  {failureCopy.showSettings ? (
-                    <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
-                      Go to Settings
-                    </Link>
-                  ) : null}
                 </p>
               )}
             </div>

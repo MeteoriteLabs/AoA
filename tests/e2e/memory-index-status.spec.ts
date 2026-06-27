@@ -8,8 +8,8 @@ import { clearFakeEmbedderControl, writeFakeEmbedderControl } from "./helpers/fa
  * Tests two surfaces:
  *
  * (a) NO key configured → Memory page shows `data-testid="no-llm-key-banner"`
- *     (amber banner: "Semantic search is off — add an OpenAI key in Settings →
- *     LLM Providers") and memory items show the "not indexed" badge
+ *     (amber banner: "Semantic search is off — add an embeddings key in Settings →
+ *     Memory") and memory items show the "not indexed" badge
  *     (`data-testid="memory-index-status"`).
  *
  *     The e2e webServer has OPENAI_API_KEY=e2e-fake-openai-key-placeholder in its

@@ -78,14 +78,17 @@ describe("extractionFailureMessage", () => {
       expect(result.primary).toBe("Something went wrong.");
     });
 
-    it("sets showSettings=true when message mentions api key", () => {
+    // Extraction is CLI-only (Decision #104, amended 2026-06-27): it never reads
+    // a hosted key, so failures never point at a provider key / Settings.
+    // showSettings is always false — even for legacy api-key/provider strings.
+    it("never shows a Settings link, even when message mentions api key", () => {
       const result = extractionFailureMessage(null, "No api key configured.");
-      expect(result.showSettings).toBe(true);
+      expect(result.showSettings).toBe(false);
     });
 
-    it("sets showSettings=true when message mentions provider", () => {
+    it("never shows a Settings link, even when message mentions provider", () => {
       const result = extractionFailureMessage(null, "No LLM provider configured.");
-      expect(result.showSettings).toBe(true);
+      expect(result.showSettings).toBe(false);
     });
 
     it("sets showSettings=false for generic messages", () => {

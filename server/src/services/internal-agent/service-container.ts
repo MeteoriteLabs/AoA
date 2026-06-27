@@ -96,7 +96,7 @@ function buildPerCompanyEmbeddingService(db: Db): EmbeddingService {
       const key = process.env.OPENAI_API_KEY;
       if (!key) {
         throw new Error(
-          "No OpenAI API key available. Configure llm:openai in Settings → LLM Providers or set OPENAI_API_KEY.",
+          "No OpenAI API key available. Configure the embeddings key in Settings → Memory or set OPENAI_API_KEY.",
         );
       }
       let embedder = embedderByKey.get(key);
@@ -136,7 +136,7 @@ function buildPerCompanyEmbeddingService(db: Db): EmbeddingService {
 
       if (!apiKey) {
         throw new Error(
-          "No OpenAI API key available. Configure llm:openai in Settings → LLM Providers or set OPENAI_API_KEY.",
+          "No OpenAI API key available. Configure the embeddings key in Settings → Memory or set OPENAI_API_KEY.",
         );
       }
 
