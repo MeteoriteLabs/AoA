@@ -11,6 +11,7 @@ import {
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 import { getDbCapabilities } from "./db-capabilities.js";
+import { coerceQueueRowTimestamps } from "./embeddings-row-utils.js";
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const EMBEDDING_API_URL = "https://api.openai.com/v1/embeddings";
@@ -820,7 +821,18 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
         // `item.inputText`, `item.companyId` as undefined and every row would
         // fail/skip in production Postgres. The aliased RETURNING above emits
         // quoted camelCase identifiers so the rows match $inferSelect exactly.
-        pending = rawRows as Array<typeof embeddingQueue.$inferSelect>;
+        //
+        // BUT: with the postgres.js driver, `db.execute(sql.raw(...))` also
+        // bypasses Drizzle's type-mapping, so timestamp columns come back as
+        // STRINGS, not Date. Downstream we feed `createdAt` into
+        // `gt(embeddingQueue.createdAt, ...)` and updateVectorColumn's WHERE,
+        // which call `.toISOString()` on the bound value — a string throws
+        // "v.toISOString is not a function" and breaks EVERY embed when pgvector
+        // is present. Coerce the timestamp fields back to Date so the
+        // $inferSelect cast is honest and the comparisons work.
+        pending = rawRows.map((r) =>
+          coerceQueueRowTimestamps(r as Record<string, unknown>),
+        ) as Array<typeof embeddingQueue.$inferSelect>;
         rowsAlreadyClaimed = true;
       } catch (skipLockedErr) {
         // Fallback for test environments / mocked DBs that don't support
