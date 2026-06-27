@@ -2,7 +2,8 @@
 //
 // Task C2 batch 3 — extract_decisions tool tests.
 // Verifies: wraps the C1 named export, passes companyId + sinceEntryId,
-// returns array of decisions, EXTRACTION_LLM_UNAVAILABLE on provider miss.
+// returns array of decisions, EXTRACTION_LLM_UNAVAILABLE when the extraction
+// CLI is unavailable. The tool is CLI-only so it always passes `null` as llm.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -11,6 +12,7 @@ vi.mock("../services/extraction.js", () => ({
 }));
 
 import { extractDecisions } from "../services/extraction.js";
+import { CliExtractionError } from "../services/extraction-cli.js";
 import { extractDecisionsTool } from "../services/internal-agent/tools/memory-extract-decisions.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
@@ -47,8 +49,7 @@ describe("extract_decisions tool (C2 batch 3)", () => {
     ];
     (extractDecisions as any).mockResolvedValueOnce(decisions);
 
-    const llm = { generate: vi.fn() };
-    const ctx = makeCtx({ services: { extraction: { llm } } as any });
+    const ctx = makeCtx();
 
     const result = await extractDecisionsTool.execute(
       { threadId: "th-1", sinceEntryId: "e-3" },
@@ -58,16 +59,17 @@ describe("extract_decisions tool (C2 batch 3)", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual(decisions);
     expect(result.summary).toContain("1");
+    // CLI-only: the tool always passes `null` as the llm.
     expect(extractDecisions).toHaveBeenCalledWith(
       ctx.db,
-      llm,
+      null,
       expect.objectContaining({ companyId: "co-1", threadId: "th-1", sinceEntryId: "e-3" }),
     );
   });
 
-  it("returns EXTRACTION_LLM_UNAVAILABLE when provider resolution fails", async () => {
+  it("returns EXTRACTION_LLM_UNAVAILABLE when the extraction CLI is unavailable", async () => {
     (extractDecisions as any).mockRejectedValueOnce(
-      new Error("No LLM provider configured"),
+      new CliExtractionError("claude CLI not found on PATH", "not_installed"),
     );
     const result = await extractDecisionsTool.execute(
       { threadId: "th-1" },

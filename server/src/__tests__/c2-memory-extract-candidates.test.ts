@@ -1,10 +1,10 @@
 // server/src/__tests__/c2-memory-extract-candidates.test.ts
 //
 // Task C2 batch 3 — extract_memory_candidates tool tests.
-// Verifies: metadata, INVALID_PARAMS for missing threadId, success path with
-// an injected ExtractionLlm, sinceEntryId cursor is passed through, and the
-// EXTRACTION_LLM_UNAVAILABLE error when no llm is injected and the provider
-// chain throws "No LLM provider configured".
+// Verifies: metadata, INVALID_PARAMS for missing threadId, success path (the
+// tool is CLI-only and always passes `null` as the llm), sinceEntryId cursor is
+// passed through, and the EXTRACTION_LLM_UNAVAILABLE error when the extraction
+// CLI is unavailable (CliExtractionError not_installed/not_authed).
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ vi.mock("../services/extraction.js", () => ({
 }));
 
 import { extractMemoryCandidates } from "../services/extraction.js";
+import { CliExtractionError } from "../services/extraction-cli.js";
 import { extractMemoryCandidatesTool } from "../services/internal-agent/tools/memory-extract-candidates.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
@@ -52,8 +53,7 @@ describe("extract_memory_candidates tool (C2 batch 3)", () => {
     ];
     (extractMemoryCandidates as any).mockResolvedValueOnce({ candidates });
 
-    const llm = { generate: vi.fn() };
-    const ctx = makeCtx({ services: { extraction: { llm } } as any });
+    const ctx = makeCtx();
 
     const result = await extractMemoryCandidatesTool.execute(
       { threadId: "th-1", sinceEntryId: "e-5" },
@@ -63,14 +63,15 @@ describe("extract_memory_candidates tool (C2 batch 3)", () => {
     expect(result.success).toBe(true);
     expect((result.data as any).candidates).toEqual(candidates);
     expect(result.summary).toContain("2");
+    // CLI-only: the tool always passes `null` as the llm.
     expect(extractMemoryCandidates).toHaveBeenCalledWith(
       ctx.db,
-      llm,
+      null,
       expect.objectContaining({ companyId: "co-1", threadId: "th-1", sinceEntryId: "e-5" }),
     );
   });
 
-  it("passes null llm when ctx.services.extraction.llm is absent", async () => {
+  it("passes null llm (CLI-only)", async () => {
     (extractMemoryCandidates as any).mockResolvedValueOnce({ candidates: [] });
     const ctx = makeCtx();
     const result = await extractMemoryCandidatesTool.execute({ threadId: "th-1" }, ctx);
@@ -79,9 +80,9 @@ describe("extract_memory_candidates tool (C2 batch 3)", () => {
     expect(llmArg).toBeNull();
   });
 
-  it("returns EXTRACTION_LLM_UNAVAILABLE when provider resolution fails", async () => {
+  it("returns EXTRACTION_LLM_UNAVAILABLE when the extraction CLI is unavailable", async () => {
     (extractMemoryCandidates as any).mockRejectedValueOnce(
-      new Error("No LLM provider configured. Set one in Settings."),
+      new CliExtractionError("claude CLI not found on PATH", "not_installed"),
     );
     const result = await extractMemoryCandidatesTool.execute(
       { threadId: "th-1" },

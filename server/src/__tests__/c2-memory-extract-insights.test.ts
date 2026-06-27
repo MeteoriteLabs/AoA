@@ -10,6 +10,7 @@ vi.mock("../services/extraction.js", () => ({
 }));
 
 import { extractInsights } from "../services/extraction.js";
+import { CliExtractionError } from "../services/extraction-cli.js";
 import { extractInsightsTool } from "../services/internal-agent/tools/memory-extract-insights.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
@@ -47,8 +48,7 @@ describe("extract_insights tool (C2 batch 3)", () => {
     ];
     (extractInsights as any).mockResolvedValueOnce(insights);
 
-    const llm = { generate: vi.fn() };
-    const ctx = makeCtx({ services: { extraction: { llm } } as any });
+    const ctx = makeCtx();
 
     const result = await extractInsightsTool.execute(
       { threadId: "th-1" },
@@ -58,16 +58,17 @@ describe("extract_insights tool (C2 batch 3)", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual(insights);
     expect(result.summary).toContain("2");
+    // CLI-only: the tool always passes `null` as the llm.
     expect(extractInsights).toHaveBeenCalledWith(
       ctx.db,
-      llm,
+      null,
       expect.objectContaining({ companyId: "co-1", threadId: "th-1" }),
     );
   });
 
-  it("returns EXTRACTION_LLM_UNAVAILABLE when provider resolution fails", async () => {
+  it("returns EXTRACTION_LLM_UNAVAILABLE when the extraction CLI is unavailable", async () => {
     (extractInsights as any).mockRejectedValueOnce(
-      new Error("No LLM provider configured"),
+      new CliExtractionError("claude CLI not found on PATH", "not_installed"),
     );
     const result = await extractInsightsTool.execute(
       { threadId: "th-1" },
