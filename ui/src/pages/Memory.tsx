@@ -386,8 +386,8 @@ export function Memory() {
           <div className="flex-1 text-muted-foreground">
             <span className="font-medium text-foreground">Semantic search is off</span>
             {" — "}
-            add an OpenAI key in{" "}
-            <span className="font-medium text-foreground">Settings → LLM Providers</span>
+            add an embeddings key in{" "}
+            <span className="font-medium text-foreground">Settings → Memory</span>
             {" "}to enable meaning-based memory recall.
           </div>
           <button
