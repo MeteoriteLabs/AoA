@@ -203,6 +203,59 @@ describe("mergeCrewAdapterConfig", () => {
     expect(merged.cwd).toBe("/work");
     expect(merged.instructionsFilePath).toBe("/i.md");
   });
+  // Codex P1: the allowlist must drop EVERY provider-specific tuning key, not just
+  // command/extraArgs — each adapter's execute.ts reads its own set, and a stale
+  // one would flow into the wrong CLI.
+  it("provider SWITCH drops ALL provider-specific tuning keys (allowlist, not just command/extraArgs)", () => {
+    const richSource = {
+      model: "claude-sonnet-4-5",
+      cwd: "/work",
+      env: { HTTP_PROXY: "p" },
+      // a grab-bag of provider-specific tuning keys read by various adapters:
+      reasoningEffort: "high",
+      modelReasoningEffort: "high",
+      chrome: true,
+      sandbox: true,
+      variant: "fast",
+      thinking: "extended",
+      maxTurnsPerRun: 9,
+      permissionMode: "yolo",
+      search: true,
+      effort: "max",
+    };
+    const merged = mergeCrewAdapterConfig(richSource, nextCodex, "claude_local", "codex_local");
+    for (const k of ["reasoningEffort", "modelReasoningEffort", "chrome", "sandbox", "variant", "thinking", "maxTurnsPerRun", "permissionMode", "search", "effort"]) {
+      expect(merged[k], `${k} must be dropped on a provider switch`).toBeUndefined();
+    }
+    // neutral + the resolved adapter's own fields survive:
+    expect(merged.cwd).toBe("/work");
+    expect(merged.model).toBe("gpt-5.5");
+    expect(merged.dangerouslyBypassApprovalsAndSandbox).toBe(true);
+  });
+  // Codex P2: claude's auth is more than ANTHROPIC_API_KEY — Bedrock flags + the
+  // auth token are part of its auth env and must be treated as a unit.
+  it("provider SWITCH away from claude drops the full claude auth env set", () => {
+    const merged = mergeCrewAdapterConfig(
+      { model: "claude-sonnet-4-5", env: { ANTHROPIC_API_KEY: "sk-ant", ANTHROPIC_AUTH_TOKEN: "tok", CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock", FOO: "bar" } },
+      nextCodex, "claude_local", "codex_local",
+    );
+    const env = merged.env as Record<string, unknown>;
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    expect(env.ANTHROPIC_BEDROCK_BASE_URL).toBeUndefined();
+    expect(env.FOO).toBe("bar"); // neutral preserved
+  });
+  it("provider SWITCH INTO claude keeps the claude auth env the target needs", () => {
+    const merged = mergeCrewAdapterConfig(
+      { model: "openai/...", env: { ANTHROPIC_API_KEY: "sk-ant", CLAUDE_CODE_USE_BEDROCK: "1" } },
+      { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true },
+      "opencode_local", "claude_local",
+    );
+    const env = merged.env as Record<string, unknown>;
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant"); // claude reads it → kept
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+  });
   it("same adapter (no switch) preserves ALL fields like mergeAdapterConfig", () => {
     const merged = mergeCrewAdapterConfig(existing, { model: "gpt-5.5" }, "claude_local", "claude_local");
     expect(merged).toEqual(mergeAdapterConfig(existing, { model: "gpt-5.5" }));

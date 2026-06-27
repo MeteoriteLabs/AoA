@@ -228,18 +228,24 @@ export function mergeAdapterConfig(
   return { ...base, ...next };
 }
 
-// Fields that are meaningful only for the adapter that set them. On a PROVIDER
-// SWITCH they must NOT carry over — e.g. a custom `command`/`extraArgs` from an
-// opencode/claude row would make the new codex CLI run the wrong executable/args
-// (Codex P2). `model` + the bypass/skip flags are always re-set by the resolved
-// adapter, but dropping them too keeps the row clean. Neutral fields (cwd, env,
-// instructions*) are NOT listed here and are preserved across a switch.
-const PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS = [
-  "command",
-  "extraArgs",
-  "model",
-  "dangerouslyBypassApprovalsAndSandbox",
-  "dangerouslySkipPermissions",
+// NEUTRAL adapterConfig keys — the only fields that survive a PROVIDER SWITCH.
+// This is an ALLOWLIST, not a denylist: each adapter's execute.ts reads its own
+// set of provider-specific keys (command, extraArgs, model, dangerouslyBypass*,
+// dangerouslySkipPermissions, modelReasoningEffort, reasoningEffort, search,
+// fastMode, sandbox, effort, chrome, maxTurnsPerRun, maxTurns, permissionMode,
+// alwaysApprove, disableWebSearch, thinking, variant, …). A denylist always lags
+// the adapters — a new provider-specific key would silently carry into the wrong
+// CLI on a switch (the exact bug class of the earlier rounds). So on a switch we
+// keep ONLY these provider-neutral fields and let the resolved adapter (`next`)
+// re-provide everything else. `instructions*` are role-based (re-seeded after the
+// rewrite by seedRoleInstructionBundle), and `env` is preserved then scrubbed of
+// the source provider's auth keys. (Codex P1/P2.)
+const NEUTRAL_CREW_CONFIG_KEYS = [
+  "cwd",
+  "env",
+  "instructionsFilePath",
+  "agentsMdPath",
+  "instructions",
 ];
 
 // The provider-specific AUTH env credential(s) each adapter reads. Used on a
@@ -249,10 +255,11 @@ const PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS = [
 // multi-provider, so it can use any of them. Adapters not listed (cursor, pi,
 // hermes, process, http) don't read these keys → all are dropped on a switch
 // into them. Matched case-insensitively (Windows env names are case-insensitive).
+const CLAUDE_AUTH_ENV_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL"];
 const ADAPTER_AUTH_ENV_KEYS: Record<string, string[]> = {
   codex_local: ["OPENAI_API_KEY"],
-  opencode_local: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
-  claude_local: ["ANTHROPIC_API_KEY"],
+  opencode_local: ["OPENAI_API_KEY", ...CLAUDE_AUTH_ENV_KEYS, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  claude_local: CLAUDE_AUTH_ENV_KEYS,
   gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
   grok_local: ["XAI_API_KEY", "GROK_API_KEY"],
 };
@@ -280,11 +287,10 @@ function stripSourceProviderAuthEnv(
  *
  * - Same adapter (`currentAdapterType === targetAdapterType`): preserve ALL of
  *   the founder's existing fields (mergeAdapterConfig) — the CLI is unchanged.
- * - Provider switch: drop provider-specific fields (command/extraArgs/model/
- *   bypass flags) that would make the new CLI misbehave, and drop the SOURCE
- *   provider's auth env keys EXCEPT any the TARGET still needs; preserve neutral
- *   fields (cwd, neutral env vars, instructions*). `next` then applies on top.
- *   (Codex P2.)
+ * - Provider switch: keep ONLY the provider-neutral fields (NEUTRAL_CREW_CONFIG_KEYS
+ *   — allowlist, so no provider-specific key can leak into the wrong CLI), scrub
+ *   the SOURCE provider's auth env keys (keeping any the TARGET still needs), then
+ *   apply the resolved adapter's fields (`next`) on top. (Codex P1/P2.)
  */
 export function mergeCrewAdapterConfig(
   existing: Record<string, unknown> | null | undefined,
@@ -293,10 +299,13 @@ export function mergeCrewAdapterConfig(
   targetAdapterType: string,
 ): Record<string, unknown> {
   if (currentAdapterType === targetAdapterType) return mergeAdapterConfig(existing, next);
-  const base: Record<string, unknown> = { ...(existing ?? {}) };
-  for (const key of PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS) delete base[key];
-  if (base.env && typeof base.env === "object" && !Array.isArray(base.env)) {
-    base.env = stripSourceProviderAuthEnv(base.env as Record<string, unknown>, targetAdapterType);
+  const existingCfg = existing ?? {};
+  const neutral: Record<string, unknown> = {};
+  for (const key of NEUTRAL_CREW_CONFIG_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(existingCfg, key)) neutral[key] = existingCfg[key];
   }
-  return { ...base, ...next };
+  if (neutral.env && typeof neutral.env === "object" && !Array.isArray(neutral.env)) {
+    neutral.env = stripSourceProviderAuthEnv(neutral.env as Record<string, unknown>, targetAdapterType);
+  }
+  return { ...neutral, ...next };
 }
