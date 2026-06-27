@@ -1,3 +1,4 @@
+import { readEnvBindingValue } from "@armyofagents/shared";
 import { resolveModel, type ResolveModelStatus } from "../model-resolution.js";
 
 /**
@@ -24,7 +25,10 @@ export function applyModelResolutionToConfig(
 
   if (adapterType === "codex_local") {
     const env = { ...((next.env as Record<string, unknown>) ?? {}) };
-    const agentSetKey = typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0;
+    // Binding-aware: saved env entries are normalized to binding objects, so a
+    // string-only check would treat the agent's own key as absent and strip it
+    // (Codex P2). readEnvBindingValue handles string / plain / secret_ref.
+    const agentSetKey = readEnvBindingValue(env.OPENAI_API_KEY) != null;
     // Env-strip hardening: the company/extraction key must never reach the CLI.
     // Only a key the AGENT set in its own adapterConfig.env survives.
     if (!agentSetKey && opts.inheritedEnvOpenAiKey) delete env.OPENAI_API_KEY;

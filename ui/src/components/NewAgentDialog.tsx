@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@armyofagents/shared";
@@ -38,6 +39,7 @@ export function NewAgentDialog() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToast();
   const [expanded, setExpanded] = useState(true);
 
   // Identity
@@ -117,6 +119,16 @@ export function NewAgentDialog() {
       queryClient.invalidateQueries({ queryKey: queryKeys.org.tree(selectedCompanyId!) });
       reset();
       closeNewAgent();
+      if (result.warnings?.length) {
+        // The server corrected the provider/model (e.g. an incompatible codex
+        // model resolved to gpt-5.5). The dialog navigates away on success, so a
+        // toast is the equivalent surface to AgentDetail's inline AgentSaveWarnings.
+        pushToast({
+          title: "Model adjusted",
+          body: result.warnings.join(" "),
+          tone: "warn",
+        });
+      }
       navigate(agentUrl(result.agent));
     },
     onError: (error) => {

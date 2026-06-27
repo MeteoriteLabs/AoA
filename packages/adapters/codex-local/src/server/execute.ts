@@ -461,6 +461,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args,
       cwd,
       env,
+      // Env-strip (Codex finding 3): the AoA server's ambient OPENAI_API_KEY must
+      // never reach a Codex agent run and silently flip it to api-key billing.
+      // Strip it from the inherited env; a key the agent set in its own config
+      // (config.env / overlay) still survives. See mergeChildEnv in adapter-utils.
+      unsetEnvKeys: ["OPENAI_API_KEY"],
       stdin: prompt,
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,

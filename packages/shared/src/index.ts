@@ -654,6 +654,8 @@ export {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  adapterModelFamilyMismatch,
+  isShellSafeModelId,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
@@ -775,6 +777,7 @@ export {
   envBindingSecretRefSchema,
   envBindingSchema,
   envConfigSchema,
+  readEnvBindingValue,
   createSecretSchema,
   rotateSecretSchema,
   updateSecretSchema,
@@ -1092,6 +1095,14 @@ export {
   normalizeSkillSlug,
   type ParsedSkillMention,
 } from "./project-mentions.js";
+
+export {
+  SENSITIVE_ENV_KEY,
+  SENSITIVE_ENV_VALUE_PATTERNS,
+  looksLikeSecretValue,
+  shouldRedactSecretValue,
+  redactEnvForLogs,
+} from "./redaction.js";
 
 export {
   paperclipConfigSchema,

@@ -5,9 +5,10 @@ import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import {
   resolveCrewAdapterForCompany,
-  needsAdapterBackfill,
-  mergeAdapterConfig,
+  shouldRewriteCrewAdapter,
+  mergeCrewAdapterConfig,
 } from "./resolve-crew-adapter.js";
+import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
 
 /** Legacy name — kept for one-time rename migration. New name is "Scribe". */
 export const LEGACY_EXTRACTION_AGENT_NAME = "Discussion Extraction";
@@ -82,7 +83,9 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       .from(agents)
       .where(eq(agents.id, existing.id))
       .limit(1);
-    const needsAdapter = current ? needsAdapterBackfill(current.adapterType, current.adapterConfig as Record<string, unknown> | null) : false;
+    const currentCfg = current ? (current.adapterConfig as Record<string, unknown> | null) : null;
+    const isApiKeyAuth = current?.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, currentCfg) : false;
+    const needsAdapter = current ? shouldRewriteCrewAdapter(current.adapterType, currentCfg, crewAdapter.adapterType, { isApiKeyAuth }) : false;
 
     if (needsAllowlist || needsRename || needsAdapter) {
       const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -96,7 +99,12 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       }
       if (needsAdapter && current) {
         updates.adapterType = crewAdapter.adapterType;
-        updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+        updates.adapterConfig = mergeCrewAdapterConfig(
+          current.adapterConfig as Record<string, unknown> | null,
+          crewAdapter.adapterConfig,
+          current.adapterType,
+          crewAdapter.adapterType,
+        );
       }
       await db.update(agents).set(updates).where(eq(agents.id, existing.id));
     }

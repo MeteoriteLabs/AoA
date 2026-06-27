@@ -2,7 +2,7 @@
 #
 # Flow:
 #   1. Devs add `.changeset/*.md` files via `pnpm changeset` as part of PRs.
-#   2. On push to main (or current porting branch), this workflow runs.
+#   2. On push to main, this workflow runs.
 #   3. If unprocessed changesets exist, the action opens a "Version Packages" PR
 #      aggregating them; that PR bumps versions + writes CHANGELOGs via
 #      `pnpm version-packages` (= `changeset version`).
@@ -23,9 +23,7 @@ name: Release
 on:
   push:
     branches:
-      - master
       - main
-      - Porting1.1
   workflow_dispatch:
 
 concurrency:

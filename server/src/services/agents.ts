@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, isNull, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -19,7 +19,11 @@ import { isUuidLike, normalizeAgentUrlKey } from "@armyofagents/shared";
 import type { UnifiedOrgNode } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
-import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
+import {
+  deduplicateAgentName,
+  findAgentShortnameCollision,
+  hasAgentShortnameCollision,
+} from "./agent-shortnames.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { orgHierarchyService, type EntityType } from "./org-hierarchy.js";
 
@@ -85,6 +89,13 @@ interface RevisionMetadata {
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
+  /**
+   * Optimistic-concurrency token (the agent row's `updatedAt`, as an ISO
+   * string). When present, the write is an atomic conditional UPDATE guarded
+   * against `agents.updatedAt`; a mismatch (row changed underneath, while it
+   * still exists) throws `conflict()` (409). When absent, last-write-wins.
+   */
+  expectedUpdatedAt?: string;
 }
 
 interface AgentShortnameCollisionOptions {
@@ -193,7 +204,11 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   return patch;
 }
 
-export { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
+export {
+  deduplicateAgentName,
+  findAgentShortnameCollision,
+  hasAgentShortnameCollision,
+} from "./agent-shortnames.js";
 
 const USER_ROLE_PRIORITY: Record<string, number> = { founder: 3, team_lead: 2, team_member: 1 };
 
@@ -240,14 +255,26 @@ export function agentService(db: Db) {
         id: agents.id,
         name: agents.name,
         status: agents.status,
+        kind: agents.kind,
       })
       .from(agents)
       .where(eq(agents.companyId, companyId));
 
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
-    if (hasCollision) {
+    const collision = findAgentShortnameCollision(candidateName, existingAgents, options);
+    if (collision) {
+      // Org and AoA-crew agents share one shortname namespace (so @shortname
+      // references stay unambiguous). The crew agents live under the AoA Team
+      // tab and are NOT shown in the Agents tab, so a bare "already in use"
+      // error reads as a phantom conflict. Name the conflict explicitly.
+      if (collision.kind === "aoa") {
+        throw conflict(
+          `The name "${candidateName}" is already used by a built-in AoA crew agent ` +
+            `("${collision.name}", shown under the AoA Team tab). Choose a different name.`,
+        );
+      }
       throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
+        `The name "${candidateName}" is already used by another agent ("${collision.name}") ` +
+          `in this company. Choose a different name.`,
       );
     }
   }
@@ -320,12 +347,49 @@ export function agentService(db: Db) {
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
+    // Normalize the client token to a ms-precision ISO string and bind it as
+    // text, casting in-SQL to timestamptz. Interpolating a raw JS `Date` into the
+    // sql`` fragment leaves Drizzle with no column type to encode against, so
+    // node-postgres serializes it as a `Date.toString()` ("Fri Jun 26 2026 …")
+    // that Postgres rejects (ERR_INVALID_ARG_TYPE). An ISO string + an explicit
+    // ::timestamptz cast is unambiguous and driver-safe.
+    const expectedIso =
+      options?.expectedUpdatedAt != null ? new Date(options.expectedUpdatedAt).toISOString() : null;
+    const guard =
+      expectedIso != null
+        ? and(
+            eq(agents.id, id),
+            // Millisecond-precision compare. `agents.updatedAt` is stored at
+            // Postgres microsecond resolution (defaultNow() on never-updated rows);
+            // the client token is a ms-precision ISO string. A naked
+            // `eq(agents.updatedAt, …)` would never match a freshly-created
+            // row → spurious 409 + retry loop. date_trunc both sides to ms.
+            sql`date_trunc('milliseconds', ${agents.updatedAt}) = date_trunc('milliseconds', ${expectedIso}::timestamptz)`,
+          )
+        : eq(agents.id, id);
+
     const updated = await db
       .update(agents)
       .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
+      .where(guard)
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    // Optimistic-concurrency: a token was supplied but the guarded write matched
+    // no row. Distinguish "row changed underneath" (409) from "row gone" (404):
+    // re-read by id. A pre-read compare would be TOCTOU — the guard above is the
+    // atomic check; this re-read only classifies the miss. (Precedent: issues.ts
+    // `checkout`.)
+    if (!updated && expectedIso != null) {
+      const current = await getById(id);
+      if (current) {
+        throw conflict(
+          "This agent was changed by someone else. Reload and re-apply your change.",
+          { currentUpdatedAt: current.updatedAt.toISOString() },
+        );
+      }
+      return null; // row vanished concurrently → caller/route maps to 404
+    }
     const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {

@@ -266,6 +266,45 @@ describe("POST /companies/:companyId/adapters/:type/test-environment", () => {
     );
   });
 
+  it("resolves an EMPTY codex_local model to the default (gpt-5.5) before probing (P2-1)", async () => {
+    // P2-1: previously the probe skipped resolution when the model was empty
+    // (the UI/default-model path), so codex probes ran with the CLI default
+    // instead of gpt-5.5 and could falsely fail on ChatGPT/subscription auth —
+    // even though the saved agent RUN is corrected to gpt-5.5. The probe must
+    // resolve the SAME model a real run would, including the empty case.
+    mockFindServerAdapter.mockReturnValue({
+      type: "codex_local",
+      testEnvironment: mockAdapterTestEnvironment,
+    });
+    mockAdapterTestEnvironment.mockResolvedValue({
+      adapterType: "codex_local",
+      status: "pass",
+      checks: [],
+      testedAt: "2026-06-01T00:00:00.000Z",
+    });
+    mockGetProviderStatus.mockResolvedValue({
+      adapterType: "codex_local",
+      installed: true,
+      authenticated: true,
+      authMode: "chatgpt",
+      defaultModelResolved: "gpt-5.5",
+    });
+
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/adapters/codex_local/test-environment`)
+      .send({ adapterConfig: {} }); // no model at all
+
+    expect(res.status).toBe(200);
+    // Resolution must run even for an empty model …
+    expect(mockGetProviderStatus).toHaveBeenCalled();
+    // … and codex's empty model resolves to the default gpt-5.5 for the probe.
+    expect(mockAdapterTestEnvironment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ model: "gpt-5.5" }),
+      }),
+    );
+  });
+
   it("redacts secrets in check message/detail/hint before returning to client", async () => {
     const secretKey = "sk-ant-abc123DEF456ghi789xyz";
     mockAdapterTestEnvironment.mockResolvedValue({

@@ -182,7 +182,11 @@ function makeDb() {
       u.where = (w: any) => {
         sets.push({ set: payload, where: w });
         const p: any = Promise.resolve([]);
-        p.returning = () => Promise.resolve([]);
+        // A real guarded UPDATE…RETURNING returns the matched row; the runner's
+        // task-release reads released.length to decide whether to publish/throw.
+        // Return one row so the release "fires" (the test setups all have the task
+        // still in_progress + owned by this run).
+        p.returning = () => Promise.resolve([{ id: "TASK-1" }]);
         p.catch = (cb: any) => Promise.resolve().catch(cb);
         return p;
       };

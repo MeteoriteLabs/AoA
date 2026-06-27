@@ -2,10 +2,9 @@ import type { Agent } from "@armyofagents/shared";
 import type { PageTabItem } from "../PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { PageTabBar } from "../PageTabBar";
-import { AgentIcon, AgentIconPicker } from "../AgentIconPicker";
-import { roleLabels } from "../agent-config-primitives";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { AgentHeroCard, type HeroKpi } from "./AgentHeroCard";
 
 export interface AgentDetailCoreActionBar {
   show: boolean;
@@ -27,6 +26,12 @@ export interface AgentDetailCoreProps {
   isMobile?: boolean;
   /** Callback when user picks a new icon */
   onIconChange?: (icon: string) => void;
+  /** Hero KPI strip (page-computed values + deep-links) */
+  heroKpis?: HeroKpi[];
+  /** Hero adapter/model badges */
+  heroBadges?: { adapter?: string; model?: string };
+  /** Header-error line rendered under the hero card */
+  headerError?: string | null;
   /** Render the content for the active tab */
   renderTab: (view: string) => React.ReactNode;
 }
@@ -35,7 +40,7 @@ export interface AgentDetailCoreProps {
  * AgentDetailCore – shared chrome for agent detail pages.
  *
  * Renders:
- *   - Agent header (icon picker, name, role/title)
+ *   - Hero card (AgentHeroCard: icon, name, status, badges, KPI strip, actions, error)
  *   - Floating save/cancel bar (desktop + mobile)
  *   - Tab bar (PageTabBar inside Tabs)
  *   - Tab content via renderTab()
@@ -52,47 +57,33 @@ export function AgentDetailCore({
   urlRunId,
   isMobile = false,
   onIconChange,
+  heroKpis,
+  heroBadges,
+  headerError,
   renderTab,
 }: AgentDetailCoreProps) {
   const showActionBar = actionBar?.show ?? false;
 
   return (
     <div className={cn("space-y-6", isMobile && showActionBar && "pb-24")}>
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          {onIconChange ? (
-            <AgentIconPicker
-              value={agent.icon}
-              onChange={onIconChange}
-            >
-              <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-                <AgentIcon icon={agent.icon} className="h-6 w-6" />
-              </button>
-            </AgentIconPicker>
-          ) : (
-            <div className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </div>
-          )}
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold truncate">{agent.name}</h1>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
-            </p>
-          </div>
-        </div>
-        {headerActions && (
-          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            {headerActions}
-          </div>
-        )}
-      </div>
+      {/* Hero card */}
+      <AgentHeroCard
+        agent={agent}
+        kpis={heroKpis}
+        badges={heroBadges}
+        actions={headerActions}
+        onIconChange={onIconChange}
+        error={headerError}
+      />
 
       {/* Floating Save/Cancel (desktop) */}
       {!isMobile && actionBar && (
         <div
+          data-testid="agent-detail-action-bar"
+          // `data-dirty` mirrors showActionBar so tests can deterministically wait
+          // for the unsaved-changes state to arm (the bar stays mounted and only
+          // fades via opacity, which Playwright's visibility checks ignore).
+          data-dirty={showActionBar ? "true" : "false"}
           className={cn(
             "sticky top-6 z-10 float-right transition-opacity duration-150",
             showActionBar
@@ -146,19 +137,19 @@ export function AgentDetailCore({
         </div>
       )}
 
-      {/* Tab navigation */}
-      {!urlRunId && (
-        <Tabs
+      {/* Tab navigation — always shown; a selected run is still within the
+          Runs tab (master-detail), so the tab bar must not vanish. */}
+      <Tabs
+        value={activeView}
+        onValueChange={onViewChange}
+        activationMode="manual"
+      >
+        <PageTabBar
+          items={tabs}
           value={activeView}
           onValueChange={onViewChange}
-        >
-          <PageTabBar
-            items={tabs}
-            value={activeView}
-            onValueChange={onViewChange}
-          />
-        </Tabs>
-      )}
+        />
+      </Tabs>
 
       {/* Tab content */}
       {renderTab(activeView)}

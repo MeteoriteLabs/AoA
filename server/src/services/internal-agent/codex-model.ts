@@ -24,10 +24,17 @@ export const COMMANDER_CODEX_REASONING_EFFORT = "high";
 // Shell-safe charset (spawn uses shell:true on Windows — REVIEW FIX C10/S5):
 // the resolved model is interpolated into argv, so reject anything that isn't
 // a plain model identifier. Full-string anchor (NOT a prefix test).
+// `:` is permitted as a shell-safe tag separator — OpenCode/Pi discover
+// ollama-style tagged ids (e.g. `ollama/llama3.1:8b`) and `:` is not a shell
+// metacharacter mid-argument (Codex P2).
 // Mirrored (intentionally duplicated) in packages/shared/src/validators/agent.ts — keep in sync.
-export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-// OpenAI chat families usable on a ChatGPT/subscription codex account.
-const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt)/i;
+export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/;
+// OpenAI/Codex NAMING families: gpt-*, o<N>*, chatgpt*, AND codex-* (the latter
+// are API-key-only — see CODEX_INCOMPATIBLE_RE). This is the broad "is this an
+// OpenAI/Codex identifier" gate used by isOpenAiFamilyModel; ChatGPT-subscription
+// compatibility is further restricted by CODEX_INCOMPATIBLE_RE in
+// isCodexCompatibleModel (which still excludes every codex-* / *-codex value).
+const CODEX_FAMILY_RE = /^(gpt-|o\d|chatgpt|codex)/i;
 // GPT-Codex variants (…-codex / codex-…) require an API key, NOT a ChatGPT
 // login → they 400 on subscription accounts (this is the exact bug). Deny
 // them so a stray config/shared value can never reintroduce the 400.
@@ -44,14 +51,30 @@ export function isCodexCompatibleModel(model: string | null | undefined): boolea
   );
 }
 
+/**
+ * OpenAI/Codex-FAMILY model (gpt-*, o<N>-*, chatgpt-*), shell-safe. UNLIKE
+ * {@link isCodexCompatibleModel} this INCLUDES the API-key-only GPT-Codex
+ * variants (…-codex), because they are valid for API-key codex users. Used to
+ * constrain the API-key-mode fallback so a shell-safe NON-OpenAI alias from a
+ * shared ~/.codex/config.toml (e.g. `claude-…`, `gemini-…`) is never passed to
+ * `codex --model` with an OpenAI key.
+ */
+export function isOpenAiFamilyModel(model: string | null | undefined): boolean {
+  if (!model) return false;
+  const m = model.trim();
+  return SAFE_MODEL_RE.test(m) && CODEX_FAMILY_RE.test(m);
+}
+
 /** True when `model` is non-empty and contains only shell-safe characters.
  * opencode uses a `provider/model` slash format; each segment is validated
- * individually (cap at 2 segments) against {@link SAFE_MODEL_RE}. */
+ * individually (NO segment-count cap) against {@link SAFE_MODEL_RE}. */
 export function isShellSafeModel(model: string | null | undefined): boolean {
   if (!model) return false;
-  // opencode uses provider/model slash format; validate each segment.
+  // opencode uses a provider/model slash id, possibly with a nested provider
+  // namespace (e.g. openrouter/anthropic/claude-sonnet-4) — validate EACH segment
+  // for shell-safety, NO segment-count cap. Keep in sync with agent.ts isShellSafeModelId.
   const segments = model.trim().split("/");
-  return segments.length <= 2 && segments.every((s) => SAFE_MODEL_RE.test(s));
+  return segments.every((s) => SAFE_MODEL_RE.test(s));
 }
 
 /**

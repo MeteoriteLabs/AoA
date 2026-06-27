@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@armyofagents/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -125,6 +126,7 @@ export function OnboardingWizard() {
   const { selectedCompanyId, companies, setSelectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToast();
 
   const initialStep = onboardingOptions.initialStep ?? 1;
   const existingCompanyId = onboardingOptions.companyId;
@@ -564,6 +566,12 @@ export function OnboardingWizard() {
         }
       });
       setCreatedAgentId(agent.id);
+      if (agent.warnings?.length) {
+        // Server corrected the provider/model (e.g. an incompatible codex model
+        // resolved to gpt-5.5). The wizard advances to the next step, so a toast
+        // is the right non-blocking surface for the correction notice.
+        pushToast({ title: "Model adjusted", body: agent.warnings.join(" "), tone: "warn" });
+      }
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });

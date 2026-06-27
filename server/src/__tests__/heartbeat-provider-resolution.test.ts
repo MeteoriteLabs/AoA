@@ -87,4 +87,26 @@ describe("heartbeat wiring — edge #5 source-order guard", () => {
     expect(iResolve).toBeGreaterThan(iCheapSwap);
     expect(iContext).toBeGreaterThan(iResolve);
   });
+
+  // Codex P2: runScopedConfig.env is the project→environment→agent MERGE, so a
+  // project/environment OPENAI_API_KEY (supplied for the app/test suite) would be
+  // misread as the agent opting into codex api-key billing. AUTH DETECTION must
+  // see the agent's OWN env (agentEnvRecord). The merged runtime env is left
+  // intact — that key still reaches the workspace, and the codex adapter strips
+  // only the ambient server key from the spawn — so the seam must NOT pass the
+  // merged env to model resolution for stripping.
+  it("provider-status detection uses the agent's OWN env (agentEnvRecord), not the merged env", async () => {
+    const src = await readFile(new URL("../services/heartbeat.ts", import.meta.url), "utf8");
+    // getProviderStatus receives the agent-only env, not the merged runScopedConfig.env.
+    expect(
+      src,
+      "getProviderStatus must be passed the agent-only env (agentEnvRecord), not the merged runScopedConfig",
+    ).toContain("adapterConfig: { ...runScopedConfig, env: agentEnvRecord }");
+    // The merged runtime env must be preserved for the workspace: the seam must
+    // NOT strip it by threading agentOwnEnv into resolveRunScopedModel (Codex P2).
+    expect(
+      src,
+      "resolveRunScopedModel must NOT receive agentOwnEnv — the merged project/environment key stays in the runtime env",
+    ).not.toContain("agentOwnEnv");
+  });
 });

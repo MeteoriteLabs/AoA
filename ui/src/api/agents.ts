@@ -21,6 +21,12 @@ export interface AgentKey {
   revokedAt: Date | null;
 }
 
+export interface AoaRunsResponse {
+  runs: unknown[];
+  total: number;
+  limit: number;
+}
+
 export interface AdapterModel {
   id: string;
   label: string;
@@ -41,6 +47,9 @@ export type OrgNode = UnifiedOrgNode;
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
+  /** Soft model-correction warnings from the server (e.g. an incompatible codex
+   *  model resolved to gpt-5.5). Surfaced to the user at create time. */
+  warnings?: string[];
 }
 
 /** Agent returned from create/update endpoints — may include soft warnings (e.g. model corrections). */
@@ -61,7 +70,7 @@ export const agentsApi = {
   listAoa: (companyId: string) =>
     api.get<Agent[]>(`/companies/${companyId}/agents?kind=aoa`),
   getAoaRuns: (agentId: string, companyId: string) =>
-    api.get<unknown[]>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/aoa-runs`),
+    api.get<AoaRunsResponse>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/aoa-runs`),
   listTriggers: (agentId: string, companyId: string) =>
     api.get<unknown[]>(`/companies/${companyId}/agents/${encodeURIComponent(agentId)}/triggers`),
   createTrigger: (agentId: string, companyId: string, data: { kind: string; config?: Record<string, unknown>; enabled?: boolean }) =>
@@ -106,7 +115,7 @@ export const agentsApi = {
   rollbackConfigRevision: (id: string, revisionId: string, companyId?: string) =>
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
-    api.post<Agent>(`/companies/${companyId}/agents`, data),
+    api.post<AgentSaveResult>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>

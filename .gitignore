@@ -82,3 +82,6 @@ server/adjutant-*.mjs
 server/adjutant-*.ts
 server/check-thread*.ts
 server/diagnose-*.ts
+
+# transient local CI/watch logs (not for commit)
+_*.log

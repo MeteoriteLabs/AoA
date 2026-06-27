@@ -3,6 +3,13 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterSkillEntry, AdapterSkillSnapshot } from "./types.js";
+// Env secret redaction lives in the browser-safe shared package so the UI
+// (ui/src/lib/env-redaction.ts) and the adapters share ONE source of truth
+// for the key regex + value patterns. Re-exported here so existing
+// `@armyofagents/adapter-utils/server-utils` importers (every adapter
+// execute.ts + server/src/adapters/utils.ts) keep working unchanged.
+import { redactEnvForLogs, looksLikeSecretValue } from "@armyofagents/shared";
+export { redactEnvForLogs, looksLikeSecretValue };
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -89,49 +96,6 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
-// H4 (Codex P1): widened beyond the original key|token|secret|… set to also
-// catch common secret-bearing env-name fragments whose VALUES are
-// provider-specific opaque strings the value patterns below can't all enumerate
-// — e.g. WEBHOOK_SIGNING (whsec_…), NPM_AUTH (npm tokens), *_CREDENTIAL, *_DSN,
-// *_CONNECTION, *_BEARER, *_PAT. Over-redacting a log value is safe.
-const SENSITIVE_ENV_KEY =
-  /(key|token|secret|password|passwd|auth|cookie|credential|bearer|signing|webhook|npm|private|connection)/i;
-
-// H4: key-name matching alone leaked secrets bound (via secret_ref) to env vars
-// whose NAME does not contain one of the words above — DATABASE_URL, STRIPE_LIVE,
-// NPM_AUTH, DSN, WEBHOOK_SIGNING, CONNECTION, PAT, … — in plaintext into the
-// persisted heartbeat_run_events row and the SSE broadcast. So ALSO redact a
-// value (regardless of key name) when it LOOKS like a secret. Over-redacting a
-// log value is safe; leaking one is not. (Patterns are kept inline here because
-// adapter-utils cannot import the server's feedback-redaction patterns — wrong
-// dependency direction; they mirror the connection-string/provider-key/JWT/PEM
-// rules in server/src/services/prompt-snapshot.ts.)
-const SENSITIVE_ENV_VALUE_PATTERNS: RegExp[] = [
-  // Connection strings / DSNs (postgres://user:pass@host, mongodb+srv://, redis://, …)
-  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/[^\s<>'")]+/i,
-  // Anthropic / OpenAI-style provider keys (sk-… / sk-ant-…)
-  /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/,
-  // Stripe-style keys (sk_live_…, pk_test_…, rk_live_…)
-  /\b[sprSPR]k_(?:live|test)_[A-Za-z0-9]{8,}\b/,
-  // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
-  // AWS access key id
-  /\bAKIA[0-9A-Z]{16}\b/,
-  // Slack tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-)
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
-  // H4 (Codex P1): generic "<prefix>_<long-random>" token shape — catches
-  // Stripe webhook signing (whsec_…), npm tokens (npm_…), Doppler (dp.pt.…→
-  // not here), and most vendor "prefix_<base62>" keys regardless of the prefix.
-  /\b[A-Za-z][A-Za-z0-9]{1,}_[A-Za-z0-9]{20,}\b/,
-  // JWTs (three base64url segments)
-  /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
-  // PEM private-key blocks
-  /-----BEGIN[A-Z ]*PRIVATE KEY-----/,
-];
-
-function looksLikeSecretValue(value: string): boolean {
-  return SENSITIVE_ENV_VALUE_PATTERNS.some((re) => re.test(value));
-}
 
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -193,17 +157,6 @@ export function resolvePathValue(obj: Record<string, unknown>, dottedPath: strin
 
 export function renderTemplate(template: string, data: Record<string, unknown>) {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
-}
-
-export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
-  const redacted: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    redacted[key] =
-      SENSITIVE_ENV_KEY.test(key) || (typeof value === "string" && looksLikeSecretValue(value))
-        ? "***REDACTED***"
-        : value;
-  }
-  return redacted;
 }
 
 export function buildAoaEnv(agent: { id: string; companyId: string }): Record<string, string> {
@@ -310,6 +263,42 @@ export async function ensureCommandResolvable(command: string, cwd: string, env:
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+/**
+ * Build a child-process environment from the parent env + an overlay, with an
+ * opt-in strip of inherited keys. A key in `unsetEnvKeys` is removed from the
+ * result ONLY if the overlay did not set it — so an agent's own value (even an
+ * explicit empty string) survives while an ambient (server-process) value is
+ * dropped. Used to keep the AoA server's OPENAI_API_KEY out of agent runs
+ * (codex opts in); default behavior (no `unsetEnvKeys`) is unchanged.
+ */
+export function mergeChildEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  overlayEnv: Record<string, string>,
+  unsetEnvKeys?: string[],
+): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...parentEnv, ...overlayEnv };
+  // Windows env var names are case-insensitive: deleting only the exact-cased
+  // `OPENAI_API_KEY` would leave a differently-cased ambient value (e.g.
+  // `OpenAI_API_KEY`) in place, so the codex child still inherits the server key
+  // and the api-key auth/billing leak this strip prevents returns (Codex P2).
+  // Match case-insensitively on Windows, exact elsewhere (POSIX env IS
+  // case-sensitive — don't drop a legitimately distinct var there).
+  const caseInsensitive = process.platform === "win32";
+  const sameKey = (a: string, b: string) =>
+    caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+  for (const key of unsetEnvKeys ?? []) {
+    // The exact key(s) the overlay set itself survive (an agent's own key — even
+    // an explicit empty string — wins). Any OTHER matching-cased key is an
+    // ambient (server-process) value and is dropped. Deleting the differently-
+    // cased ambient key matters on Windows, where it is the SAME variable.
+    const overlayKeys = new Set(Object.keys(overlayEnv).filter((k) => sameKey(k, key)));
+    for (const mergedKey of Object.keys(merged)) {
+      if (sameKey(mergedKey, key) && !overlayKeys.has(mergedKey)) delete merged[mergedKey];
+    }
+  }
+  return merged;
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -329,12 +318,14 @@ export async function runChildProcess(
      */
     onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
     shell?: boolean;
+    /** Keys to strip from the inherited parent env (unless `env` set them). */
+    unsetEnvKeys?: string[];
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,

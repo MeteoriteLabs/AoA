@@ -3577,15 +3577,24 @@ export function heartbeatService(db: Db) {
         );
       }
 
-      // Provider-switching (org/heartbeat): resolve the model auth-aware + shell-safe,
-      // and strip any inherited company OPENAI_API_KEY before spawn. Runs AFTER the
-      // cheap-model swaps above (edge #5) so we resolve the model that will run.
-      // Best-effort detection; a failure falls back to authMode "unknown".
+      // Provider-switching (org/heartbeat): resolve the model auth-aware + shell-safe.
+      // Runs AFTER the cheap-model swaps above (edge #5) so we resolve the model that
+      // will run. Best-effort detection; a failure falls back to authMode "unknown".
+      //
+      // Auth DETECTION must see ONLY the agent's OWN adapter env (agentEnvRecord =
+      // the pre-merge mergedConfig.env). runScopedConfig.env is the
+      // project→environment→agent MERGE, so a project/environment OPENAI_API_KEY
+      // (supplied for the app/test suite, not for codex auth) must NOT be misread as
+      // the agent opting into codex api-key billing — only adapterConfig.env
+      // .OPENAI_API_KEY does that (Codex P2). The merged runtime env is left intact:
+      // that project/environment key still reaches the workspace, and the codex
+      // adapter strips only the AMBIENT server key from the spawn (execute.ts
+      // unsetEnvKeys) — so we do NOT strip the merged key here (Codex P2).
       let providerStatus: ProviderStatus;
       try {
         providerStatus = await getProviderStatus(
           agent.adapterType,
-          { companyId: agent.companyId, adapterConfig: runScopedConfig },
+          { companyId: agent.companyId, adapterConfig: { ...runScopedConfig, env: agentEnvRecord } },
           realProviderStatusDeps,
         );
       } catch (statusErr) {

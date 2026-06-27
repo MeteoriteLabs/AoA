@@ -31,19 +31,33 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 // NOTE: intentionally duplicated from server/src/services/internal-agent/codex-model.ts
 // (SAFE_MODEL_RE) — the shared package cannot import from server. Keep the two in sync:
 // if you change this, change codex-model.ts too (and vice versa).
-const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+// `:` is allowed as a shell-safe tag separator: OpenCode/Pi discover ollama-style
+// tagged ids verbatim (e.g. `ollama/llama3.1:8b`), and `:` is not a shell
+// metacharacter mid-argument — so it must pass this gate, not be rejected (Codex P2).
+const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/;
 
 // Shell-safety consistent with the server's isShellSafeModel (Unit B): a model
-// may be a provider/model slash id (opencode); validate EACH segment and cap at 2.
-function isShellSafeModelId(model: string): boolean {
+// may be a provider/model slash id (opencode); validate EACH segment (no
+// segment-count cap). Exported so the route layer can reject a model-only PATCH
+// (no adapterType in the body → the schema refine below early-returns) with the
+// SAME rule the schema uses — route and schema must never diverge (Codex P2).
+export function isShellSafeModelId(model: string): boolean {
+  // Validate EACH slash segment for shell-safety, with NO segment-count cap:
+  // OpenCode ids can carry a nested provider namespace (e.g.
+  // openrouter/anthropic/claude-sonnet-4), which the adapter's own discovery
+  // validates. Each segment must still be a plain identifier (SAFE_MODEL_RE), so
+  // the joined id stays shell-safe. Keep in sync with codex-model.ts isShellSafeModel.
   const segments = model.split("/");
-  return segments.length <= 2 && segments.every((s) => SAFE_MODEL_RE.test(s));
+  return segments.every((s) => SAFE_MODEL_RE.test(s));
 }
 
 function modelFamily(model: string): "claude" | "openai" | "gemini" | "unknown" {
   const m = model.includes("/") ? model.split("/").pop()! : model; // opencode openai/<id>
   if (/^claude-/i.test(m)) return "claude";
-  if (/^(gpt-|o\d|chatgpt)/i.test(m)) return "openai";
+  // gpt-*, o<N>, chatgpt-*, AND codex-* (api-key-only Codex models). Mirrors
+  // codex-model.ts CODEX_FAMILY_RE so the save-side family guard rejects a Codex
+  // model on a non-OpenAI adapter (e.g. claude_local + codex-mini-latest).
+  if (/^(gpt-|o\d|chatgpt|codex)/i.test(m)) return "openai";
   if (/^gemini-|^auto$/i.test(m)) return "gemini";
   return "unknown";
 }
@@ -51,9 +65,30 @@ function modelFamily(model: string): "claude" | "openai" | "gemini" | "unknown" 
 const ADAPTER_FAMILY: Record<string, "claude" | "openai" | "gemini"> = {
   claude_local: "claude",
   codex_local: "openai",
-  opencode_local: "openai",
+  // opencode_local is intentionally NOT family-pinned: OpenCode is multi-provider
+  // (provider/model slash ids, e.g. anthropic/claude-..., google/gemini-...).
+  // Compatibility is validated by OpenCode's own ensureOpenCodeModelConfiguredAndAvailable
+  // (run on create/hire/patch); shell-safety still applies via isShellSafeModelId.
   gemini_local: "gemini",
 };
+
+// Pure family-compatibility check, shared by the schema refinement (create / hire /
+// update) and the route's adapter-only PATCH guard so the rule lives in ONE place.
+// Returns a human-readable reason string on a genuine cross-family mismatch, else null.
+// Returns null when adapterType/model is absent, the model family is unknown, or the
+// adapter has no pinned family (opencode_local is intentionally exempt — see ADAPTER_FAMILY).
+export function adapterModelFamilyMismatch(
+  adapterType: string | undefined,
+  model: string | undefined,
+): string | null {
+  if (!adapterType || typeof model !== "string" || model.length === 0) return null;
+  const fam = modelFamily(model);
+  const expected = ADAPTER_FAMILY[adapterType];
+  if (expected && fam !== "unknown" && fam !== expected) {
+    return `Model "${model}" (${fam}) does not match adapter ${adapterType} (${expected}).`;
+  }
+  return null;
+}
 
 // `val` is loosely typed because this refinement runs across the create / hire /
 // (partial) update shapes — all of which carry adapterType + adapterConfig.
@@ -74,13 +109,12 @@ function refineAdapterModel(
     return;
   }
 
-  const fam = modelFamily(model);
-  const expected = ADAPTER_FAMILY[at];
-  if (expected && fam !== "unknown" && fam !== expected) {
+  const mismatch = adapterModelFamilyMismatch(at, model);
+  if (mismatch) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["adapterConfig", "model"],
-      message: `Model "${model}" (${fam}) does not match adapter ${at} (${expected}).`,
+      message: mismatch,
     });
   }
 }
@@ -132,6 +166,13 @@ export const updateAgentSchema = _createAgentBase
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     skillKeys: z.array(z.string()).optional(),
     defaultEnvironmentId: z.string().uuid().optional().nullable(),
+    // Optimistic-concurrency token. OPTIONAL: when present, the update is
+    // guarded against `agents.updatedAt` (atomic conditional UPDATE → 409 on
+    // mismatch). When absent, the write is last-write-wins (full back-compat).
+    // Token = the agent row's `updatedAt` as a millisecond-precision ISO string.
+    // The server compares it at ms precision (date_trunc) because the stored
+    // column is microsecond-precision — see Decision #104.
+    expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
   })
   .superRefine(refineAdapterModel);
 
