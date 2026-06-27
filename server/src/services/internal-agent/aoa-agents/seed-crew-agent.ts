@@ -5,9 +5,10 @@ import { seedRoleInstructionBundle } from "./seed-commander-bundle.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import {
   resolveCrewAdapterForCompany,
-  needsAdapterBackfill,
-  mergeAdapterConfig,
+  shouldRewriteCrewAdapter,
+  mergeCrewAdapterConfig,
 } from "./resolve-crew-adapter.js";
+import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
 
 /**
  * Phase D batch 1 (T9): shared crew-agent seeder.
@@ -209,18 +210,18 @@ export async function seedCrewAgent(
       .from(agents)
       .where(eq(agents.id, agentId))
       .limit(1);
-    if (
-      current &&
-      needsAdapterBackfill(
-        current.adapterType,
-        current.adapterConfig as Record<string, unknown> | null,
-      )
-    ) {
-      updates.adapterType = crewAdapter.adapterType;
-      updates.adapterConfig = mergeAdapterConfig(
-        current.adapterConfig as Record<string, unknown> | null,
-        crewAdapter.adapterConfig,
-      );
+    if (current) {
+      const cfg = current.adapterConfig as Record<string, unknown> | null;
+      const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
+      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
+        updates.adapterType = crewAdapter.adapterType;
+        updates.adapterConfig = mergeCrewAdapterConfig(
+          cfg,
+          crewAdapter.adapterConfig,
+          current.adapterType,
+          crewAdapter.adapterType,
+        );
+      }
     }
 
     if (Object.keys(updates).length > 0) {

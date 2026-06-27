@@ -21,6 +21,11 @@ import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 import { maybeExecuteFakeCrewTurn } from "./fake-crew-llm.js";
+import { getProviderStatus } from "../../../adapters/provider-status.js";
+import type { ProviderStatus } from "../../../adapters/provider-status.js";
+import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
+import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
+import { secretService } from "../../secrets.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
@@ -376,6 +381,55 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       contextBundle,
     });
 
+    // Provider-switching (Unit B): resolve the model auth-aware + shell-safe and
+    // strip any inherited company OPENAI_API_KEY before spawn. getProviderStatus
+    // (Unit A) is the real detector; resolveModel throws on shell-unsafe — caught
+    // by the run's existing try/catch and surfaced via Unit E.
+    //
+    // Provider-status detection is best-effort (consistent with the runner's other
+    // guarded I/O): a detection hiccup must not abort an otherwise-ready run. Model
+    // RESOLUTION still hard-fails on shell-unsafe input — that throw comes from
+    // applyModelResolutionToConfig below, outside this guard, and is recorded as a
+    // failed run by the outer catch.
+    // Crew path MUST resolve env bindings (secret_ref/plain → string) BEFORE
+    // provider detection + model resolution + spawn. Saved env entries are
+    // normalized to binding objects, and codex-local copies only STRING env into
+    // the child — so an unresolved per-agent OPENAI_API_KEY would be detected as
+    // apikey here yet never reach the codex child, breaking the run. Mirror the
+    // org (heartbeat) + probe paths. resolveEnvBindings no-ops to {} for agents
+    // with no env; a missing secret throws → recorded as a failed run by the
+    // outer catch (correct — the run can't proceed without the configured key).
+    // (Codex P2.)
+    const runtimeBaseConfig = await secretService(db).resolveAdapterConfigForRuntime(
+      agent.companyId,
+      baseConfig,
+      { consumerType: "agent", consumerId: agent.id, actorType: "agent", actorId: agent.id },
+    );
+
+    let providerStatus: ProviderStatus;
+    try {
+      providerStatus = await getProviderStatus(
+        agent.adapterType,
+        { companyId: agent.companyId, adapterConfig: runtimeBaseConfig },
+        realProviderStatusDeps,
+      );
+    } catch (statusErr) {
+      log.warn({ err: statusErr }, "aoa-runner: provider status detection failed (best-effort fallback to unknown)");
+      providerStatus = {
+        adapterType: agent.adapterType,
+        installed: true,
+        authenticated: false,
+        authMode: "unknown",
+        defaultModelResolved: null,
+      };
+    }
+    const resolvedBaseConfig = applyModelResolutionToConfig(
+      agent.adapterType,
+      runtimeBaseConfig,
+      providerStatus,
+      { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null },
+    );
+
     // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
     // it for codex/opencode/etc. leaked an invalid flag into their argv (the
     // reason codex AoA agents got zero MCP tools). claude_local is the ONLY
@@ -389,8 +443,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // returns it verbatim.
     const isClaudeFamily = agent.adapterType === "claude_local";
     const config = isClaudeFamily
-      ? { ...baseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
-      : { ...baseConfig, promptTemplate: triggerPrompt };
+      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
+      : { ...resolvedBaseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
@@ -495,21 +549,29 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       const { issueService } = await import("../../issues.js");
       const task = await issueService(db).getById(payload.issueId);
       if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === runId) {
-        log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — releasing task to todo");
-        await db.update(issues)
+        const released = await db.update(issues)
+          // Atomic status guard (Codex P2): a concurrent set_task_status between
+          // the getById read and this write keeps executionRunId (only checkoutRunId
+          // is cleared on leaving in_progress), so without status='in_progress' here
+          // this could revert an in_review/done task back to todo.
           .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId)));
-        // Task 5.6: the silent-stuck release is a CREW status-MOVE
-        // (in_progress → todo) that bypasses issueService.update. Publish
-        // issue.status_changed (company-broadcast, R3) so the board reflects
-        // the card dropping back to todo live. Best-effort — must not mask the
-        // loud throw below (which terminalizes the run).
-        try {
-          publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
-        } catch (publishErr) {
-          log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")))
+          .returning({ id: issues.id });
+        // Only publish + throw if the guarded UPDATE actually released the row. A
+        // ZERO-row result means set_task_status won the race and already moved the
+        // task — the agent DID move it, so the run is NOT a failure (Codex P2).
+        if (released.length > 0) {
+          log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — released task to todo");
+          // Task 5.6: this is a CREW status-MOVE (in_progress → todo) that bypasses
+          // issueService.update; publish issue.status_changed so the board reflects
+          // the card dropping back to todo. Best-effort — must not mask the throw.
+          try {
+            publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+          } catch (publishErr) {
+            log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+          }
+          throw new Error("crew task run completed without moving the task (no set_task_status call)");
         }
-        throw new Error("crew task run completed without moving the task (no set_task_status call)");
       }
     }
 
@@ -672,6 +734,46 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           .set({ status: "failed", errorMessage: String((err as Error)?.message ?? err), durationMs: Date.now() - startedAt, completedAt: new Date() })
           .where(eq(internalAgentRuns.id, runId));
       } catch { /* swallow */ }
+    }
+    // Release a TASK this run checked out if a mid-run failure terminated the run
+    // BEFORE the success-path release guard (e.g. runtime secret resolution, a
+    // shell-unsafe model, a context/bundle error — all of which throw between
+    // issueService.checkout and adapter.execute). Without this the task stays
+    // stuck 'in_progress' + locked forever, blocking retry/redispatch. Symmetric
+    // to the discussion-entry terminalizer below and the silent-stuck release in
+    // the success path: only clear the lock when the task is still 'in_progress'
+    // AND still owned by THIS run (executionRunId===runId), so a concurrently
+    // re-claimed task is never clobbered. Entirely best-effort — never escape the
+    // run boundary (consistent with the catch's swallow style).
+    if (payload.issueId && runId) {
+      const releaseRunId = runId;
+      try {
+        const { issueService } = await import("../../issues.js");
+        const task = await issueService(db).getById(payload.issueId);
+        if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === releaseRunId) {
+          const released = await db.update(issues)
+            // Guard on status='in_progress' IN the UPDATE (not just the JS read):
+            // the issue update path clears checkoutRunId but keeps executionRunId
+            // when leaving in_progress, so a concurrent set_task_status between the
+            // getById read and this write could otherwise revert an in_review/done
+            // task back to todo (Codex P2). Atomic predicate prevents the clobber.
+            .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
+            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, releaseRunId), eq(issues.status, "in_progress")))
+            .returning({ id: issues.id });
+          // Only log/publish when the guarded UPDATE actually released the row; a
+          // zero-row result means a concurrent set_task_status already moved it.
+          if (released.length > 0) {
+            log.warn({ issueId: payload.issueId }, "crew run failed before execute — released checked-out task to todo");
+            try {
+              publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+            } catch (publishErr) {
+              log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on failed-run task release (best-effort, ignored)");
+            }
+          }
+        }
+      } catch (releaseErr) {
+        log.warn({ err: releaseErr, issueId: payload.issueId }, "failed-run task release failed (best-effort, ignored)");
+      }
     }
     // FX1/B1: a failed extraction RUN must terminalize the entry it claimed —
     // otherwise the entry is stuck 'processing' forever (silent permanent

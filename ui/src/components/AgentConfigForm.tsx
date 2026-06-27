@@ -852,6 +852,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 allowDefault={adapterType !== "opencode_local"}
                 required={adapterType === "opencode_local"}
                 groupByProvider={adapterType === "opencode_local"}
+                defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
+                defaultValue={adapterType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""}
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
@@ -1496,6 +1498,8 @@ function ModelDropdown({
   allowDefault,
   required,
   groupByProvider,
+  defaultLabel,
+  defaultValue,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1505,6 +1509,11 @@ function ModelDropdown({
   allowDefault: boolean;
   required: boolean;
   groupByProvider: boolean;
+  defaultLabel?: string;
+  /** Value written when the "Default" option is chosen. Codex passes its real
+   *  default (gpt-5.5) so an edited agent doesn't persist an empty model that
+   *  runs the CLI default instead (Codex P2-3). Others omit → empty. */
+  defaultValue?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const selected = models.find((m) => m.id === value);
@@ -1558,7 +1567,7 @@ function ModelDropdown({
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
                 ? selected.label
-                : value || (allowDefault ? "Default" : required ? "Select model (required)" : "Select model")}
+                : value || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
             </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
@@ -1579,11 +1588,11 @@ function ModelDropdown({
                   !value && "bg-accent",
                 )}
                 onClick={() => {
-                  onChange("");
+                  onChange(defaultValue ?? "");
                   onOpenChange(false);
                 }}
               >
-                Default
+                {defaultLabel ?? "Default"}
               </button>
             )}
             {groupedModels.map((group) => (

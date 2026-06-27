@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTarget,
+  runAdapterExecutionTargetProcess,
   runLocalTargetProcess,
 } from "./execution-target.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -86,6 +87,83 @@ describe("runLocalTargetProcess", () => {
       onLog,
       onSpawn,
     });
+  });
+
+  it("forwards unsetEnvKeys to the runner when set (env-strip threading)", async () => {
+    const run = vi.fn().mockResolvedValue(okResult);
+    await runLocalTargetProcess(
+      {
+        runId: "run_2",
+        command: "codex",
+        args: ["exec"],
+        cwd: "/repo",
+        env: { A: "1" },
+        timeoutSec: 30,
+        graceSec: 2,
+        onLog: vi.fn(),
+        unsetEnvKeys: ["OPENAI_API_KEY"],
+      },
+      run,
+    );
+
+    expect(run).toHaveBeenCalledWith(
+      "run_2",
+      "codex",
+      ["exec"],
+      expect.objectContaining({ env: { A: "1" }, unsetEnvKeys: ["OPENAI_API_KEY"] }),
+    );
+  });
+});
+
+describe("runAdapterExecutionTargetProcess — provider-sandbox env (Codex finding 3)", () => {
+  function providerSandboxTarget(execute: ReturnType<typeof vi.fn>) {
+    return resolveAdapterExecutionTarget({
+      type: "provider-sandbox",
+      provider: "e2b",
+      providerLeaseId: "lease-1",
+      remoteCwd: "/sandbox",
+      runner: { execute },
+      env: {},
+    });
+  }
+  function baseOpts(env: Record<string, string>) {
+    return {
+      runId: "run-ps",
+      command: "codex",
+      args: ["exec"],
+      cwd: "/repo",
+      env,
+      timeoutSec: 30,
+      graceSec: 2,
+      onLog: async () => {},
+      unsetEnvKeys: ["OPENAI_API_KEY"],
+    };
+  }
+
+  it("does not pass the ambient OPENAI_API_KEY to the provider runner (env built from opts.env, not process.env)", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-server-ambient";
+    try {
+      const execute = vi.fn().mockResolvedValue(okResult);
+      await runAdapterExecutionTargetProcess(providerSandboxTarget(execute), baseOpts({}));
+      const passedEnv = (execute.mock.calls[0][0] as { env: Record<string, string> }).env;
+      expect(passedEnv.OPENAI_API_KEY).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prev;
+    }
+  });
+
+  it("DOES pass an opts.env OPENAI_API_KEY to the provider runner (agent-set key)", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-server-ambient";
+    try {
+      const execute = vi.fn().mockResolvedValue(okResult);
+      await runAdapterExecutionTargetProcess(providerSandboxTarget(execute), baseOpts({ OPENAI_API_KEY: "sk-agent" }));
+      const passedEnv = (execute.mock.calls[0][0] as { env: Record<string, string> }).env;
+      expect(passedEnv.OPENAI_API_KEY).toBe("sk-agent");
+    } finally {
+      if (prev === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prev;
+    }
   });
 });
 

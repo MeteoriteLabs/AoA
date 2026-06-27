@@ -16,7 +16,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 |-------|------|----------|-------------|
 | `cwd` | string | No | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
 | `instructionsFilePath` | string | No | Absolute path to a markdown instructions file prepended to stdin prompt at runtime |
-| `model` | string | No | Codex model to use (default: `gpt-5.3-codex`) |
+| `model` | string | No | Codex model to use (default: `gpt-5.5`). The runtime corrects API-key-only models (e.g. `gpt-5.3-codex`) to a ChatGPT-login-compatible model when the login isn't API-key mode — see the provider-switching engine. |
 | `modelReasoningEffort` | string | No | Reasoning effort override (`minimal` \| `low` \| `medium` \| `high`) — passed via `-c model_reasoning_effort=...` |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `search` | boolean | No | Run Codex with `--search` |

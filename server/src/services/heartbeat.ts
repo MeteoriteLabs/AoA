@@ -37,6 +37,9 @@ import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
+import { getProviderStatus, type ProviderStatus } from "../adapters/provider-status.js";
+import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
+import { resolveRunScopedModel } from "./heartbeat-provider-resolution.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
@@ -3573,6 +3576,32 @@ export function heartbeatService(db: Db) {
           "[heartbeat] cheap-fallback check failed; continuing with original model",
         );
       }
+
+      // Provider-switching (org/heartbeat): resolve the model auth-aware + shell-safe.
+      // Runs AFTER the cheap-model swaps above (edge #5) so we resolve the model that
+      // will run. Best-effort detection; a failure falls back to authMode "unknown".
+      //
+      // Auth DETECTION must see ONLY the agent's OWN adapter env (agentEnvRecord =
+      // the pre-merge mergedConfig.env). runScopedConfig.env is the
+      // project→environment→agent MERGE, so a project/environment OPENAI_API_KEY
+      // (supplied for the app/test suite, not for codex auth) must NOT be misread as
+      // the agent opting into codex api-key billing — only adapterConfig.env
+      // .OPENAI_API_KEY does that (Codex P2). The merged runtime env is left intact:
+      // that project/environment key still reaches the workspace, and the codex
+      // adapter strips only the AMBIENT server key from the spawn (execute.ts
+      // unsetEnvKeys) — so we do NOT strip the merged key here (Codex P2).
+      let providerStatus: ProviderStatus;
+      try {
+        providerStatus = await getProviderStatus(
+          agent.adapterType,
+          { companyId: agent.companyId, adapterConfig: { ...runScopedConfig, env: agentEnvRecord } },
+          realProviderStatusDeps,
+        );
+      } catch (statusErr) {
+        logger.warn({ err: statusErr, companyId: agent.companyId, agentId: agent.id, runId: run.id }, "[heartbeat] provider status detection failed (best-effort fallback to unknown)");
+        providerStatus = { adapterType: agent.adapterType, installed: true, authenticated: false, authMode: "unknown", defaultModelResolved: null };
+      }
+      runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null });
 
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
       const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {

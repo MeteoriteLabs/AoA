@@ -18,6 +18,8 @@ import {
   upsertAgentInstructionsFileSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  adapterModelFamilyMismatch,
+  isShellSafeModelId,
   type InstanceSchedulerHeartbeatAgent,
   type WakeAgent,
 } from "@armyofagents/shared";
@@ -38,12 +40,12 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, redactSecretsInString } from "../redaction.js";
 import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
 } from "@armyofagents/adapter-codex-local";
+import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@armyofagents/adapter-cursor-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@armyofagents/adapter-opencode-local/server";
 import {
@@ -54,6 +56,43 @@ import { environmentRunOrchestrator } from "../services/environment-run-orchestr
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
+import { getProviderStatus } from "../adapters/provider-status.js";
+import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
+import { resolveModel, ShellUnsafeModelError } from "../services/internal-agent/model-resolution.js";
+
+// Adapter types that go through the assertAdapterConfigConstraints validation
+// path (provider-status + model-resolution checks). Allocated once at module
+// scope rather than per-request inside the PATCH handler.
+const ADAPTER_CONSTRAINT_TYPES = new Set([
+  "opencode_local",
+  "codex_local",
+  "claude_local",
+  "gemini_local",
+]);
+
+// Adapter types that pass adapterConfig.model through to a CLI as `--model`
+// (each has `--model` in its execute.ts). A model-only PATCH on any of these
+// must be shell-safety validated even when the type is OUTSIDE
+// ADAPTER_CONSTRAINT_TYPES (cursor/grok/pi) — without an adapterType in the body
+// the schema's refine early-returns, so the route is the only gate (Codex P2).
+const MODEL_AWARE_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "opencode_local",
+  "pi_local",
+]);
+
+// Unit D: per-company concurrency cap for the adapter test-connection probe.
+// The probe spawns a real CLI; cap concurrent probes per company to prevent abuse.
+// (Hard timeout ceiling is already enforced per-adapter: e.g. codex test.ts uses
+// timeoutSec 45 + graceSec 5 — see packages/adapters/*/server/test.ts.)
+// NOTE: in-process only — a multi-instance deployment would need a distributed
+// lock to share this counter. Acceptable for the Phase 1 single-process target.
+const MAX_CONCURRENT_PROBES_PER_COMPANY = 1;
+const inFlightProbeCounts = new Map<string, number>();
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -269,7 +308,7 @@ export function agentRoutes(db: Db) {
     const next = { ...adapterConfig };
     if (adapterType === "codex_local") {
       if (!asNonEmptyString(next.model)) {
-        next.model = DEFAULT_CODEX_LOCAL_MODEL;
+        next.model = DEFAULT_CODEX_CHAT_MODEL;
       }
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
@@ -290,25 +329,53 @@ export function agentRoutes(db: Db) {
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
-  ) {
-    if (adapterType !== "opencode_local") return;
-    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
-      consumerType: "system",
-      consumerId: `adapter-check:${adapterType ?? "unknown"}`,
-      actorType: "system",
-    });
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
-    try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
+  ): Promise<string[]> {
+    const warnings: string[] = [];
+
+    if (adapterType === "opencode_local") {
+      const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+        consumerType: "system",
+        consumerId: `adapter-check:${adapterType ?? "unknown"}`,
+        actorType: "system",
       });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
+      try {
+        await ensureOpenCodeModelConfiguredAndAvailable({
+          model: runtimeConfig.model,
+          command: runtimeConfig.command,
+          cwd: runtimeConfig.cwd,
+          env: runtimeEnv,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+      return warnings; // opencode has no soft-warn tier
     }
+
+    // Auth-mode soft-warn (Unit C): if the configured model would be runtime-
+    // corrected for the detected provider auth mode, surface a non-blocking
+    // warning. Best-effort — detection/resolution failures must NOT block a save.
+    if (adapterType === "codex_local" || adapterType === "claude_local" || adapterType === "gemini_local") {
+      const model = adapterConfig.model;
+      if (typeof model === "string" && model.length > 0) {
+        try {
+          const status = await getProviderStatus(adapterType, { companyId, adapterConfig }, realProviderStatusDeps);
+          const resolved = resolveModel(adapterType, model, status);
+          if (resolved.note) warnings.push(resolved.note);
+        } catch (warnErr) {
+          // Shell-safety is a mandatory hard-block (defense-in-depth behind the
+          // shared schema's 400). Never let a shell-unsafe model slip through the
+          // soft-warn path as a silent success.
+          if (warnErr instanceof ShellUnsafeModelError) {
+            throw unprocessable(`Unsafe model identifier: ${String(adapterConfig.model)}`);
+          }
+          logger.warn({ err: warnErr }, "agents: auth-mismatch soft-warn check failed (best-effort, ignored)");
+        }
+      }
+    }
+
+    return warnings;
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
@@ -463,6 +530,9 @@ export function agentRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
+
+      // RBAC check and 404 check happen BEFORE incrementing the in-flight
+      // counter so they never leak a slot.
       await assertCanReadConfigurations(req, companyId);
 
       const adapter = findServerAdapter(type);
@@ -471,66 +541,120 @@ export function agentRoutes(db: Db) {
         return;
       }
 
-      const inputAdapterConfig =
-        (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
-      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        companyId,
-        inputAdapterConfig,
-        { strictMode: strictSecretsMode },
-      );
-      const runtimeAdapterConfig = await secretsSvc.resolveAdapterConfigForRuntime(
-        companyId,
-        normalizedAdapterConfig,
-        {
-          consumerType: "system",
-          consumerId: `adapter-test:${type}`,
-          actorType: "system",
-        },
-      );
-
-      const environmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? req.body.environmentId.trim()
-          : null;
-      const acquiredEnvironment = environmentId
-        ? await environmentRuns.acquireForRun({
-            companyId,
-            environmentId,
-            adapterType: type,
-            issueId: null,
-            heartbeatRunId: null,
-            persistedExecutionWorkspace: null,
-          })
-        : null;
+      // Unit D: per-company concurrency cap — reject if a probe is already running.
+      const inFlight = inFlightProbeCounts.get(companyId) ?? 0;
+      if (inFlight >= MAX_CONCURRENT_PROBES_PER_COMPANY) {
+        res.status(429).set("Retry-After", "30").json({ error: "A connection test is already running for this company. Please wait for it to finish and retry." });
+        return;
+      }
+      inFlightProbeCounts.set(companyId, inFlight + 1);
 
       try {
-        const result = await adapter.testEnvironment({
+        const inputAdapterConfig =
+          (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+        const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
           companyId,
-          adapterType: type,
-          config: runtimeAdapterConfig,
-          executionTarget: acquiredEnvironment?.configPatch.executionTarget,
-          environmentName: acquiredEnvironment?.environment.name ?? null,
-        });
+          inputAdapterConfig,
+          { strictMode: strictSecretsMode },
+        );
+        const runtimeAdapterConfig = await secretsSvc.resolveAdapterConfigForRuntime(
+          companyId,
+          normalizedAdapterConfig,
+          {
+            consumerType: "system",
+            consumerId: `adapter-test:${type}`,
+            actorType: "system",
+          },
+        );
 
-        res.json(result);
-      } finally {
-        if (acquiredEnvironment) {
-          await environmentRuntime.releaseRunLease({
-            environment: acquiredEnvironment.environment,
-            lease: acquiredEnvironment.lease,
-            status: "released",
-          }).catch((err) => {
-            logger.warn(
-              {
-                err,
-                companyId,
-                environmentId,
-                adapterType: type,
-                leaseId: acquiredEnvironment.lease.id,
-              },
-              "Failed to release adapter environment test lease",
-            );
+        // Unit D (Part B): resolve the model the SAME way a real run would, so
+        // the probe tests reality. Best-effort detection; shell-unsafe is a hard 422.
+        let probeAdapterConfig: Record<string, unknown> = runtimeAdapterConfig;
+        if (ADAPTER_CONSTRAINT_TYPES.has(type)) {
+          // Codex finding P2-1: resolve the model even when it's EMPTY (the UI
+          // default-model path). resolveModel maps an empty codex model to the
+          // gpt-5.5 default, omits the flag for gemini/claude/opencode — exactly
+          // what a real run does. Skipping the empty case made codex probes run
+          // with the CLI default instead of gpt-5.5, falsely failing on a ChatGPT
+          // login even though the saved run would be corrected.
+          const reqModel = typeof runtimeAdapterConfig.model === "string" ? runtimeAdapterConfig.model : "";
+          try {
+            const status = await getProviderStatus(type, { companyId, adapterConfig: runtimeAdapterConfig }, realProviderStatusDeps);
+            const resolved = resolveModel(type, reqModel, status);
+            probeAdapterConfig = { ...runtimeAdapterConfig };
+            if (resolved.omitModelFlag) delete probeAdapterConfig.model;
+            else probeAdapterConfig.model = resolved.model;
+          } catch (resolveErr) {
+            if (resolveErr instanceof ShellUnsafeModelError) {
+              throw unprocessable(`Unsafe model identifier: ${String(reqModel)}`);
+            }
+            logger.warn({ err: resolveErr }, "adapter-test: model resolution failed (best-effort, using requested model)");
+          }
+        }
+
+        const environmentId =
+          typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
+            ? req.body.environmentId.trim()
+            : null;
+        const acquiredEnvironment = environmentId
+          ? await environmentRuns.acquireForRun({
+              companyId,
+              environmentId,
+              adapterType: type,
+              issueId: null,
+              heartbeatRunId: null,
+              persistedExecutionWorkspace: null,
+            })
+          : null;
+
+        try {
+          const result = await adapter.testEnvironment({
+            companyId,
+            adapterType: type,
+            config: probeAdapterConfig,
+            executionTarget: acquiredEnvironment?.configPatch.executionTarget,
+            environmentName: acquiredEnvironment?.environment.name ?? null,
           });
+
+          // Unit D (Part C): redact any secrets that leaked into check messages
+          // before returning the result to the client.
+          const redactedResult = {
+            ...result,
+            checks: result.checks.map((c) => ({
+              ...c,
+              message: typeof c.message === "string" ? redactSecretsInString(c.message) : c.message,
+              ...(typeof c.detail === "string" ? { detail: redactSecretsInString(c.detail) } : {}),
+              ...(typeof c.hint === "string" ? { hint: redactSecretsInString(c.hint) } : {}),
+            })),
+          };
+          res.json(redactedResult);
+        } finally {
+          if (acquiredEnvironment) {
+            await environmentRuntime.releaseRunLease({
+              environment: acquiredEnvironment.environment,
+              lease: acquiredEnvironment.lease,
+              status: "released",
+            }).catch((err) => {
+              logger.warn(
+                {
+                  err,
+                  companyId,
+                  environmentId,
+                  adapterType: type,
+                  leaseId: acquiredEnvironment.lease.id,
+                },
+                "Failed to release adapter environment test lease",
+              );
+            });
+          }
+        }
+      } finally {
+        // Unit D: always decrement the in-flight counter regardless of outcome.
+        const n = (inFlightProbeCounts.get(companyId) ?? 1) - 1;
+        if (n <= 0) {
+          inFlightProbeCounts.delete(companyId);
+        } else {
+          inFlightProbeCounts.set(companyId, n);
         }
       }
     },
@@ -940,7 +1064,9 @@ export function agentRoutes(db: Db) {
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertAdapterConfigConstraints(
+    // Unconditional call — function self-dispatches by adapterType and returns []
+    // cheaply for non-constraint types; create always sets adapterConfig.
+    const adapterWarnings = await assertAdapterConfigConstraints(
       companyId,
       hireInput.adapterType,
       normalizedAdapterConfig,
@@ -1066,7 +1192,7 @@ export function agentRoutes(db: Db) {
       });
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(201).json({ agent, approval, ...(adapterWarnings.length ? { warnings: adapterWarnings } : {}) });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -1088,7 +1214,7 @@ export function agentRoutes(db: Db) {
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertAdapterConfigConstraints(
+    const adapterWarnings = await assertAdapterConfigConstraints(
       companyId,
       req.body.adapterType,
       normalizedAdapterConfig,
@@ -1136,7 +1262,7 @@ export function agentRoutes(db: Db) {
       });
     }
 
-    res.status(201).json(agent);
+    res.status(201).json({ ...agent, ...(adapterWarnings.length ? { warnings: adapterWarnings } : {}) });
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -1323,7 +1449,27 @@ export function agentRoutes(db: Db) {
     const touchesAdapterConfiguration =
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
+    let adapterWarnings: string[] = [];
+    // Codex P2: a model-only PATCH carries no adapterType in the body, so the
+    // schema's refineAdapterModel early-returns; and the ADAPTER_CONSTRAINT_TYPES
+    // path below only covers four types. So an unsafe model on another model-aware
+    // adapter (cursor/grok_local/pi_local — all spawn `--model`) would persist and
+    // fail at runtime. Hard-block a shell-unsafe EFFECTIVE model for EVERY
+    // model-aware adapter, using the SAME rule (isShellSafeModelId) the schema
+    // applies, so the route and schema can never diverge.
+    if (touchesAdapterConfiguration && requestedAdapterType != null && MODEL_AWARE_ADAPTER_TYPES.has(requestedAdapterType)) {
+      const effectiveModel = asNonEmptyString(
+        (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+          ? asRecord(patchData.adapterConfig)
+          : asRecord(existing.adapterConfig)
+        )?.model,
+      );
+      if (effectiveModel && !isShellSafeModelId(effectiveModel)) {
+        res.status(422).json({ error: `Unsafe model identifier: ${effectiveModel}` });
+        return;
+      }
+    }
+    if (touchesAdapterConfiguration && requestedAdapterType != null && ADAPTER_CONSTRAINT_TYPES.has(requestedAdapterType)) {
       const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : (asRecord(existing.adapterConfig) ?? {});
@@ -1332,7 +1478,20 @@ export function agentRoutes(db: Db) {
         rawEffectiveAdapterConfig,
         { strictMode: strictSecretsMode },
       );
-      await assertAdapterConfigConstraints(
+      // Codex finding ②: the schema's cross-family refinement can't see the EFFECTIVE
+      // model on an adapter-only PATCH (no model in the body) or a model-only PATCH
+      // (no adapterType in the body). Hard-block a persisted-model/new-adapter mismatch
+      // here so we never persist e.g. claude_local + a gpt model. (opencode_local is
+      // exempt — adapterModelFamilyMismatch returns null for it.)
+      const familyMismatch = adapterModelFamilyMismatch(
+        requestedAdapterType,
+        asNonEmptyString(effectiveAdapterConfig.model) ?? undefined,
+      );
+      if (familyMismatch) {
+        res.status(422).json({ error: familyMismatch });
+        return;
+      }
+      adapterWarnings = await assertAdapterConfigConstraints(
         existing.companyId,
         requestedAdapterType,
         effectiveAdapterConfig,
@@ -1380,7 +1539,7 @@ export function agentRoutes(db: Db) {
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json({ ...agent, ...(adapterWarnings.length ? { warnings: adapterWarnings } : {}) });
   });
 
   router.post("/agents/:id/pause", async (req, res) => {

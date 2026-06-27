@@ -263,6 +263,42 @@ export async function ensureCommandResolvable(command: string, cwd: string, env:
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+/**
+ * Build a child-process environment from the parent env + an overlay, with an
+ * opt-in strip of inherited keys. A key in `unsetEnvKeys` is removed from the
+ * result ONLY if the overlay did not set it — so an agent's own value (even an
+ * explicit empty string) survives while an ambient (server-process) value is
+ * dropped. Used to keep the AoA server's OPENAI_API_KEY out of agent runs
+ * (codex opts in); default behavior (no `unsetEnvKeys`) is unchanged.
+ */
+export function mergeChildEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  overlayEnv: Record<string, string>,
+  unsetEnvKeys?: string[],
+): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...parentEnv, ...overlayEnv };
+  // Windows env var names are case-insensitive: deleting only the exact-cased
+  // `OPENAI_API_KEY` would leave a differently-cased ambient value (e.g.
+  // `OpenAI_API_KEY`) in place, so the codex child still inherits the server key
+  // and the api-key auth/billing leak this strip prevents returns (Codex P2).
+  // Match case-insensitively on Windows, exact elsewhere (POSIX env IS
+  // case-sensitive — don't drop a legitimately distinct var there).
+  const caseInsensitive = process.platform === "win32";
+  const sameKey = (a: string, b: string) =>
+    caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+  for (const key of unsetEnvKeys ?? []) {
+    // The exact key(s) the overlay set itself survive (an agent's own key — even
+    // an explicit empty string — wins). Any OTHER matching-cased key is an
+    // ambient (server-process) value and is dropped. Deleting the differently-
+    // cased ambient key matters on Windows, where it is the SAME variable.
+    const overlayKeys = new Set(Object.keys(overlayEnv).filter((k) => sameKey(k, key)));
+    for (const mergedKey of Object.keys(merged)) {
+      if (sameKey(mergedKey, key) && !overlayKeys.has(mergedKey)) delete merged[mergedKey];
+    }
+  }
+  return merged;
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -282,12 +318,14 @@ export async function runChildProcess(
      */
     onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
     shell?: boolean;
+    /** Keys to strip from the inherited parent env (unless `env` set them). */
+    unsetEnvKeys?: string[];
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,

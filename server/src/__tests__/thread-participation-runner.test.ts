@@ -43,13 +43,16 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
+// Use vi.hoisted so the error spy is accessible as a stable module-level handle,
+// matching the mockRunAoaAgent / mockResolveCrewRole pattern in this file.
+const { mockLogError } = vi.hoisted(() => ({ mockLogError: vi.fn() }));
 vi.mock("../middleware/logger.js", () => ({
   logger: {
     child: vi.fn(() => ({
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
-      error: vi.fn(),
+      error: mockLogError,
     })),
   },
 }));
@@ -149,6 +152,7 @@ describe("makeThreadParticipationRunner", () => {
     vi.clearAllMocks();
     mockRunAoaAgent.mockReset();
     mockResolveCrewRole.mockReset();
+    mockLogError.mockReset();
   });
 
   it("1: calls runAoaAgent with thread.participation payload and returns \"\" (agent self-posts)", async () => {
@@ -257,10 +261,12 @@ describe("makeThreadParticipationRunner", () => {
     expect(reply).toBe("");
   });
 
-  it("6: returns \"\" even when the underlying run fails (the agent owns its own posting)", async () => {
-    // Whatever the run status, the runner returns "" — requestParticipation must
-    // not synthesize an entry. A failed run that posted nothing is fine; a stray
-    // empty entry would be worse (it pollutes the chat).
+  it("6: returns \"\" when the underlying run fails (Unit E: now logs error, still preserves B1 no-double-post)", async () => {
+    // A failed run must still return "" — requestParticipation must not
+    // synthesize an entry attributed to the agent (that would misattribute
+    // the error text to the agent). Unit E (Phase 1) adds a log.error call
+    // so the failure is no longer silently swallowed / mislabeled as a
+    // "self-posted via MCP" debug message.
     mockRunAoaAgent.mockResolvedValue({ status: "failed", errorMessage: "cli exited 1" });
     mockResolveCrewRole.mockResolvedValue("scout");
 
@@ -272,7 +278,11 @@ describe("makeThreadParticipationRunner", () => {
     const runner = makeThreadParticipationRunner(db as any);
     const reply = await runner({ threadId: "thread-fail", agentId: "agent-scout-f", prompt: "go" });
 
+    // B1 contract preserved: "" → no double-post.
     expect(reply).toBe("");
+    // Unit E contract: the failed run is SURFACED — not silently swallowed.
+    // A future refactor that re-swallows the error will break this assertion.
+    expect(mockLogError).toHaveBeenCalledTimes(1);
   });
 
   it("7: throws when a successful run produced NO post action and posted no entry", async () => {

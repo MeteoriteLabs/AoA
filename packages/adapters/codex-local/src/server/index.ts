@@ -4,7 +4,7 @@ export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 export { writeCodexMcpConfigToml } from "./codex-config-toml.js";
 export type { CodexMcpBridgeSpec } from "./codex-config-toml.js";
-export { ensureCodexAuthInHome, readSharedCodexModel } from "./codex-home.js";
+export { ensureCodexAuthInHome, readSharedCodexModel, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import type { AdapterSessionCodec } from "@armyofagents/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {

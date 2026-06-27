@@ -3,11 +3,34 @@ import {
   createRuntimeProviderKeySchema,
   createSecretBindingSchema,
   createSecretProviderConfigSchema,
+  readEnvBindingValue,
   remoteSecretImportCommitSchema,
   remoteSecretImportPreviewSchema,
   secretProviderConfigPayloadSchema,
   updateRuntimeProviderKeySchema,
 } from "./secret.js";
+
+describe("readEnvBindingValue (binding-aware presence)", () => {
+  it("returns a non-blank raw string", () => {
+    expect(readEnvBindingValue("sk-x")).toBe("sk-x");
+  });
+  it("returns the value of a non-blank plain binding", () => {
+    expect(readEnvBindingValue({ type: "plain", value: "sk-x" })).toBe("sk-x");
+  });
+  it("returns the secretId of a secret_ref binding (presence marker)", () => {
+    expect(readEnvBindingValue({ type: "secret_ref", secretId: "abc", version: "latest" })).toBe("abc");
+  });
+  it("returns null for blank / whitespace / missing values", () => {
+    expect(readEnvBindingValue("")).toBeNull();
+    expect(readEnvBindingValue("   ")).toBeNull();
+    expect(readEnvBindingValue({ type: "plain", value: "" })).toBeNull();
+    expect(readEnvBindingValue({ type: "plain", value: "  " })).toBeNull();
+    expect(readEnvBindingValue({ type: "secret_ref", secretId: "" })).toBeNull();
+    expect(readEnvBindingValue(undefined)).toBeNull();
+    expect(readEnvBindingValue(null)).toBeNull();
+    expect(readEnvBindingValue({})).toBeNull();
+  });
+});
 
 describe("secret validators", () => {
   it("accepts an AWS provider config with AoA defaults", () => {

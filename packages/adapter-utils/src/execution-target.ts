@@ -97,6 +97,8 @@ export interface AdapterTargetProcessOptions {
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
+  /** Keys to strip from the inherited parent env at spawn (unless `env` set them). */
+  unsetEnvKeys?: string[];
 }
 
 type ChildProcessRunner = typeof runChildProcess;
@@ -133,6 +135,7 @@ export async function runLocalTargetProcess(
     graceSec: opts.graceSec,
     onLog: opts.onLog,
     onSpawn: opts.onSpawn,
+    ...(opts.unsetEnvKeys ? { unsetEnvKeys: opts.unsetEnvKeys } : {}),
   });
 }
 

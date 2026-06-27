@@ -47,7 +47,13 @@ export type OrgNode = UnifiedOrgNode;
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
+  /** Soft model-correction warnings from the server (e.g. an incompatible codex
+   *  model resolved to gpt-5.5). Surfaced to the user at create time. */
+  warnings?: string[];
 }
+
+/** Agent returned from create/update endpoints — may include soft warnings (e.g. model corrections). */
+export type AgentSaveResult = Agent & { warnings?: string[] };
 
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
@@ -109,11 +115,11 @@ export const agentsApi = {
   rollbackConfigRevision: (id: string, revisionId: string, companyId?: string) =>
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
-    api.post<Agent>(`/companies/${companyId}/agents`, data),
+    api.post<AgentSaveResult>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
-    api.patch<Agent>(agentPath(id, companyId), data),
+    api.patch<AgentSaveResult>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: { canCreateAgents: boolean }, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId, "/permissions"), data),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),

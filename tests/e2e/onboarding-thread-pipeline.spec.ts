@@ -88,7 +88,7 @@ test.describe("Onboarding → first thread → entry", () => {
       page.locator("h3", { hasText: "Choose your Crew" }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByTestId("crew-provider").selectOption({ value: "openai" });
-    await page.getByTestId("crew-model").fill("gpt-5.3-codex");
+    await page.getByTestId("crew-model").fill("gpt-5.5");
     await page.getByTestId("step4-next").click();
 
     // ── Wait for the company to land — Step 5 heading is the signal ──

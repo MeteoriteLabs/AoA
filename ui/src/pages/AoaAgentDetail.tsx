@@ -15,6 +15,7 @@ import { AoaTriggersTab } from "../components/agent-detail/AoaTriggersTab";
 import { AoaRunsPanel } from "../components/agent-detail/AoaRunsPanel";
 import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentSaveWarnings } from "../components/AgentSaveWarnings";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
@@ -495,19 +496,22 @@ function AoaConfigurePage({
     enabled: Boolean(companyId),
   });
 
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: (data) => {
+    onSuccess: (result) => {
       // Cache the saved row (incl. fresh updatedAt) synchronously so a quick
       // repeat save uses the up-to-date optimistic-concurrency token, not the
       // stale pre-save one (which would 409 the user against their own save).
       // The invalidate still refetches for eventual consistency. (Decision #104)
-      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
-      if (agent.urlKey) queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), result);
+      if (agent.urlKey) queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), result);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       if (agent.urlKey) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
+      setSaveWarnings(result.warnings ?? []);
     },
     onError: (err) => {
       // Optimistic-concurrency conflict: someone else changed the agent. Refetch
@@ -535,7 +539,7 @@ function AoaConfigurePage({
       <AgentConfigForm
         mode="edit"
         agent={agent}
-        onSave={(patch) => updateAgent.mutate(patch)}
+        onSave={(patch) => { setSaveWarnings([]); updateAgent.mutate(patch); }}
         isSaving={updateAgent.isPending}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
@@ -544,6 +548,8 @@ function AoaConfigurePage({
         hideInlineSave
         sectionLayout="cards"
       />
+
+      <AgentSaveWarnings warnings={saveWarnings} />
     </div>
   );
 }

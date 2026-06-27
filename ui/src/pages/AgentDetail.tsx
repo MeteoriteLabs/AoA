@@ -17,6 +17,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentSaveWarnings } from "../components/AgentSaveWarnings";
 import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { roleLabels } from "../components/agent-config-primitives";
 // Tabs and PageTabBar are now used via AgentDetailCore
@@ -1329,19 +1330,22 @@ function ConfigurationTab({
     enabled: Boolean(companyId),
   });
 
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onSuccess: (data) => {
+    onSuccess: (result) => {
       // Write the saved row (incl. its fresh updatedAt) into the cache
       // synchronously so a quick repeat save uses the up-to-date
       // optimistic-concurrency token, not the stale pre-save one (which would
       // 409 the user against their own just-completed save). The invalidate
       // below still refetches for eventual consistency. (Decision #104)
-      queryClient.setQueryData(queryKeys.agents.detail(agent.id), data);
-      queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), data);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.id), result);
+      queryClient.setQueryData(queryKeys.agents.detail(agent.urlKey), result);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      setSaveWarnings(result.warnings ?? []);
     },
     onError: (err) => {
       // Optimistic-concurrency conflict: someone else changed the agent. Refetch
@@ -1363,20 +1367,24 @@ function ConfigurationTab({
   }, [onSavingChange, updateAgent.isPending]);
 
   return (
-    <AgentConfigForm
-      mode="edit"
-      agent={agent}
-      onSave={(patch) => updateAgent.mutate(patch)}
-      isSaving={updateAgent.isPending}
-      adapterModels={adapterModels}
-      onDirtyChange={onDirtyChange}
-      onSaveActionChange={onSaveActionChange}
-      onCancelActionChange={onCancelActionChange}
-      hideInlineSave
-      sectionLayout="cards"
-      activeSection={activeSection}
-      onAdapterTypeChange={onAdapterTypeChange}
-    />
+    <div className="space-y-6">
+      <AgentConfigForm
+        mode="edit"
+        agent={agent}
+        onSave={(patch) => { setSaveWarnings([]); updateAgent.mutate(patch); }}
+        isSaving={updateAgent.isPending}
+        adapterModels={adapterModels}
+        onDirtyChange={onDirtyChange}
+        onSaveActionChange={onSaveActionChange}
+        onCancelActionChange={onCancelActionChange}
+        hideInlineSave
+        sectionLayout="cards"
+        activeSection={activeSection}
+        onAdapterTypeChange={onAdapterTypeChange}
+      />
+
+      <AgentSaveWarnings warnings={saveWarnings} />
+    </div>
   );
 }
 
