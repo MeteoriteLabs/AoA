@@ -671,30 +671,26 @@ export function extractionService(db: Db) {
 //
 // Implementation notes:
 //   • These exports REUSE every internal helper above — same prompt template,
-//     same departments lookup, same JSON parser, same provider fallback chain.
-//     There is no second extraction prompt to maintain. The only divergence
-//     from the legacy `extractFromDiscussionEntry` path is that NOTHING is
-//     written to the database here: the caller (tool wrapper) decides what to
-//     persist (e.g. `submit_extracted_items`-style approval queue inserts).
+//     same departments lookup, same JSON parser. There is no second extraction
+//     prompt to maintain. The only divergence from `extractFromDiscussionEntry`
+//     is that NOTHING is written to the database here: the caller (tool wrapper)
+//     decides what to persist (e.g. `submit_extracted_items`-style inserts).
 //   • `extractDecisions`, `extractInsights`, `extractReferences` are thin
 //     filters over `extractMemoryCandidates` — DRY win. If a future tool
 //     needs `extractTasks` or `extractPreferences` add another one-liner.
-//   • The `ExtractionLlm` interface is intentionally narrower than the full
-//     `LLMProvider` so tool wrappers and tests can supply a minimal stub. The
-//     real provider used by the autonomous flow (Anthropic/OpenAI/Gemini) is
-//     selected via `resolveAvailableProvider` when `llm === undefined`, so a
-//     caller that doesn't want to inject one can pass `null`.
+//   • The `ExtractionLlm` interface is a test/eval-only injection seam. In
+//     production callers pass `null` and extraction runs through the keyless
+//     CLI (`extractViaCli`). No hosted provider key is ever consulted.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal LLM surface the tool-callable extractors depend on. The autonomous
- * Scribe path uses `internal-agent/providers` directly; the tool path lets
- * callers pass any object with a single `generate(prompt, content)` method —
- * useful for unit tests and for future thin wrappers around different SDKs.
+ * Minimal LLM surface the tool-callable extractors depend on — a single
+ * `generate(prompt, content)` method. This is a TEST/EVAL-ONLY injection seam
+ * (e.g. the memory-keeper eval injects a real OpenAI client for deterministic
+ * quality measurement).
  *
- * Pass `null` to fall back to the same provider resolution used by the
- * legacy autonomous path (`resolveAvailableProvider` → first provider with a
- * usable API key — DB secret or env var).
+ * In production callers pass `null`: extraction then runs through the keyless
+ * CLI (`extractViaCli`). No hosted provider key is consulted.
  */
 export interface ExtractionLlm {
   /**
@@ -758,10 +754,10 @@ function toMemoryCandidate(item: ExtractedItem): MemoryCandidate {
  * entry are considered (cursor-based incremental extraction). When omitted
  * the entire thread's entries are used as input.
  *
- * If `llm` is `null` the function falls back to `resolveAvailableProvider`
- * (same provider chain used by the autonomous Scribe path). If `llm` is
- * supplied it is called with the prompt + concatenated entry content; the
- * raw response is fed through `parseExtractedItems`.
+ * If `llm` is `null` (production) the function runs the keyless CLI extractor
+ * (`extractViaCli`), which returns already-parsed items. If `llm` is supplied
+ * (tests/evals only) it is called with the prompt + concatenated entry content
+ * and the raw response is fed through `parseExtractedItems`.
  *
  * Errors are surfaced (the function rejects) so the tool wrapper can return
  * a structured `{ ok: false }` to the calling agent. An empty thread returns
@@ -858,14 +854,20 @@ export async function extractMemoryCandidates(
     deptList,
   );
 
-  // ── 4. Run the LLM. Caller-supplied `llm` takes precedence; otherwise
-  //       resolve a provider exactly the way the autonomous path does.
+  // ── 4. Run extraction. A caller-supplied `llm` (tests/evals only) takes
+  //       precedence; otherwise extraction runs through the keyless CLI.
+  //       extractViaCli already returns parsed ExtractedItem[], so there is
+  //       no parseExtractedItems step on the CLI branch.
   let items: ExtractedItem[];
   if (llm) {
     const raw = await llm.generate(systemPrompt, userContent);
     items = parseExtractedItems(raw);
   } else {
-    items = await callLLM(systemPrompt, userContent, db, params.companyId);
+    const { cliTool, codexModel } = await resolveCliExtractionContext(
+      db,
+      params.companyId,
+    );
+    items = await extractViaCli(cliTool, systemPrompt, userContent, { codexModel });
   }
 
   log.info({ candidateCount: items.length, entries: entries.length }, "extraction complete");

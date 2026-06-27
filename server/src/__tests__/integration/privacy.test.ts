@@ -24,13 +24,12 @@
  *      Returns MEMORY_EXTRACTION_DISABLED.
  *
  *   4. Plan: "extractMemoryCandidates skips threads with
- *      allowMemoryExtraction=false". Reality: GAP — extractMemoryCandidates
- *      does NOT read discussions.allowMemoryExtraction at all (see
- *      server/src/services/extraction.ts:800). Neither does the
- *      extract_memory_candidates tool wrapper, the Memory Keeper sweep,
- *      nor the autonomous Scribe drain. The flag is only honored at the
- *      proposal boundary (one level downstream). We assert CURRENT
- *      behavior so the gap is visible.
+ *      allowMemoryExtraction=false". Reality: CLOSED (G3 follow-up) —
+ *      extractMemoryCandidates now reads discussions.allowMemoryExtraction as
+ *      its first select and short-circuits to {candidates:[]} when false (the
+ *      privacy gate). The describe block at the bottom of this file pins that
+ *      behavior. Note: extraction is now CLI-only (keyless), so these tests
+ *      feed empty entry sets — the keyless CLI is never spawned in a unit test.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -354,7 +353,7 @@ describe("integration: extractMemoryCandidates respects allowMemoryExtraction (G
     async () => {
       const { db } = makeExtractionDb({
         threadAllowExtraction: true,
-        entryRows: [], // no entries, so the LLM is still never invoked
+        entryRows: [], // no entries, so the keyless CLI is still never invoked
       });
 
       const result = await extractMemoryCandidates(db as any, null, {
