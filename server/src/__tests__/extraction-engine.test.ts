@@ -20,17 +20,15 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({
   detectCliTool: (...args: unknown[]) => mockDetectCliTool(...args),
 }));
 
-const mockResolveAvailableProvider = vi.fn();
-vi.mock("../services/internal-agent/providers/index.js", () => ({
-  resolveAvailableProvider: (...args: unknown[]) => mockResolveAvailableProvider(...args),
-}));
-
 import {
   resolveExtractionEngine,
   resolveCompanyCliTool,
   probeExtractionCli,
   DEFAULT_EXTRACTION_CLI_TOOL,
 } from "../services/extraction-engine.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve as resolvePath } from "node:path";
 
 /** Minimal db stub: select(...).from(...).where(...) resolves to `rows`. */
 function makeDb(rows: unknown[]) {
@@ -49,50 +47,23 @@ describe("resolveExtractionEngine", () => {
     vi.clearAllMocks();
   });
 
-  it("returns 'cli' when a CLI is available (injected)", async () => {
+  it("returns 'cli' when a supported CLI is available (injected)", async () => {
     const engine = await resolveExtractionEngine(makeDb([]), "c1", {
       cliAvailable: true,
     });
     expect(engine).toBe("cli");
-    // CLI won — the provider resolver must never be consulted.
-    expect(mockResolveAvailableProvider).not.toHaveBeenCalled();
   });
 
-  it("returns 'api' when no CLI but a hosted key exists (injected)", async () => {
-    const engine = await resolveExtractionEngine(makeDb([]), "c1", {
-      cliAvailable: false,
-      apiKey: true,
-    });
-    expect(engine).toBe("api");
-  });
-
-  it("throws /no extraction engine/i when neither CLI nor key exists (injected)", async () => {
+  it("THROWS when no CLI is available (no api fallback, key never consulted)", async () => {
     await expect(
-      resolveExtractionEngine(makeDb([]), "c1", {
-        cliAvailable: false,
-        apiKey: false,
-      }),
-    ).rejects.toThrow(/no extraction engine/i);
+      resolveExtractionEngine(makeDb([]), "c1", { cliAvailable: false }),
+    ).rejects.toThrow(/install a cli|claude/i);
   });
 
-  it("falls back to the real provider resolver when apiKey not injected", async () => {
-    mockResolveAvailableProvider.mockResolvedValueOnce({
-      provider: "anthropic",
-      apiKey: "k",
-      model: "claude",
-    });
-    const engine = await resolveExtractionEngine(makeDb([]), "c1", {
-      cliAvailable: false,
-    });
-    expect(engine).toBe("api");
-    expect(mockResolveAvailableProvider).toHaveBeenCalledTimes(1);
-  });
-
-  it("throws when CLI not injected (probe fails) and provider resolver rejects", async () => {
+  it("throws when CLI not injected and the real probe finds no binary", async () => {
     mockDetectCliTool.mockResolvedValueOnce({ available: false, error: "nope" });
-    mockResolveAvailableProvider.mockRejectedValueOnce(new Error("no key"));
-    await expect(resolveExtractionEngine(makeDb([]), "c1")).rejects.toThrow(
-      /no extraction engine/i,
+    await expect(resolveExtractionEngine(makeDb([{ cliTool: "claude_cli" }]), "c1")).rejects.toThrow(
+      /install a cli|claude/i,
     );
   });
 
@@ -101,7 +72,15 @@ describe("resolveExtractionEngine", () => {
     const engine = await resolveExtractionEngine(makeDb([{ cliTool: "claude_cli" }]), "c1");
     expect(engine).toBe("cli");
     expect(mockDetectCliTool).toHaveBeenCalledWith("claude_cli");
-    expect(mockResolveAvailableProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not import or call resolveAvailableProvider", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(
+      resolvePath(here, "../services/extraction-engine.ts"),
+      "utf8",
+    );
+    expect(src).not.toMatch(/resolveAvailableProvider/);
   });
 });
 

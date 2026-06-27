@@ -1,33 +1,28 @@
 /**
  * Extraction ENGINE ROUTER.
  *
- * Decides — BEFORE any hosted-key precheck — whether a discussion entry should
- * be extracted via a local CLI (`claude` / `codex`, keyless) or a hosted API
- * provider (`anthropic` / `openai`, key-gated).
+ * Decides whether a discussion entry can be extracted. Extraction is CLI-ONLY
+ * (keyless): a local CLI (`claude` / `codex`) on PATH and logged in. There is
+ * NO hosted-API extraction path — hosted provider keys are consumed only by
+ * embeddings (Decision #104, amended 2026-06-27). If no supported CLI is
+ * available the router throws; it NEVER consults a provider key.
  *
- * This is the P0 that makes keyless extraction actually run. The legacy
- * `extractFromDiscussionEntry` path used to `resolveAvailableProvider` FIRST and
- * mark the entry `skipped` when no hosted key resolved — which meant a keyless
- * CLI path could never fire. The fix: choose the engine first; the CLI engine
- * bypasses provider resolution entirely.
+ * AUTO resolution:
+ *   1. If a supported CLI is available (binary on PATH, probed via
+ *      `detectCliTool`) → "cli".
+ *   2. Else throw (no extraction engine — install + log in a CLI).
  *
- * AUTO resolution order:
- *   1. If a CLI is available (binary on PATH, probed via `detectCliTool`) → "cli".
- *   2. Else if a hosted provider key is configured → "api".
- *   3. Else throw (no extraction engine at all).
- *
- * The `opts` injection points (`cliAvailable`, `apiKey`) let unit tests drive
- * the decision without real binaries or keys.
+ * The `opts.cliAvailable` injection point lets unit tests drive the decision
+ * without real binaries.
  */
 
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig } from "@armyofagents/db";
 import { detectCliTool } from "./internal-agent/cli-mode.js";
-import { resolveAvailableProvider } from "./internal-agent/providers/index.js";
 
-/** Engines the router can select. */
-export type ExtractionEngine = "cli" | "api";
+/** Engines the router can select. Extraction is CLI-only. */
+export type ExtractionEngine = "cli";
 
 /** Default CLI tool when a company has no configured Commander CLI tool. */
 export const DEFAULT_EXTRACTION_CLI_TOOL = "claude_cli";
@@ -38,9 +33,9 @@ export const DEFAULT_EXTRACTION_CLI_TOOL = "claude_cli";
  * recognizes `opencode` (and future tools) for Commander CHAT, but
  * `extractViaCli` has no extractor for them. Without this allow-list an
  * opencode-configured company would resolve to "cli", then every extraction
- * would throw "Unsupported CLI tool" AND the hosted-API fallback would be
- * skipped (engine already committed to "cli"). Keep this in sync with
- * `extraction-cli.ts`'s CLI_BINARY_MAP.
+ * would throw "Unsupported CLI tool". Treating it as unavailable instead makes
+ * the router throw a clear "install a supported CLI" error. Keep this in sync
+ * with `extraction-cli.ts`'s CLI_BINARY_MAP.
  */
 export const EXTRACTION_SUPPORTED_CLI_TOOLS = new Set([
   "claude_cli",
@@ -98,32 +93,26 @@ export interface ResolveExtractionEngineOptions {
    * uses this value verbatim instead of calling `probeExtractionCli`.
    */
   cliAvailable?: boolean;
-  /**
-   * Inject hosted-key availability (skips the real provider resolution). When
-   * set, the router uses this value verbatim instead of calling
-   * `resolveAvailableProvider`.
-   */
-  apiKey?: boolean;
 }
 
 /**
- * AUTO-resolve the extraction engine for a company.
+ * AUTO-resolve the extraction engine for a company. Extraction is CLI-only.
  *
  *   1. Determine the company's configured CLI tool (Commander hint, else default).
- *   2. If a CLI is available → "cli".
- *   3. Else if a hosted provider key is configured → "api".
- *   4. Else throw (message matches /no extraction engine/i) guiding the user to
- *      install a CLI + `claude login`, or set a key in Settings → LLM Providers.
+ *   2. If a supported CLI is available → "cli".
+ *   3. Else throw — no extraction engine. The message guides the user to install
+ *      a CLI (e.g. the Claude Code CLI) and run its login flow. A hosted
+ *      provider key is NEVER consulted (keys are embeddings-only).
  *
- * Test injection: `opts.cliAvailable` / `opts.apiKey` short-circuit the real
- * probes so unit tests can drive the decision without binaries or keys.
+ * Test injection: `opts.cliAvailable` short-circuits the real probe so unit
+ * tests can drive the decision without binaries.
  */
 export async function resolveExtractionEngine(
   db: Db,
   companyId: string,
   opts: ResolveExtractionEngineOptions = {},
 ): Promise<ExtractionEngine> {
-  // 1. CLI availability — injected for tests, else a real PATH probe.
+  // CLI availability — injected for tests, else a real PATH probe.
   let cliAvailable: boolean;
   if (opts.cliAvailable !== undefined) {
     cliAvailable = opts.cliAvailable;
@@ -131,9 +120,9 @@ export async function resolveExtractionEngine(
     const cliTool = await resolveCompanyCliTool(db, companyId);
     // Only probe CLIs that extraction can actually drive. An unsupported
     // extraction CLI (e.g. opencode, which detectCliTool recognizes for chat)
-    // must NOT report available — otherwise we'd commit to "cli" and skip the
-    // hosted-API fallback, then fail every extraction. Treat it as unavailable
-    // so resolution falls through to "api" (or the no-engine guidance).
+    // must NOT report available — otherwise we'd commit to "cli" then fail
+    // every extraction with "Unsupported CLI tool". Treat it as unavailable
+    // so resolution throws the clear "install a supported CLI" guidance.
     if (!EXTRACTION_SUPPORTED_CLI_TOOLS.has(cliTool)) {
       cliAvailable = false;
     } else {
@@ -146,27 +135,9 @@ export async function resolveExtractionEngine(
     return "cli";
   }
 
-  // 2. Hosted provider key — injected for tests, else a real resolution.
-  let apiKeyAvailable: boolean;
-  if (opts.apiKey !== undefined) {
-    apiKeyAvailable = opts.apiKey;
-  } else {
-    try {
-      await resolveAvailableProvider(db, companyId);
-      apiKeyAvailable = true;
-    } catch {
-      apiKeyAvailable = false;
-    }
-  }
-
-  if (apiKeyAvailable) {
-    return "api";
-  }
-
-  // 3. Neither — there is no extraction engine at all.
+  // No CLI — there is no extraction engine. Hosted keys are NOT a fallback.
   throw new Error(
     "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) " +
-      "and run its login flow (`claude login`), or set a provider key in " +
-      "Settings → LLM Providers.",
+      "and run its login flow (`claude login`).",
   );
 }
