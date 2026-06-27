@@ -31,7 +31,10 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 // NOTE: intentionally duplicated from server/src/services/internal-agent/codex-model.ts
 // (SAFE_MODEL_RE) — the shared package cannot import from server. Keep the two in sync:
 // if you change this, change codex-model.ts too (and vice versa).
-const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+// `:` is allowed as a shell-safe tag separator: OpenCode/Pi discover ollama-style
+// tagged ids verbatim (e.g. `ollama/llama3.1:8b`), and `:` is not a shell
+// metacharacter mid-argument — so it must pass this gate, not be rejected (Codex P2).
+const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/;
 
 // Shell-safety consistent with the server's isShellSafeModel (Unit B): a model
 // may be a provider/model slash id (opencode); validate EACH segment (no

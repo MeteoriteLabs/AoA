@@ -89,11 +89,16 @@ describe("isShellSafeModelId (exported for the route's model-only PATCH gate —
     expect(isShellSafeModelId("openai/gpt-5.2-codex")).toBe(true);
     expect(isShellSafeModelId("openrouter/anthropic/claude-sonnet-4")).toBe(true);
   });
+  it("accepts ollama-style tagged ids with a `:` separator (OpenCode/Pi discovery) — Codex P2", () => {
+    expect(isShellSafeModelId("ollama/llama3.1:8b")).toBe(true);
+    expect(isShellSafeModelId("ollama/qwen2.5-coder:32b")).toBe(true);
+  });
   it("rejects shell-unsafe model strings", () => {
     expect(isShellSafeModelId("gpt-5.5; rm -rf /")).toBe(false);
     expect(isShellSafeModelId("gpt-5.5 && calc")).toBe(false);
     expect(isShellSafeModelId("a/b`whoami`")).toBe(false);
     expect(isShellSafeModelId("a//b")).toBe(false); // empty segment
+    expect(isShellSafeModelId("a:;rm")).toBe(false); // `:` ok, but `;` still rejected
   });
 });
 

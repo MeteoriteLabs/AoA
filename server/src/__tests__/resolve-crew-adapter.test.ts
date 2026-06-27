@@ -151,12 +151,12 @@ describe("shouldRewriteCrewAdapter — provider-switch migration", () => {
 // executable/args — while neutral fields (cwd/env/instructions*) are preserved.
 describe("mergeCrewAdapterConfig", () => {
   const existing = {
-    model: "anthropic/claude-sonnet-4-5",
-    command: "/opt/opencode",        // provider-specific — must NOT survive a switch
+    model: "claude-sonnet-4-5",
+    command: "/opt/claude",          // provider-specific — must NOT survive a switch
     extraArgs: ["--print"],          // provider-specific
     dangerouslySkipPermissions: true, // claude-specific
     cwd: "/work",                    // neutral
-    env: { OPENAI_API_KEY: "sk-agent" }, // neutral (preserved)
+    env: { ANTHROPIC_API_KEY: "sk-ant", HTTP_PROXY: "http://proxy:8080" }, // provider-auth + neutral
     instructionsFilePath: "/i.md",   // neutral
   };
   const nextCodex = { model: "gpt-5.5", dangerouslyBypassApprovalsAndSandbox: true };
@@ -169,15 +169,31 @@ describe("mergeCrewAdapterConfig", () => {
     expect(merged.model).toBe("gpt-5.5"); // new adapter wins
     expect(merged.dangerouslyBypassApprovalsAndSandbox).toBe(true); // new adapter sets it
   });
-  it("provider SWITCH preserves neutral fields (cwd, env, instructions*)", () => {
+  it("provider SWITCH drops the OLD provider's auth env but keeps neutral env vars (Codex P2)", () => {
+    const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
+    const env = merged.env as Record<string, unknown>;
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined(); // old provider credential dropped
+    expect(env.HTTP_PROXY).toBe("http://proxy:8080"); // neutral var preserved
+  });
+  it("provider SWITCH drops a differently-cased provider-auth env key (case-insensitive)", () => {
+    const merged = mergeCrewAdapterConfig(
+      { model: "gpt-5.5", env: { OpenAI_API_Key: "sk-x", FOO: "bar" } },
+      { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true },
+      true,
+    );
+    const env = merged.env as Record<string, unknown>;
+    expect(env.OpenAI_API_Key).toBeUndefined();
+    expect(env.FOO).toBe("bar");
+  });
+  it("provider SWITCH preserves neutral fields (cwd, instructions*)", () => {
     const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
     expect(merged.cwd).toBe("/work");
-    expect(merged.env).toEqual({ OPENAI_API_KEY: "sk-agent" });
     expect(merged.instructionsFilePath).toBe("/i.md");
   });
   it("same-adapter backfill (isProviderSwitch=false) preserves ALL fields like mergeAdapterConfig", () => {
     const merged = mergeCrewAdapterConfig(existing, { model: "gpt-5.5" }, false);
     expect(merged).toEqual(mergeAdapterConfig(existing, { model: "gpt-5.5" }));
-    expect(merged.command).toBe("/opt/opencode"); // preserved on a same-CLI backfill
+    expect(merged.command).toBe("/opt/claude"); // preserved on a same-CLI backfill
+    expect((merged.env as Record<string, unknown>).ANTHROPIC_API_KEY).toBe("sk-ant"); // env untouched
   });
 });

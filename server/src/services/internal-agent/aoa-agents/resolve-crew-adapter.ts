@@ -242,6 +242,31 @@ const PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS = [
   "dangerouslySkipPermissions",
 ];
 
+// Provider-specific AUTH credentials in adapterConfig.env. On a provider SWITCH
+// the OLD provider's key must NOT reach the new CLI (e.g. a codex row's
+// OPENAI_API_KEY handed to the claude CLI) — the UI treats these as
+// provider-specific auth bindings (Codex P2). Matched case-insensitively
+// (Windows env names are case-insensitive). Neutral env vars are preserved.
+const PROVIDER_AUTH_ENV_KEYS = [
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+];
+
+function stripProviderAuthEnv(env: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...env };
+  for (const envKey of Object.keys(out)) {
+    if (PROVIDER_AUTH_ENV_KEYS.some((k) => k.toLowerCase() === envKey.toLowerCase())) {
+      delete out[envKey];
+    }
+  }
+  return out;
+}
+
 /**
  * Build the adapter_config to persist when migrating a crew row to `next`.
  *
@@ -260,5 +285,9 @@ export function mergeCrewAdapterConfig(
   if (!isProviderSwitch) return mergeAdapterConfig(existing, next);
   const base: Record<string, unknown> = { ...(existing ?? {}) };
   for (const key of PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS) delete base[key];
+  // Scrub the OLD provider's auth credentials from env; keep neutral env vars.
+  if (base.env && typeof base.env === "object" && !Array.isArray(base.env)) {
+    base.env = stripProviderAuthEnv(base.env as Record<string, unknown>);
+  }
   return { ...base, ...next };
 }

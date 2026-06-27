@@ -24,8 +24,11 @@ export const COMMANDER_CODEX_REASONING_EFFORT = "high";
 // Shell-safe charset (spawn uses shell:true on Windows — REVIEW FIX C10/S5):
 // the resolved model is interpolated into argv, so reject anything that isn't
 // a plain model identifier. Full-string anchor (NOT a prefix test).
+// `:` is permitted as a shell-safe tag separator — OpenCode/Pi discover
+// ollama-style tagged ids (e.g. `ollama/llama3.1:8b`) and `:` is not a shell
+// metacharacter mid-argument (Codex P2).
 // Mirrored (intentionally duplicated) in packages/shared/src/validators/agent.ts — keep in sync.
-export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+export const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/;
 // OpenAI/Codex NAMING families: gpt-*, o<N>*, chatgpt*, AND codex-* (the latter
 // are API-key-only — see CODEX_INCOMPATIBLE_RE). This is the broad "is this an
 // OpenAI/Codex identifier" gate used by isOpenAiFamilyModel; ChatGPT-subscription
@@ -64,7 +67,7 @@ export function isOpenAiFamilyModel(model: string | null | undefined): boolean {
 
 /** True when `model` is non-empty and contains only shell-safe characters.
  * opencode uses a `provider/model` slash format; each segment is validated
- * individually (cap at 2 segments) against {@link SAFE_MODEL_RE}. */
+ * individually (NO segment-count cap) against {@link SAFE_MODEL_RE}. */
 export function isShellSafeModel(model: string | null | undefined): boolean {
   if (!model) return false;
   // opencode uses a provider/model slash id, possibly with a nested provider

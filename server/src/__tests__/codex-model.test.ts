@@ -15,6 +15,7 @@ describe("isShellSafeModel", () => {
     expect(isShellSafeModel("openai/gpt-5.2-codex")).toBe(true);
     expect(isShellSafeModel("openrouter/anthropic/claude-sonnet-4")).toBe(true); // 3 segments — was wrongly rejected
     expect(isShellSafeModel("  anthropic/claude-3.5-sonnet  ")).toBe(true); // trims
+    expect(isShellSafeModel("ollama/llama3.1:8b")).toBe(true); // `:` tag separator (Codex P2)
   });
   it("rejects shell-unsafe segments, empty segments, and empty input", () => {
     expect(isShellSafeModel("gpt-5.5; rm -rf /")).toBe(false);
