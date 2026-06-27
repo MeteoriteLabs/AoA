@@ -36,11 +36,12 @@ export function LayerTilesPanel({ companyId }: LayerTilesPanelProps) {
   const companyPrefix =
     (selectedCompany as { issuePrefix?: string } | null)?.issuePrefix ?? "";
 
-  const { data: items } = useQuery({
+  const { data: _listResponse } = useQuery({
     queryKey: queryKeys.memory.list(companyId),
     queryFn: () => memoryApi.list(companyId, {}),
     enabled: Boolean(companyId),
   });
+  const items = _listResponse?.items;
 
   const counts = useMemo(() => {
     const result: Record<LayerKey, { total: number; pending: number }> = {

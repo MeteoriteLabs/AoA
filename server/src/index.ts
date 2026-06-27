@@ -52,6 +52,9 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { resetStaleProcessing } from "./services/embeddings.js";
+import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
+import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
 import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
 import { initThreadEventListener } from "./services/thread-events.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
@@ -894,13 +897,85 @@ setInterval(() => {
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
 
-// Write-behind embedding queue worker (Task B1, Decision D2).
+// P1-2: Recover embedding_queue rows that were stuck in 'processing' by a
+// previous worker crash. Rows that have been 'processing' for >5 minutes are
+// reset to 'pending' so the next tick can pick them up. Best-effort — a
+// failure here must NOT block server startup.
+void resetStaleProcessing(db as any)
+  .then((res) => {
+    if (res.reset > 0) {
+      logger.info({ reset: res.reset }, "startup: recovered stale processing embedding rows");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "resetStaleProcessing on startup failed (non-fatal)"),
+  );
+
+// Idempotent backfill: stamp company_id onto pre-keyless embedding_queue rows
+// so the per-company key resolver (Task 10) can look up the right key.
+// Best-effort — a failure here must NOT block server startup.
+void backfillQueueCompanyIds(db as any)
+  .then((res) => {
+    if (res.updated > 0) {
+      logger.info({ updated: res.updated }, "embedding_queue company_id backfill complete");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "embedding_queue company_id backfill failed"),
+  );
+
+// Periodic reconciliation sweep (Task W4, keyless-except-embeddings).
+// Finds null-vector memory_items that were never enqueued (e.g. created before
+// the write-path hook was wired) and enqueues them. Belt-and-suspenders.
+// 10-minute cadence is frequent enough to catch stragglers without adding load.
+// Best-effort — a failure here must NOT block any other functionality.
+const RECONCILE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const reconcileTimer = setInterval(() => {
+  // P1-2: Reset any rows that got stuck in 'processing' since the last tick
+  // (e.g. from a worker crash). Run before reconcileNullVectors so recovered
+  // rows are immediately eligible for the upcoming enqueue sweep.
+  void resetStaleProcessing(db as any)
+    .then((res) => {
+      if (res.reset > 0) {
+        logger.info({ reset: res.reset }, "periodic sweep: recovered stale processing embedding rows");
+      }
+    })
+    .catch((err: unknown) =>
+      logger.warn({ err }, "resetStaleProcessing sweep failed (non-fatal)"),
+    );
+  void reconcileNullVectors(db as any)
+    .then((res) => {
+      if (res.enqueued > 0) {
+        logger.info({ enqueued: res.enqueued }, "reconcileNullVectors: enqueued missing embeddings");
+      }
+    })
+    .catch((err: unknown) =>
+      logger.warn({ err }, "reconcileNullVectors sweep failed (non-fatal)"),
+    );
+}, RECONCILE_INTERVAL_MS);
+process.once("SIGTERM", () => clearInterval(reconcileTimer));
+process.once("SIGINT", () => clearInterval(reconcileTimer));
+
+// Write-behind embedding queue worker (Task B1 + Task 10, Decision D2).
 // Drains rows from `embedding_queue` and UPDATEs the target row's vector
-// column. The worker tolerates a missing OPENAI_API_KEY (warns but stays
-// registered so any queued rows surface as auth errors via the normal
-// retry path). 2-second tick is fast enough to keep find-similar staleness
-// to a few seconds for typical traffic.
-const embeddingWorker = startEmbeddingWorker(db as any, { intervalMs: 2000 });
+// column. Per-company key resolution: each row's companyId is used to look
+// up the company's `llm:openai` Settings secret, falling back to the env
+// OPENAI_API_KEY. Rows with no resolvable key are left pending (not failed)
+// until a key is configured. 2-second tick is fast enough to keep
+// find-similar staleness to a few seconds for typical traffic.
+const embeddingWorker = startEmbeddingWorker(db as any, {
+  intervalMs: 2000,
+  resolveCompanyKey: async (companyId: string | null): Promise<string | null> => {
+    if (companyId) {
+      try {
+        return await getProviderApiKey(db as any, companyId, "openai");
+      } catch {
+        // No key in company_secrets — fall through to env fallback.
+      }
+    }
+    return process.env.OPENAI_API_KEY ?? null;
+  },
+});
 // Best-effort stop on SIGTERM/SIGINT — the shared shutdown handlers below
 // already exit the process, but this lets the in-flight tick log cleanly.
 process.once("SIGTERM", () => embeddingWorker.stop());

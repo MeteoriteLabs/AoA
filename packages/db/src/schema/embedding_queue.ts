@@ -34,11 +34,20 @@ export const embeddingQueue = pgTable(
     status: text("status").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     error: text("error"),
+    // Nullable — populated on new enqueues; backfilled for existing rows.
+    // Lets the worker resolve a per-company OpenAI key (Task 10).
+    companyId: uuid("company_id"),
+    // Nullable — null means eligible immediately. Set by the worker for
+    // exponential back-off retry scheduling (Task 11).
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     statusIdx: index("embedding_queue_status_idx").on(table.status, table.createdAt),
     targetIdx: index("embedding_queue_target_idx").on(table.targetTable, table.targetId),
+    // Compound index for the worker's pick-next-eligible query:
+    // WHERE status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= now())
+    pendingDueIdx: index("embedding_queue_pending_due_idx").on(table.status, table.nextRetryAt),
   }),
 );

@@ -24,11 +24,12 @@ export function ExtractsSidebar({ companyId, importJobId }: ExtractsSidebarProps
   const { selectedCompany } = useCompany();
   const companyPrefix = (selectedCompany as { issuePrefix?: string } | null)?.issuePrefix ?? "";
 
-  const { data, isLoading } = useQuery({
+  const { data: _listResponse, isLoading } = useQuery({
     queryKey: [...queryKeys.memory.list(companyId), { importJobId }],
     queryFn: () => memoryApi.list(companyId, {}),
     enabled: Boolean(companyId && importJobId),
   });
+  const data = _listResponse?.items;
 
   const extracts = ((data ?? []) as MemoryItem[]).filter(
     (it) => (it as MemoryItem & { importJobId?: string }).importJobId === importJobId,

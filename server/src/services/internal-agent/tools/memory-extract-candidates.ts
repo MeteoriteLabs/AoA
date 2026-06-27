@@ -7,13 +7,12 @@
 // without persisting — callers decide whether to submit_extracted_items or
 // propose_memory_from_thread.
 //
-// LLM resolution: prefers an injected `ctx.services.extraction?.llm` (used by
-// tests), otherwise falls back to the same `resolveAvailableProvider` chain the
-// autonomous Scribe path uses (by passing `null` to the underlying function).
-// This way production callers don't need extraction.llm wired into the
-// ServiceContainer — the legacy provider chain handles it.
+// Extraction is CLI-only (keyless): the wrapper passes NO `llm`, so the
+// underlying function runs through `extractViaCli`. A CLI-unavailable failure
+// (CliExtractionError not_installed/not_authed) maps to EXTRACTION_LLM_UNAVAILABLE.
 
 import { extractMemoryCandidates } from "../../extraction.js";
+import { CliExtractionError } from "../../extraction-cli.js";
 import type { AgentTool } from "../types.js";
 
 export const extractMemoryCandidatesTool: AgentTool = {
@@ -54,14 +53,9 @@ export const extractMemoryCandidatesTool: AgentTool = {
       };
     }
 
-    // Prefer an injected ExtractionLlm (tests + future custom wrappers), but
-    // fall back to `null` so the extraction service resolves a provider via
-    // the same chain the autonomous Scribe path uses. Either way the function
-    // returns a stable `{ candidates }` shape.
-    const llm = (ctx.services as any)?.extraction?.llm ?? null;
-
+    // Production is CLI-only: pass NO `llm` so extraction runs via extractViaCli.
     try {
-      const result = await extractMemoryCandidates(ctx.db, llm, {
+      const result = await extractMemoryCandidates(ctx.db, null, {
         companyId: ctx.companyId,
         threadId,
         ...(sinceEntryId ? { sinceEntryId } : {}),
@@ -73,17 +67,19 @@ export const extractMemoryCandidatesTool: AgentTool = {
         summary: `Extracted ${count} memory candidate${count === 1 ? "" : "s"}`,
       };
     } catch (err: any) {
-      // Provider-resolution failure surfaces here when no `llm` is injected
-      // and no provider has a key configured.
+      // A CLI-unavailable failure (binary missing / not logged in) surfaces as
+      // EXTRACTION_LLM_UNAVAILABLE with CLI guidance.
+      const isCliUnavailable =
+        err instanceof CliExtractionError &&
+        (err.kind === "not_installed" || err.kind === "not_authed");
       const msg = err?.message ?? "unknown error";
-      const isProviderMissing = /No LLM provider configured/i.test(msg);
       return {
         success: false,
         data: { candidates: [] },
-        summary: isProviderMissing
-          ? "Extraction LLM unavailable"
+        summary: isCliUnavailable
+          ? "Extraction CLI unavailable — install a CLI (e.g. the Claude Code CLI) and run its login flow"
           : `Extraction failed: ${msg}`,
-        error: isProviderMissing ? "EXTRACTION_LLM_UNAVAILABLE" : "EXTRACTION_FAILED",
+        error: isCliUnavailable ? "EXTRACTION_LLM_UNAVAILABLE" : "EXTRACTION_FAILED",
       };
     }
   },

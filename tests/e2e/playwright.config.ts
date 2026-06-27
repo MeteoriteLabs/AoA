@@ -3,8 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
-import { FAKE_CLAUDE_CONTROL_PATH } from "./helpers/fake-claude";
+import { FAKE_CLAUDE_CONTROL_PATH, FAKE_CLAUDE_INVOCATIONS_PATH } from "./helpers/fake-claude";
 import { FAKE_CODEX_CONTROL_PATH, FAKE_CODEX_INVOCATIONS_PATH } from "./helpers/fake-codex";
+import { FAKE_EMBEDDER_CONTROL_PATH } from "./helpers/fake-embedder";
 
 // Windows runner can't start embedded-postgres because GitHub's Windows
 // runner is `runneradmin` (administrative) and PostgreSQL refuses to
@@ -109,8 +110,22 @@ export default defineConfig({
           // false means the single global control/invocations files are race-free.
           PATH: `${FAKE_CLAUDE_BIN_DIR}${path.delimiter}${FAKE_CODEX_BIN_DIR}${path.delimiter}${process.env.PATH ?? ""}`,
           AOA_E2E_FAKE_CLAUDE_CONTROL: FAKE_CLAUDE_CONTROL_PATH,
+          AOA_E2E_FAKE_CLAUDE_INVOCATIONS: FAKE_CLAUDE_INVOCATIONS_PATH,
           AOA_E2E_FAKE_CODEX_CONTROL: FAKE_CODEX_CONTROL_PATH,
           AOA_E2E_FAKE_CODEX_INVOCATIONS: FAKE_CODEX_INVOCATIONS_PATH,
+          // Fake embedder seam (T15): makes all embedding flows deterministic
+          // in CI/e2e without a real OpenAI key. The fake embedder returns a
+          // fixed 1536-dim vector; forced-error scenarios are controlled via
+          // FAKE_EMBEDDER_CONTROL_PATH (write JSON before the triggering action).
+          AOA_E2E_FAKE_EMBEDDER: "1",
+          AOA_E2E_FAKE_EMBEDDER_CONTROL: FAKE_EMBEDDER_CONTROL_PATH,
+          // The embedding worker/processQueue resolves a per-company key via
+          // resolveCompanyKey before calling createOpenAiEmbedder. When no key
+          // resolves, rows are left pending (not attempted). Provide a dummy
+          // OPENAI_API_KEY in the e2e env so resolveCompanyKey returns non-null
+          // and the fake embedder is actually reached. The fake ignores the key
+          // value entirely — it never calls the OpenAI SDK.
+          OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "e2e-fake-openai-key-placeholder",
         },
       },
   outputDir: "./test-results",

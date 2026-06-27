@@ -300,6 +300,14 @@ interface CliInvocation {
   mcpArtifactPath: string;
   /** Resolved model actually used for this invocation (for provenance, not cost). */
   resolvedModel?: string;
+  /**
+   * RAW (UNESCAPED) user prompt to write to the child's stdin after spawn.
+   * stdin does NOT pass through cmd.exe, so this is the unescaped content —
+   * the Windows argv-positional path drops the prompt (cmd.exe mangling),
+   * while stdin delivers it intact. The spawn block writes this then closes
+   * stdin (claude `--print` is one-shot). Absent ⇒ nothing is written.
+   */
+  stdinPrompt?: string;
 }
 
 /**
@@ -343,25 +351,35 @@ function codexConfigTomlPath(companyId: string, userId: string): string {
  * C-systemsplit args for the claude_cli path.
  * rawSystemContext is written to a temp file and passed via --system-prompt-file
  * to avoid Windows cmd.exe newline-truncation of multi-line inline arg values.
- * safeRawContent is pre-escaped for the platform's shell (for the -p arg).
+ * rawContent is the RAW (unescaped) user message — delivered to claude over
+ * stdin (W1 fix), never as a shell-escaped argv positional.
  */
 interface SystemSplitArgs {
   /** Unescaped system context — written to a temp file, never passed inline. */
   rawSystemContext: string;
-  /** Platform-safe user message for the -p arg. */
-  safeRawContent: string;
+  /**
+   * RAW (UNESCAPED) user message. Delivered to claude over stdin (which does
+   * NOT pass through cmd.exe), so it must NOT be shell-escaped. On Windows the
+   * argv-positional form silently dropped the prompt — stdin fixes that.
+   */
+  rawContent: string;
 }
 
-async function resolveCliInvocation(
+export async function resolveCliInvocation(
   cliTool: string,
   params: McpConfigParams,
   safeContent: string,
   resumeCodexSessionId?: string | null,
-  // C-systemsplit: when provided, claude_cli uses --system + -p split instead
-  // of the legacy single -p path.  Strings are pre-escaped by the caller.
+  // C-systemsplit: when provided, claude_cli uses --system + stdin split
+  // instead of the legacy single -p path.  Strings carry raw (unescaped) user
+  // text — claude's prompt is delivered over stdin, not argv.
   systemSplitArgs?: SystemSplitArgs,
   vendorCliBypassEnabled = true,
   codexModel?: string | null,
+  // RAW (unescaped) user prompt for the claude plain (non-systemSplit) path.
+  // Threaded from the caller (params.content). claude delivers the prompt over
+  // stdin so it must be the raw text, never the cmd-escaped safeContent.
+  rawContent?: string,
 ): Promise<CliInvocation | null> {
   const isWin = platform() === "win32";
   const claudeBypassArgs = vendorCliBypassEnabled
@@ -382,12 +400,13 @@ async function resolveCliInvocation(
       await writeFile(configPath, JSON.stringify(mcpConfig, null, 2));
 
       // C-systemsplit: when the assembled system context is available, pass it
-      // via --system so the model treats it as its system prompt.  The raw user
-      // input goes via -p.  This prevents the user's global CLAUDE.md (which
-      // may carry gstack routing rules that cause the model to echo skill text)
-      // from being applied to what would otherwise look like instruction content
-      // inside a user message.  When systemSplitArgs is absent (assembly failed
-      // or not applicable) we fall back to the legacy single-arg -p path.
+      // via --system-prompt-file so the model treats it as its system prompt.
+      // The raw user input goes over stdin (W1 fix).  This prevents the user's
+      // global CLAUDE.md (which may carry gstack routing rules that cause the
+      // model to echo skill text) from being applied to what would otherwise
+      // look like instruction content inside a user message.  When
+      // systemSplitArgs is absent (assembly failed or not applicable) we fall
+      // back to the plain path — which also delivers the prompt over stdin.
       //
       // C-systemsplit (corrected): use --system-prompt-file (not inline --system-prompt)
       // to avoid Windows cmd.exe newline-truncation: the system context is multi-line
@@ -402,6 +421,11 @@ async function resolveCliInvocation(
         const safeSystemPromptPath = isWin
           ? `"${systemPromptPath.replace(/"/g, '""')}"`
           : systemPromptPath;
+        // W1 stdin fix: the user prompt is NO LONGER an argv positional. On
+        // Windows the positional rode through cmd.exe and was silently dropped
+        // (the "empty/garbage Commander turn" bug). It is delivered over stdin
+        // (raw, unescaped) by the spawn block, which then closes stdin —
+        // claude `--print` is one-shot. See keyless-cli-spike-findings.md.
         return {
           binary: "claude",
           args: [
@@ -412,13 +436,14 @@ async function resolveCliInvocation(
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--verbose",
-            systemSplitArgs.safeRawContent,
           ],
           spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
           mcpArtifactPath: configPath,
+          stdinPrompt: systemSplitArgs.rawContent,
         };
       }
 
+      // W1 stdin fix (plain path): same as above — prompt over stdin, not argv.
       return {
         binary: "claude",
         args: [
@@ -428,10 +453,14 @@ async function resolveCliInvocation(
           "--output-format", "stream-json",
           "--include-partial-messages",
           "--verbose",
-          safeContent,
         ],
         spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
         mcpArtifactPath: configPath,
+        // Prefer the explicit raw prompt; fall back to safeContent only if the
+        // caller didn't thread rawContent (defensive — the chat caller always
+        // passes it). safeContent may be win32-escaped, but on the non-win
+        // path it equals the raw content anyway.
+        stdinPrompt: rawContent ?? safeContent,
       };
     }
     case "codex": {
@@ -637,9 +666,11 @@ export function cliModeService(db: Db) {
           // installed as .cmd wrappers. Node's `spawn` can only launch
           // .bat/.cmd files with `shell: true` (direct spawn raises
           // EINVAL). `shell: true` invokes cmd.exe which forwards args to
-          // the shell — so user-controlled content (params.content) must
-          // be escaped to prevent cmd injection. Other args (config path,
-          // flag literals) come from constants and tmpdir, not user input.
+          // the shell — so any user-controlled content placed in ARGV must
+          // be escaped to prevent cmd injection. claude no longer takes the
+          // prompt in argv (it rides stdin — see below), but safeContent is
+          // still threaded for the non-systemSplit fallback + codex. Other
+          // args (config path, flag literals) come from constants and tmpdir.
           const isWin = platform() === "win32";
           const safeContent = isWin
             ? `"${params.content.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
@@ -654,13 +685,14 @@ export function cliModeService(db: Db) {
           // both systemContext and rawContent were assembled by agent-loop.
           // rawSystemContext is written to a temp file by resolveCliInvocation
           // to avoid Windows cmd.exe newline-truncation of multi-line contexts.
+          // W1 stdin fix: claude's prompt is delivered over stdin (raw,
+          // unescaped) — NOT argv. So rawContent (the raw user message) is
+          // threaded straight through; no per-platform argv escaping.
           const systemSplitArgs: SystemSplitArgs | undefined =
             params.systemContext !== undefined && params.rawContent !== undefined
               ? {
                   rawSystemContext: params.systemContext,
-                  safeRawContent: isWin
-                    ? `"${params.rawContent.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
-                    : params.rawContent,
+                  rawContent: params.rawContent,
                 }
               : undefined;
 
@@ -679,6 +711,8 @@ export function cliModeService(db: Db) {
             undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)
             systemSplitArgs,
             config.vendorCliBypassEnabled ?? true,
+            undefined,        // codexModel (codex routes through runCodexTurn, not here)
+            params.content,   // raw prompt for claude's stdin (plain-path fallback)
           );
           if (!invocation) {
             yield {
@@ -698,6 +732,14 @@ export function cliModeService(db: Db) {
             shell: isWin,
             cwd: tmpdir(),
           });
+
+          // Swallow stdin stream errors (P1, Codex): if the CLI exits before
+          // reading stdin (auth/flag/config error) and the assembled prompt
+          // exceeds the OS pipe buffer, the write below (turn 1 and every
+          // subsequent persistent-session turn) raises EPIPE. Without an `error`
+          // listener that is an unhandled stream error that crashes the server;
+          // the dead process is otherwise handled by the stream-end / cleanup path.
+          cliProcess.stdin?.on("error", () => {});
 
           session = {
             cliProcess,
@@ -723,12 +765,28 @@ export function cliModeService(db: Db) {
             }
           });
 
-          // codex receives its prompt over stdin (the `-` PROMPT arg →
-          // instructions read from stdin), matching the chat's persistent
-          // stdin-piping multi-turn model. claude takes the prompt in argv
-          // (`-p <msg>`) and is NOT written to here — pre-MX4 behavior.
-          if (config.cliTool === "codex" && cliProcess.stdin?.writable) {
-            cliProcess.stdin.write(params.content + "\n");
+          // Prompt delivery over stdin.
+          //
+          // claude (W1 stdin fix): the prompt is written to stdin (raw,
+          // unescaped — stdin never passes through cmd.exe) and stdin is then
+          // CLOSED. claude `--print` is one-shot: it reads the prompt to EOF,
+          // answers, and exits. The Windows argv-positional form silently
+          // dropped the prompt (the empty/garbage Commander turn). Because the
+          // process exits per turn, every claude turn re-spawns here — so this
+          // spawn-time stdin write covers all claude turns. (Codex never
+          // reaches this branch: it returns earlier via runCodexTurn.)
+          //
+          // Note: opencode is the only non-claude CLI that could fall through
+          // here, and it's rejected above (invocation === null). So in practice
+          // this branch runs for claude only — but we key off invocation.stdinPrompt
+          // (present iff the provider wants stdin delivery) rather than the CLI
+          // name, keeping it provider-neutral.
+          if (
+            invocation.stdinPrompt !== undefined &&
+            cliProcess.stdin?.writable
+          ) {
+            cliProcess.stdin.write(invocation.stdinPrompt + "\n");
+            cliProcess.stdin.end?.();
           }
 
           // Stream stdout — collect text for persistence.
@@ -963,6 +1021,12 @@ async function* runCodexTurn(
       shell: args.isWin,
       cwd: tmpdir(),
     });
+
+    // Swallow stdin stream errors (P1, Codex): an early CLI exit + a prompt
+    // larger than the OS pipe buffer makes the write below raise EPIPE; without
+    // an `error` listener that's an unhandled stream error that crashes the
+    // server. The early exit is captured by the close/exit handling instead.
+    proc.stdin?.on("error", () => {});
 
     // codex reads the prompt from stdin (the `-` PROMPT arg) until EOF, so
     // the stream MUST be closed for the one-shot turn to proceed. Raw

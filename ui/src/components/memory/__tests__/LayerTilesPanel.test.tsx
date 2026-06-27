@@ -27,13 +27,16 @@ function renderWithProviders(ui: React.ReactNode) {
 describe("LayerTilesPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    listMock.mockResolvedValue([
-      { id: "1", layer: "identity", status: "approved" },
-      { id: "2", layer: "domain", status: "approved" },
-      { id: "3", layer: "domain", status: "pending" },
-      { id: "4", layer: "domain", status: "pending" },
-      { id: "5", layer: "active_context", status: "approved" },
-    ]);
+    listMock.mockResolvedValue({
+      items: [
+        { id: "1", layer: "identity", status: "approved" },
+        { id: "2", layer: "domain", status: "approved" },
+        { id: "3", layer: "domain", status: "pending" },
+        { id: "4", layer: "domain", status: "pending" },
+        { id: "5", layer: "active_context", status: "approved" },
+      ],
+      semanticAvailable: true,
+    });
   });
 
   it("renders all four layer tiles with correct labels", async () => {

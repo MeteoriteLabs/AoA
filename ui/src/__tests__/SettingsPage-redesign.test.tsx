@@ -281,7 +281,8 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.getAllByText("Health").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Activity").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Commander").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("LLM providers").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Memory").length).toBeGreaterThan(0);
+    expect(screen.queryByText("LLM providers")).toBeNull();
     expect(screen.getAllByText("Budget & caps").length).toBeGreaterThan(0);
     expect(screen.getAllByText("MCP API keys").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Environments").length).toBeGreaterThan(0);
@@ -378,11 +379,24 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(await screen.findByText("Plugin update policy")).toBeInTheDocument();
   });
 
-  it("LLM providers section: renders Anthropic, OpenAI, Google", async () => {
+  it("Memory section: renders the OpenAI embeddings key (no engine-status banner)", async () => {
+    renderSettings("/P4/settings?tab=memory");
+    expect(await screen.findByText(/OpenAI/i)).toBeInTheDocument();
+    // Task 7: the extraction engine-status banner is gone.
+    expect(screen.queryByTestId("settings-extraction-engine-status")).toBeNull();
+  });
+
+  it("nav shows 'Memory' not 'LLM providers'", () => {
+    renderSettings();
+    expect(screen.getAllByText("Memory").length).toBeGreaterThan(0);
+    expect(screen.queryByText("LLM providers")).toBeNull();
+  });
+
+  it("?tab=llm normalizes to the Memory section (no dead bookmark)", async () => {
     renderSettings("/P4/settings?tab=llm");
-    expect(await screen.findByText(/Anthropic/i)).toBeInTheDocument();
-    expect(screen.getByText(/OpenAI/i)).toBeInTheDocument();
-    expect(screen.getByText(/Google/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: /memory/i }),
+    ).toBeInTheDocument();
   });
 
   it("Plugins section: renders the existing PluginsSection", async () => {

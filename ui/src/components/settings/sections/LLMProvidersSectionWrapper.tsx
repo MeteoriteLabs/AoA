@@ -9,10 +9,10 @@ export function LLMProvidersSectionWrapper() {
           Settings · Operations
         </div>
         <h2 className="text-[1.4rem] font-bold tracking-tight mt-1">
-          LLM providers<span className="text-brand">.</span>
+          Memory<span className="text-brand">.</span>
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          API keys for Anthropic, OpenAI, and Google. Used by Discussion extraction and memory embeddings.
+          API key for the embeddings model — used only for semantic memory search.
         </p>
       </div>
       <div className="p-8">

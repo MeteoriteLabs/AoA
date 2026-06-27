@@ -13,6 +13,12 @@ import type {
 } from "@armyofagents/shared";
 import { api } from "./client";
 
+/** Shape returned by GET /companies/:cid/memory */
+export interface MemoryListResponse {
+  items: MemoryItem[];
+  semanticAvailable: boolean;
+}
+
 export type SimilarMemoryItem = MemoryItem & {
   similarity?: number | null;
 };
@@ -41,7 +47,7 @@ export const memoryApi = {
     if (filters?.tags && filters.tags.length > 0) params.set("tags", filters.tags.join(","));
     if (filters?.search) params.set("search", filters.search);
     const qs = params.toString();
-    return api.get<MemoryItem[]>(`/companies/${companyId}/memory${qs ? `?${qs}` : ""}`);
+    return api.get<MemoryListResponse>(`/companies/${companyId}/memory${qs ? `?${qs}` : ""}`);
   },
   get: (companyId: string, id: string) =>
     api.get<MemoryItem>(`/companies/${companyId}/memory/${id}`),
@@ -208,4 +214,16 @@ export const memoryApi = {
       `/companies/${companyId}/memory/search?${params.toString()}`,
     );
   },
+
+  /** Re-index a single memory item's embedding. */
+  reindexItem: (companyId: string, id: string) =>
+    api.post<MemoryItem>(`/companies/${companyId}/memory/${encodeURIComponent(id)}/reindex`, {}),
+
+  /** Re-index all failed embeddings for the company. */
+  reindexFailed: (companyId: string) =>
+    api.post<{ requeued: number }>(`/companies/${companyId}/memory/reindex-failed`, {}),
+
+  /** Founder-only: re-embed every memory item in the company (dedup-safe). */
+  reindexAll: (companyId: string) =>
+    api.post<{ reindexed: number }>(`/companies/${companyId}/memory/reindex-all`, {}),
 };

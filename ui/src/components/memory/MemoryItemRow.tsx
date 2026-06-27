@@ -1,7 +1,8 @@
 import { FileText, Image as ImageIcon, Film, type LucideIcon } from "lucide-react";
-import type { MemoryItemCategory, MemoryItemStatus } from "@armyofagents/shared";
+import type { MemoryItemCategory, MemoryItemStatus, MemoryIndexStatus } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { MemoryChip } from "./MemoryChip";
+import { MemoryIndexBadge } from "./MemoryIndexBadge";
 import {
   pickIconKind,
   pickSnippet,
@@ -21,12 +22,15 @@ export interface MemoryItemRowData {
   modifiedAt: string;
   content?: string | null;
   extractedText?: string | null;
+  /** Embedding index status. Only relevant for memory_item kind. */
+  indexStatus?: MemoryIndexStatus | null;
 }
 
 interface Props {
   row: MemoryItemRowData;
   active: boolean;
   onSelect: (id: string, kind: "memory_item" | "asset") => void;
+  onReindex?: (id: string) => void;
 }
 
 const ICON_FOR_KIND: Record<IconKind, LucideIcon> = {
@@ -38,17 +42,28 @@ const ICON_FOR_KIND: Record<IconKind, LucideIcon> = {
   generic: FileText,
 };
 
-export function MemoryItemRow({ row, active, onSelect }: Props) {
+export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
   const kind = pickIconKind(row);
   const snippet = pickSnippet(row);
   const Icon = ICON_FOR_KIND[kind];
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(row.id, row.kind)}
+      onKeyDown={(e) => {
+        // Only act on keydowns that originated on the row itself — ignore those
+        // bubbling up from nested controls (e.g. the Re-index button) so a
+        // keyboard user activating those doesn't also select the row (P2, Codex).
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(row.id, row.kind);
+        }
+      }}
       className={cn(
-        "relative flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors",
+        "relative flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors cursor-pointer",
         active ? "bg-brand/[0.08]" : "hover:bg-white/[0.04]",
       )}
     >
@@ -92,6 +107,13 @@ export function MemoryItemRow({ row, active, onSelect }: Props) {
             <MemoryChip label={row.mimeType} />
           )}
 
+          {row.indexStatus && (
+            <MemoryIndexBadge
+              status={row.indexStatus}
+              onReindex={onReindex ? () => onReindex(row.id) : undefined}
+            />
+          )}
+
           <span className="text-[10px] tabular-nums text-very-dim shrink-0">
             {formatRelative(row.modifiedAt)}
           </span>
@@ -115,6 +137,6 @@ export function MemoryItemRow({ row, active, onSelect }: Props) {
           className="pointer-events-none absolute right-2.5 top-3 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
         />
       )}
-    </button>
+    </div>
   );
 }

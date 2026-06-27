@@ -29,7 +29,7 @@ export { orgHierarchyService } from "./org-hierarchy.js";
 export { memoryService, type MemoryFilters, type SemanticSearchFilters, type FindSimilarScope } from "./memory.js";
 export { companyBrainGraphService } from "./company-brain-graph.js";
 export type { GraphActorScope, MemoryItemGraphRow } from "./company-brain-graph.js";
-export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding } from "./embeddings.js";
+export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding, resetStaleProcessing } from "./embeddings.js";
 export { debriefService, type DebriefFilters } from "./debriefs.js";
 export { briefService, type BriefFilters } from "./briefs.js";
 export { extractionService } from "./extraction.js";

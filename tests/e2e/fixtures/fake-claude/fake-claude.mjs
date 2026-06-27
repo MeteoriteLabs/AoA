@@ -1,7 +1,25 @@
 #!/usr/bin/env node
 // Deterministic fake `claude` CLI for the Commander viewer e2e
-// (tests/e2e/commander-viewer.spec.ts).
+// (tests/e2e/commander-viewer.spec.ts) AND for the keyless extraction e2e
+// (tests/e2e/keyless-extraction.spec.ts).
 //
+// ── EXTRACTION MODE (keyless path, Task 16) ───────────────────────────────
+// server/src/services/extraction-cli.ts invokes claude as:
+//   claude --print --system-prompt-file <f> --output-format text
+// and delivers the entry content over stdin. It expects PLAIN TEXT stdout
+// (a JSON array of extracted items that parseExtractedItems can consume).
+//
+// Detection: if argv does NOT contain "--output-format stream-json" (i.e.
+// this is NOT a Commander chat spawn), we are in extraction mode. The control
+// file for extraction mode uses the `extractionText` field:
+//   { "extractionText": "[{\"kind\":\"task\",\"title\":\"...\"}]" }
+//   { "extractionText": "not json at all" }   ← forces unparseable failure
+//   { "fail": "exit" }                         ← nonzero exit (forces failure)
+//
+// In extraction mode the shim writes the extractionText (or nothing on fail)
+// to stdout and exits 0 (or 1 on { fail: "exit" }).
+//
+// ── COMMANDER / CHAT MODE (existing behavior) ─────────────────────────────
 // Commander's cli-mode (server/src/services/internal-agent/cli-mode.ts)
 // resolves the literal binary name "claude" from PATH (`which`/`where`) and
 // spawns it with `--print --output-format stream-json …` — one process per
@@ -48,6 +66,14 @@ const CONTROL_PATH =
   process.env.AOA_E2E_FAKE_CLAUDE_CONTROL ||
   path.join(os.tmpdir(), "aoa-e2e-fake-claude-control.json");
 
+// Invocation record: every spawn appends a JSON line describing HOW
+// Commander actually invoked claude, so specs can PROVE the real cli-mode
+// contract (argv flags, prompt-over-stdin, cwd) rather than trusting the
+// shim's own defaulting. Mirrors the same pattern in fake-codex.mjs.
+const INVOCATIONS_PATH =
+  process.env.AOA_E2E_FAKE_CLAUDE_INVOCATIONS ||
+  path.join(os.tmpdir(), "aoa-e2e-fake-claude-invocations.jsonl");
+
 // If the parent closes our stdout mid-turn (Stop button kills the CLI
 // session, or the server shuts down), exit quietly instead of crashing with
 // an unhandled EPIPE 'error' event.
@@ -63,6 +89,54 @@ function emit(obj) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Capture argv + stdin for the invocation record WITHOUT blocking. The real
+// cli-mode spawns claude one-shot per turn but does NOT always close claude's
+// stdin (today the prompt rides argv and the stdin pipe is left open), so a
+// synchronous readFileSync(0) would DEADLOCK here: the parent waits for our
+// stdout before it would ever close stdin, and we'd be waiting for stdin EOF.
+// Accumulate stdin asynchronously instead and write the record just before exit.
+const argv = process.argv.slice(2);
+let stdinContent = "";
+// Resolves when stdin reaches EOF (the parent closed the pipe). Extraction mode
+// awaits this so the invocation record captures the piped prompt — the keyless
+// extractor (extraction-cli.ts extractViaClaude) writes the content to stdin
+// then closes it, and extraction mode otherwise exits before the async 'data'
+// events fire (it has no streaming delays like chat mode does). Chat mode never
+// awaits this (cli-mode may leave stdin open), so there is no deadlock risk.
+let resolveStdinEnd;
+const stdinEnded = new Promise((resolve) => {
+  resolveStdinEnd = resolve;
+});
+try {
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    stdinContent += chunk;
+  });
+  process.stdin.on("end", () => resolveStdinEnd());
+  process.stdin.on("close", () => resolveStdinEnd());
+  process.stdin.on("error", () => {
+    /* stdin may not be readable — fine */
+    resolveStdinEnd();
+  });
+} catch {
+  /* no stdin attached — fine */
+  resolveStdinEnd();
+}
+
+// Best-effort, never fatal. Called right before exit so any stdin the parent
+// piped in (the prompt, post-stdin-delivery) has been received during the turn.
+function recordInvocation() {
+  try {
+    fs.appendFileSync(
+      INVOCATIONS_PATH,
+      JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd() }) + "\n",
+      "utf8",
+    );
+  } catch {
+    /* recording is best-effort */
+  }
+}
+
 function readControl() {
   try {
     const parsed = JSON.parse(fs.readFileSync(CONTROL_PATH, "utf8"));
@@ -72,6 +146,38 @@ function readControl() {
     // unexpected spawn (e.g. a background Commander run) never crashes.
   }
   return { toolCalls: [], text: "Fake claude: no control file found." };
+}
+
+// ── Extraction mode detection ─────────────────────────────────────────────
+// The extraction-cli spawns: claude --print --system-prompt-file <f>
+//   --output-format text
+// Commander chat spawns:     claude --print --output-format stream-json …
+// Distinguishing factor: extraction mode has "--output-format text" (or
+// simply NOT "--output-format stream-json").
+const IS_EXTRACTION_MODE = !argv.includes("stream-json");
+
+async function mainExtraction() {
+  // Wait for the parent to finish piping the prompt over stdin (and close it)
+  // before recording the invocation / emitting output. Bounded by a 2s safety
+  // race so a never-closed stdin can't hang the shim. extractViaClaude always
+  // closes stdin, so in practice this resolves immediately on EOF.
+  await Promise.race([stdinEnded, sleep(2000)]);
+
+  const control = readControl();
+
+  // Forced nonzero exit — simulates CLI crash / auth failure so the extractor
+  // marks the entry as "failed".
+  if (control.fail === "exit") {
+    process.stderr.write("fake-claude: forced nonzero exit for extraction failure test\n");
+    recordInvocation();
+    process.exit(1);
+  }
+
+  // Write the scripted extraction payload to stdout (a JSON array string or
+  // any string the caller wants — may be intentionally unparseable).
+  const payload =
+    typeof control.extractionText === "string" ? control.extractionText : "[]";
+  process.stdout.write(payload + "\n");
 }
 
 async function main() {
@@ -191,9 +297,14 @@ async function main() {
   });
 }
 
-main().then(
-  () => process.exit(0),
+const runner = IS_EXTRACTION_MODE ? mainExtraction() : main();
+runner.then(
+  () => {
+    recordInvocation();
+    process.exit(0);
+  },
   (err) => {
+    recordInvocation();
     process.stderr.write(`fake-claude failed: ${err?.stack ?? err}\n`);
     process.exit(1);
   },

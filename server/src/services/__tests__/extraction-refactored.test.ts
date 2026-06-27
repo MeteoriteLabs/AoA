@@ -73,10 +73,11 @@ vi.mock("../live-events.js", () => ({
   publishLiveEvent: vi.fn(),
 }));
 
-// Provider resolver: extraction.ts uses these for the autonomous path. The
-// tool-callable extractors only consult them when the caller passes
-// `llm === null` — every test in this file passes a mock LLM, so the resolver
-// path is exercised separately by a single negative test below.
+// Provider resolver: legacy import surface kept so extraction.ts loads. These
+// are NEVER consulted by the tool-callable extractors anymore — production runs
+// the keyless CLI (covered by extraction-memory-candidates-cli.test.ts). Every
+// test in THIS file injects a mock LLM (the test/eval seam), so neither the CLI
+// nor the resolver is reached.
 vi.mock("../internal-agent/providers/index.js", () => ({
   getProviderApiKey: vi.fn().mockRejectedValue(new Error("no key in test")),
   createProvider: vi.fn(),

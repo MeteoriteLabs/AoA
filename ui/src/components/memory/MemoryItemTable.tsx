@@ -1,7 +1,8 @@
 import { ChevronDown, FileText, Image as ImageIcon, Film, type LucideIcon } from "lucide-react";
-import type { MemoryItemLayer, MemoryItemStatus } from "@armyofagents/shared";
+import type { MemoryItemLayer, MemoryItemStatus, MemoryIndexStatus } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { MemoryChip } from "./MemoryChip";
+import { MemoryIndexBadge } from "./MemoryIndexBadge";
 import {
   pickIconKind,
   formatRelative,
@@ -25,6 +26,8 @@ export interface MemoryItemTableRowData {
   tokenEstimate?: number;
   /** Byte size for assets — rendered in the "Tokens" column for files. */
   sizeBytes?: number;
+  /** Embedding index status. Only relevant for memory_item kind. */
+  indexStatus?: MemoryIndexStatus | null;
 }
 
 export type MemoryTableSortColumn = "title" | "modifiedAt" | "usedCount";
@@ -36,6 +39,7 @@ interface Props {
   sortBy: MemoryTableSortColumn;
   sortDir: "asc" | "desc";
   onSortChange: (column: MemoryTableSortColumn) => void;
+  onReindex?: (id: string) => void;
 }
 
 const ICON_FOR_KIND: Record<IconKind, LucideIcon> = {
@@ -93,7 +97,7 @@ function Th({ label, column, sortBy, sortDir, onSortChange, align = "left", widt
   );
 }
 
-export function MemoryItemTable({ rows, activeId, onSelect, sortBy, sortDir, onSortChange }: Props) {
+export function MemoryItemTable({ rows, activeId, onSelect, sortBy, sortDir, onSortChange, onReindex }: Props) {
   return (
     <table className="w-full border-collapse text-xs">
       <thead>
@@ -101,6 +105,7 @@ export function MemoryItemTable({ rows, activeId, onSelect, sortBy, sortDir, onS
           <Th label="Name" column="title" width="36%" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
           <Th label="Layer" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
           <Th label="Status" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
+          <Th label="Index" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
           <Th label="Modified" column="modifiedAt" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
           <Th label="Used" column="usedCount" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
           <Th label="Tokens" align="right" sortBy={sortBy} sortDir={sortDir} onSortChange={onSortChange} />
@@ -160,6 +165,14 @@ export function MemoryItemTable({ rows, activeId, onSelect, sortBy, sortDir, onS
                   />
                 ) : r.kind === "asset" ? (
                   <span className="text-very-dim">file</span>
+                ) : null}
+              </td>
+              <td className="px-4 py-2">
+                {r.indexStatus ? (
+                  <MemoryIndexBadge
+                    status={r.indexStatus}
+                    onReindex={onReindex ? () => onReindex(r.id) : undefined}
+                  />
                 ) : null}
               </td>
               <td className="px-4 py-2">{formatRelative(r.modifiedAt)}</td>

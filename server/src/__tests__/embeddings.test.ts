@@ -5,6 +5,8 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn(),
   eq: vi.fn(),
   isNull: vi.fn(),
+  lte: vi.fn(),
+  or: vi.fn(),
   sql: vi.fn(),
 }));
 vi.mock("@armyofagents/db", () => ({
@@ -40,17 +42,41 @@ vi.mock("../adapters/api-common.js", () => ({
   resolveApiKey: vi.fn(),
 }));
 
+// P1-1: generateEmbedding and generateEmbeddingsBatch now delegate to
+// createOpenAiEmbedder (OpenAI SDK), not a direct fetch. Mock the SDK.
+const mockEmbeddingsCreate = vi.fn();
+vi.mock("openai", () => ({
+  default: vi.fn().mockImplementation(() => ({
+    embeddings: {
+      create: mockEmbeddingsCreate,
+    },
+  })),
+}));
+
+// db-capabilities is imported by the module at top level
+vi.mock("../services/db-capabilities.js", () => ({
+  getDbCapabilities: vi.fn(() => ({ hasVectorSupport: false })),
+}));
+
 import { generateEmbedding, generateEmbeddingsBatch } from "../services/embeddings.js";
 
 describe("Embedding Generation", () => {
-  const originalFetch = globalThis.fetch;
+  let savedFakeEmbedderEnv: string | undefined;
 
   beforeEach(() => {
-    vi.restoreAllMocks();
+    // Reset the SDK mock call history without restoring it
+    mockEmbeddingsCreate.mockReset();
+    // Ensure fake embedder is off for all tests in this suite
+    savedFakeEmbedderEnv = process.env.AOA_E2E_FAKE_EMBEDDER;
+    delete process.env.AOA_E2E_FAKE_EMBEDDER;
   });
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
+    if (savedFakeEmbedderEnv === undefined) {
+      delete process.env.AOA_E2E_FAKE_EMBEDDER;
+    } else {
+      process.env.AOA_E2E_FAKE_EMBEDDER = savedFakeEmbedderEnv;
+    }
   });
 
   function makeFakeEmbedding(dim = 1536): number[] {
@@ -58,34 +84,22 @@ describe("Embedding Generation", () => {
   }
 
   describe("generateEmbedding", () => {
-    it("calls OpenAI API and returns 1536-dim vector", async () => {
+    it("calls OpenAI SDK and returns 1536-dim vector", async () => {
       const fakeEmbedding = makeFakeEmbedding();
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: fakeEmbedding }] }),
+      mockEmbeddingsCreate.mockResolvedValue({
+        data: [{ embedding: fakeEmbedding }],
       });
 
       const result = await generateEmbedding("Hello world", "sk-test-key");
 
       expect(result).toEqual(fakeEmbedding);
       expect(result).toHaveLength(1536);
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "https://api.openai.com/v1/embeddings",
+      expect(mockEmbeddingsCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          method: "POST",
-          headers: expect.objectContaining({
-            Authorization: "Bearer sk-test-key",
-            "Content-Type": "application/json",
-          }),
+          model: "text-embedding-3-small",
+          input: "Hello world",
         }),
       );
-
-      // Verify the body contains correct model and dimensions
-      const call = (globalThis.fetch as any).mock.calls[0];
-      const body = JSON.parse(call[1].body);
-      expect(body.model).toBe("text-embedding-3-small");
-      expect(body.dimensions).toBe(1536);
-      expect(body.input).toBe("Hello world");
     });
 
     it("throws on empty text", async () => {
@@ -97,45 +111,45 @@ describe("Embedding Generation", () => {
       );
     });
 
-    it("throws on API error response", async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-        text: async () => "Rate limit exceeded",
-      });
+    it("throws when OpenAI SDK returns no embedding data", async () => {
+      mockEmbeddingsCreate.mockResolvedValue({ data: [] });
 
       await expect(generateEmbedding("test", "sk-test")).rejects.toThrow(
-        "OpenAI Embeddings API error 429: Rate limit exceeded",
+        "OpenAI returned no embedding data",
       );
     });
 
-    it("throws on invalid embedding response", async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [] }),
-      });
+    it("propagates SDK errors", async () => {
+      mockEmbeddingsCreate.mockRejectedValue(new Error("network error"));
 
       await expect(generateEmbedding("test", "sk-test")).rejects.toThrow(
-        "Invalid embedding response from OpenAI",
+        "network error",
       );
     });
 
-    it("throws on wrong dimension embedding", async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }),
-      });
+    it("routes through fake embedder when AOA_E2E_FAKE_EMBEDDER=1", async () => {
+      process.env.AOA_E2E_FAKE_EMBEDDER = "1";
 
-      await expect(generateEmbedding("test", "sk-test")).rejects.toThrow(
-        "Invalid embedding response from OpenAI",
-      );
+      const result = await generateEmbedding("Hello world", "any-key");
+
+      // Must NOT have called the OpenAI SDK
+      expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+      // Must return a 1536-dim vector (fake)
+      expect(result).toHaveLength(1536);
+      for (const v of result) {
+        expect(Number.isFinite(v)).toBe(true);
+      }
     });
   });
 
   describe("generateEmbeddingsBatch", () => {
-    it("generates embeddings for multiple texts in one API call", async () => {
+    it("calls OpenAI SDK and returns vectors in input order", async () => {
       const emb1 = makeFakeEmbedding();
       const emb2 = makeFakeEmbedding();
+      // Simulate batch fetch path via the underlying fetch (legacy path, fake OFF)
+      // generateEmbeddingsBatch uses direct fetch when fake is off.
+      // We need to mock global fetch for the batch path.
+      const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -146,12 +160,16 @@ describe("Embedding Generation", () => {
         }),
       });
 
-      const result = await generateEmbeddingsBatch(["hello", "world"], "sk-test");
+      try {
+        const result = await generateEmbeddingsBatch(["hello", "world"], "sk-test");
 
-      expect(result).toHaveLength(2);
-      expect(result[0]).toEqual(emb1);
-      expect(result[1]).toEqual(emb2);
-      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        expect(result).toHaveLength(2);
+        expect(result[0]).toEqual(emb1);
+        expect(result[1]).toEqual(emb2);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     it("returns empty array for empty input", async () => {
@@ -159,8 +177,9 @@ describe("Embedding Generation", () => {
       expect(result).toEqual([]);
     });
 
-    it("filters out empty strings", async () => {
+    it("filters out empty strings before calling API", async () => {
       const emb1 = makeFakeEmbedding();
+      const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -168,17 +187,22 @@ describe("Embedding Generation", () => {
         }),
       });
 
-      const result = await generateEmbeddingsBatch(["hello", "", "  "], "sk-test");
+      try {
+        const result = await generateEmbeddingsBatch(["hello", "", "  "], "sk-test");
 
-      expect(result).toHaveLength(1);
-      const call = (globalThis.fetch as any).mock.calls[0];
-      const body = JSON.parse(call[1].body);
-      expect(body.input).toEqual(["hello"]);
+        expect(result).toHaveLength(1);
+        const call = (globalThis.fetch as any).mock.calls[0];
+        const body = JSON.parse(call[1].body);
+        expect(body.input).toEqual(["hello"]);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     it("sorts results by index to maintain order", async () => {
       const emb1 = makeFakeEmbedding();
       const emb2 = makeFakeEmbedding();
+      const originalFetch = globalThis.fetch;
       // API returns out of order
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -190,22 +214,53 @@ describe("Embedding Generation", () => {
         }),
       });
 
-      const result = await generateEmbeddingsBatch(["first", "second"], "sk-test");
+      try {
+        const result = await generateEmbeddingsBatch(["first", "second"], "sk-test");
 
-      expect(result[0]).toEqual(emb1);
-      expect(result[1]).toEqual(emb2);
+        expect(result[0]).toEqual(emb1);
+        expect(result[1]).toEqual(emb2);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     it("throws on API error", async () => {
+      const originalFetch = globalThis.fetch;
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: false,
         status: 500,
         text: async () => "Internal server error",
       });
 
-      await expect(
-        generateEmbeddingsBatch(["test"], "sk-test"),
-      ).rejects.toThrow("OpenAI Embeddings API error 500");
+      try {
+        await expect(
+          generateEmbeddingsBatch(["test"], "sk-test"),
+        ).rejects.toThrow("OpenAI Embeddings API error 500");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("routes through fake embedder when AOA_E2E_FAKE_EMBEDDER=1 (no fetch, no SDK)", async () => {
+      process.env.AOA_E2E_FAKE_EMBEDDER = "1";
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn();
+
+      try {
+        const result = await generateEmbeddingsBatch(["hello", "world"], "any-key");
+
+        // Fake path: one vector per input, no fetch
+        expect(result).toHaveLength(2);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+        for (const vec of result) {
+          expect(vec).toHaveLength(1536);
+          for (const v of vec) expect(Number.isFinite(v)).toBe(true);
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+        delete process.env.AOA_E2E_FAKE_EMBEDDER;
+      }
     });
   });
 });

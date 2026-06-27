@@ -5,10 +5,11 @@
 // Filters `extractMemoryCandidates` to type='decision'. Thin wrapper over C1's
 // `extractDecisions` (server/src/services/extraction.ts).
 //
-// LLM resolution mirrors extract_memory_candidates — prefer an injected
-// `ctx.services.extraction?.llm`; fall back to `null` for the provider chain.
+// Extraction is CLI-only — the wrapper passes NO `llm`. See
+// extract_memory_candidates for the shared CLI-unavailable error mapping.
 
 import { extractDecisions } from "../../extraction.js";
+import { CliExtractionError } from "../../extraction-cli.js";
 import type { AgentTool } from "../types.js";
 
 export const extractDecisionsTool: AgentTool = {
@@ -43,10 +44,8 @@ export const extractDecisionsTool: AgentTool = {
       };
     }
 
-    const llm = (ctx.services as any)?.extraction?.llm ?? null;
-
     try {
-      const decisions = await extractDecisions(ctx.db, llm, {
+      const decisions = await extractDecisions(ctx.db, null, {
         companyId: ctx.companyId,
         threadId,
         ...(sinceEntryId ? { sinceEntryId } : {}),
@@ -57,15 +56,17 @@ export const extractDecisionsTool: AgentTool = {
         summary: `Extracted ${decisions.length} decision${decisions.length === 1 ? "" : "s"}`,
       };
     } catch (err: any) {
+      const isCliUnavailable =
+        err instanceof CliExtractionError &&
+        (err.kind === "not_installed" || err.kind === "not_authed");
       const msg = err?.message ?? "unknown error";
-      const isProviderMissing = /No LLM provider configured/i.test(msg);
       return {
         success: false,
         data: [],
-        summary: isProviderMissing
-          ? "Extraction LLM unavailable"
+        summary: isCliUnavailable
+          ? "Extraction CLI unavailable — install a CLI (e.g. the Claude Code CLI) and run its login flow"
           : `Extraction failed: ${msg}`,
-        error: isProviderMissing ? "EXTRACTION_LLM_UNAVAILABLE" : "EXTRACTION_FAILED",
+        error: isCliUnavailable ? "EXTRACTION_LLM_UNAVAILABLE" : "EXTRACTION_FAILED",
       };
     }
   },

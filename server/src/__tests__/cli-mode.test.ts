@@ -668,7 +668,9 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     const proc: any = new EventEmitter();
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
-    proc.stdin = { writable: true, write: vi.fn() };
+    // W1 stdin fix: claude writes the prompt to stdin then closes it, so the
+    // fake stdin must expose both write + end.
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn(), on: vi.fn() };
     proc.kill = vi.fn();
     // Drive the stream helper to completion once the chat attaches its
     // stdout/exit listeners (streamProcessOutput registers them lazily).
@@ -735,8 +737,8 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     };
   }
 
-  it("claude_cli: spawns `claude` with print-mode flags before the positional prompt", async () => {
-    const { spawn, writeFile, writeCodexMcpConfigToml, ensureCodexAuthInHome } =
+  it("claude_cli: spawns `claude` with print-mode flags and delivers the prompt over stdin (W1 fix), no argv positional", async () => {
+    const { spawn, writeFile, writeCodexMcpConfigToml, ensureCodexAuthInHome, fake } =
       await runChat("claude_cli");
 
     // claude path is byte-unchanged: no codex CODEX_HOME provisioning at
@@ -748,8 +750,10 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     const [binary, args] = spawn.mock.calls[0];
     expect(binary).toBe("claude");
 
-    // Keep the prompt last. On Windows/cmd.exe, putting flags after the prompt
-    // makes Claude treat those flags as prompt text, dropping stream-json events.
+    // W1 stdin fix: the argv ends at the flags — the prompt is NO LONGER an
+    // argv positional. On Windows the positional rode through cmd.exe and was
+    // silently dropped (the empty/garbage Commander turn). The prompt is
+    // delivered over stdin instead (asserted below).
     expect(args[0]).toBe("--mcp-config");
     expect(typeof args[1]).toBe("string");
     expect(args[1]).toMatch(/\.json$/);
@@ -759,10 +763,18 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     expect(args[5]).toBe("stream-json");
     expect(args[6]).toBe("--include-partial-messages");
     expect(args[7]).toBe("--verbose");
-    // content (possibly shell-escaped on win32); assert it carries the message
-    expect(String(args[8])).toContain("hello world");
-    expect(args).toHaveLength(9);
+    // No content positional — argv stops at the flags.
+    expect(args).toHaveLength(8);
+    expect(args.join(" ")).not.toContain("hello world");
     expect(args).not.toContain("exec");
+
+    // The RAW (unescaped) prompt is written to stdin, then stdin is closed
+    // (claude --print is one-shot — reads to EOF, answers, exits).
+    expect(fake.stdin.write).toHaveBeenCalledTimes(1);
+    expect(String(fake.stdin.write.mock.calls[0][0])).toContain("hello world");
+    // Raw, not the win32 cmd-escaped quoted form.
+    expect(String(fake.stdin.write.mock.calls[0][0])).not.toContain('""');
+    expect(fake.stdin.end).toHaveBeenCalledTimes(1);
 
     // claude path writes the {mcpServers:{aoa}} wrapper JSON to a tmp file.
     expect(writeFile).toHaveBeenCalledTimes(1);
@@ -876,7 +888,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     const proc: any = new EventEmitter();
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
-    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn() };
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn(), on: vi.fn() };
     proc.kill = vi.fn();
     let driven = false;
     const drive = () => {
@@ -903,7 +915,8 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     const proc: any = new EventEmitter();
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
-    proc.stdin = { writable: true, write: vi.fn() };
+    // W1 stdin fix: claude writes the prompt to stdin then closes it.
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn(), on: vi.fn() };
     proc.kill = vi.fn();
     proc.feed = (text: string) => {
       setImmediate(() => proc.stdout.emit("data", Buffer.from(text)));
@@ -1311,16 +1324,14 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(argArr[argArr.length - 1]).toBe("-");
   });
 
-  it("claude_cli uses print-mode argv (prompt NOT on stdin) + stream-json accumulation + done shape; no codex sessionId", async () => {
+  it("claude_cli delivers the prompt over stdin (W1 fix) + stream-json accumulation + done shape; no codex sessionId", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
-    // Persistent claude process: streamProcessOutput attaches its listeners
-    // lazily; on attach we feed plain text then emit exit so the turn's
-    // for-await completes (claude's `--output-format stream-json` emits
-    // JSONL lines; the StreamJsonParser extracts text from stream_event deltas).
-    // The persistent-vs-one-shot distinction is proven by the codex tests
-    // (which show a FRESH re-spawn per turn); claude must keep the
-    // pre-MX-chatparse persistent-process + `-p` argv shape.
+    // claude process: streamProcessOutput attaches its listeners lazily; on
+    // attach we feed stream-json text then emit exit so the turn's for-await
+    // completes (claude's `--output-format stream-json` emits JSONL lines; the
+    // StreamJsonParser extracts text from stream_event deltas). claude `--print`
+    // is one-shot — the prompt rides stdin (raw) and stdin is closed.
     const persistent = makePersistentProcess();
     vi.mocked(cp.spawn).mockReturnValue(persistent as any);
     const fsp = await import("node:fs/promises");
@@ -1351,12 +1362,15 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
 
     const chunks1 = await drainChat(service, "claude_cli", "first");
 
-    // Persistent process: claude takes the prompt in argv and is NOT
-    // written to stdin on turn-1.
-    expect(persistent.stdin.write).not.toHaveBeenCalled();
+    // W1 stdin fix: claude's prompt is written to stdin (raw) then stdin is
+    // closed — NOT passed as an argv positional.
+    expect(persistent.stdin.write).toHaveBeenCalledTimes(1);
+    expect(String(persistent.stdin.write.mock.calls[0][0])).toContain("first");
+    expect(persistent.stdin.end).toHaveBeenCalledTimes(1);
     expect(vi.mocked(cp.spawn)).toHaveBeenCalledTimes(1);
     const [binary, args] = vi.mocked(cp.spawn).mock.calls[0];
     expect(binary).toBe("claude");
+    // argv ends at the flags — no content positional.
     expect(args).toEqual([
       "--mcp-config",
       expect.stringMatching(/\.json$/),
@@ -1366,8 +1380,8 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      expect.stringContaining("first"),
     ]);
+    expect((args as string[]).join(" ")).not.toContain("first");
     // Stream-json accumulation: StreamJsonParser extracts text from stream_event
     // text_delta events (NOT plain-text parseCliOutput).
     const text1 = chunks1

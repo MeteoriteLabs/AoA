@@ -343,3 +343,62 @@ Discussion scope resolves in this order (Decision #61):
 2. Entry-level scope (`departmentId`/`projectId`/`goalId` on the entry)
 3. Thread-level scope (`scopeType`/`scopeId` on the discussion)
 4. `null` (company-wide)
+
+## Extraction Engine Status
+
+Returns the resolved extraction engine and its availability. Used by Settings to surface actionable setup copy when the CLI is not installed or authenticated. (Decision #104)
+
+```
+GET /api/companies/{companyId}/extraction/engine-status
+```
+
+Requires `founder` or `team_lead` role.
+
+Response:
+
+```json
+{
+  "engine": "cli",
+  "cli": { "available": true, "tool": "claude_cli" },
+  "apiKey": false
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `engine` | Resolved engine: `"cli"` \| `"api"` \| `"none"` |
+| `cli.available` | `true` if an extraction-capable CLI binary is on PATH |
+| `cli.tool` | The probed CLI tool key, e.g. `"claude_cli"` \| `"codex"` |
+| `apiKey` | `true` if at least one hosted provider key resolves for the company |
+
+## Memory Re-index Endpoints
+
+These endpoints manage the embedding queue for semantic memory search. The embedding worker uses `text-embedding-3-small` via the company's `llm:openai` Settings secret (falls back to `OPENAI_API_KEY`). Both routes require `founder` or `team_lead` role and log activity. (Decision #104)
+
+### Re-index Single Memory Item
+
+```
+POST /api/companies/{companyId}/memory/{memoryItemId}/reindex
+```
+
+Enqueues the specified memory item for re-embedding. Idempotent: if a live `pending` or `processing` queue row already exists for this item, no duplicate is created.
+
+Response `200`:
+
+```json
+{ "queued": true }
+```
+
+### Re-index All Failed Items
+
+```
+POST /api/companies/{companyId}/memory/reindex-failed
+```
+
+Enqueues every memory item for this company whose latest `embedding_queue` row has `status = 'failed'`. Returns the count of rows newly enqueued.
+
+Response `200`:
+
+```json
+{ "queued": 4 }
+```

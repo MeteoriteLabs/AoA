@@ -1,7 +1,8 @@
 import { FileText, Image as ImageIcon, Film, FileType, File as FileIcon, type LucideIcon } from "lucide-react";
-import type { MemoryItemCategory, MemoryItemStatus } from "@armyofagents/shared";
+import type { MemoryItemCategory, MemoryItemStatus, MemoryIndexStatus } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { MemoryChip } from "./MemoryChip";
+import { MemoryIndexBadge } from "./MemoryIndexBadge";
 import {
   pickIconKind,
   pickSnippet,
@@ -25,12 +26,15 @@ export interface MemoryItemCardData {
   pageCount?: number | null;
   /** Asset chunk count (after embedding). Used in the meta chip for PDFs. */
   chunkCount?: number | null;
+  /** Embedding index status. Only relevant for memory_item kind. */
+  indexStatus?: MemoryIndexStatus | null;
 }
 
 interface Props {
   row: MemoryItemCardData;
   active: boolean;
   onSelect: (id: string, kind: "memory_item" | "asset") => void;
+  onReindex?: (id: string) => void;
 }
 
 const GENERIC_ICON_FOR_KIND: Record<Exclude<IconKind, "markdown" | "image" | "pdf">, LucideIcon> = {
@@ -39,7 +43,7 @@ const GENERIC_ICON_FOR_KIND: Record<Exclude<IconKind, "markdown" | "image" | "pd
   generic: FileIcon,
 };
 
-export function MemoryItemCard({ row, active, onSelect }: Props) {
+export function MemoryItemCard({ row, active, onSelect, onReindex }: Props) {
   const kind = pickIconKind(row);
 
   const outerClasses = cn(
@@ -50,10 +54,20 @@ export function MemoryItemCard({ row, active, onSelect }: Props) {
   );
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(row.id, row.kind)}
-      className={outerClasses}
+      onKeyDown={(e) => {
+        // Ignore keydowns bubbling from nested controls (e.g. the Re-index
+        // button) so keyboard activation of those doesn't also select the row.
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(row.id, row.kind);
+        }
+      }}
+      className={cn(outerClasses, "cursor-pointer")}
     >
       {active && (
         <span
@@ -63,7 +77,7 @@ export function MemoryItemCard({ row, active, onSelect }: Props) {
       )}
 
       {kind === "markdown" ? (
-        <MarkdownVariant row={row} active={active} />
+        <MarkdownVariant row={row} active={active} onReindex={onReindex} />
       ) : kind === "image" ? (
         <ImageVariant row={row} active={active} />
       ) : kind === "pdf" ? (
@@ -71,13 +85,21 @@ export function MemoryItemCard({ row, active, onSelect }: Props) {
       ) : (
         <GenericVariant row={row} active={active} kind={kind} />
       )}
-    </button>
+    </div>
   );
 }
 
 // ---- Markdown variant ----
 
-function MarkdownVariant({ row, active }: { row: MemoryItemCardData; active: boolean }) {
+function MarkdownVariant({
+  row,
+  active,
+  onReindex,
+}: {
+  row: MemoryItemCardData;
+  active: boolean;
+  onReindex?: (id: string) => void;
+}) {
   const snippet = pickSnippet(row);
   return (
     <div className="flex min-h-[168px] flex-col p-3.5">
@@ -120,6 +142,12 @@ function MarkdownVariant({ row, active }: { row: MemoryItemCardData; active: boo
           <MemoryChip
             label={row.status}
             tone={STATUS_TONE[row.status as MemoryItemStatus] ?? "slate"}
+          />
+        )}
+        {row.indexStatus && (
+          <MemoryIndexBadge
+            status={row.indexStatus}
+            onReindex={onReindex ? () => onReindex(row.id) : undefined}
           />
         )}
         <span className="text-[10px] tabular-nums text-very-dim">

@@ -55,11 +55,12 @@ export function MemoryQuickSwitcher() {
     }
   }, [open]);
 
-  const itemsQuery = useQuery({
+  const _itemsQuery = useQuery({
     queryKey: queryKeys.memory.list(selectedCompanyId ?? ""),
     queryFn: () => memoryApi.list(selectedCompanyId!, {}),
     enabled: open && Boolean(selectedCompanyId),
   });
+  const itemsQuery = { ..._itemsQuery, data: _itemsQuery.data?.items };
   const assetsQuery = useQuery({
     queryKey: queryKeys.memory.assets.list(selectedCompanyId ?? ""),
     queryFn: () => memoryAssetsApi.list(selectedCompanyId!),

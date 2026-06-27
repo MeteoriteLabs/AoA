@@ -4,6 +4,7 @@ interface Props {
   rows: ReadonlyArray<MemoryItemCardData>;
   activeId: string | null;
   onSelect: (id: string, kind: "memory_item" | "asset") => void;
+  onReindex?: (id: string) => void;
 }
 
 /**
@@ -11,7 +12,7 @@ interface Props {
  * available width with cards at a minimum of 220px each — adapts from a 1-col
  * narrow list at low widths up to 4-5 cards across at typical desktop widths.
  */
-export function MemoryItemCardGrid({ rows, activeId, onSelect }: Props) {
+export function MemoryItemCardGrid({ rows, activeId, onSelect, onReindex }: Props) {
   return (
     <div
       className="grid gap-2.5 p-3"
@@ -23,6 +24,7 @@ export function MemoryItemCardGrid({ rows, activeId, onSelect }: Props) {
           row={r}
           active={activeId === r.id}
           onSelect={onSelect}
+          onReindex={onReindex}
         />
       ))}
     </div>

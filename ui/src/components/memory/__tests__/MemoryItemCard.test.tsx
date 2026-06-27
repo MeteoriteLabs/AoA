@@ -90,7 +90,7 @@ describe("MemoryItemCard", () => {
     const { container } = render(
       <MemoryItemCard row={markdown} active={true} onSelect={() => {}} />,
     );
-    const card = container.querySelector("button");
+    const card = container.querySelector('[role="button"]');
     expect(card?.className).toContain("border-brand");
     expect(card?.className).toContain("bg-brand/[0.08]");
     expect(container.querySelector(".bg-brand.rounded-full")).toBeInTheDocument();

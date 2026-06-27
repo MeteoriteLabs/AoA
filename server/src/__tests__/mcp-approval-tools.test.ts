@@ -22,6 +22,11 @@ vi.mock("@armyofagents/db", () => {
     approvals: makeTable(),
     issueApprovals: makeTable(),
     approvalComments: makeTable(),
+    // Required by write-tools.ts → memory-write.ts / embeddings.ts → @armyofagents/db
+    memoryItems: makeTable(),
+    embeddingQueue: makeTable(),
+    discussions: makeTable(),
+    discussionExtractedItems: makeTable(),
   };
 });
 

@@ -31,10 +31,35 @@ vi.mock("../middleware/logger.js", () => ({
   logger: {
     child: () => ({
       info: vi.fn(),
+      warn: vi.fn(),
       error: vi.fn(),
     }),
   },
 }));
+
+// Extraction is CLI-only — pin the CLI tool resolution + stub the one-shot
+// extractor so these unit tests stay deterministic and never spawn a real
+// `claude`/`codex` binary.
+vi.mock("../services/extraction-engine.js", () => ({
+  resolveExtractionEngine: vi.fn(async () => "cli"),
+  resolveCompanyCliTool: vi.fn(async () => "claude_cli"),
+}));
+
+const mockExtractViaCli = vi.fn();
+vi.mock("../services/extraction-cli.js", () => {
+  class FakeCliExtractionError extends Error {
+    readonly kind: string;
+    constructor(message: string, kind: string) {
+      super(message);
+      this.name = "CliExtractionError";
+      this.kind = kind;
+    }
+  }
+  return {
+    extractViaCli: (...a: unknown[]) => mockExtractViaCli(...a),
+    CliExtractionError: FakeCliExtractionError,
+  };
+});
 
 import { extractionService } from "../services/extraction.js";
 
@@ -48,22 +73,27 @@ function makeSelectChain(queue: any[]) {
 
 describe("extractionService", () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
-    process.env.OPENAI_API_KEY = "test-key";
+    vi.clearAllMocks();
+    delete process.env.OPENAI_API_KEY;
   });
 
   it("stores suggested layer and selected layer on extracted brief items", async () => {
     const capturedBriefItems: any[] = [];
-    const selectQueue = [[
-      {
-        id: "debrief-1",
-        companyId: "company-1",
-        rawContent: "Founder preference: write in a direct tone",
-        departmentId: null,
-        projectId: null,
-        goalId: "goal-1",
-      },
-    ], []];
+    // Queue: 1) debrief, 2) departments, 3) agent config (model hint)
+    const selectQueue = [
+      [
+        {
+          id: "debrief-1",
+          companyId: "company-1",
+          rawContent: "Founder preference: write in a direct tone",
+          departmentId: null,
+          projectId: null,
+          goalId: "goal-1",
+        },
+      ],
+      [],
+      [{ model: null }],
+    ];
     const db = {
       select: vi.fn(() => makeSelectChain(selectQueue)),
       transaction: vi.fn(async (fn: (tx: any) => Promise<any>) =>
@@ -86,27 +116,20 @@ describe("extractionService", () => {
         })),
     } as any;
 
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{
-          message: {
-            content: JSON.stringify([
-              {
-                type: "preference",
-                title: "Write directly",
-                description: "Use a direct, concise tone.",
-                department: null,
-                layer: "identity",
-              },
-            ]),
-          },
-        }],
-      }),
-    }));
+    // Keyless CLI extractor returns already-parsed items (deterministic).
+    mockExtractViaCli.mockResolvedValueOnce([
+      {
+        type: "preference",
+        title: "Write directly",
+        description: "Use a direct, concise tone.",
+        department: null,
+        layer: "identity",
+      },
+    ]);
 
     await extractionService(db).extractFromDebrief("company-1", "debrief-1");
 
+    expect(mockExtractViaCli).toHaveBeenCalledTimes(1);
     expect(capturedBriefItems[0]).toEqual(
       expect.objectContaining({
         type: "preference",

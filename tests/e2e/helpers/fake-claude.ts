@@ -22,6 +22,45 @@ export const FAKE_CLAUDE_CONTROL_PATH = path.join(
 );
 
 /**
+ * Invocation record: the fake-claude shim appends one JSON line per spawn
+ * describing HOW Commander actually invoked claude, so specs can PROVE the
+ * real cli-mode contract (argv flags, prompt-over-stdin, cwd) rather than
+ * trusting the shim's own defaulting. Mirrors fake-codex.ts FAKE_CODEX_INVOCATIONS_PATH.
+ */
+export const FAKE_CLAUDE_INVOCATIONS_PATH = path.join(
+  os.tmpdir(),
+  "aoa-e2e-fake-claude-invocations.jsonl",
+);
+
+export interface FakeClaudeInvocation {
+  argv: string[];
+  stdin: string;
+  cwd: string;
+}
+
+/** Read all recorded invocations (oldest first). Empty if none yet. */
+export function readFakeClaudeInvocations(): FakeClaudeInvocation[] {
+  try {
+    return fs
+      .readFileSync(FAKE_CLAUDE_INVOCATIONS_PATH, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as FakeClaudeInvocation);
+  } catch {
+    return [];
+  }
+}
+
+/** Clear the invocation log — call before a send to scope assertions to it. */
+export function clearFakeClaudeInvocations(): void {
+  try {
+    fs.rmSync(FAKE_CLAUDE_INVOCATIONS_PATH, { force: true });
+  } catch {
+    /* nothing to clear */
+  }
+}
+
+/**
  * Structural mirror of CommanderOutputRef (packages/shared/src/
  * commander-output-refs.ts). Re-declared locally so the e2e tree doesn't
  * depend on workspace package resolution.
@@ -82,6 +121,38 @@ export interface FakeClaudeTurn {
 /** Write the scripted turn the NEXT fake-claude spawn will emit. */
 export function writeFakeClaudeControl(turn: FakeClaudeTurn): void {
   fs.writeFileSync(FAKE_CLAUDE_CONTROL_PATH, JSON.stringify(turn, null, 2));
+}
+
+/**
+ * Control shape for the EXTRACTION mode of the fake-claude shim.
+ *
+ * Extraction mode is active when claude is spawned with `--output-format text`
+ * (i.e. NOT `--output-format stream-json`). The extraction-cli.ts one-shot
+ * extractor uses this path.
+ *
+ * Fields:
+ *   extractionText — the plain text the shim writes to stdout. Should be a
+ *                    JSON array string that parseExtractedItems() can consume.
+ *                    Pass an intentionally invalid string to exercise the
+ *                    "unparseable" failure branch. Defaults to "[]" if absent.
+ *   fail           — "exit" → shim exits with code 1 (exercises the
+ *                    "nonzero_exit" CliExtractionError branch and marks the
+ *                    discussion entry as "failed").
+ */
+export interface FakeClaudeExtractionControl {
+  extractionText?: string;
+  fail?: "exit";
+}
+
+/**
+ * Write a control file for the NEXT extraction-mode fake-claude invocation.
+ * Uses the same control file path as the chat-mode control so only ONE control
+ * file write is needed before an extraction-triggering action.
+ */
+export function writeFakeClaudeExtractionControl(
+  ctrl: FakeClaudeExtractionControl,
+): void {
+  fs.writeFileSync(FAKE_CLAUDE_CONTROL_PATH, JSON.stringify(ctrl, null, 2));
 }
 
 interface SeededArtifact {

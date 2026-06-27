@@ -35,10 +35,11 @@ export function MemoryRecentsStrip({ companyId, onOpenTab }: MemoryRecentsStripP
   const { selectedCompany } = useCompany();
   const companyPrefix = (selectedCompany as { issuePrefix?: string } | null)?.issuePrefix ?? "";
 
-  const itemsQuery = useQuery({
+  const _itemsQuery = useQuery({
     queryKey: queryKeys.memory.list(companyId),
     queryFn: () => memoryApi.list(companyId, {}),
   });
+  const itemsQuery = { ..._itemsQuery, data: _itemsQuery.data?.items };
   const assetsQuery = useQuery({
     queryKey: queryKeys.memory.assets.list(companyId),
     queryFn: () => memoryAssetsApi.list(companyId),

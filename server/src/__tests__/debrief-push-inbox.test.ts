@@ -38,10 +38,29 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 vi.mock("@armyofagents/db", () => {
-  const col = (name: string) => name;
-  const makeTable = () =>
-    new Proxy({} as any, { get: (_t, p) => (typeof p === "string" ? col(p) : undefined) });
-  return new Proxy({} as any, { get: (_t, _name) => makeTable() });
+  const makeTable = (name: string) =>
+    new Proxy({} as any, { get: (_t, p) => (typeof p === "string" ? p : undefined) });
+  // Enumerate every table the write-tools → memory-write → memory/embeddings chain imports.
+  return {
+    agents: makeTable("agents"),
+    internalAgentRuns: makeTable("internal_agent_runs"),
+    discussionEntries: makeTable("discussion_entries"),
+    discussions: makeTable("discussions"),
+    discussionExtractedItems: makeTable("discussion_extracted_items"),
+    debriefs: makeTable("debriefs"),
+    briefs: makeTable("briefs"),
+    briefItems: makeTable("brief_items"),
+    issues: makeTable("issues"),
+    memoryItems: makeTable("memory_items"),
+    embeddingQueue: makeTable("embedding_queue"),
+    memoryItemVersions: makeTable("memory_item_versions"),
+    memoryRetrievals: makeTable("memory_retrievals"),
+    suggestions: makeTable("suggestions"),
+    artifacts: makeTable("artifacts"),
+    artifactVersions: makeTable("artifact_versions"),
+    goals: makeTable("goals"),
+    projects: makeTable("projects"),
+  };
 });
 
 // The key mock: capture calls to enqueueInboxItem so we can assert them.

@@ -114,6 +114,14 @@ vi.mock("../adapters/api-common.js", () => ({
   resolveApiKey: (...args: any[]) => mockResolveApiKey(...args),
 }));
 
+// The search paths now resolve the embedding key via getProviderApiKey
+// (env-fallback-aware). Delegate to the same mock (dropping the leading db arg)
+// so the existing mockResolveApiKey.mockResolved/Rejected scenarios still drive
+// the no-key / has-key behavior.
+vi.mock("../services/internal-agent/providers/index.js", () => ({
+  getProviderApiKey: (...args: any[]) => mockResolveApiKey(...args.slice(1)),
+}));
+
 const mockGenerateEmbedding = vi.fn();
 vi.mock("../services/embeddings.js", () => ({
   generateEmbedding: (...args: any[]) => mockGenerateEmbedding(...args),

@@ -1,15 +1,21 @@
-import { and, eq, ilike, or, sql, desc, isNull, gt } from "drizzle-orm";
+import { and, eq, ilike, or, sql, desc, isNull, gt, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
+import { agents, embeddingQueue, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
-import { resolveApiKey } from "../adapters/api-common.js";
+import { enqueueMemoryEmbedding } from "./memory-write.js";
+// Query-side key resolution MUST match the write-side worker + resolveSemanticAvailable:
+// getProviderApiKey resolves the per-company llm:openai secret AND falls back to env
+// OPENAI_API_KEY. The old resolveApiKey had no env fallback, so env-only installs
+// indexed vectors (worker) but could never embed the QUERY → semantic recall silently
+// fell back to keyword while the UI reported semantic available (P2, Codex).
+import { getProviderApiKey } from "./internal-agent/providers/index.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
 import { buildMemoryInsert, memoryItemsSelection } from "./memory-projection.js";
 import { publishLiveEvent } from "./live-events.js";
-
+import { deriveIndexStatus } from "./memory-index-status.js";
 const log = logger.child({ service: "memory" });
 
 /** Validate embedding values are all finite numbers and format for pgvector. */
@@ -123,9 +129,67 @@ function isValidLayer(layer: string | null | undefined): boolean {
   return !!layer && MEMORY_ITEM_LAYERS.includes(layer as (typeof MEMORY_ITEM_LAYERS)[number]);
 }
 
+// ─── Index-status enrichment helpers (Task W5) ────────────────────────────────
+
+/**
+ * Batch-fetch the latest embedding_queue status for a set of memory item IDs.
+ * Uses a single query (no N+1): selects all rows for the given IDs then keeps
+ * the most recently created row per targetId.
+ *
+ * Returns a Map: targetId → latest queue status string.
+ * IDs with no queue row are absent from the map (callers treat as null).
+ */
+async function batchFetchQueueStatuses(
+  db: Db,
+  ids: string[],
+): Promise<Map<string, "pending" | "processing" | "completed" | "failed">> {
+  if (ids.length === 0) return new Map();
+
+  // One query: fetch all queue rows for these items ordered newest-first.
+  // We then keep only the first-seen row per targetId (= latest by createdAt).
+  const rows = await db
+    .select({
+      targetId: embeddingQueue.targetId,
+      status: embeddingQueue.status,
+    })
+    .from(embeddingQueue)
+    .where(
+      and(
+        eq(embeddingQueue.targetTable, "memory_items"),
+        inArray(embeddingQueue.targetId, ids),
+      ),
+    )
+    .orderBy(desc(embeddingQueue.createdAt));
+
+  const result = new Map<string, "pending" | "processing" | "completed" | "failed">();
+  for (const row of rows) {
+    if (!result.has(row.targetId)) {
+      result.set(
+        row.targetId,
+        row.status as "pending" | "processing" | "completed" | "failed",
+      );
+    }
+  }
+  return result;
+}
+
+/**
+ * Determine whether the embedding column IS NOT NULL for a given item row.
+ * When pgvector is absent, the embedding column doesn't exist so always false.
+ * When it exists, the row's `embedding` field is a non-null value if set.
+ *
+ * `memoryItemsSelection()` includes the `embedding` column only when
+ * `hasVectorSupport` is true; otherwise the field is absent on the row.
+ * We rely on that: if the field is present and truthy, the vector exists.
+ */
+function rowHasVector(row: Record<string, unknown>): boolean {
+  return row.embedding != null;
+}
+
+
 export function memoryService(db: Db) {
   return {
-    list: (companyId: string, filters: MemoryFilters = {}) => {
+    list: async (companyId: string, filters: MemoryFilters = {}) => {
       const conditions = [eq(memoryItems.companyId, companyId)];
 
       if (filters.category) {
@@ -161,7 +225,24 @@ export function memoryService(db: Db) {
         }
       }
 
-      return db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
+      const rows = await db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
+      // Enrich with per-item indexStatus (Task W5 — additive field, array contract preserved).
+      // semanticAvailable lives at the route level — call resolveSemanticAvailable() there.
+      const queueStatuses = await batchFetchQueueStatuses(
+        db,
+        rows.map((r) => (r as Record<string, unknown>).id as string),
+      );
+      return rows.map((item) => ({
+        // Spread the TYPED row (not a Record<string,unknown> cast) so the base
+        // MemoryItem fields survive in the result type — object spread drops a
+        // spread source's index signature, which would erase layer/status/etc.
+        ...item,
+        indexStatus: deriveIndexStatus({
+          hasVector: rowHasVector(item as Record<string, unknown>),
+          queueStatus:
+            queueStatuses.get((item as { id: string }).id) ?? null,
+        }),
+      }));
     },
 
     searchAuditCandidates: (companyId: string, query: string, filters: SearchAuditCandidatesFilters = {}) => {
@@ -187,12 +268,24 @@ export function memoryService(db: Db) {
         .limit(Math.min(filters.limit ?? 50, 100));
     },
 
-    getById: (companyId: string, id: string) =>
-      db
+    getById: async (companyId: string, id: string) => {
+      const rows = await db
         .select(memoryItemsSelection())
         .from(memoryItems)
-        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .then((rows) => rows[0] ?? null),
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)));
+      const row = rows[0] ?? null;
+      if (!row) return null;
+      // Enrich with per-item indexStatus (Task W5 — additive field, same outer shape).
+      const queueStatuses = await batchFetchQueueStatuses(db, [id]);
+      return {
+        // Spread the TYPED row (see list() note) so base fields survive.
+        ...row,
+        indexStatus: deriveIndexStatus({
+          hasVector: rowHasVector(row as Record<string, unknown>),
+          queueStatus: queueStatuses.get(id) ?? null,
+        }),
+      };
+    },
 
     create: (
       companyId: string,
@@ -227,7 +320,15 @@ export function memoryService(db: Db) {
         values.embedding = null;
       }
       return buildMemoryInsert((tx ?? db) as Db, values, caps.hasVectorSupport).then(
-        (rows) => rows[0],
+        async (rows) => {
+          const row = rows[0];
+          // Status-agnostic: enqueue immediately regardless of pending/approved.
+          // Dedup guard in enqueueMemoryEmbedding ensures no double-insert.
+          if (row) {
+            await enqueueMemoryEmbedding(db, companyId, row, tx as unknown as Db | undefined);
+          }
+          return row;
+        },
       );
     },
 
@@ -245,7 +346,15 @@ export function memoryService(db: Db) {
         .set(setData)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection(caps.hasVectorSupport))
-        .then((rows) => rows[0] ?? null);
+        .then(async (rows) => {
+          const row = rows[0] ?? null;
+          // Re-index when content/title changed — dedup guard prevents
+          // double-insert if the item is already pending in the queue.
+          if (row && hasContentChange) {
+            await enqueueMemoryEmbedding(db, companyId, row);
+          }
+          return row;
+        });
     },
 
     remove: (companyId: string, id: string) =>
@@ -261,7 +370,16 @@ export function memoryService(db: Db) {
         .set({ status: "approved", updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection())
-        .then((rows) => rows[0] ?? null),
+        .then(async (rows) => {
+          const row = rows[0] ?? null;
+          // Enqueue (deduped) — covers items that were created on installs
+          // where the create-enqueue was skipped (e.g. no pgvector at create
+          // time, or items that pre-date this wiring).
+          if (row) {
+            await enqueueMemoryEmbedding(db, companyId, row);
+          }
+          return row;
+        }),
 
     reject: (companyId: string, id: string) =>
       db
@@ -289,7 +407,7 @@ export function memoryService(db: Db) {
       let apiKey: string | null = null;
       if (caps.hasVectorSupport) {
         try {
-          apiKey = await resolveApiKey(companyId, "openai");
+          apiKey = await getProviderApiKey(db, companyId, "openai");
         } catch {
           // No API key — fall back to text search
         }
@@ -475,7 +593,7 @@ export function memoryService(db: Db) {
 
         let apiKey: string | null = null;
         try {
-          apiKey = await resolveApiKey(companyId, "openai");
+          apiKey = await getProviderApiKey(db, companyId, "openai");
         } catch {
           return [];
         }
@@ -673,7 +791,7 @@ export function memoryService(db: Db) {
       let apiKey: string | null = null;
       if (caps.hasVectorSupport) {
         try {
-          apiKey = await resolveApiKey(scope.companyId, "openai");
+          apiKey = await getProviderApiKey(db, scope.companyId, "openai");
         } catch {
           // No API key — fall back to text search
         }

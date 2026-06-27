@@ -22,7 +22,6 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { relativeTime } from "@/lib/utils";
-import { Link } from "@/lib/router";
 import type { DiscussionEntry, DiscussionEntryAttachment } from "../../api/discussions";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { ScopeProposalCard } from "./ScopeProposalCard";
@@ -143,14 +142,12 @@ function ChipRow({
   pendingCount,
   extractionStatus,
   extractionError,
-  errorMentionsProvider,
 }: {
   taskCount: number;
   memCount: number;
   pendingCount: number;
   extractionStatus: string;
   extractionError: string | null;
-  errorMentionsProvider: boolean;
 }) {
   const hasChips =
     taskCount > 0 ||
@@ -184,11 +181,6 @@ function ChipRow({
         >
           <XCircle className="h-2.5 w-2.5" />
           Extraction failed
-          {errorMentionsProvider && (
-            <Link to="/settings?tab=llm" className="underline hover:no-underline ml-1">
-              Settings
-            </Link>
-          )}
         </span>
       )}
       {taskCount > 0 && (
@@ -380,13 +372,21 @@ export function EntryRow({
     (i) => i.status === "pending" || i.status === "edited",
   ).length;
 
+  // extractionError may be a plain string (legacy path) OR the CLI path's
+  // structured { kind, message } object (extraction.ts). Surface the human
+  // message from either shape so the failure chip's tooltip shows the actionable
+  // CLI guidance (e.g. "run claude login") instead of a generic message (P2,
+  // Codex). Extraction is CLI-only (Decision #104, amended 2026-06-27) — it never
+  // reads a hosted key, so the failure chip no longer offers a "Settings" link.
+  const rawExtractionError = (entry.sourceInfo as Record<string, unknown> | null)?.extractionError;
   const extractionError =
-    typeof (entry.sourceInfo as Record<string, unknown> | null)?.extractionError === "string"
-      ? ((entry.sourceInfo as Record<string, unknown>).extractionError as string)
-      : null;
-  const errorMentionsProvider = extractionError
-    ? /api key|provider/i.test(extractionError)
-    : false;
+    typeof rawExtractionError === "string"
+      ? rawExtractionError
+      : rawExtractionError &&
+          typeof rawExtractionError === "object" &&
+          typeof (rawExtractionError as { message?: unknown }).message === "string"
+        ? ((rawExtractionError as { message: string }).message)
+        : null;
 
   if (isAgent) {
     return (
@@ -396,7 +396,6 @@ export function EntryRow({
         memCount={memCount}
         pendingCount={pendingCount}
         extractionError={extractionError}
-        errorMentionsProvider={errorMentionsProvider}
         onOpenArtifact={onOpenArtifact}
       />
     );
@@ -409,6 +408,7 @@ export function EntryRow({
         taskCount={taskCount}
         memCount={memCount}
         pendingCount={pendingCount}
+        extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
       />
     );
@@ -421,7 +421,6 @@ export function EntryRow({
       memCount={memCount}
       pendingCount={pendingCount}
       extractionError={extractionError}
-      errorMentionsProvider={errorMentionsProvider}
       onOpenArtifact={onOpenArtifact}
     />
   );
@@ -434,12 +433,14 @@ function MeBubble({
   taskCount,
   memCount,
   pendingCount,
+  extractionError,
   onOpenArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
   memCount: number;
   pendingCount: number;
+  extractionError?: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   return (
@@ -485,8 +486,7 @@ function MeBubble({
             memCount={memCount}
             pendingCount={pendingCount}
             extractionStatus={entry.extractionStatus}
-            extractionError={null}
-            errorMentionsProvider={false}
+            extractionError={extractionError ?? null}
           />
           <ReplyCountToggle count={entry.replyCount ?? 0} />
         </div>
@@ -510,7 +510,6 @@ function HumanBubble({
   memCount,
   pendingCount,
   extractionError,
-  errorMentionsProvider,
   onOpenArtifact,
 }: {
   entry: DiscussionEntry;
@@ -518,7 +517,6 @@ function HumanBubble({
   memCount: number;
   pendingCount: number;
   extractionError: string | null;
-  errorMentionsProvider: boolean;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   return (
@@ -568,7 +566,6 @@ function HumanBubble({
           pendingCount={pendingCount}
           extractionStatus={entry.extractionStatus}
           extractionError={extractionError}
-          errorMentionsProvider={errorMentionsProvider}
         />
         <ReplyCountToggle count={entry.replyCount ?? 0} />
       </div>
@@ -584,7 +581,6 @@ function AgentCard({
   memCount,
   pendingCount,
   extractionError,
-  errorMentionsProvider,
   onOpenArtifact,
 }: {
   entry: DiscussionEntry;
@@ -592,7 +588,6 @@ function AgentCard({
   memCount: number;
   pendingCount: number;
   extractionError: string | null;
-  errorMentionsProvider: boolean;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
 }) {
   const color = agentRoleColor(entry.authorAgentName);
@@ -659,7 +654,6 @@ function AgentCard({
           pendingCount={pendingCount}
           extractionStatus={entry.extractionStatus}
           extractionError={extractionError}
-          errorMentionsProvider={errorMentionsProvider}
         />
 
         {/* Reply count */}

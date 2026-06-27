@@ -7,6 +7,21 @@
 // cap, INVALID_PARAMS for empty text, EMBEDDING_FAILED when embedder throws.
 
 import { describe, expect, it, vi } from "vitest";
+
+// Instrument drizzle's `eq` (keeping every other operator real) so we can assert
+// the governance filter eq(status, 'approved') is part of the HNSW query.
+const { eqCalls } = vi.hoisted(() => ({ eqCalls: [] as Array<[unknown, unknown]> }));
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("drizzle-orm")>();
+  return {
+    ...actual,
+    eq: (col: unknown, val: unknown) => {
+      eqCalls.push([col, val]);
+      return (actual.eq as any)(col, val);
+    },
+  };
+});
+
 import { findSimilarMemoryHnswTool } from "../services/internal-agent/tools/memory-find-similar.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
@@ -16,7 +31,7 @@ function makeDbReturning(rows: any[]) {
   const where = vi.fn().mockReturnValue({ orderBy });
   const from = vi.fn().mockReturnValue({ where });
   const select = vi.fn().mockReturnValue({ from });
-  return { db: { select } as any, limitMock: limit };
+  return { db: { select } as any, limitMock: limit, whereMock: where };
 }
 
 function makeCtx(db: any, overrides: Partial<ToolContext> = {}): ToolContext {
@@ -67,8 +82,23 @@ describe("find_similar_memory_hnsw tool (C2 batch 3)", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual(rows);
     expect(embedSync).toHaveBeenCalledOnce();
-    expect(embedSync).toHaveBeenCalledWith("billing config");
+    expect(embedSync).toHaveBeenCalledWith("billing config", "co-1");
     expect(result.summary).toContain("2");
+  });
+
+  it("governance (P1): query filters to approved status (pending memory is not recalled)", async () => {
+    eqCalls.length = 0;
+    const { db, whereMock } = makeDbReturning([]);
+    const embedSync = vi.fn().mockResolvedValue(new Array(1536).fill(0.001));
+    const ctx = makeCtx(db, {
+      services: { embeddings: { embedSync } } as any,
+    });
+    await findSimilarMemoryHnswTool.execute({ text: "anything" }, ctx);
+
+    expect(whereMock).toHaveBeenCalledOnce();
+    // The query MUST constrain status to 'approved' so unapproved pending
+    // agent/MCP memory can never surface via semantic recall (Critical Rule #6).
+    expect(eqCalls.some(([, val]) => val === "approved")).toBe(true);
   });
 
   it("respects layer filter and includes it in the where clause", async () => {

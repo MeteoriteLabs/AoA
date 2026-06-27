@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NewMemoryItemDialog } from "../components/memory/NewMemoryItemDialog";
-import { useSearchParams, useNavigate } from "@/lib/router";
-import { Brain, Plus, Search } from "lucide-react";
+import { useSearchParams, useNavigate, Link } from "@/lib/router";
+import { AlertCircle, Brain, Plus, Search, X } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { Button } from "@/components/ui/button";
@@ -46,11 +46,14 @@ export function MemoryExplorer() {
   const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();
 
   // Rail counts — derived from the flat items list (same query key as MemoryTree; cache hit).
-  const { data: allItems } = useQuery({
+  const { data: _listResponse } = useQuery({
     queryKey: queryKeys.memory.list(selectedCompanyId ?? ""),
     queryFn: () => memoryApi.list(selectedCompanyId!, {}),
     enabled: Boolean(selectedCompanyId),
   });
+  const allItems = _listResponse?.items;
+  const semanticAvailable = _listResponse?.semanticAvailable ?? true;
+  const [semanticBannerDismissed, setSemanticBannerDismissed] = useState(false);
   const railCounts = useMemo(() => deriveMemoryCounts(allItems ?? []), [allItems]);
   const activeRailKind = activeRailKindFromUrl({ folderPath, departmentId, layer: layer ?? null });
 
@@ -184,6 +187,34 @@ export function MemoryExplorer() {
 
   return (
     <div className="h-full flex flex-col">
+      {/* No-key semantic search banner — embeddings key powers meaning-based recall. */}
+      {!semanticAvailable && !semanticBannerDismissed && (
+        <div
+          data-testid="no-llm-key-banner"
+          className="mx-2 mt-2 flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/[0.08] px-4 py-3 text-sm"
+        >
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-500" aria-hidden />
+          <div className="flex-1 text-muted-foreground">
+            <span className="font-medium text-foreground">Semantic search is off</span>
+            {" — add an embeddings key in "}
+            <Link
+              to="/settings?tab=memory"
+              className="font-medium text-foreground underline hover:no-underline"
+            >
+              Settings → Memory
+            </Link>
+            {" to enable meaning-based memory recall."}
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setSemanticBannerDismissed(true)}
+            className="ml-2 shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
       <Group
         orientation="horizontal"
         id="memory-explorer-panes"

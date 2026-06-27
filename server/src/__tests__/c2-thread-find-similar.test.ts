@@ -68,7 +68,7 @@ describe("find_similar_threads tool (C2 batch 1)", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual(rows);
     expect(embedSync).toHaveBeenCalledOnce();
-    expect(embedSync).toHaveBeenCalledWith("auth flow");
+    expect(embedSync).toHaveBeenCalledWith("auth flow", "co-1");
     expect(result.summary).toContain("2");
   });
 

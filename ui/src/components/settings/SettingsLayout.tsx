@@ -1,16 +1,22 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useSidebar } from "@/context/SidebarContext";
-import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose } from "lucide-react";
+import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose, Brain } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 
 export type SettingsSectionId =
-  | "general" | "health" | "commander" | "llm" | "budget" | "mcp" | "github"
+  | "general" | "health" | "commander" | "memory" | "budget" | "mcp" | "github"
   | "plugins" | "marketplace" | "archive"
   | "activity" | "environments" | "secrets";
+
+/**
+ * Accepted ?tab= input alias. The old "llm" tab value is still accepted on
+ * read (so bookmarks survive) but normalizes to the canonical "memory".
+ */
+export type SettingsSectionAlias = SettingsSectionId | "llm";
 
 interface SettingsItem {
   id: SettingsSectionId;
@@ -32,7 +38,7 @@ export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
   { group: "Operations", items: [
     { id: "health",       label: "Health",             icon: HeartPulse },
     { id: "commander",    label: "Commander",          icon: Shield },
-    { id: "llm",          label: "LLM providers",      icon: KeyRound },
+    { id: "memory",       label: "Memory",             icon: Brain },
     { id: "budget",       label: "Budget & caps",      icon: DollarSign },
     { id: "mcp",          label: "MCP API keys",       icon: Plug },
     { id: "environments", label: "Environments",       icon: Layers },

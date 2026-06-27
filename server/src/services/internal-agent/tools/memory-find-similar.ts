@@ -16,7 +16,7 @@
 //     embedding-IS-NOT-NULL guard keeps un-embedded rows out of the result
 //     so the ORDER BY can't crash.
 
-import { sql, eq, and } from "drizzle-orm";
+import { sql, eq, and, or, isNull, gt } from "drizzle-orm";
 import { memoryItems } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
@@ -88,7 +88,7 @@ export const findSimilarMemoryHnswTool: AgentTool = {
 
     let vector: number[];
     try {
-      vector = await embedSync(text);
+      vector = await embedSync(text, ctx.companyId);
     } catch (err: any) {
       return {
         success: false,
@@ -101,6 +101,13 @@ export const findSimilarMemoryHnswTool: AgentTool = {
     const conditions = [
       eq(memoryItems.companyId, ctx.companyId),
       sql`${memoryItems.embedding} IS NOT NULL`,
+      // Governance gate (P1, Codex): only approved, non-expired memory may be
+      // retrieved. Agent/MCP suggestions are stored 'pending' and are now
+      // indexed for RAG on write, so WITHOUT this filter find_similar_memory_hnsw
+      // would surface unapproved pending memory and bypass the founder-approval
+      // gate (Critical Rule #6). Mirrors the memoryService retrieval filters.
+      eq(memoryItems.status, "approved"),
+      or(isNull(memoryItems.expiresAt), gt(memoryItems.expiresAt, sql`now()`))!,
     ];
     if (layer) {
       conditions.push(eq(memoryItems.layer, layer));

@@ -16,9 +16,14 @@ import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { companyBrainGraphService, memoryService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
+import { resolveSemanticAvailable } from "../services/memory-index-status.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertMemoryAccess, assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
+import { reindexCompany, reindexAllCompany } from "../services/embeddings-backfill.js";
+import { enqueueMemoryEmbedding } from "../services/memory-write.js";
+import { eq, and, inArray } from "drizzle-orm";
+import { embeddingQueue } from "@armyofagents/db";
 
 function resolveAgentRequestId(
   req: Parameters<typeof getActorInfo>[0],
@@ -110,8 +115,11 @@ export function memoryRoutes(db: Db) {
       tags: req.query.tags ? (req.query.tags as string).split(",") : undefined,
       search: req.query.search as string | undefined,
     };
-    const result = await svc.list(companyId, filters);
-    res.json(result);
+    const [items, semanticAvailable] = await Promise.all([
+      svc.list(companyId, filters),
+      resolveSemanticAvailable(db, companyId),
+    ]);
+    res.json({ items, semanticAvailable });
   });
 
   router.get("/companies/:companyId/memory-pending", async (req, res) => {
@@ -1036,6 +1044,240 @@ export function memoryRoutes(db: Db) {
       }
     },
   );
+
+  // ── Embedding re-index routes (Task W4, keyless-except-embeddings) ─────────
+
+  /**
+   * POST /companies/:companyId/memory/:id/reindex
+   *
+   * Re-index one memory item:
+   *   - If the item has a `failed` queue row, reset it to `pending` (clears
+   *     next_retry_at, attempts, error) so the worker will retry it.
+   *   - Otherwise, enqueue the item via the standard dedup-guarded path.
+   *
+   * RBAC: founder or team_lead only.
+   */
+  router.post("/companies/:companyId/memory/:id/reindex", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    // Board-only (P2, Codex): assertRole is a no-op for agent actors (rbac.ts
+    // returns early for type==="agent"), so without assertBoard any company agent
+    // key could drive re-index. This is a founder/team_lead UI action.
+    assertBoard(req);
+    await assertRole(db, req, companyId, "founder", "team_lead");
+
+    const item = await svc.getById(companyId, id);
+    if (!item) {
+      res.status(404).json({ error: "Memory item not found" });
+      return;
+    }
+
+    // Department-scope (audit follow-up): assertRole above is company-wide, so a
+    // team_lead of department A could otherwise re-index department B's item.
+    // Re-index mutates the embedding (an "update"), so gate on the FETCHED item's
+    // department/layer/visibility — the same department-aware check the sibling
+    // update/delete routes use.
+    await assertMemoryAccess(db, req, companyId, "update", {
+      layer: item.layer,
+      departmentId: item.departmentId,
+      visibility: item.visibility,
+    });
+
+    // Check for an existing failed queue row for this item.
+    const failedRows = await (db as any)
+      .select({ id: embeddingQueue.id })
+      .from(embeddingQueue)
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          eq(embeddingQueue.targetTable, "memory_items"),
+          eq(embeddingQueue.targetId, id),
+          eq(embeddingQueue.targetColumn, "embedding"),
+          eq(embeddingQueue.status, "failed"),
+        ),
+      )
+      .limit(1);
+
+    // Re-index the item's CURRENT content (P2, Codex). We deliberately do NOT
+    // reset the stale failed row in place: if the item was edited and re-indexed
+    // after the earlier failure, that failed row carries pre-edit inputText and
+    // requeuing it would overwrite the current vector with obsolete content.
+    // enqueueMemoryEmbedding composes inputText from the item's current
+    // title+content and dedups against any live pending row, so the latest
+    // content is always what gets embedded (matches the bulk reindex path's
+    // superseding-row protection). The old failed row is left as harmless history.
+    await enqueueMemoryEmbedding(db, companyId, item);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.reindex",
+      entityType: "memory_item",
+      entityId: id,
+      details: { title: item.title, hadFailedRow: failedRows.length > 0 },
+    });
+
+    res.json({ reindexed: true });
+  });
+
+  /**
+   * POST /companies/:companyId/memory/reindex-failed
+   *
+   * Reset ALL `failed` embedding_queue rows for this company back to `pending`,
+   * clearing next_retry_at, attempts, and error so the worker drains the backlog.
+   *
+   * Returns { requeued: N } where N is the number of rows reset.
+   *
+   * RBAC: FOUNDER only (P2, Codex re-review). This is a company-wide bulk
+   * operation that re-embeds failed rows across ALL departments + the identity
+   * layer; a team_lead (scoped to one department) would otherwise mutate other
+   * departments' memory. Department-scoped re-index is available per-item via
+   * POST /memory/:id/reindex (which gates on the item's department).
+   */
+  router.post("/companies/:companyId/memory/reindex-failed", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
+    assertBoard(req);
+    await assertRole(db, req, companyId, "founder");
+
+    // Only requeue NON-STALE failed rows (P2, Codex): skip any failed row whose
+    // target already has a completed/live (pending|processing) sibling — that
+    // means a NEWER row re-indexed the (possibly edited) item, so this failed
+    // row's inputText is stale and requeuing it would clobber the current vector.
+    // Same predicate as embeddings-backfill.reindexCompany.
+    const failedRows = await (db as any)
+      .select({
+        id: embeddingQueue.id,
+        targetTable: embeddingQueue.targetTable,
+        targetId: embeddingQueue.targetId,
+        targetColumn: embeddingQueue.targetColumn,
+        createdAt: embeddingQueue.createdAt,
+      })
+      .from(embeddingQueue)
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          eq(embeddingQueue.status, "failed"),
+        ),
+      );
+
+    const supersedingRows = await (db as any)
+      .select({
+        targetTable: embeddingQueue.targetTable,
+        targetId: embeddingQueue.targetId,
+        targetColumn: embeddingQueue.targetColumn,
+        createdAt: embeddingQueue.createdAt,
+      })
+      .from(embeddingQueue)
+      .where(
+        and(
+          eq(embeddingQueue.companyId, companyId),
+          inArray(embeddingQueue.status, ["completed", "pending", "processing"]),
+        ),
+      );
+
+    // Recency-aware suppression (P2, Codex): a failed row is stale only if a
+    // completed/live sibling is NEWER than it. The newest failed attempt for a
+    // target must still be requeued even if an OLDER completed row exists.
+    const tkey = (r: { targetTable: string; targetId: string; targetColumn: string }) =>
+      `${r.targetTable} ${r.targetId} ${r.targetColumn}`;
+    const tms = (v: unknown) => (v ? new Date(v as string | Date).getTime() : 0);
+    const newestSibling = new Map<string, number>();
+    for (const s of supersedingRows as Array<{
+      targetTable: string;
+      targetId: string;
+      targetColumn: string;
+      createdAt: unknown;
+    }>) {
+      const k = tkey(s);
+      const t = tms(s.createdAt);
+      const prev = newestSibling.get(k);
+      if (prev === undefined || t > prev) newestSibling.set(k, t);
+    }
+    const requeueableIds = (
+      failedRows as Array<{
+        id: string;
+        targetTable: string;
+        targetId: string;
+        targetColumn: string;
+        createdAt: unknown;
+      }>
+    )
+      .filter((r) => {
+        const sib = newestSibling.get(tkey(r));
+        return sib === undefined || tms(r.createdAt) >= sib;
+      })
+      .map((r) => r.id);
+
+    const requeued = requeueableIds.length;
+
+    if (requeued > 0) {
+      await (db as any)
+        .update(embeddingQueue)
+        .set({ status: "pending", nextRetryAt: null, attempts: 0, error: null })
+        .where(inArray(embeddingQueue.id, requeueableIds));
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.reindex_failed",
+      entityType: "company",
+      entityId: companyId,
+      details: { requeued },
+    });
+
+    res.json({ requeued });
+  });
+
+  /**
+   * POST /companies/:companyId/memory/reindex-all
+   *
+   * Re-embed the company's ENTIRE memory: enqueue a fresh `pending` row for
+   * every memory_item that does not already have a live (pending|processing)
+   * queue row (dedup-safe). The "Re-index all" button in Settings → Memory.
+   *
+   * Returns { reindexed: N } where N is the number of items newly enqueued.
+   *
+   * RBAC: FOUNDER only. This is a company-wide bulk re-embed across ALL
+   * departments + the identity layer, so (like /reindex-failed) a department-
+   * scoped team_lead must not drive it. Department-scoped re-index is available
+   * per-item via POST /memory/:id/reindex (which gates on the item's department).
+   */
+  router.post("/companies/:companyId/memory/reindex-all", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
+    assertBoard(req);
+    await assertRole(db, req, companyId, "founder");
+
+    const { enqueued } = await reindexAllCompany(db, companyId);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.reindex_all",
+      entityType: "company",
+      entityId: companyId,
+      details: { reindexed: enqueued },
+    });
+
+    res.json({ reindexed: enqueued });
+  });
 
   return router;
 }

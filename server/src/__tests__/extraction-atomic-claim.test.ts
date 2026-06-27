@@ -22,10 +22,29 @@ vi.mock("../middleware/logger.js", () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
-vi.mock("../services/internal-agent/providers/index.js", () => ({
-  getProviderApiKey: vi.fn(async () => "k"),
-  createProvider: vi.fn(),
+// Force the engine to "cli" so the atomic-claim assertions (select counts) are
+// not perturbed by a real CLI PATH probe and so we never spawn a real binary.
+vi.mock("../services/extraction-engine.js", () => ({
+  resolveExtractionEngine: vi.fn(async () => "cli"),
+  resolveCompanyCliTool: vi.fn(async () => "claude_cli"),
 }));
+
+// Keyless CLI extractor is stubbed — the winner-of-the-claim test only needs the
+// extraction to proceed past the claim, not to produce real items.
+vi.mock("../services/extraction-cli.js", () => {
+  class FakeCliExtractionError extends Error {
+    readonly kind: string;
+    constructor(message: string, kind: string) {
+      super(message);
+      this.name = "CliExtractionError";
+      this.kind = kind;
+    }
+  }
+  return {
+    extractViaCli: vi.fn(async () => []),
+    CliExtractionError: FakeCliExtractionError,
+  };
+});
 
 import { extractionService } from "../services/extraction.js";
 

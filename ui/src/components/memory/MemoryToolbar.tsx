@@ -37,12 +37,12 @@ export function MemoryToolbar({
   uploadContext,
   searchEnabled = true,
 }: Props) {
-  const { data: items } = useQuery({
+  const { data: listResponse } = useQuery({
     queryKey: queryKeys.memory.list(companyId),
     queryFn: () => memoryApi.list(companyId, {}),
     enabled: Boolean(companyId),
   });
-  const total = items?.length ?? 0;
+  const total = listResponse?.items?.length ?? 0;
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">

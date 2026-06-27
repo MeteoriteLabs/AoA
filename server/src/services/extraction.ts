@@ -1,42 +1,16 @@
 import { eq, and, desc, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@armyofagents/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getProviderApiKey, createProvider, resolveAvailableProvider } from "./internal-agent/providers/index.js";
+import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
+import { resolveExtractionEngine, resolveCompanyCliTool } from "./extraction-engine.js";
+import { extractViaCli, CliExtractionError } from "./extraction-cli.js";
 
-/**
- * Item types the extractor can produce. Mirrors the six legacy types used by
- * the autonomous Scribe flow plus the two thread-specific types introduced for
- * Phase 1 (`artifact`, `spin_off_thread`). The DB column comment on
- * `discussion_extracted_items.type` already documents all eight.
- *
- * NOTE: `parseExtractedItems` below currently accepts only the six legacy
- * types — that is intentional. The legacy autonomous flow never asks the LLM
- * to emit `artifact` / `spin_off_thread`; the tool-callable extractors (Task
- * C1 named exports) inherit the same prompt and so only ever yield the six.
- * If Phase-1 thread tools later need the new types they can broaden
- * `VALID_EXTRACTED_TYPES` and the prompt together — keeping the type union
- * exhaustive here avoids a second source of truth.
- */
-export type ExtractedItemType =
-  | "decision"
-  | "task"
-  | "insight"
-  | "context"
-  | "reference"
-  | "preference"
-  | "artifact"
-  | "spin_off_thread";
-
-export interface ExtractedItem {
-  type: "decision" | "task" | "insight" | "context" | "reference" | "preference";
-  title: string;
-  description: string;
-  priority?: "urgent" | "high" | "medium" | "low";
-  department?: string | null;
-  layer?: "identity" | "domain" | "active_context" | "working" | null;
-}
+// Re-export pure parser symbols so existing importers (`from "./extraction.js"`)
+// continue to work unchanged after the move to extraction-parser.ts.
+export { parseExtractedItems } from "./extraction-parser.js";
+export type { ExtractedItem, ExtractedItemType } from "./extraction-parser.js";
 
 const EXTRACTION_PROMPT_TEMPLATE = `You are extracting structured items from a founder's discussion entry — raw notes, meeting summaries, brainstorming, or pasted conversations.
 
@@ -116,159 +90,21 @@ async function buildDepartmentsList(
 }
 
 /**
- * Call the LLM to extract structured items from raw debrief content.
- * Uses a direct fetch to an OpenAI-compatible API endpoint.
- * Falls back gracefully if no API key is configured.
+ * Resolve the keyless-CLI extraction context for a company: the CLI tool to
+ * spawn and the codex model hint to forward. Mirrors how the discussion path
+ * derives `cliTool` + `codexModel` from `internal_agent_config`. Used by the
+ * debrief-push and file-import extraction paths.
  */
-async function callLLM(prompt: string, content: string, db?: Db, companyId?: string): Promise<ExtractedItem[]> {
-  // Try DB-stored provider keys first (these are managed via Settings UI and always up-to-date)
-  if (db && companyId) {
-    for (const provider of ["anthropic", "openai"] as const) {
-      try {
-        const dbKey = await getProviderApiKey(db, companyId, provider);
-        if (provider === "anthropic") {
-          return callAnthropic(dbKey, prompt, content);
-        }
-        return callOpenAI(dbKey, prompt, content);
-      } catch {
-        // Key not found for this provider, try next
-      }
-    }
-  }
-
-  // Fallback to env vars
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
-
-  if (anthropicKey) {
-    return callAnthropic(anthropicKey, prompt, content);
-  }
-
-  if (openaiKey) {
-    return callOpenAI(openaiKey, prompt, content);
-  }
-
-  throw new Error(
-    "No LLM API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or configure a provider in Settings → LLM Providers.",
-  );
-}
-
-async function callAnthropic(
-  apiKey: string,
-  systemPrompt: string,
-  content: string,
-): Promise<ExtractedItem[]> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      temperature: 0.2,
-      system: systemPrompt,
-      messages: [{ role: "user", content }],
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${body}`);
-  }
-
-  const result = await response.json();
-  const text = result.content?.[0]?.text;
-  if (!text) throw new Error("Empty response from Anthropic API");
-
-  return parseExtractedItems(text);
-}
-
-async function callOpenAI(
-  apiKey: string,
-  systemPrompt: string,
-  content: string,
-): Promise<ExtractedItem[]> {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: process.env.EXTRACTION_MODEL || "gpt-4o-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content },
-      ],
-      temperature: 0.2,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${body}`);
-  }
-
-  const result = await response.json();
-  const text = result.choices?.[0]?.message?.content;
-  if (!text) throw new Error("Empty response from OpenAI API");
-
-  return parseExtractedItems(text);
-}
-
-/**
- * Parse the LLM response text into structured items.
- * Handles potential markdown code fences around JSON.
- */
-export function parseExtractedItems(text: string): ExtractedItem[] {
-  let cleaned = text.trim();
-
-  // Strip markdown code fences if present
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
-  }
-
-  const parsed = JSON.parse(cleaned);
-
-  if (!Array.isArray(parsed)) {
-    throw new Error("LLM response is not a JSON array");
-  }
-
-  const validTypes = new Set(["decision", "task", "insight", "context", "reference", "preference"]);
-  const validPriorities = new Set(["urgent", "high", "medium", "low"]);
-  const validLayers = new Set(["identity", "domain", "active_context", "working"]);
-
-  return parsed
-    .filter((item: unknown) => {
-      if (!item || typeof item !== "object") return false;
-      const obj = item as Record<string, unknown>;
-      return (
-        typeof obj.type === "string" &&
-        validTypes.has(obj.type) &&
-        typeof obj.title === "string" &&
-        obj.title.length > 0
-      );
-    })
-    .map((item: Record<string, unknown>) => ({
-      type: item.type as ExtractedItem["type"],
-      title: String(item.title),
-      description: typeof item.description === "string" ? item.description : "",
-      priority:
-        item.type === "task" &&
-        typeof item.priority === "string" &&
-        validPriorities.has(item.priority)
-          ? (item.priority as ExtractedItem["priority"])
-          : undefined,
-      department:
-        typeof item.department === "string" ? item.department : null,
-      layer:
-        typeof item.layer === "string" && validLayers.has(item.layer)
-          ? (item.layer as ExtractedItem["layer"])
-          : null,
-    }));
+async function resolveCliExtractionContext(
+  db: Db,
+  companyId: string,
+): Promise<{ cliTool: string; codexModel: string | null }> {
+  const cliTool = await resolveCompanyCliTool(db, companyId);
+  const [config] = await db
+    .select({ model: internalAgentConfig.model })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId));
+  return { cliTool, codexModel: config?.model ?? null };
 }
 
 export function extractionService(db: Db) {
@@ -302,9 +138,15 @@ export function extractionService(db: Db) {
           deptList,
         );
 
-        // 3. Call LLM
-        log.info("Starting LLM extraction");
-        const extractedItems = await callLLM(prompt, debrief.rawContent, db, companyId);
+        // 3. Extract via the keyless CLI (no hosted provider key).
+        const { cliTool, codexModel } = await resolveCliExtractionContext(
+          db,
+          companyId,
+        );
+        log.info({ cliTool }, "Starting CLI extraction");
+        const extractedItems = await extractViaCli(cliTool, prompt, debrief.rawContent, {
+          codexModel,
+        });
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
         // 4-6. Create Brief + BriefItems + update debrief atomically
@@ -463,24 +305,17 @@ export function extractionService(db: Db) {
           return;
         }
 
-        // 4. Pre-check: verify an LLM provider/key is available before proceeding
-        const [preCheckConfig] = await db
-          .select()
-          .from(internalAgentConfig)
-          .where(eq(internalAgentConfig.companyId, companyId));
-
-        // Resolve a usable provider: the configured one, or any provider that
-        // actually has a key (DB secret or env var). Adding any one key works.
-        let resolvedProvider: { provider: string; apiKey: string; model: string };
+        // 4. Resolve the extraction ENGINE. Extraction is CLI-only (keyless) —
+        //    `resolveExtractionEngine` returns "cli" or throws. The `skipped`
+        //    outcome happens when no supported CLI is available; a hosted
+        //    provider key is NEVER consulted (keys are embeddings-only).
         try {
-          resolvedProvider = await resolveAvailableProvider(
-            db,
-            companyId,
-            preCheckConfig?.provider ?? undefined,
-          );
-        } catch {
+          await resolveExtractionEngine(db, companyId);
+        } catch (engineErr) {
           const msg =
-            "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
+            engineErr instanceof Error
+              ? engineErr.message
+              : "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude login`).";
           log.warn(msg);
           await db
             .update(discussionEntries)
@@ -494,7 +329,14 @@ export function extractionService(db: Db) {
 
         // (status was already set to 'processing' by the atomic claim above)
 
-        // 6. Get thread context (most recent 10 entries, excluding current)
+        // 5. Fetch agent config (CLI tool hint + codex model for the keyless
+        //    extractor). Cheap single read.
+        const [agentConfig] = await db
+          .select()
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId));
+
+        // 6. Get thread context (most recent 10 entries, excluding current).
         const previousEntries = await db
           .select()
           .from(discussionEntries)
@@ -509,7 +351,8 @@ export function extractionService(db: Db) {
           .map((e: any) => e.rawContent)
           .join("\n---\n");
 
-        // 7. Build extraction prompt
+        // 7. Build extraction prompt. Shared by BOTH engines — there is no
+        //    second extraction prompt to maintain.
         const { text: deptList, lookup: deptLookup } =
           await buildDepartmentsList(db, companyId);
         const prompt = EXTRACTION_PROMPT_TEMPLATE.replace(
@@ -517,77 +360,84 @@ export function extractionService(db: Db) {
           deptList,
         );
 
-        // 8. Use agent config from pre-check (already fetched above)
-        const agentConfig = preCheckConfig;
+        const userContent = threadContext
+          ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
+          : entry.rawContent;
 
-        let extractedItems: ExtractedItem[];
+        let extractedItems: ExtractedItem[] = [];
 
-        if (resolvedProvider) {
-          // ── Agent-based extraction ────────────────────────────────────
-          log.info(`Using ${resolvedProvider.provider} provider for extraction`);
+        // ── Keyless CLI extraction ──────────────────────────────────────
+        // Extraction is CLI-only — no hosted provider key is ever consulted.
+        // extractViaCli returns already-parsed ExtractedItem[] (no
+        // parseExtractedItems step).
+        const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
+        log.info({ cliTool }, "Using CLI engine for extraction (keyless)");
 
-          const [run] = await db
-            .insert(internalAgentRuns)
-            .values({
-              companyId,
-              triggerType: "event",
-              triggerSource: "discussion_entry",
-              status: "running",
-            })
-            .returning();
+        // Bounded retry for transient timeout failures (up to 3 attempts total).
+        // Only `timeout` errors are retried — structural errors (not_installed,
+        // not_authed, nonzero_exit, unparseable) terminalize immediately.
+        const MAX_CLI_ATTEMPTS = 3;
+        const CLI_RETRY_DELAY_MS = 500;
+        let lastCliErr: CliExtractionError | undefined;
 
+        for (let attempt = 1; attempt <= MAX_CLI_ATTEMPTS; attempt++) {
           try {
-            const provider = createProvider(resolvedProvider.provider, resolvedProvider.apiKey);
-            const model =
-              agentConfig?.provider === resolvedProvider.provider && agentConfig?.model
-                ? agentConfig.model
-                : resolvedProvider.model;
-
-            const userContent = threadContext
-              ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
-              : entry.rawContent;
-
-            let text = "";
-            for await (const chunk of provider.chat({
-              messages: [{ role: "user", content: userContent }],
-              tools: [],
-              model,
-              maxTokens: 4096,
-              systemPrompt: prompt,
-            })) {
-              if (chunk.type === "text") text += chunk.delta;
+            extractedItems = await extractViaCli(cliTool, prompt, userContent, {
+              codexModel: agentConfig?.model ?? null,
+            });
+            lastCliErr = undefined; // success — clear any prior transient error
+            break; // exit retry loop
+          } catch (cliErr) {
+            if (!(cliErr instanceof CliExtractionError)) {
+              // Non-CLI error (e.g. DB, network): rethrow into the outer catch.
+              throw cliErr;
             }
 
-            extractedItems = parseExtractedItems(text);
+            if (cliErr.kind !== "timeout") {
+              // Structural failure (not_installed, not_authed, nonzero_exit,
+              // unparseable) — no point retrying, terminalize immediately.
+              lastCliErr = cliErr;
+              break;
+            }
 
-            await db
-              .update(internalAgentRuns)
-              .set({ status: "completed", completedAt: new Date() })
-              .where(eq(internalAgentRuns.id, run.id));
-
-            await db
-              .update(discussionEntries)
-              .set({ extractionRunId: run.id })
-              .where(eq(discussionEntries.id, entryId));
-          } catch (providerErr: any) {
-            log.error({ err: providerErr }, "Agent provider extraction failed");
-            await db
-              .update(internalAgentRuns)
-              .set({
-                status: "failed",
-                errorMessage: providerErr?.message ?? "Unknown error",
-                completedAt: new Date(),
-              })
-              .where(eq(internalAgentRuns.id, run.id));
-            throw providerErr;
+            // Transient timeout — retry if we have attempts left.
+            lastCliErr = cliErr;
+            if (attempt < MAX_CLI_ATTEMPTS) {
+              log.warn(
+                { attempt, maxAttempts: MAX_CLI_ATTEMPTS, kind: cliErr.kind },
+                "CLI extraction timed out — retrying",
+              );
+              await new Promise<void>((resolve) => setTimeout(resolve, CLI_RETRY_DELAY_MS));
+            }
           }
-        } else {
-          // ── Legacy fallback extraction ────────────────────────────────
-          log.info("No agent config — using legacy extraction");
-          const userContent = threadContext
-            ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
-            : entry.rawContent;
-          extractedItems = await callLLM(prompt, userContent, db, companyId);
+        }
+
+        if (lastCliErr !== undefined) {
+          // All attempts exhausted (or non-retryable error) — terminalize failed.
+          // There is NO hosted-API fallback: extraction is CLI-only. Record kind
+          // + message so the failure UX can surface actionable CLI guidance.
+          const failPayload = JSON.stringify({
+            kind: lastCliErr.kind,
+            message: lastCliErr.message,
+          });
+          log.error(
+            { kind: lastCliErr.kind, err: lastCliErr },
+            "CLI extraction failed (all attempts exhausted)",
+          );
+          await db
+            .update(discussionEntries)
+            .set({
+              extractionStatus: "failed",
+              sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${failPayload}::jsonb)`,
+            })
+            .where(eq(discussionEntries.id, entryId));
+
+          publishLiveEvent({
+            companyId,
+            type: "discussion.extraction.failed",
+            payload: { discussionId, entryId, error: lastCliErr.message },
+          });
+          return;
         }
 
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
@@ -692,10 +542,14 @@ export function extractionService(db: Db) {
           "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
           deptList,
         );
-        return await callLLM(systemPrompt, rawText, db, companyId);
+        const { cliTool, codexModel } = await resolveCliExtractionContext(
+          db,
+          companyId,
+        );
+        return await extractViaCli(cliTool, systemPrompt, rawText, { codexModel });
       } catch (err) {
-        // LLM unavailable or quota exceeded — caller falls back to paragraph chunking
-        logger.warn({ err, companyId }, "extractFromRawText: LLM call failed, falling back to chunking");
+        // CLI unavailable/unauth or timeout — caller falls back to paragraph chunking
+        logger.warn({ err, companyId }, "extractFromRawText: CLI extraction failed, falling back to chunking");
         return [];
       }
     },
@@ -712,30 +566,26 @@ export function extractionService(db: Db) {
 //
 // Implementation notes:
 //   • These exports REUSE every internal helper above — same prompt template,
-//     same departments lookup, same JSON parser, same provider fallback chain.
-//     There is no second extraction prompt to maintain. The only divergence
-//     from the legacy `extractFromDiscussionEntry` path is that NOTHING is
-//     written to the database here: the caller (tool wrapper) decides what to
-//     persist (e.g. `submit_extracted_items`-style approval queue inserts).
+//     same departments lookup, same JSON parser. There is no second extraction
+//     prompt to maintain. The only divergence from `extractFromDiscussionEntry`
+//     is that NOTHING is written to the database here: the caller (tool wrapper)
+//     decides what to persist (e.g. `submit_extracted_items`-style inserts).
 //   • `extractDecisions`, `extractInsights`, `extractReferences` are thin
 //     filters over `extractMemoryCandidates` — DRY win. If a future tool
 //     needs `extractTasks` or `extractPreferences` add another one-liner.
-//   • The `ExtractionLlm` interface is intentionally narrower than the full
-//     `LLMProvider` so tool wrappers and tests can supply a minimal stub. The
-//     real provider used by the autonomous flow (Anthropic/OpenAI/Gemini) is
-//     selected via `resolveAvailableProvider` when `llm === undefined`, so a
-//     caller that doesn't want to inject one can pass `null`.
+//   • The `ExtractionLlm` interface is a test/eval-only injection seam. In
+//     production callers pass `null` and extraction runs through the keyless
+//     CLI (`extractViaCli`). No hosted provider key is ever consulted.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal LLM surface the tool-callable extractors depend on. The autonomous
- * Scribe path uses `internal-agent/providers` directly; the tool path lets
- * callers pass any object with a single `generate(prompt, content)` method —
- * useful for unit tests and for future thin wrappers around different SDKs.
+ * Minimal LLM surface the tool-callable extractors depend on — a single
+ * `generate(prompt, content)` method. This is a TEST/EVAL-ONLY injection seam
+ * (e.g. the memory-keeper eval injects a real OpenAI client for deterministic
+ * quality measurement).
  *
- * Pass `null` to fall back to the same provider resolution used by the
- * legacy autonomous path (`resolveAvailableProvider` → first provider with a
- * usable API key — DB secret or env var).
+ * In production callers pass `null`: extraction then runs through the keyless
+ * CLI (`extractViaCli`). No hosted provider key is consulted.
  */
 export interface ExtractionLlm {
   /**
@@ -799,10 +649,10 @@ function toMemoryCandidate(item: ExtractedItem): MemoryCandidate {
  * entry are considered (cursor-based incremental extraction). When omitted
  * the entire thread's entries are used as input.
  *
- * If `llm` is `null` the function falls back to `resolveAvailableProvider`
- * (same provider chain used by the autonomous Scribe path). If `llm` is
- * supplied it is called with the prompt + concatenated entry content; the
- * raw response is fed through `parseExtractedItems`.
+ * If `llm` is `null` (production) the function runs the keyless CLI extractor
+ * (`extractViaCli`), which returns already-parsed items. If `llm` is supplied
+ * (tests/evals only) it is called with the prompt + concatenated entry content
+ * and the raw response is fed through `parseExtractedItems`.
  *
  * Errors are surfaced (the function rejects) so the tool wrapper can return
  * a structured `{ ok: false }` to the calling agent. An empty thread returns
@@ -899,14 +749,20 @@ export async function extractMemoryCandidates(
     deptList,
   );
 
-  // ── 4. Run the LLM. Caller-supplied `llm` takes precedence; otherwise
-  //       resolve a provider exactly the way the autonomous path does.
+  // ── 4. Run extraction. A caller-supplied `llm` (tests/evals only) takes
+  //       precedence; otherwise extraction runs through the keyless CLI.
+  //       extractViaCli already returns parsed ExtractedItem[], so there is
+  //       no parseExtractedItems step on the CLI branch.
   let items: ExtractedItem[];
   if (llm) {
     const raw = await llm.generate(systemPrompt, userContent);
     items = parseExtractedItems(raw);
   } else {
-    items = await callLLM(systemPrompt, userContent, db, params.companyId);
+    const { cliTool, codexModel } = await resolveCliExtractionContext(
+      db,
+      params.companyId,
+    );
+    items = await extractViaCli(cliTool, systemPrompt, userContent, { codexModel });
   }
 
   log.info({ candidateCount: items.length, entries: entries.length }, "extraction complete");

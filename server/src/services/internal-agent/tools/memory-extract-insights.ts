@@ -2,9 +2,10 @@
 //
 // Task C2 batch 3 — `extract_insights` (memory tool, Memory Keeper).
 // Filters `extractMemoryCandidates` to type='insight'. See extract_decisions
-// for the shared resolution + error-handling pattern.
+// for the shared CLI-only resolution + error-handling pattern.
 
 import { extractInsights } from "../../extraction.js";
+import { CliExtractionError } from "../../extraction-cli.js";
 import type { AgentTool } from "../types.js";
 
 export const extractInsightsTool: AgentTool = {
@@ -39,10 +40,8 @@ export const extractInsightsTool: AgentTool = {
       };
     }
 
-    const llm = (ctx.services as any)?.extraction?.llm ?? null;
-
     try {
-      const insights = await extractInsights(ctx.db, llm, {
+      const insights = await extractInsights(ctx.db, null, {
         companyId: ctx.companyId,
         threadId,
         ...(sinceEntryId ? { sinceEntryId } : {}),
@@ -53,15 +52,17 @@ export const extractInsightsTool: AgentTool = {
         summary: `Extracted ${insights.length} insight${insights.length === 1 ? "" : "s"}`,
       };
     } catch (err: any) {
+      const isCliUnavailable =
+        err instanceof CliExtractionError &&
+        (err.kind === "not_installed" || err.kind === "not_authed");
       const msg = err?.message ?? "unknown error";
-      const isProviderMissing = /No LLM provider configured/i.test(msg);
       return {
         success: false,
         data: [],
-        summary: isProviderMissing
-          ? "Extraction LLM unavailable"
+        summary: isCliUnavailable
+          ? "Extraction CLI unavailable — install a CLI (e.g. the Claude Code CLI) and run its login flow"
           : `Extraction failed: ${msg}`,
-        error: isProviderMissing ? "EXTRACTION_LLM_UNAVAILABLE" : "EXTRACTION_FAILED",
+        error: isCliUnavailable ? "EXTRACTION_LLM_UNAVAILABLE" : "EXTRACTION_FAILED",
       };
     }
   },

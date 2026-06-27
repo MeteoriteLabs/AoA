@@ -149,7 +149,7 @@ vi.mock("@tanstack/react-query", async () => {
         if (opts.queryKey?.[2] === "starter-templates") {
           return { data: [], isLoading: false };
         }
-        return { data: allItems, isLoading: false };
+        return { data: { items: allItems, semanticAvailable: true }, isLoading: false };
       }
       if (opts.queryKey?.[0] === "projects") {
         return { data: [], isLoading: false };
@@ -284,7 +284,10 @@ describe("Memory Page", () => {
           if (opts.queryKey?.[2] === "starter-templates") {
             return { data: [], isLoading: false };
           }
-          return { data: [identityItem], isLoading: false };
+          if (opts.queryKey?.[2] === "pending") {
+            return { data: { items: [], versions: [], archives: [], totalCount: 0 }, isLoading: false };
+          }
+          return { data: { items: [identityItem], semanticAvailable: true }, isLoading: false };
         }
         return { data: [], isLoading: false };
       };
@@ -404,7 +407,7 @@ describe("Memory Page", () => {
           if (opts.queryKey?.[2] === "starter-templates") {
             return { data: [], isLoading: false };
           }
-          return { data: [domainItem], isLoading: false };
+          return { data: { items: [domainItem], semanticAvailable: true }, isLoading: false };
         }
         return { data: [], isLoading: false };
       };
@@ -499,7 +502,7 @@ describe("Memory Page", () => {
           if (opts.queryKey?.[2] === "starter-templates") {
             return { data: [], isLoading: false };
           }
-          return { data: allItems, isLoading: false };
+          return { data: { items: allItems, semanticAvailable: true }, isLoading: false };
         }
         return { data: [], isLoading: false };
       };

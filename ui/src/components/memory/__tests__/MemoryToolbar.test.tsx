@@ -46,7 +46,7 @@ function renderWithProviders(ui: React.ReactNode) {
 describe("MemoryToolbar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    listMock.mockResolvedValue([{ id: "1" }, { id: "2" }, { id: "3" }]);
+    listMock.mockResolvedValue({ items: [{ id: "1" }, { id: "2" }, { id: "3" }], semanticAvailable: true });
     listPendingMock.mockResolvedValue({ totalCount: 0, items: [] });
   });
 

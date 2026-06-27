@@ -18,6 +18,11 @@ import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { runtimeProviderKeyService } from "../services/runtime-provider-keys.js";
+import { reindexCompany } from "../services/embeddings-backfill.js";
+import { PROVIDER_SECRET_NAMES } from "../services/internal-agent/providers/index.js";
+import { logger } from "../middleware/logger.js";
+
+const secretsLog = logger.child({ service: "secrets-routes" });
 
 export function secretRoutes(db: Db) {
   const router = Router();
@@ -244,6 +249,17 @@ export function secretRoutes(db: Db) {
       details: { name: created.name, provider: created.provider },
     });
 
+    // When the OpenAI embedding key is added, drain the backlog best-effort.
+    // Compare against the secret NAME (P2, Codex): the UI sends name="llm:openai"
+    // while secretService normalizes `created.key` to "LLM_OPENAI", so the old
+    // `created.key === "llm:openai"` check never matched and reindex never fired.
+    // Reuse the same name set the provider resolver uses so they stay in sync.
+    if (PROVIDER_SECRET_NAMES.openai?.includes(created.name)) {
+      void reindexCompany(db, companyId).catch((err: unknown) =>
+        secretsLog.warn({ err, companyId }, "reindexCompany after secret.created: non-fatal"),
+      );
+    }
+
     res.status(201).json(created);
   });
 
@@ -277,6 +293,15 @@ export function secretRoutes(db: Db) {
       entityId: rotated.id,
       details: { version: rotated.latestVersion },
     });
+
+    // When the OpenAI embedding key is rotated, drain the backlog best-effort
+    // (a rotation may have unblocked stalled pending rows if the old key was
+    // invalid). Match on the secret NAME, not the normalized `.key` (P2, Codex).
+    if (PROVIDER_SECRET_NAMES.openai?.includes(existing.name)) {
+      void reindexCompany(db, rotated.companyId).catch((err: unknown) =>
+        secretsLog.warn({ err, companyId: rotated.companyId }, "reindexCompany after secret.rotated: non-fatal"),
+      );
+    }
 
     res.json(rotated);
   });

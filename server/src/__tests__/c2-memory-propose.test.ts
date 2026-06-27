@@ -8,8 +8,23 @@
 //   - allowMemoryExtraction=false → MEMORY_EXTRACTION_DISABLED,
 //   - private thread + layer outside {working,active_context} → VISIBILITY_VIOLATION,
 //   - enqueue failure is swallowed (proposal still returns success).
+//
+// W3 update: memory-propose now routes enqueue through enqueueMemoryEmbedding
+// (memory-write.ts) instead of ctx.services.embeddings.enqueue. We mock the
+// module so tests control the helper without needing a fully wired db/caps stub.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mock the shared memory-write module so enqueueMemoryEmbedding is a spy.
+// `vi.hoisted` ensures the mock fn is created before vi.mock is hoisted.
+const { mockEnqueueMemoryEmbedding } = vi.hoisted(() => ({
+  mockEnqueueMemoryEmbedding: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/memory-write.js", () => ({
+  enqueueMemoryEmbedding: mockEnqueueMemoryEmbedding,
+  writeMemoryAndIndex: vi.fn(),
+}));
+
 import { proposeMemoryFromThreadTool } from "../services/internal-agent/tools/memory-propose.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
@@ -63,6 +78,11 @@ function makeCtx(
 }
 
 describe("propose_memory_from_thread tool (C2 batch 3)", () => {
+  beforeEach(() => {
+    mockEnqueueMemoryEmbedding.mockReset();
+    mockEnqueueMemoryEmbedding.mockResolvedValue(undefined);
+  });
+
   it("metadata: name, category=memory, requiredRole=team_member, no confirmation", () => {
     expect(proposeMemoryFromThreadTool.name).toBe("propose_memory_from_thread");
     expect(proposeMemoryFromThreadTool.category).toBe("memory");
@@ -233,7 +253,8 @@ describe("propose_memory_from_thread tool (C2 batch 3)", () => {
     expect(insertValues.last.goalId).toBe("goal-q3");
   });
 
-  it("best-effort embedding enqueue — proposal still succeeds when enqueue throws", async () => {
+  it("best-effort embedding enqueue — proposal still succeeds when enqueueMemoryEmbedding throws", async () => {
+    mockEnqueueMemoryEmbedding.mockRejectedValueOnce(new Error("queue offline"));
     const { db } = makeDb({
       threadRow: {
         id: "th-1",
@@ -245,20 +266,21 @@ describe("propose_memory_from_thread tool (C2 batch 3)", () => {
       },
       memoryId: "mem-1",
     });
-    const enqueue = vi.fn().mockRejectedValue(new Error("queue offline"));
-    const ctx = makeCtx(db, {
-      services: { embeddings: { enqueue } } as any,
-    });
+    const ctx = makeCtx(db);
     const result = await proposeMemoryFromThreadTool.execute(
       { content: "y", layer: "domain", sourceThreadId: "th-1" },
       ctx,
     );
+    // enqueueMemoryEmbedding is best-effort inside memory-write.ts — it catches
+    // its own errors. But even if it re-threw, the propose tool would still need
+    // to succeed. Either way the proposal must complete successfully.
     expect(result.success).toBe(true);
     expect((result.data as any).memoryItemId).toBe("mem-1");
-    expect(enqueue).toHaveBeenCalled();
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalled();
   });
 
-  it("enqueues memory_items target on successful proposal", async () => {
+  it("calls enqueueMemoryEmbedding with companyId + item id on successful proposal", async () => {
+    mockEnqueueMemoryEmbedding.mockResolvedValue(undefined);
     const { db } = makeDb({
       threadRow: {
         id: "th-1",
@@ -270,20 +292,21 @@ describe("propose_memory_from_thread tool (C2 batch 3)", () => {
       },
       memoryId: "mem-42",
     });
-    const enqueue = vi.fn().mockResolvedValue({ id: "q-1" });
-    const ctx = makeCtx(db, {
-      services: { embeddings: { enqueue } } as any,
-    });
+    const ctx = makeCtx(db);
     await proposeMemoryFromThreadTool.execute(
       { content: "indexed content", layer: "domain", sourceThreadId: "th-1" },
       ctx,
     );
-    expect(enqueue).toHaveBeenCalledWith({
-      targetTable: "memory_items",
-      targetId: "mem-42",
-      targetColumn: "embedding",
-      inputText: "indexed content",
-    });
+    // The shared helper is called with (db, companyId, {id, title?, content?}).
+    // The third arg must have at least the item id and the text fields.
+    expect(mockEnqueueMemoryEmbedding).toHaveBeenCalledWith(
+      db,
+      "co-1",
+      expect.objectContaining({
+        id: "mem-42",
+        content: "indexed content",
+      }),
+    );
   });
 
   it("uses default 'context' category when type is omitted", async () => {

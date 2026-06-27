@@ -92,6 +92,7 @@ describe("thread.updateSummary tool (C2 batch 1)", () => {
     expect(result.success).toBe(true);
     expect(enqueue).toHaveBeenCalledOnce();
     expect(enqueue).toHaveBeenCalledWith({
+      companyId: "co-1",
       targetTable: "discussions",
       targetId: "t-1",
       targetColumn: "summary_embedding",

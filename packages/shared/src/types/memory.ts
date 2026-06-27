@@ -6,6 +6,16 @@ import type {
   MemoryItemVisibility,
 } from "../constants.js";
 
+/**
+ * Per-item embedding index status (Task W5).
+ *
+ * - "indexed"     — a stored vector is present (wins regardless of key/queue state)
+ * - "pending"     — embedding_queue row is pending or processing
+ * - "failed"      — embedding_queue row is failed (no stored vector)
+ * - "not_indexed" — no vector and no active queue row
+ */
+export type MemoryIndexStatus = "indexed" | "pending" | "failed" | "not_indexed";
+
 export interface MemoryItem {
   id: string;
   companyId: string;
@@ -32,4 +42,10 @@ export interface MemoryItem {
   embeddingRetries: number;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Per-item embedding index status (Task W5). Optional: only present on list
+   * and getById responses enriched by the memory service. Undefined when the
+   * field is not yet included in the query projection.
+   */
+  indexStatus?: MemoryIndexStatus;
 }

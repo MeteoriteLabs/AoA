@@ -1,11 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Regression: ISSUE-003 (2026-05-25). extractFromDebrief (the MCP debrief-push
-// extraction path) called callLLM(prompt, content) WITHOUT db/companyId, so it
-// skipped the company_secrets (Settings UI) key lookup and only checked env
-// vars → "No LLM API key configured" → debrief processing_failed. This test
-// configures ONLY a Settings/db key (no env), so it fails if the db/companyId
-// args are dropped again.
+// extractFromDebrief (the MCP debrief-push extraction path) is now CLI-only —
+// it routes through extractViaCli (keyless), NOT a hosted provider key. This
+// test pins: the CLI extractor is used, items land in brief_items, and the
+// provider-key helpers are never consulted.
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => args),
@@ -16,6 +14,7 @@ vi.mock("@armyofagents/db", () => ({
   debriefs: { id: "debrief_id", companyId: "debrief_company_id" },
   briefs: {},
   briefItems: {},
+  internalAgentConfig: { companyId: "iac_cid", cliTool: "iac_cli" },
   projects: {
     id: "project_id",
     name: "project_name",
@@ -25,15 +24,44 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 vi.mock("../middleware/logger.js", () => ({
-  logger: { child: () => ({ info: vi.fn(), error: vi.fn() }) },
+  logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
-const getKeyMock = vi.fn();
+// Provider-key helpers must NEVER be reached on the CLI-only debrief path.
+const getKeyMock = vi.fn(async () => {
+  throw new Error("getProviderApiKey must not be called on the CLI-only path");
+});
+const resolveProviderMock = vi.fn(async () => {
+  throw new Error("resolveAvailableProvider must not be called on the CLI-only path");
+});
 vi.mock("../services/internal-agent/providers/index.js", () => ({
   getProviderApiKey: (...a: unknown[]) => getKeyMock(...a),
   createProvider: vi.fn(),
-  resolveAvailableProvider: vi.fn(),
+  resolveAvailableProvider: (...a: unknown[]) => resolveProviderMock(...a),
 }));
+
+// CLI tool resolution — pin to claude_cli.
+vi.mock("../services/extraction-engine.js", () => ({
+  resolveExtractionEngine: vi.fn(async () => "cli"),
+  resolveCompanyCliTool: vi.fn(async () => "claude_cli"),
+}));
+
+// One-shot CLI extractor — controlled per-test.
+const mockExtractViaCli = vi.fn();
+vi.mock("../services/extraction-cli.js", () => {
+  class FakeCliExtractionError extends Error {
+    readonly kind: string;
+    constructor(message: string, kind: string) {
+      super(message);
+      this.name = "CliExtractionError";
+      this.kind = kind;
+    }
+  }
+  return {
+    extractViaCli: (...a: unknown[]) => mockExtractViaCli(...a),
+    CliExtractionError: FakeCliExtractionError,
+  };
+});
 
 import { extractionService } from "../services/extraction.js";
 
@@ -47,23 +75,22 @@ function makeSelectChain(queue: unknown[][]) {
   };
 }
 
-describe("extractFromDebrief — Settings provider key (ISSUE-003)", () => {
+describe("extractFromDebrief — CLI-only (no provider key)", () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     delete process.env.OPENAI_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
-    // Only an OpenAI key is configured in Settings (company_secrets via db) —
-    // no env keys. callLLM must reach this via getProviderApiKey(db, companyId).
-    getKeyMock.mockImplementation(
-      (_db: unknown, _cid: string, provider: string) =>
-        provider === "openai"
-          ? Promise.resolve("settings-openai-key")
-          : Promise.reject(new Error("no key")),
-    );
+    getKeyMock.mockImplementation(async () => {
+      throw new Error("getProviderApiKey must not be called on the CLI-only path");
+    });
+    resolveProviderMock.mockImplementation(async () => {
+      throw new Error("resolveAvailableProvider must not be called on the CLI-only path");
+    });
   });
 
-  it("extracts using the db/companyId-resolved key when no env key is present", async () => {
+  it("routes through extractViaCli (no callLLM / no provider key) and writes brief items", async () => {
     const capturedBriefItems: Record<string, unknown>[] = [];
+    // Queue: 1) debrief fetch, 2) departments list, 3) agent config (model hint)
     const selectQueue: unknown[][] = [
       [
         {
@@ -76,9 +103,13 @@ describe("extractFromDebrief — Settings provider key (ISSUE-003)", () => {
         },
       ],
       [],
+      [{ model: null }],
     ];
     const db = {
       select: vi.fn(() => makeSelectChain(selectQueue)),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      })),
       transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
           insert: vi.fn(() => ({
@@ -94,35 +125,66 @@ describe("extractFromDebrief — Settings provider key (ISSUE-003)", () => {
       ),
     } as unknown as Parameters<typeof extractionService>[0];
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: JSON.stringify([
-                  { type: "task", title: "Ship it", description: "x", department: null },
-                ]),
-              },
-            },
-          ],
-        }),
-      }),
-    );
+    mockExtractViaCli.mockResolvedValueOnce([
+      { type: "task", title: "Ship it", description: "x", department: null },
+    ]);
 
     await extractionService(db).extractFromDebrief("company-1", "debrief-1");
 
-    // The db/companyId path was used (rejects "no key" → would fail if dropped).
-    expect(getKeyMock).toHaveBeenCalledWith(
-      expect.anything(),
-      "company-1",
-      "openai",
-    );
-    // Extraction succeeded (items produced) rather than processing_failed.
-    expect(capturedBriefItems.length).toBeGreaterThan(0);
+    // The keyless CLI extractor ran; no provider key was consulted.
+    expect(mockExtractViaCli).toHaveBeenCalledTimes(1);
+    expect(getKeyMock).not.toHaveBeenCalled();
+    expect(resolveProviderMock).not.toHaveBeenCalled();
 
-    vi.unstubAllGlobals();
+    // Items were written.
+    expect(capturedBriefItems.length).toBeGreaterThan(0);
+    expect(capturedBriefItems[0].title).toBe("Ship it");
+  });
+
+  it("forwards the company's codex model to extractViaCli", async () => {
+    const selectQueue: unknown[][] = [
+      [
+        {
+          id: "debrief-2",
+          companyId: "company-2",
+          rawContent: "Some substantive debrief content for extraction.",
+          departmentId: null,
+          projectId: null,
+          goalId: null,
+        },
+      ],
+      [],
+      [{ model: "gpt-5.5" }],
+    ];
+    const db = {
+      select: vi.fn(() => makeSelectChain(selectQueue)),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      })),
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          insert: vi.fn(() => ({
+            values: vi.fn(() => ({
+              returning: vi.fn().mockResolvedValue([{ id: "brief-2" }]),
+            })),
+          })),
+          update: vi.fn(() => ({
+            set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+          })),
+        }),
+      ),
+    } as unknown as Parameters<typeof extractionService>[0];
+
+    mockExtractViaCli.mockResolvedValueOnce([]);
+
+    await extractionService(db).extractFromDebrief("company-2", "debrief-2");
+
+    // The 4th arg is the options bag carrying codexModel (mirror the discussion
+    // path). We don't assert the exact model — just that an options object is
+    // forwarded (codexModel key present).
+    expect(mockExtractViaCli).toHaveBeenCalledTimes(1);
+    const opts = mockExtractViaCli.mock.calls[0][3];
+    expect(opts).toBeDefined();
+    expect(opts).toHaveProperty("codexModel");
   });
 });

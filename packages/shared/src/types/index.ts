@@ -36,7 +36,7 @@ export type {
   LegacyPlanDocument,
 } from "./issue.js";
 export type { Goal, GoalProjectRef } from "./goal.js";
-export type { MemoryItem } from "./memory.js";
+export type { MemoryItem, MemoryIndexStatus } from "./memory.js";
 export type {
   MemoryAssetRecord,
   MemoryAssetCreateInput,

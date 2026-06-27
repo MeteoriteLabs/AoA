@@ -46,6 +46,11 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 const mockResolveApiKey = vi.fn();
+// Search paths resolve the embedding key via getProviderApiKey (env-fallback
+// aware); delegate to the same mock (dropping the leading db arg).
+vi.mock("../services/internal-agent/providers/index.js", () => ({
+  getProviderApiKey: (...args: unknown[]) => mockResolveApiKey(...args.slice(1)),
+}));
 vi.mock("../adapters/api-common.js", () => ({
   resolveApiKey: (...args: unknown[]) => mockResolveApiKey(...args),
 }));
