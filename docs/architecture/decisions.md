@@ -931,3 +931,13 @@ Per-item `indexStatus` is derived (not stored): `indexed` (vector column not nul
 - `POST /companies/:cid/memory/reindex-all` — enqueues every company memory item without a live queue row for re-embedding (dedup-safe; no-op without pgvector). Auth: **`founder`-only** (board + `assertRole(…, "founder")`). Logs activity. (Added 2026-06-27 — backs the Settings → Memory "Re-index all" button.)
 
 **Reference:** `server/src/services/extraction-engine.ts`, `extraction-cli.ts`, `codex-exec.ts`, `embeddings.ts`, `embeddings-backfill.ts`, `memory-write.ts`, `server/src/routes/memory.ts`. Design: `docs/aoa/plans/2026-06-25-keyless-except-embeddings-design.md`; CLI-only amendment: `docs/aoa/plans/2026-06-27-decouple-extraction-from-keys-spec.md`.
+
+### Embedding worker correctness + pgvector CI lane (2026-06-27 follow-up)
+
+The embedding write path had **never executed end-to-end** — no CI lane set `AOA_E2E_PGVECTOR`, so the worker short-circuited before pgvector code. Running the real pgvector e2e locally surfaced three latent bugs (all now fixed, regression-gated):
+
+1. **Raw-SQL timestamps are strings, not Date.** `db.execute(sql.raw(...))` with the postgres.js driver returns `timestamp`/`timestamptz` columns as **strings** (Drizzle's column type-mapping is bypassed for raw SQL). Feeding such a value into a Drizzle timestamp comparison calls `.toISOString()` on a string → throws. **Rule:** always coerce raw-claimed timestamps to `Date` before reuse (`embeddings-row-utils.ts: coerceQueueRowTimestamps`).
+2. **Stale-write guard must exclude self by `id`, not by timestamp.** Coerced `Date`s are millisecond-precision while stored `timestamptz` is microsecond, so `created_at > $coerced` matches the row against itself. Use `ne(id, claimedId)` in both newer-row guards.
+3. **Don't bind a `Date` into a raw `db.execute(sql\`…\`)` template** (drizzle-postgres-js execute throws `ERR_INVALID_ARG_TYPE`), and **don't write a pgvector value via a dynamic `.set({[col]: number[]})`** (bypasses the customType → array mis-binds). Write vectors as `.set({[col]: sql\`\${toVectorString(v)}::vector\`})` with a query-builder WHERE (typed `eq`/`ne`/`gt` convert `Date`+uuid correctly).
+
+**CI:** a new required `e2e-pgvector` lane (`pgvector/pgvector:pg16` + `AOA_E2E_PGVECTOR=1`, wired into `ci-required`) now exercises the embedding **write + retrieval** path, including the first cosine-distance ranking assertion (`tests/e2e/semantic-retrieval.spec.ts`). Plan: `docs/aoa/plans/2026-06-27-embedding-pgvector-timestamp-fix-and-retrieval-tests.md`.

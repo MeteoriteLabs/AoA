@@ -437,3 +437,15 @@ gh pr create --base main --title "fix(embeddings): pgvector write-path timestamp
 1. **Spec coverage:** worker bug fix (T1) ✓, sibling raw-SQL site hardened (T2) ✓, stale tests fixed (T3) ✓, no-key tests decoupled (T4) ✓, retrieval proven (T5) ✓, CI lane (T6) ✓, full verify (T7) ✓, docs+PR (T8) ✓.
 2. **Placeholder scan:** every code step has real code; the only deliberate "confirm shape" step (T5 S2) reads a specific file/line range.
 3. **Type consistency:** helper named `coerceQueueRowTimestamps` everywhere; secret field `name` everywhere; route `GET /companies/:cid/memory/search?q=`.
+
+---
+
+## Outcome (2026-06-27)
+
+Implemented + **fully green**. Running the real pgvector e2e (the half CI never exercised) surfaced **three** latent embedding-write bugs, not one — each only reachable once the prior was fixed:
+
+1. `createdAt` string→Date (`toISOString` crash) — coercion helper (Task 1).
+2. Stale-write guard matched the row against itself (ms-vs-µs precision) — exclude by `id` (`ne`).
+3. Vector write mis-bound: dynamic `.set({[col]: number[]})` bypassed the pgvector customType; a raw `db.execute` template then threw on the `Date` param. Final form: `.set({[col]: sql\`${lit}::vector\`})` + query-builder typed WHERE.
+
+**Verification:** `pnpm -r typecheck` clean; embedding/memory unit suite 896 passed; **pgvector e2e 12/12 passed** (keyless extraction, failure UX, Settings/banner/alias, failed→reindex→indexed, indexed-flip, key-add backfill, and the new **semantic-retrieval cosine-ranking** test — the first real vector-READ assertion). Embeddings now persist and are retrievable when pgvector is present; the no-key path degrades correctly. CI `e2e-pgvector` lane gates this going forward.
