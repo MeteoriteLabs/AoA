@@ -6,7 +6,7 @@ import { agentInstructionsService } from "../../agent-instructions.js";
 import {
   resolveCrewAdapterForCompany,
   shouldRewriteCrewAdapter,
-  mergeAdapterConfig,
+  mergeCrewAdapterConfig,
 } from "./resolve-crew-adapter.js";
 import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
 
@@ -99,7 +99,11 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       }
       if (needsAdapter && current) {
         updates.adapterType = crewAdapter.adapterType;
-        updates.adapterConfig = mergeAdapterConfig(current.adapterConfig as Record<string, unknown> | null, crewAdapter.adapterConfig);
+        updates.adapterConfig = mergeCrewAdapterConfig(
+          current.adapterConfig as Record<string, unknown> | null,
+          crewAdapter.adapterConfig,
+          current.adapterType !== crewAdapter.adapterType,
+        );
       }
       await db.update(agents).set(updates).where(eq(agents.id, existing.id));
     }

@@ -7,7 +7,7 @@
 // Companion to resolve-crew-adapter-opencode.test.ts (same import/mock pattern).
 
 import { describe, it, expect } from "vitest";
-import { resolveCrewAdapterFor, needsAdapterBackfill, shouldRewriteCrewAdapter, mergeAdapterConfig } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
+import { resolveCrewAdapterFor, needsAdapterBackfill, shouldRewriteCrewAdapter, mergeAdapterConfig, mergeCrewAdapterConfig } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
 
 describe("resolve-crew-adapter (provider-switching fixes)", () => {
@@ -143,5 +143,41 @@ describe("shouldRewriteCrewAdapter — provider-switch migration", () => {
     expect(shouldRewriteCrewAdapter("codex_local", cfg, "codex_local")).toBe(
       needsAdapterBackfill("codex_local", cfg),
     );
+  });
+});
+
+// Codex P2: a provider switch must NOT carry over provider-specific fields
+// (command/extraArgs/bypass flags) — they'd make the new CLI run the wrong
+// executable/args — while neutral fields (cwd/env/instructions*) are preserved.
+describe("mergeCrewAdapterConfig", () => {
+  const existing = {
+    model: "anthropic/claude-sonnet-4-5",
+    command: "/opt/opencode",        // provider-specific — must NOT survive a switch
+    extraArgs: ["--print"],          // provider-specific
+    dangerouslySkipPermissions: true, // claude-specific
+    cwd: "/work",                    // neutral
+    env: { OPENAI_API_KEY: "sk-agent" }, // neutral (preserved)
+    instructionsFilePath: "/i.md",   // neutral
+  };
+  const nextCodex = { model: "gpt-5.5", dangerouslyBypassApprovalsAndSandbox: true };
+
+  it("provider SWITCH drops command/extraArgs/old-bypass and applies the new adapter's fields", () => {
+    const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
+    expect(merged.command).toBeUndefined();
+    expect(merged.extraArgs).toBeUndefined();
+    expect(merged.dangerouslySkipPermissions).toBeUndefined(); // old provider flag dropped
+    expect(merged.model).toBe("gpt-5.5"); // new adapter wins
+    expect(merged.dangerouslyBypassApprovalsAndSandbox).toBe(true); // new adapter sets it
+  });
+  it("provider SWITCH preserves neutral fields (cwd, env, instructions*)", () => {
+    const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
+    expect(merged.cwd).toBe("/work");
+    expect(merged.env).toEqual({ OPENAI_API_KEY: "sk-agent" });
+    expect(merged.instructionsFilePath).toBe("/i.md");
+  });
+  it("same-adapter backfill (isProviderSwitch=false) preserves ALL fields like mergeAdapterConfig", () => {
+    const merged = mergeCrewAdapterConfig(existing, { model: "gpt-5.5" }, false);
+    expect(merged).toEqual(mergeAdapterConfig(existing, { model: "gpt-5.5" }));
+    expect(merged.command).toBe("/opt/opencode"); // preserved on a same-CLI backfill
   });
 });

@@ -6,7 +6,7 @@ import { agentInstructionsService } from "../../agent-instructions.js";
 import {
   resolveCrewAdapterForCompany,
   shouldRewriteCrewAdapter,
-  mergeAdapterConfig,
+  mergeCrewAdapterConfig,
 } from "./resolve-crew-adapter.js";
 import { isCodexApiKeyAuth } from "./crew-codex-auth.js";
 
@@ -215,7 +215,11 @@ export async function seedCrewAgent(
       const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
       if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
         updates.adapterType = crewAdapter.adapterType;
-        updates.adapterConfig = mergeAdapterConfig(cfg, crewAdapter.adapterConfig);
+        updates.adapterConfig = mergeCrewAdapterConfig(
+          cfg,
+          crewAdapter.adapterConfig,
+          current.adapterType !== crewAdapter.adapterType,
+        );
       }
     }
 

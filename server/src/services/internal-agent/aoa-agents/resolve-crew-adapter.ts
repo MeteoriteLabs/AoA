@@ -227,3 +227,38 @@ export function mergeAdapterConfig(
   const base = existing ?? {};
   return { ...base, ...next };
 }
+
+// Fields that are meaningful only for the adapter that set them. On a PROVIDER
+// SWITCH they must NOT carry over — e.g. a custom `command`/`extraArgs` from an
+// opencode/claude row would make the new codex CLI run the wrong executable/args
+// (Codex P2). `model` + the bypass/skip flags are always re-set by the resolved
+// adapter, but dropping them too keeps the row clean. Neutral fields (cwd, env,
+// instructions*) are NOT listed here and are preserved across a switch.
+const PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS = [
+  "command",
+  "extraArgs",
+  "model",
+  "dangerouslyBypassApprovalsAndSandbox",
+  "dangerouslySkipPermissions",
+];
+
+/**
+ * Build the adapter_config to persist when migrating a crew row to `next`.
+ *
+ * - Same-adapter backfill (`isProviderSwitch === false`): preserve ALL of the
+ *   founder's existing fields (mergeAdapterConfig) — the CLI is unchanged.
+ * - Provider switch (`isProviderSwitch === true`): drop provider-specific fields
+ *   (command/extraArgs/model/bypass flags) that would otherwise make the new CLI
+ *   misbehave, while preserving neutral fields (cwd, env, instructions*). The
+ *   resolved adapter's own fields (`next`) then apply on top (Codex P2).
+ */
+export function mergeCrewAdapterConfig(
+  existing: Record<string, unknown> | null | undefined,
+  next: Record<string, unknown>,
+  isProviderSwitch: boolean,
+): Record<string, unknown> {
+  if (!isProviderSwitch) return mergeAdapterConfig(existing, next);
+  const base: Record<string, unknown> = { ...(existing ?? {}) };
+  for (const key of PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS) delete base[key];
+  return { ...base, ...next };
+}
