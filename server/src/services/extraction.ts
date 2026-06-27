@@ -91,6 +91,24 @@ async function buildDepartmentsList(
 }
 
 /**
+ * Resolve the keyless-CLI extraction context for a company: the CLI tool to
+ * spawn and the codex model hint to forward. Mirrors how the discussion path
+ * derives `cliTool` + `codexModel` from `internal_agent_config`. Used by the
+ * debrief-push and file-import extraction paths.
+ */
+async function resolveCliExtractionContext(
+  db: Db,
+  companyId: string,
+): Promise<{ cliTool: string; codexModel: string | null }> {
+  const cliTool = await resolveCompanyCliTool(db, companyId);
+  const [config] = await db
+    .select({ model: internalAgentConfig.model })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId));
+  return { cliTool, codexModel: config?.model ?? null };
+}
+
+/**
  * Call the LLM to extract structured items from raw debrief content.
  * Uses a direct fetch to an OpenAI-compatible API endpoint.
  * Falls back gracefully if no API key is configured.
@@ -225,9 +243,15 @@ export function extractionService(db: Db) {
           deptList,
         );
 
-        // 3. Call LLM
-        log.info("Starting LLM extraction");
-        const extractedItems = await callLLM(prompt, debrief.rawContent, db, companyId);
+        // 3. Extract via the keyless CLI (no hosted provider key).
+        const { cliTool, codexModel } = await resolveCliExtractionContext(
+          db,
+          companyId,
+        );
+        log.info({ cliTool }, "Starting CLI extraction");
+        const extractedItems = await extractViaCli(cliTool, prompt, debrief.rawContent, {
+          codexModel,
+        });
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
         // 4-6. Create Brief + BriefItems + update debrief atomically
@@ -623,10 +647,14 @@ export function extractionService(db: Db) {
           "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
           deptList,
         );
-        return await callLLM(systemPrompt, rawText, db, companyId);
+        const { cliTool, codexModel } = await resolveCliExtractionContext(
+          db,
+          companyId,
+        );
+        return await extractViaCli(cliTool, systemPrompt, rawText, { codexModel });
       } catch (err) {
-        // LLM unavailable or quota exceeded — caller falls back to paragraph chunking
-        logger.warn({ err, companyId }, "extractFromRawText: LLM call failed, falling back to chunking");
+        // CLI unavailable/unauth or timeout — caller falls back to paragraph chunking
+        logger.warn({ err, companyId }, "extractFromRawText: CLI extraction failed, falling back to chunking");
         return [];
       }
     },
