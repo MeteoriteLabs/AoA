@@ -1,7 +1,11 @@
 import { useEffect } from "react";
 import { useSearchParams } from "@/lib/router";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { SettingsLayout, type SettingsSectionId } from "@/components/settings/SettingsLayout";
+import {
+  SettingsLayout,
+  type SettingsSectionId,
+  type SettingsSectionAlias,
+} from "@/components/settings/SettingsLayout";
 import { GeneralSection } from "@/components/settings/sections/GeneralSection";
 import { ArchiveCompanySection } from "@/components/settings/sections/ArchiveCompanySection";
 import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
@@ -16,13 +20,21 @@ import { HealthSection } from "@/components/settings/sections/HealthSection";
 import { EnvironmentsSectionWrapper } from "@/components/settings/sections/EnvironmentsSection";
 import { SecretsSectionWrapper } from "@/components/settings/sections/SecretsSection";
 
-const VALID_SECTIONS: readonly SettingsSectionId[] = [
-  "general", "health", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
+// Accepted ?tab= input values. "llm" is retained as a legacy alias so old
+// bookmarks (?tab=llm) survive and normalize to "memory" rather than silently
+// falling back to General (Rev 3, finding #10).
+const VALID_SECTIONS: readonly SettingsSectionAlias[] = [
+  "general", "health", "commander", "memory", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
   "activity", "environments", "secrets",
 ];
 
-function isValidSection(s: string | null): s is SettingsSectionId {
+function isValidSection(s: string | null): s is SettingsSectionAlias {
   return s != null && (VALID_SECTIONS as readonly string[]).includes(s);
+}
+
+/** Normalize an accepted input value to its canonical section id. */
+function normalizeSection(s: SettingsSectionAlias): SettingsSectionId {
+  return s === "llm" ? "memory" : s;
 }
 
 function renderActiveSection(id: SettingsSectionId) {
@@ -33,7 +45,7 @@ function renderActiveSection(id: SettingsSectionId) {
       return <HealthSection />;
     case "commander":
       return <CommanderSection />;
-    case "llm":
+    case "memory":
       return <LLMProvidersSectionWrapper />;
     case "budget":
       return <BudgetCapsSection />;
@@ -74,7 +86,9 @@ export function SettingsPage() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   const tabParam = searchParams.get("tab");
-  const activeSection: SettingsSectionId = isValidSection(tabParam) ? tabParam : "general";
+  const activeSection: SettingsSectionId = isValidSection(tabParam)
+    ? normalizeSection(tabParam)
+    : "general";
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Settings" }]);
