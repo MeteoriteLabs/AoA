@@ -156,10 +156,11 @@ test.describe("provider-switching: agent config save-side", () => {
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
 
-    // The model picker lives in the "Permissions & Configuration" section,
-    // which is collapsed by default in the cards/edit layout — expand it.
+    // The redesigned config page uses a section rail; the model picker lives in
+    // the "Permissions & config" section — select it (its content is expanded by
+    // default in the edit layout).
     await page
-      .getByRole("button", { name: "Permissions & Configuration" })
+      .getByRole("button", { name: "Permissions & config" })
       .click();
 
     // Default reflected: the trigger shows the server-pinned gpt-5.5, not a
@@ -184,9 +185,10 @@ test.describe("provider-switching: agent config save-side", () => {
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
 
-    // Expand the collapsed "Permissions & Configuration" section (holds the model picker).
+    // Select the "Permissions & config" rail section (holds the model picker;
+    // its content is expanded by default).
     await page
-      .getByRole("button", { name: "Permissions & Configuration" })
+      .getByRole("button", { name: "Permissions & config" })
       .click();
 
     // Open the model picker. The trigger shows the current model value
@@ -250,9 +252,9 @@ test.describe("provider-switching: agent config save-side", () => {
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
 
-    // Expand the collapsed Adapter section to reveal the Test environment button.
+    // Select the "Adapter & model" rail section to reveal the Test environment button.
     await page
-      .getByRole("button", { name: "Adapter", exact: true })
+      .getByRole("button", { name: "Adapter & model" })
       .click();
 
     await page.getByRole("button", { name: "Test environment" }).click();
