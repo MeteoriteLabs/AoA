@@ -222,9 +222,12 @@ describe("mergeCrewAdapterConfig", () => {
       permissionMode: "yolo",
       search: true,
       effort: "max",
+      command: "/opt/claude",
+      extraArgs: ["--print"],
+      args: ["--legacy-flag"], // legacy fallback the adapters still read when extraArgs is absent
     };
     const merged = mergeCrewAdapterConfig(richSource, nextCodex, "claude_local", "codex_local");
-    for (const k of ["reasoningEffort", "modelReasoningEffort", "chrome", "sandbox", "variant", "thinking", "maxTurnsPerRun", "permissionMode", "search", "effort"]) {
+    for (const k of ["reasoningEffort", "modelReasoningEffort", "chrome", "sandbox", "variant", "thinking", "maxTurnsPerRun", "permissionMode", "search", "effort", "command", "extraArgs", "args"]) {
       expect(merged[k], `${k} must be dropped on a provider switch`).toBeUndefined();
     }
     // neutral + the resolved adapter's own fields survive:
