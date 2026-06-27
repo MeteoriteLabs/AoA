@@ -222,4 +222,8 @@ export const memoryApi = {
   /** Re-index all failed embeddings for the company. */
   reindexFailed: (companyId: string) =>
     api.post<{ requeued: number }>(`/companies/${companyId}/memory/reindex-failed`, {}),
+
+  /** Founder-only: re-embed every memory item in the company (dedup-safe). */
+  reindexAll: (companyId: string) =>
+    api.post<{ reindexed: number }>(`/companies/${companyId}/memory/reindex-all`, {}),
 };
