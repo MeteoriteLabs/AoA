@@ -1,5 +1,12 @@
 # Keyless-Except-Embeddings Implementation Plan (rev. 2 — post Codex + self review)
 
+> **Update 2026-06-27 (partial supersede):** the "selectable server-side engine
+> (`cli` one-shot | dormant `api`)" architecture below was superseded — extraction
+> is now **CLI-only** everywhere; the `api` engine + engine-status route are
+> deleted. See `docs/aoa/plans/2026-06-27-decouple-extraction-from-keys-spec.md`
+> + PLAN and Decision #104's 2026-06-27 amendment. The embeddings/queue/status
+> tasks still hold.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make discussion extraction (and Commander) run keyless via the local CLI, leaving the OpenAI key needed only for embeddings, with enterprise-grade retry/circuit-break/status behavior, graceful degradation, and full unit + UI e2e coverage.

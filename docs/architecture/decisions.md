@@ -801,17 +801,35 @@ The plugin worker sandbox (`server/src/services/plugin-sandbox.ts`,
 
 ## Decision #104 — Keyless-except-embeddings: selectable extraction engine + embedding resilience (2026-06-26)
 
-**Status:** Locked 2026-06-26.
+**Status:** Locked 2026-06-26. **Amended 2026-06-27 (extraction is CLI-only; hosted-API fallback removed).**
+
+**Amendment (2026-06-27):** The founder overrode the original "selectable engine"
+ruling below. Discussion extraction (and every other extraction entry point —
+debrief-push, file-import, the crew memory-extract tools) is now **CLI-only**: no
+extraction code path ever reads a hosted provider key. The dormant `api` engine
+(the `callLLM` / `callAnthropic` / `callOpenAI` direct-API path) and the
+`GET …/extraction/engine-status` route + `ExtractionEngineStatusResponse` shared
+type are **deleted**, not retained. `resolveExtractionEngine` now returns `"cli"`
+or throws ("install a CLI and run its login"); there is no api fallback and no
+key precheck. Hosted provider keys (the OpenAI `llm:openai` secret / env
+`OPENAI_API_KEY`) are used **only** for embeddings. The Provider SDK utilities in
+`server/src/services/internal-agent/providers/` remain for embeddings + Commander,
+but are no longer reachable from any extraction path. UI: the Settings extraction
+engine-status banner is removed and the "LLM providers" settings section is
+renamed to **Memory** (OpenAI embeddings key only); extraction-failure copy points
+at the local CLI, never at a key. See `docs/aoa/plans/2026-06-27-decouple-extraction-from-keys-spec.md`
+and the matching PLAN. The original (now-superseded) selectable-engine ruling is
+preserved below for history.
 
 **Principle:** The only hosted API key AoA needs at runtime is for **embeddings** (`text-embedding-3-small` via OpenAI). Every other runtime operation — agent execution, Commander, and **discussion extraction** — runs keyless through the user's locally-installed CLI (Claude Code / Codex / Gemini CLI), authenticating against the subscription the user already has.
 
-### Extraction: selectable engine
+### Extraction: selectable engine ~~(SUPERSEDED 2026-06-27 — extraction is CLI-only, see amendment above)~~
 
 **Rule:** `resolveExtractionEngine(db, companyId)` runs **before** the old hosted-key precheck and returns one of `cli` | `api`:
 
 - `auto` (default): resolve `cli` when a local CLI is installed and authenticated; else resolve `api` when a hosted provider key is configured; else surface "no extraction engine available."
 - Desktop installs default-resolve to `cli` — keyless extraction.
-- The `api` engine (the old `callLLM` direct-API path) is retained **dormant** as the fallback and as the seed for a future "per-company provider keys for crew/org adapters" initiative. It is NOT deleted.
+- ~~The `api` engine (the old `callLLM` direct-API path) is retained **dormant** as the fallback and as the seed for a future "per-company provider keys for crew/org adapters" initiative. It is NOT deleted.~~ **(Superseded 2026-06-27: the `api` engine, the `call*` functions, and the engine-status route/type are now DELETED. Extraction is CLI-only.)**
 
 **Why Option B (server-side one-shot, not crew-bridge):** Decision #100 (amended 2026-05-25) shelved the crew-CLI extraction path because (a) the MCP bridge is wired for `claude_local` only — codex/opencode have no bridge wiring — and (b) the `claude` headless `submit_extracted_items` handshake hangs in local/Windows dev, leaving entries stuck `processing`. Option B invokes the CLI headless (`claude --print` / `codex exec`), captures stdout, parses the JSON array, and writes rows itself — exactly today's server-side structure, transport swapped. No MCP bridge, no handshake, no Decision #100 blockers.
 
@@ -850,12 +868,13 @@ Every memory write path — `memory.create()`, `memory.approve()`, crew `write_m
 
 ### Status model
 
-Per-item `indexStatus` is derived (not stored): `indexed` (vector column not null), `pending` (live queue row pending/processing), `failed` (latest queue row failed), `not_indexed` / `no_key` (no vector, no live row). Surfaced as badges on memory card/row/table. A dismissible no-key banner shows on the Memory page when `semanticAvailable` is false. Extraction-engine status shown in Settings. Actionable failure copy shown in DiscussionDetail on CLI errors.
+Per-item `indexStatus` is derived (not stored): `indexed` (vector column not null), `pending` (live queue row pending/processing), `failed` (latest queue row failed), `not_indexed` / `no_key` (no vector, no live row). Surfaced as badges on memory card/row/table. A dismissible no-key banner shows on the Memory page / MemoryExplorer when `semanticAvailable` is false (deep-links to Settings → Memory). Actionable failure copy shown in DiscussionDetail on CLI errors. ~~Extraction-engine status shown in Settings.~~ **(Removed 2026-06-27 — the engine-status banner is deleted; extraction is CLI-only.)**
 
 ### New endpoints
 
-- `GET /companies/:cid/extraction/engine-status` — returns resolved engine, CLI availability, and failure details. Auth: `founder` | `team_lead`.
+- ~~`GET /companies/:cid/extraction/engine-status` — returns resolved engine, CLI availability, and failure details.~~ **(Deleted 2026-06-27 — extraction is CLI-only; the route + `ExtractionEngineStatusResponse` type are removed.)**
 - `POST /companies/:cid/memory/:id/reindex` — enqueues a single memory item for re-embedding. Auth: `founder` | `team_lead`. Logs activity.
 - `POST /companies/:cid/memory/reindex-failed` — enqueues all `failed` queue rows for this company. Auth: `founder` | `team_lead`. Logs activity.
+- `POST /companies/:cid/memory/reindex-all` — enqueues every company memory item without a live queue row for re-embedding (dedup-safe; no-op without pgvector). Auth: **`founder`-only** (board + `assertRole(…, "founder")`). Logs activity. (Added 2026-06-27 — backs the Settings → Memory "Re-index all" button.)
 
-**Reference:** `server/src/services/extraction-engine.ts`, `extraction-cli.ts`, `codex-exec.ts`, `embeddings.ts`, `memory-write.ts`, `server/src/routes/extraction.ts`, `server/src/routes/memory.ts`. Design: `docs/aoa/plans/2026-06-25-keyless-except-embeddings-design.md`.
+**Reference:** `server/src/services/extraction-engine.ts`, `extraction-cli.ts`, `codex-exec.ts`, `embeddings.ts`, `embeddings-backfill.ts`, `memory-write.ts`, `server/src/routes/memory.ts`. Design: `docs/aoa/plans/2026-06-25-keyless-except-embeddings-design.md`; CLI-only amendment: `docs/aoa/plans/2026-06-27-decouple-extraction-from-keys-spec.md`.

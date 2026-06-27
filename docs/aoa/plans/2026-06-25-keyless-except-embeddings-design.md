@@ -1,5 +1,12 @@
 # Keyless-Except-Embeddings — Design
 
+> **Update 2026-06-27 (partial supersede):** the "selectable engine" model below
+> (a `cli` engine with a **dormant `api` fallback** kept for crew/Adjutant
+> extractors) was superseded. Extraction is now **CLI-only** everywhere and the
+> `api` engine + engine-status route are deleted — see
+> `docs/aoa/plans/2026-06-27-decouple-extraction-from-keys-spec.md` and Decision
+> #104's 2026-06-27 amendment. The embeddings/resilience sections still hold.
+
 **Status:** Draft (pending Codex review)
 **Date:** 2026-06-25
 **Branch:** one feature branch, one PR, multiple scoped commits

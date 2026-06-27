@@ -28,7 +28,7 @@ You are reading this as context for working on the AoA codebase. This applies wh
 8. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
 9. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
 10. **Consult `docs/architecture/decisions.md` before making architectural choices.** 90+ locked decisions exist. Do not relitigate.
-11. **The only runtime hosted API key is for embeddings.** Agents, Commander, and discussion extraction run keyless via locally-installed CLIs. Embeddings use OpenAI `text-embedding-3-small`; per-company key = Settings secret `llm:openai` → env `OPENAI_API_KEY`. The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the sole caller. Do not add new hosted-API calls outside this chokepoint. (Decision #104)
+11. **The only runtime hosted API key is for embeddings.** Agents, Commander, and **all extraction** (discussion + debrief-push + file-import + crew memory-extract tools) run keyless via locally-installed CLIs. Extraction is **CLI-only** — no extraction code path reads a hosted provider key, and there is no api fallback (the `callLLM`/`callAnthropic`/`callOpenAI` path + the engine-status route were removed, amended Decision #104 on 2026-06-27). Embeddings use OpenAI `text-embedding-3-small`; per-company key = Settings secret `llm:openai` → env `OPENAI_API_KEY`, configured in **Settings → Memory**. The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the sole caller. Do not add new hosted-API calls outside this chokepoint, and do not re-introduce a hosted-key extraction fallback. (Decision #104, amended 2026-06-27)
 
 ---
 
@@ -117,7 +117,7 @@ Registered in `server/src/adapters/registry.ts`. All agent execution is CLI-only
 | `process` | Generic shell process |
 | `http` | HTTP webhook |
 
-API-mode adapters (`claude_api`, `openai_api`, `gemini_api`) were removed per Decision #91 and must not be re-added. The Provider SDK utilities in `server/src/services/internal-agent/providers/` remain for **embeddings only** — extraction is now handled by the selectable engine (see Discussion Pipeline below), not the provider SDK. Not in the adapter registry.
+API-mode adapters (`claude_api`, `openai_api`, `gemini_api`) were removed per Decision #91 and must not be re-added. The Provider SDK utilities in `server/src/services/internal-agent/providers/` remain for **embeddings + Commander only** — extraction is **CLI-only** (Decision #104, amended 2026-06-27; see Discussion Pipeline below) and no longer reaches the provider SDK. Not in the adapter registry.
 
 ---
 
@@ -159,12 +159,12 @@ See `docs/architecture/memory.md` for UI layout, semantic retrieval configuratio
 
 Thread-based. Input modes: paste, write, voice, MCP.
 
-Flow: Discussion entry → LLM extraction → `discussion_extracted_items` → founder approval → Tasks + Memory items.
+Flow: Discussion entry → CLI extraction → `discussion_extracted_items` → founder approval → Tasks + Memory items.
 
 - Polymorphic scope: department / project / goal. Entry-level scope overrides thread-level scope.
 - Inline annotations on entries (anchorStart/anchorEnd character offsets).
-- **Extraction engine (Decision #104):** `resolveExtractionEngine` selects `cli` (default — keyless, uses installed Claude/Codex CLI, no API key) or `api` (dormant fallback — requires hosted provider key). Resolution runs before the hosted-key precheck. CLI engine is Option B server-side one-shot (`--print` / `exec`): no MCP bridge, no `submit_extracted_items` handshake, no Decision #100 crew-CLI blockers. Windows prompt delivery: user content is sent via **stdin** to claude (never argv), fixing empty Commander turns.
-- Extraction failure: entry marked `failed`, founder notified via `notifications` table. Can retry or manually create. Failure type classified (`not_installed` / `not_authed` / `timeout` / `nonzero_exit` / `unparseable`) with actionable UX copy in DiscussionDetail. Engine status shown in Settings.
+- **Extraction engine — CLI-only (Decision #104, amended 2026-06-27):** `resolveExtractionEngine` returns `"cli"` or throws ("install a CLI and run its login"). There is no `api` engine and no hosted-key precheck — extraction never reads a provider key. The CLI engine is Option B server-side one-shot (`--print` / `exec`): no MCP bridge, no `submit_extracted_items` handshake, no Decision #100 crew-CLI blockers. Windows prompt delivery: user content is sent via **stdin** to claude (never argv), fixing empty Commander turns. The same CLI extractor serves discussion, debrief-push, file-import, and the crew memory-extract tools.
+- Extraction failure: entry marked `failed`/`skipped`, founder notified via `notifications` table. Can retry or manually create. Failure type classified (`not_installed` / `not_authed` / `timeout` / `nonzero_exit` / `unparseable`) with actionable CLI-guidance copy in DiscussionDetail (never points at a key). No engine-status banner — that route + UI were removed.
 
 ### Artifacts
 

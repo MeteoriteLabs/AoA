@@ -1,6 +1,10 @@
 /**
- * Server-side ONE-SHOT CLI extractor — the keyless replacement transport for
- * discussion extraction.
+ * Server-side ONE-SHOT CLI extractor — the keyless transport for ALL extraction.
+ *
+ * Extraction is CLI-only (Decision #104, amended 2026-06-27): there is no
+ * hosted-API fallback. This extractor backs every extraction entry point —
+ * discussion extraction, debrief-push, file-import, and the crew memory-extract
+ * tools — none of which ever read a hosted provider key.
  *
  * This is NOT the Commander chat path. It is a fresh, headless, one-shot CLI
  * invocation per extraction:
@@ -10,8 +14,8 @@
  *   4. parse it via parseExtractedItems, and return structured items.
  *
  * There is NO MCP bridge and NO `submit_extracted_items` tool here — the SERVER
- * writes the rows itself (a later task). This deliberately avoids the Decision
- * #100 blockers.
+ * (the calling extraction service) writes the rows itself. This deliberately
+ * avoids the Decision #100 blockers.
  *
  * Prompt delivery uses stdin (W1 spike: on Windows argv positionals are
  * silently dropped; stdin works). The claude shape mirrors the chat path's
