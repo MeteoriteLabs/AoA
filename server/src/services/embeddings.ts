@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import fs from "node:fs";
 import OpenAI from "openai";
 import type { Db } from "@armyofagents/db";
@@ -631,32 +631,51 @@ async function updateVectorColumn(
   targetId: string,
   targetColumn: string,
   vector: number[],
+  claimedRowId: string,
   claimedRowCreatedAt: Date,
 ): Promise<void> {
   const table = TARGET_TABLE_MAP[targetTable];
   if (!table) {
     throw new Error(`Unknown target table: ${targetTable}`);
   }
-  // Atomic stale-write guard (audit follow-up): the pre-write SELECT in the
-  // worker is a TOCTOU — a newer queue row for this target could be inserted
-  // between that check and this UPDATE. Re-evaluate "no newer queue row exists"
-  // INSIDE the UPDATE's WHERE so check-and-write is a single atomic statement:
-  // if the item was edited + re-enqueued after this row was claimed, the UPDATE
-  // matches zero rows and the up-to-date embedding is preserved. Params are
-  // bound (no interpolation), so there is no injection surface.
+  // Write the vector via a single parameterized raw UPDATE rather than the query
+  // builder's `.set()`. A dynamic computed-key `.set({ [targetColumn]: ... } as any)`
+  // does NOT route through the pgvector column's customType serializer, so the
+  // number[] (or even a sql-wrapped string) ends up mis-bound — the value spreads
+  // across bind params, positional args shift, and `id = $2` receives a float →
+  // the UPDATE throws. Binding the vector literal once as `${str}::vector` in a
+  // raw `sql` template is the same approach searchSemantic uses for reads.
+  //
+  // Atomic stale-write guard: re-evaluate "no NEWER queue row exists" INSIDE the
+  // WHERE so check-and-write is one statement (closes the SELECT→write TOCTOU).
+  // Exclude THIS row by id (not just by timestamp): createdAt was coerced to a
+  // ms-precision JS Date, while the stored timestamptz is microsecond — a bare
+  // `created_at > $claimed` would match the row against itself. All values are
+  // bound params (no string interpolation), so there is no injection surface.
+  const vectorLiteral = toVectorString(vector);
   await db
     .update(table)
-    .set({ [targetColumn]: vector } as any)
+    .set({ [targetColumn]: sql`${vectorLiteral}::vector` } as any)
     .where(
       and(
         eq(table.id as any, targetId),
-        sql`NOT EXISTS (
-          SELECT 1 FROM ${embeddingQueue}
-          WHERE ${embeddingQueue.targetTable} = ${targetTable}
-            AND ${embeddingQueue.targetId} = ${targetId}
-            AND ${embeddingQueue.targetColumn} = ${targetColumn}
-            AND ${embeddingQueue.createdAt} > ${claimedRowCreatedAt}
-        )`,
+        // Use the query builder for the guard so Drizzle converts the Date
+        // (createdAt) and uuid (id/targetId) values via the column type mappers.
+        // A raw `sql\`... > ${dateValue}\`` here makes drizzle-postgres-js's
+        // execute path try to stringify the Date and throw ERR_INVALID_ARG_TYPE
+        // ("string argument ... Received an instance of Date").
+        sql`NOT EXISTS (${db
+          .select({ one: sql`1` })
+          .from(embeddingQueue)
+          .where(
+            and(
+              eq(embeddingQueue.targetTable, targetTable),
+              eq(embeddingQueue.targetId, targetId),
+              eq(embeddingQueue.targetColumn, targetColumn),
+              ne(embeddingQueue.id, claimedRowId),
+              gt(embeddingQueue.createdAt, claimedRowCreatedAt),
+            ),
+          )})`,
       ),
     );
 }
@@ -1012,6 +1031,13 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
           // row completed without writing so it doesn't linger. This SELECT is the
           // fast-path skip (correct counter); the atomic backstop lives in
           // updateVectorColumn's WHERE (closes the SELECT→write TOCTOU).
+          // Exclude THIS row by id (not just by timestamp). createdAt coerced
+          // from the raw-SQL claim is a JS Date — millisecond precision — while
+          // the stored timestamptz has microsecond precision. A bare
+          // `createdAt > item.createdAt` would match the row against ITSELF
+          // (its microsecond value > the truncated-to-ms bound) and falsely
+          // conclude a newer row exists, skipping the vector write. `ne(id)`
+          // makes "is there a genuinely NEWER row?" precision-independent.
           const newerRows = await db
             .select({ id: embeddingQueue.id })
             .from(embeddingQueue)
@@ -1020,6 +1046,7 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
                 eq(embeddingQueue.targetTable, item.targetTable),
                 eq(embeddingQueue.targetId, item.targetId),
                 eq(embeddingQueue.targetColumn, item.targetColumn),
+                ne(embeddingQueue.id, item.id),
                 gt(embeddingQueue.createdAt, item.createdAt as Date),
               ),
             )
@@ -1040,6 +1067,7 @@ export function createEmbeddingService(db: Db, llm: LlmEmbedder) {
             item.targetId,
             item.targetColumn,
             vector,
+            item.id,
             item.createdAt as Date,
           );
 

@@ -318,7 +318,11 @@ describe("createEmbeddingService", () => {
       expect(db.updateCalls[0].tableName).toBe("embedding_queue");
       expect(db.updateCalls[0].set).toMatchObject({ status: "processing" });
       expect(db.updateCalls[1].tableName).toBe("memory_items");
-      expect(db.updateCalls[1].set).toEqual({ embedding: fakeEmbedding });
+      // The vector is written as a `${literal}::vector` SQL expression (Drizzle's
+      // dynamic .set() mis-binds a raw number[]). This mock only confirms the
+      // write targets the embedding column; the actual stored + retrievable
+      // vector is verified by the pgvector e2e (semantic-retrieval.spec.ts).
+      expect(db.updateCalls[1].set).toHaveProperty("embedding");
       expect(db.updateCalls[2].tableName).toBe("embedding_queue");
       expect(db.updateCalls[2].set).toMatchObject({ status: "completed" });
     });
@@ -354,9 +358,10 @@ describe("createEmbeddingService", () => {
 
         expect(result.processed).toBe(1);
         expect(db.updateCalls[1].tableName).toBe(targetTable);
-        // The new column value is a plain `number[]` passed straight through —
-        // pgvector's customType.toDriver formats it at the SQL layer.
-        expect(db.updateCalls[1].set).toEqual({ [targetColumn]: fakeEmbedding });
+        // The column value is a `${literal}::vector` SQL expression (see the
+        // memory_items case above). Confirm the right column is written; vector
+        // correctness is covered by the pgvector e2e.
+        expect(db.updateCalls[1].set).toHaveProperty(targetColumn);
       },
     );
 
