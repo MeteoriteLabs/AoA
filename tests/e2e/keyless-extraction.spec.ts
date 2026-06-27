@@ -248,3 +248,87 @@ test.describe("keyless extraction — happy path", () => {
     },
   );
 });
+
+/**
+ * E2E — Settings → Memory section (the keyless rename) + MemoryExplorer banner.
+ *
+ * After the keyless refactor (Phase C): the Settings "LLM providers" section was
+ * renamed to "Memory" (canonical id "memory"; the old `?tab=llm` value is
+ * accepted as an alias and normalizes to the Memory section), the extraction
+ * engine-status banner (testid "settings-extraction-engine-status") was DELETED,
+ * and the MemoryExplorer page shows a "no-llm-key-banner" when no embeddings key
+ * is configured (semanticAvailable === false), deep-linking to Settings → Memory.
+ *
+ * These are the CI-feasible UI scenarios — they require NO logged-in CLI and no
+ * pgvector. Real-CLI extraction is covered by the happy-path describe above (via
+ * the fake-claude shim) and by the live verification matrix (Task 13).
+ */
+test.describe("keyless — Settings → Memory section + MemoryExplorer banner", () => {
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request, /^E2E-KeylessUI-/);
+  });
+
+  test(
+    "Settings nav shows 'Memory' (not 'LLM providers') and no extraction engine-status banner",
+    async ({ page, request }) => {
+      const company = await seedCompany(request, `E2E-KeylessUI-${Date.now()}`);
+
+      await page.goto(`/${company.issuePrefix}/settings?tab=memory`);
+
+      // (a) The Memory section heading renders ("Memory." with a brand period).
+      await expect(
+        page.getByRole("heading", { level: 2, name: /^Memory\.$/ }),
+      ).toBeVisible({ timeout: 10_000 });
+
+      // (a) The settings nav has a "Memory" item and NOT "LLM providers".
+      // The "Memory" nav button renders in both the desktop secondary sidebar
+      // and the (CSS-hidden) mobile sub-nav — both from SETTINGS_SECTIONS — so
+      // scope to the first match to stay strict-mode-safe across viewports.
+      await expect(
+        page.getByRole("button", { name: "Memory" }).first(),
+      ).toBeVisible();
+      await expect(page.getByText("LLM providers")).toHaveCount(0);
+
+      // (b) The extraction engine-status banner testid is GONE everywhere in
+      // Settings — it was deleted with the api-extraction engine.
+      await expect(
+        page.getByTestId("settings-extraction-engine-status"),
+      ).toHaveCount(0);
+    },
+  );
+
+  test(
+    "?tab=llm alias lands on the Memory section (old bookmark survives)",
+    async ({ page, request }) => {
+      const company = await seedCompany(request, `E2E-KeylessUI-${Date.now()}`);
+
+      // (c) The legacy ?tab=llm value normalizes to the Memory section rather
+      // than silently falling back to General.
+      await page.goto(`/${company.issuePrefix}/settings?tab=llm`);
+
+      await expect(
+        page.getByRole("heading", { level: 2, name: /^Memory\.$/ }),
+      ).toBeVisible({ timeout: 10_000 });
+    },
+  );
+
+  test(
+    "MemoryExplorer shows the no-llm-key-banner when no embeddings key is configured",
+    async ({ page, request }) => {
+      const company = await seedCompany(request, `E2E-KeylessUI-${Date.now()}`);
+
+      // (d) A freshly seeded company has no per-company OpenAI secret, so
+      // resolveSemanticAvailable() → false and the MemoryExplorer banner shows.
+      await page.goto(`/${company.issuePrefix}/memory/explore`);
+
+      const banner = page.getByTestId("no-llm-key-banner");
+      await expect(banner).toBeVisible({ timeout: 10_000 });
+      await expect(banner).toContainText(/Semantic search is off/i);
+      await expect(banner).toContainText(/Settings\s*→\s*Memory/);
+      // The banner deep-links to the Memory settings tab.
+      await expect(
+        banner.getByRole("link", { name: /Settings\s*→\s*Memory/ }),
+      ).toHaveAttribute("href", /tab=memory/);
+    },
+  );
+});

@@ -24,9 +24,15 @@ import { clearFakeEmbedderControl, writeFakeEmbedderControl } from "./helpers/fa
  *     key configured, create a memory item → poll until the badge shows "Indexed".
  *     Also verifies the key-add-backfill path (key creation triggers reindex sweep).
  *
- * The `no-llm-key-banner` and `memory-index-status` testids live in
- * `ui/src/pages/Memory.tsx` (the legacy /memory/legacy route). That page renders
- * the items list with MemoryIndexBadge per item.
+ * The `memory-index-status` badge testid lives in `ui/src/pages/Memory.tsx`
+ * (the legacy /memory/legacy route), which renders the items list with a
+ * MemoryIndexBadge per item.
+ *
+ * The `no-llm-key-banner` (amber "Semantic search is off — add an embeddings
+ * key in Settings → Memory") now appears on BOTH surfaces: the legacy
+ * `ui/src/pages/Memory.tsx` AND the primary `ui/src/pages/MemoryExplorer.tsx`
+ * (the /memory/explore route). Both deep-link to Settings → Memory
+ * (`?tab=memory`). This spec asserts the banner on each surface.
  */
 
 const PGVECTOR_AVAILABLE = process.env.AOA_E2E_PGVECTOR === "1";
@@ -117,6 +123,17 @@ test.describe("memory index status — no-key path (no pgvector needed)", () => 
       await expect(page.getByTestId("memory-index-status").first()).toContainText(
         /not indexed/i,
       );
+
+      // The PRIMARY surface (MemoryExplorer, /memory/explore) must ALSO show the
+      // no-llm-key-banner, deep-linking to Settings → Memory.
+      await page.goto(`/${company.issuePrefix}/memory/explore`);
+      const explorerBanner = page.getByTestId("no-llm-key-banner");
+      await expect(explorerBanner).toBeVisible({ timeout: 10_000 });
+      await expect(explorerBanner).toContainText(/Settings\s*→\s*Memory/);
+      // The banner links to the Memory settings tab (?tab=memory).
+      await expect(
+        explorerBanner.getByRole("link", { name: /Settings\s*→\s*Memory/ }),
+      ).toHaveAttribute("href", /tab=memory/);
     },
   );
 });
