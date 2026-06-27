@@ -102,7 +102,8 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
         updates.adapterConfig = mergeCrewAdapterConfig(
           current.adapterConfig as Record<string, unknown> | null,
           crewAdapter.adapterConfig,
-          current.adapterType !== crewAdapter.adapterType,
+          current.adapterType,
+          crewAdapter.adapterType,
         );
       }
       await db.update(agents).set(updates).where(eq(agents.id, existing.id));

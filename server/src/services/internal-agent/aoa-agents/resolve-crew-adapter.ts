@@ -242,27 +242,35 @@ const PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS = [
   "dangerouslySkipPermissions",
 ];
 
-// Provider-specific AUTH credentials in adapterConfig.env. On a provider SWITCH
-// the OLD provider's key must NOT reach the new CLI (e.g. a codex row's
-// OPENAI_API_KEY handed to the claude CLI) — the UI treats these as
-// provider-specific auth bindings (Codex P2). Matched case-insensitively
-// (Windows env names are case-insensitive). Neutral env vars are preserved.
-const PROVIDER_AUTH_ENV_KEYS = [
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "GOOGLE_GENERATIVE_AI_API_KEY",
-  "XAI_API_KEY",
-  "GROK_API_KEY",
-];
+// The provider-specific AUTH env credential(s) each adapter reads. Used on a
+// provider SWITCH to drop the SOURCE provider's key while KEEPING any key the
+// TARGET provider still needs — e.g. opencode_local → codex_local both use
+// OPENAI_API_KEY, so it must survive the switch (Codex P2). opencode is
+// multi-provider, so it can use any of them. Adapters not listed (cursor, pi,
+// hermes, process, http) don't read these keys → all are dropped on a switch
+// into them. Matched case-insensitively (Windows env names are case-insensitive).
+const ADAPTER_AUTH_ENV_KEYS: Record<string, string[]> = {
+  codex_local: ["OPENAI_API_KEY"],
+  opencode_local: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  claude_local: ["ANTHROPIC_API_KEY"],
+  gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  grok_local: ["XAI_API_KEY", "GROK_API_KEY"],
+};
+// The union — any of these is a provider-specific auth credential.
+const PROVIDER_AUTH_ENV_KEYS = Array.from(new Set(Object.values(ADAPTER_AUTH_ENV_KEYS).flat()));
 
-function stripProviderAuthEnv(env: Record<string, unknown>): Record<string, unknown> {
+// Drop the SOURCE provider's auth keys from env while preserving (a) any key the
+// TARGET adapter still reads and (b) all neutral (non-provider-auth) vars.
+function stripSourceProviderAuthEnv(
+  env: Record<string, unknown>,
+  targetAdapterType: string,
+): Record<string, unknown> {
+  const keep = new Set((ADAPTER_AUTH_ENV_KEYS[targetAdapterType] ?? []).map((k) => k.toLowerCase()));
   const out = { ...env };
   for (const envKey of Object.keys(out)) {
-    if (PROVIDER_AUTH_ENV_KEYS.some((k) => k.toLowerCase() === envKey.toLowerCase())) {
-      delete out[envKey];
-    }
+    const lower = envKey.toLowerCase();
+    const isProviderAuth = PROVIDER_AUTH_ENV_KEYS.some((k) => k.toLowerCase() === lower);
+    if (isProviderAuth && !keep.has(lower)) delete out[envKey];
   }
   return out;
 }
@@ -270,24 +278,25 @@ function stripProviderAuthEnv(env: Record<string, unknown>): Record<string, unkn
 /**
  * Build the adapter_config to persist when migrating a crew row to `next`.
  *
- * - Same-adapter backfill (`isProviderSwitch === false`): preserve ALL of the
- *   founder's existing fields (mergeAdapterConfig) — the CLI is unchanged.
- * - Provider switch (`isProviderSwitch === true`): drop provider-specific fields
- *   (command/extraArgs/model/bypass flags) that would otherwise make the new CLI
- *   misbehave, while preserving neutral fields (cwd, env, instructions*). The
- *   resolved adapter's own fields (`next`) then apply on top (Codex P2).
+ * - Same adapter (`currentAdapterType === targetAdapterType`): preserve ALL of
+ *   the founder's existing fields (mergeAdapterConfig) — the CLI is unchanged.
+ * - Provider switch: drop provider-specific fields (command/extraArgs/model/
+ *   bypass flags) that would make the new CLI misbehave, and drop the SOURCE
+ *   provider's auth env keys EXCEPT any the TARGET still needs; preserve neutral
+ *   fields (cwd, neutral env vars, instructions*). `next` then applies on top.
+ *   (Codex P2.)
  */
 export function mergeCrewAdapterConfig(
   existing: Record<string, unknown> | null | undefined,
   next: Record<string, unknown>,
-  isProviderSwitch: boolean,
+  currentAdapterType: string | null | undefined,
+  targetAdapterType: string,
 ): Record<string, unknown> {
-  if (!isProviderSwitch) return mergeAdapterConfig(existing, next);
+  if (currentAdapterType === targetAdapterType) return mergeAdapterConfig(existing, next);
   const base: Record<string, unknown> = { ...(existing ?? {}) };
   for (const key of PROVIDER_SPECIFIC_ADAPTER_CONFIG_KEYS) delete base[key];
-  // Scrub the OLD provider's auth credentials from env; keep neutral env vars.
   if (base.env && typeof base.env === "object" && !Array.isArray(base.env)) {
-    base.env = stripProviderAuthEnv(base.env as Record<string, unknown>);
+    base.env = stripSourceProviderAuthEnv(base.env as Record<string, unknown>, targetAdapterType);
   }
   return { ...base, ...next };
 }

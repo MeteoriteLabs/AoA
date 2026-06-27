@@ -218,7 +218,8 @@ export async function seedCrewAgent(
         updates.adapterConfig = mergeCrewAdapterConfig(
           cfg,
           crewAdapter.adapterConfig,
-          current.adapterType !== crewAdapter.adapterType,
+          current.adapterType,
+          crewAdapter.adapterType,
         );
       }
     }

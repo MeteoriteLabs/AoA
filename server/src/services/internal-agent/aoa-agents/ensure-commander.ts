@@ -146,7 +146,8 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
         updates.adapterConfig = mergeCrewAdapterConfig(
           cfg,
           crewAdapter.adapterConfig,
-          current.adapterType !== crewAdapter.adapterType,
+          current.adapterType,
+          crewAdapter.adapterType,
         );
       }
     }

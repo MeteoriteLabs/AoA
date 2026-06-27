@@ -162,36 +162,49 @@ describe("mergeCrewAdapterConfig", () => {
   const nextCodex = { model: "gpt-5.5", dangerouslyBypassApprovalsAndSandbox: true };
 
   it("provider SWITCH drops command/extraArgs/old-bypass and applies the new adapter's fields", () => {
-    const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
+    const merged = mergeCrewAdapterConfig(existing, nextCodex, "claude_local", "codex_local");
     expect(merged.command).toBeUndefined();
     expect(merged.extraArgs).toBeUndefined();
     expect(merged.dangerouslySkipPermissions).toBeUndefined(); // old provider flag dropped
     expect(merged.model).toBe("gpt-5.5"); // new adapter wins
     expect(merged.dangerouslyBypassApprovalsAndSandbox).toBe(true); // new adapter sets it
   });
-  it("provider SWITCH drops the OLD provider's auth env but keeps neutral env vars (Codex P2)", () => {
-    const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
+  it("provider SWITCH drops the SOURCE provider's auth env but keeps neutral env vars (Codex P2)", () => {
+    const merged = mergeCrewAdapterConfig(existing, nextCodex, "claude_local", "codex_local");
     const env = merged.env as Record<string, unknown>;
-    expect(env.ANTHROPIC_API_KEY).toBeUndefined(); // old provider credential dropped
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined(); // claude's key — codex doesn't use it → dropped
     expect(env.HTTP_PROXY).toBe("http://proxy:8080"); // neutral var preserved
   });
-  it("provider SWITCH drops a differently-cased provider-auth env key (case-insensitive)", () => {
+  it("provider SWITCH KEEPS an auth key the TARGET still needs — opencode→codex preserves OPENAI_API_KEY (Codex P2)", () => {
+    const merged = mergeCrewAdapterConfig(
+      { model: "openai/gpt-5.2-codex", command: "/opt/opencode", env: { OPENAI_API_KEY: "sk-agent", FOO: "bar" } },
+      { model: "gpt-5.5", dangerouslyBypassApprovalsAndSandbox: true },
+      "opencode_local",
+      "codex_local",
+    );
+    const env = merged.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-agent"); // codex reads it → MUST survive the switch
+    expect(env.FOO).toBe("bar");
+    expect(merged.command).toBeUndefined(); // opencode's command still dropped
+  });
+  it("provider SWITCH drops a differently-cased SOURCE auth env key (case-insensitive)", () => {
     const merged = mergeCrewAdapterConfig(
       { model: "gpt-5.5", env: { OpenAI_API_Key: "sk-x", FOO: "bar" } },
       { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true },
-      true,
+      "codex_local",
+      "claude_local", // target=claude doesn't use OPENAI_API_KEY → drop it
     );
     const env = merged.env as Record<string, unknown>;
     expect(env.OpenAI_API_Key).toBeUndefined();
     expect(env.FOO).toBe("bar");
   });
   it("provider SWITCH preserves neutral fields (cwd, instructions*)", () => {
-    const merged = mergeCrewAdapterConfig(existing, nextCodex, true);
+    const merged = mergeCrewAdapterConfig(existing, nextCodex, "claude_local", "codex_local");
     expect(merged.cwd).toBe("/work");
     expect(merged.instructionsFilePath).toBe("/i.md");
   });
-  it("same-adapter backfill (isProviderSwitch=false) preserves ALL fields like mergeAdapterConfig", () => {
-    const merged = mergeCrewAdapterConfig(existing, { model: "gpt-5.5" }, false);
+  it("same adapter (no switch) preserves ALL fields like mergeAdapterConfig", () => {
+    const merged = mergeCrewAdapterConfig(existing, { model: "gpt-5.5" }, "claude_local", "claude_local");
     expect(merged).toEqual(mergeAdapterConfig(existing, { model: "gpt-5.5" }));
     expect(merged.command).toBe("/opt/claude"); // preserved on a same-CLI backfill
     expect((merged.env as Record<string, unknown>).ANTHROPIC_API_KEY).toBe("sk-ant"); // env untouched
