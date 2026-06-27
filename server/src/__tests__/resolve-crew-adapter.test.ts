@@ -259,6 +259,27 @@ describe("mergeCrewAdapterConfig", () => {
     expect(env.ANTHROPIC_API_KEY).toBe("sk-ant"); // claude reads it → kept
     expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
   });
+  it("provider SWITCH INTO gemini keeps gemini's auth env, drops others", () => {
+    const merged = mergeCrewAdapterConfig(
+      { model: "gpt-5.5", env: { GEMINI_API_KEY: "g", GOOGLE_API_KEY: "g2", OPENAI_API_KEY: "sk-open", FOO: "bar" } },
+      { model: "gemini-2.5-pro" },
+      "codex_local", "gemini_local",
+    );
+    const env = merged.env as Record<string, unknown>;
+    expect(env.GEMINI_API_KEY).toBe("g"); // gemini reads these → kept
+    expect(env.GOOGLE_API_KEY).toBe("g2");
+    expect(env.OPENAI_API_KEY).toBeUndefined(); // source codex key — gemini doesn't read it → dropped
+    expect(env.FOO).toBe("bar"); // neutral preserved
+  });
+  it("provider SWITCH from a grok SOURCE drops XAI_API_KEY but keeps the codex target's key", () => {
+    const merged = mergeCrewAdapterConfig(
+      { model: "grok-2", env: { XAI_API_KEY: "xai", OPENAI_API_KEY: "sk-open" } },
+      nextCodex, "grok_local", "codex_local",
+    );
+    const env = merged.env as Record<string, unknown>;
+    expect(env.XAI_API_KEY).toBeUndefined(); // grok's key — codex doesn't read it → dropped
+    expect(env.OPENAI_API_KEY).toBe("sk-open"); // codex reads it → kept
+  });
   it("same adapter (no switch) preserves ALL fields like mergeAdapterConfig", () => {
     const merged = mergeCrewAdapterConfig(existing, { model: "gpt-5.5" }, "claude_local", "claude_local");
     expect(merged).toEqual(mergeAdapterConfig(existing, { model: "gpt-5.5" }));
