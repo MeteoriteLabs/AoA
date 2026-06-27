@@ -103,9 +103,11 @@ vi.mock("../middleware/rate-limit.js", () => ({
 // ── embeddings-backfill mock ─────────────────────────────────────────────────
 
 const mockReindexCompany = vi.hoisted(() => vi.fn().mockResolvedValue({ requeuedFailed: 0, enqueuedMissing: 0 }));
+const mockReindexAllCompany = vi.hoisted(() => vi.fn().mockResolvedValue({ enqueued: 0 }));
 
 vi.mock("../services/embeddings-backfill.js", () => ({
   reindexCompany: mockReindexCompany,
+  reindexAllCompany: mockReindexAllCompany,
 }));
 
 // ── memory-write mock ─────────────────────────────────────────────────────────
@@ -473,6 +475,91 @@ describe("POST /companies/:companyId/memory/reindex-failed", () => {
     const db = makeMockDb({ failedQueueRows: [] });
     const res = await request(makeApp(founderActor, db))
       .post(`/api/companies/${COMPANY_ID}/memory/reindex-failed`)
+      .send();
+    expect(res.status).toBe(200);
+    expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "founder",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("POST /companies/:companyId/memory/reindex-all", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAssertRole.mockResolvedValue(undefined);
+    mockReindexAllCompany.mockResolvedValue({ enqueued: 0 });
+  });
+
+  it("re-enqueues every company memory item and returns the count", async () => {
+    mockReindexAllCompany.mockResolvedValueOnce({ enqueued: 7 });
+    const res = await request(makeApp(founderActor))
+      .post(`/api/companies/${COMPANY_ID}/memory/reindex-all`)
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ reindexed: 7 });
+    expect(mockReindexAllCompany).toHaveBeenCalledWith(expect.anything(), COMPANY_ID);
+
+    expect(mockLogActivity).toHaveBeenCalledOnce();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "memory.reindex_all",
+        entityType: "company",
+        entityId: COMPANY_ID,
+        companyId: COMPANY_ID,
+        details: { reindexed: 7 },
+      }),
+    );
+  });
+
+  it("RBAC: founder-only — team_lead is rejected with 403", async () => {
+    mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder"));
+
+    const res = await request(makeApp(memberActor))
+      .post(`/api/companies/${COMPANY_ID}/memory/reindex-all`)
+      .send();
+
+    expect(res.status).toBe(403);
+    // Bulk re-embed spans all departments + identity, so it is FOUNDER-only —
+    // a team_lead must NOT pass this gate.
+    expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "founder",
+    );
+    expect(mockAssertRole).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "founder",
+      "team_lead",
+    );
+    expect(mockReindexAllCompany).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent actors (board-only) before any role check", async () => {
+    // assertRole is a no-op for agent actors, so assertBoard must reject them
+    // first — otherwise any company agent key could drive a full re-embed.
+    const res = await request(makeApp(agentActor))
+      .post(`/api/companies/${COMPANY_ID}/memory/reindex-all`)
+      .send();
+
+    expect(res.status).toBe(403);
+    expect(mockAssertRole).not.toHaveBeenCalled();
+    expect(mockReindexAllCompany).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("RBAC: founder is allowed", async () => {
+    const res = await request(makeApp(founderActor))
+      .post(`/api/companies/${COMPANY_ID}/memory/reindex-all`)
       .send();
     expect(res.status).toBe(200);
     expect(mockAssertRole).toHaveBeenCalledWith(

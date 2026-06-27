@@ -96,7 +96,7 @@ function createSequenceDb(config: {
 }
 
 // Import after mocks are registered
-import { backfillQueueCompanyIds, reindexCompany, reconcileNullVectors } from "../services/embeddings-backfill.js";
+import { backfillQueueCompanyIds, reindexCompany, reindexAllCompany, reconcileNullVectors } from "../services/embeddings-backfill.js";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -240,6 +240,8 @@ function createReindexDb(config: {
   let selectIdx = 0;
   const selects = config.selects ?? [];
   const setCalls: Array<Record<string, unknown>> = [];
+  // Captures every `insert().values(rows)` payload (reindexAllCompany bulk path).
+  const insertCalls: Array<unknown[]> = [];
 
   function makeSelectChain(): Record<string, unknown> {
     const result = selects[selectIdx++] ?? [];
@@ -269,13 +271,18 @@ function createReindexDb(config: {
     update: () => makeUpdateChain(),
     insert: () => {
       const c: Record<string, unknown> = {};
-      for (const m of ["values", "returning", "onConflictDoNothing"]) {
+      c.values = (rows: unknown) => {
+        insertCalls.push(Array.isArray(rows) ? rows : [rows]);
+        return c;
+      };
+      for (const m of ["returning", "onConflictDoNothing"]) {
         c[m] = () => c;
       }
       c.then = (resolve: (v: unknown) => unknown) => Promise.resolve(resolve([]));
       return c;
     },
     setCalls,
+    insertCalls,
   };
 }
 
@@ -454,6 +461,105 @@ describe("reindexCompany", () => {
     expect(db.setCalls.length).toBe(2);
     expect(db.setCalls[0]).toMatchObject({ status: "pending", attempts: 0, error: null });
     expect(db.setCalls[1]).toEqual({ nextRetryAt: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reindexAllCompany (Task 6 — founder-only bulk re-embed, dedup-safe)
+// ---------------------------------------------------------------------------
+
+describe("reindexAllCompany", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDbCapabilities.mockReturnValue({ hasVectorSupport: true });
+  });
+
+  it("returns { enqueued: 0 } without touching DB when pgvector is absent", async () => {
+    mockGetDbCapabilities.mockReturnValue({ hasVectorSupport: false });
+    const db = createReindexDb({ selects: [[{ id: "m1" }]] });
+
+    const result = await reindexAllCompany(db as any, "co-1");
+    expect(result).toEqual({ enqueued: 0 });
+    expect(db.insertCalls.length).toBe(0);
+  });
+
+  it("enqueues items that have NO live queue row (bulk insert)", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: all memory_items for the company
+        [
+          { id: "m1", title: "A", content: "aa" },
+          { id: "m2", title: "B", content: "bb" },
+        ],
+        // select #1: live (pending|processing) queue rows — none
+        [],
+      ],
+    });
+
+    const result = await reindexAllCompany(db as any, "co-1");
+    expect(result).toEqual({ enqueued: 2 });
+    // One bulk insert, NOT a per-item loop.
+    expect(db.insertCalls.length).toBe(1);
+    expect(db.insertCalls[0]).toHaveLength(2);
+    expect(db.insertCalls[0][0]).toMatchObject({
+      companyId: "co-1",
+      targetTable: "memory_items",
+      targetId: "m1",
+      targetColumn: "embedding",
+      inputText: "A\naa",
+      status: "pending",
+    });
+    expect(db.insertCalls[0][1]).toMatchObject({ targetId: "m2", inputText: "B\nbb" });
+  });
+
+  it("skips items that already have a live (pending|processing) row — no duplicate", async () => {
+    const db = createReindexDb({
+      selects: [
+        // select #0: 2 items
+        [
+          { id: "m1", title: "A", content: "aa" },
+          { id: "m2", title: "B", content: "bb" },
+        ],
+        // select #1: m1 already has a live queue row → excluded
+        [{ targetId: "m1" }],
+      ],
+    });
+
+    const result = await reindexAllCompany(db as any, "co-1");
+    expect(result).toEqual({ enqueued: 1 });
+    expect(db.insertCalls.length).toBe(1);
+    expect(db.insertCalls[0]).toHaveLength(1);
+    expect(db.insertCalls[0][0]).toMatchObject({ targetId: "m2", inputText: "B\nbb" });
+  });
+
+  it("returns { enqueued: 0 } and does NOT insert when every item already has a live row", async () => {
+    const db = createReindexDb({
+      selects: [
+        [{ id: "m1", title: "A", content: "aa" }],
+        [{ targetId: "m1" }],
+      ],
+    });
+
+    const result = await reindexAllCompany(db as any, "co-1");
+    expect(result).toEqual({ enqueued: 0 });
+    expect(db.insertCalls.length).toBe(0);
+  });
+
+  it("composes inputText from title+content (matches enqueueMemoryEmbedding)", async () => {
+    const db = createReindexDb({
+      selects: [
+        [
+          { id: "m1", title: "Title only", content: null },
+          { id: "m2", title: null, content: "Content only" },
+        ],
+        [],
+      ],
+    });
+
+    const result = await reindexAllCompany(db as any, "co-1");
+    expect(result).toEqual({ enqueued: 2 });
+    expect(db.insertCalls[0][0]).toMatchObject({ inputText: "Title only" });
+    expect(db.insertCalls[0][1]).toMatchObject({ inputText: "Content only" });
   });
 });
 

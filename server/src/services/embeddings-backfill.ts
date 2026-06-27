@@ -292,6 +292,106 @@ export async function reindexCompany(
 }
 
 /**
+ * Re-index EVERY memory_item for a company (founder-only bulk op, Task 6).
+ *
+ * Unlike {@link reindexCompany} (which drains only missing/failed rows and
+ * auto-fires on key add/rotate), this re-embeds the company's ENTIRE memory —
+ * the explicit "Re-index all" button in Settings → Memory. Use after a model
+ * change or a vector reset, when even already-indexed items should be redone.
+ *
+ * Dedup-safe (Rev 3): a blind bulk insert would create a SECOND `pending` row
+ * for every item that already has a live one (the per-item
+ * {@link enqueueMemoryEmbedding} refreshes in place — memory-write.ts). So we
+ * first collect the set of memory targetIds that already have a live
+ * (`pending`|`processing`) embedding_queue row and EXCLUDE them — the same
+ * predicate {@link reindexCompany} uses for its superseding-row check. The
+ * remaining items are inserted in one (chunked) bulk INSERT, never a per-item
+ * loop (avoids N+1). The worker (circuit-breaker + backoff) paces the actual
+ * provider calls.
+ *
+ * No-op (returns `{ enqueued: 0 }`) when pgvector is not available.
+ */
+export async function reindexAllCompany(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  companyId: string,
+): Promise<{ enqueued: number }> {
+  if (!getDbCapabilities().hasVectorSupport) {
+    return { enqueued: 0 };
+  }
+
+  // All memory_items for the company.
+  const items = await db
+    .select({
+      id: memoryItems.id,
+      title: memoryItems.title,
+      content: memoryItems.content,
+    })
+    .from(memoryItems)
+    .where(eq(memoryItems.companyId, companyId));
+
+  if (items.length === 0) {
+    return { enqueued: 0 };
+  }
+
+  // Items that already have a live (pending|processing) queue row — same
+  // predicate reindexCompany uses — must be excluded so we don't pile up a
+  // duplicate pending row alongside the in-flight one.
+  const liveQueueRows = await db
+    .select({ targetId: embeddingQueue.targetId })
+    .from(embeddingQueue)
+    .where(
+      and(
+        eq(embeddingQueue.companyId, companyId),
+        eq(embeddingQueue.targetTable, "memory_items"),
+        eq(embeddingQueue.targetColumn, "embedding"),
+        inArray(embeddingQueue.status, [...LIVE_STATUSES]),
+      ),
+    );
+
+  const liveTargetIds = new Set(
+    liveQueueRows.map((r: { targetId: string }) => r.targetId),
+  );
+
+  // Compose inputText exactly as enqueueMemoryEmbedding does (title\ncontent),
+  // skip items with nothing to embed, and drop those with a live row.
+  const rows = (
+    items as Array<{ id: string; title?: string | null; content?: string | null }>
+  )
+    .filter((item) => !liveTargetIds.has(item.id))
+    .map((item) => ({
+      id: item.id,
+      inputText: [item.title, item.content].filter(Boolean).join("\n"),
+    }))
+    .filter((r) => r.inputText.length > 0)
+    .map((r) => ({
+      companyId,
+      targetTable: "memory_items" as const,
+      targetId: r.id,
+      targetColumn: "embedding" as const,
+      inputText: r.inputText,
+      status: "pending" as const,
+    }));
+
+  if (rows.length === 0) {
+    return { enqueued: 0 };
+  }
+
+  // Bulk insert, chunked to keep a single statement's parameter count bounded.
+  const CHUNK = 500;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    await db.insert(embeddingQueue).values(rows.slice(i, i + CHUNK));
+  }
+
+  log.info(
+    { companyId, enqueued: rows.length },
+    "reindexAllCompany: enqueued full-company re-embed",
+  );
+
+  return { enqueued: rows.length };
+}
+
+/**
  * Global reconciliation sweep: find null-vector memory_items across ALL
  * companies that lack a live queue row and enqueue them.
  *

@@ -20,7 +20,7 @@ import { resolveSemanticAvailable } from "../services/memory-index-status.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryAccess, assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { embeddingSearchLimiter } from "../middleware/rate-limit.js";
-import { reindexCompany } from "../services/embeddings-backfill.js";
+import { reindexCompany, reindexAllCompany } from "../services/embeddings-backfill.js";
 import { enqueueMemoryEmbedding } from "../services/memory-write.js";
 import { eq, and, inArray } from "drizzle-orm";
 import { embeddingQueue } from "@armyofagents/db";
@@ -1238,6 +1238,45 @@ export function memoryRoutes(db: Db) {
     });
 
     res.json({ requeued });
+  });
+
+  /**
+   * POST /companies/:companyId/memory/reindex-all
+   *
+   * Re-embed the company's ENTIRE memory: enqueue a fresh `pending` row for
+   * every memory_item that does not already have a live (pending|processing)
+   * queue row (dedup-safe). The "Re-index all" button in Settings → Memory.
+   *
+   * Returns { reindexed: N } where N is the number of items newly enqueued.
+   *
+   * RBAC: FOUNDER only. This is a company-wide bulk re-embed across ALL
+   * departments + the identity layer, so (like /reindex-failed) a department-
+   * scoped team_lead must not drive it. Department-scoped re-index is available
+   * per-item via POST /memory/:id/reindex (which gates on the item's department).
+   */
+  router.post("/companies/:companyId/memory/reindex-all", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
+    assertBoard(req);
+    await assertRole(db, req, companyId, "founder");
+
+    const { enqueued } = await reindexAllCompany(db, companyId);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.reindex_all",
+      entityType: "company",
+      entityId: companyId,
+      details: { reindexed: enqueued },
+    });
+
+    res.json({ reindexed: enqueued });
   });
 
   return router;
