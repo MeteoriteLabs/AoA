@@ -378,11 +378,11 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(await screen.findByText("Plugin update policy")).toBeInTheDocument();
   });
 
-  it("LLM providers section: renders Anthropic, OpenAI, Google", async () => {
+  it("Memory section: renders the OpenAI embeddings key (no engine-status banner)", async () => {
     renderSettings("/P4/settings?tab=llm");
-    expect(await screen.findByText(/Anthropic/i)).toBeInTheDocument();
-    expect(screen.getByText(/OpenAI/i)).toBeInTheDocument();
-    expect(screen.getByText(/Google/i)).toBeInTheDocument();
+    expect(await screen.findByText(/OpenAI/i)).toBeInTheDocument();
+    // Task 7: the extraction engine-status banner is gone.
+    expect(screen.queryByTestId("settings-extraction-engine-status")).toBeNull();
   });
 
   it("Plugins section: renders the existing PluginsSection", async () => {

@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { secretsApi } from "../api/secrets";
-import { extractionApi } from "../api/extraction";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -18,9 +17,6 @@ import {
   Eye,
   EyeOff,
   Loader2,
-  CheckCircle2,
-  AlertTriangle,
-  Terminal,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -81,18 +77,6 @@ export function LLMProvidersSection() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: engineStatus } = useQuery({
-    queryKey: queryKeys.extraction.engineStatus(selectedCompanyId!),
-    queryFn: () => extractionApi.engineStatus(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    // Probe is cheap. staleTime alone does NOT refetch a mounted query, so a CLI
-    // install / key change wouldn't reflect until remount (Codex #19). Poll every
-    // 30s so an out-of-band CLI install is picked up, and invalidate explicitly
-    // after key add/remove/rotate (below) so in-app changes reflect immediately.
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-  });
-
   // Filter to only LLM secrets (name starts with "llm:")
   const llmSecrets = useMemo(
     () => allSecrets.filter((s) => s.name.startsWith("llm:")),
@@ -112,11 +96,6 @@ export function LLMProvidersSection() {
   function invalidateProviderState() {
     queryClient.invalidateQueries({
       queryKey: queryKeys.secrets.list(selectedCompanyId!),
-    });
-    // A key add/remove/rotate can flip the extraction engine (cli ↔ api ↔ none),
-    // so refresh the banner immediately instead of waiting for the poll (Codex #19).
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.extraction.engineStatus(selectedCompanyId!),
     });
   }
 
@@ -204,44 +183,6 @@ export function LLMProvidersSection() {
         </span>
         <HintIcon text="Keys are stored encrypted. Agents reference them via secret bindings in their adapter config." />
       </div>
-
-      {/* Extraction engine status */}
-      {engineStatus && (
-        <div
-          data-testid="settings-extraction-engine-status"
-          className={cn(
-            "flex items-center gap-2 rounded-md border px-3 py-2 text-xs mb-1",
-            engineStatus.cli.available
-              ? "border-green-200 bg-green-50 text-green-800 dark:border-green-800/40 dark:bg-green-950/20 dark:text-green-300"
-              : engineStatus.apiKey
-                ? "border-border bg-muted/30 text-muted-foreground"
-                : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-950/20 dark:text-amber-300",
-          )}
-        >
-          {engineStatus.cli.available ? (
-            <>
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                Local CLI ready ({engineStatus.cli.tool})
-              </span>
-            </>
-          ) : engineStatus.apiKey ? (
-            <>
-              <Terminal className="h-3.5 w-3.5 shrink-0" />
-              <span>Extraction will use your API key</span>
-            </>
-          ) : (
-            <>
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                No extraction engine — install a CLI and run{" "}
-                <code className="font-mono">claude login</code>, or add an API
-                key below
-              </span>
-            </>
-          )}
-        </div>
-      )}
 
       {/* Configured providers */}
       {llmSecrets.map((secret) => {

@@ -323,9 +323,6 @@ export {
 } from "./constants.js";
 
 export type {
-  ExtractionEngineStatus,
-  ExtractionEngineCliStatus,
-  ExtractionEngineStatusResponse,
   Company,
   Agent,
   AgentPermissions,
