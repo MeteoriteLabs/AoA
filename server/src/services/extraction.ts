@@ -1,6 +1,6 @@
 import { eq, and, desc, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@armyofagents/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getProviderApiKey, createProvider, resolveAvailableProvider } from "./internal-agent/providers/index.js";
@@ -386,19 +386,17 @@ export function extractionService(db: Db) {
           return;
         }
 
-        // 4. Decide the extraction ENGINE *before* any hosted-key precheck.
-        //    Keyless extraction only runs if we choose the engine first: the
-        //    "cli" engine bypasses provider resolution entirely. The legacy
-        //    no-provider `skipped` outcome now happens ONLY when NEITHER a CLI
-        //    nor a hosted key exists (resolveExtractionEngine throws).
-        let engine: "cli" | "api";
+        // 4. Resolve the extraction ENGINE. Extraction is CLI-only (keyless) —
+        //    `resolveExtractionEngine` returns "cli" or throws. The `skipped`
+        //    outcome happens when no supported CLI is available; a hosted
+        //    provider key is NEVER consulted (keys are embeddings-only).
         try {
-          engine = await resolveExtractionEngine(db, companyId);
+          await resolveExtractionEngine(db, companyId);
         } catch (engineErr) {
           const msg =
             engineErr instanceof Error
               ? engineErr.message
-              : "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow, or set a provider key in Settings → LLM Providers.";
+              : "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude login`).";
           log.warn(msg);
           await db
             .update(discussionEntries)
@@ -412,16 +410,14 @@ export function extractionService(db: Db) {
 
         // (status was already set to 'processing' by the atomic claim above)
 
-        // 5. Fetch agent config (used by both engines: provider/model hint for
-        //    the api path, and shared for downstream bookkeeping). Cheap single
-        //    read; harmless on the cli path.
+        // 5. Fetch agent config (CLI tool hint + codex model for the keyless
+        //    extractor). Cheap single read.
         const [agentConfig] = await db
           .select()
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId));
 
         // 6. Get thread context (most recent 10 entries, excluding current).
-        //    Shared by BOTH engines.
         const previousEntries = await db
           .select()
           .from(discussionEntries)
@@ -450,195 +446,79 @@ export function extractionService(db: Db) {
           : entry.rawContent;
 
         let extractedItems: ExtractedItem[] = [];
-        // Whether to run the hosted-API extraction path. Starts true only when the
-        // engine router chose "api", but the CLI branch can flip it on when an
-        // installed-but-unusable CLI (not_authed/not_installed) fails AND a hosted
-        // provider key is available — so a logged-out CLI on PATH never blocks
-        // extraction for users who have an API key (P2, Codex).
-        let useApiPath = engine === "api";
 
-        if (engine === "cli") {
-          // ── Keyless CLI extraction ────────────────────────────────────
-          // NO resolveAvailableProvider call: the CLI is keyless. extractViaCli
-          // returns already-parsed ExtractedItem[] (no parseExtractedItems step).
-          const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
-          log.info({ cliTool }, "Using CLI engine for extraction (keyless)");
+        // ── Keyless CLI extraction ──────────────────────────────────────
+        // Extraction is CLI-only. NO resolveAvailableProvider call — the CLI is
+        // keyless. extractViaCli returns already-parsed ExtractedItem[] (no
+        // parseExtractedItems step).
+        const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
+        log.info({ cliTool }, "Using CLI engine for extraction (keyless)");
 
-          // Bounded retry for transient timeout failures (up to 3 attempts total).
-          // Only `timeout` errors are retried — structural errors (not_installed,
-          // not_authed, nonzero_exit, unparseable) terminalize immediately.
-          const MAX_CLI_ATTEMPTS = 3;
-          const CLI_RETRY_DELAY_MS = 500;
-          let lastCliErr: CliExtractionError | undefined;
+        // Bounded retry for transient timeout failures (up to 3 attempts total).
+        // Only `timeout` errors are retried — structural errors (not_installed,
+        // not_authed, nonzero_exit, unparseable) terminalize immediately.
+        const MAX_CLI_ATTEMPTS = 3;
+        const CLI_RETRY_DELAY_MS = 500;
+        let lastCliErr: CliExtractionError | undefined;
 
-          for (let attempt = 1; attempt <= MAX_CLI_ATTEMPTS; attempt++) {
-            try {
-              extractedItems = await extractViaCli(cliTool, prompt, userContent, {
-                codexModel: agentConfig?.model ?? null,
-              });
-              lastCliErr = undefined; // success — clear any prior transient error
-              break; // exit retry loop
-            } catch (cliErr) {
-              if (!(cliErr instanceof CliExtractionError)) {
-                // Non-CLI error (e.g. DB, network): rethrow into the outer catch.
-                throw cliErr;
-              }
+        for (let attempt = 1; attempt <= MAX_CLI_ATTEMPTS; attempt++) {
+          try {
+            extractedItems = await extractViaCli(cliTool, prompt, userContent, {
+              codexModel: agentConfig?.model ?? null,
+            });
+            lastCliErr = undefined; // success — clear any prior transient error
+            break; // exit retry loop
+          } catch (cliErr) {
+            if (!(cliErr instanceof CliExtractionError)) {
+              // Non-CLI error (e.g. DB, network): rethrow into the outer catch.
+              throw cliErr;
+            }
 
-              if (cliErr.kind !== "timeout") {
-                // Structural failure (not_installed, not_authed, nonzero_exit,
-                // unparseable) — no point retrying, terminalize immediately.
-                lastCliErr = cliErr;
-                break;
-              }
-
-              // Transient timeout — retry if we have attempts left.
+            if (cliErr.kind !== "timeout") {
+              // Structural failure (not_installed, not_authed, nonzero_exit,
+              // unparseable) — no point retrying, terminalize immediately.
               lastCliErr = cliErr;
-              if (attempt < MAX_CLI_ATTEMPTS) {
-                log.warn(
-                  { attempt, maxAttempts: MAX_CLI_ATTEMPTS, kind: cliErr.kind },
-                  "CLI extraction timed out — retrying",
-                );
-                await new Promise<void>((resolve) => setTimeout(resolve, CLI_RETRY_DELAY_MS));
-              }
+              break;
             }
-          }
 
-          if (lastCliErr !== undefined) {
-            // CLI→API fallback (P2, Codex): the engine router picks "cli" purely
-            // from a PATH probe, so an installed-but-logged-out CLI lands here as
-            // not_authed/not_installed. If a hosted provider key IS configured,
-            // fall back to the API path instead of terminalizing — a broken CLI
-            // binary on PATH must not block extraction for users who have a key.
-            if (
-              lastCliErr.kind === "not_authed" ||
-              lastCliErr.kind === "not_installed"
-            ) {
-              try {
-                await resolveAvailableProvider(
-                  db,
-                  companyId,
-                  agentConfig?.provider ?? undefined,
-                );
-                log.warn(
-                  { kind: lastCliErr.kind },
-                  "CLI extraction unusable — falling back to hosted API provider",
-                );
-                useApiPath = true;
-              } catch {
-                // No hosted key either — fall through to terminalize below.
-              }
+            // Transient timeout — retry if we have attempts left.
+            lastCliErr = cliErr;
+            if (attempt < MAX_CLI_ATTEMPTS) {
+              log.warn(
+                { attempt, maxAttempts: MAX_CLI_ATTEMPTS, kind: cliErr.kind },
+                "CLI extraction timed out — retrying",
+              );
+              await new Promise<void>((resolve) => setTimeout(resolve, CLI_RETRY_DELAY_MS));
             }
-          }
-
-          if (lastCliErr !== undefined && !useApiPath) {
-            // All attempts exhausted (or non-retryable error) — terminalize failed.
-            // Record kind + message so the failure UX can surface actionable guidance.
-            const failPayload = JSON.stringify({
-              kind: lastCliErr.kind,
-              message: lastCliErr.message,
-            });
-            log.error(
-              { kind: lastCliErr.kind, err: lastCliErr },
-              "CLI extraction failed (all attempts exhausted)",
-            );
-            await db
-              .update(discussionEntries)
-              .set({
-                extractionStatus: "failed",
-                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${failPayload}::jsonb)`,
-              })
-              .where(eq(discussionEntries.id, entryId));
-
-            publishLiveEvent({
-              companyId,
-              type: "discussion.extraction.failed",
-              payload: { discussionId, entryId, error: lastCliErr.message },
-            });
-            return;
           }
         }
 
-        if (useApiPath) {
-          // ── Hosted API extraction ─────────────────────────────────────
-          // Runs when the engine router chose "api", OR when the CLI branch fell
-          // back here because an installed-but-unusable CLI failed and a hosted
-          // provider key is available. The provider precheck lives here, on the
-          // api path ONLY, so keyless CLI extraction never reaches it.
-          let resolvedProvider: { provider: string; apiKey: string; model: string };
-          try {
-            resolvedProvider = await resolveAvailableProvider(
-              db,
-              companyId,
-              agentConfig?.provider ?? undefined,
-            );
-          } catch {
-            const msg =
-              "No LLM provider configured. Set one in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
-            log.warn(msg);
-            await db
-              .update(discussionEntries)
-              .set({
-                extractionStatus: "skipped",
-                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
-              })
-              .where(eq(discussionEntries.id, entryId));
-            return;
-          }
-
-          // ── Agent-based extraction ────────────────────────────────────
-          log.info(`Using ${resolvedProvider.provider} provider for extraction`);
-
-          const [run] = await db
-            .insert(internalAgentRuns)
-            .values({
-              companyId,
-              triggerType: "event",
-              triggerSource: "discussion_entry",
-              status: "running",
+        if (lastCliErr !== undefined) {
+          // All attempts exhausted (or non-retryable error) — terminalize failed.
+          // There is NO hosted-API fallback: extraction is CLI-only. Record kind
+          // + message so the failure UX can surface actionable CLI guidance.
+          const failPayload = JSON.stringify({
+            kind: lastCliErr.kind,
+            message: lastCliErr.message,
+          });
+          log.error(
+            { kind: lastCliErr.kind, err: lastCliErr },
+            "CLI extraction failed (all attempts exhausted)",
+          );
+          await db
+            .update(discussionEntries)
+            .set({
+              extractionStatus: "failed",
+              sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${failPayload}::jsonb)`,
             })
-            .returning();
+            .where(eq(discussionEntries.id, entryId));
 
-          try {
-            const provider = createProvider(resolvedProvider.provider, resolvedProvider.apiKey);
-            const model =
-              agentConfig?.provider === resolvedProvider.provider && agentConfig?.model
-                ? agentConfig.model
-                : resolvedProvider.model;
-
-            let text = "";
-            for await (const chunk of provider.chat({
-              messages: [{ role: "user", content: userContent }],
-              tools: [],
-              model,
-              maxTokens: 4096,
-              systemPrompt: prompt,
-            })) {
-              if (chunk.type === "text") text += chunk.delta;
-            }
-
-            extractedItems = parseExtractedItems(text);
-
-            await db
-              .update(internalAgentRuns)
-              .set({ status: "completed", completedAt: new Date() })
-              .where(eq(internalAgentRuns.id, run.id));
-
-            await db
-              .update(discussionEntries)
-              .set({ extractionRunId: run.id })
-              .where(eq(discussionEntries.id, entryId));
-          } catch (providerErr: any) {
-            log.error({ err: providerErr }, "Agent provider extraction failed");
-            await db
-              .update(internalAgentRuns)
-              .set({
-                status: "failed",
-                errorMessage: providerErr?.message ?? "Unknown error",
-                completedAt: new Date(),
-              })
-              .where(eq(internalAgentRuns.id, run.id));
-            throw providerErr;
-          }
+          publishLiveEvent({
+            companyId,
+            type: "discussion.extraction.failed",
+            payload: { discussionId, entryId, error: lastCliErr.message },
+          });
+          return;
         }
 
         log.info({ itemCount: extractedItems.length }, "Extraction complete");

@@ -237,7 +237,7 @@ describe("extractFromDiscussionEntry — keyless CLI path", () => {
     );
   });
 
-  it("falls back to the hosted API path when CLI is not_authed AND a provider key exists (P2)", async () => {
+  it("does NOT fall back to a hosted provider when CLI is not_authed (CLI-only)", async () => {
     const { db, selectQueue, capturedInserts, capturedUpdates } = createMockDb();
     selectQueue.push(
       [createMockEntry()],
@@ -247,41 +247,25 @@ describe("extractFromDiscussionEntry — keyless CLI path", () => {
       [],
     );
 
-    // CLI is installed but logged out.
+    // CLI is installed but logged out — there is NO hosted-API fallback anymore.
     mockExtractViaCli.mockRejectedValueOnce(
       new CliExtractionError("claude CLI is not authenticated", "not_authed"),
     );
-    // A hosted provider IS configured → the not_authed CLI must NOT terminalize
-    // the entry; it should fall back to the API path. (Called twice: once in the
-    // fallback check, once in the API path itself — both must resolve.)
-    mockResolveAvailableProvider.mockResolvedValue({
-      provider: "anthropic",
-      apiKey: "sk-test",
-      model: "claude-sonnet-4-6",
-    });
-    mockCreateProvider.mockReturnValueOnce({
-      chat: async function* () {
-        yield {
-          type: "text",
-          delta: JSON.stringify([{ type: "task", title: "From API fallback" }]),
-        };
-      },
-    });
 
     await extractionService(db as any).extractFromDiscussionEntry("company-1", "entry-1");
 
-    // CLI was attempted, failed not_authed, then fell back to the hosted API.
+    // The provider resolver / hosted path must NEVER be consulted.
     expect(mockExtractViaCli).toHaveBeenCalledTimes(1);
-    expect(mockResolveAvailableProvider).toHaveBeenCalled();
-    expect(mockCreateProvider).toHaveBeenCalled();
+    expect(mockResolveAvailableProvider).not.toHaveBeenCalled();
+    expect(mockCreateProvider).not.toHaveBeenCalled();
 
-    // Entry terminalized via the API path: completed, NOT failed.
+    // Entry terminalized failed (no API rescue).
     const entryUpdates = capturedUpdates.filter((u) => u.table === "discussion_entries");
-    expect(entryUpdates.find((u) => u.set.extractionStatus === "completed")).toBeDefined();
-    expect(entryUpdates.find((u) => u.set.extractionStatus === "failed")).toBeUndefined();
+    expect(entryUpdates.find((u) => u.set.extractionStatus === "failed")).toBeDefined();
+    expect(entryUpdates.find((u) => u.set.extractionStatus === "completed")).toBeUndefined();
 
-    // The API-extracted item was written.
+    // Nothing was written.
     const itemInserts = capturedInserts.filter((i) => i.table === "discussion_extracted_items");
-    expect(itemInserts[0]?.values[0]?.title).toBe("From API fallback");
+    expect(itemInserts).toHaveLength(0);
   });
 });

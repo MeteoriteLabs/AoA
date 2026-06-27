@@ -68,19 +68,22 @@ vi.mock("../services/live-events.js", () => ({
 }));
 
 // Provider resolver must NEVER be called on the cli path.
+const mockResolveAvailableProvider = vi.fn(async () => {
+  throw new Error("resolveAvailableProvider must not be called on the cli path");
+});
+const mockGetProviderApiKey = vi.fn(async () => {
+  throw new Error("getProviderApiKey must not be called on the cli path");
+});
 vi.mock("../services/internal-agent/providers/index.js", () => ({
-  resolveAvailableProvider: vi.fn(async () => {
-    throw new Error("resolveAvailableProvider must not be called on the cli path");
-  }),
+  resolveAvailableProvider: (...a: unknown[]) => mockResolveAvailableProvider(...a),
   createProvider: vi.fn(),
-  getProviderApiKey: vi.fn(async () => {
-    throw new Error("getProviderApiKey must not be called on the cli path");
-  }),
+  getProviderApiKey: (...a: unknown[]) => mockGetProviderApiKey(...a),
 }));
 
-// Pin the engine to "cli".
+// Pin the engine to "cli" (overridable per-test via mockResolveExtractionEngine).
+const mockResolveExtractionEngine = vi.fn(async () => "cli");
 vi.mock("../services/extraction-engine.js", () => ({
-  resolveExtractionEngine: vi.fn(async () => "cli"),
+  resolveExtractionEngine: (...a: unknown[]) => mockResolveExtractionEngine(...a),
   resolveCompanyCliTool: vi.fn(async () => "claude_cli"),
 }));
 
@@ -180,6 +183,15 @@ describe("extractFromDiscussionEntry — CLI failure classification + retry", ()
     vi.clearAllMocks();
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    // clearAllMocks wipes implementations — re-establish the engine default + the
+    // provider-resolver guards (must throw if ever reached on the cli path).
+    mockResolveExtractionEngine.mockImplementation(async () => "cli");
+    mockResolveAvailableProvider.mockImplementation(async () => {
+      throw new Error("resolveAvailableProvider must not be called on the cli path");
+    });
+    mockGetProviderApiKey.mockImplementation(async () => {
+      throw new Error("getProviderApiKey must not be called on the cli path");
+    });
     // Re-use fake timer replacement so we don't actually wait 500ms per retry.
     vi.useFakeTimers();
   });
@@ -359,5 +371,34 @@ describe("extractFromDiscussionEntry — CLI failure classification + retry", ()
     expect(mockPublishLiveEvent).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "discussion.extraction.failed" }),
     );
+  });
+
+  it("no CLI + no key → entry skipped with CLI-install message, no key lookup", async () => {
+    const { db, selectQueue, capturedUpdates } = createMockDb();
+
+    // Only the entry fetch + atomic claim happen before the engine resolves.
+    selectQueue.push([createMockEntry()], [createMockDiscussion()]);
+
+    // The engine router throws (no supported CLI; hosted keys are NOT a fallback).
+    mockResolveExtractionEngine.mockRejectedValueOnce(
+      new Error(
+        "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude login`).",
+      ),
+    );
+
+    await extractionService(db as never).extractFromDiscussionEntry("company-1", "entry-1");
+
+    // The CLI extractor was never reached, and NO provider key was consulted.
+    expect(mockExtractViaCli).not.toHaveBeenCalled();
+    expect(mockResolveAvailableProvider).not.toHaveBeenCalled();
+    expect(mockGetProviderApiKey).not.toHaveBeenCalled();
+
+    // Entry terminalized skipped with a CLI-install message (no key wording).
+    const entryUpdates = capturedUpdates.filter((u) => u.table === "discussion_entries");
+    const skipped = entryUpdates.find((u) => u.set.extractionStatus === "skipped");
+    expect(skipped).toBeDefined();
+    const payload = JSON.stringify(skipped!.set);
+    expect(payload).toMatch(/install a cli|claude/i);
+    expect(payload).not.toMatch(/api key|provider key|Settings . LLM Providers/i);
   });
 });
