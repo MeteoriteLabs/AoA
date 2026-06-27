@@ -129,6 +129,14 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
 
       const company = await seedCompany(request, `E2E-Reindex-${Date.now()}`);
 
+      // Add a per-company OpenAI key so the worker resolves a key and processes
+      // the queue row. The e2e webServer no longer injects a global
+      // OPENAI_API_KEY, so without this the row stays pending and never fails.
+      const keyRes = await request.post(`/api/companies/${company.id}/secrets`, {
+        data: { name: "llm:openai", value: "e2e-fake-reindex-key" },
+      });
+      expect(keyRes.ok()).toBe(true);
+
       // Force a row-permanent embed failure: fake embedder throws { status: 400 }.
       // classifyEmbeddingError maps this to "row_permanent" → the worker marks
       // the row "failed" immediately (one attempt; will never succeed). A
@@ -180,11 +188,13 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
       // Click the re-index button — fires POST /memory/:id/reindex.
       await reindexButton.click();
 
-      // After clicking, the queue row is reset to "pending". Poll until the API
-      // reflects "pending" (the worker hasn't processed it yet, so it stays
-      // pending unless the fake embedder can write a vector — see pgvector gate).
-      await waitForIndexStatus(request, company.id, item.id, "pending", {
-        timeoutMs: 10_000,
+      // After clicking, the queue row is reset to pending and the worker (fake
+      // embedder, error cleared above) re-embeds it. With pgvector present + the
+      // timestamp-coercion/self-exclusion fix, the vector is written and the row
+      // flips to "indexed". (Pre-fix this silently completed WITHOUT a vector and
+      // stayed not_indexed.) This proves the full failed → reindex → indexed loop.
+      await waitForIndexStatus(request, company.id, item.id, "indexed", {
+        timeoutMs: 30_000,
       });
 
       // The re-index API round-trip is now proven:
@@ -210,7 +220,7 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
       const secretRes = await request.post(
         `/api/companies/${company.id}/secrets`,
         {
-          data: { secretType: "llm:openai", value: "e2e-fake-reindex-key" },
+          data: { name: "llm:openai", value: "e2e-fake-reindex-key" },
         },
       );
       expect(secretRes.ok()).toBe(true);

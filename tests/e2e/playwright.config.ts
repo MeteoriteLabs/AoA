@@ -119,13 +119,15 @@ export default defineConfig({
           // FAKE_EMBEDDER_CONTROL_PATH (write JSON before the triggering action).
           AOA_E2E_FAKE_EMBEDDER: "1",
           AOA_E2E_FAKE_EMBEDDER_CONTROL: FAKE_EMBEDDER_CONTROL_PATH,
-          // The embedding worker/processQueue resolves a per-company key via
-          // resolveCompanyKey before calling createOpenAiEmbedder. When no key
-          // resolves, rows are left pending (not attempted). Provide a dummy
-          // OPENAI_API_KEY in the e2e env so resolveCompanyKey returns non-null
-          // and the fake embedder is actually reached. The fake ignores the key
-          // value entirely — it never calls the OpenAI SDK.
-          OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "e2e-fake-openai-key-placeholder",
+          // Embeddings: NO instance-level OPENAI_API_KEY. The fake embedder
+          // (AOA_E2E_FAKE_EMBEDDER=1) supplies vectors without a real key, and
+          // tests that need semantic availability add a PER-COMPANY key via
+          // POST /secrets. We force this EMPTY (not just omit it) so the no-key
+          // path is deterministic even if the dev shell exports a real
+          // OPENAI_API_KEY — otherwise resolveSemanticAvailable's env fallback
+          // would report semantic "available" for keyless companies and the
+          // no-llm-key-banner tests would fail under pgvector.
+          OPENAI_API_KEY: "",
         },
       },
   outputDir: "./test-results",
