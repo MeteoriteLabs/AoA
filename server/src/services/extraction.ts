@@ -3,7 +3,6 @@ import type { Db } from "@armyofagents/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getProviderApiKey, createProvider, resolveAvailableProvider } from "./internal-agent/providers/index.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
 import { resolveExtractionEngine, resolveCompanyCliTool } from "./extraction-engine.js";
 import { extractViaCli, CliExtractionError } from "./extraction-cli.js";
@@ -106,110 +105,6 @@ async function resolveCliExtractionContext(
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId));
   return { cliTool, codexModel: config?.model ?? null };
-}
-
-/**
- * Call the LLM to extract structured items from raw debrief content.
- * Uses a direct fetch to an OpenAI-compatible API endpoint.
- * Falls back gracefully if no API key is configured.
- */
-async function callLLM(prompt: string, content: string, db?: Db, companyId?: string): Promise<ExtractedItem[]> {
-  // Try DB-stored provider keys first (these are managed via Settings UI and always up-to-date)
-  if (db && companyId) {
-    for (const provider of ["anthropic", "openai"] as const) {
-      try {
-        const dbKey = await getProviderApiKey(db, companyId, provider);
-        if (provider === "anthropic") {
-          return callAnthropic(dbKey, prompt, content);
-        }
-        return callOpenAI(dbKey, prompt, content);
-      } catch {
-        // Key not found for this provider, try next
-      }
-    }
-  }
-
-  // Fallback to env vars
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
-
-  if (anthropicKey) {
-    return callAnthropic(anthropicKey, prompt, content);
-  }
-
-  if (openaiKey) {
-    return callOpenAI(openaiKey, prompt, content);
-  }
-
-  throw new Error(
-    "No LLM API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or configure a provider in Settings → LLM Providers.",
-  );
-}
-
-async function callAnthropic(
-  apiKey: string,
-  systemPrompt: string,
-  content: string,
-): Promise<ExtractedItem[]> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      temperature: 0.2,
-      system: systemPrompt,
-      messages: [{ role: "user", content }],
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${body}`);
-  }
-
-  const result = await response.json();
-  const text = result.content?.[0]?.text;
-  if (!text) throw new Error("Empty response from Anthropic API");
-
-  return parseExtractedItems(text);
-}
-
-async function callOpenAI(
-  apiKey: string,
-  systemPrompt: string,
-  content: string,
-): Promise<ExtractedItem[]> {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: process.env.EXTRACTION_MODEL || "gpt-4o-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content },
-      ],
-      temperature: 0.2,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${body}`);
-  }
-
-  const result = await response.json();
-  const text = result.choices?.[0]?.message?.content;
-  if (!text) throw new Error("Empty response from OpenAI API");
-
-  return parseExtractedItems(text);
 }
 
 export function extractionService(db: Db) {
@@ -472,8 +367,8 @@ export function extractionService(db: Db) {
         let extractedItems: ExtractedItem[] = [];
 
         // ── Keyless CLI extraction ──────────────────────────────────────
-        // Extraction is CLI-only. NO resolveAvailableProvider call — the CLI is
-        // keyless. extractViaCli returns already-parsed ExtractedItem[] (no
+        // Extraction is CLI-only — no hosted provider key is ever consulted.
+        // extractViaCli returns already-parsed ExtractedItem[] (no
         // parseExtractedItems step).
         const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
         log.info({ cliTool }, "Using CLI engine for extraction (keyless)");

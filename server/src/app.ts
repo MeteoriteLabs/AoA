@@ -69,7 +69,6 @@ import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import { mcpServerRoutes } from "./mcp/server.js";
 import { teamRoutes } from "./routes/team.js";
 import { discussionRoutes } from "./routes/discussions.js";
-import { extractionRoutes } from "./routes/extraction.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { internalAgentRoutes } from "./routes/internal-agent.js";
 import { internalSweepsDevRoutes } from "./routes/internal-sweeps-dev.js";
@@ -301,7 +300,6 @@ export async function createApp(
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));
   api.use(discussionRoutes(db));
-  api.use(extractionRoutes(db));
   api.use(notificationRoutes(db));
   api.use(workflowTemplateRoutes(db));
   api.use(internalAgentRoutes(db));
