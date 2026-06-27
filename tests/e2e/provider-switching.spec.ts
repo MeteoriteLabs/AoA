@@ -1,74 +1,269 @@
-import { test } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
+import { cleanupTestCompanies } from "./helpers/seed-company";
 
 /**
- * provider-switching.spec.ts  (Unit 11 — Part C)
+ * provider-switching.spec.ts  (Unit 11 — Part C, Layer 3 e2e)
  *
- * PLACEHOLDER — deferred pending local Playwright verification.
+ * SAVE-SIDE behavior of the agent-config UI for the provider-switching engine.
  *
- * WHY DEFERRED:
- *
- * The provider-switching engine is fully tested at two lower levels:
+ * Lower layers (locally green / Linux-CI green):
  *   - Pure/contract:  server/src/__tests__/provider-switching-parity.test.ts
- *                     (9 passing tests, locally green)
  *   - Integration:    server/src/__tests__/provider-switching.integration.test.ts
- *                     (7 tests, skipped on Windows, runs on Linux CI)
  *
- * Authoring a Playwright spec for the agent-config form would require knowing
- * the exact selectors for the model input, adapter-type selector, and save
- * button inside the AgentSlideOver / AgentConfig UI. There is NO existing
- * agent-adapter-config e2e spec in this repo to mirror (the closest analogues
- * are onboarding-thread-pipeline.spec.ts and commander-codex-reply.spec.ts,
- * which cover different UI surfaces). Guessing selectors would produce a
- * likely-broken spec that fails CI — worse than a documented deferral.
+ * This Playwright layer drives the real agent-config form (codex_local) and
+ * the request-only validation gates. On CI Linux this is a required e2e gate;
+ * on Windows the playwright config skips ALL specs (embedded-postgres can't
+ * boot on the runner), so locally this only confirms the suite COLLECTS.
  *
- * INTENDED SCENARIOS (to implement once selectors are confirmed):
- *
- * 1. PERSIST — change a codex_local agent's model, save; assert the new model
- *    appears in a subsequent GET /api/companies/:cid/agents/:id response and
- *    is rendered in the model input on re-open.
- *
- * 2. CROSS-FAMILY VALIDATION — attempt to save a claude_local model string
- *    ("claude-sonnet-4-5-20250929") on a codex_local agent's model field;
- *    assert an inline validation error or 400 API response renders (the
- *    backend's shell-safety + adapter-specific gate should reject it before
- *    the runner touches it).
- *
- * 3. AUTH-MISMATCH WARNING — configure a codex_local agent with model
- *    "gpt-5.3-codex"; if the UI surfaces a "not supported on your plan" /
- *    "will be auto-corrected" inline warning, assert it is visible. If the
- *    warning is server-side only (in the run-summary comment), check the
- *    comment text after a fake-codex turn instead.
- *
- * HOW TO IMPLEMENT:
- *   1. Locally run the e2e suite with `pnpm aoa onboard --yes --run` on :3199.
- *   2. Navigate to /{prefix}/team/agents/:id in Chromium DevTools and inspect
- *      the model input, adapter selector, and save button — confirm test-id
- *      attributes (or aria-labels) are present.
- *   3. Add data-testid attributes if missing (cheap one-liner in the React component).
- *   4. Replace the test.skip stubs below with full test bodies.
- *
- * PLATFORM NOTE:
- *   The playwright config already excludes ALL *.spec.ts files on Windows
- *   (when DATABASE_URL is absent) via testMatch → windows-embedded-postgres-
- *   skip.spec.ts. No per-spec guard is needed here.
+ * Company-creation mirrors onboarding-thread-pipeline.spec.ts (drives the
+ * wizard through Step 4, which is the step that actually POSTs /companies).
+ * Agents are seeded directly via the API because the wizard's Step 5 needs a
+ * real local adapter CLI to advance.
  */
 
-test.describe("provider-switching UI (placeholder — deferred)", () => {
-  test.skip(
-    "1: codex_local agent model change persists (change + save → GET confirms new model)",
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    async () => {},
-  );
+/**
+ * Drive the OnboardingWizard through Step 4 (the step that POSTs /companies),
+ * then resolve the created company's { id, issuePrefix } from /api/companies.
+ *
+ * Mirrors tests/e2e/onboarding-thread-pipeline.spec.ts lines 42-110 verbatim.
+ */
+async function seedCompanyViaWizard(
+  page: Page,
+  request: APIRequestContext,
+): Promise<{ companyId: string; issuePrefix: string; companyName: string }> {
+  const companyName = `E2E-PS-${Date.now()}`;
 
-  test.skip(
-    "2: cross-family model (claude string on codex_local agent) renders validation error",
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    async () => {},
-  );
+  await page.goto("/");
 
-  test.skip(
-    "3: ChatGPT-incompatible model (gpt-5.3-codex on subscription account) renders auth-mismatch warning or is auto-corrected in run summary",
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    async () => {},
+  // ── Lobby empty state opens the wizard ──
+  const createCompanyButton = page.getByRole("button", {
+    name: /^create organization$/i,
+  });
+  await expect(createCompanyButton).toBeVisible({ timeout: 10_000 });
+  await createCompanyButton.click();
+
+  // ── Step 1: company name ──
+  await expect(
+    page.locator("h3", { hasText: "Name your company" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
+  await page.getByTestId("step1-next").click();
+
+  // ── Step 2: workspace root (accept the auto-suggested path; fall back) ──
+  await expect(
+    page.locator("h3", { hasText: "Set up workspace root" }),
+  ).toBeVisible({ timeout: 10_000 });
+  const rootInput = page.locator(
+    'input[placeholder="/path/to/company/workspace"]',
   );
+  await expect(rootInput).toBeVisible({ timeout: 5_000 });
+  if ((await rootInput.inputValue()).trim() === "") {
+    await rootInput.fill("/tmp/aoa-e2e-ps");
+  }
+  await page.getByTestId("step2-next").click();
+
+  // ── Step 3: Commander pick ──
+  await expect(
+    page.locator("h3", { hasText: "Choose your Commander" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await page
+    .getByTestId("commander-provider")
+    .selectOption({ value: "anthropic" });
+  await page.getByTestId("commander-model").fill("claude-sonnet-4-6");
+  await page.getByTestId("step3-next").click();
+
+  // ── Step 4: Crew pick (this is the step that POSTs /companies) ──
+  await expect(
+    page.locator("h3", { hasText: "Choose your Crew" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("crew-provider").selectOption({ value: "openai" });
+  await page.getByTestId("crew-model").fill("gpt-5.5");
+  await page.getByTestId("step4-next").click();
+
+  // ── Wait for the company to land — Step 5 heading is the signal ──
+  await expect(
+    page.locator("h3", { hasText: "Create your first agent" }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // ── Resolve the created company from the API ──
+  const companiesRes = await request.get("/api/companies");
+  expect(companiesRes.ok()).toBe(true);
+  const companies = (await companiesRes.json()) as Array<{
+    id: string;
+    name: string;
+    issuePrefix: string;
+  }>;
+  const company = companies.find((c) => c.name === companyName);
+  expect(company).toBeTruthy();
+  expect(company?.id).toBeTruthy();
+  expect(company?.issuePrefix).toBeTruthy();
+
+  return {
+    companyId: company!.id,
+    issuePrefix: company!.issuePrefix,
+    companyName,
+  };
+}
+
+/**
+ * Seed a codex_local agent via the API. In local_trusted mode the synthetic
+ * local-board actor is auto-authorised, so no Bearer token is needed.
+ *
+ * Pass `model` to pin an explicit adapterConfig.model; omit it and the server
+ * injects the codex default (DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5") via
+ * applyCreateDefaultsByAdapterType, so the stored config still carries a
+ * concrete model.
+ */
+async function seedCodexAgent(
+  request: APIRequestContext,
+  companyId: string,
+  model?: string,
+): Promise<string> {
+  const adapterConfig = model ? { model } : {};
+  const res = await request.post(`/api/companies/${companyId}/agents`, {
+    data: {
+      name: "PS Codex Worker",
+      adapterType: "codex_local",
+      adapterConfig,
+    },
+  });
+  if (res.status() !== 201) {
+    const body = await res.text().catch(() => "(no body)");
+    throw new Error(`seedCodexAgent failed: ${res.status()} ${body}`);
+  }
+  const agent = (await res.json()) as { id: string };
+  if (!agent.id) {
+    throw new Error(`seedCodexAgent returned no id: ${JSON.stringify(agent)}`);
+  }
+  return agent.id;
+}
+
+test.describe("provider-switching: agent config save-side", () => {
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request, /^E2E-PS-/);
+  });
+
+  test("codex model picker defaults to gpt-5.5 and lists it", async ({
+    page,
+    request,
+  }) => {
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
+    // No explicit model on create -> the server injects the codex default
+    // (DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5") via applyCreateDefaultsByAdapterType,
+    // so the stored config persists model="gpt-5.5" and the picker reflects it.
+    const agentId = await seedCodexAgent(request, companyId);
+
+    await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
+
+    // The redesigned config page uses a section rail; the model picker lives in
+    // the "Permissions & config" section — select it (its content is expanded by
+    // default in the edit layout).
+    await page
+      .getByRole("button", { name: "Permissions & config" })
+      .click();
+
+    // Default reflected: the trigger shows the server-pinned gpt-5.5, not a
+    // placeholder (a created codex agent always persists a concrete model).
+    const trigger = page.getByRole("button", { name: "gpt-5.5", exact: true });
+    await expect(trigger).toBeVisible({ timeout: 10_000 });
+
+    // ...and gpt-5.5 is offered in the list: opening the picker surfaces a
+    // second exact "gpt-5.5" button (the option) alongside the trigger.
+    await trigger.click();
+    await expect(
+      page.getByRole("button", { name: "gpt-5.5", exact: true }),
+    ).toHaveCount(2);
+  });
+
+  test("saving codex gpt-5.3-codex surfaces a 'using gpt-5.5' warning", async ({
+    page,
+    request,
+  }) => {
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
+    const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
+
+    await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
+
+    // Select the "Permissions & config" rail section (holds the model picker;
+    // its content is expanded by default).
+    await page
+      .getByRole("button", { name: "Permissions & config" })
+      .click();
+
+    // Open the model picker. The trigger shows the current model value
+    // ("gpt-5.5"). Click it, filter to the codex-incompatible model, choose it.
+    await page
+      .getByRole("button", { name: "gpt-5.5", exact: true })
+      .click();
+    await page.getByPlaceholder("Search models...").fill("gpt-5.3-codex");
+    await page
+      .getByRole("button", { name: "gpt-5.3-codex", exact: true })
+      .click();
+
+    // Save (the floating action bar appears once the config is dirty).
+    await page.getByRole("button", { name: "Save" }).click();
+
+    // Server-generated warning: model swapped to the codex-compatible default.
+    // Assumes the CI runner has no shared Codex login configured, so the
+    // detected auth mode resolves "unknown" (not "apikey") and resolveModel
+    // takes the ChatGPT-compat branch, falling back to gpt-5.5.
+    await expect(page.getByRole("alert")).toContainText(/using gpt-5\.5/i, {
+      timeout: 15_000,
+    });
+  });
+
+  test("cross-family (claude adapter + gpt model) is rejected", async ({
+    page,
+    request,
+  }) => {
+    const { companyId } = await seedCompanyViaWizard(page, request);
+    const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
+
+    const res = await request.patch(
+      `/api/agents/${agentId}?companyId=${companyId}`,
+      { data: { adapterType: "claude_local", adapterConfig: { model: "gpt-5.5" } } },
+    );
+    expect(res.status()).toBe(400);
+  });
+
+  test("shell-unsafe model is rejected", async ({ page, request }) => {
+    const { companyId } = await seedCompanyViaWizard(page, request);
+    const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
+
+    // Include adapterType so the shared schema's shell-safety refinement runs
+    // (refineAdapterModel early-returns when adapterType is absent). This keeps
+    // the rejection on the same 400 schema hard-block path as the cross-family
+    // test above; without adapterType the request would instead reach the
+    // route's runtime guard and surface as 422.
+    const res = await request.patch(
+      `/api/agents/${agentId}?companyId=${companyId}`,
+      { data: { adapterType: "codex_local", adapterConfig: { model: "gpt-5 && rm" } } },
+    );
+    expect(res.status()).toBe(400);
+  });
+
+  test("test-connection button runs and renders a result", async ({
+    page,
+    request,
+  }) => {
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
+    const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
+
+    await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
+
+    // Select the "Adapter & model" rail section to reveal the Test environment button.
+    await page
+      .getByRole("button", { name: "Adapter & model" })
+      .click();
+
+    await page.getByRole("button", { name: "Test environment" }).click();
+
+    // Pass OR fail status both render the result div (codex may be absent on CI).
+    // Generous timeout: the probe spawns a real adapter CLI, which can be slow
+    // to cold-start on a CI runner.
+    await expect(page.getByTestId("adapter-env-result")).toBeVisible({
+      timeout: 60_000,
+    });
+  });
 });
