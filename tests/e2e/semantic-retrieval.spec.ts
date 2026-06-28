@@ -28,6 +28,20 @@ async function addKey(request: APIRequestContext, companyId: string): Promise<vo
     data: { name: "llm:openai", value: "e2e-fake-retrieval-key" },
   });
   expect(res.ok()).toBe(true);
+  // Block until the key is actually RESOLVABLE (semanticAvailable=true) before any
+  // item is created. Otherwise the 2s embedding worker could claim a freshly
+  // created item's queue row in the brief window before the key is visible, mark
+  // it "no key" and push nextRetryAt out by NO_KEY_BACKOFF_MS (5 min) — which
+  // would blow the indexing wait below. With the key resolvable first, every
+  // item row the worker claims resolves the key and embeds.
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const list = await request.get(`/api/companies/${companyId}/memory`);
+    const body = (await list.json()) as { semanticAvailable?: boolean };
+    if (body.semanticAvailable === true) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  throw new Error("semanticAvailable never became true after adding the key");
 }
 
 async function createItem(
@@ -48,7 +62,9 @@ async function waitIndexed(
   companyId: string,
   id: string,
 ): Promise<void> {
-  const deadline = Date.now() + 30_000;
+  // 60s (not 30s): this is the last spec in the e2e-pgvector lane, so the embed
+  // queue can carry a backlog from earlier specs and CI runners are slower.
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     const res = await request.get(`/api/companies/${companyId}/memory`);
     const body = (await res.json()) as { items: Array<{ id: string; indexStatus?: string }> };
@@ -78,6 +94,9 @@ test.describe("semantic retrieval — pgvector cosine ranking", () => {
 
   test("indexed items are returned ranked by similarity to the query", async ({ request }) => {
     test.skip(!PGVECTOR_AVAILABLE, "Requires pgvector (set AOA_E2E_PGVECTOR=1)");
+    // Generous budget: addKey waits for the key to resolve + both items index
+    // (last spec in the lane → possible queue backlog; CI runners are slow).
+    test.setTimeout(120_000);
 
     const company = await seedCompany(request, `E2E-Retr-${Date.now()}`);
     await addKey(request, company.id);
@@ -91,8 +110,12 @@ test.describe("semantic retrieval — pgvector cosine ranking", () => {
 
     const billing = await createItem(request, company.id, billingTitle, billingContent);
     const wifi = await createItem(request, company.id, wifiTitle, wifiContent);
-    await waitIndexed(request, company.id, billing.id);
-    await waitIndexed(request, company.id, wifi.id);
+    // Wait in parallel — the worker embeds the batch concurrently, so this caps
+    // the wait at one timeout window rather than summing two.
+    await Promise.all([
+      waitIndexed(request, company.id, billing.id),
+      waitIndexed(request, company.id, wifi.id),
+    ]);
 
     // Query with the EXACT embedded text of each item (title\ncontent). The
     // deterministic fake embedder yields an identical vector → distance 0 → the
