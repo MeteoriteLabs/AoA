@@ -142,4 +142,16 @@ describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", ()
     // The org hierarchy now tops out at the seeded operator.
     expect(await orgHierarchyService(db).getFounderUserId(companyId)).toBe(operatorId);
   });
+
+  it("backfillHumanAtTop re-parents existing rootless org agents to the founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const orphanId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status) VALUES (gen_random_uuid(), ${companyId}, 'Orphan', 'org', 'idle') RETURNING id`));
+    const count = await agentService(db).backfillHumanAtTop(companyId);
+    expect(count).toBeGreaterThanOrEqual(1);
+    const res = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${orphanId}`);
+    const a = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(a.parent_type).toBe("user");
+    expect(a.parent_id).toBe(founderId);
+  });
 });

@@ -436,8 +436,36 @@ export function agentService(db: Db) {
     return count;
   }
 
+  // W6: backfill pre-rule rootless org agents to the founder (human-at-top).
+  // Org agents created before the human-at-top rule may sit at the org root with
+  // no parent. Re-parent each (non-terminated, org-kind, rootless) agent to the
+  // company's founder so the chain always tops at a human. Remove after
+  // confirming all data migrated.
+  async function backfillHumanAtTop(companyId: string): Promise<number> {
+    const founderId = await orgHierarchy.getFounderUserId(companyId);
+    if (!founderId) return 0;
+    const rows = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, companyId),
+        eq(agents.kind, "org"),
+        ne(agents.status, "terminated"),
+        isNull(agents.parentId),
+      ));
+    let count = 0;
+    for (const row of rows) {
+      await db.update(agents)
+        .set({ parentType: "user", parentId: founderId, updatedAt: new Date() })
+        .where(eq(agents.id, row.id));
+      count++;
+    }
+    return count;
+  }
+
   return {
     backfillParentFields,
+    backfillHumanAtTop,
 
     list: async (companyId: string, options?: { includeTerminated?: boolean; kind?: "org" | "aoa" }) => {
       // Centralized org-agent accessor: platform agents (Commander team,

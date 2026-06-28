@@ -2059,6 +2059,21 @@ export function agentRoutes(db: Db) {
     res.json({ ok: true, backfilledCount: count });
   });
 
+  // Temporary admin endpoint — backfill rootless org agents to the founder so
+  // every chain tops at a human (W6 human-at-top). Iterates all companies and
+  // sums the re-parent counts. Remove after confirming all data migrated.
+  router.post("/agents/admin/backfill-human-at-top", async (req, res) => {
+    // rbac: instance-admin-not-required
+    // TODO(plugins-workstream): replace with assertCanManageInstanceSettings(req) — see plugins workstream tracking issue
+    assertBoard(req);
+    const rows = await db.select({ id: companies.id }).from(companies);
+    let reparented = 0;
+    for (const c of rows) {
+      reparented += await svc.backfillHumanAtTop(c.id);
+    }
+    res.json({ reparented });
+  });
+
   // ── Agent Instructions Bundle routes ──
 
   router.get("/agents/:id/instructions-bundle", async (req, res) => {
