@@ -546,8 +546,8 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       await db.transaction(async (tx) => {
-        // D4: Orphan children (agents + users) before terminating
-        await orgHierarchy.orphanChildren(id, "agent", tx as unknown as Db);
+        // D4: Re-parent children (agents + users) before terminating
+        await orgHierarchy.reparentChildren(existing.companyId, id, "agent", tx as unknown as Db);
 
         await tx
           .update(agents)
@@ -568,8 +568,8 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
-        // Cross-type orphaning: agents + users (replaces reportsTo-only orphaning)
-        await orgHierarchy.orphanChildren(id, "agent", tx as unknown as Db);
+        // Cross-type re-parenting: agents + users (replaces reportsTo-only orphaning)
+        await orgHierarchy.reparentChildren(existing.companyId, id, "agent", tx as unknown as Db);
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));

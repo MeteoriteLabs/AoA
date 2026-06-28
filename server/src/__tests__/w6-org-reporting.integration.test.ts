@@ -97,4 +97,16 @@ describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", ()
     const crew = await agentService(db).create(companyId, { name: "X", kind: "aoa", role: "general" });
     expect(crew.parentId).toBeNull();
   });
+
+  it("removing an agent re-parents its reports to the removed agent's parent", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const leadId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Lead', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const workerId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'agent', ${leadId}) RETURNING id`));
+    await orgHierarchyService(db).reparentChildren(companyId, leadId, "agent");
+    const res = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${workerId}`);
+    const w = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(w.parent_type).toBe("user");
+    expect(w.parent_id).toBe(founderId);
+  });
 });

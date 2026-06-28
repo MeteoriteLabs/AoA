@@ -101,9 +101,9 @@ describe("teamService.removeMember", () => {
         [{ role: "team_member", projectId: null }],
       ],
       updates: [
-        // orphanChildren: update agents
+        // reparentChildren: update agents
         [],
-        // orphanChildren: update company_memberships
+        // reparentChildren: update company_memberships
         [],
       ],
       deletes: [

@@ -22,6 +22,7 @@ vi.mock("@armyofagents/db", () => {
   return {
     agents: makeTable("agents"),
     companyMemberships: makeTable("company_memberships"),
+    userRoles: makeTable("user_roles"),
   };
 });
 
@@ -356,13 +357,23 @@ describe("orgHierarchyService", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // orphanChildren
+  // reparentChildren
+  //
+  // W6: removing an entity re-parents its children up to the removed entity's
+  // OWN parent (fallback: company founder), never to null/root. The .set()
+  // clause must therefore carry the resolved parent, not null.
   // ---------------------------------------------------------------------------
-  describe("orphanChildren", () => {
+  describe("reparentChildren", () => {
     let updateCalls: { table: string; setArg: unknown; whereArg: unknown }[];
 
-    function createTrackingDb() {
+    // `selects` is a sequence of result-sets consumed in order. The order of
+    // selects inside reparentChildren is:
+    //   1. removed entity's own parent (agents OR company_memberships)
+    //   2. (only if no parent found) getFounderUserId: user_roles, then owner
+    //      membership fallback.
+    function createTrackingDb(selects: MockRow[][] = []) {
       updateCalls = [];
+      let selectIdx = 0;
 
       function makeUpdateChain(tableName: string) {
         let setArg: unknown;
@@ -391,6 +402,7 @@ describe("orgHierarchyService", () => {
 
       return {
         select: (..._args: unknown[]) => {
+          const result = selects[selectIdx++] ?? [];
           const chain: Record<string, unknown> = {};
           for (const m of [
             "from",
@@ -403,7 +415,7 @@ describe("orgHierarchyService", () => {
             chain[m] = (...__args: unknown[]) => chain;
           }
           chain.then = (resolve: (v: MockRow[]) => unknown) =>
-            Promise.resolve(resolve([]));
+            Promise.resolve(resolve(result));
           return chain;
         },
         update: (..._args: unknown[]) => {
@@ -422,63 +434,107 @@ describe("orgHierarchyService", () => {
       };
     }
 
-    it("nullifies agent children (parentType, parentId, reportsTo)", async () => {
-      const db = createTrackingDb();
+    it("re-parents agent children to the removed agent's own parent", async () => {
+      // Removed agent a1's parent lookup → user u-parent.
+      const db = createTrackingDb([[{ parentType: "user", parentId: "u-parent" }]]);
       const svc = orgHierarchyService(db as any);
-      await svc.orphanChildren("a1", "agent");
+      await svc.reparentChildren("co-1", "a1", "agent");
 
       expect(updateCalls.length).toBe(2);
-      // First update targets agents table
+      // First update targets agents table, carries the resolved parent (NOT null)
       expect(updateCalls[0].table).toBe("agents");
       expect(updateCalls[0].setArg).toEqual(
         expect.objectContaining({
+          parentType: "user",
+          parentId: "u-parent",
+          // reportsTo is null because the new parent is a user, not an agent
           reportsTo: null,
-          parentType: null,
-          parentId: null,
         }),
       );
     });
 
-    it("nullifies user children (company_memberships)", async () => {
-      const db = createTrackingDb();
+    it("re-parents child agents' reportsTo when the new parent is an agent", async () => {
+      // Removed agent a1's parent lookup → agent a-grandparent.
+      const db = createTrackingDb([[{ parentType: "agent", parentId: "a-grandparent" }]]);
       const svc = orgHierarchyService(db as any);
-      await svc.orphanChildren("u1", "user");
+      await svc.reparentChildren("co-1", "a1", "agent");
+
+      expect(updateCalls[0].table).toBe("agents");
+      expect(updateCalls[0].setArg).toEqual(
+        expect.objectContaining({
+          parentType: "agent",
+          parentId: "a-grandparent",
+          // agent parent → reportsTo follows the agent parent
+          reportsTo: "a-grandparent",
+        }),
+      );
+    });
+
+    it("re-parents user children (company_memberships) to the removed entity's parent", async () => {
+      // Removed user u1's membership lookup → user u-manager.
+      const db = createTrackingDb([[{ parentType: "user", parentId: "u-manager" }]]);
+      const svc = orgHierarchyService(db as any);
+      await svc.reparentChildren("co-1", "u1", "user");
 
       expect(updateCalls.length).toBe(2);
-      // Second update targets company_memberships
+      // Second update targets company_memberships, carries resolved parent (NOT null)
       expect(updateCalls[1].table).toBe("company_memberships");
       expect(updateCalls[1].setArg).toEqual(
         expect.objectContaining({
-          parentType: null,
-          parentId: null,
+          parentType: "user",
+          parentId: "u-manager",
+        }),
+      );
+      // No reportsTo on the company_memberships set clause
+      expect(updateCalls[1].setArg).not.toHaveProperty("reportsTo");
+    });
+
+    it("falls back to the company founder when the removed entity has no parent", async () => {
+      // 1st select: removed agent a1's parent → none (root).
+      // 2nd select: getFounderUserId → user_roles founder = u-founder.
+      const db = createTrackingDb([
+        [{ parentType: null, parentId: null }],
+        [{ userId: "u-founder" }],
+      ]);
+      const svc = orgHierarchyService(db as any);
+      await svc.reparentChildren("co-1", "a1", "agent");
+
+      expect(updateCalls[0].table).toBe("agents");
+      // Children re-parent to the founder, NOT to null.
+      expect(updateCalls[0].setArg).toEqual(
+        expect.objectContaining({
+          parentType: "user",
+          parentId: "u-founder",
+          reportsTo: null,
         }),
       );
     });
 
     it("clears reportsTo on agent children only for agent parents", async () => {
-      // When orphaning an agent parent, reportsTo should be cleared (D7 compat)
-      const db1 = createTrackingDb();
+      // When removing an AGENT, reportsTo is set on agent children (here null,
+      // because the resolved new parent is a user).
+      const db1 = createTrackingDb([[{ parentType: "user", parentId: "u-parent" }]]);
       const svc1 = orgHierarchyService(db1 as any);
-      await svc1.orphanChildren("a1", "agent");
+      await svc1.reparentChildren("co-1", "a1", "agent");
       expect(updateCalls[0].table).toBe("agents");
-      expect(updateCalls[0].setArg).toHaveProperty("reportsTo", null);
+      expect(updateCalls[0].setArg).toHaveProperty("reportsTo");
 
-      // When orphaning a user parent, reportsTo should NOT be cleared
-      // (reportsTo is agent-to-agent only; user parents don't affect it)
+      // When removing a USER, reportsTo should NOT be present on the agent set
+      // clause (reportsTo is agent-to-agent only; user parents don't affect it).
       updateCalls.length = 0;
-      const db2 = createTrackingDb();
+      const db2 = createTrackingDb([[{ parentType: "user", parentId: "u-manager" }]]);
       const svc2 = orgHierarchyService(db2 as any);
-      await svc2.orphanChildren("u1", "user");
+      await svc2.reparentChildren("co-1", "u1", "user");
       expect(updateCalls[0].table).toBe("agents");
       expect(updateCalls[0].setArg).not.toHaveProperty("reportsTo");
     });
 
     it("accepts a transaction object instead of default db", async () => {
-      const tx = createTrackingDb();
+      const tx = createTrackingDb([[{ parentType: "user", parentId: "u-parent" }]]);
       // Create service with a different db, but pass tx
       const mainDb = createSequenceDb();
       const svc = orgHierarchyService(mainDb as any);
-      await svc.orphanChildren("a1", "agent", tx as any);
+      await svc.reparentChildren("co-1", "a1", "agent", tx as any);
 
       // Should have used tx, not mainDb
       expect(updateCalls.length).toBe(2);

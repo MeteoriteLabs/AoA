@@ -418,8 +418,8 @@ export function teamService(db: Db) {
     }
 
     await db.transaction(async (tx) => {
-      // Orphan all children pointing to this user
-      await orgHierarchy.orphanChildren(userId, "user", tx as unknown as Db);
+      // Re-parent all children pointing to this user
+      await orgHierarchy.reparentChildren(companyId, userId, "user", tx as unknown as Db);
       // Delete role assignments
       await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
       // Delete permission grants

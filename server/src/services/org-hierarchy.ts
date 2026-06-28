@@ -125,38 +125,55 @@ export function orgHierarchyService(db: Db) {
   }
 
   /**
-   * Nullify parent fields on all children of the given entity.
-   * Used when terminating/removing an agent or removing a user from a company.
-   *
-   * - Clears parentType, parentId on child agents
-   * - Clears reportsTo on child agents only when entityType is "agent"
-   *   (reportsTo is agent-to-agent only; user parents don't affect it)
-   * - Clears parentType, parentId on child users (via company_memberships)
+   * Re-parent all children of a removed entity up to the removed entity's own
+   * parent (fallback: the company founder). Preserves human-at-top instead of
+   * nulling pointers to root.
    */
-  async function orphanChildren(
+  async function reparentChildren(
+    companyId: string,
     entityId: string,
     entityType: EntityType,
     txOrDb: Db = db,
   ): Promise<void> {
-    // Orphan child agents — only clear reportsTo for agent parents
-    const agentSetClause = entityType === "agent"
-      ? { parentType: null, parentId: null, reportsTo: null, updatedAt: new Date() }
-      : { parentType: null, parentId: null, updatedAt: new Date() };
-    await txOrDb
-      .update(agents)
-      .set(agentSetClause)
+    // The removed entity's own parent.
+    let newParentType: EntityType | null = null;
+    let newParentId: string | null = null;
+    if (entityType === "agent") {
+      const row = await txOrDb
+        .select({ parentType: agents.parentType, parentId: agents.parentId })
+        .from(agents).where(eq(agents.id, entityId)).limit(1).then((r) => r[0]);
+      newParentType = (row?.parentType as EntityType | null) ?? null;
+      newParentId = (row?.parentId as string | null) ?? null;
+    } else {
+      const row = await txOrDb
+        .select({ parentType: companyMemberships.parentType, parentId: companyMemberships.parentId })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, entityId),
+        ))
+        .limit(1).then((r) => r[0]);
+      newParentType = (row?.parentType as EntityType | null) ?? null;
+      newParentId = (row?.parentId as string | null) ?? null;
+    }
+    // Fallback to founder so children never become rootless agents.
+    if (!newParentId) {
+      const founderId = await getFounderUserId(companyId);
+      if (founderId) { newParentType = "user"; newParentId = founderId; }
+    }
+
+    // Re-parent child AGENTS (reportsTo follows only for agent parents).
+    const agentSet = entityType === "agent"
+      ? { parentType: newParentType, parentId: newParentId, reportsTo: newParentType === "agent" ? newParentId : null, updatedAt: new Date() }
+      : { parentType: newParentType, parentId: newParentId, updatedAt: new Date() };
+    await txOrDb.update(agents).set(agentSet as never)
       .where(and(eq(agents.parentType, entityType), eq(agents.parentId, entityId)));
 
-    // Orphan child users (company_memberships)
-    await txOrDb
-      .update(companyMemberships)
-      .set({ parentType: null, parentId: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(companyMemberships.parentType, entityType),
-          eq(companyMemberships.parentId, entityId),
-        ),
-      );
+    // Re-parent child USERS (memberships).
+    await txOrDb.update(companyMemberships)
+      .set({ parentType: newParentType, parentId: newParentId, updatedAt: new Date() })
+      .where(and(eq(companyMemberships.parentType, entityType), eq(companyMemberships.parentId, entityId)));
   }
 
   /** Founder user_role, else the owner-role company_membership principal (always exists). */
@@ -203,5 +220,5 @@ export function orgHierarchyService(db: Db) {
     return null;
   }
 
-  return { assertNoCycle, ensureParent, orphanChildren, getFounderUserId, getFirstHumanAncestor };
+  return { assertNoCycle, ensureParent, reparentChildren, getFounderUserId, getFirstHumanAncestor };
 }
