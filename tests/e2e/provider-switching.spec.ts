@@ -177,16 +177,22 @@ async function seedCodexAgent(
 async function getAoaCrew(
   request: APIRequestContext,
   companyId: string,
-): Promise<Array<{ adapterType: string }>> {
+): Promise<
+  Array<{ name: string; adapterType: string; adapterConfig?: Record<string, unknown> }>
+> {
   const res = await request.get(
     `/api/companies/${companyId}/agents?kind=aoa`,
   );
   expect(res.ok()).toBe(true);
   const body = (await res.json()) as
-    | Array<{ name: string; adapterType: string }>
-    | { agents: Array<{ name: string; adapterType: string }> };
+    | Array<{ name: string; adapterType: string; adapterConfig?: Record<string, unknown> }>
+    | { agents: Array<{ name: string; adapterType: string; adapterConfig?: Record<string, unknown> }> };
   const rows = Array.isArray(body) ? body : body.agents;
   // Commander follows its own cliTool, not the crew provider — exclude it.
+  // In local_trusted the e2e runs as the `board` actor, so adapterConfig is
+  // returned UNREDACTED (the list handler returns the raw rows for board/config
+  // readers; only restricted actors get an empty adapterConfig). model is not a
+  // secret, so adapterConfig.model survives for the model-only assertions below.
   return rows.filter((a) => a.name !== "Commander");
 }
 
@@ -407,5 +413,38 @@ test.describe("provider-switching: agent config save-side", () => {
         { timeout: 15_000 },
       )
       .toBe(true);
+  });
+
+  test("Settings crew MODEL-only change (same provider) rewrites the crew row's model", async ({ page, request }) => {
+    // Seed an anthropic crew pinned to a specific model. crewProvider stays anthropic
+    // throughout, so the adapter TYPE never changes — only the model does. This is the
+    // path the provider-change tests don't cover (the Task 4b model-drift branch).
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+      commanderProvider: "anthropic",
+      crewProvider: "anthropic",
+      crewModel: "claude-haiku-4-5",
+    });
+
+    // After seeding: crew is claude_local pinned to the seeded model.
+    await expect.poll(async () => {
+      const crew = await getAoaCrew(request, companyId);
+      return crew.length > 0
+        && crew.every((a) => a.adapterType === "claude_local")
+        && crew.every((a) => (a.adapterConfig as { model?: string } | undefined)?.model === "claude-haiku-4-5");
+    }, { timeout: 15_000 }).toBe(true);
+
+    // Change ONLY the crew model in Settings (leave the crew provider on anthropic).
+    await openCommanderExecutionTab(page, issuePrefix);
+    const crewModelInput = page.getByLabel(/crew model/i);
+    await crewModelInput.fill("claude-opus-4-1");
+    await page.getByRole("button", { name: /^save$/i }).first().click();
+
+    // The crew rows must migrate to the new model — same adapter type, model-only change.
+    await expect.poll(async () => {
+      const crew = await getAoaCrew(request, companyId);
+      return crew.length > 0
+        && crew.every((a) => a.adapterType === "claude_local")
+        && crew.every((a) => (a.adapterConfig as { model?: string } | undefined)?.model === "claude-opus-4-1");
+    }, { timeout: 15_000 }).toBe(true);
   });
 });
