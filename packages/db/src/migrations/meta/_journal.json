@@ -1058,6 +1058,13 @@
       "when": 1782379063143,
       "tag": "0150_sloppy_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1782638264214,
+      "tag": "0151_clumsy_lightspeed",
+      "breakpoints": true
     }
   ]
 }

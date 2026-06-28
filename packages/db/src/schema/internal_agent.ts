@@ -31,11 +31,16 @@ export const internalAgentConfig = pgTable(
     // on it — every Commander turn goes through cli-mode.ts.
     executionMode: text("execution_mode").notNull().default("cli"), // 'api' | 'cli'
 
-    // Legacy API-mode settings (dormant post-Sprint-2A, kept for rollback
-    // safety and for the `model` column's potential future reuse as a CLI
-    // flag). Not read by the dispatch path.
-    provider: text("provider").default("anthropic"), // 'anthropic' | 'openai' | 'google'
-    model: text("model").default("claude-sonnet-4-6"),
+    // Crew provider (provider-switching). READ by resolveCrewAdapterForCompany to
+    // pick the crew CLI adapter (claude_local/codex_local/gemini_local/opencode_local).
+    // This is the live source of truth for the AoA crew — NOT dormant.
+    provider: text("provider").default("anthropic"), // 'anthropic'|'openai'|'google'|'opencode'
+    model: text("model").default("claude-sonnet-4-6"), // Commander cli-mode model (codex --model)
+    // Crew model override (provider-switching reconnect). When set + valid for the
+    // company's `provider`, resolveCrewAdapterFor uses it instead of the per-provider
+    // default. Validated per provider (codex-model.ts) — an invalid value falls back
+    // to the default, never breaks a run.
+    crewModel: text("crew_model"),
     // Cheap-model fallback (D4): if set and monthly spend ≥ 80% of budget,
     // heartbeat swaps adapter model to this value for the rest of the month.
     cheapModel: text("cheap_model"),
