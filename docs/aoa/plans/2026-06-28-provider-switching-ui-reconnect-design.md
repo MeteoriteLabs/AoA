@@ -63,7 +63,7 @@ already reads it); the `companies.*_adapter_config` columns are deprecated no-op
 
 | Surface | SoT field | Provider options | Model field |
 |---|---|---|---|
-| **Commander** (chat) | `internal_agent_config.cliTool` | anthropic / openai / opencode (**no google**) | `internal_agent_config.model` |
+| **Commander** (chat) | `internal_agent_config.cliTool` | anthropic / openai (**only** — cli-mode chat has no google/opencode path) | `internal_agent_config.model` |
 | **Crew** (8 AoA agents) | `internal_agent_config.provider` | anthropic / openai / google / opencode | `internal_agent_config.crewModel` (**new**) |
 
 ### Locked decisions (from design review)
@@ -71,10 +71,16 @@ already reads it); the `companies.*_adapter_config` columns are deprecated no-op
 - **D1 — Two independent picks.** Commander and Crew can differ (e.g. Commander on
   Claude for chat quality, Crew on Codex for cheap bulk runs). Honor the existing
   two-pick onboarding UI.
-- **D2 — Exclude Google from the Commander picker.** `cli-mode.ts` has no gemini
-  chat path; building one is out of scope. Google stays a **crew-only** option
-  (`gemini_local` works headless). The two pickers therefore have different option
-  sets — an honest reflection of a real capability difference.
+- **D2 — Commander picker = anthropic + openai ONLY.** `cli-mode.ts`'s
+  `resolveCliInvocation` only builds chat invocations for `claude_cli` + `codex`;
+  it has **no gemini path** and **no opencode path** (opencode → `default: return
+  null` → `chat()` hard-errors). Building either chat path is out of scope. Google
+  and OpenCode stay **crew-only** options (`gemini_local`/`opencode_local` run
+  headless fine). The two pickers therefore have different option sets — an honest
+  reflection of a real capability difference. (Review P0: previously this said
+  "exclude Google only"; opencode-as-Commander is equally broken and is also
+  excluded.) The existing Settings "CLI Tool" select today still lists OpenCode
+  via `CLI_TOOLS` — a pre-existing broken option; §5.2 filters it out.
 - **D3 — Honor model picks too.** Thread the free-form model strings through, with
   per-provider validation (reusing `codex-model.ts` validators). There are **no
   stale dropdowns to replace** — `AGENT_MODELS_BY_PROVIDER` is dead/unused (only
@@ -99,16 +105,20 @@ Today the mappings are scattered: `providerToAdapter` is **local** to
 export const CREW_PROVIDERS = ["anthropic", "openai", "google", "opencode"] as const;
 export type CrewProvider = (typeof CREW_PROVIDERS)[number];
 
-// Providers that have a real Commander chat CLI path (cli-mode.ts). No google.
-export const COMMANDER_PROVIDERS = ["anthropic", "openai", "opencode"] as const;
+// Providers that have a WORKING Commander chat CLI path in cli-mode.ts.
+// resolveCliInvocation only builds invocations for claude_cli + codex; opencode
+// falls to `default: return null` and chat() hard-errors ("opencode is not yet
+// supported for the Commander chat"), and gemini has no branch at all. So the
+// Commander picker offers ONLY anthropic + openai. (Review P0: an opencode/google
+// Commander pick would yield a Commander that cannot chat.)
+export const COMMANDER_PROVIDERS = ["anthropic", "openai"] as const;
 export type CommanderProvider = (typeof COMMANDER_PROVIDERS)[number];
 
 // provider → Commander cliTool (internal_agent_config.cliTool).
-export function providerToCliTool(p: CommanderProvider): "claude_cli" | "codex" | "opencode" {
+export function providerToCliTool(p: CommanderProvider): "claude_cli" | "codex" {
   switch (p) {
     case "anthropic": return "claude_cli";
     case "openai":    return "codex";
-    case "opencode":  return "opencode";
   }
 }
 
@@ -161,10 +171,16 @@ export function providerToCrewAdapter(p: CrewProvider): "claude_local" | "codex_
 
 ### 5.2 Settings — add a Crew control (`CommanderSection.tsx`, Execution & Model tab)
 
-- Keep the existing **CLI Tool** select (writes `cliTool`) — this is **Commander**.
-  Add an optional **Commander model** text field (writes `model`).
+- Keep the existing **CLI Tool** select (writes `cliTool`) — this is **Commander** —
+  but **filter out `opencode`** (`CLI_TOOLS.filter(t => t.value !== "opencode")`) so
+  Settings stops offering the pre-existing broken opencode-Commander option. Add an
+  optional **Commander model** text field (writes `model`).
 - Add a **Crew provider** select (`CREW_PROVIDERS`) + **Crew model** text field,
-  clearly labelled as governing the AoA crew agents. `saveExecution()` extends to:
+  clearly labelled as governing the AoA crew agents. Include help text noting (a)
+  the crew provider also governs Commander's **autonomous (non-chat)** runs (see §9),
+  and (b) switching the crew provider re-provisions the crew and **discards
+  per-agent crew model/extraArgs customization** (the allowlist merge keeps only
+  neutral keys). `saveExecution()` extends to:
   ```ts
   { executionMode: "cli", cliTool, model: commanderModel || null,
     provider: crewProvider, crewModel: crewModel || null,
@@ -225,22 +241,50 @@ scrub source-provider auth env on switch). **No change to that logic.**
   Validation reuses `codex-model.ts` exports — no new validators. Invalid overrides
   silently fall back (never break a run); the UI may surface a soft warning later.
 
-### 5.6 Commander model honoring (`cli-mode.ts`)
+  > **Note (review P1):** `isCodexCompatibleModel` rejects *non-OpenAI-family* and
+  > *`*-codex`/`codex-*`* ids — but **`gpt-4o` IS accepted** (it's gpt-family, no
+  > "codex"). The codex fallback only triggers for things like `claude-…`,
+  > `gemini-…`, `gpt-5.2-codex`, or shell-unsafe strings.
+  >
+  > **Note (review P1):** `resolveCrewAdapterFor`'s override is the **seed-time**
+  > model. At dispatch the crew runs it through `applyModelResolutionToConfig` →
+  > `resolveModel(adapterType, model, status)` (`runner-model-resolution.ts`,
+  > `model-resolution.ts`), which is the *final* authority and applies its own
+  > per-adapter rules (e.g. for `codex_local` apikey-mode it constrains to
+  > OpenAI-family; for `opencode_local` it does **not** require a slash). A valid
+  > override passes through unchanged, so this is not a conflict — but the runtime
+  > gate, not §5.5's table, has the last word. A test asserts an override survives
+  > `applyModelResolutionToConfig`.
 
-- **codex:** already honored — `config.model` → `resolveCodexChatModel` → `--model`.
-  Writing `model` (§5.1/§5.2) is sufficient.
-- **claude_cli / opencode:** these branches pass **no** `--model` today (claude is
-  "BYTE-UNCHANGED"; uses subscription default). To honor the pick, add a
-  shell-safe (`SAFE_MODEL_RE` for claude; `isShellSafeModel` for opencode) `--model`
-  argument **only when `config.model` is set and valid**, leaving the byte-identical
-  default path intact when it is empty. This is the **highest-risk** edit (sensitive
-  file) and is sequenced **last** with its own tests; if review judges the claude
-  path too sensitive, this sub-item can defer without blocking §5.1-§5.5.
+### 5.6 Commander model honoring (`cli-mode.ts`) — claude_cli only
+
+- **codex:** already honored — `config.model` → `resolveCodexChatModel` → `--model`
+  (threaded at the `runCodexTurn` call). Writing `model` (§5.1/§5.2) is sufficient;
+  **no cli-mode change needed.**
+- **claude_cli:** the claude branch passes **no** `--model` today and `config.model`
+  is **NOT in scope** inside the arg-builder. The real builder is
+  `resolveCliInvocation(cliTool, params, safeContent, resumeCodexSessionId?,
+  systemSplitArgs?, vendorCliBypassEnabled?, codexModel?, rawContent?)` — the claude
+  call site passes `undefined` for the model. To honor the pick: **add a
+  `commanderModel?: string | null` parameter** to `resolveCliInvocation`, thread
+  `config.model` from the `chat()` claude call site into it, and splice a shell-safe
+  (`SAFE_MODEL_RE`) `--model` into **both** the systemSplit and plain claude arg
+  arrays — only when set + valid, leaving the byte-identical default path intact
+  when empty. Highest-risk edit (sensitive file); sequenced **last** with its own
+  tests; deferrable without blocking §5.1-§5.5.
+- **opencode (NOT done):** `resolveCliInvocation` has **no opencode branch** (returns
+  `null`; `chat()` rejects opencode). Commander-on-opencode chat is unimplemented, so
+  there is no model to honor and nothing to splice. opencode is **not** a Commander
+  option (§3/D2). A real opencode chat path is a separate future feature.
 
 ### 5.7 Cost label (`run-cost.ts`)
 
-- Add `case "opencode": return { provider: "openai", model: "gpt-5.2-codex" };`
-  to `rateModelForCliTool` so opencode runs aren't priced at Claude rates.
+- Add `case "opencode": return { provider: "openai", model: "gpt-4.1" };` to
+  `rateModelForCliTool` so an opencode run isn't priced at Claude rates. Use the
+  **same model string the `codex` case uses (`gpt-4.1`)** for parity — both are
+  OpenAI-on-a-codex-style-CLI subscription runs and must price identically (review
+  P2). This is **defensive**: opencode is no longer a Commander pick (§3/D2), but a
+  pre-existing persisted `cliTool="opencode"` row could still produce a costed run.
   (`gemini` is unreachable for Commander, so no gemini case needed.)
 
 ### 5.8 Dead columns (`packages/db/src/schema/companies.ts`)
@@ -328,13 +372,23 @@ branch) preserves all founder config and overrides only `model`.
   `adapterType`; unaffected here.
 - Surfacing a UI warning when a model override is rejected as invalid.
 - **Commander's agent-row adapter** is resolved from the crew `provider`
-  (existing behavior via `ensureCommanderAgent` → `resolveCrewAdapterForCompany`).
+  (existing behavior via `ensureCommanderAgent` → `resolveCrewAdapterForCompany` →
+  the aoa-runner dispatches non-chat Commander work on that row's `adapterType`).
   Its interactive **chat** correctly uses `cliTool`. So with Commander=Claude +
   Crew=Codex, Commander's *chat* runs claude_cli but its *non-chat* (proactive/
-  heartbeat) runs would use the crew adapter. This pre-dates this change; whether
-  Commander's non-chat runs should instead follow `cliTool` is a separate question
-  and is **not** altered here (we keep `ensureCommanderAgent` in the bootstrap as
-  today).
+  thread-participation) runs use the crew adapter (codex_local). Run **cost** is
+  unaffected (it keys off `cliTool` via `rateModelForCliTool`).
+  - **Review P1 — this divergence is NEWLY REACHABLE.** Before this change `provider`
+    was never UI-writable (always defaulted anthropic), so Commander's row always
+    matched its claude chat. This plan is the first time a user can split the two.
+  - **Mitigation (this plan):** the Settings/onboarding crew help text states the
+    crew provider also governs Commander's autonomous runs (§5.2), so the behavior
+    is disclosed, not silent.
+  - **Follow-up (out of scope, flagged for the user):** optionally resolve the
+    Commander row's adapter from `cliTool` (`providerToCliTool`-derived adapter)
+    instead of the crew provider, so Commander's non-chat runs match the chat CLI.
+    Moderate change to `ensureCommanderAgent` + the re-ensure; deferred unless the
+    user wants it in this plan.
 
 ---
 

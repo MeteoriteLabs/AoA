@@ -40,16 +40,17 @@ import {
 import { AGENT_PROVIDERS } from "../constants.js";
 
 describe("provider-mapping", () => {
-  it("CREW_PROVIDERS has all four providers; COMMANDER_PROVIDERS excludes google", () => {
+  it("CREW_PROVIDERS has all four; COMMANDER_PROVIDERS is anthropic+openai only", () => {
     expect([...CREW_PROVIDERS]).toEqual(["anthropic", "openai", "google", "opencode"]);
-    expect([...COMMANDER_PROVIDERS]).toEqual(["anthropic", "openai", "opencode"]);
+    // cli-mode chat only supports claude_cli + codex (no gemini, no opencode path).
+    expect([...COMMANDER_PROVIDERS]).toEqual(["anthropic", "openai"]);
     expect(COMMANDER_PROVIDERS).not.toContain("google");
+    expect(COMMANDER_PROVIDERS).not.toContain("opencode");
   });
 
   it("providerToCliTool maps each commander provider to its CLI", () => {
     expect(providerToCliTool("anthropic")).toBe("claude_cli");
     expect(providerToCliTool("openai")).toBe("codex");
-    expect(providerToCliTool("opencode")).toBe("opencode");
   });
 
   it("providerToCrewAdapter maps each crew provider to its adapter", () => {
@@ -79,8 +80,10 @@ Expected: FAIL — cannot find module `../provider-mapping.js`.
 // both import these so the provider↔cliTool↔adapter relationship can never drift.
 //
 // Two surfaces:
-//   - Commander (chat): driven by internal_agent_config.cliTool. cli-mode.ts only
-//     speaks claude_cli / codex / opencode → no google (gemini has no chat path).
+//   - Commander (chat): driven by internal_agent_config.cliTool. cli-mode.ts's
+//     resolveCliInvocation only builds chat invocations for claude_cli + codex
+//     (opencode → returns null + chat() rejects; gemini has no branch). So the
+//     Commander picker is anthropic + openai ONLY.
 //   - Crew (8 AoA agents): driven by internal_agent_config.provider → crew adapter.
 //     resolveCrewAdapterFor (server) is the runtime authority; providerToCrewAdapter
 //     is the lightweight label map and MUST agree with it (asserted in a server test).
@@ -88,18 +91,19 @@ Expected: FAIL — cannot find module `../provider-mapping.js`.
 export const CREW_PROVIDERS = ["anthropic", "openai", "google", "opencode"] as const;
 export type CrewProvider = (typeof CREW_PROVIDERS)[number];
 
-export const COMMANDER_PROVIDERS = ["anthropic", "openai", "opencode"] as const;
+export const COMMANDER_PROVIDERS = ["anthropic", "openai"] as const;
 export type CommanderProvider = (typeof COMMANDER_PROVIDERS)[number];
 
+// cliTool column may still hold "opencode" on legacy rows; the type stays broad
+// even though providerToCliTool only ever produces the two working values.
 export type CliTool = "claude_cli" | "codex" | "opencode";
 export type CrewAdapterType = "claude_local" | "codex_local" | "gemini_local" | "opencode_local";
 
 /** provider → Commander cliTool (internal_agent_config.cliTool). */
-export function providerToCliTool(p: CommanderProvider): CliTool {
+export function providerToCliTool(p: CommanderProvider): "claude_cli" | "codex" {
   switch (p) {
     case "anthropic": return "claude_cli";
     case "openai": return "codex";
-    case "opencode": return "opencode";
   }
 }
 
@@ -318,8 +322,11 @@ describe("resolveCrewAdapterFor model override", () => {
   it("applies a codex-compatible override for openai", () => {
     expect(resolveCrewAdapterFor("openai", "gpt-5.5").adapterConfig.model).toBe("gpt-5.5");
   });
-  it("rejects a codex-INCOMPATIBLE override (gpt-4o) → openai default", () => {
-    expect(resolveCrewAdapterFor("openai", "gpt-4o").adapterConfig.model).toBe(DEFAULT_CODEX_CHAT_MODEL);
+  it("rejects a codex-INCOMPATIBLE override → openai default", () => {
+    // NOTE (review P0-3): isCodexCompatibleModel ACCEPTS gpt-4o (gpt-family, no
+    // "codex"). Genuinely-incompatible = a *-codex id or a non-OpenAI family model.
+    expect(resolveCrewAdapterFor("openai", "gpt-5.2-codex").adapterConfig.model).toBe(DEFAULT_CODEX_CHAT_MODEL);
+    expect(resolveCrewAdapterFor("openai", "claude-sonnet-4-5").adapterConfig.model).toBe(DEFAULT_CODEX_CHAT_MODEL);
   });
   it("requires slash form for opencode override; bare → default", () => {
     expect(resolveCrewAdapterFor("opencode", "anthropic/claude-sonnet-4").adapterConfig.model).toBe("anthropic/claude-sonnet-4");
@@ -386,7 +393,9 @@ export function resolveCrewAdapterFor(
       return {
         adapterType: "codex_local",
         adapterConfig: {
-          // codex models must pass isCodexCompatibleModel (rejects gpt-4o, *-codex).
+          // codex models must pass isCodexCompatibleModel (rejects *-codex ids and
+          // non-OpenAI-family models; gpt-4o IS accepted). At dispatch the value is
+          // re-validated by resolveModel — see the note after this task.
           model: isCodexCompatibleModel(ov) ? ov : DEFAULT_CODEX_CHAT_MODEL,
           dangerouslyBypassApprovalsAndSandbox: true,
         },
@@ -428,15 +437,33 @@ git add server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts se
 git commit -m "feat(provider-switching): resolveCrewAdapterFor honors a validated crew model override"
 ```
 
+> **Note (review P1-2):** `resolveCrewAdapterFor`'s `adapterConfig.model` is the
+> **seed-time** value. At crew dispatch it is re-resolved by
+> `applyModelResolutionToConfig` → `resolveModel(adapterType, model, status)`
+> (`server/src/services/internal-agent/aoa-agents/runner-model-resolution.ts`,
+> `…/model-resolution.ts`) — the *final* authority. A valid override passes through
+> unchanged (claude/gemini/opencode pass-through; codex apikey-mode constrains to
+> OpenAI-family). This is not a conflict, but the runtime gate has the last word —
+> do NOT add a second validation layer in `resolveCrewAdapterFor`. (Optional extra
+> coverage: a unit test asserting `applyModelResolutionToConfig` preserves a valid
+> override for `codex_local` subscription mode.)
+
 ---
 
 ## Task 5: `ensureAllCrewAgents` helper + de-dupe boot/create
 
 **Files:**
 - Create: `server/src/services/internal-agent/aoa-agents/ensure-all-crew.ts`
-- Modify: `server/src/index.ts:709-768` (boot loop)
-- Modify: `server/src/services/companies.ts:158-193` (create path)
+- Modify: `server/src/index.ts:717-768` (boot loop — marketplace gate + `Promise.all`)
+- Modify: `server/src/services/companies.ts:158-193` (create path — sequential awaits)
 - Test: `server/src/__tests__/ensure-all-crew.test.ts`
+
+> **Behavior change (review P1-3):** the boot loop currently runs the six ensures via
+> `Promise.all` (parallel); `ensureAllCrewAgents` runs them **sequentially**. This is
+> intentional (the helper comment explains: sequential prevents Engineer's
+> Maker→Engineer rename racing the unique-name index), but it is a real change to
+> boot semantics (slightly slower; different failure interleaving). Confirm this is
+> acceptable — it is the safer ordering and the create path was already sequential.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -745,9 +772,18 @@ Ensure `logger` is imported in this file (it is used elsewhere in routes; if not
 Run: `cd server && pnpm vitest run src/__tests__/internal-agent-config-reensure.test.ts`
 Expected: PASS (4/4).
 
-- [ ] **Step 5: Run the existing internal-agent route contract test (no regression)**
+- [ ] **Step 5: Guard against schema drift (review P1) + run the contract test**
 
-Run: `cd server && pnpm vitest run src/__tests__/internal-agent-routes-contract.test.ts`
+`validate()` does `req.body = schema.parse(req.body)` and Zod **strips unknown keys**,
+and the PATCH uses the **route-local** `updateConfigSchema` (not the shared one). If
+`provider:"opencode"`/`crewModel` aren't in that local schema they're silently dropped
+and the handler returns 200 with no effect — the exact enum-fracture bug. Add an
+assertion to `internal-agent-routes-contract.test.ts` (or a focused route test) that a
+PATCH body `{ provider: "opencode", crewModel: "openai/gpt-5.2-codex" }` survives
+parsing and is reflected in the returned row (proves the route-local schema accepts
+both). Then run:
+
+Run: `cd server && pnpm vitest run src/__tests__/internal-agent-routes-contract.test.ts src/__tests__/internal-agent-config-reensure.test.ts`
 Expected: PASS.
 
 - [ ] **Step 6: Typecheck + commit**
@@ -794,12 +830,17 @@ Expected: FAIL — opencode falls through `default` → provider `anthropic`.
 
 - [ ] **Step 3: Add the opencode case**
 
-In `server/src/services/internal-agent/run-cost.ts`, in `rateModelForCliTool`'s switch (line ~36), add a case before `claude_cli`:
+In `server/src/services/internal-agent/run-cost.ts`, in `rateModelForCliTool`'s switch (line ~36), add a case before `claude_cli`. Use the SAME model string the `codex` case uses (`gpt-4.1`, line ~38) for parity — both are OpenAI-on-a-codex-CLI subscription runs and must price identically (review P2):
 
 ```ts
     case "opencode":
-      return { provider: "openai", model: "gpt-5.2-codex" };
+      return { provider: "openai", model: "gpt-4.1" };
 ```
+
+> Defensive: opencode is no longer a Commander pick (Task 1/§D2), but a pre-existing
+> persisted `cliTool="opencode"` row could still produce a costed run. Confirm
+> `gpt-4.1` exists in `cost-model.ts`'s price table (the codex case already relies
+> on it); otherwise the estimate falls through to a default rate.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -845,27 +886,33 @@ git commit -m "docs(provider-switching): mark companies.*_adapter_config columns
 
 ---
 
-## Task 9: UI API types — `crewModel` on config
+## Task 9: UI API read-type `AgentConfig` — `crewModel` for hydration
+
+> **Review P0-4:** the UI READ interface is named **`AgentConfig`** (`ui/src/api/internal-agent.ts:36`),
+> NOT `InternalAgentConfig` (which does not exist in that file). The WRITE path uses
+> the shared `UpdateInternalAgentConfig` (gained `crewModel` in Task 3) — no UI write
+> change needed. This task only adds `crewModel` to the READ type so Task 11's
+> `useEffect` hydration (`config.crewModel`) typechecks.
 
 **Files:**
-- Modify: `ui/src/api/internal-agent.ts:36-45` (the `InternalAgentConfig` response interface)
-- Test: `ui/src/api/__tests__/internal-agent-types.test.ts` (type-level)
+- Modify: `ui/src/api/internal-agent.ts:36` (the `AgentConfig` response interface)
+- Test: `ui/src/api/__tests__/agent-config-types.test.ts` (type-level)
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// ui/src/api/__tests__/internal-agent-types.test.ts
+// ui/src/api/__tests__/agent-config-types.test.ts
 import { describe, it, expect } from "vitest";
-import type { InternalAgentConfig } from "../internal-agent";
+import type { AgentConfig } from "../internal-agent";
 import type { UpdateInternalAgentConfig } from "@armyofagents/shared";
 
-describe("internal-agent config types carry crewModel", () => {
-  it("InternalAgentConfig has provider + crewModel", () => {
-    const c: Pick<InternalAgentConfig, "provider" | "crewModel"> = { provider: "openai", crewModel: "gpt-5.5" };
+describe("UI config types carry crewModel", () => {
+  it("AgentConfig (read type) has provider + crewModel", () => {
+    const c: Pick<AgentConfig, "provider" | "crewModel"> = { provider: "openai", crewModel: "gpt-5.5" };
     expect(c.provider).toBe("openai");
     expect(c.crewModel).toBe("gpt-5.5");
   });
-  it("UpdateInternalAgentConfig accepts crewModel", () => {
+  it("UpdateInternalAgentConfig (write type) accepts crewModel", () => {
     const u: UpdateInternalAgentConfig = { provider: "opencode", crewModel: "openai/gpt-5.2-codex" };
     expect(u.crewModel).toBe("openai/gpt-5.2-codex");
   });
@@ -874,30 +921,34 @@ describe("internal-agent config types carry crewModel", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ui && pnpm vitest run src/api/__tests__/internal-agent-types.test.ts`
-Expected: FAIL — `InternalAgentConfig` has no `crewModel` (compile error / `tsc` failure under vitest).
+Run: `cd ui && pnpm vitest run src/api/__tests__/agent-config-types.test.ts`
+Expected: FAIL — `AgentConfig` has no `crewModel` (compile error under vitest/tsc).
 
-- [ ] **Step 3: Add `crewModel` to the response interface**
+- [ ] **Step 3: Add `crewModel` to the `AgentConfig` interface**
 
-In `ui/src/api/internal-agent.ts`, in the `InternalAgentConfig` interface (it already has `provider: string | null` at line ~39 and `cliTool: string | null` at ~41), add:
+In `ui/src/api/internal-agent.ts`, in the `AgentConfig` interface (line ~36; it
+already has `provider: string | null` at ~39 and `cliTool: string | null` at ~41),
+add:
 
 ```ts
   crewModel: string | null;
 ```
 
-(`UpdateInternalAgentConfig` comes from `@armyofagents/shared` and already gained `crewModel` in Task 3 — no UI change needed there.)
+(`internalAgentApi.getConfig` returns `AgentConfig`, so Task 11's `config.crewModel`
+hydration now typechecks. The write path's `UpdateInternalAgentConfig` already
+carries `crewModel` from Task 3.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ui && pnpm vitest run src/api/__tests__/internal-agent-types.test.ts`
+Run: `cd ui && pnpm vitest run src/api/__tests__/agent-config-types.test.ts`
 Expected: PASS (2/2).
 
 - [ ] **Step 5: Typecheck + commit**
 
 ```bash
 pnpm --filter ui typecheck
-git add ui/src/api/internal-agent.ts ui/src/api/__tests__/internal-agent-types.test.ts
-git commit -m "feat(provider-switching): UI config type carries crewModel"
+git add ui/src/api/internal-agent.ts ui/src/api/__tests__/agent-config-types.test.ts
+git commit -m "feat(provider-switching): UI AgentConfig read-type carries crewModel"
 ```
 
 ---
@@ -957,7 +1008,7 @@ import {
   providerToCliTool,
   providerToCrewAdapter,
 } from "@armyofagents/shared";
-import type { CrewProvider } from "@armyofagents/shared";
+import type { CrewProvider, CommanderProvider } from "@armyofagents/shared";
 
 type Provider = CrewProvider; // crew supports all four; commander is a subset
 const PROVIDER_LABELS: Record<CrewProvider, string> = {
@@ -986,6 +1037,24 @@ In the Commander picker (step 3, line ~901) change the option source from
 In the Crew picker (step 4) use `CREW_PROVIDERS` as the option source (same `.map`
 shape, all four).
 
+> **Preserve the existing `data-testid`s** when rewriting the pickers — the e2e spec
+> (Task 13) and existing tests depend on `commander-provider`, `crew-provider`,
+> `commander-model`, `crew-model`, and the step Next buttons (`step3-next` /
+> `step4-next` per `OnboardingWizard.tsx`). Change only the option source, not the
+> test hooks.
+
+- [ ] **Step 3b: Relax the model-required gate (review P1-4)**
+
+The wizard currently blocks advancing without a model: `handleStep3Next` returns
+early on `!commanderModel` (`OnboardingWizard.tsx:447-449`), `handleStep4Next` on
+`!crewModel` (`:457`), and the Next buttons are `disabled` without a model
+(`:~1579`, `:~1595`). Since the model is now genuinely optional (blank → provider
+default via `crewModel.trim() || null`), relax these: drop the `!commanderModel` /
+`!crewModel` conditions from both `handleStepNNext` early-returns AND from the
+Next-button `disabled` expressions (keep the provider-required checks). This makes
+the `|| null` real instead of dead. Update the placeholder text to read
+"optional — leave blank for the provider default".
+
 - [ ] **Step 4: PATCH the live fields after create; stop writing dead columns**
 
 In `handleStep4Next` (lines ~452-475), change the `companiesApi.create` call to drop
@@ -1001,11 +1070,11 @@ the adapter-config keys, then add a config PATCH:
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
       // Provider-switching: write the LIVE internal_agent_config fields. Commander
-      // (cliTool+model) is a subset of providers (no google — no gemini chat path);
+      // (cliTool+model) is anthropic|openai only (no google/opencode chat path);
       // crew (provider+crewModel) supports all four. The server re-ensures the crew
       // to the chosen adapter when provider changes from the seeded default.
       await internalAgentApi.updateConfig(company.id, {
-        cliTool: providerToCliTool(commanderProvider as Exclude<Provider, "google">),
+        cliTool: providerToCliTool(commanderProvider as CommanderProvider),
         model: commanderModel.trim() || null,
         provider: crewProvider as Provider,
         crewModel: crewModel.trim() || null,
@@ -1179,8 +1248,11 @@ Pass the new state into `ExecutionTabContent` (the `{active === "execution" && (
           />
         </div>
         <p className="text-[11px] text-muted-foreground">
-          Governs the AoA crew agents. Changing the provider re-provisions the crew
-          on the new CLI. Google/Gemini is crew-only (Commander has no Gemini chat path).
+          Governs the AoA crew agents <strong>and Commander's autonomous (non-chat)
+          runs</strong>. Changing the provider re-provisions the crew on the new CLI
+          and <strong>discards per-agent crew model/extraArgs customization</strong>.
+          Google/Gemini and OpenCode are crew-only (Commander chat supports only
+          Claude and Codex).
         </p>
       </div>
 ```
@@ -1200,6 +1272,23 @@ const CREW_PROVIDER_LABELS: Record<string, string> = {
 Wire the new props through `ExecutionTabContentProps` (add `commanderModel`,
 `setCommanderModel`, `crewProvider`, `setCrewProvider`, `crewModel`, `setCrewModel`)
 and the call site.
+
+- [ ] **Step 4b: Filter `opencode` out of the existing CLI Tool select (review P0)**
+
+The existing "CLI Tool" `<Select>` in `ExecutionTabContent` maps over `CLI_TOOLS`
+(claude_cli / codex / opencode). opencode-as-Commander chat is unimplemented
+(`cli-mode.ts` `chat()` rejects it), so stop offering it. Change the option source:
+
+```tsx
+            {CLI_TOOLS.filter((t) => t.value !== "opencode").map((t) => (
+              <SelectItem key={t.value} value={t.value}>
+                {t.label}
+              </SelectItem>
+            ))}
+```
+
+(Leave `CLI_TOOLS` itself unchanged — it's exported and may be referenced elsewhere;
+this only narrows the Commander picker.)
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -1221,44 +1310,48 @@ git commit -m "feat(provider-switching): Settings crew provider+model controls +
 
 ---
 
-## Task 12: Commander model on claude_cli + opencode (`cli-mode.ts`) — RISKIEST, do last
+## Task 12: Commander model on claude_cli (`cli-mode.ts`) — RISKIEST, do last
 
-> **Risk note:** the `claude_cli` branch is marked "BYTE-UNCHANGED". Only ADD a
-> `--model` argument when `config.model` is set AND shell-safe; when it's empty the
-> emitted argv must be byte-identical to today. If review judges this too sensitive,
-> this task may be deferred without affecting Tasks 1-11 (codex Commander model
-> already honors `config.model`).
+> **Review P0/P1 corrections:** the per-CLI arg builder is **`resolveCliInvocation`**
+> (`cli-mode.ts:368`), NOT `translateCliInvocation` (which does not exist).
+> `config.model` is **NOT in scope** inside it — its params are
+> `(cliTool, params, safeContent, resumeCodexSessionId?, systemSplitArgs?,
+> vendorCliBypassEnabled?, codexModel?, rawContent?)` and the claude call site
+> (`cli-mode.ts:~714`) passes `undefined` for the model. So we must **add a new
+> parameter** and thread `config.model` from `chat()`. **opencode is OUT of scope:**
+> `resolveCliInvocation`'s `default:` returns `null` (`cli-mode.ts:513-516`) and
+> `chat()` rejects opencode — there is no opencode arg array to splice into.
+>
+> The `claude_cli` branch is marked "BYTE-UNCHANGED": only ADD `--model` when the
+> model is set AND shell-safe; when empty, emitted argv is byte-identical to today.
+> Deferrable without affecting Tasks 1-11 (codex Commander model already honors
+> `config.model` via `runCodexTurn`).
 
 **Files:**
-- Modify: `server/src/services/internal-agent/cli-mode.ts` (claude_cli branch ~374-436; opencode branch)
+- Modify: `server/src/services/internal-agent/cli-mode.ts` (add helper; add a
+  `commanderModel?` param to `resolveCliInvocation` ~line 368; thread it from
+  `chat()` ~line 699-716; splice into the systemSplit `:431` and plain `:449`
+  claude arg arrays)
 - Test: `server/src/__tests__/cli-mode-commander-model.test.ts`
 
-- [ ] **Step 1: Write the failing test (pure arg-builder)**
-
-Identify the smallest pure helper that builds the claude/opencode argv. If
-`translateCliInvocation` (the per-CLI translator, ~line 356) is exported, test it
-directly; if not, export a tiny `claudeModelArgs(model)` / `opencodeModelArgs(model)`
-helper and use it inside the branch. Test:
+- [ ] **Step 1: Write the failing test (pure arg-builder helper)**
 
 ```ts
 // server/src/__tests__/cli-mode-commander-model.test.ts
 import { describe, it, expect } from "vitest";
-import { claudeModelArgs, opencodeModelArgs } from "../services/internal-agent/cli-mode.js";
+import { claudeModelArgs } from "../services/internal-agent/cli-mode.js";
 
-describe("Commander model args", () => {
-  it("claude: empty model → no args (byte-identical default path)", () => {
+describe("claudeModelArgs (Commander model on claude_cli)", () => {
+  it("empty/undefined model → no args (byte-identical default path)", () => {
     expect(claudeModelArgs(null)).toEqual([]);
     expect(claudeModelArgs("")).toEqual([]);
+    expect(claudeModelArgs(undefined)).toEqual([]);
   });
-  it("claude: shell-safe model → --model <model>", () => {
+  it("shell-safe model → --model <model>", () => {
     expect(claudeModelArgs("claude-opus-4-1")).toEqual(["--model", "claude-opus-4-1"]);
   });
-  it("claude: shell-UNSAFE model → no args (never interpolate unsafe)", () => {
+  it("shell-UNSAFE model → no args (never interpolate unsafe input)", () => {
     expect(claudeModelArgs("evil; rm -rf")).toEqual([]);
-  });
-  it("opencode: slash model → --model; bare/unsafe → none", () => {
-    expect(opencodeModelArgs("anthropic/claude-sonnet-4")).toEqual(["--model", "anthropic/claude-sonnet-4"]);
-    expect(opencodeModelArgs("bare")).toEqual([]);
   });
 });
 ```
@@ -1266,39 +1359,46 @@ describe("Commander model args", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd server && pnpm vitest run src/__tests__/cli-mode-commander-model.test.ts`
-Expected: FAIL — helpers not exported.
+Expected: FAIL — `claudeModelArgs` not exported.
 
-- [ ] **Step 3: Add the helpers and use them in the branches**
+- [ ] **Step 3: Add the helper**
 
-At the top of `cli-mode.ts` (after the codex-model import on line ~20, which already
-imports `resolveCodexChatModel`), extend the import to include the validators and add
-the helpers:
+At the top of `cli-mode.ts`, extend the existing codex-model import (line ~20) and
+add the helper:
 
 ```ts
-import { resolveCodexChatModel, SAFE_MODEL_RE, isShellSafeModel } from "./codex-model.js";
+import { resolveCodexChatModel, SAFE_MODEL_RE } from "./codex-model.js";
 
-/** claude CLI: pass --model only for a shell-safe non-empty model; else nothing
- *  (keeps the default path byte-identical). */
+/** claude CLI: pass --model only for a shell-safe non-empty model; else nothing,
+ *  so the default path's argv stays byte-identical. */
 export function claudeModelArgs(model: string | null | undefined): string[] {
   const m = model?.trim() ?? "";
   return m && SAFE_MODEL_RE.test(m) ? ["--model", m] : [];
 }
-
-/** opencode: pass --model only for a shell-safe slash-form id; else nothing. */
-export function opencodeModelArgs(model: string | null | undefined): string[] {
-  const m = model?.trim() ?? "";
-  return m && m.includes("/") && isShellSafeModel(m) ? ["--model", m] : [];
-}
 ```
 
-In the `claude_cli` branch's returned `args` array (the `--print`/`--output-format`
-block, ~line 426-435), splice the model args in BEFORE `--print`:
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd server && pnpm vitest run src/__tests__/cli-mode-commander-model.test.ts`
+Expected: PASS (3 cases).
+
+- [ ] **Step 5: Thread the model into `resolveCliInvocation` and splice it**
+
+1. Add a parameter to `resolveCliInvocation` (after `codexModel`, before
+   `rawContent` — keep existing call sites compiling by giving it a default):
+   `commanderModel?: string | null,`
+2. At the `chat()` claude call site (the `resolveCliInvocation(...)` call around
+   `cli-mode.ts:699-716` that currently passes `undefined` for `codexModel`), pass
+   `config.model` for the new `commanderModel` argument.
+3. In **both** claude arg arrays — the systemSplit path (~`:431`) and the plain path
+   (~`:449`) — splice `...claudeModelArgs(commanderModel)` immediately before
+   `...claudeBypassArgs`:
 
 ```tsx
           args: [
             "--mcp-config", configPath,
             "--system-prompt-file", safeSystemPromptPath,
-            ...claudeModelArgs((config as { model?: string | null }).model),
+            ...claudeModelArgs(commanderModel),
             ...claudeBypassArgs,
             "--print",
             "--output-format", "stream-json",
@@ -1307,30 +1407,20 @@ block, ~line 426-435), splice the model args in BEFORE `--print`:
           ],
 ```
 
-Thread `config.model` into `translateCliInvocation` if it isn't already available in
-that scope (the codex path already receives `codexModel: config.model` — pass the same
-value to the claude/opencode helpers). Apply the analogous one-line splice in the
-opencode branch's args array using `opencodeModelArgs`. Also apply the same
-`claudeModelArgs` splice to the **plain** (non-`systemSplit`) claude path so both
-claude branches honor the model.
+Do **not** touch the codex or `default:` (opencode→null) branches.
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd server && pnpm vitest run src/__tests__/cli-mode-commander-model.test.ts`
-Expected: PASS (4 cases).
-
-- [ ] **Step 5: Run the cli-mode suite (no regression on the byte-sensitive paths)**
+- [ ] **Step 6: Run the cli-mode suite (no regression on the byte-sensitive path)**
 
 Run: `cd server && pnpm vitest run src/__tests__ -t "cli-mode"`
-Expected: PASS. If any snapshot/contract test asserts the claude default argv, confirm
-it is unchanged for the empty-model case.
+Expected: PASS. Confirm any test asserting the claude default argv is unchanged for
+the empty-model case (the splice yields `[]` when `commanderModel` is null/empty).
 
-- [ ] **Step 6: Typecheck + commit**
+- [ ] **Step 7: Typecheck + commit**
 
 ```bash
 pnpm --filter @armyofagents/server typecheck
 git add server/src/services/internal-agent/cli-mode.ts server/src/__tests__/cli-mode-commander-model.test.ts
-git commit -m "feat(provider-switching): honor Commander model on claude_cli + opencode (shell-safe)"
+git commit -m "feat(provider-switching): honor Commander model on claude_cli (shell-safe --model)"
 ```
 
 ---
@@ -1340,17 +1430,61 @@ git commit -m "feat(provider-switching): honor Commander model on claude_cli + o
 **Files:**
 - Modify: `tests/e2e/provider-switching.spec.ts`
 
-- [ ] **Step 1: Add the assertions**
+- [ ] **Step 1: Refactor `seedCompanyViaWizard` to accept options (back-compat)**
 
-Extend `tests/e2e/provider-switching.spec.ts` (which already drives the onboarding
-wizard via `seedCompanyViaWizard`) with two cases. Use the existing API helper to
-read crew agents (or add a small `GET /api/companies/:id/agents?kind=aoa` fetch):
+The real helper is `seedCompanyViaWizard(page, request)` (`provider-switching.spec.ts:31`),
+returning `{ companyId, issuePrefix, companyName }`, with **hardcoded** picks
+(commander `selectOption({value:"anthropic"})` ~`:72`, crew
+`selectOption({value:"openai"})` ~`:80`). Change its signature to:
+
+```ts
+async function seedCompanyViaWizard(
+  page: Page,
+  request: APIRequestContext,
+  opts: { commanderProvider?: string; commanderModel?: string; crewProvider?: string; crewModel?: string } = {},
+): Promise<{ companyId: string; issuePrefix: string; companyName: string }> {
+  const commanderProvider = opts.commanderProvider ?? "anthropic";
+  const crewProvider = opts.crewProvider ?? "openai";
+  // ... drive wizard, using these for the step-3/step-4 selectOption calls,
+  //     and opts.commanderModel/opts.crewModel for the model inputs (default "").
+}
+```
+
+Defaults preserve the current behavior so the **existing 5 tests keep passing**
+unchanged. Use the preserved `data-testid`s (`commander-provider`, `crew-provider`,
+`commander-model`, `crew-model`) from Task 10's Step-3 preservation note.
+
+- [ ] **Step 2: Add the two new helpers**
+
+`getAoaCrew` hits the **existing** endpoint `GET /api/companies/:id/agents?kind=aoa`
+(`routes/agents.ts:663`; `svc.list({kind:"aoa"})` returns full rows incl.
+`adapterType`; in `local_trusted` the e2e runs as the `board` actor so rows are
+unredacted):
+
+```ts
+async function getAoaCrew(request: APIRequestContext, companyId: string): Promise<Array<{ adapterType: string }>> {
+  const res = await request.get(`/api/companies/${companyId}/agents?kind=aoa`);
+  expect(res.ok()).toBe(true);
+  return (await res.json()).agents ?? (await res.json());
+}
+
+async function openCommanderExecutionTab(page: Page, companyPrefix: string): Promise<void> {
+  await page.goto(`/${companyPrefix}/settings/commander`);
+  // the Execution & Model sub-tab is the default; ensure the crew control is visible
+  await page.getByLabel(/crew provider/i).waitFor();
+}
+```
+
+(Confirm the Settings→Commander route + sub-tab path against `CommanderSection`/
+router; adjust the `goto` URL to the real path. `getAoaCrew`'s JSON shape — `{agents:[…]}`
+vs a bare array — must match `routes/agents.ts`'s list response; read it and pin one.)
+
+- [ ] **Step 3: Add the two assertions**
 
 ```ts
 test("onboarding as OpenAI crew → crew agents are codex_local", async ({ page, request }) => {
-  const { companyId } = await seedCompanyViaWizard(page, {
-    commanderProvider: "anthropic",
-    crewProvider: "openai", crewModel: "",
+  const { companyId } = await seedCompanyViaWizard(page, request, {
+    commanderProvider: "anthropic", crewProvider: "openai",
   });
   const crew = await getAoaCrew(request, companyId);
   expect(crew.length).toBeGreaterThan(0);
@@ -1358,24 +1492,18 @@ test("onboarding as OpenAI crew → crew agents are codex_local", async ({ page,
 });
 
 test("Settings crew provider change re-ensures the crew", async ({ page, request }) => {
-  const { companyId } = await seedCompanyViaWizard(page, {
-    commanderProvider: "anthropic", crewProvider: "anthropic", crewModel: "",
+  const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+    commanderProvider: "anthropic", crewProvider: "anthropic",
   });
-  // change crew provider to opencode via the Settings → Commander → Execution tab
-  await openCommanderExecutionTab(page, companyId);
+  await openCommanderExecutionTab(page, issuePrefix);
   await page.getByLabel(/crew provider/i).selectOption("opencode");
-  await page.getByRole("button", { name: /save/i }).first().click();
+  await page.getByRole("button", { name: /^save$/i }).first().click();
   await expect.poll(async () => {
     const crew = await getAoaCrew(request, companyId);
-    return crew.every((a) => a.adapterType === "opencode_local");
-  }).toBe(true);
+    return crew.length > 0 && crew.every((a) => a.adapterType === "opencode_local");
+  }, { timeout: 15_000 }).toBe(true);
 });
 ```
-
-Add the `getAoaCrew(request, companyId)` and `openCommanderExecutionTab(page, companyId)`
-helpers at the top of the spec (or in `tests/e2e/helpers/`), mirroring the existing
-helper style. Extend `seedCompanyViaWizard`'s options to accept
-`commanderProvider`/`crewProvider`/`crewModel` and select them in steps 3/4.
 
 - [ ] **Step 2: Run locally (win32 embedded-postgres override)**
 
@@ -1416,7 +1544,7 @@ git commit -m "test(provider-switching): e2e — onboarding + settings provider 
 | §5.4 ensureAllCrewAgents + boot/create de-dupe + re-ensure | T5, T6 |
 | §5.1 onboarding writes live fields; Commander drops google | T10 |
 | §5.2 Settings crew control + Commander model | T11 |
-| §5.6 Commander model on claude_cli/opencode | T12 |
+| §5.6 Commander model on claude_cli (codex already honors; opencode out of scope) | T12 |
 | §5.7 cost opencode | T7 |
 | §5.8 deprecate dead columns + comment fixes | T8 (companies), T2 (internal_agent comment) |
 | §8 testing (unit/integration/e2e) | per-task tests + T13 |
