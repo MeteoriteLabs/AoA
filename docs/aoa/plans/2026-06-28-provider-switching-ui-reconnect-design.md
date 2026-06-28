@@ -176,11 +176,11 @@ export function providerToCrewAdapter(p: CrewProvider): "claude_local" | "codex_
   Settings stops offering the pre-existing broken opencode-Commander option. Add an
   optional **Commander model** text field (writes `model`).
 - Add a **Crew provider** select (`CREW_PROVIDERS`) + **Crew model** text field,
-  clearly labelled as governing the AoA crew agents. Include help text noting (a)
-  the crew provider also governs Commander's **autonomous (non-chat)** runs (see §9),
-  and (b) switching the crew provider re-provisions the crew and **discards
-  per-agent crew model/extraArgs customization** (the allowlist merge keeps only
-  neutral keys). `saveExecution()` extends to:
+  clearly labelled as governing the AoA crew agents. Include help text noting that
+  switching the crew provider re-provisions the crew and **discards per-agent crew
+  model/extraArgs customization** (the allowlist merge keeps only neutral keys).
+  (Commander's own runs follow the Commander CLI, not this — see §5.9.)
+  `saveExecution()` extends to:
   ```ts
   { executionMode: "cli", cliTool, model: commanderModel || null,
     provider: crewProvider, crewModel: crewModel || null,
@@ -212,8 +212,12 @@ error-tolerant `.catch` semantics). Call it from:
 1. `index.ts` boot loop (replace the inline sequence).
 2. `companies.ts` create path (replace the inline sequence).
 3. **The config PATCH handler** (`internal-agent.ts:789`) — **after** persisting,
-   **iff** `provider` (or `crewModel`) changed vs the prior row. This makes a
-   provider switch take effect immediately rather than only on next server boot.
+   **iff** any adapter-affecting field changed vs the prior row: `provider` or
+   `crewModel` (crew) **or** `cliTool` or `model` (Commander — see §5.9). Running
+   the full `ensureAllCrewAgents` on any such change is safe: each ensure resolves
+   from its own inputs and `shouldRewriteCrewAdapter` is a no-op when the adapter
+   already matches, so a crew-only change leaves Commander untouched and vice-versa.
+   This makes a switch take effect immediately rather than only on next server boot.
 
 The actual row migration is already handled inside the ensure-*/seed-crew helpers
 via `shouldRewriteCrewAdapter` + `mergeCrewAdapterConfig` (allowlist neutral keys +
@@ -296,6 +300,33 @@ scrub source-provider auth env on switch). **No change to that logic.**
 - Fix the stale comment on `internal_agent.ts:37` (`provider` "dormant / not read"
   is now **false** — it is the crew SoT) and on `companies.ts:24-28` (the phantom
   D6 reader claim).
+
+### 5.9 Commander agent-row adapter follows `cliTool` (not the crew provider)
+
+Today `ensureCommanderAgent` seeds the Commander agent row's `adapterType`/
+`adapterConfig` from `resolveCrewAdapterForCompany` (the crew `provider`). The
+aoa-runner dispatches Commander's **non-chat** work (proactive, thread
+participation) on that row. So a split Commander/Crew choice makes Commander's
+autonomous runs use the crew CLI — wrong. Fix:
+
+- **New `cliToolToProvider(cliTool)`** in `provider-mapping.ts` (the inverse of
+  `providerToCliTool`, with `opencode → opencode` for legacy rows and a `claude_cli`
+  default): `claude_cli → anthropic`, `codex → openai`, `opencode → opencode`.
+- **New `resolveCommanderAdapterForCompany(db, companyId)`** in
+  `resolve-crew-adapter.ts`: selects `cliTool` + `model` from `internal_agent_config`
+  and returns `resolveCrewAdapterFor(cliToolToProvider(cliTool), model)`. This reuses
+  the crew resolver (same per-adapter bypass flags + model validation) but keys it on
+  the Commander surface. Commander's model (`internal_agent_config.model`) is the
+  override, validated the same way (codex → `isCodexCompatibleModel` else default,
+  etc.).
+- **`ensureCommanderAgent`** calls `resolveCommanderAdapterForCompany` instead of
+  `resolveCrewAdapterForCompany`. Everything else (the `shouldRewriteCrewAdapter` /
+  `mergeCrewAdapterConfig` migration, the instruction-bundle seeding) is unchanged —
+  so a Commander cliTool/model change migrates the Commander row exactly as a crew
+  provider change migrates the crew rows.
+
+Net: Commander's chat **and** non-chat runs both follow `cliTool`+`model`; the crew
+follows `provider`+`crewModel`. Fully independent, as the two-pick model intends.
 
 ---
 
@@ -381,14 +412,14 @@ branch) preserves all founder config and overrides only `model`.
   - **Review P1 — this divergence is NEWLY REACHABLE.** Before this change `provider`
     was never UI-writable (always defaulted anthropic), so Commander's row always
     matched its claude chat. This plan is the first time a user can split the two.
-  - **Mitigation (this plan):** the Settings/onboarding crew help text states the
-    crew provider also governs Commander's autonomous runs (§5.2), so the behavior
-    is disclosed, not silent.
-  - **Follow-up (out of scope, flagged for the user):** optionally resolve the
-    Commander row's adapter from `cliTool` (`providerToCliTool`-derived adapter)
-    instead of the crew provider, so Commander's non-chat runs match the chat CLI.
-    Moderate change to `ensureCommanderAgent` + the re-ensure; deferred unless the
-    user wants it in this plan.
+  - **FIXED IN THIS PLAN (§5.9, Task 5b):** `ensureCommanderAgent` resolves the
+    Commander row's adapter from its **`cliTool`** (via `resolveCommanderAdapterForCompany`),
+    not the crew `provider`. So with Commander=Claude + Crew=Codex, Commander's
+    non-chat runs use `claude_local` (matching the chat CLI), and the crew uses
+    `codex_local`. The two surfaces are now fully independent and consistent.
+  - The crew help text (§5.2) still notes the crew provider governs the crew agents;
+    the "also governs Commander's autonomous runs" clause is **removed** (no longer
+    true after this fix).
 
 ---
 

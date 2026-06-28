@@ -36,6 +36,7 @@ import {
   COMMANDER_PROVIDERS,
   providerToCliTool,
   providerToCrewAdapter,
+  cliToolToProvider,
 } from "../provider-mapping.js";
 import { AGENT_PROVIDERS } from "../constants.js";
 
@@ -58,6 +59,14 @@ describe("provider-mapping", () => {
     expect(providerToCrewAdapter("openai")).toBe("codex_local");
     expect(providerToCrewAdapter("google")).toBe("gemini_local");
     expect(providerToCrewAdapter("opencode")).toBe("opencode_local");
+  });
+
+  it("cliToolToProvider inverts providerToCliTool (+ opencode legacy + default)", () => {
+    expect(cliToolToProvider("claude_cli")).toBe("anthropic");
+    expect(cliToolToProvider("codex")).toBe("openai");
+    expect(cliToolToProvider("opencode")).toBe("opencode");
+    expect(cliToolToProvider(null)).toBe("anthropic");
+    expect(cliToolToProvider("weird")).toBe("anthropic");
   });
 
   it("AGENT_PROVIDERS now includes opencode", () => {
@@ -116,6 +125,18 @@ export function providerToCrewAdapter(p: CrewProvider): CrewAdapterType {
     case "opencode": return "opencode_local";
   }
 }
+
+/** cliTool → crew-provider (inverse of providerToCliTool, used to resolve the
+ *  COMMANDER agent row's adapter from its CLI — Task 5b). `opencode` is included
+ *  for legacy rows; anything unknown/null defaults to anthropic (claude). */
+export function cliToolToProvider(cliTool: string | null | undefined): CrewProvider {
+  switch (cliTool) {
+    case "codex": return "openai";
+    case "opencode": return "opencode";
+    case "claude_cli":
+    default: return "anthropic";
+  }
+}
 ```
 
 - [ ] **Step 4: Add opencode to `AGENT_PROVIDERS`**
@@ -142,6 +163,7 @@ export {
   COMMANDER_PROVIDERS,
   providerToCliTool,
   providerToCrewAdapter,
+  cliToolToProvider,
 } from "./provider-mapping.js";
 export type { CrewProvider, CommanderProvider, CliTool, CrewAdapterType } from "./provider-mapping.js";
 ```
@@ -636,7 +658,122 @@ git commit -m "refactor(provider-switching): single ensureAllCrewAgents entrypoi
 
 ---
 
-## Task 6: Re-ensure the crew on a provider/crewModel change (config PATCH)
+## Task 5b: Commander agent-row adapter follows `cliTool` (not the crew provider)
+
+> **From the design decision (§5.9):** Commander's autonomous (non-chat) runs must
+> use Commander's CLI, not the crew CLI. `ensureCommanderAgent` currently seeds the
+> Commander row from `resolveCrewAdapterForCompany` (crew `provider`). Switch it to a
+> Commander-specific resolver keyed on `cliTool`+`model`.
+
+**Files:**
+- Modify: `server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts`
+- Modify: `server/src/services/internal-agent/aoa-agents/ensure-commander.ts:7,75,83-84,144-151`
+- Test: `server/src/__tests__/resolve-commander-adapter.test.ts`
+- Update: `server/src/__tests__/aoa-ensure-commander.test.ts` (mock the new resolver)
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// server/src/__tests__/resolve-commander-adapter.test.ts
+import { describe, it, expect } from "vitest";
+import { resolveCommanderAdapterFor } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
+
+describe("resolveCommanderAdapterFor (keyed on cliTool, not provider)", () => {
+  it("claude_cli / null → claude_local", () => {
+    expect(resolveCommanderAdapterFor("claude_cli", null).adapterType).toBe("claude_local");
+    expect(resolveCommanderAdapterFor(null, null).adapterType).toBe("claude_local");
+  });
+  it("codex → codex_local", () => {
+    expect(resolveCommanderAdapterFor("codex", null).adapterType).toBe("codex_local");
+  });
+  it("honors a valid Commander model override per cliTool", () => {
+    expect(resolveCommanderAdapterFor("codex", "gpt-5.5").adapterConfig.model).toBe("gpt-5.5");
+    expect(resolveCommanderAdapterFor("claude_cli", "claude-opus-4-1").adapterConfig.model).toBe("claude-opus-4-1");
+  });
+  it("rejects a cliTool-incompatible model → per-CLI default", () => {
+    // claude default model survives validation only on claude; on codex it's rejected.
+    expect(resolveCommanderAdapterFor("codex", "claude-sonnet-4-6").adapterConfig.model).not.toBe("claude-sonnet-4-6");
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd server && pnpm vitest run src/__tests__/resolve-commander-adapter.test.ts`
+Expected: FAIL — `resolveCommanderAdapterFor` not exported.
+
+- [ ] **Step 3: Add the Commander resolvers**
+
+In `server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts`, add the
+shared import and the two functions (right after `resolveCrewAdapterForCompany`):
+
+```ts
+import { cliToolToProvider } from "@armyofagents/shared";
+
+/**
+ * Resolve the COMMANDER agent row's adapter from its cliTool + model — NOT the
+ * crew provider. Reuses resolveCrewAdapterFor (so the per-adapter bypass flags and
+ * model validation are identical to the crew), keyed on the Commander surface via
+ * cliToolToProvider. So Commander's non-chat runs use the CLI the founder picked
+ * for Commander, independent of the crew provider.
+ */
+export function resolveCommanderAdapterFor(
+  cliTool: string | null | undefined,
+  modelOverride?: string | null,
+): CrewAdapter {
+  return resolveCrewAdapterFor(cliToolToProvider(cliTool), modelOverride);
+}
+
+export async function resolveCommanderAdapterForCompany(db: Db, companyId: string): Promise<CrewAdapter> {
+  const rows = await db
+    .select({ cliTool: internalAgentConfig.cliTool, model: internalAgentConfig.model })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .limit(1);
+  return resolveCommanderAdapterFor(rows[0]?.cliTool, rows[0]?.model);
+}
+```
+
+- [ ] **Step 4: Point `ensureCommanderAgent` at the Commander resolver**
+
+In `server/src/services/internal-agent/aoa-agents/ensure-commander.ts`:
+- Change the import (line ~7) from `resolveCrewAdapterForCompany` to
+  `resolveCommanderAdapterForCompany` (keep `shouldRewriteCrewAdapter`,
+  `mergeCrewAdapterConfig`).
+- Line ~75: `const crewAdapter = await resolveCommanderAdapterForCompany(db, companyId);`
+  (rename the local to `commanderAdapter` and update its uses at lines ~83-84 insert
+  values and ~144-151 in the `shouldRewriteCrewAdapter`/`mergeCrewAdapterConfig`
+  rewrite — the migration logic itself is unchanged).
+
+- [ ] **Step 5: Update the existing ensure-commander test**
+
+`server/src/__tests__/aoa-ensure-commander.test.ts` exercises `ensureCommanderAgent`.
+If it mocks or asserts `resolveCrewAdapterForCompany`, switch that to
+`resolveCommanderAdapterForCompany`. Read the file first; adjust the mock/import so
+the Commander row resolves from `cliTool`. Add one assertion: a company with
+`cliTool="claude_cli"` + `provider="openai"` seeds the Commander row as
+`claude_local` (NOT codex_local) — proving Commander follows its CLI, not the crew.
+
+- [ ] **Step 6: Run tests**
+
+Run: `cd server && pnpm vitest run src/__tests__/resolve-commander-adapter.test.ts src/__tests__/aoa-ensure-commander.test.ts`
+Expected: PASS.
+
+- [ ] **Step 7: Typecheck + commit**
+
+```bash
+pnpm --filter @armyofagents/server typecheck
+git add server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts server/src/services/internal-agent/aoa-agents/ensure-commander.ts server/src/__tests__/resolve-commander-adapter.test.ts server/src/__tests__/aoa-ensure-commander.test.ts
+git commit -m "feat(provider-switching): Commander agent-row adapter follows cliTool, not crew provider"
+```
+
+---
+
+## Task 6: Re-ensure agents on a config change (config PATCH)
+
+> Fires on a crew change (provider/crewModel) **or** a Commander change
+> (cliTool/model — Task 5b). `ensureAllCrewAgents` re-runs all six ensures; each
+> migrates only its own row (no-op if its adapter already matches).
 
 **Files:**
 - Modify: `server/src/routes/internal-agent.ts:788-818` (the config PATCH handler)
@@ -655,26 +792,36 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-all-crew.js", () => ({
   isCrewMarketplaceManaged: isManaged,
 }));
 
-import { maybeReensureCrewOnConfigChange } from "../routes/internal-agent.js";
+import { maybeReensureAgentsOnConfigChange } from "../routes/internal-agent.js";
 
-describe("maybeReensureCrewOnConfigChange", () => {
+const base = { provider: "openai", crewModel: null, cliTool: "claude_cli", model: null } as const;
+
+describe("maybeReensureAgentsOnConfigChange", () => {
   beforeEach(() => { ensureAll.mockClear(); isManaged.mockClear(); isManaged.mockResolvedValue(false); });
 
-  it("re-ensures when provider changed", async () => {
-    await maybeReensureCrewOnConfigChange({} as any, "co-1", { provider: "anthropic", crewModel: null }, { provider: "openai", crewModel: null });
+  it("re-ensures when crew provider changed", async () => {
+    await maybeReensureAgentsOnConfigChange({} as any, "co-1", { ...base, provider: "anthropic" }, { ...base, provider: "openai" });
     expect(ensureAll).toHaveBeenCalledWith({}, "co-1");
   });
   it("re-ensures when crewModel changed", async () => {
-    await maybeReensureCrewOnConfigChange({} as any, "co-1", { provider: "openai", crewModel: null }, { provider: "openai", crewModel: "gpt-5.5" });
+    await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, crewModel: "gpt-5.5" });
     expect(ensureAll).toHaveBeenCalledTimes(1);
   });
-  it("does NOT re-ensure when neither changed", async () => {
-    await maybeReensureCrewOnConfigChange({} as any, "co-1", { provider: "openai", crewModel: "gpt-5.5" }, { provider: "openai", crewModel: "gpt-5.5" });
+  it("re-ensures when Commander cliTool changed", async () => {
+    await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, cliTool: "codex" });
+    expect(ensureAll).toHaveBeenCalledTimes(1);
+  });
+  it("re-ensures when Commander model changed", async () => {
+    await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, model: "claude-opus-4-1" });
+    expect(ensureAll).toHaveBeenCalledTimes(1);
+  });
+  it("does NOT re-ensure when nothing adapter-affecting changed", async () => {
+    await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base });
     expect(ensureAll).not.toHaveBeenCalled();
   });
   it("skips when marketplace-managed", async () => {
     isManaged.mockResolvedValue(true);
-    await maybeReensureCrewOnConfigChange({} as any, "co-1", { provider: "anthropic", crewModel: null }, { provider: "openai", crewModel: null });
+    await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, provider: "anthropic" });
     expect(ensureAll).not.toHaveBeenCalled();
   });
 });
@@ -683,7 +830,7 @@ describe("maybeReensureCrewOnConfigChange", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd server && pnpm vitest run src/__tests__/internal-agent-config-reensure.test.ts`
-Expected: FAIL — `maybeReensureCrewOnConfigChange` is not exported.
+Expected: FAIL — `maybeReensureAgentsOnConfigChange` is not exported.
 
 - [ ] **Step 3: Add the exported helper + wire it into the PATCH handler**
 
@@ -693,19 +840,32 @@ In `server/src/routes/internal-agent.ts`, add this exported pure-ish helper near
 import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
 import type { Db } from "@armyofagents/db";
 
+interface AgentAdapterFields {
+  provider: string | null;
+  crewModel: string | null;
+  cliTool: string | null;
+  model: string | null;
+}
+
 /**
- * Re-seed the crew after a config PATCH iff the crew-affecting fields changed
- * (provider or crewModel) and the crew isn't marketplace-managed. The actual
- * row migration happens inside the ensure-* helpers via shouldRewriteCrewAdapter
- * + mergeCrewAdapterConfig.
+ * Re-seed the AoA agents after a config PATCH iff any adapter-affecting field
+ * changed and they aren't marketplace-managed. Crew rows follow provider/crewModel;
+ * the Commander row follows cliTool/model (Task 5b). Running the full
+ * ensureAllCrewAgents on any change is safe — each ensure resolves from its own
+ * inputs and shouldRewriteCrewAdapter is a no-op when the adapter already matches,
+ * so a crew-only change leaves Commander untouched and vice-versa.
  */
-export async function maybeReensureCrewOnConfigChange(
+export async function maybeReensureAgentsOnConfigChange(
   db: Db,
   companyId: string,
-  before: { provider: string | null; crewModel: string | null },
-  after: { provider: string | null; crewModel: string | null },
+  before: AgentAdapterFields,
+  after: AgentAdapterFields,
 ): Promise<void> {
-  const changed = before.provider !== after.provider || before.crewModel !== after.crewModel;
+  const changed =
+    before.provider !== after.provider ||
+    before.crewModel !== after.crewModel ||
+    before.cliTool !== after.cliTool ||
+    before.model !== after.model;
   if (!changed) return;
   if (await isCrewMarketplaceManaged(db, companyId)) return;
   await ensureAllCrewAgents(db, companyId);
@@ -731,9 +891,14 @@ Now modify the PATCH handler (lines ~806-816). Replace:
 with:
 
 ```ts
-      // Read the crew-affecting fields BEFORE the update so we can detect a change.
+      // Read the adapter-affecting fields BEFORE the update so we can detect a change.
       const [prior] = await db
-        .select({ provider: internalAgentConfig.provider, crewModel: internalAgentConfig.crewModel })
+        .select({
+          provider: internalAgentConfig.provider,
+          crewModel: internalAgentConfig.crewModel,
+          cliTool: internalAgentConfig.cliTool,
+          model: internalAgentConfig.model,
+        })
         .from(internalAgentConfig)
         .where(eq(internalAgentConfig.companyId, companyId))
         .limit(1);
@@ -748,18 +913,19 @@ with:
         throw notFound("Internal agent config not found");
       }
 
-      // Migrate existing crew rows to the newly-resolved adapter when the crew
-      // provider/model actually changed (no-op otherwise). Best-effort: a crew
-      // re-seed failure must not fail the settings save.
+      // Migrate existing agent rows to the newly-resolved adapter when an
+      // adapter-affecting field changed (crew: provider/crewModel; Commander:
+      // cliTool/model). No-op otherwise. Best-effort: a re-seed failure must not
+      // fail the settings save.
       try {
-        await maybeReensureCrewOnConfigChange(
+        await maybeReensureAgentsOnConfigChange(
           db,
           companyId,
-          { provider: prior?.provider ?? null, crewModel: prior?.crewModel ?? null },
-          { provider: updated.provider ?? null, crewModel: updated.crewModel ?? null },
+          { provider: prior?.provider ?? null, crewModel: prior?.crewModel ?? null, cliTool: prior?.cliTool ?? null, model: prior?.model ?? null },
+          { provider: updated.provider ?? null, crewModel: updated.crewModel ?? null, cliTool: updated.cliTool ?? null, model: updated.model ?? null },
         );
       } catch (err) {
-        logger.warn({ err, companyId }, "crew re-ensure after config PATCH failed");
+        logger.warn({ err, companyId }, "agent re-ensure after config PATCH failed");
       }
 
       res.json(updated);
@@ -770,7 +936,7 @@ Ensure `logger` is imported in this file (it is used elsewhere in routes; if not
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd server && pnpm vitest run src/__tests__/internal-agent-config-reensure.test.ts`
-Expected: PASS (4/4).
+Expected: PASS (6/6).
 
 - [ ] **Step 5: Guard against schema drift (review P1) + run the contract test**
 
@@ -791,7 +957,7 @@ Expected: PASS.
 ```bash
 pnpm --filter @armyofagents/server typecheck
 git add server/src/routes/internal-agent.ts server/src/__tests__/internal-agent-config-reensure.test.ts
-git commit -m "feat(provider-switching): re-ensure crew when config PATCH changes provider/crewModel"
+git commit -m "feat(provider-switching): re-ensure agents when config PATCH changes provider/crewModel/cliTool/model"
 ```
 
 ---
@@ -1541,7 +1707,8 @@ git commit -m "test(provider-switching): e2e — onboarding + settings provider 
 | §4 centralized mapping + AGENT_PROVIDERS opencode | T1 |
 | §5.5 crew model override + read crewModel | T2 (col), T4 (logic) |
 | §5.3 validators (opencode + crewModel) | T3 |
-| §5.4 ensureAllCrewAgents + boot/create de-dupe + re-ensure | T5, T6 |
+| §5.4 ensureAllCrewAgents + boot/create de-dupe + re-ensure (provider/crewModel/cliTool/model) | T5, T6 |
+| §5.9 Commander agent-row adapter follows cliTool (cliToolToProvider + resolveCommanderAdapterForCompany) | T1, T5b |
 | §5.1 onboarding writes live fields; Commander drops google | T10 |
 | §5.2 Settings crew control + Commander model | T11 |
 | §5.6 Commander model on claude_cli (codex already honors; opencode out of scope) | T12 |
