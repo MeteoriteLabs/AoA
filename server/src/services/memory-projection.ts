@@ -153,5 +153,13 @@ export async function buildMemoryInsert(
   const rawRows = Array.isArray(result)
     ? (result as unknown as Array<Record<string, unknown>>)
     : ((result as { rows?: Array<Record<string, unknown>> }).rows ?? []);
+  // CAVEAT: this is a RAW `db.execute` path. With the postgres.js driver, Drizzle's
+  // column type-mapping is bypassed, so timestamp columns (createdAt, updatedAt,
+  // expiresAt, accessedAt, lastValidatedAt) come back as STRINGS, not Date — the
+  // `$inferSelect` cast below is a lie for those fields. Current callers only read
+  // id/title/content (e.g. enqueueMemoryEmbedding), so this is safe today. If a
+  // caller ever consumes a timestamp from this result (or passes it into a Drizzle
+  // timestamp comparison), coerce it to Date first — see embeddings-row-utils.ts
+  // for why (otherwise `.toISOString()` throws on the string).
   return rawRows as unknown as Array<typeof memoryItems.$inferSelect>;
 }

@@ -737,6 +737,91 @@ jobs:
           )
           PYEOF
 
+  # Runs the embedding WRITE + RETRIEVAL e2e specs against a pgvector-enabled
+  # Postgres (AOA_E2E_PGVECTOR=1). The standard `e2e` job uses embedded-postgres
+  # which has NO pgvector, so the indexing/retrieval half of the Memory feature
+  # never executes there. This lane is the only thing that exercises the vector
+  # write path (the createdAt->Date worker coercion) and cosine-distance
+  # retrieval — without it, that whole class of bug is invisible to CI.
+  e2e-pgvector:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aoa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pin marketplace catalog fixture for stable e2e
+        run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
+
+      - name: Install Playwright
+        run: |
+          npx playwright install-deps chromium
+          if ! timeout 150 npx playwright install chromium; then
+            echo "::warning::playwright browser install via cdn.playwright.dev stalled or failed; falling back to Google Chrome-for-Testing storage"
+            bash tests/e2e/scripts/install-chromium-from-google.sh
+          fi
+
+      # NO ~/.aoa config.json generation here (unlike the `e2e` job). The
+      # playwright webServer (`pnpm aoa onboard --yes --run`) selects Postgres
+      # from DATABASE_URL; writing an embedded-postgres config.json would
+      # override it and run WITHOUT pgvector, silently SKIPPING every
+      # AOA_E2E_PGVECTOR-gated test and turning this lane into a green no-op.
+      - name: Run pgvector e2e specs
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/aoa
+          AOA_E2E_PGVECTOR: "1"
+          AOA_E2E_SKIP_LLM: "true"
+        run: >-
+          pnpm exec playwright test --config=tests/e2e/playwright.config.ts
+          tests/e2e/embedding-reindex.spec.ts
+          tests/e2e/memory-index-status.spec.ts
+          tests/e2e/semantic-retrieval.spec.ts
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: playwright-report-pgvector
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 14
+
   # Single required status check. Branch protection requires ONLY this job.
   # Runs ALWAYS (`!cancelled()`), even when upstream jobs fail or skip, and
   # computes the verdict explicitly so a `skipped` job cannot silently pass —
@@ -744,7 +829,7 @@ jobs:
   # so this gate goes RED (drafts are unmergeable; a passing required check
   # there would be the footgun). Marking ready re-runs everything for real.
   ci-required:
-    needs: [changes, policy, brand-check, verify, e2e, migrations]
+    needs: [changes, policy, brand-check, verify, e2e, e2e-pgvector, migrations]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -757,9 +842,10 @@ jobs:
           R_BRAND: ${{ needs['brand-check'].result }}
           R_VERIFY: ${{ needs.verify.result }}
           R_E2E: ${{ needs.e2e.result }}
+          R_E2E_PGVECTOR: ${{ needs['e2e-pgvector'].result }}
           R_MIGRATIONS: ${{ needs.migrations.result }}
         run: |
-          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY e2e=$R_E2E migrations=$R_MIGRATIONS"
+          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS"
           fail=0
           # Detector must have succeeded. Skipped (draft) => red, by design.
           if [ "$R_CHANGES" != "success" ]; then
@@ -780,7 +866,7 @@ jobs:
           # Heavy jobs required to pass ONLY when code changed. On a docs-only
           # PR (code=false) they are skipped, which is allowed.
           if [ "$R_CODE" = "true" ]; then
-            for kv in "verify=$R_VERIFY" "e2e=$R_E2E" "migrations=$R_MIGRATIONS"; do
+            for kv in "verify=$R_VERIFY" "e2e=$R_E2E" "e2e-pgvector=$R_E2E_PGVECTOR" "migrations=$R_MIGRATIONS"; do
               name="${kv%%=*}"; res="${kv#*=}"
               [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
             done

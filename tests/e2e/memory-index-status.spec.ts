@@ -12,10 +12,10 @@ import { clearFakeEmbedderControl, writeFakeEmbedderControl } from "./helpers/fa
  *     Memory") and memory items show the "not indexed" badge
  *     (`data-testid="memory-index-status"`).
  *
- *     The e2e webServer has OPENAI_API_KEY=e2e-fake-openai-key-placeholder in its
- *     env. However, resolveSemanticAvailable() checks the per-COMPANY key stored in
- *     company_secrets (not the instance env var). A freshly seeded company has NO
- *     company secret, so semanticAvailable = false → banner is shown.
+ *     The e2e webServer runs with NO embeddings key (OPENAI_API_KEY=""), and a
+ *     freshly seeded company has no per-company secret either. resolveSemanticAvailable()
+ *     needs pgvector AND a resolvable key (per-company secret or env), so it returns
+ *     false → banner is shown.
  *
  *     This runs on standard embedded-pg (no pgvector needed).
  *
@@ -102,10 +102,13 @@ test.describe("memory index status — no-key path (no pgvector needed)", () => 
       // Verify via API that semanticAvailable is false.
       const listResult = await listMemoryItems(request, company.id);
       expect(listResult.semanticAvailable).toBe(false);
-      // The created item must have indexStatus "not_indexed" (no vector, no queue row).
+      // indexStatus depends on pgvector: WITHOUT pgvector no queue row is created
+      // → "not_indexed". WITH pgvector the item is enqueued but cannot embed (no
+      // key resolves) → it sits "pending". Either way it is NOT "indexed" and the
+      // no-llm-key banner shows (semanticAvailable=false).
       const item = listResult.items.find((i) => i.title === "E2E: Keyless memory index status test");
       expect(item).toBeTruthy();
-      expect(item!.indexStatus).toBe("not_indexed");
+      expect(["not_indexed", "pending"]).toContain(item!.indexStatus);
 
       // Navigate to the Memory page.
       await openMemoryPage(page, company.issuePrefix);
@@ -115,13 +118,16 @@ test.describe("memory index status — no-key path (no pgvector needed)", () => 
         timeout: 10_000,
       });
 
-      // The item must show the "not indexed" badge.
+      // The item must show an un-indexed badge. WITHOUT pgvector that is
+      // "Not indexed" (no queue row). WITH pgvector the item is enqueued but
+      // can't embed (no key) so it reads "Indexing…" (pending). Either is a
+      // valid "not searchable yet" state; the no-llm-key banner is the
+      // authoritative no-key signal asserted above.
       await expect(page.getByTestId("memory-index-status").first()).toBeVisible({
         timeout: 5_000,
       });
-      // Text content of the not_indexed badge is "Not indexed".
       await expect(page.getByTestId("memory-index-status").first()).toContainText(
-        /not indexed/i,
+        /not indexed|indexing/i,
       );
 
       // The PRIMARY surface (MemoryExplorer, /memory/explore) must ALSO show the
@@ -165,7 +171,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
       const secretRes = await request.post(
         `/api/companies/${company.id}/secrets`,
         {
-          data: { secretType: "llm:openai", value: "e2e-fake-pgvector-key" },
+          data: { name: "llm:openai", value: "e2e-fake-pgvector-key" },
         },
       );
       expect(secretRes.ok()).toBe(true);
@@ -234,7 +240,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
       const secretRes = await request.post(
         `/api/companies/${company.id}/secrets`,
         {
-          data: { secretType: "llm:openai", value: "e2e-fake-backfill-key" },
+          data: { name: "llm:openai", value: "e2e-fake-backfill-key" },
         },
       );
       expect(secretRes.ok()).toBe(true);

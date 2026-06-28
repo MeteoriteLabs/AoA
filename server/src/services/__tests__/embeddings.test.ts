@@ -318,18 +318,27 @@ describe("createEmbeddingService", () => {
       expect(db.updateCalls[0].tableName).toBe("embedding_queue");
       expect(db.updateCalls[0].set).toMatchObject({ status: "processing" });
       expect(db.updateCalls[1].tableName).toBe("memory_items");
-      expect(db.updateCalls[1].set).toEqual({ embedding: fakeEmbedding });
+      // The vector is written as a `${literal}::vector` SQL expression (Drizzle's
+      // dynamic .set() mis-binds a raw number[]). This mock only confirms the
+      // write targets the embedding column; the actual stored + retrievable
+      // vector is verified by the pgvector e2e (semantic-retrieval.spec.ts).
+      expect(db.updateCalls[1].set).toHaveProperty("embedding");
       expect(db.updateCalls[2].tableName).toBe("embedding_queue");
       expect(db.updateCalls[2].set).toMatchObject({ status: "completed" });
     });
 
+    // Third tuple element = the expected Drizzle JS PROPERTY for the SET key.
+    // It differs from the DB column name (2nd element) for discussions
+    // (summary_embedding ↔ summaryEmbedding); passing the DB name to `.set()`
+    // would be silently dropped → empty SET → SQL error. This asserts the
+    // VECTOR_COLUMN_DB_TO_PROP resolution in updateVectorColumn.
     it.each([
-      ["memory_items", "embedding"],
-      ["discussions", "summary_embedding"],
-      ["discussion_extracted_items", "embedding"],
+      ["memory_items", "embedding", "embedding"],
+      ["discussions", "summary_embedding", "summaryEmbedding"],
+      ["discussion_extracted_items", "embedding", "embedding"],
     ] as const)(
-      "embeds and updates target table %s/%s",
-      async (targetTable, targetColumn) => {
+      "embeds and updates target table %s/%s (SET key = %s)",
+      async (targetTable, targetColumn, expectedSetProp) => {
         const db = createSequenceDb({
           selects: [
             [
@@ -354,9 +363,10 @@ describe("createEmbeddingService", () => {
 
         expect(result.processed).toBe(1);
         expect(db.updateCalls[1].tableName).toBe(targetTable);
-        // The new column value is a plain `number[]` passed straight through —
-        // pgvector's customType.toDriver formats it at the SQL layer.
-        expect(db.updateCalls[1].set).toEqual({ [targetColumn]: fakeEmbedding });
+        // The column value is a `${literal}::vector` SQL expression (see the
+        // memory_items case above). Confirm the write uses the JS PROPERTY key
+        // (not the DB column name); vector correctness is covered by the e2e.
+        expect(db.updateCalls[1].set).toHaveProperty(expectedSetProp);
       },
     );
 
