@@ -384,14 +384,17 @@ export async function resolveCliInvocation(
   systemSplitArgs?: SystemSplitArgs,
   vendorCliBypassEnabled = true,
   codexModel?: string | null,
-  // claude_cli Commander model (internal_agent_config.model). Emitted as a
-  // shell-safe `--model <m>` only when set; null/empty keeps the argv
-  // byte-identical to the pre-model default path. Threaded from chat().
-  commanderModel?: string | null,
   // RAW (unescaped) user prompt for the claude plain (non-systemSplit) path.
   // Threaded from the caller (params.content). claude delivers the prompt over
   // stdin so it must be the raw text, never the cmd-escaped safeContent.
   rawContent?: string,
+  // claude_cli Commander model (internal_agent_config.model). Emitted as a
+  // shell-safe `--model <m>` only when set; null/empty keeps the argv
+  // byte-identical to the pre-model default path. Threaded from chat(). Kept LAST
+  // in the param list so existing positional callers passing `rawContent` are
+  // unaffected (string is assignable to the prior commanderModel slot, so a
+  // mid-list insert mis-bound rawContent without a typecheck error).
+  commanderModel?: string | null,
 ): Promise<CliInvocation | null> {
   const isWin = platform() === "win32";
   const claudeBypassArgs = vendorCliBypassEnabled
@@ -726,8 +729,8 @@ export function cliModeService(db: Db) {
             systemSplitArgs,
             config.vendorCliBypassEnabled ?? true,
             undefined,        // codexModel (codex routes through runCodexTurn, not here)
-            config.model,     // commanderModel — shell-safe --model for claude_cli
-            params.content,   // raw prompt for claude's stdin (plain-path fallback)
+            params.content,   // rawContent — raw prompt for claude's stdin (plain-path fallback)
+            config.model,     // commanderModel — shell-safe --model for claude_cli (LAST param)
           );
           if (!invocation) {
             yield {

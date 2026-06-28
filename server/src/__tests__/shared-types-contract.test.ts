@@ -77,8 +77,10 @@ describe("v2.5 internal agent constants", () => {
     expect(AGENT_EXECUTION_MODES).toEqual(["api", "cli"]);
   });
 
-  it("AGENT_PROVIDERS has 3 values", () => {
-    expect(AGENT_PROVIDERS).toEqual(["anthropic", "openai", "google"]);
+  it("AGENT_PROVIDERS has 4 values (incl. opencode)", () => {
+    // opencode is a first-class crew provider (resolveCrewAdapterFor handles it);
+    // added in the provider-switching reconnect.
+    expect(AGENT_PROVIDERS).toEqual(["anthropic", "openai", "google", "opencode"]);
   });
 
   it("TRIGGER_TYPES has 4 values", () => {
