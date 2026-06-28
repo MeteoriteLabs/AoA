@@ -65,4 +65,21 @@ async function seedCompanyWithFounder(): Promise<{ companyId: string; founderId:
 
 describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", () => {
   it("setup harness boots", () => { if (setupError) throw new Error(String(setupError)); expect(db).toBeTruthy(); });
+
+  it("getFounderUserId returns the founder, else the owner-membership principal", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = orgHierarchyService(db);
+    expect(await svc.getFounderUserId(companyId)).toBe(founderId);
+    await db.execute(sql`DELETE FROM user_roles WHERE company_id = ${companyId} AND role = 'founder'`);
+    expect(await svc.getFounderUserId(companyId)).toBe(founderId);
+  });
+
+  it("getFirstHumanAncestor walks agent -> agent -> human", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const leadId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Lead', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const workerId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'agent', ${leadId}) RETURNING id`));
+    expect(await orgHierarchyService(db).getFirstHumanAncestor(companyId, "agent", workerId)).toBe(founderId);
+  });
 });

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, companyMemberships } from "@armyofagents/db";
+import { agents, companyMemberships, userRoles } from "@armyofagents/db";
 import { notFound, unprocessable } from "../errors.js";
 
 /**
@@ -159,5 +159,49 @@ export function orgHierarchyService(db: Db) {
       );
   }
 
-  return { assertNoCycle, ensureParent, orphanChildren };
+  /** Founder user_role, else the owner-role company_membership principal (always exists). */
+  async function getFounderUserId(companyId: string): Promise<string | null> {
+    const founder = await db
+      .select({ userId: userRoles.userId })
+      .from(userRoles)
+      .where(and(eq(userRoles.companyId, companyId), eq(userRoles.role, "founder")))
+      .limit(1)
+      .then((r) => r[0]?.userId ?? null);
+    if (founder) return founder;
+    return await db
+      .select({ principalId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.membershipRole, "owner"),
+        eq(companyMemberships.status, "active"),
+      ))
+      .limit(1)
+      .then((r) => r[0]?.principalId ?? null);
+  }
+
+  /** Walk parentType/parentId from (startType,startId) to the first human ancestor; null if none / depth-capped. */
+  async function getFirstHumanAncestor(
+    companyId: string,
+    startType: EntityType,
+    startId: string,
+  ): Promise<string | null> {
+    let currentType: EntityType | null = startType;
+    let currentId: string | null = startId;
+    let depth = 0;
+    while (currentType && currentId && depth < MAX_CHAIN_DEPTH) {
+      if (currentType === "user") return currentId;
+      const row = await db
+        .select({ parentType: agents.parentType, parentId: agents.parentId })
+        .from(agents).where(eq(agents.id, currentId)).limit(1).then((r) => r[0]);
+      if (!row || !row.parentId) return null;
+      currentType = row.parentType as EntityType | null;
+      currentId = row.parentId as string | null;
+      depth++;
+    }
+    return null;
+  }
+
+  return { assertNoCycle, ensureParent, orphanChildren, getFounderUserId, getFirstHumanAncestor };
 }
