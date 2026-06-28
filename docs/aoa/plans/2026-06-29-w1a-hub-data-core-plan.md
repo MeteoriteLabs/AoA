@@ -24,6 +24,15 @@
 4. **Redact-before-persist.** The denormalized `summary` is sanitized with `server/src/redaction.ts` at emit time, before it ever hits the row. RBAC is enforced at emit + query + action, not just render.
 5. **Audit before side-effect.** `recordAndAct()` writes the immutable `hub_audit` row inside the same transaction as the state transition, before the source-API side-effect — manual actions too, not just Autopilot.
 6. **Concurrency = conditional UPDATE → 409.** Actions carry the item's `version`; the guarded UPDATE only matches the expected version and bumps it; a no-match re-reads to return 409 (stale) vs 404 (gone) — the `agents.ts` idiom, not a generic ORM version column.
+7. **Owner is resolved, never punted (§7/§19).** `emit` resolves a real human owner: when the caller passes an explicit `ownerUserId` (natural-owner items — mention→mentioned user, reminder→user), use it; when the source identifies an agent/run and no owner is given, resolve the **first human ancestor** via the already-shipped W6 `orgHierarchyService.getFirstHumanAncestor(...)`, falling back to `getFounderUserId`. The legacy `userId` column is always set to the resolved owner — **never `""`** (W6 guarantees a human exists).
+8. **Owner ≠ Authority; gate actions by Authority.** Authority is a property of the **item type** (e.g. `approval_request`/`join_request` → founder/board; most notifications → owner-can-act), held in `HUB_AUTHORITY_BY_TYPE` (Task 0). "Accountable" has ONE fixed meaning = the Authority-holder for the decision; the Owner is Responsible (shepherds it, may need to Route/Escalate). The action path (Task 7/9) checks Authority, not just ownership — an Owner lacking Authority is rejected at the action layer (not just at render).
+9. **`hub_audit` is durable + uses a real idempotency column.** The audit row must outlive its hub item — `hub_audit.hubItemId` is **nullable, `onDelete: "set null"`** (no cascade). Action idempotency uses a dedicated `idempotencyKey text` column with a partial unique index, NOT a JSONB path into `relayResult` (which is reserved for the W5 relay outcome).
+10. **Side-effects run after commit.** Inside `recordAndAct`'s transaction, only DB-only effects run; any external/irreversible source-API relay happens **after** the transaction commits (the audit row is already durable, so a relay failure is recoverable via status reconciliation rather than erasing the decision record). The reconciliation sweeper uses the **version-guarded UPDATE** too, so a system transition and a concurrent user action can't lost-update each other.
+11. **Transaction type convention.** Service functions that may run in a caller's transaction take `executor: Db = db` and the caller passes `tx as unknown as Db` (the repo idiom — `routines.ts`, `agents.ts`). `PgTransaction` is NOT assignable to `Db`; do not type a param as `tx?: Db` directly.
+
+**Scope notes (from review):**
+- The **headline "Waiting on you" sources** (`approvals`, `join_requests`, `discussions`, `suggestions`) do **not** emit today and their emit-wiring is **W1b**, not W1a. W1a proves the emit path via the existing notification sites (Task 10) + tests; the `waiting_on_you` lane is intentionally empty until W1b. (Stated so a reader doesn't expect a populated flagship lane.)
+- Task 10 migrates **5** emit sites, not 4: the 4 notification sites **plus `server/src/services/issues.ts:2139`** (`notificationService(db).create` task-mention path).
 
 ## File structure
 
@@ -107,22 +116,31 @@ export type HubItemPriority = (typeof HUB_ITEM_PRIORITIES)[number];
 // Semantic type = WHAT the item is, independent of its source table. Adding a
 // type = one entry here + one registry entry (W1b). The W5 runtime-decision type
 // is RESERVED (no adapter bridge yet — see master scope §10).
+// NOTE: enumerate against `SELECT DISTINCT type FROM notifications` during Task 4;
+// every live legacy type must map to one of these (unknowns → "legacy_other").
 export const HUB_SEMANTIC_TYPES = [
   // waiting_on_you
   "approval_request",
   "discussion_pending",
   "join_request",
+  "human_input_needed",   // thread.human_input_needed
+  "scope_proposal",       // thread.scope_proposal_posted
   "agent_runtime_decision", // reserved (W5)
   // notifications
   "run_failed",
-  "budget_alert",
+  "budget_alert",         // budget.incident_created
   "agent_error",
-  "mention",
-  "marketplace_op",
+  "mention",              // thread.mention, internal_agent.notification
+  "marketplace_op",       // marketplace.*
   "run_complete",
+  "reminder",             // internal_agent.reminder
+  "extraction_failed",    // discussion.extraction_failed
+  "routine_outcome",      // routine.tick / sweep.tick
+  "legacy_other",         // catch-all sink for any un-mapped legacy type
   // suggestions
   "suggestion",
   "stale_work",
+  "proactive",            // internal_agent_proactive
 ] as const;
 export type HubSemanticType = (typeof HUB_SEMANTIC_TYPES)[number];
 
@@ -130,6 +148,8 @@ export const HUB_SEMANTIC_TO_LANE: Record<HubSemanticType, HubLane> = {
   approval_request: "waiting_on_you",
   discussion_pending: "waiting_on_you",
   join_request: "waiting_on_you",
+  human_input_needed: "waiting_on_you",
+  scope_proposal: "waiting_on_you",
   agent_runtime_decision: "waiting_on_you",
   run_failed: "notifications",
   budget_alert: "notifications",
@@ -137,12 +157,36 @@ export const HUB_SEMANTIC_TO_LANE: Record<HubSemanticType, HubLane> = {
   mention: "notifications",
   marketplace_op: "notifications",
   run_complete: "notifications",
+  reminder: "notifications",
+  extraction_failed: "notifications",
+  routine_outcome: "notifications",
+  legacy_other: "notifications",
   suggestion: "suggestions",
   stale_work: "suggestions",
+  proactive: "suggestions",
 };
 
 export function laneForSemanticType(t: HubSemanticType): HubLane {
   return HUB_SEMANTIC_TO_LANE[t];
+}
+
+// Authority = who may make the FINAL decision (a property of the TYPE, §7).
+// "Accountable" = the Authority-holder (ONE fixed meaning). The Owner is
+// Responsible (shepherds it) and Routes/Escalates when lacking Authority.
+// The action layer (Task 7/9) gates on THIS, not on ownership.
+export type HubAuthority = "founder" | "owner"; // founder = founder/board only; owner = the responsible human may act
+export const HUB_AUTHORITY_BY_TYPE: Record<HubSemanticType, HubAuthority> = {
+  approval_request: "founder",
+  join_request: "founder",
+  agent_runtime_decision: "founder", // reserved; per-prompt tightening in W5
+  discussion_pending: "owner", human_input_needed: "owner", scope_proposal: "owner",
+  run_failed: "owner", budget_alert: "owner", agent_error: "owner", mention: "owner",
+  marketplace_op: "owner", run_complete: "owner", reminder: "owner",
+  extraction_failed: "owner", routine_outcome: "owner", legacy_other: "owner",
+  suggestion: "owner", stale_work: "owner", proactive: "owner",
+};
+export function authorityForSemanticType(t: HubSemanticType): HubAuthority {
+  return HUB_AUTHORITY_BY_TYPE[t];
 }
 
 // Owner pool sentinel for authority-gated items with no single natural owner.
@@ -328,18 +372,23 @@ git commit -m "feat(hub): hub_item_user_state table (sparse, seat-keyed) (W1a Ta
 
 ```ts
 // packages/db/src/schema/hub_audit.ts
-import { pgTable, uuid, text, integer, jsonb, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, jsonb, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { notifications } from "./notifications.js";
 
-// Append-only. One row per hub action (manual OR autonomous) written BEFORE the
-// source-API side-effect, in the same transaction as the state transition.
+// Append-only. One row per hub action (manual OR autonomous) written in the same
+// transaction as the state transition, BEFORE any DB-only effect; external/
+// irreversible relays happen after commit so the record survives a relay failure.
 export const hubAudit = pgTable(
   "hub_audit",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    hubItemId: uuid("hub_item_id").notNull().references(() => notifications.id, { onDelete: "cascade" }),
+    // Nullable + set-null on delete: the immutable decision record must OUTLIVE
+    // its hub item (audit survives item purge/retention). NEVER cascade-delete.
+    hubItemId: uuid("hub_item_id").references(() => notifications.id, { onDelete: "set null" }),
+    idempotencyKey: text("idempotency_key"), // action dedup (partial-unique below)
     actorType: text("actor_type").notNull(),      // "user" | "agent" | "autonomy" | "system"
     actorId: text("actor_id").notNull(),
     action: text("action").notNull(),
@@ -356,6 +405,9 @@ export const hubAudit = pgTable(
   (table) => ({
     itemIdx: index("hub_audit_item_idx").on(table.hubItemId, table.createdAt),
     companyIdx: index("hub_audit_company_idx").on(table.companyId, table.createdAt),
+    idemUq: uniqueIndex("hub_audit_idem_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
   }),
 );
 ```
@@ -461,6 +513,8 @@ import { hubItems, hubItemUserState, hubAudit } from "@armyofagents/db";
 import type { HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
 import { laneForSemanticType } from "@armyofagents/shared";
 import { redactSecretsInString } from "../redaction.js";
+import { orgHierarchyService } from "./org-hierarchy.js";
+import { unprocessable } from "../routes/errors.js"; // same http-error helper W6 uses (match the actual import path)
 
 export interface EmitArgs {
   companyId: string;
@@ -471,11 +525,18 @@ export interface EmitArgs {
   summary?: string | null;
   scopeKey?: string | null;
   priority?: "low" | "normal" | "high" | "urgent";
+  // Owner resolution: pass ownerUserId for NATURAL-owner items (mention → the
+  // mentioned user, reminder → the user). For agent/run-sourced events, pass
+  // sourceActorType/sourceActorId and emit resolves the first human ancestor.
   ownerUserId?: string | null;
-  ownerPool?: HubOwnerPool | null;
+  sourceActorType?: "agent" | "user" | null;
+  sourceActorId?: string | null;
+  ownerPool?: HubOwnerPool | null; // ADDITIONAL pool visibility; never replaces the human owner
   slaAt?: Date | null;
   sourcePermissionRevision?: string | null;
-  tx?: Db; // emit in the SAME transaction as the source mutation (no silent drops)
+  // Emit in the SAME transaction as the source mutation (no silent drops). A
+  // PgTransaction is NOT assignable to Db — callers pass `tx as unknown as Db`.
+  executor?: Db;
 }
 
 export function hubItemsService(db: Db) {
@@ -483,14 +544,30 @@ export function hubItemsService(db: Db) {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
   }
 
+  // §7/§19: every item has a real human Owner. Natural owner → use it; agent/run
+  // source → first human ancestor (W6); else the founder. Never null/"" (W6
+  // guarantees a human-at-top, so getFounderUserId is the floor).
+  async function resolveOwner(conn: Db, a: EmitArgs): Promise<string> {
+    if (a.ownerUserId) return a.ownerUserId;
+    const org = orgHierarchyService(conn);
+    if (a.sourceActorType === "agent" && a.sourceActorId) {
+      const human = await org.getFirstHumanAncestor(a.companyId, "agent", a.sourceActorId);
+      if (human) return human;
+    }
+    const founder = await org.getFounderUserId(a.companyId);
+    if (!founder) throw unprocessable("Cannot emit a hub item: company has no human owner");
+    return founder;
+  }
+
   async function emit(a: EmitArgs) {
-    const conn = a.tx ?? db;
+    const conn = (a.executor ?? db) as unknown as Db; // executor may be a PgTransaction
+    const ownerUserId = await resolveOwner(conn, a);   // a real human; never ""
     const key = sourceUniqueKey(a);
     const safeSummary = a.summary == null ? null : redactSecretsInString(a.summary);
     const values = {
       companyId: a.companyId,
-      userId: a.ownerUserId ?? "", // legacy NOT NULL column; owner is the canonical field
-      type: a.semanticType,        // keep legacy `type` populated for back-compat reads
+      userId: ownerUserId,           // legacy NOT NULL column = the resolved human owner
+      type: a.semanticType,          // keep legacy `type` populated for back-compat reads
       title: a.title,
       semanticType: a.semanticType,
       sourceType: a.sourceType,
@@ -499,19 +576,21 @@ export function hubItemsService(db: Db) {
       sourceUniqueKey: key,
       summary: safeSummary,
       priority: a.priority ?? "normal",
-      ownerUserId: a.ownerUserId ?? null,
+      ownerUserId,
       ownerPool: a.ownerPool ?? null,
       slaAt: a.slaAt ?? null,
       sourcePermissionRevision: a.sourcePermissionRevision ?? null,
       status: "open" as const,
     };
-    // Idempotent upsert: a re-emit refreshes the denormalized summary/owner but
-    // does NOT resurrect a resolved item or create a duplicate.
-    const [row] = await conn
+    // Idempotent upsert, gated to STILL-OPEN rows: a re-emit refreshes the
+    // denormalized fields ONLY while the item is open — it never resurrects a
+    // resolved/archived item nor clobbers fields under an in-flight action.
+    const inserted = await conn
       .insert(hubItems)
       .values(values)
       .onConflictDoUpdate({
         target: hubItems.sourceUniqueKey,
+        setWhere: sql`${hubItems.status} = 'open'`,
         set: {
           title: values.title, summary: values.summary, priority: values.priority,
           ownerUserId: values.ownerUserId, ownerPool: values.ownerPool, slaAt: values.slaAt,
@@ -519,14 +598,24 @@ export function hubItemsService(db: Db) {
         },
       })
       .returning();
+    // A conflict on a NON-open row updates nothing (setWhere false) → RETURNING
+    // is empty; re-select the existing row so callers always get the current item.
+    let row = inserted[0];
+    if (!row) {
+      row = await conn.select().from(hubItems)
+        .where(eq(hubItems.sourceUniqueKey, key)).limit(1).then((r) => r[0]);
+    }
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
-  return { emit, sourceUniqueKey };
+  return { emit, sourceUniqueKey, resolveOwner };
 }
 ```
 
-NOTE: `firstRow`/`firstId` helpers + the harness header come from the W6 integration test — copy them. `userId` stays populated (legacy NOT NULL) but ownership reads use `ownerUserId`.
+NOTES:
+- Copy `firstId` + the embedded-postgres harness header from the W6 integration test. The W6 harness does NOT export `firstRow` or `seedMember` — **write them**: `firstRow(res)` returns the first row of a `db.execute` result; `seedMember(companyId, role, departmentId?)` inserts a `"user"` row + `company_memberships` + a `user_roles` row (with `projectId` for the cross-department RBAC negative test in Task 6).
+- Confirm the actual `unprocessable`/`conflict`/`notFound` import path (W6's `agents.ts` imports them — match it exactly; the path above is illustrative).
+- Owner resolution runs on the same `conn`, so it participates in the caller's transaction.
 
 - [ ] **Step 4: Run the test to confirm it passes** (Linux/CI; on Windows it skips). Expected: PASS.
 
@@ -590,26 +679,32 @@ Mirror `permissionService`/`assertRole` semantics: founder → no owner/scope fi
 async function recordAndAct(args: {
   companyId: string; hubItemId: string; action: string;
   expectedVersion: number; actorType: string; actorId: string;
+  actorIsFounder: boolean;        // route resolves via permissionService (founder OR board)
   authorityBasis?: string; reason?: string; idempotencyKey?: string;
   nextStatus: "resolved" | "archived" | "snoozed";
-  sideEffect?: (tx: Db) => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
+  sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>; // EXTERNAL; runs after commit
 }) {
-  return db.transaction(async (tx) => {
-    const current = await tx.select().from(hubItems)
-      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
-      .limit(1).then((r) => r[0]);
-    if (!current) throw notFound("Hub item not found");
+  const current = await db.select().from(hubItems)
+    .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
+    .limit(1).then((r) => r[0]);
+  if (!current) throw notFound("Hub item not found");
 
-    // Idempotency: a replay short-circuits without a second audit/side-effect.
+  // AUTHORITY gate (§7): gated by the item TYPE's authority, not by ownership.
+  // An Owner who lacks Authority is rejected HERE (the action layer), not just
+  // at render — they must Route/Escalate instead.
+  if (authorityForSemanticType(current.semanticType as HubSemanticType) === "founder" && !args.actorIsFounder) {
+    throw forbidden("This decision requires founder/board authority — route or escalate it.");
+  }
+
+  // Phase 1 — atomic DB transaction: idempotency + version-guarded transition +
+  // immutable audit. The audit is DURABLE before any external side-effect.
+  const committed = await db.transaction(async (txRaw) => {
+    const tx = txRaw as unknown as Db;
     if (args.idempotencyKey) {
       const dup = await tx.select({ id: hubAudit.id }).from(hubAudit)
-        .where(and(eq(hubAudit.hubItemId, args.hubItemId),
-                   sql`${hubAudit.relayResult}->>'idempotencyKey' = ${args.idempotencyKey}`))
-        .limit(1).then((r) => r[0]);
-      if (dup) return current;
+        .where(eq(hubAudit.idempotencyKey, args.idempotencyKey)).limit(1).then((r) => r[0]);
+      if (dup) return { item: current, replayed: true as const };
     }
-
-    // Optimistic concurrency: guarded UPDATE only matches the expected version.
     const updated = await tx.update(hubItems)
       .set({
         status: args.nextStatus, version: current.version + 1,
@@ -622,24 +717,27 @@ async function recordAndAct(args: {
       throw conflict("This item was changed by someone else. Reload and retry.",
         { currentVersion: current.version });
     }
-
-    // Audit BEFORE the side-effect (manual + autonomous).
     await tx.insert(hubAudit).values({
       companyId: args.companyId, hubItemId: args.hubItemId,
       actorType: args.actorType, actorId: args.actorId, action: args.action,
       authorityBasis: args.authorityBasis ?? null, reason: args.reason ?? null,
+      idempotencyKey: args.idempotencyKey ?? null,
       priorState: { status: current.status, version: current.version },
-      relayResult: args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : null,
     });
-
-    let effects: { irreversibleSideEffects?: unknown; relayResult?: unknown } = {};
-    if (args.sideEffect) effects = await args.sideEffect(tx); // source-API call (Task 9 wires real ones)
-    return { ...updated, effects };
+    return { item: updated, replayed: false as const };
   });
+  if (committed.replayed) return committed.item; // no second side-effect on replay
+
+  // Phase 2 — EXTERNAL/irreversible source-API side-effect AFTER commit. The audit
+  // row is already durable, so a relay/source failure is recoverable (the sweeper
+  // reconciles), NEVER an erased decision record. (DB-only effects, if any, belong
+  // inside Phase 1's transaction instead.)
+  if (args.sideEffect) await args.sideEffect();
+  return committed.item;
 }
 ```
 
-`conflict`/`notFound` come from the existing http-errors helper (same module `agents.ts` uses). Action `pending/failed/partial` states + cross-source bulk semantics are noted for W1c; W1a covers single-item resolve/archive/snooze with 409 + audit + idempotency.
+`conflict`/`notFound`/`forbidden` come from the existing http-errors helper (the module `agents.ts` uses — match its import). Action `pending/failed/partial` states + cross-source bulk semantics are W1c; W1a covers single-item resolve/archive/snooze with the Authority gate + 409 + immutable audit + idempotency. The Task-7 test must assert: stale `expectedVersion`→409; an Owner-without-founder-authority acting on an `approval_request`→403; audit row written with `priorState.status='open'`; idempotency replay = no second audit row / no second side-effect.
 
 - [ ] **Step 4: Run → PASS.**
 
@@ -653,13 +751,13 @@ async function recordAndAct(args: {
 - Modify: `server/src/services/hub-items.ts`
 - Test: `server/src/__tests__/hub-items-sweeper.integration.test.ts`
 
-- [ ] **Step 1: Failing test** — simulate a commit-then-emit-failure: insert an `approvals` row whose `status='approved'` but leave its hub item `open` (the missed-emit case), plus a hub item whose source approval row was deleted. Assert the sweeper (a) closes the hub item whose source is terminal/deleted, and (b) does NOT touch items whose source is still pending.
+- [ ] **Step 1: Failing test** — simulate a commit-then-emit-failure: insert an `approvals` row whose `status='approved'` but leave its hub item `open` (the missed-emit case), plus a hub item whose source approval row was deleted, plus a hub item whose source `sourcePermissionRevision` drifted from the stored one. Assert the sweeper (a) closes the hub item whose source is terminal/deleted, (b) does NOT touch items whose source is still pending, and (c) refreshes the redacted summary + permission revision on the drifted item (permission-drift healing, §18).
 
 - [ ] **Step 2: Run → FAIL.**
 
 - [ ] **Step 3: Implement `reconcile(companyId, { sourceType })`**
 
-For the given `sourceType`, load open hub items; for each, look up the source row by `sourceId`; if the source is gone OR in a terminal state, transition the hub item to `resolved`/`archived` (with an `actorType:"system"` audit row); if the source's summary/permission revision drifted, refresh it. Process in company-scoped batches. W1a implements the **approval** + **heartbeat_run** reconcilers (the two highest-volume terminal sources) and a registry hook so other source types plug in later. Log a count of healed items (no silent caps — `log` what was reconciled).
+For the given `sourceType`, load open hub items; for each, look up the source row by `sourceId`; if the source is gone OR in a terminal state, transition the hub item via the **same version-guarded path** as `recordAndAct` (read `version`, guard the UPDATE on it, bump it, write an `actorType:"system"` audit row) — so a concurrent user action gets a clean 409 rather than a lost update; if the source's summary or permission revision drifted, refresh the redacted summary + `sourcePermissionRevision` (permission-drift healing). Process in company-scoped batches. W1a implements the **approval** + **heartbeat_run** reconcilers (the two highest-volume terminal sources) and a registry hook so other source types plug in later. Log a count of healed items (no silent caps — `log` what was reconciled).
 
 - [ ] **Step 4: Run → PASS.**
 
@@ -692,11 +790,11 @@ For the given `sourceType`, load open hub items; for each, look up the source ro
 
 ---
 
-## Task 10: Migrate the 4 existing emit sites onto `hubItems.emit`
+## Task 10: Migrate the 5 existing emit sites onto `hubItems.emit`
 
-**Files (modify):** `services/threads.ts` (mention), `services/internal-agent/proactive.ts` (proactive + reminder), `services/marketplace-notifications.ts` (6 marketplace types), `services/internal-agent/tools/notify-owner-tool.ts`.
+**Files (modify):** `services/threads.ts` (mention), `services/internal-agent/proactive.ts` (proactive + reminder), `services/marketplace-notifications.ts` (6 marketplace types), `services/internal-agent/tools/notify-owner-tool.ts` (→ `mention`/`legacy_other`), **and `services/issues.ts:2139`** (task-mention `notificationService(db).create`). Grep `notificationService(`/`createNotification(` to confirm no 6th site slipped in.
 
-- [ ] **Step 1:** For each site, replace the raw `createNotification`/`notificationService().create` call with `hubItemsService(db).emit({...})`, mapping the existing `type`→`semanticType`, setting `sourceType`/`sourceId` (the related entity), `ownerUserId` (the existing recipient userId), and `summary` (the existing message — now redacted at emit). Pass `tx` where the call already sits inside a transaction (no silent drops). Keep `createNotification` itself for now (delivery-retry scaffold) but route new emits through `emit`.
+- [ ] **Step 1:** For each site, replace the raw `createNotification`/`notificationService().create` call with `hubItemsService(db).emit({...})`, mapping the existing `type`→`semanticType`, setting `sourceType`/`sourceId` (the related entity). For **natural-owner** items (mention, reminder, notify-owner) pass `ownerUserId` = the existing recipient userId (so the resolved owner stays that person). For **agent/run-sourced** items (e.g. a future run-failed/budget emit), pass `sourceActorType:"agent"` + `sourceActorId` and let `emit` resolve the first human ancestor. Set `summary` (the existing message — redacted at emit). Pass `executor: tx as unknown as Db` where the call sits inside a transaction (no silent drops). Keep `createNotification` itself for now (the delivery-retry scaffold) but route new emits through `emit`.
 
 - [ ] **Step 2:** Update the existing notification unit tests for these sites (they currently assert a `notifications` insert — assert the `hubItems.emit` shape instead). Drop the dead notification types (`internal_agent.action_result` + the 5 unused `thread.*`) from `NOTIFICATION_TYPES` if nothing emits them (grep to confirm).
 
@@ -707,7 +805,7 @@ For the given `sourceType`, load open hub items; for each, look up the source ro
 ## Task 11: Test-coverage sweep + contract regression
 
 - [ ] **Step 1:** Confirm the integration suite covers: idempotent emit, redaction-before-persist, RBAC query (founder/lead/member + cross-department negative), 409 on stale action, audit-before-side-effect ordering, idempotency replay, sweeper heal (missed emit + dead source), per-user state upsert, counts.
-- [ ] **Step 2:** Add a contract regression unit test asserting the `hubActionEnvelope` shape + `HUB_SEMANTIC_TO_LANE` completeness stays in sync with the DB `semanticType` values.
+- [ ] **Step 2:** Add a contract regression unit test asserting: the `HubActionEnvelope` shape; `HUB_SEMANTIC_TO_LANE` AND `HUB_AUTHORITY_BY_TYPE` are both total over `HUB_SEMANTIC_TYPES` (every type has a lane + an authority); and a **W5-reservation guard** that no W1a emit site passes `semanticType: "agent_runtime_decision"` (reserve-don't-build, §14/§18).
 - [ ] **Step 3:** Run the FULL server suite locally (`pnpm -C server exec vitest run`) → expect 0 failures (integration files skip on Windows). On Linux CI the integration tests are the real gate (Issue #114).
 - [ ] **Step 4:** Final commit — `test(hub): W1a data-core coverage sweep (W1a Task 11)`.
 
@@ -722,6 +820,7 @@ For the given `sourceType`, load open hub items; for each, look up the source ro
 
 ## Self-review checklist (run before execution)
 
-- [ ] Every §18 day-1 requirement present: RBAC at emit+query+action ✓ (Tasks 5/6/9), redact-before-persist ✓ (Task 5), immutable audit before side-effect ✓ (Task 7), idempotent emit + reconciliation sweeper ✓ (Tasks 5/8), optimistic concurrency 409 ✓ (Task 7), sparse seat-keyed user state ✓ (Task 2).
+- [ ] Every §18 day-1 requirement present: RBAC at emit+query+action ✓ (Tasks 5/6/9), redact-before-persist ✓ (Task 5), immutable+durable audit before side-effect ✓ (Tasks 3/7), idempotent emit + reconciliation sweeper ✓ (Tasks 5/8), optimistic concurrency 409 ✓ (Tasks 7/8), sparse seat-keyed user state ✓ (Task 2).
+- [ ] Review (rev-2) fixes present: owner ALWAYS resolved (never `""`/null), via W6 first-human-ancestor for agent sources ✓ (Task 5 + decision 7); Authority gate on the action path, "Accountable"=Authority-holder ✓ (Tasks 0/7 + decision 8); audit durable (no cascade) + dedicated idempotency column ✓ (Task 3 + decision 9); side-effects after commit ✓ (Task 7 + decision 10); `executor: Db = db` + `as unknown as Db` everywhere a tx threads ✓ (decision 11); open-only upsert gate ✓ (Task 5); explicit legacy backfill mapping + `legacy_other` sink ✓ (Tasks 0/4); 5 emit sites incl `issues.ts` ✓ (Task 10); headline "Waiting on you" sources = W1b (noted) ✓.
 - [ ] Type names consistent across tasks: `hubItems`, `hubItemUserState`, `hubAudit`, `hubItemsService`, `emit`/`query`/`recordAndAct`/`reconcile`/`counts`, `HUB_SEMANTIC_TYPES`/`laneForSemanticType`.
 - [ ] No UI in scope (W1b). No realtime (W2-L3). W5 type reserved only.
