@@ -22,20 +22,18 @@ export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
-  // Phase 1 Phase E batch 2 (T20): OnboardingWizard now collects Commander +
-  // Crew adapter picks at company-create time. Both are optional — when
-  // omitted the server falls back to legacy defaults (empty objects).
-  // Schema contracts: see CommanderAdapterConfigSchema / CrewAdapterConfigSchema
-  // in packages/shared/src/api/threads-contract.ts.
+  // The OnboardingWizard no longer sends Commander/Crew adapter picks at
+  // company-create time. The live internal_agent_config fields (Commander
+  // cliTool/model + crew provider/crewModel) are written by a follow-up
+  // internalAgentApi.updateConfig PATCH after the company is created — see
+  // OnboardingWizard.handleStep4Next. The server's create validator and the
+  // legacy DB columns are kept for rollback safety, but the UI create flow no
+  // longer populates commanderAdapterConfig / crewAdapterConfig, so they are
+  // dropped from this payload type.
   create: (data: {
     name: string;
     description?: string | null;
     budgetMonthlyCents?: number;
-    commanderAdapterConfig?: { adapter: string; model: string };
-    crewAdapterConfig?: {
-      default?: { adapter: string; model: string };
-      perAgent?: Record<string, { adapter: string; model: string }>;
-    };
   }) => api.post<Company>("/companies", data),
   update: (
     companyId: string,
