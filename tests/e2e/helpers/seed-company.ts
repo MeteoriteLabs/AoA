@@ -65,9 +65,15 @@ export async function cleanupTestCompanies(
  */
 export async function openOnboardingWizard(page: Page): Promise<void> {
   await page.goto("/");
-  const createCompanyButton = page.getByRole("button", {
-    name: /^create organization$/i,
-  });
+  // The empty-state "Create organization" CTA (LobbyEmptyState) only renders
+  // when ZERO companies exist; once any company is present — e.g. left behind by
+  // an earlier spec in the same run — the sole entry point is the sidebar's
+  // always-present "New organization" button (LobbySidebar). Match EITHER so this
+  // helper is robust regardless of how many companies prior specs accumulated.
+  // `.first()` guards the empty-state case where both buttons render at once.
+  const createCompanyButton = page
+    .getByRole("button", { name: /^(create|new) organization$/i })
+    .first();
   await expect(createCompanyButton).toBeVisible({ timeout: 30_000 });
   await createCompanyButton.click();
 }
