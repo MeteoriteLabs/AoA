@@ -19,10 +19,18 @@ import { COMMANDER_MAX_THINKING_TOKENS } from "./thinking-config.js";
 import {
   resolveCodexChatModel,
   COMMANDER_CODEX_REASONING_EFFORT,
+  SAFE_MODEL_RE,
 } from "./codex-model.js";
 import { logger } from "../../middleware/logger.js";
 
 const require = createRequire(import.meta.url);
+
+/** claude CLI: pass --model only for a shell-safe non-empty model; else nothing,
+ *  so the default path's argv stays byte-identical. */
+export function claudeModelArgs(model: string | null | undefined): string[] {
+  const m = model?.trim() ?? "";
+  return m && SAFE_MODEL_RE.test(m) ? ["--model", m] : [];
+}
 
 function normalizeCliContextScope(
   scope: ChatInput["contextScope"] | undefined,
@@ -376,6 +384,10 @@ export async function resolveCliInvocation(
   systemSplitArgs?: SystemSplitArgs,
   vendorCliBypassEnabled = true,
   codexModel?: string | null,
+  // claude_cli Commander model (internal_agent_config.model). Emitted as a
+  // shell-safe `--model <m>` only when set; null/empty keeps the argv
+  // byte-identical to the pre-model default path. Threaded from chat().
+  commanderModel?: string | null,
   // RAW (unescaped) user prompt for the claude plain (non-systemSplit) path.
   // Threaded from the caller (params.content). claude delivers the prompt over
   // stdin so it must be the raw text, never the cmd-escaped safeContent.
@@ -431,6 +443,7 @@ export async function resolveCliInvocation(
           args: [
             "--mcp-config", configPath,
             "--system-prompt-file", safeSystemPromptPath,
+            ...claudeModelArgs(commanderModel),
             ...claudeBypassArgs,
             "--print",
             "--output-format", "stream-json",
@@ -448,6 +461,7 @@ export async function resolveCliInvocation(
         binary: "claude",
         args: [
           "--mcp-config", configPath,
+          ...claudeModelArgs(commanderModel),
           ...claudeBypassArgs,
           "--print",
           "--output-format", "stream-json",
@@ -712,6 +726,7 @@ export function cliModeService(db: Db) {
             systemSplitArgs,
             config.vendorCliBypassEnabled ?? true,
             undefined,        // codexModel (codex routes through runCodexTurn, not here)
+            config.model,     // commanderModel — shell-safe --model for claude_cli
             params.content,   // raw prompt for claude's stdin (plain-path fallback)
           );
           if (!invocation) {
