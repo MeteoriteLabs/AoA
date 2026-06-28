@@ -460,13 +460,28 @@ export function agentService(db: Db) {
       // D7: Resolve parent fields from either parentType/parentId or reportsTo
       const parentType = (data.parentType ?? (data.reportsTo ? "agent" : null)) as EntityType | null;
       const parentId = data.parentId ?? data.reportsTo ?? null;
-      const reportsTo = data.reportsTo ?? (parentType === "agent" ? parentId : null);
+
+      // W6: human-at-top. An ORG agent with no parent auto-parents to the founder so
+      // the chain always tops at a human. `kind` defaults to "org" at the DB but is
+      // usually ABSENT from `data` (mirror list()'s `options?.kind ?? "org"`): only the
+      // explicit non-org kinds (aoa crew, platform) are exempt.
+      let resolvedParentType = parentType;
+      let resolvedParentId = parentId;
+      if (data.kind !== "aoa" && data.kind !== "platform" && !resolvedParentId) {
+        const founderId = await orgHierarchy.getFounderUserId(companyId);
+        if (!founderId) {
+          throw unprocessable("Cannot create an org agent: no human founder exists for this company");
+        }
+        resolvedParentType = "user";
+        resolvedParentId = founderId;
+      }
+      const resolvedReportsTo = resolvedParentType === "agent" ? resolvedParentId : null;
 
       // CXO parent constraint: CXOs cannot report to another agent.
-      assertCxoParentConstraint(data.role, parentType);
+      assertCxoParentConstraint(data.role, resolvedParentType);
 
-      if (parentType && parentId) {
-        await orgHierarchy.ensureParent(companyId, parentType, parentId);
+      if (resolvedParentType && resolvedParentId) {
+        await orgHierarchy.ensureParent(companyId, resolvedParentType, resolvedParentId);
         // Bug fix: assertNoCycle was missing from create() — add cycle detection
         // Note: for a new agent (no id yet), cycles are not possible since no
         // other node can point to it. But we validate the parent chain is not broken.
@@ -483,9 +498,9 @@ export function agentService(db: Db) {
           companyId,
           role,
           permissions: normalizedPermissions,
-          parentType,
-          parentId,
-          reportsTo: reportsTo as string | null,
+          parentType: resolvedParentType,
+          parentId: resolvedParentId,
+          reportsTo: resolvedReportsTo as string | null,
         })
         .returning()
         .then((rows) => rows[0]);

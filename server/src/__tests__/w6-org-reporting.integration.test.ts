@@ -82,4 +82,19 @@ describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", ()
     const workerId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'agent', ${leadId}) RETURNING id`));
     expect(await orgHierarchyService(db).getFirstHumanAncestor(companyId, "agent", workerId)).toBe(founderId);
   });
+
+  it("a rootless org agent (no kind field) auto-parents to the founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const agent = await agentService(db).create(companyId, { name: "Atlas", role: "cxo" });
+    expect(agent.parentType).toBe("user");
+    expect(agent.parentId).toBe(founderId);
+  });
+
+  it("an aoa crew agent is NOT force-parented", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId } = await seedCompanyWithFounder();
+    const crew = await agentService(db).create(companyId, { name: "X", kind: "aoa", role: "general" });
+    expect(crew.parentId).toBeNull();
+  });
 });
