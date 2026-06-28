@@ -192,17 +192,29 @@ test.describe("provider-switching: agent config save-side", () => {
       .click();
 
     // Open the model picker. The trigger shows the current model value
-    // ("gpt-5.5"). Click it, filter to the codex-incompatible model, choose it.
-    await page
-      .getByRole("button", { name: "gpt-5.5", exact: true })
-      .click();
+    // ("gpt-5.5"). Gate each interaction on the target being actionable: the
+    // trigger only renders once the "permissions" section is active, so this also
+    // confirms the section switch took effect. Without the gate a bare .click()
+    // auto-waits against the whole 60s test budget if a stray re-render strands
+    // the form on the default section (mirrors the sibling "defaults to gpt-5.5"
+    // test). The underlying mount-time churn is fixed in AgentConfigForm, but the
+    // gate keeps the test legible + fast-failing if any future re-render appears.
+    const trigger = page.getByRole("button", { name: "gpt-5.5", exact: true });
+    await expect(trigger).toBeVisible({ timeout: 10_000 });
+    await trigger.click();
+
     await page.getByPlaceholder("Search models...").fill("gpt-5.3-codex");
-    await page
-      .getByRole("button", { name: "gpt-5.3-codex", exact: true })
-      .click();
+    const codexOption = page.getByRole("button", {
+      name: "gpt-5.3-codex",
+      exact: true,
+    });
+    await expect(codexOption).toBeVisible({ timeout: 10_000 });
+    await codexOption.click();
 
     // Save (the floating action bar appears once the config is dirty).
-    await page.getByRole("button", { name: "Save" }).click();
+    const saveButton = page.getByRole("button", { name: "Save" });
+    await expect(saveButton).toBeVisible({ timeout: 10_000 });
+    await saveButton.click();
 
     // Server-generated warning: model swapped to the codex-compatible default.
     // Assumes the CI runner has no shared Codex login configured, so the
