@@ -66,6 +66,20 @@ describe("ensureCommanderAgent", () => {
     // role must be preserved
     expect(agentRcUpdate.runtimeConfig.aoa.role).toBe("lead");
   });
+  it("Task 5b: Commander row follows cliTool, NOT crew provider (claude_cli + provider=openai → claude_local)", async () => {
+    // resolveCommanderAdapterForCompany runs real against this mock db and selects
+    // cliTool + model. cliTool='claude_cli' (Commander's CLI) must win even though
+    // the crew provider is 'openai' — proving Commander follows its own CLI.
+    const av: any[] = [];
+    const db: any = {
+      select: () => sel([{ cliTool: "claude_cli", provider: "openai", model: null }]),
+      insert: () => ({ values: (v: any) => { av.push(v); return { onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ id: "cmd-new" }]) }) }; } }),
+      update: () => ({ set: () => ({ where: () => Promise.resolve([]) }) }),
+    };
+    expect(await ensureCommanderAgent(db, "co-1")).toBe("cmd-new");
+    expect(av[0].adapterType).toBe("claude_local");
+    expect(av[0].adapterType).not.toBe("codex_local");
+  });
   it("seeds the commander instruction bundle and persists the linked adapterConfig", async () => {
     const setCalls: unknown[] = [];
     const db = {

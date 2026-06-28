@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig } from "@armyofagents/db";
-import { readEnvBindingValue } from "@armyofagents/shared";
+import { readEnvBindingValue, cliToolToProvider } from "@armyofagents/shared";
 import { DEFAULT_CODEX_CHAT_MODEL, isCodexCompatibleModel, isShellSafeModel, SAFE_MODEL_RE } from "../codex-model.js";
 
 /**
@@ -109,6 +109,29 @@ export async function resolveCrewAdapterForCompany(db: Db, companyId: string): P
     .where(eq(internalAgentConfig.companyId, companyId))
     .limit(1);
   return resolveCrewAdapterFor(rows[0]?.provider, rows[0]?.crewModel);
+}
+
+/**
+ * Resolve the COMMANDER agent row's adapter from its cliTool + model — NOT the
+ * crew provider. Reuses resolveCrewAdapterFor (so the per-adapter bypass flags and
+ * model validation are identical to the crew), keyed on the Commander surface via
+ * cliToolToProvider. So Commander's non-chat runs use the CLI the founder picked
+ * for Commander, independent of the crew provider.
+ */
+export function resolveCommanderAdapterFor(
+  cliTool: string | null | undefined,
+  modelOverride?: string | null,
+): CrewAdapter {
+  return resolveCrewAdapterFor(cliToolToProvider(cliTool), modelOverride);
+}
+
+export async function resolveCommanderAdapterForCompany(db: Db, companyId: string): Promise<CrewAdapter> {
+  const rows = await db
+    .select({ cliTool: internalAgentConfig.cliTool, model: internalAgentConfig.model })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .limit(1);
+  return resolveCommanderAdapterFor(rows[0]?.cliTool, rows[0]?.model);
 }
 
 /**
