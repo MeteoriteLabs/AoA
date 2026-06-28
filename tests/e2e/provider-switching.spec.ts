@@ -39,16 +39,13 @@ async function seedCompanyViaWizard(
   } = {},
 ): Promise<{ companyId: string; issuePrefix: string; companyName: string }> {
   // Defaults preserve the original hardcoded picks so the existing tests keep
-  // passing unchanged: Commander = anthropic, Crew = openai.
+  // passing unchanged: Commander = anthropic + "claude-sonnet-4-6", Crew = openai.
   //
-  // NOTE: the Commander model defaults to a concrete value (not ""). The wizard's
-  // Step-4 config PATCH sends `model: commanderModel.trim() || null`, and the
-  // route-local updateConfigSchema types `model: z.string().optional()` — NOT
-  // nullable — so a blank Commander model would send `model: null` and the PATCH
-  // 400s ("Validation error"), stalling the wizard before Step 5. The original
-  // hardcoded helper filled "claude-sonnet-4-6", so keeping that as the default
-  // is what actually preserves the existing behavior. (crewModel is nullable in
-  // the schema, so it may default to "" → null safely.)
+  // NOTE: the route-local updateConfigSchema.model is now NULLABLE (a blank
+  // Commander model → `model: null` is accepted; the CLI default is used). The
+  // concrete "claude-sonnet-4-6" default here is only to reproduce the original
+  // helper's fixtures exactly — pass `commanderModel: ""` to exercise the blank
+  // (provider-default) path.
   const commanderProvider = opts.commanderProvider ?? "anthropic";
   const crewProvider = opts.crewProvider ?? "openai";
   const commanderModel = opts.commanderModel ?? "claude-sonnet-4-6";
