@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig } from "@armyofagents/db";
 import { readEnvBindingValue } from "@armyofagents/shared";
-import { DEFAULT_CODEX_CHAT_MODEL, isCodexCompatibleModel } from "../codex-model.js";
+import { DEFAULT_CODEX_CHAT_MODEL, isCodexCompatibleModel, isShellSafeModel, SAFE_MODEL_RE } from "../codex-model.js";
 
 /**
  * Resolves the right CLI adapter for AoA crew agents based on the company's
@@ -28,13 +28,17 @@ export interface CrewAdapter {
   adapterConfig: Record<string, unknown>;
 }
 
-export function resolveCrewAdapterFor(provider: string | null | undefined): CrewAdapter {
+export function resolveCrewAdapterFor(
+  provider: string | null | undefined,
+  modelOverride?: string | null,
+): CrewAdapter {
+  const ov = modelOverride?.trim() || "";
   switch (provider) {
     case "anthropic":
       return {
         adapterType: "claude_local",
         adapterConfig: {
-          model: "claude-sonnet-4-5-20250929",
+          model: SAFE_MODEL_RE.test(ov) ? ov : "claude-sonnet-4-5-20250929",
           // UAT iteration-2 root cause (P0): claude_local CLI in --print
           // (non-interactive) mode hits a permission gate on every MCP tool
           // call. With no TTY to answer the prompt, claude silently skips
@@ -53,7 +57,7 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
       return {
         adapterType: "gemini_local",
         adapterConfig: {
-          model: "gemini-2.5-pro",
+          model: SAFE_MODEL_RE.test(ov) ? ov : "gemini-2.5-pro",
         },
       };
     // T2.0: opencode is its own first-class CLI (uses OpenAI under the hood
@@ -68,7 +72,10 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
           // opencode uses a `provider/model` slash id. gpt-5.3-codex was a bare
           // codex id (API-key-only) that 400s on a ChatGPT login — replaced
           // with the correct slash format for subscription accounts.
-          model: "openai/gpt-5.2-codex",
+          //
+          // opencode ids are slash-format `provider/model`; require a slash so a
+          // bare codex id can't reach opencode. isShellSafeModel validates each segment.
+          model: ov.includes("/") && isShellSafeModel(ov) ? ov : "openai/gpt-5.2-codex",
         },
       };
     case "openai":
@@ -79,7 +86,11 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
           // gpt-5.3-codex was an API-key-only model that 400s on ChatGPT
           // subscription logins. Use DEFAULT_CODEX_CHAT_MODEL (gpt-5.5) which
           // is verified-safe for subscription accounts (Test C in codex-model.ts).
-          model: DEFAULT_CODEX_CHAT_MODEL,
+          //
+          // codex models must pass isCodexCompatibleModel (rejects *-codex ids and
+          // non-OpenAI-family models; gpt-4o IS accepted). At dispatch the value is
+          // re-validated by resolveModel — see the note after this task.
+          model: isCodexCompatibleModel(ov) ? ov : DEFAULT_CODEX_CHAT_MODEL,
           dangerouslyBypassApprovalsAndSandbox: true,
         },
       };
@@ -93,11 +104,11 @@ export function resolveCrewAdapterFor(provider: string | null | undefined): Crew
  */
 export async function resolveCrewAdapterForCompany(db: Db, companyId: string): Promise<CrewAdapter> {
   const rows = await db
-    .select({ provider: internalAgentConfig.provider })
+    .select({ provider: internalAgentConfig.provider, crewModel: internalAgentConfig.crewModel })
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId))
     .limit(1);
-  return resolveCrewAdapterFor(rows[0]?.provider);
+  return resolveCrewAdapterFor(rows[0]?.provider, rows[0]?.crewModel);
 }
 
 /**
