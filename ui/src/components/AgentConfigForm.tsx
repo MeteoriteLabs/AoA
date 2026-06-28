@@ -261,10 +261,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [overlay, setOverlay] = useState<Overlay>(emptyOverlay);
   const agentRef = useRef<Agent | null>(null);
 
-  // Clear overlay when agent data refreshes (after save)
+  // Clear the dirty overlay when agent data refreshes AFTER A SAVE (the refetch
+  // returns the saved row, so the now-saved draft should drop). Guard on
+  // isOverlayDirty: a fresh page load triggers an on-mount refetch that changes
+  // props.agent's identity while the overlay is still empty — clearing it then
+  // allocates a NEW empty overlay object, forcing a re-render burst (this effect
+  // → the action-callback effect → parent state setters → parent re-render) that
+  // intermittently detaches the config form mid-interaction. That churn was the
+  // root cause of the provider-switching e2e flake (a section/model-picker click
+  // landing on a re-rendering node got lost, stranding the form on the default
+  // Identity section). Only clearing when actually dirty preserves the post-save
+  // behavior (the overlay holds the user's edits then) with no needless churn.
   useEffect(() => {
     if (!isCreate) {
-      if (agentRef.current !== null && props.agent !== agentRef.current) {
+      if (
+        agentRef.current !== null &&
+        props.agent !== agentRef.current &&
+        isOverlayDirty(overlay)
+      ) {
         setOverlay({ ...emptyOverlay });
       }
       agentRef.current = props.agent;
