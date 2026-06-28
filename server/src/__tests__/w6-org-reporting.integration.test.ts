@@ -30,6 +30,8 @@ import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { orgHierarchyService } from "../services/org-hierarchy.js";
 import { agentService } from "../services/agents.js";
 import { accessService } from "../services/access.js";
+import { companyPortabilityService } from "../services/company-portability.js";
+import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
 type Pg = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 let pg: Pg | null = null; let dataDir = ""; let db: Db; let setupError: unknown = null;
@@ -150,6 +152,80 @@ describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", ()
     const count = await agentService(db).backfillHumanAtTop(companyId);
     expect(count).toBeGreaterThanOrEqual(1);
     const res = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${orphanId}`);
+    const a = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(a.parent_type).toBe("user");
+    expect(a.parent_id).toBe(founderId);
+  });
+
+  it("importBundle into a NEW company seeds a real operator + roots a rootless org agent at the founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // Minimal valid bundle: one company + one rootless org agent (reportsToSlug
+    // null, no parentType/parentIdRef). Mirrors the inline-source shape used by
+    // company-portability-env-inputs.test.ts so the manifest schema validates.
+    const manifest: CompanyPortabilityManifest = {
+      schemaVersion: 2,
+      generatedAt: "2026-06-28T00:00:00.000Z",
+      source: null,
+      includes: { company: true, agents: true, projects: false, issues: false, skills: false, routines: false, envInputs: false },
+      company: {
+        path: "COMPANY.md",
+        name: "Imported W6 Co",
+        description: null,
+        brandColor: null,
+        requireBoardApprovalForNewAgents: true,
+      },
+      agents: [
+        {
+          slug: "atlas",
+          name: "Atlas",
+          path: "agents/atlas/AGENTS.md",
+          role: "Engineer",
+          title: null,
+          icon: null,
+          capabilities: null,
+          reportsToSlug: null,
+          adapterType: "claude_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+          budgetMonthlyCents: 0,
+          metadata: null,
+        },
+      ],
+      requiredSecrets: [],
+    };
+
+    // actorUserId = null exercises the genuine bug: company-create route operator
+    // seeding is bypassed, so without the fix the company would have no real human
+    // founder and the restored org agent would top out at a non-user principal.
+    const result = await companyPortabilityService(db).importBundle(
+      {
+        source: { type: "inline", manifest, files: {
+          "COMPANY.md": "---\nkind: company\nname: Imported W6 Co\n---\n",
+          "agents/atlas/AGENTS.md": "---\nname: Atlas\nslug: atlas\n---\nDo the thing.\n",
+        } },
+        target: { mode: "new_company", newCompanyName: "Imported W6 Co" },
+        include: { company: true, agents: true },
+      },
+      null,
+    );
+
+    const companyId = result.company.id;
+    expect(result.company.action).toBe("created");
+
+    // (a) A real human founder now exists for the imported company.
+    const founderId = await orgHierarchyService(db).getFounderUserId(companyId);
+    expect(founderId).toBeTruthy();
+    // The founder is backed by a real auth-user row (not the synthetic "board" actor).
+    const founderUserRows = await db.execute(sql`SELECT id FROM "user" WHERE id = ${founderId}`);
+    const founderUser = (Array.isArray(founderUserRows) ? founderUserRows : (founderUserRows as { rows: unknown[] }).rows);
+    expect(founderUser.length).toBe(1);
+
+    // (b) The imported (rootless) org agent now reports to that founder.
+    const createdAgent = result.agents.find((a) => a.slug === "atlas");
+    expect(createdAgent?.id).toBeTruthy();
+    const res = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${createdAgent!.id}`);
     const a = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
     expect(a.parent_type).toBe("user");
     expect(a.parent_id).toBe(founderId);

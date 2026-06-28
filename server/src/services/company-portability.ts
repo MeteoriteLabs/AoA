@@ -1897,6 +1897,18 @@ export function companyPortabilityService(db: Db) {
 
     if (!targetCompany) throw notFound("Target company not found");
 
+    // W6 human-at-top invariant. Import builds the company via the service layer,
+    // bypassing the company-create route's operator seeding — so a freshly created
+    // company has no real human founder. If we restored agents now, agentService
+    // .create() would either throw ("no human founder exists") or auto-parent them
+    // to a non-user owner principal (e.g. the synthetic "board" actor when
+    // actorUserId is null). Seed a real operator FIRST so agent restoration parents
+    // every org agent to a genuine human. Idempotent: returns the existing founder
+    // when one is already present, so it is safe for the existing-company path too.
+    if (include.agents) {
+      await access.ensureRealOperator(targetCompany.id, actorUserId);
+    }
+
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
     const importedSlugToAgentId = new Map<string, string>();
     const existingSlugToAgentId = new Map<string, string>();
@@ -3011,6 +3023,13 @@ export function companyPortabilityService(db: Db) {
       ...(sourceManifest.requiredSecrets ?? []),
       ...envSecretRequirements,
     ]);
+
+    // W6 human-at-top invariant (safety net): re-parent any org agent that still
+    // landed rootless up to the founder. ensureRealOperator already ran above
+    // (before agent restoration), so a founder is guaranteed to exist here.
+    if (include.agents) {
+      await agents.backfillHumanAtTop(targetCompany.id);
+    }
 
     return {
       company: {
