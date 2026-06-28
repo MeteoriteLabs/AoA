@@ -19,6 +19,8 @@ import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
 import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
+import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
+import { logger } from "../middleware/logger.js";
 import { companySkillService } from "../services/company-skills.js";
 import {
   createToolRegistry,
@@ -97,6 +99,39 @@ const toolPermissionSchema = z.object({
 });
 
 const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
+
+// ── Agent re-ensure on config change ──────────────────────────────────────────
+
+interface AgentAdapterFields {
+  provider: string | null;
+  crewModel: string | null;
+  cliTool: string | null;
+  model: string | null;
+}
+
+/**
+ * Re-seed the AoA agents after a config PATCH iff any adapter-affecting field
+ * changed and they aren't marketplace-managed. Crew rows follow provider/crewModel;
+ * the Commander row follows cliTool/model (Task 5b). Running the full
+ * ensureAllCrewAgents on any change is safe — each ensure resolves from its own
+ * inputs and shouldRewriteCrewAdapter is a no-op when the adapter already matches,
+ * so a crew-only change leaves Commander untouched and vice-versa.
+ */
+export async function maybeReensureAgentsOnConfigChange(
+  db: Db,
+  companyId: string,
+  before: AgentAdapterFields,
+  after: AgentAdapterFields,
+): Promise<void> {
+  const changed =
+    before.provider !== after.provider ||
+    before.crewModel !== after.crewModel ||
+    before.cliTool !== after.cliTool ||
+    before.model !== after.model;
+  if (!changed) return;
+  if (await isCrewMarketplaceManaged(db, companyId)) return;
+  await ensureAllCrewAgents(db, companyId);
+}
 
 // ── Route factory ────────────────────────────────────────────────────────────
 
@@ -804,6 +839,18 @@ export function internalAgentRoutes(db: Db) {
         throw badRequest("autonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
       }
 
+      // Read the adapter-affecting fields BEFORE the update so we can detect a change.
+      const [prior] = await db
+        .select({
+          provider: internalAgentConfig.provider,
+          crewModel: internalAgentConfig.crewModel,
+          cliTool: internalAgentConfig.cliTool,
+          model: internalAgentConfig.model,
+        })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId))
+        .limit(1);
+
       const [updated] = await db
         .update(internalAgentConfig)
         .set({ ...req.body, updatedAt: new Date() })
@@ -812,6 +859,21 @@ export function internalAgentRoutes(db: Db) {
 
       if (!updated) {
         throw notFound("Internal agent config not found");
+      }
+
+      // Migrate existing agent rows to the newly-resolved adapter when an
+      // adapter-affecting field changed (crew: provider/crewModel; Commander:
+      // cliTool/model). No-op otherwise. Best-effort: a re-seed failure must not
+      // fail the settings save.
+      try {
+        await maybeReensureAgentsOnConfigChange(
+          db,
+          companyId,
+          { provider: prior?.provider ?? null, crewModel: prior?.crewModel ?? null, cliTool: prior?.cliTool ?? null, model: prior?.model ?? null },
+          { provider: updated.provider ?? null, crewModel: updated.crewModel ?? null, cliTool: updated.cliTool ?? null, model: updated.model ?? null },
+        );
+      } catch (err) {
+        logger.warn({ err, companyId }, "agent re-ensure after config PATCH failed");
       }
 
       res.json(updated);
