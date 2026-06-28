@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { cleanupTestCompanies } from "./helpers/seed-company";
+import {
+  cleanupTestCompanies,
+  seedCompanyViaWizard,
+} from "./helpers/seed-company";
 
 /**
  * provider-switching.spec.ts  (Unit 11 — Part C, Layer 3 e2e)
@@ -21,111 +24,6 @@ import { cleanupTestCompanies } from "./helpers/seed-company";
  * Agents are seeded directly via the API because the wizard's Step 5 needs a
  * real local adapter CLI to advance.
  */
-
-/**
- * Drive the OnboardingWizard through Step 4 (the step that POSTs /companies),
- * then resolve the created company's { id, issuePrefix } from /api/companies.
- *
- * Mirrors tests/e2e/onboarding-thread-pipeline.spec.ts lines 42-110 verbatim.
- */
-async function seedCompanyViaWizard(
-  page: Page,
-  request: APIRequestContext,
-  opts: {
-    commanderProvider?: string;
-    commanderModel?: string;
-    crewProvider?: string;
-    crewModel?: string;
-  } = {},
-): Promise<{ companyId: string; issuePrefix: string; companyName: string }> {
-  // Defaults preserve the original hardcoded picks so the existing tests keep
-  // passing unchanged: Commander = anthropic + "claude-sonnet-4-6", Crew = openai.
-  //
-  // NOTE: the route-local updateConfigSchema.model is now NULLABLE (a blank
-  // Commander model → `model: null` is accepted; the CLI default is used). The
-  // concrete "claude-sonnet-4-6" default here is only to reproduce the original
-  // helper's fixtures exactly — pass `commanderModel: ""` to exercise the blank
-  // (provider-default) path.
-  const commanderProvider = opts.commanderProvider ?? "anthropic";
-  const crewProvider = opts.crewProvider ?? "openai";
-  const commanderModel = opts.commanderModel ?? "claude-sonnet-4-6";
-  const crewModel = opts.crewModel ?? "";
-
-  const companyName = `E2E-PS-${Date.now()}`;
-
-  await page.goto("/");
-
-  // ── Lobby empty state opens the wizard ──
-  const createCompanyButton = page.getByRole("button", {
-    name: /^create organization$/i,
-  });
-  await expect(createCompanyButton).toBeVisible({ timeout: 10_000 });
-  await createCompanyButton.click();
-
-  // ── Step 1: company name ──
-  await expect(
-    page.locator("h3", { hasText: "Name your company" }),
-  ).toBeVisible({ timeout: 10_000 });
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
-  await page.getByTestId("step1-next").click();
-
-  // ── Step 2: workspace root (accept the auto-suggested path; fall back) ──
-  await expect(
-    page.locator("h3", { hasText: "Set up workspace root" }),
-  ).toBeVisible({ timeout: 10_000 });
-  const rootInput = page.locator(
-    'input[placeholder="/path/to/company/workspace"]',
-  );
-  await expect(rootInput).toBeVisible({ timeout: 5_000 });
-  if ((await rootInput.inputValue()).trim() === "") {
-    await rootInput.fill("/tmp/aoa-e2e-ps");
-  }
-  await page.getByTestId("step2-next").click();
-
-  // ── Step 3: Commander pick (anthropic + openai only; model optional) ──
-  await expect(
-    page.locator("h3", { hasText: "Choose your Commander" }),
-  ).toBeVisible({ timeout: 10_000 });
-  await page
-    .getByTestId("commander-provider")
-    .selectOption({ value: commanderProvider });
-  await page.getByTestId("commander-model").fill(commanderModel);
-  await page.getByTestId("step3-next").click();
-
-  // ── Step 4: Crew pick (all 4 providers; this step POSTs /companies) ──
-  await expect(
-    page.locator("h3", { hasText: "Choose your Crew" }),
-  ).toBeVisible({ timeout: 10_000 });
-  await page
-    .getByTestId("crew-provider")
-    .selectOption({ value: crewProvider });
-  await page.getByTestId("crew-model").fill(crewModel);
-  await page.getByTestId("step4-next").click();
-
-  // ── Wait for the company to land — Step 5 heading is the signal ──
-  await expect(
-    page.locator("h3", { hasText: "Create your first agent" }),
-  ).toBeVisible({ timeout: 15_000 });
-
-  // ── Resolve the created company from the API ──
-  const companiesRes = await request.get("/api/companies");
-  expect(companiesRes.ok()).toBe(true);
-  const companies = (await companiesRes.json()) as Array<{
-    id: string;
-    name: string;
-    issuePrefix: string;
-  }>;
-  const company = companies.find((c) => c.name === companyName);
-  expect(company).toBeTruthy();
-  expect(company?.id).toBeTruthy();
-  expect(company?.issuePrefix).toBeTruthy();
-
-  return {
-    companyId: company!.id,
-    issuePrefix: company!.issuePrefix,
-    companyName,
-  };
-}
 
 /**
  * Seed a codex_local agent via the API. In local_trusted mode the synthetic
@@ -218,7 +116,9 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-PS-${Date.now()}`,
+    });
     // No explicit model on create -> the server injects the codex default
     // (DEFAULT_CODEX_CHAT_MODEL = "gpt-5.5") via applyCreateDefaultsByAdapterType,
     // so the stored config persists model="gpt-5.5" and the picker reflects it.
@@ -250,7 +150,9 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-PS-${Date.now()}`,
+    });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
@@ -299,7 +201,9 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId } = await seedCompanyViaWizard(page, request);
+    const { companyId } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-PS-${Date.now()}`,
+    });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
 
     const res = await request.patch(
@@ -310,7 +214,9 @@ test.describe("provider-switching: agent config save-side", () => {
   });
 
   test("shell-unsafe model is rejected", async ({ page, request }) => {
-    const { companyId } = await seedCompanyViaWizard(page, request);
+    const { companyId } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-PS-${Date.now()}`,
+    });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
 
     // Include adapterType so the shared schema's shell-safety refinement runs
@@ -329,7 +235,9 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request);
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-PS-${Date.now()}`,
+    });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
@@ -358,6 +266,7 @@ test.describe("provider-switching: agent config save-side", () => {
     // Crew = openai at onboarding → ensureAllCrewAgents seeds the AoA crew on
     // the codex_local adapter (resolveCrewAdapterFor("openai")).
     const { companyId } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-PS-${Date.now()}`,
       commanderProvider: "anthropic",
       crewProvider: "openai",
     });
@@ -377,7 +286,11 @@ test.describe("provider-switching: agent config save-side", () => {
     const { companyId, issuePrefix } = await seedCompanyViaWizard(
       page,
       request,
-      { commanderProvider: "anthropic", crewProvider: "anthropic" },
+      {
+        companyName: `E2E-PS-${Date.now()}`,
+        commanderProvider: "anthropic",
+        crewProvider: "anthropic",
+      },
     );
 
     // Sanity: the crew starts on claude_local.

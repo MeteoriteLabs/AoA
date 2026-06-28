@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openOnboardingWizard } from "./helpers/seed-company";
 
 /**
  * E2E: Onboarding wizard smoke (SKIP_LLM mode).
@@ -46,14 +47,11 @@ test.describe("Onboarding wizard", () => {
   });
 
   test("opens on first run and advances past step 1", async ({ page }) => {
-    await page.goto("/");
-
-    // Lobby empty state (LobbyEmptyState) replaces the previous auto-open onboarding
-    // modal (removed in the lobby redesign). The CTA button is "Create organization"
-    // (AoA uses "organization" in the lobby empty-state — see LobbyEmptyState.tsx).
-    const createCompanyButton = page.getByRole("button", { name: /^create organization$/i });
-    await expect(createCompanyButton).toBeVisible({ timeout: 10_000 });
-    await createCompanyButton.click();
+    // Lobby empty state (LobbyEmptyState) replaces the previous auto-open
+    // onboarding modal (removed in the lobby redesign). The CTA is the
+    // "Create organization" button; openOnboardingWizard owns the cold-path
+    // budget for the FIRST lobby load in a run (see seed-company.ts).
+    await openOnboardingWizard(page);
 
     const step1Heading = page.locator("h3", { hasText: "Name your company" });
     await expect(step1Heading).toBeVisible({ timeout: 10_000 });
