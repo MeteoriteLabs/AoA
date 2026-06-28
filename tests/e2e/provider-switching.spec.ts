@@ -31,7 +31,29 @@ import { cleanupTestCompanies } from "./helpers/seed-company";
 async function seedCompanyViaWizard(
   page: Page,
   request: APIRequestContext,
+  opts: {
+    commanderProvider?: string;
+    commanderModel?: string;
+    crewProvider?: string;
+    crewModel?: string;
+  } = {},
 ): Promise<{ companyId: string; issuePrefix: string; companyName: string }> {
+  // Defaults preserve the original hardcoded picks so the existing tests keep
+  // passing unchanged: Commander = anthropic, Crew = openai.
+  //
+  // NOTE: the Commander model defaults to a concrete value (not ""). The wizard's
+  // Step-4 config PATCH sends `model: commanderModel.trim() || null`, and the
+  // route-local updateConfigSchema types `model: z.string().optional()` — NOT
+  // nullable — so a blank Commander model would send `model: null` and the PATCH
+  // 400s ("Validation error"), stalling the wizard before Step 5. The original
+  // hardcoded helper filled "claude-sonnet-4-6", so keeping that as the default
+  // is what actually preserves the existing behavior. (crewModel is nullable in
+  // the schema, so it may default to "" → null safely.)
+  const commanderProvider = opts.commanderProvider ?? "anthropic";
+  const crewProvider = opts.crewProvider ?? "openai";
+  const commanderModel = opts.commanderModel ?? "claude-sonnet-4-6";
+  const crewModel = opts.crewModel ?? "";
+
   const companyName = `E2E-PS-${Date.now()}`;
 
   await page.goto("/");
@@ -63,22 +85,24 @@ async function seedCompanyViaWizard(
   }
   await page.getByTestId("step2-next").click();
 
-  // ── Step 3: Commander pick ──
+  // ── Step 3: Commander pick (anthropic + openai only; model optional) ──
   await expect(
     page.locator("h3", { hasText: "Choose your Commander" }),
   ).toBeVisible({ timeout: 10_000 });
   await page
     .getByTestId("commander-provider")
-    .selectOption({ value: "anthropic" });
-  await page.getByTestId("commander-model").fill("claude-sonnet-4-6");
+    .selectOption({ value: commanderProvider });
+  await page.getByTestId("commander-model").fill(commanderModel);
   await page.getByTestId("step3-next").click();
 
-  // ── Step 4: Crew pick (this is the step that POSTs /companies) ──
+  // ── Step 4: Crew pick (all 4 providers; this step POSTs /companies) ──
   await expect(
     page.locator("h3", { hasText: "Choose your Crew" }),
   ).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("crew-provider").selectOption({ value: "openai" });
-  await page.getByTestId("crew-model").fill("gpt-5.5");
+  await page
+    .getByTestId("crew-provider")
+    .selectOption({ value: crewProvider });
+  await page.getByTestId("crew-model").fill(crewModel);
   await page.getByTestId("step4-next").click();
 
   // ── Wait for the company to land — Step 5 heading is the signal ──
@@ -137,6 +161,55 @@ async function seedCodexAgent(
     throw new Error(`seedCodexAgent returned no id: ${JSON.stringify(agent)}`);
   }
   return agent.id;
+}
+
+/**
+ * Fetch the AoA CREW agents (the worker agents seeded at company create) via the
+ * existing list endpoint. `routes/agents.ts` GET /companies/:id/agents returns a
+ * BARE ARRAY (res.json(result) where result = svc.list(...)), each row carrying
+ * `name` + `adapterType`. We tolerate a `{ agents: [...] }` envelope defensively,
+ * but the real shape today is a bare array. In local_trusted the e2e runs as the
+ * `board` actor, so configs are unredacted.
+ *
+ * IMPORTANT: the kind="aoa" set includes the COMMANDER row, which follows the
+ * Commander cliTool (resolveCommanderAdapterForCompany), NOT the crew provider —
+ * so on an anthropic-commander + openai-crew company Commander is claude_local
+ * while the crew is codex_local. The provider-switch behavior under test is about
+ * the CREW, so we exclude Commander by name here.
+ */
+async function getAoaCrew(
+  request: APIRequestContext,
+  companyId: string,
+): Promise<Array<{ adapterType: string }>> {
+  const res = await request.get(
+    `/api/companies/${companyId}/agents?kind=aoa`,
+  );
+  expect(res.ok()).toBe(true);
+  const body = (await res.json()) as
+    | Array<{ name: string; adapterType: string }>
+    | { agents: Array<{ name: string; adapterType: string }> };
+  const rows = Array.isArray(body) ? body : body.agents;
+  // Commander follows its own cliTool, not the crew provider — exclude it.
+  return rows.filter((a) => a.name !== "Commander");
+}
+
+/**
+ * Navigate to Settings → Commander → "Execution & Model" sub-tab, where the AoA
+ * crew-provider picker lives. The real route is a query-param tab on the company
+ * settings page (`/:prefix/settings?tab=commander&sub=execution`); `execution`
+ * is the default sub-tab. The crew-provider control is a Radix Select whose
+ * trigger carries `aria-label="Crew provider"`, so getByLabel(/crew provider/i)
+ * resolves it. (It is NOT a native <select>, so callers must open the trigger and
+ * click the option rather than using selectOption.)
+ */
+async function openCommanderExecutionTab(
+  page: Page,
+  companyPrefix: string,
+): Promise<void> {
+  await page.goto(
+    `/${companyPrefix}/settings?tab=commander&sub=execution`,
+  );
+  await page.getByLabel(/crew provider/i).waitFor();
 }
 
 test.describe("provider-switching: agent config save-side", () => {
@@ -265,5 +338,65 @@ test.describe("provider-switching: agent config save-side", () => {
     await expect(page.getByTestId("adapter-env-result")).toBeVisible({
       timeout: 60_000,
     });
+  });
+
+  // ── Provider switch reaches the crew (onboarding + Settings) ──
+
+  test("onboarding as OpenAI crew → crew agents are codex_local", async ({
+    page,
+    request,
+  }) => {
+    // Crew = openai at onboarding → ensureAllCrewAgents seeds the AoA crew on
+    // the codex_local adapter (resolveCrewAdapterFor("openai")).
+    const { companyId } = await seedCompanyViaWizard(page, request, {
+      commanderProvider: "anthropic",
+      crewProvider: "openai",
+    });
+
+    const crew = await getAoaCrew(request, companyId);
+    expect(crew.length).toBeGreaterThan(0);
+    expect(crew.every((a) => a.adapterType === "codex_local")).toBe(true);
+  });
+
+  test("Settings crew provider change re-ensures the crew", async ({
+    page,
+    request,
+  }) => {
+    // Onboard with an anthropic crew (claude_local), then flip the crew provider
+    // to OpenCode in Settings → the config PATCH re-runs ensureAllCrewAgents and
+    // migrates the existing crew rows to opencode_local.
+    const { companyId, issuePrefix } = await seedCompanyViaWizard(
+      page,
+      request,
+      { commanderProvider: "anthropic", crewProvider: "anthropic" },
+    );
+
+    // Sanity: the crew starts on claude_local.
+    const before = await getAoaCrew(request, companyId);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every((a) => a.adapterType === "claude_local")).toBe(true);
+
+    await openCommanderExecutionTab(page, issuePrefix);
+
+    // The crew-provider control is a Radix Select (not a native <select>): open
+    // the labelled combobox, then pick the OpenCode option.
+    await page.getByRole("combobox", { name: /crew provider/i }).click();
+    await page.getByRole("option", { name: "OpenCode" }).click();
+
+    // Save the Execution & Model tab (first Save button on the page).
+    await page.getByRole("button", { name: /^save$/i }).first().click();
+
+    await expect
+      .poll(
+        async () => {
+          const crew = await getAoaCrew(request, companyId);
+          return (
+            crew.length > 0 &&
+            crew.every((a) => a.adapterType === "opencode_local")
+          );
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
   });
 });
