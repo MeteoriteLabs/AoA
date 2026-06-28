@@ -30,6 +30,7 @@ import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { orgHierarchyService } from "../services/org-hierarchy.js";
 import { agentService } from "../services/agents.js";
 import { accessService } from "../services/access.js";
+import { teamService } from "../services/team.js";
 import { companyPortabilityService } from "../services/company-portability.js";
 import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
@@ -229,5 +230,104 @@ describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", ()
     const a = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
     expect(a.parent_type).toBe("user");
     expect(a.parent_id).toBe(founderId);
+  });
+
+  // ── Task 8b — caller-level integration (exercise the REAL service methods
+  // that re-parent, not orgHierarchy.reparentChildren directly). These are the
+  // higher-risk paths the eng review flagged as untested. ──
+
+  it("agentService.terminate(leadId) re-parents the lead's reports to the founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const leadId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Lead', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const workerId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'agent', ${leadId}) RETURNING id`));
+
+    // Real terminate path (transaction → orgHierarchy.reparentChildren → soft terminate).
+    await agentService(db).terminate(leadId);
+
+    const res = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${workerId}`);
+    const w = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(w.parent_type).toBe("user");
+    expect(w.parent_id).toBe(founderId);
+  });
+
+  it("agentService.remove(leadId) re-parents the lead's reports to the founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const leadId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Lead', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const workerId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'agent', ${leadId}) RETURNING id`));
+
+    // Real remove path (hard delete + transaction → orgHierarchy.reparentChildren).
+    await agentService(db).remove(leadId);
+
+    const res = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${workerId}`);
+    const w = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(w.parent_type).toBe("user");
+    expect(w.parent_id).toBe(founderId);
+  });
+
+  it("teamService.removeMember(companyId, managerId) re-parents the manager's child agent + child human up to the founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+    // The user-offboarding caller is the higher-risk path: removing a human
+    // manager must NOT leave their reports rootless. We seed a manager that
+    // reports to the founder, with one child agent and one child human, then
+    // call the REAL removeMember and assert both children re-parent to the
+    // founder (the removed manager's own parent).
+    const { companyId, founderId } = await seedCompanyWithFounder();
+
+    // Manager: a team_member user reporting to the founder.
+    const managerId = firstId(await db.execute(sql`INSERT INTO "user" (id, email, name, email_verified, created_at, updated_at) VALUES (gen_random_uuid()::text, 'mgr@w6.test', 'Manager', false, now(), now()) RETURNING id`));
+    await db.execute(sql`INSERT INTO company_memberships (id, company_id, principal_type, principal_id, membership_role, status, parent_type, parent_id, created_at, updated_at) VALUES (gen_random_uuid(), ${companyId}, 'user', ${managerId}, 'member', 'active', 'user', ${founderId}, now(), now())`);
+    await db.execute(sql`INSERT INTO user_roles (id, company_id, user_id, role) VALUES (gen_random_uuid(), ${companyId}, ${managerId}, 'team_member')`);
+
+    // Child agent reporting directly to the manager (parentType='user').
+    const childAgentId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'ManagerBot', 'org', 'idle', 'user', ${managerId}) RETURNING id`));
+
+    // Child human reporting to the manager.
+    const reportId = firstId(await db.execute(sql`INSERT INTO "user" (id, email, name, email_verified, created_at, updated_at) VALUES (gen_random_uuid()::text, 'report@w6.test', 'Report', false, now(), now()) RETURNING id`));
+    await db.execute(sql`INSERT INTO company_memberships (id, company_id, principal_type, principal_id, membership_role, status, parent_type, parent_id, created_at, updated_at) VALUES (gen_random_uuid(), ${companyId}, 'user', ${reportId}, 'member', 'active', 'user', ${managerId}, now(), now())`);
+    await db.execute(sql`INSERT INTO user_roles (id, company_id, user_id, role) VALUES (gen_random_uuid(), ${companyId}, ${reportId}, 'team_member')`);
+
+    // REAL offboarding path.
+    await teamService(db).removeMember(companyId, managerId);
+
+    // Child agent re-parents to the founder (manager's parent), NOT null.
+    const agentRes = await db.execute(sql`SELECT parent_type, parent_id FROM agents WHERE id = ${childAgentId}`);
+    const childAgent = (Array.isArray(agentRes) ? agentRes[0] : (agentRes as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(childAgent.parent_type).toBe("user");
+    expect(childAgent.parent_id).toBe(founderId);
+
+    // Child human's membership re-parents to the founder too, NOT null.
+    const memRes = await db.execute(sql`SELECT parent_type, parent_id FROM company_memberships WHERE company_id = ${companyId} AND principal_type = 'user' AND principal_id = ${reportId}`);
+    const childMember = (Array.isArray(memRes) ? memRes[0] : (memRes as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
+    expect(childMember.parent_type).toBe("user");
+    expect(childMember.parent_id).toBe(founderId);
+
+    // The removed manager is gone (membership deleted).
+    const goneRes = await db.execute(sql`SELECT id FROM company_memberships WHERE company_id = ${companyId} AND principal_type = 'user' AND principal_id = ${managerId}`);
+    const goneRows = (Array.isArray(goneRes) ? goneRes : (goneRes as { rows: unknown[] }).rows);
+    expect(goneRows.length).toBe(0);
+
+    // NOTE on the sibling offboarding caller: accessService.setUserCompanyAccess
+    // re-parents via the SAME orgHierarchy.reparentChildren path inside its
+    // delete branch (access.ts ~:199). removeMember is the cleaner caller to
+    // drive (companyId + userId, no membership-id plumbing), so it is the one
+    // exercised here; both share the re-parent implementation.
+  });
+
+  // ── Task 8c — error path: company with NO human founder. ──
+
+  it("agentService.create rejects an org agent when the company has no human founder", async () => {
+    if (setupError) throw new Error(String(setupError));
+    // Raw-insert ONLY a company — no founder user, membership, or role — so
+    // getFounderUserId resolves null and create() must hard-fail rather than
+    // produce a rootless org agent.
+    const companyId = firstId(
+      await db.execute(sql`INSERT INTO companies (id, name) VALUES (gen_random_uuid(), 'W6 No-Founder Co') RETURNING id`),
+    );
+
+    await expect(
+      agentService(db).create(companyId, { name: "X" }),
+    ).rejects.toThrow(/no human founder/i);
   });
 });
