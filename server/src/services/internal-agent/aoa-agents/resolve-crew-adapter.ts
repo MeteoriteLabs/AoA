@@ -212,15 +212,25 @@ export function needsAdapterBackfill(
  *     needsAdapterBackfill, so without this check provider switching would never
  *     migrate existing Commander/crew/Scribe agents — they'd keep running the old
  *     CLI (Codex P1).
- *  2. **Broken/stale same-provider row** — delegates to needsAdapterBackfill.
+ *  2. **Same-adapter model drift** — the company kept its provider but changed the
+ *     model (provider/crewModel or cliTool/model). The resolved target adapter type
+ *     matches the row, but the resolved model differs, so the new model would never
+ *     land on existing rows (review P0). Rewrite so dispatch reads the new model.
+ *  3. **Broken/stale same-provider row** — delegates to needsAdapterBackfill.
  */
 export function shouldRewriteCrewAdapter(
   currentAdapterType: string | null | undefined,
   currentAdapterConfig: Record<string, unknown> | null | undefined,
   targetAdapterType: string,
+  targetAdapterConfig: Record<string, unknown>,
   opts?: { isApiKeyAuth?: boolean },
 ): boolean {
   if (currentAdapterType !== targetAdapterType) return true;
+  // Same adapter, but the resolved model changed (a model-only switch) — rewrite so
+  // the new model lands. mergeCrewAdapterConfig's same-adapter branch overrides model.
+  const cur = typeof currentAdapterConfig?.model === "string" ? currentAdapterConfig.model : "";
+  const tgt = typeof targetAdapterConfig?.model === "string" ? targetAdapterConfig.model : "";
+  if (tgt && tgt !== cur) return true;
   return needsAdapterBackfill(currentAdapterType, currentAdapterConfig, opts);
 }
 

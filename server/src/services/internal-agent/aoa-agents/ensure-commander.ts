@@ -141,7 +141,7 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     if (current) {
       const cfg = current.adapterConfig as Record<string, unknown> | null;
       const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
-      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
+      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, crewAdapter.adapterConfig, { isApiKeyAuth })) {
         updates.adapterType = crewAdapter.adapterType;
         updates.adapterConfig = mergeCrewAdapterConfig(
           cfg,
