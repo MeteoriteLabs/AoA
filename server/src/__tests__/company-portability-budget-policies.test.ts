@@ -104,6 +104,7 @@ const targetAgents = [
 
 vi.mock("../services/agents.js", () => ({
   agentService: () => ({
+    backfillHumanAtTop: vi.fn(async () => undefined),
     list: vi.fn(async (companyId: string) => {
       if (companyId === SRC_CO_ID) return sourceAgents;
       if (companyId === TGT_CO_ID) return targetAgents;
@@ -117,6 +118,7 @@ vi.mock("../services/agents.js", () => ({
 vi.mock("../services/access.js", () => ({
   accessService: () => ({
     ensureMembership: vi.fn(async () => undefined),
+    ensureRealOperator: vi.fn(async () => "operator-user-id"),
   }),
 }));
 

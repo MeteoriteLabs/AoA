@@ -32,7 +32,7 @@ import { AgentConfigForm, type CreateConfigValues } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { filesystemApi } from "../api/filesystem";
-import { ReportsToSelect } from "./team/ReportsToSelect";
+import { ReportsToSelect, flattenOrgTree } from "./team/ReportsToSelect";
 
 export function NewAgentDialog() {
   const { newAgentOpen, closeNewAgent } = useDialog();
@@ -94,6 +94,19 @@ export function NewAgentDialog() {
       if (!title) setTitle("Director");
     }
   }, [newAgentOpen, isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The backend auto-parents the first/rootless org agent to the founder (the
+  // human root). Mirror that in the picker: once the org tree loads, default the
+  // first agent's reports-to to the founder so the UI matches what gets created.
+  useEffect(() => {
+    if (!newAgentOpen || !isFirstAgent || parentValue) return;
+    const humans = flattenOrgTree(orgTree).filter(
+      (node) => node.nodeType === "user",
+    );
+    const founder =
+      humans.find((node) => node.userRole === "founder") ?? humans[0];
+    if (founder) setParentValue(`user:${founder.id}`);
+  }, [newAgentOpen, isFirstAgent, orgTree]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-suggest cwd from company rootFolder when name changes
   const [cwdManuallyEdited, setCwdManuallyEdited] = useState(false);
@@ -342,7 +355,6 @@ export function NewAgentDialog() {
                 currentEntityType="agent"
                 value={parentValue}
                 onChange={setParentValue}
-                disabled={isFirstAgent}
                 className="h-7 text-xs"
               />
             </div>

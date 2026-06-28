@@ -133,7 +133,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // authenticated = real multi-human board; approval is multi-person accountability.
     const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
     const company = await svc.create({ ...req.body, requireBoardApprovalForNewAgents });
-    await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    await access.ensureRealOperator(company.id, req.actor.userId);
     await seedAoaNativeSkills(db, company.id).catch(() => {
       // Never block company creation on skill seeding failure
     });

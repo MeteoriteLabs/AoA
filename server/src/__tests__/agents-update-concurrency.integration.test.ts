@@ -71,6 +71,28 @@ beforeAll(async () => {
       INSERT INTO companies (id, name, issue_prefix)
       VALUES (${companyId}, 'Agent Concurrency Co', 'ACC')
     `);
+
+    // W6 human-at-top: agentService.create() auto-parents a rootless org agent
+    // to the company founder and throws if none exists. Seed a founder so the
+    // create() calls below resolve. (Column lists mirror seedCompanyWithFounder
+    // in w6-org-reporting.integration.test.ts — the auth-users table is the
+    // quoted "user" table; id is text → gen_random_uuid()::text.)
+    const founderRows = await db.execute<{ id: string }>(sql`
+      INSERT INTO "user" (id, email, name, email_verified, created_at, updated_at)
+      VALUES (gen_random_uuid()::text, 'f@agent-concurrency.test', 'Founder', false, now(), now())
+      RETURNING id
+    `);
+    const founderId = (Array.isArray(founderRows)
+      ? (founderRows[0] as { id: string } | undefined)?.id
+      : (founderRows as { rows?: { id: string }[] }).rows?.[0]?.id) as string;
+    await db.execute(sql`
+      INSERT INTO company_memberships (id, company_id, principal_type, principal_id, membership_role, status, created_at, updated_at)
+      VALUES (gen_random_uuid(), ${companyId}, 'user', ${founderId}, 'owner', 'active', now(), now())
+    `);
+    await db.execute(sql`
+      INSERT INTO user_roles (id, company_id, user_id, role)
+      VALUES (gen_random_uuid(), ${companyId}, ${founderId}, 'founder')
+    `);
   } catch (err) {
     setupError = err;
   }

@@ -1,12 +1,14 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   invites,
   mcpApiKeys,
   principalPermissionGrants,
+  userRoles,
 } from "@armyofagents/db";
 import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
@@ -194,7 +196,7 @@ export function accessService(db: Db) {
       if (toDelete.length > 0) {
         for (const row of toDelete) {
           if (row.principalType === "user") {
-            await orgHierarchy.orphanChildren(row.principalId, "user", tx as unknown as Db);
+            await orgHierarchy.reparentChildren(row.companyId, row.principalId, "user", tx as unknown as Db);
           }
         }
         await tx.delete(companyMemberships).where(inArray(companyMemberships.id, toDelete.map((row) => row.id)));
@@ -270,6 +272,36 @@ export function accessService(db: Db) {
       })
       .returning()
       .then((rows) => rows[0]);
+  }
+
+  async function ensureRealOperator(companyId: string, userId: string | null | undefined): Promise<string> {
+    let operatorId = userId ?? null;
+    // local_trusted passes a synthetic principal (e.g. "local-board") that is TRUTHY but
+    // has NO auth-user row. Treat a missing OR non-existent id as "needs a real operator".
+    if (operatorId) {
+      const exists = await db.select({ id: authUsers.id }).from(authUsers)
+        .where(eq(authUsers.id, operatorId)).limit(1).then((r) => r[0]);
+      if (!exists) operatorId = null;
+    }
+    if (!operatorId) {
+      operatorId = randomUUID();
+      await db.insert(authUsers).values({
+        id: operatorId,
+        email: `operator-${operatorId.slice(0, 8)}@local.invalid`,
+        name: "Operator",
+        emailVerified: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+    await ensureMembership(companyId, "user", operatorId, "owner", "active");
+    const existingRole = await db.select({ id: userRoles.id }).from(userRoles)
+      .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, operatorId), eq(userRoles.role, "founder")))
+      .limit(1).then((r) => r[0]);
+    if (!existingRole) {
+      await db.insert(userRoles).values({ companyId, userId: operatorId, role: "founder" });
+    }
+    return operatorId;
   }
 
   async function setPrincipalGrants(
@@ -382,6 +414,7 @@ export function accessService(db: Db) {
     hasPermission,
     getMembership,
     ensureMembership,
+    ensureRealOperator,
     listMembers,
     setMemberPermissions,
     promoteInstanceAdmin,

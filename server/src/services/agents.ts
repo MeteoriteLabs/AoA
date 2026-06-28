@@ -436,8 +436,36 @@ export function agentService(db: Db) {
     return count;
   }
 
+  // W6: backfill pre-rule rootless org agents to the founder (human-at-top).
+  // Org agents created before the human-at-top rule may sit at the org root with
+  // no parent. Re-parent each (non-terminated, org-kind, rootless) agent to the
+  // company's founder so the chain always tops at a human. Remove after
+  // confirming all data migrated.
+  async function backfillHumanAtTop(companyId: string): Promise<number> {
+    const founderId = await orgHierarchy.getFounderUserId(companyId);
+    if (!founderId) return 0;
+    const rows = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, companyId),
+        eq(agents.kind, "org"),
+        ne(agents.status, "terminated"),
+        isNull(agents.parentId),
+      ));
+    let count = 0;
+    for (const row of rows) {
+      await db.update(agents)
+        .set({ parentType: "user", parentId: founderId, updatedAt: new Date() })
+        .where(eq(agents.id, row.id));
+      count++;
+    }
+    return count;
+  }
+
   return {
     backfillParentFields,
+    backfillHumanAtTop,
 
     list: async (companyId: string, options?: { includeTerminated?: boolean; kind?: "org" | "aoa" }) => {
       // Centralized org-agent accessor: platform agents (Commander team,
@@ -460,13 +488,28 @@ export function agentService(db: Db) {
       // D7: Resolve parent fields from either parentType/parentId or reportsTo
       const parentType = (data.parentType ?? (data.reportsTo ? "agent" : null)) as EntityType | null;
       const parentId = data.parentId ?? data.reportsTo ?? null;
-      const reportsTo = data.reportsTo ?? (parentType === "agent" ? parentId : null);
+
+      // W6: human-at-top. An ORG agent with no parent auto-parents to the founder so
+      // the chain always tops at a human. `kind` defaults to "org" at the DB but is
+      // usually ABSENT from `data` (mirror list()'s `options?.kind ?? "org"`): only the
+      // explicit non-org kinds (aoa crew, platform) are exempt.
+      let resolvedParentType = parentType;
+      let resolvedParentId = parentId;
+      if (data.kind !== "aoa" && data.kind !== "platform" && !resolvedParentId) {
+        const founderId = await orgHierarchy.getFounderUserId(companyId);
+        if (!founderId) {
+          throw unprocessable("Cannot create an org agent: no human founder exists for this company");
+        }
+        resolvedParentType = "user";
+        resolvedParentId = founderId;
+      }
+      const resolvedReportsTo = resolvedParentType === "agent" ? resolvedParentId : null;
 
       // CXO parent constraint: CXOs cannot report to another agent.
-      assertCxoParentConstraint(data.role, parentType);
+      assertCxoParentConstraint(data.role, resolvedParentType);
 
-      if (parentType && parentId) {
-        await orgHierarchy.ensureParent(companyId, parentType, parentId);
+      if (resolvedParentType && resolvedParentId) {
+        await orgHierarchy.ensureParent(companyId, resolvedParentType, resolvedParentId);
         // Bug fix: assertNoCycle was missing from create() — add cycle detection
         // Note: for a new agent (no id yet), cycles are not possible since no
         // other node can point to it. But we validate the parent chain is not broken.
@@ -483,9 +526,9 @@ export function agentService(db: Db) {
           companyId,
           role,
           permissions: normalizedPermissions,
-          parentType,
-          parentId,
-          reportsTo: reportsTo as string | null,
+          parentType: resolvedParentType,
+          parentId: resolvedParentId,
+          reportsTo: resolvedReportsTo as string | null,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -531,8 +574,8 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       await db.transaction(async (tx) => {
-        // D4: Orphan children (agents + users) before terminating
-        await orgHierarchy.orphanChildren(id, "agent", tx as unknown as Db);
+        // D4: Re-parent children (agents + users) before terminating
+        await orgHierarchy.reparentChildren(existing.companyId, id, "agent", tx as unknown as Db);
 
         await tx
           .update(agents)
@@ -553,8 +596,8 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
-        // Cross-type orphaning: agents + users (replaces reportsTo-only orphaning)
-        await orgHierarchy.orphanChildren(id, "agent", tx as unknown as Db);
+        // Cross-type re-parenting: agents + users (replaces reportsTo-only orphaning)
+        await orgHierarchy.reparentChildren(existing.companyId, id, "agent", tx as unknown as Db);
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));

@@ -237,7 +237,20 @@ describe("create() D7 sync computation", () => {
     expect(reportsTo).toBeNull();
   });
 
-  it("all null when no parent info provided", () => {
+  it("derives all-null from the D7 expression when no parent info provided", () => {
+    // This case isolates the pure D7 reportsTo↔parentType/parentId derivation:
+    // with no parent input, the bidirectional sync yields all-null. This is the
+    // INPUT to create(), not its final output.
+    //
+    // W6 / §19 (human-at-top) layers ON TOP of this in agentService.create():
+    // when this derivation yields a null parentId for an ORG agent (kind not
+    // 'aoa'/'platform'), create() resolves the founder via
+    // orgHierarchy.getFounderUserId and parents the agent to that human
+    // (parentType='user', parentId=founderId) — see services/agents.ts
+    // create() and the "rootless org agent auto-parents to the founder"
+    // integration test in w6-org-reporting.integration.test.ts. So the
+    // all-null result asserted here is the pre-human-at-top derivation, NOT the
+    // persisted parent of a created org agent.
     const data = {} as any;
 
     const parentType = data.parentType ?? (data.reportsTo ? "agent" : null);

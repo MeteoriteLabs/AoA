@@ -100,12 +100,14 @@ vi.mock("../services/agents.js", () => ({
       if (row) Object.assign(row, data);
       return row;
     }),
+    backfillHumanAtTop: vi.fn(async () => undefined),
   }),
 }));
 
 vi.mock("../services/access.js", () => ({
   accessService: () => ({
     ensureMembership: vi.fn(async () => undefined),
+    ensureRealOperator: vi.fn(async () => "operator-user-id"),
   }),
 }));
 

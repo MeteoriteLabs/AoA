@@ -32,6 +32,7 @@ vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
     ensureMembership: vi.fn().mockResolvedValue(undefined),
+    ensureRealOperator: vi.fn().mockResolvedValue("operator-user-id"),
   }),
   logActivity: vi.fn().mockResolvedValue(undefined),
 }));
