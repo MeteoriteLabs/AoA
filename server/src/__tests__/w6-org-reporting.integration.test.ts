@@ -29,6 +29,7 @@ import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { orgHierarchyService } from "../services/org-hierarchy.js";
 import { agentService } from "../services/agents.js";
+import { accessService } from "../services/access.js";
 
 type Pg = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 let pg: Pg | null = null; let dataDir = ""; let db: Db; let setupError: unknown = null;
@@ -108,5 +109,37 @@ describe.skipIf(process.platform === "win32")("W6 org reporting — real DB", ()
     const w = (Array.isArray(res) ? res[0] : (res as { rows: { parent_type: string; parent_id: string }[] }).rows[0]);
     expect(w.parent_type).toBe("user");
     expect(w.parent_id).toBe(founderId);
+  });
+
+  it("ensureRealOperator seeds a real human operator when none exists (local_trusted path)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    // Seed ONLY a company — no founder user, membership, or role.
+    const companyId = firstId(
+      await db.execute(sql`INSERT INTO companies (id, name) VALUES (gen_random_uuid(), 'W6 Operator Co') RETURNING id`),
+    );
+
+    const operatorId = await accessService(db).ensureRealOperator(companyId, null);
+    expect(operatorId).toBeTruthy();
+
+    // A real auth-user row exists for the returned id.
+    const userRows = await db.execute(sql`SELECT id FROM "user" WHERE id = ${operatorId}`);
+    expect(firstId(userRows)).toBe(operatorId);
+
+    // A user_roles founder row exists for the operator.
+    const roleRes = await db.execute(
+      sql`SELECT id FROM user_roles WHERE company_id = ${companyId} AND user_id = ${operatorId} AND role = 'founder'`,
+    );
+    const roleRows = (Array.isArray(roleRes) ? roleRes : (roleRes as { rows: unknown[] }).rows);
+    expect(roleRows.length).toBe(1);
+
+    // An owner company_memberships row exists for the operator.
+    const memRes = await db.execute(
+      sql`SELECT id FROM company_memberships WHERE company_id = ${companyId} AND principal_type = 'user' AND principal_id = ${operatorId} AND membership_role = 'owner' AND status = 'active'`,
+    );
+    const memRows = (Array.isArray(memRes) ? memRes : (memRes as { rows: unknown[] }).rows);
+    expect(memRows.length).toBe(1);
+
+    // The org hierarchy now tops out at the seeded operator.
+    expect(await orgHierarchyService(db).getFounderUserId(companyId)).toBe(operatorId);
   });
 });
