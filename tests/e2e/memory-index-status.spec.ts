@@ -12,10 +12,10 @@ import { clearFakeEmbedderControl, writeFakeEmbedderControl } from "./helpers/fa
  *     Memory") and memory items show the "not indexed" badge
  *     (`data-testid="memory-index-status"`).
  *
- *     The e2e webServer has OPENAI_API_KEY=e2e-fake-openai-key-placeholder in its
- *     env. However, resolveSemanticAvailable() checks the per-COMPANY key stored in
- *     company_secrets (not the instance env var). A freshly seeded company has NO
- *     company secret, so semanticAvailable = false → banner is shown.
+ *     The e2e webServer runs with NO embeddings key (OPENAI_API_KEY=""), and a
+ *     freshly seeded company has no per-company secret either. resolveSemanticAvailable()
+ *     needs pgvector AND a resolvable key (per-company secret or env), so it returns
+ *     false → banner is shown.
  *
  *     This runs on standard embedded-pg (no pgvector needed).
  *

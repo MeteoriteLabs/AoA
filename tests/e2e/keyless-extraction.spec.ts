@@ -149,10 +149,10 @@ test.describe("keyless extraction — happy path", () => {
     async ({ request }) => {
       const company = await seedCompany(request, `E2E-Keyless-${Date.now()}`);
 
-      // The e2e instance has OPENAI_API_KEY=placeholder in the webServer env,
-      // but the company itself has NO per-company OpenAI secret stored in
-      // company_secrets — so resolveSemanticAvailable() returns false.
-      // The extraction engine still resolves to "cli" (fake-claude on PATH).
+      // The e2e webServer runs with NO embeddings key (OPENAI_API_KEY="") and the
+      // company has no per-company OpenAI secret — so resolveSemanticAvailable()
+      // returns false. Extraction is keyless regardless: the engine resolves to
+      // "cli" (fake-claude on PATH).
 
       const discussion = await createDiscussion(
         request,

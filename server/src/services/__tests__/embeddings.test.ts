@@ -327,13 +327,18 @@ describe("createEmbeddingService", () => {
       expect(db.updateCalls[2].set).toMatchObject({ status: "completed" });
     });
 
+    // Third tuple element = the expected Drizzle JS PROPERTY for the SET key.
+    // It differs from the DB column name (2nd element) for discussions
+    // (summary_embedding ↔ summaryEmbedding); passing the DB name to `.set()`
+    // would be silently dropped → empty SET → SQL error. This asserts the
+    // VECTOR_COLUMN_DB_TO_PROP resolution in updateVectorColumn.
     it.each([
-      ["memory_items", "embedding"],
-      ["discussions", "summary_embedding"],
-      ["discussion_extracted_items", "embedding"],
+      ["memory_items", "embedding", "embedding"],
+      ["discussions", "summary_embedding", "summaryEmbedding"],
+      ["discussion_extracted_items", "embedding", "embedding"],
     ] as const)(
-      "embeds and updates target table %s/%s",
-      async (targetTable, targetColumn) => {
+      "embeds and updates target table %s/%s (SET key = %s)",
+      async (targetTable, targetColumn, expectedSetProp) => {
         const db = createSequenceDb({
           selects: [
             [
@@ -359,9 +364,9 @@ describe("createEmbeddingService", () => {
         expect(result.processed).toBe(1);
         expect(db.updateCalls[1].tableName).toBe(targetTable);
         // The column value is a `${literal}::vector` SQL expression (see the
-        // memory_items case above). Confirm the right column is written; vector
-        // correctness is covered by the pgvector e2e.
-        expect(db.updateCalls[1].set).toHaveProperty(targetColumn);
+        // memory_items case above). Confirm the write uses the JS PROPERTY key
+        // (not the DB column name); vector correctness is covered by the e2e.
+        expect(db.updateCalls[1].set).toHaveProperty(expectedSetProp);
       },
     );
 

@@ -613,6 +613,15 @@ const TARGET_TABLE_MAP = {
   discussion_extracted_items: discussionExtractedItems,
 } as const;
 
+// Maps a vector column's DB NAME (what embedding_queue.targetColumn stores) to its
+// Drizzle JS PROPERTY name (what `.update().set({ key })` expects). They differ for
+// discussions (summary_embedding ↔ summaryEmbedding); for the rest they coincide
+// ("embedding"). Anything not listed falls back to the DB name unchanged. Add an
+// entry here whenever a new embedding column whose DB name ≠ JS prop is introduced.
+const VECTOR_COLUMN_DB_TO_PROP: Record<string, string> = {
+  summary_embedding: "summaryEmbedding",
+};
+
 function isValidTargetTable(value: string): value is EmbeddingTargetTable {
   return value in TARGET_TABLE_MAP;
 }
@@ -652,10 +661,18 @@ async function updateVectorColumn(
   // ms-precision JS Date, while the stored timestamptz is microsecond — a bare
   // `created_at > $claimed` would match the row against itself. All values are
   // bound params (no string interpolation), so there is no injection surface.
+  // The queue stores targetColumn as the DB column NAME (e.g. "summary_embedding"),
+  // but Drizzle's `.set({ key })` resolves `key` against the table's JS PROPERTY
+  // names (e.g. "summaryEmbedding"). For memory_items / discussion_extracted_items
+  // the two coincide ("embedding"), but for discussions they differ — passing the
+  // DB name would be silently dropped → empty SET clause → SQL syntax error. Map
+  // the DB column name to its JS property. (Explicit map, not getTableColumns(),
+  // so it also works under the Proxy-based mock DB in unit tests.)
+  const propKey = VECTOR_COLUMN_DB_TO_PROP[targetColumn] ?? targetColumn;
   const vectorLiteral = toVectorString(vector);
   await db
     .update(table)
-    .set({ [targetColumn]: sql`${vectorLiteral}::vector` } as any)
+    .set({ [propKey]: sql`${vectorLiteral}::vector` } as any)
     .where(
       and(
         eq(table.id as any, targetId),
