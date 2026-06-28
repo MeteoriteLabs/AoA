@@ -510,4 +510,16 @@ describe("config PATCH route-local schema accepts opencode + crewModel (Task 6)"
     expect(parsed.provider).toBe("opencode");
     expect(parsed.crewModel).toBe("openai/gpt-5.2-codex");
   });
+
+  it("the route-local schema's model is NULLABLE so a blank Commander model (null) is accepted, not 400'd", () => {
+    const start = routeSrc.indexOf("const updateConfigSchema = z.object({");
+    const schemaBlock = routeSrc.slice(start, routeSrc.indexOf("});", start));
+    // The onboarding wizard + Settings send `model: commanderModel.trim() || null`
+    // (the Commander model field is optional). If `model` weren't nullable, a blank
+    // value would 400 and onboarding would stall (regression guard).
+    expect(schemaBlock).toMatch(/model:\s*z\.string\(\)\.nullable\(\)\.optional\(\)/);
+    // Runtime proof a null model survives the same shape.
+    const slice = z.object({ model: z.string().nullable().optional() }).passthrough();
+    expect(slice.parse({ model: null }).model).toBeNull();
+  });
 });

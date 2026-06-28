@@ -62,7 +62,10 @@ const confirmActionSchema = z
 const updateConfigSchema = z.object({
   executionMode: z.enum(["api", "cli"]).optional(),
   provider: z.enum(AGENT_PROVIDERS).optional(),
-  model: z.string().optional(),
+  // Nullable: the onboarding wizard + Settings send `model: commanderModel.trim() || null`
+  // (the Commander model field is OPTIONAL — blank → null → CLI default). Without
+  // `.nullable()` a blank model 400s and onboarding stalls (found by e2e).
+  model: z.string().nullable().optional(),
   crewModel: z.string().nullable().optional(),
   cliTool: z.string().nullable().optional(),
   // Threads crew (Discussions feature) opens autonomyLevel to L2 — the design
