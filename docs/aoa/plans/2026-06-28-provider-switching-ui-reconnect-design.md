@@ -250,15 +250,15 @@ scrub source-provider auth env on switch). **No change to that logic.**
   > "codex"). The codex fallback only triggers for things like `claude-…`,
   > `gemini-…`, `gpt-5.2-codex`, or shell-unsafe strings.
   >
-  > **Note (review P1):** `resolveCrewAdapterFor`'s override is the **seed-time**
-  > model. At dispatch the crew runs it through `applyModelResolutionToConfig` →
-  > `resolveModel(adapterType, model, status)` (`runner-model-resolution.ts`,
-  > `model-resolution.ts`), which is the *final* authority and applies its own
-  > per-adapter rules (e.g. for `codex_local` apikey-mode it constrains to
-  > OpenAI-family; for `opencode_local` it does **not** require a slash). A valid
-  > override passes through unchanged, so this is not a conflict — but the runtime
-  > gate, not §5.5's table, has the last word. A test asserts an override survives
-  > `applyModelResolutionToConfig`.
+  > **Note (review P0/P1):** the override only takes effect when it is **written to
+  > the agent row** — at seed time, and (for an existing company) on a re-ensure that
+  > actually rewrites the row. `shouldRewriteCrewAdapter` originally rewrote only on an
+  > adapter-*type* change, so a **model-only** change (same provider) never landed.
+  > **§Task 4b fixes this**: the rewrite gate now also fires on same-adapter model
+  > drift. At dispatch, `applyModelResolutionToConfig` → `resolveModel` reads the model
+  > **off the row** (not from `crewModel`) and passes a valid value through — so it
+  > faithfully runs whatever the row holds; it cannot rescue a model that was never
+  > written. Writing the row (Task 4b) is therefore mandatory, not optional.
 
 ### 5.6 Commander model honoring (`cli-mode.ts`) — claude_cli only
 
@@ -328,6 +328,12 @@ autonomous runs use the crew CLI — wrong. Fix:
 Net: Commander's chat **and** non-chat runs both follow `cliTool`+`model`; the crew
 follows `provider`+`crewModel`. Fully independent, as the two-pick model intends.
 
+> **Note (review P1):** the Commander default model column is `claude-sonnet-4-6`
+> (`internal_agent.ts:38`) while the crew claude default is `claude-sonnet-4-5-20250929`
+> (`resolveCrewAdapterFor`). Both are valid, shell-safe Claude ids, so Commander's
+> claude_local non-chat runs use `claude-sonnet-4-6` when the Commander model is left
+> at its default. This divergence is acceptable (cosmetic); not aligning it here.
+
 ---
 
 ## 6. Data flow
@@ -350,8 +356,10 @@ saveExecution → PATCH { provider: opencode, crewModel } → persist
     (OPENAI_API_KEY preserved — opencode reads it; via ADAPTER_AUTH_ENV_KEYS keep-set)
 ```
 
-**Settings model-only change (same provider):** `mergeAdapterConfig` (same-adapter
-branch) preserves all founder config and overrides only `model`.
+**Settings model-only change (same provider):** the re-ensure rewrites the row
+**because Task 4b makes `shouldRewriteCrewAdapter` fire on same-adapter model drift**;
+`mergeCrewAdapterConfig`'s same-adapter branch (`mergeAdapterConfig`) then preserves all
+founder config and overrides only `model`. (Without Task 4b this would silently no-op.)
 
 ---
 

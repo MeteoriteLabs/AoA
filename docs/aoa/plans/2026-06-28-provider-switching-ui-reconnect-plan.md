@@ -472,6 +472,117 @@ git commit -m "feat(provider-switching): resolveCrewAdapterFor honors a validate
 
 ---
 
+## Task 4b: Make a model-only change actually rewrite the row (review P0)
+
+> **Critical gap (confirmed by review):** `shouldRewriteCrewAdapter` returns
+> `currentAdapterType !== targetAdapterType || needsAdapterBackfill(...)`. On a
+> **model-only** change (same provider/cliTool → same adapter type), it delegates to
+> `needsAdapterBackfill`, which for a healthy `claude_local` row checks only
+> `dangerouslySkipPermissions` (not the model), and for `codex_local` checks model
+> *compatibility* not *equality*. So the new model is **never written** to existing
+> rows, and dispatch (`resolveModel`) reads the model off the stale row — it can't
+> inject `crewModel`/`model`. Without this task, "honor model picks" only works on a
+> brand-new company or a provider switch, NOT on "keep provider, change model".
+
+**Files:**
+- Modify: `server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts` (`shouldRewriteCrewAdapter`)
+- Modify call sites (pass the resolved target config): `ensure-commander.ts:144`,
+  `seed-crew-agent.ts:216`, `ensure-extraction-agent.ts:88` (the 3 callers — the
+  extraction one is the 7th caller the rest of the plan doesn't otherwise touch)
+- Test: extend `server/src/__tests__/resolve-crew-adapter.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// add to server/src/__tests__/resolve-crew-adapter.test.ts
+import { shouldRewriteCrewAdapter } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
+
+describe("shouldRewriteCrewAdapter — same-adapter model drift", () => {
+  it("rewrites when the model differs on the SAME adapter", () => {
+    expect(shouldRewriteCrewAdapter(
+      "claude_local", { model: "claude-sonnet-4-5-20250929", dangerouslySkipPermissions: true },
+      "claude_local", { model: "claude-opus-4-1", dangerouslySkipPermissions: true },
+    )).toBe(true);
+  });
+  it("does NOT rewrite when the model is identical and the row is healthy", () => {
+    expect(shouldRewriteCrewAdapter(
+      "claude_local", { model: "claude-opus-4-1", dangerouslySkipPermissions: true },
+      "claude_local", { model: "claude-opus-4-1", dangerouslySkipPermissions: true },
+    )).toBe(false);
+  });
+  it("still rewrites on an adapter-type switch (unchanged behavior)", () => {
+    expect(shouldRewriteCrewAdapter(
+      "claude_local", { model: "x" }, "codex_local", { model: "gpt-5.5" },
+    )).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd server && pnpm vitest run src/__tests__/resolve-crew-adapter.test.ts`
+Expected: FAIL — the first case returns `false` (model ignored on same adapter), and
+the signature doesn't yet accept a 4th `targetAdapterConfig` arg.
+
+- [ ] **Step 3: Add same-adapter model drift to `shouldRewriteCrewAdapter`**
+
+Replace the function (`resolve-crew-adapter.ts:206-214`) with:
+
+```ts
+export function shouldRewriteCrewAdapter(
+  currentAdapterType: string | null | undefined,
+  currentAdapterConfig: Record<string, unknown> | null | undefined,
+  targetAdapterType: string,
+  targetAdapterConfig: Record<string, unknown>,
+  opts?: { isApiKeyAuth?: boolean },
+): boolean {
+  if (currentAdapterType !== targetAdapterType) return true;
+  // Same adapter, but the resolved model changed (a model-only switch) — rewrite so
+  // the new model lands. mergeCrewAdapterConfig's same-adapter branch overrides model.
+  const cur = typeof currentAdapterConfig?.model === "string" ? currentAdapterConfig.model : "";
+  const tgt = typeof targetAdapterConfig?.model === "string" ? targetAdapterConfig.model : "";
+  if (tgt && tgt !== cur) return true;
+  return needsAdapterBackfill(currentAdapterType, currentAdapterConfig, opts);
+}
+```
+
+- [ ] **Step 4: Update all three call sites to pass the resolved target config**
+
+Each caller already has the resolved adapter in scope — pass its `adapterConfig` as
+the new 4th argument (BEFORE the `{ isApiKeyAuth }` opts):
+
+- `ensure-commander.ts:144` →
+  `shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, crewAdapter.adapterConfig, { isApiKeyAuth })`
+  (Task 5b later renames `crewAdapter` → `commanderAdapter`; keep them consistent.)
+- `seed-crew-agent.ts:216` →
+  `shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, crewAdapter.adapterConfig, { isApiKeyAuth })`
+- `ensure-extraction-agent.ts:88` →
+  `shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, crewAdapter.adapterConfig, { isApiKeyAuth })`
+
+(Read each call site first to match the exact local variable names; the shape is
+identical across all three.)
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `cd server && pnpm vitest run src/__tests__/resolve-crew-adapter.test.ts src/__tests__/resolve-crew-adapter-opencode.test.ts src/__tests__/seed-crew-agent.test.ts src/__tests__/aoa-ensure-commander.test.ts src/__tests__/aoa-ensure-extraction-agent.test.ts`
+Expected: PASS. (Existing `shouldRewriteCrewAdapter` callers/tests now pass the 4th
+arg — update any test that calls it directly with the old 3/4-arg shape.)
+
+- [ ] **Step 6: Typecheck + commit**
+
+```bash
+pnpm --filter @armyofagents/server typecheck
+git add server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts server/src/services/internal-agent/aoa-agents/ensure-commander.ts server/src/services/internal-agent/aoa-agents/seed-crew-agent.ts server/src/services/internal-agent/aoa-agents/ensure-extraction-agent.ts server/src/__tests__/resolve-crew-adapter.test.ts
+git commit -m "fix(provider-switching): rewrite agent row on a same-adapter model-only change"
+```
+
+> **Integration coverage (add in Task 5/13 territory):** a real-DB test that sets
+> `provider` once, then changes ONLY `crewModel` via the config PATCH, and asserts the
+> crew rows' `adapterConfig.model` actually updated. This is the regression guard for
+> this whole gap.
+
+---
+
 ## Task 5: `ensureAllCrewAgents` helper + de-dupe boot/create
 
 **Files:**
@@ -1706,6 +1817,7 @@ git commit -m "test(provider-switching): e2e — onboarding + settings provider 
 |---|---|
 | §4 centralized mapping + AGENT_PROVIDERS opencode | T1 |
 | §5.5 crew model override + read crewModel | T2 (col), T4 (logic) |
+| §5.5 model-only change actually rewrites the row (shouldRewriteCrewAdapter model drift) | T4b |
 | §5.3 validators (opencode + crewModel) | T3 |
 | §5.4 ensureAllCrewAgents + boot/create de-dupe + re-ensure (provider/crewModel/cliTool/model) | T5, T6 |
 | §5.9 Commander agent-row adapter follows cliTool (cliToolToProvider + resolveCommanderAdapterForCompany) | T1, T5b |
