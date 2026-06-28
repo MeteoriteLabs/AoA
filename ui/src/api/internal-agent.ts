@@ -39,6 +39,7 @@ export interface AgentConfig {
   provider: string | null;
   model: string | null;
   cliTool: string | null;
+  crewModel: string | null;
   autonomyLevel: number;
   enabledCapabilities: string[];
   notificationPreference: string;
