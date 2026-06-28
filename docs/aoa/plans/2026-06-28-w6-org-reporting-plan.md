@@ -232,6 +232,13 @@ Use `resolvedParentType`/`resolvedParentId`/`resolvedReportsTo` in `assertCxoPar
 ```typescript
   async function ensureRealOperator(companyId: string, userId: string | null | undefined): Promise<string> {
     let operatorId = userId ?? null;
+    // local_trusted passes a synthetic principal (e.g. "local-board") with NO auth-user
+    // row, and it is TRUTHY — so treat a missing OR non-existent user id as "needs a real operator".
+    if (operatorId) {
+      const exists = await db.select({ id: authUsers.id }).from(authUsers)
+        .where(eq(authUsers.id, operatorId)).limit(1).then((r) => r[0]);
+      if (!exists) operatorId = null;
+    }
     if (!operatorId) {
       operatorId = crypto.randomUUID();
       await db.insert(authUsers).values({
@@ -319,7 +326,7 @@ Closes the 11 gaps from `/plan-eng-review`: e2e user flow, caller-level integrat
 - [ ] **8c — Error path:** create an org agent in a company with **no founder** (delete the founder role + owner membership first); assert `agentService(db).create(companyId, { name: "X" })` rejects with the "no human founder" message (422). Add a UI assertion in the component test that a 422 surfaces a visible error (not a silent failure).
   - Commit: `test(org): no-founder create rejects (error path)`
 
-- [ ] **8d — CRITICAL regression:** the human-at-top change in `create()` reverses the contract asserted at `server/src/services/__tests__/agent-parent-fields.test.ts:240-250` ("all null when no parent info provided"). Update that test: a `kind="org"`/no-kind create with no parent now yields `parentType="user"` + founder; keep the **`kind="aoa"`/`platform`** case asserting `null` (the exemption). Add a one-line comment pointing at §19 / this plan so the reversal is intentional and documented.
+- [ ] **8d — CRITICAL regression:** the human-at-top change in `create()` changes the contract documented at `server/src/__tests__/agent-parent-fields.test.ts:240-250` ("all null when no parent info provided"). NOTE (review): that file is a **pure-logic** test (re-derives the old expression inline; does NOT call `create()`), so it won't *fail* CI — but it now asserts a contract `create()` no longer honors, so update it. (Also: the real break was `agents-update-concurrency.integration.test.ts` seeding a founder-less company then calling `create()` — fixed in the Task 2 follow-up commit.) Update that test: a `kind="org"`/no-kind create with no parent now yields `parentType="user"` + founder; keep the **`kind="aoa"`/`platform`** case asserting `null` (the exemption). Add a one-line comment pointing at §19 / this plan so the reversal is intentional and documented.
   - Commit: `test(org): update agent-parent-fields contract for human-at-top (regression)`
 
 ---
