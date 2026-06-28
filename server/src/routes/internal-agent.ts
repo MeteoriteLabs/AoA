@@ -28,7 +28,7 @@ import { createServiceContainer } from "../services/internal-agent/service-conta
 import { loadOwnedConversation, resolveActorRole } from "./conversation-authz.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
-import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
+import { AGENT_PROVIDERS, COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared";
 import {
   resolveRunCostCents,
   rateModelForCliTool,
@@ -59,8 +59,9 @@ const confirmActionSchema = z
 
 const updateConfigSchema = z.object({
   executionMode: z.enum(["api", "cli"]).optional(),
-  provider: z.enum(["anthropic", "openai", "google"]).optional(),
+  provider: z.enum(AGENT_PROVIDERS).optional(),
   model: z.string().optional(),
+  crewModel: z.string().nullable().optional(),
   cliTool: z.string().nullable().optional(),
   // Threads crew (Discussions feature) opens autonomyLevel to L2 — the design
   // ceiling for the crew (task + route + execute). Goals and identity/domain
