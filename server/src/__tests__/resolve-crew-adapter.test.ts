@@ -117,32 +117,57 @@ describe("shouldRewriteCrewAdapter — provider-switch migration", () => {
     // claude_local crew row is perfectly healthy (has dangerouslySkipPermissions)
     // but the company switched provider → target is codex_local → must rewrite.
     expect(
-      shouldRewriteCrewAdapter("claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }, "codex_local"),
+      shouldRewriteCrewAdapter("claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }, "codex_local", { model: "gpt-5.5" }),
     ).toBe(true);
     // codex_local row with a ChatGPT-safe model is healthy, but the company
     // switched to anthropic → target claude_local → must rewrite.
-    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.5" }, "claude_local")).toBe(true);
+    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.5" }, "claude_local", { model: "claude-sonnet-4-5-20250929" })).toBe(true);
   });
   it("does NOT rewrite a healthy row already on the target adapter (no provider change)", () => {
     expect(
-      shouldRewriteCrewAdapter("claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }, "claude_local"),
+      shouldRewriteCrewAdapter("claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }, "claude_local", { model: "claude-sonnet-4-5", dangerouslySkipPermissions: true }),
     ).toBe(false);
-    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.5" }, "codex_local")).toBe(false);
+    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.5" }, "codex_local", { model: "gpt-5.5" })).toBe(false);
   });
   it("still rewrites a broken SAME-adapter row (delegates to needsAdapterBackfill)", () => {
     // codex subscription row pinned to an API-key-only model → backfill.
-    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.3-codex", env: {} }, "codex_local")).toBe(true);
+    // Target config carries the SAME model so the model-drift branch is not the
+    // trigger — this asserts the needsAdapterBackfill delegation (case 3).
+    expect(shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.3-codex", env: {} }, "codex_local", { model: "gpt-5.3-codex", env: {} })).toBe(true);
   });
   it("preserves a founder's api-key codex row on the same adapter (opts.isApiKeyAuth)", () => {
     expect(
-      shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.3-codex", env: {} }, "codex_local", { isApiKeyAuth: true }),
+      shouldRewriteCrewAdapter("codex_local", { model: "gpt-5.3-codex", env: {} }, "codex_local", { model: "gpt-5.3-codex", env: {} }, { isApiKeyAuth: true }),
     ).toBe(false);
   });
   it("is consistent with needsAdapterBackfill when the adapter is unchanged", () => {
     const cfg = { model: "gpt-5.3-codex", env: {} };
-    expect(shouldRewriteCrewAdapter("codex_local", cfg, "codex_local")).toBe(
+    expect(shouldRewriteCrewAdapter("codex_local", cfg, "codex_local", { model: "gpt-5.3-codex", env: {} })).toBe(
       needsAdapterBackfill("codex_local", cfg),
     );
+  });
+});
+
+// Task 4b (review P0): a model-only change (same provider → same adapter type)
+// must still rewrite the row, otherwise the new model never lands on existing
+// crew rows and dispatch reads the stale model.
+describe("shouldRewriteCrewAdapter — same-adapter model drift", () => {
+  it("rewrites when the model differs on the SAME adapter", () => {
+    expect(shouldRewriteCrewAdapter(
+      "claude_local", { model: "claude-sonnet-4-5-20250929", dangerouslySkipPermissions: true },
+      "claude_local", { model: "claude-opus-4-1", dangerouslySkipPermissions: true },
+    )).toBe(true);
+  });
+  it("does NOT rewrite when the model is identical and the row is healthy", () => {
+    expect(shouldRewriteCrewAdapter(
+      "claude_local", { model: "claude-opus-4-1", dangerouslySkipPermissions: true },
+      "claude_local", { model: "claude-opus-4-1", dangerouslySkipPermissions: true },
+    )).toBe(false);
+  });
+  it("still rewrites on an adapter-type switch (unchanged behavior)", () => {
+    expect(shouldRewriteCrewAdapter(
+      "claude_local", { model: "x" }, "codex_local", { model: "gpt-5.5" },
+    )).toBe(true);
   });
 });
 

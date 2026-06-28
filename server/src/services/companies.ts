@@ -2,12 +2,7 @@ import { and, eq, count, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
-import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-commander.js";
-import { ensureCommandStaff } from "./internal-agent/aoa-agents/ensure-command-staff.js";
-import { ensureAdjutant } from "./internal-agent/aoa-agents/ensure-adjutant.js";
-import { ensureScout } from "./internal-agent/aoa-agents/ensure-scout.js";
-import { ensureEngineer } from "./internal-agent/aoa-agents/ensure-engineer.js";
-import { ensureChronicler } from "./internal-agent/aoa-agents/ensure-chronicler.js";
+import { ensureAllCrewAgents } from "./internal-agent/aoa-agents/ensure-all-crew.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -159,37 +154,7 @@ export function companyService(db: Db) {
           await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
             logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
           });
-          await ensureCommanderAgent(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Commander agent seeding failed");
-          });
-          // Plan 3: seed the four Command Staff roles (Router, Planner, Dispatcher, Memory Keeper).
-          await ensureCommandStaff(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Command Staff seeding failed");
-          });
-          // Plan 3 P3.1: seed the Adjutant role (phase-advance keystone, sweep trigger).
-          // Without this, runAdjutantSweep finds no trigger and the phase loop is dead.
-          await ensureAdjutant(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Adjutant agent seeding failed");
-          });
-          // Phase D batch 1 (T2): seed Scout (internal-only research arm).
-          await ensureScout(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Scout agent seeding failed");
-          });
-          // Phase D batch 1 (T6): seed Engineer (replaces Maker).
-          // ensureEngineer's first action is to UPDATE any pre-existing
-          // name='Maker' rows in this company to name='Engineer' before its own
-          // INSERT lands, so legacy companies migrate in place without a unique-
-          // index conflict and without spawning a duplicate Maker row.
-          // The legacy ensure-maker.ts file was deleted in Phase D batch 2;
-          // git history preserves it for rollback if ever needed.
-          await ensureEngineer(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Engineer agent seeding failed");
-          });
-          // Routing-card redesign: seed the Chronicler (keeps per-thread
-          // routing cards fresh for the Navigator).
-          await ensureChronicler(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "Chronicler agent seeding failed");
-          });
+          await ensureAllCrewAgents(db, company.id);
         }
         return company;
       } catch (error) {

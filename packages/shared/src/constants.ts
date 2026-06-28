@@ -928,10 +928,12 @@ export type AgentCapability = (typeof AGENT_CAPABILITIES)[number];
 export const AGENT_EXECUTION_MODES = ["api", "cli"] as const;
 export type AgentExecutionMode = (typeof AGENT_EXECUTION_MODES)[number];
 
-export const AGENT_PROVIDERS = ["anthropic", "openai", "google"] as const;
+// NOTE: opencode is a first-class crew provider (resolveCrewAdapterFor handles it).
+// AGENT_MODELS_BY_PROVIDER below is dead/unused (no live consumer) — do not extend it.
+export const AGENT_PROVIDERS = ["anthropic", "openai", "google", "opencode"] as const;
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
 
-export const AGENT_MODELS_BY_PROVIDER: Record<AgentProvider, { value: string; label: string }[]> = {
+export const AGENT_MODELS_BY_PROVIDER: Partial<Record<AgentProvider, { value: string; label: string }[]>> = {
   anthropic: [
     { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     { value: "claude-haiku-4-5", label: "Claude Haiku 4.5" },

@@ -322,6 +322,15 @@ export {
   type PluginBridgeErrorCode,
 } from "./constants.js";
 
+export {
+  CREW_PROVIDERS,
+  COMMANDER_PROVIDERS,
+  providerToCliTool,
+  providerToCrewAdapter,
+  cliToolToProvider,
+} from "./provider-mapping.js";
+export type { CrewProvider, CommanderProvider, CliTool, CrewAdapterType } from "./provider-mapping.js";
+
 export type {
   Company,
   Agent,

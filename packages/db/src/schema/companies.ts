@@ -21,13 +21,10 @@ export const companies = pgTable(
     logoAssetId: uuid("logo_asset_id"),
     rootFolder: text("root_folder"),
     mcpEnabled: boolean("mcp_enabled").notNull().default(false),
-    // Thread-Native Agent Coordination Phase 1 (Task A1).
-    // Onboarding wizard writes the founder's Commander adapter pick here;
-    // resolveCrewAdapterForCompany() (Task D6) reads this column first and
-    // falls back to internal_agent_config.provider when empty. Empty object
-    // = legacy company (created before onboarding offered adapter selection).
-    // Shape contract: see CommanderAdapterConfigSchema in
-    // packages/shared/src/api/threads-contract.ts (Pre-Task 0.6).
+    // @deprecated NEVER READ at runtime (the "Task D6" reader was never built).
+    // Superseded by internal_agent_config.{cliTool,model,provider,crewModel}, which
+    // is the live source of truth for Commander + crew. Kept (not dropped) for
+    // rollback safety per AoA convention; onboarding no longer writes them.
     commanderAdapterConfig: jsonb("commander_adapter_config")
       .$type<{ adapter: string; model: string } | Record<string, never>>()
       .notNull()

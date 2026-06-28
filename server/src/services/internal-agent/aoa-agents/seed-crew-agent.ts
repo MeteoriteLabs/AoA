@@ -213,7 +213,7 @@ export async function seedCrewAgent(
     if (current) {
       const cfg = current.adapterConfig as Record<string, unknown> | null;
       const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
-      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
+      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, crewAdapter.adapterConfig, { isApiKeyAuth })) {
         updates.adapterType = crewAdapter.adapterType;
         updates.adapterConfig = mergeCrewAdapterConfig(
           cfg,

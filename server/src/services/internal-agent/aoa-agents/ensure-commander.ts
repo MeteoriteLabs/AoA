@@ -4,7 +4,7 @@ import { agents, internalAgentConfig, companySkills } from "@armyofagents/db";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import { seedCommanderInstructionBundle } from "./seed-commander-bundle.js";
 import {
-  resolveCrewAdapterForCompany,
+  resolveCommanderAdapterForCompany,
   shouldRewriteCrewAdapter,
   mergeCrewAdapterConfig,
 } from "./resolve-crew-adapter.js";
@@ -70,9 +70,10 @@ export const COMMANDER_TOOL_ALLOWLIST = [
  *  Discriminator: kind='aoa' + runtimeConfig.aoa.role='lead' (NOT agents.role
  *  — that is special-cased). */
 export async function ensureCommanderAgent(db: Db, companyId: string): Promise<string> {
-  // Resolve the right CLI adapter for this company's configured provider
-  // (P1-B fix — see ensure-adjutant.ts for context).
-  const crewAdapter = await resolveCrewAdapterForCompany(db, companyId);
+  // Resolve the Commander row's adapter from its OWN cliTool + model — NOT the
+  // crew provider (Task 5b). Commander's autonomous (non-chat) runs must use the
+  // CLI the founder picked for Commander, independent of the crew provider.
+  const commanderAdapter = await resolveCommanderAdapterForCompany(db, companyId);
 
   // Attempt atomic insert. ON CONFLICT (company_id, name) WHERE kind='aoa'
   // silently no-ops if another process beat us to it.
@@ -80,8 +81,8 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     .insert(agents)
     .values({
       companyId, name: COMMANDER_AGENT_NAME, kind: "aoa", role: "general", status: "idle",
-      adapterType: crewAdapter.adapterType,
-      adapterConfig: crewAdapter.adapterConfig,
+      adapterType: commanderAdapter.adapterType,
+      adapterConfig: commanderAdapter.adapterConfig,
       runtimeConfig: {
         aoa: { role: "lead", toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST] },
         heartbeat: { enabled: false, intervalSec: 0 },
@@ -141,13 +142,13 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     if (current) {
       const cfg = current.adapterConfig as Record<string, unknown> | null;
       const isApiKeyAuth = current.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, cfg) : false;
-      if (shouldRewriteCrewAdapter(current.adapterType, cfg, crewAdapter.adapterType, { isApiKeyAuth })) {
-        updates.adapterType = crewAdapter.adapterType;
+      if (shouldRewriteCrewAdapter(current.adapterType, cfg, commanderAdapter.adapterType, commanderAdapter.adapterConfig, { isApiKeyAuth })) {
+        updates.adapterType = commanderAdapter.adapterType;
         updates.adapterConfig = mergeCrewAdapterConfig(
           cfg,
-          crewAdapter.adapterConfig,
+          commanderAdapter.adapterConfig,
           current.adapterType,
-          crewAdapter.adapterType,
+          commanderAdapter.adapterType,
         );
       }
     }

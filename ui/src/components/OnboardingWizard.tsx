@@ -2,10 +2,17 @@ import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@armyofagents/shared";
+import {
+  CREW_PROVIDERS,
+  COMMANDER_PROVIDERS,
+  providerToCliTool,
+} from "@armyofagents/shared";
+import type { CrewProvider, CommanderProvider } from "@armyofagents/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
+import { internalAgentApi } from "../api/internal-agent";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -72,37 +79,22 @@ const STEP_AGENT = 5;
 const STEP_TASK = 6;
 
 /**
- * Phase 1 Phase E batch 2 (T20): provider → adapter mapping used to translate
- * the wizard's user-facing "Anthropic / OpenAI / Google / OpenCode" picks
- * into the canonical adapterType strings the server writes to
- * companies.commanderAdapterConfig + companies.crewAdapterConfig.
+ * Provider → adapter/cliTool mapping is now owned by the shared
+ * `provider-mapping` module so UI and server can never drift. The crew picker
+ * offers all four providers (CREW_PROVIDERS); the Commander picker offers only
+ * anthropic + openai (COMMANDER_PROVIDERS) — cli-mode chat has no google/opencode
+ * path. The wizard writes the LIVE internal_agent_config fields via a config
+ * PATCH after company create (providerToCliTool maps the Commander provider to its
+ * cliTool; the crew adapter is resolved server-side from the chosen `provider`). The
+ * dead companies.*_adapter_config columns are no longer written.
  */
-type Provider = "anthropic" | "openai" | "google" | "opencode";
-const PROVIDER_OPTIONS: Provider[] = ["anthropic", "openai", "google", "opencode"];
-const PROVIDER_LABELS: Record<Provider, string> = {
+type Provider = CrewProvider; // crew supports all four; commander is a subset
+const PROVIDER_LABELS: Record<CrewProvider, string> = {
   anthropic: "Anthropic (Claude)",
   openai: "OpenAI (Codex)",
   google: "Google (Gemini)",
   opencode: "OpenCode (multi-provider)",
 };
-export function providerToAdapter(provider: Provider): string {
-  switch (provider) {
-    case "anthropic":
-      return "claude_local";
-    case "openai":
-      return "codex_local";
-    case "google":
-      return "gemini_local";
-    case "opencode":
-      return "opencode_local";
-    default: {
-      // Exhaustiveness guard — surfaces a compile error if a Provider is
-      // added without a mapping. Throws at runtime as a safety net.
-      const _exhaustive: never = provider;
-      throw new Error(`Unknown provider: ${_exhaustive as string}`);
-    }
-  }
-}
 
 type AdapterType =
   | "claude_local"
@@ -446,37 +438,45 @@ export function OnboardingWizard() {
   function handleStep3Next() {
     // Phase E batch 2 (T20): Commander pick. No server-side write — just
     // advance to the Crew pick step. Disabled-until-valid in the footer.
-    if (!commanderProvider || !commanderModel) return;
+    // Model is optional (blank → provider default), so only the provider is
+    // required here.
+    if (!commanderProvider) return;
     setError(null);
     setStep(4);
   }
 
   async function handleStep4Next() {
     // Phase E batch 2 (T20): Crew pick + final company creation. This is the
-    // single POST /companies that carries name + description + commander +
-    // crew configs. We then PATCH rootFolder and (optionally) create the
-    // company goal, mirroring the legacy Step 1/2 behavior in one flush.
-    if (!crewProvider || !crewModel) return;
+    // single POST /companies that carries the company name; the LIVE
+    // internal_agent_config fields (Commander cliTool/model + crew
+    // provider/crewModel) are written by a follow-up config PATCH below. We
+    // then PATCH rootFolder and (optionally) create the company goal,
+    // mirroring the legacy Step 1/2 behavior in one flush. Model is optional
+    // (blank → provider default), so only the provider is required here.
+    if (!crewProvider) return;
     setLoading(true);
     setError(null);
     try {
       const company = await companiesApi.create({
         name: companyName.trim(),
-        commanderAdapterConfig: {
-          adapter: providerToAdapter(commanderProvider as Provider),
-          model: commanderModel.trim(),
-        },
-        crewAdapterConfig: {
-          default: {
-            adapter: providerToAdapter(crewProvider as Provider),
-            model: crewModel.trim(),
-          },
-        },
       });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+
+      // Provider-switching: write the LIVE internal_agent_config fields.
+      // Commander (cliTool+model) is anthropic|openai only (no google/opencode
+      // chat path — COMMANDER_PROVIDERS), so commanderProvider is never
+      // "google" here. Crew (provider+crewModel) supports all four. The server
+      // re-ensures the crew to the chosen adapter when provider changes from
+      // the seeded default. Blank model → provider default (|| null).
+      await internalAgentApi.updateConfig(company.id, {
+        cliTool: providerToCliTool(commanderProvider as CommanderProvider),
+        model: commanderModel.trim() || null,
+        provider: crewProvider as Provider,
+        crewModel: crewModel.trim() || null,
+      });
 
       if (companyGoal.trim()) {
         await goalsApi.create(company.id, {
@@ -686,9 +686,8 @@ export function OnboardingWizard() {
       e.preventDefault();
       if (step === 1 && companyName.trim()) handleStep1Next();
       else if (step === 2 && rootFolder.trim()) handleStep2Next();
-      else if (step === 3 && commanderProvider && commanderModel)
-        handleStep3Next();
-      else if (step === 4 && crewProvider && crewModel) handleStep4Next();
+      else if (step === 3 && commanderProvider) handleStep3Next();
+      else if (step === 4 && crewProvider) handleStep4Next();
       else if (step === STEP_AGENT && agentName.trim()) handleStep5Next();
       else if (step === STEP_TASK && taskTitle.trim()) handleStep6Next();
       else if (step === 7) setStep(8);
@@ -898,7 +897,7 @@ export function OnboardingWizard() {
                       }
                     >
                       <option value="">Select a provider…</option>
-                      {PROVIDER_OPTIONS.map((p) => (
+                      {COMMANDER_PROVIDERS.map((p) => (
                         <option key={p} value={p}>
                           {PROVIDER_LABELS[p]}
                         </option>
@@ -916,7 +915,7 @@ export function OnboardingWizard() {
                       id="commander-model"
                       data-testid="commander-model"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. claude-sonnet-4-6"
+                      placeholder="optional — leave blank for the provider default"
                       value={commanderModel}
                       onChange={(e) => setCommanderModel(e.target.value)}
                     />
@@ -964,7 +963,7 @@ export function OnboardingWizard() {
                       }
                     >
                       <option value="">Select a provider…</option>
-                      {PROVIDER_OPTIONS.map((p) => (
+                      {CREW_PROVIDERS.map((p) => (
                         <option key={p} value={p}>
                           {PROVIDER_LABELS[p]}
                         </option>
@@ -982,7 +981,7 @@ export function OnboardingWizard() {
                       id="crew-model"
                       data-testid="crew-model"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. gpt-5.5"
+                      placeholder="optional — leave blank for the provider default"
                       value={crewModel}
                       onChange={(e) => setCrewModel(e.target.value)}
                     />
@@ -1576,7 +1575,7 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       data-testid="step3-next"
-                      disabled={!commanderProvider || !commanderModel.trim() || loading}
+                      disabled={!commanderProvider || loading}
                       onClick={handleStep3Next}
                     >
                       <ArrowRight className="h-3.5 w-3.5 mr-1" />
@@ -1592,7 +1591,7 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       data-testid="step4-next"
-                      disabled={!crewProvider || !crewModel.trim() || loading}
+                      disabled={!crewProvider || loading}
                       onClick={handleStep4Next}
                     >
                       {loading ? (

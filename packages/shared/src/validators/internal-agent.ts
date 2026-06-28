@@ -11,6 +11,7 @@ export const updateInternalAgentConfigSchema = z.object({
   executionMode: z.enum(AGENT_EXECUTION_MODES).optional(),
   provider: z.enum(AGENT_PROVIDERS).optional().nullable(),
   model: z.string().optional().nullable(),
+  crewModel: z.string().optional().nullable(),
   cliTool: z.string().optional().nullable(),
   autonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.enum(AGENT_CAPABILITIES)).optional(),

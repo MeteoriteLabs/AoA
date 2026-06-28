@@ -30,6 +30,7 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import {
   AGENT_CAPABILITIES,
   CLI_TOOLS,
+  CREW_PROVIDERS,
   NOTIFICATION_PREFERENCES,
 } from "@armyofagents/shared";
 import type {
@@ -103,6 +104,13 @@ const CONTEXT_BUDGET_OPTIONS = [
   { value: 16000, label: "Large (16,000)" },
 ];
 
+const CREW_PROVIDER_LABELS: Record<string, string> = {
+  anthropic: "Anthropic (Claude)",
+  openai: "OpenAI (Codex)",
+  google: "Google (Gemini)",
+  opencode: "OpenCode",
+};
+
 const NOTIFICATION_LABELS: Record<
   NotificationPreference,
   { label: string; description: string }
@@ -156,6 +164,9 @@ export function CommanderSection() {
   // path; CLI is now the only dispatch. executionMode stays in the DB schema
   // for rollback/audit but is always written as 'cli' here.
   const [cliTool, setCliTool] = useState<string>("claude_cli");
+  const [commanderModel, setCommanderModel] = useState<string>("");
+  const [crewProvider, setCrewProvider] = useState<string>("anthropic");
+  const [crewModel, setCrewModel] = useState<string>("");
   const [enabledCapabilities, setEnabledCapabilities] = useState<string[]>([
     ...AGENT_CAPABILITIES,
   ]);
@@ -294,6 +305,9 @@ export function CommanderSection() {
   useEffect(() => {
     if (!config) return;
     if (config.cliTool) setCliTool(config.cliTool);
+    setCommanderModel(config.model ?? "");
+    if (config.provider) setCrewProvider(config.provider);
+    setCrewModel(config.crewModel ?? "");
     setEnabledCapabilities([...config.enabledCapabilities]);
     setNotificationPreference(
       config.notificationPreference as NotificationPreference,
@@ -333,6 +347,9 @@ export function CommanderSection() {
     saveMutation.mutate({
       executionMode: "cli",
       cliTool,
+      model: commanderModel.trim() || null,
+      provider: crewProvider as "anthropic" | "openai" | "google" | "opencode",
+      crewModel: crewModel.trim() || null,
       runtimeApprovalsEnabled,
       runtimeAllowAlwaysEnabled,
       vendorCliBypassEnabled,
@@ -434,6 +451,12 @@ export function CommanderSection() {
           <ExecutionTabContent
             cliTool={cliTool}
             setCliTool={setCliTool}
+            commanderModel={commanderModel}
+            setCommanderModel={setCommanderModel}
+            crewProvider={crewProvider}
+            setCrewProvider={setCrewProvider}
+            crewModel={crewModel}
+            setCrewModel={setCrewModel}
             connectionStatus={connectionStatus}
             connectionError={connectionError}
             handleTestConnection={handleTestConnection}
@@ -691,6 +714,12 @@ function TrustedActionsTabContent({
 interface ExecutionTabContentProps {
   cliTool: string;
   setCliTool: (v: string) => void;
+  commanderModel: string;
+  setCommanderModel: (v: string) => void;
+  crewProvider: string;
+  setCrewProvider: (v: string) => void;
+  crewModel: string;
+  setCrewModel: (v: string) => void;
   connectionStatus: "untested" | "loading" | "success" | "failed";
   connectionError: string | null;
   handleTestConnection: () => Promise<void>;
@@ -708,6 +737,12 @@ interface ExecutionTabContentProps {
 function ExecutionTabContent({
   cliTool,
   setCliTool,
+  commanderModel,
+  setCommanderModel,
+  crewProvider,
+  setCrewProvider,
+  crewModel,
+  setCrewModel,
   connectionStatus,
   connectionError,
   handleTestConnection,
@@ -738,7 +773,7 @@ function ExecutionTabContent({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {CLI_TOOLS.map((t) => (
+            {CLI_TOOLS.filter((t) => t.value !== "opencode").map((t) => (
               <SelectItem key={t.value} value={t.value}>
                 {t.label}
               </SelectItem>
@@ -747,6 +782,59 @@ function ExecutionTabContent({
         </Select>
         <p className="text-xs text-muted-foreground mt-1">
           Make sure the selected tool is installed and on your PATH.
+        </p>
+      </div>
+
+      {/* Commander model (optional) */}
+      <div>
+        <label className="text-xs text-muted-foreground mb-1 block" htmlFor="commander-model">
+          Commander model (optional)
+        </label>
+        <input
+          id="commander-model"
+          className="w-full max-w-xs rounded-md border border-border bg-transparent px-3 py-2 text-sm"
+          placeholder="leave blank for the CLI default"
+          value={commanderModel}
+          onChange={(e) => setCommanderModel(e.target.value)}
+        />
+      </div>
+
+      {/* Crew (the AoA crew agents) */}
+      <div className="rounded-md border border-border p-3 space-y-3 max-w-xl">
+        <p className="text-xs font-medium text-muted-foreground">AoA Crew</p>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block" htmlFor="crew-provider">
+            Crew provider
+          </label>
+          <Select value={crewProvider} onValueChange={setCrewProvider}>
+            <SelectTrigger id="crew-provider" aria-label="Crew provider" className="w-full max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CREW_PROVIDERS.map((p) => (
+                <SelectItem key={p} value={p}>{CREW_PROVIDER_LABELS[p]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block" htmlFor="crew-model">
+            Crew model (optional)
+          </label>
+          <input
+            id="crew-model"
+            aria-label="Crew model"
+            className="w-full max-w-xs rounded-md border border-border bg-transparent px-3 py-2 text-sm"
+            placeholder="leave blank for the provider default"
+            value={crewModel}
+            onChange={(e) => setCrewModel(e.target.value)}
+          />
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Governs the AoA crew agents. Changing the provider re-provisions the crew
+          on the new CLI and <strong>discards per-agent crew model/extraArgs
+          customization</strong>. Google/Gemini and OpenCode are crew-only (Commander
+          chat supports only Claude and Codex).
         </p>
       </div>
 

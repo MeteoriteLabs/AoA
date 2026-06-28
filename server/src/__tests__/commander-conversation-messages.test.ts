@@ -34,7 +34,12 @@ describe("conversation messages endpoint — implementation contract", () => {
   });
 
   it("chat route uses shared chat schema and forwards structured context scope", () => {
-    expect(routeSrc).toContain('import { COMMANDER_TOOL_PERMISSION_DEFAULT, chatMessageSchema } from "@armyofagents/shared"');
+    // Tolerant of other members on the same shared import line (e.g. AGENT_PROVIDERS,
+    // added by the provider-switching reconnect) — assert the two symbols are imported
+    // from @armyofagents/shared, not the exact member list.
+    expect(routeSrc).toMatch(
+      /import \{[^}]*\bCOMMANDER_TOOL_PERMISSION_DEFAULT\b[^}]*\bchatMessageSchema\b[^}]*\} from "@armyofagents\/shared"/,
+    );
     expect(routeSrc).toContain("contextScope: req.body.contextScope ?? undefined");
     expect(routeSrc).toContain("departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined");
   });

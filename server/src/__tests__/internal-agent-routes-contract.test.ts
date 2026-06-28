@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { AGENT_PROVIDERS } from "@armyofagents/shared";
 
 // ── drizzle-orm mock ─────────────────────────────────────────────────────────
 vi.mock("drizzle-orm", () => ({
@@ -466,5 +468,58 @@ describe("internal-agent-conversations pinned column schema contract (Task 1)", 
   it("pinned column exists in internalAgentConversations with DEFAULT false NOT NULL", () => {
     // Drizzle ORM form: boolean("pinned").notNull().default(false) or .default(false).notNull()
     expect(schemaSrc).toMatch(/boolean\("pinned"\)\.notNull\(\)\.default\(false\)|boolean\("pinned"\)\.default\(false\)\.notNull\(\)/);
+  });
+});
+
+// ── config PATCH provider/crewModel schema-drift guard (Task 6, Step 5) ────────
+// validate() does `req.body = schema.parse(req.body)` and Zod strips unknown keys,
+// and the config PATCH uses the ROUTE-LOCAL `updateConfigSchema` (not the shared
+// one). If `provider:"opencode"`/`crewModel` aren't in that local schema they're
+// silently dropped and the handler returns 200 with no effect — the enum-fracture
+// bug. These assertions prove a `{ provider:"opencode", crewModel:"openai/gpt-5.2-codex" }`
+// body survives the route-local parse and is reflected (not stripped).
+describe("config PATCH route-local schema accepts opencode + crewModel (Task 6)", () => {
+  const routeSrc = readFileSync(
+    resolve(__dirname, "../routes/internal-agent.ts"),
+    "utf8",
+  );
+
+  it("route-local updateConfigSchema wires provider to the shared AGENT_PROVIDERS enum (incl. opencode)", () => {
+    const schemaStart = routeSrc.indexOf("const updateConfigSchema = z.object({");
+    expect(schemaStart).toBeGreaterThan(-1);
+    const schemaEnd = routeSrc.indexOf("});", schemaStart);
+    const schemaBlock = routeSrc.slice(schemaStart, schemaEnd);
+    // provider must use the shared enum (which now includes "opencode"), NOT a
+    // hand-rolled z.enum(["anthropic","openai","google"]) that would strip opencode.
+    expect(schemaBlock).toMatch(/provider:\s*z\.enum\(AGENT_PROVIDERS\)/);
+    // crewModel must be a declared key (nullable optional) so it isn't stripped.
+    expect(schemaBlock).toMatch(/crewModel:\s*z\.string\(\)\.nullable\(\)\.optional\(\)/);
+  });
+
+  it("AGENT_PROVIDERS includes opencode, so z.enum(AGENT_PROVIDERS) accepts it and a crewModel key survives parsing", () => {
+    expect([...AGENT_PROVIDERS]).toContain("opencode");
+    // Reconstruct the relevant slice of the route-local schema from the SAME shared
+    // enum the route imports, and prove a real PATCH body survives + carries both fields.
+    const slice = z
+      .object({
+        provider: z.enum(AGENT_PROVIDERS).optional(),
+        crewModel: z.string().nullable().optional(),
+      })
+      .passthrough();
+    const parsed = slice.parse({ provider: "opencode", crewModel: "openai/gpt-5.2-codex" });
+    expect(parsed.provider).toBe("opencode");
+    expect(parsed.crewModel).toBe("openai/gpt-5.2-codex");
+  });
+
+  it("the route-local schema's model is NULLABLE so a blank Commander model (null) is accepted, not 400'd", () => {
+    const start = routeSrc.indexOf("const updateConfigSchema = z.object({");
+    const schemaBlock = routeSrc.slice(start, routeSrc.indexOf("});", start));
+    // The onboarding wizard + Settings send `model: commanderModel.trim() || null`
+    // (the Commander model field is optional). If `model` weren't nullable, a blank
+    // value would 400 and onboarding would stall (regression guard).
+    expect(schemaBlock).toMatch(/model:\s*z\.string\(\)\.nullable\(\)\.optional\(\)/);
+    // Runtime proof a null model survives the same shape.
+    const slice = z.object({ model: z.string().nullable().optional() }).passthrough();
+    expect(slice.parse({ model: null }).model).toBeNull();
   });
 });

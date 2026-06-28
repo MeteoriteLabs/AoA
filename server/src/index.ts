@@ -19,7 +19,6 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-  agents,
   marketplaceCatalogCache,
   marketplaceCompanySettings,
 } from "@armyofagents/db";
@@ -63,13 +62,8 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { DEFAULT_BACKUP_RETENTION, MARKETPLACE_SETTINGS_DEFAULTS } from "@armyofagents/shared";
-import { ensureCommandStaff } from "./services/internal-agent/aoa-agents/ensure-command-staff.js";
-import { ensureAdjutant } from "./services/internal-agent/aoa-agents/ensure-adjutant.js";
-import { ensureScout } from "./services/internal-agent/aoa-agents/ensure-scout.js";
-import { ensureEngineer } from "./services/internal-agent/aoa-agents/ensure-engineer.js";
-import { ensureChronicler } from "./services/internal-agent/aoa-agents/ensure-chronicler.js";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
-import { ensureCommanderAgent } from "./services/internal-agent/aoa-agents/ensure-commander.js";
+import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/ensure-all-crew.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
@@ -712,60 +706,11 @@ void db
       // abort the backfill for the remaining companies.
       try {
         // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
-        // Wrapped so a transient DB error defaults to running the ensures (safe:
-        // ensures are idempotent and non-fatal on legacy companies).
-        let marketplaceInstalled: { id: string } | undefined;
-        try {
-          [marketplaceInstalled] = await db
-            .select({ id: agents.id })
-            .from(agents)
-            .where(
-              and(
-                eq(agents.companyId, row.id),
-                eq(agents.kind, "aoa"),
-                sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
-              ),
-            )
-            .limit(1);
-        } catch (err: unknown) {
-          logger.warn({ err, companyId: row.id }, "marketplace gate check failed — defaulting to legacy crew ensures");
-        }
-
-        if (marketplaceInstalled) {
+        if (await isCrewMarketplaceManaged(db as any, row.id)) {
           logger.debug({ companyId: row.id }, "crew startup backfill: skipping — marketplace governs");
           continue;
         }
-
-        await Promise.all([
-          ensureCommandStaff(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "command staff backfill failed"),
-          ),
-          ensureAdjutant(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "adjutant backfill failed"),
-          ),
-          ensureChronicler(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "bootstrap: ensureChronicler failed"),
-          ),
-          // Phase D batch 1: Maker → Engineer + new Scout. ensureEngineer's
-          // first action renames any legacy Maker rows to Engineer so the
-          // unique index never sees both names for one company.
-          ensureScout(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "scout backfill failed"),
-          ),
-          ensureEngineer(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "engineer backfill failed"),
-          ),
-          ensureCommanderAgent(db as any, row.id).catch((err: unknown) =>
-            logger.warn({ err, companyId: row.id }, "commander backfill failed"),
-          ),
-          // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
-          // ("Scribe") agent is no longer backfilled at startup. The
-          // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
-          // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
-          // Keeper + Adjutant. ensureExtractionAgent stays in the codebase
-          // for rollback safety and the dispatcher's lazy-ensure path; it is
-          // simply no longer invoked from bootstrap.
-        ]);
+        await ensureAllCrewAgents(db as any, row.id);
       } catch (err: unknown) {
         logger.warn({ err, companyId: row.id }, "crew startup backfill failed for company");
       }

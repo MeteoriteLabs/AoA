@@ -85,7 +85,7 @@ export async function ensureExtractionAgent(db: Db, companyId: string): Promise<
       .limit(1);
     const currentCfg = current ? (current.adapterConfig as Record<string, unknown> | null) : null;
     const isApiKeyAuth = current?.adapterType === "codex_local" ? await isCodexApiKeyAuth(companyId, currentCfg) : false;
-    const needsAdapter = current ? shouldRewriteCrewAdapter(current.adapterType, currentCfg, crewAdapter.adapterType, { isApiKeyAuth }) : false;
+    const needsAdapter = current ? shouldRewriteCrewAdapter(current.adapterType, currentCfg, crewAdapter.adapterType, crewAdapter.adapterConfig, { isApiKeyAuth }) : false;
 
     if (needsAllowlist || needsRename || needsAdapter) {
       const updates: Record<string, unknown> = { updatedAt: new Date() };
