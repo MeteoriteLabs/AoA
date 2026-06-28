@@ -36,6 +36,8 @@ export function rateModelForCliTool(
   switch (cliTool) {
     case "codex":
       return { provider: "openai", model: "gpt-4.1" };
+    case "opencode":
+      return { provider: "openai", model: "gpt-4.1" };
     case "claude_cli":
     default:
       return { provider: "anthropic", model: configModel ?? "claude-sonnet-4-6" };
