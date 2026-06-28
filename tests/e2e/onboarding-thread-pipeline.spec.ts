@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { cleanupTestCompanies } from "./helpers/seed-company";
+import {
+  cleanupTestCompanies,
+  seedCompanyViaWizard,
+} from "./helpers/seed-company";
 
 /**
  * E2E: Phase 1 thread pipeline — onboarding → first thread → entry.
@@ -37,81 +40,18 @@ test.describe("Onboarding → first thread → entry", () => {
     page,
     request,
   }) => {
-    const companyName = `E2E-Onboard-${Date.now()}`;
-
-    await page.goto("/");
-
-    // ── Lobby empty state opens the wizard ──
-    const createCompanyButton = page.getByRole("button", {
-      name: /^create organization$/i,
+    // Drive the wizard through Step 4 (the step that POSTs /companies) via the
+    // shared helper, which owns the cold-path lobby-button budget. Preserve the
+    // original crew model ("gpt-5.5") + the E2E-Onboard- cleanup prefix.
+    const { issuePrefix } = await seedCompanyViaWizard(page, request, {
+      companyName: `E2E-Onboard-${Date.now()}`,
+      crewModel: "gpt-5.5",
     });
-    await expect(createCompanyButton).toBeVisible({ timeout: 10_000 });
-    await createCompanyButton.click();
-
-    // ── Step 1: company name ──
-    await expect(
-      page.locator("h3", { hasText: "Name your company" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
-    await page.getByTestId("step1-next").click();
-
-    // ── Step 2: workspace root (we accept the auto-suggested path) ──
-    await expect(
-      page.locator("h3", { hasText: "Set up workspace root" }),
-    ).toBeVisible({ timeout: 10_000 });
-    // Step1's handler pre-fills rootFolder with a suggested path; the Next
-    // button is disabled until it's non-empty. If filesystemApi.home() fails
-    // on the runner the suggestion is empty — fall back to typing a path.
-    const rootInput = page.locator(
-      'input[placeholder="/path/to/company/workspace"]',
-    );
-    await expect(rootInput).toBeVisible({ timeout: 5_000 });
-    if ((await rootInput.inputValue()).trim() === "") {
-      await rootInput.fill("/tmp/aoa-e2e-onboard");
-    }
-    await page.getByTestId("step2-next").click();
-
-    // ── Step 3: Commander pick ──
-    await expect(
-      page.locator("h3", { hasText: "Choose your Commander" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page
-      .getByTestId("commander-provider")
-      .selectOption({ value: "anthropic" });
-    await page
-      .getByTestId("commander-model")
-      .fill("claude-sonnet-4-6");
-    await page.getByTestId("step3-next").click();
-
-    // ── Step 4: Crew pick (this is the step that POSTs /companies) ──
-    await expect(
-      page.locator("h3", { hasText: "Choose your Crew" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByTestId("crew-provider").selectOption({ value: "openai" });
-    await page.getByTestId("crew-model").fill("gpt-5.5");
-    await page.getByTestId("step4-next").click();
-
-    // ── Wait for the company to land — Step 5 heading is the signal ──
-    await expect(
-      page.locator("h3", { hasText: "Create your first agent" }),
-    ).toBeVisible({ timeout: 15_000 });
-
-    // ── Sanity: the company exists in the DB ──
-    const companiesRes = await request.get("/api/companies");
-    expect(companiesRes.ok()).toBe(true);
-    const companies = (await companiesRes.json()) as Array<{
-      id: string;
-      name: string;
-      issuePrefix: string;
-    }>;
-    const company = companies.find((c) => c.name === companyName);
-    expect(company).toBeTruthy();
-    expect(company?.issuePrefix).toBeTruthy();
 
     // ── Navigate to the discussions list — the post-onboarding landing per
     // the plan. Step 5 needs a real local adapter CLI to advance so we leave
     // the wizard and drive the discussions surface directly. ──
-    await page.goto(`/${company!.issuePrefix}/discussions`);
+    await page.goto(`/${issuePrefix}/discussions`);
     await expect(
       page.getByRole("heading", { name: /Discussions/i }).first(),
     ).toBeVisible({ timeout: 10_000 });
