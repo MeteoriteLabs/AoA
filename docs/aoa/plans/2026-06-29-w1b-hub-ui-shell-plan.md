@@ -1382,7 +1382,7 @@ Verification:
 - Create: `ui/src/components/hub/HubShell.tsx`
 - Test: `ui/src/components/hub/__tests__/HubShell.test.tsx`
 
-- [ ] **Step 1: Write the failing shell tests**
+- [x] **Step 1: Write the failing shell tests**
 
 Create `ui/src/components/hub/__tests__/HubShell.test.tsx`:
 
@@ -1468,7 +1468,7 @@ describe("HubShell", () => {
 });
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 Run:
 
@@ -1478,7 +1478,7 @@ pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/HubS
 
 Expected: FAIL because shell components do not exist.
 
-- [ ] **Step 3: Implement components**
+- [x] **Step 3: Implement components**
 
 Implement:
 
@@ -1495,7 +1495,7 @@ Constraints:
 - Empty/loading/error states must be explicit.
 - Text must not overflow buttons or compact rows.
 
-- [ ] **Step 4: Run to confirm tests pass**
+- [x] **Step 4: Run to confirm tests pass**
 
 Run:
 
@@ -1505,12 +1505,19 @@ pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/HubS
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add ui/src/components/hub/HubRail.tsx ui/src/components/hub/HubList.tsx ui/src/components/hub/HubHome.tsx ui/src/components/hub/HubViewer.tsx ui/src/components/hub/HubShell.tsx ui/src/components/hub/__tests__/HubShell.test.tsx
 git commit -m "feat(hub): build W1b three-pane shell"
 ```
+
+Verification:
+
+- RED: `corepack pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/HubShell.test.tsx` failed because `../HubShell` did not exist.
+- GREEN: `corepack pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/HubShell.test.tsx` PASS, including priority display, nullable viewer close, named viewer landmark, and company-prefixed `Open full` link coverage.
+- `corepack pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/HubShell.test.tsx src/components/hub/__tests__/hubRegistry.test.tsx` PASS.
+- `corepack pnpm --filter @armyofagents/ui typecheck` PASS.
 
 ---
 
