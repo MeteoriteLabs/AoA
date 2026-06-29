@@ -16,10 +16,13 @@ interface HubShellProps {
   historyStatus: Extract<HubItemStatus, "open" | "resolved" | "archived">;
   auditRows: HubAuditRow[];
   auditLoading: boolean;
+  selectedBulkIds: Set<string>;
   onLaneChange: (lane: HubRailLane) => void;
   onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
   onMarkRead: (itemId: string) => void;
+  onToggleBulkItem: (itemId: string) => void;
+  onBulkAction: (action: "archive" | "dismiss" | "snooze") => void;
   onMarkUnread: (itemId: string) => void;
   onDismiss: (itemId: string) => void;
   onSnooze: (itemId: string) => void;
@@ -37,10 +40,13 @@ export function HubShell({
   historyStatus,
   auditRows,
   auditLoading,
+  selectedBulkIds,
   onLaneChange,
   onHistoryStatusChange,
   onSelectItem,
   onMarkRead,
+  onToggleBulkItem,
+  onBulkAction,
   onMarkUnread,
   onDismiss,
   onSnooze,
@@ -49,6 +55,7 @@ export function HubShell({
 }: HubShellProps) {
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const showHome = activeLane === null;
+  const selectedCount = selectedBulkIds.size;
 
   return (
     <div className="flex h-[calc(100vh-96px)] min-h-[520px] overflow-hidden border-y border-border bg-bg text-text">
@@ -76,6 +83,22 @@ export function HubShell({
               </div>
             ) : null}
           </div>
+          {!showHome && selectedCount > 0 ? (
+            <div className="flex h-11 items-center justify-between gap-3 border-b border-border bg-card px-4 text-xs">
+              <span className="text-muted-foreground">{selectedCount} selected</span>
+              <div className="flex gap-1">
+                <Button type="button" variant="secondary" size="sm" onClick={() => onBulkAction("archive")}>
+                  Archive selected
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => onBulkAction("dismiss")}>
+                  Dismiss selected
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => onBulkAction("snooze")}>
+                  Snooze selected
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {showHome ? (
             <HubHome
               counts={counts}
@@ -88,8 +111,10 @@ export function HubShell({
               isLoading={isLoading}
               error={error}
               selectedItemId={selectedItemId}
+              selectedBulkIds={selectedBulkIds}
               onSelectItem={onSelectItem}
               onMarkRead={onMarkRead}
+              onToggleBulkItem={onToggleBulkItem}
             />
           )}
         </section>

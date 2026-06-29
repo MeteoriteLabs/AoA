@@ -7,8 +7,10 @@ interface HubListProps {
   isLoading: boolean;
   error: unknown;
   selectedItemId: string | null;
+  selectedBulkIds: Set<string>;
   onSelectItem: (itemId: string) => void;
   onMarkRead: (itemId: string) => void;
+  onToggleBulkItem: (itemId: string) => void;
 }
 
 function formatDate(value: string) {
@@ -23,8 +25,10 @@ export function HubList({
   isLoading,
   error,
   selectedItemId,
+  selectedBulkIds,
   onSelectItem,
   onMarkRead,
+  onToggleBulkItem,
 }: HubListProps) {
   if (isLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading hub items...</div>;
@@ -43,22 +47,31 @@ export function HubList({
         const Icon = entry.icon;
         const selected = selectedItemId === item.id;
         return (
-          <button
+          <div
             key={item.id}
-            type="button"
-            onClick={() => {
-              onSelectItem(item.id);
-              if (!item.readAt) onMarkRead(item.id);
-            }}
             className={cn(
-              "grid h-[92px] w-full grid-cols-[28px_1fr_auto] gap-3 border-b border-border px-4 py-3 text-left transition-colors hover:bg-card",
+              "grid h-[92px] w-full grid-cols-[18px_28px_1fr_auto] gap-3 border-b border-border px-4 py-3 text-left transition-colors hover:bg-card",
               selected && "bg-card",
             )}
           >
+            <input
+              type="checkbox"
+              aria-label={`Select ${item.title}`}
+              checked={selectedBulkIds.has(item.id)}
+              onChange={() => onToggleBulkItem(item.id)}
+              className="mt-1 size-4 accent-brand"
+            />
             <span className="mt-0.5 flex size-7 items-center justify-center rounded-md border border-border bg-bg">
               <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
             </span>
-            <span className="min-w-0">
+            <button
+              type="button"
+              onClick={() => {
+                onSelectItem(item.id);
+                if (!item.readAt) onMarkRead(item.id);
+              }}
+              className="min-w-0 text-left"
+            >
               <span className="flex items-center gap-2">
                 {!item.readAt ? (
                   <span className="size-1.5 shrink-0 rounded-full bg-brand" aria-label="Unread" />
@@ -76,11 +89,11 @@ export function HubList({
                   {item.priority}
                 </span>
               </span>
-            </span>
+            </button>
             <span className="whitespace-nowrap text-xs text-muted-foreground">
               {formatDate(item.createdAt)}
             </span>
-          </button>
+          </div>
         );
       })}
     </div>

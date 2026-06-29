@@ -43,6 +43,7 @@ export function InboxHub() {
   const [historyStatus, setHistoryStatus] = useState<
     Extract<HubItemStatus, "open" | "resolved" | "archived">
   >("open");
+  const [selectedBulkIds, setSelectedBulkIds] = useState<Set<string>>(() => new Set());
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -125,6 +126,7 @@ export function InboxHub() {
 
   const handleLaneChange = (lane: HubLane | null) => {
     setHistoryStatus("open");
+    setSelectedBulkIds(new Set());
     if (!lane) {
       navigate("/inbox-hub");
       return;
@@ -136,6 +138,34 @@ export function InboxHub() {
     status: Extract<HubItemStatus, "open" | "resolved" | "archived">,
   ) => {
     setHistoryStatus(status);
+    setSelectedBulkIds(new Set());
+  };
+
+  const handleToggleBulkItem = (itemId: string) => {
+    setSelectedBulkIds((current) => {
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  };
+
+  const handleBulkAction = (action: "archive" | "dismiss" | "snooze") => {
+    const selectedItems = items.filter((item) => selectedBulkIds.has(item.id));
+    if (selectedItems.length === 0) return;
+    const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    hubMutations.bulkAction.mutate({
+      items: selectedItems.map((item) => {
+        if (action === "archive") {
+          return { id: item.id, action, expectedVersion: item.version };
+        }
+        if (action === "snooze") {
+          return { id: item.id, action, until };
+        }
+        return { id: item.id, action };
+      }),
+    });
+    setSelectedBulkIds(new Set());
   };
 
   const handleSelectItem = (itemId: string | null) => {
@@ -221,10 +251,13 @@ export function InboxHub() {
       historyStatus={historyStatus}
       auditRows={auditQuery.data ?? []}
       auditLoading={auditQuery.isLoading}
+      selectedBulkIds={selectedBulkIds}
       onLaneChange={handleLaneChange}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}
+      onToggleBulkItem={handleToggleBulkItem}
+      onBulkAction={handleBulkAction}
       onMarkUnread={handleMarkUnread}
       onDismiss={handleDismiss}
       onSnooze={handleSnooze}

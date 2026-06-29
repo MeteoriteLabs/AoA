@@ -35,6 +35,11 @@ vi.mock("@/api/hub-items", () => ({
       item: { id: "hub-1", status: "open", version: 1 },
       auditId: "undo-audit-1",
     }),
+    bulkAction: vi.fn().mockResolvedValue({
+      bulkId: "bulk-1",
+      summary: { succeeded: 2, failed: 0, skipped: 0 },
+      results: [],
+    }),
     audit: vi.fn().mockResolvedValue([]),
   },
 }));
@@ -75,6 +80,11 @@ beforeEach(() => {
     item: { id: "hub-1", status: "open", version: 1 },
     auditId: "undo-audit-1",
   } as never);
+  vi.mocked(hubItemsApi.bulkAction).mockResolvedValue({
+    bulkId: "bulk-1",
+    summary: { succeeded: 2, failed: 0, skipped: 0 },
+    results: [],
+  });
   vi.mocked(hubItemsApi.audit).mockResolvedValue([]);
 });
 
@@ -297,5 +307,49 @@ describe("InboxHub page", () => {
     expect(within(auditTimeline).getByText(/^archive$/i)).toBeInTheDocument();
     expect(within(auditTimeline).getByText(/No longer needed/i)).toBeInTheDocument();
     expect(within(auditTimeline).getByText(/user-1/i)).toBeInTheDocument();
+  });
+
+  it("bulk archives selected open items with optimistic versions", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({ id: "hub-1", title: "First approval", version: 1 }),
+      hubItem({ id: "hub-2", title: "Second approval", version: 3 }),
+    ]);
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: /select first approval/i }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /select second approval/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /archive selected/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.bulkAction).toHaveBeenCalledWith("company-1", {
+        items: [
+          { id: "hub-1", action: "archive", expectedVersion: 1 },
+          { id: "hub-2", action: "archive", expectedVersion: 3 },
+        ],
+      });
+    });
+  });
+
+  it("bulk dismisses selected open items as personal state", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({ id: "hub-1", title: "Dismiss one" }),
+      hubItem({ id: "hub-2", title: "Dismiss two" }),
+    ]);
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: /select dismiss one/i }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /select dismiss two/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /dismiss selected/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.bulkAction).toHaveBeenCalledWith("company-1", {
+        items: [
+          { id: "hub-1", action: "dismiss" },
+          { id: "hub-2", action: "dismiss" },
+        ],
+      });
+    });
   });
 });
