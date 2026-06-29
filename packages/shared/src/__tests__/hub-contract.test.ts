@@ -19,8 +19,13 @@ describe("hub contract", () => {
     }
   });
   it("reserves the W5 runtime-decision type without a UI bridge yet", () => {
+    // W5 reserve-don't-build boundary: the runtime-decision type exists in the
+    // contract, lands in the "waiting_on_you" lane, and is gated to founder
+    // authority — but W1a ships NO adapter bridge for it (master scope §10/§18).
     expect(HUB_SEMANTIC_TYPES).toContain("agent_runtime_decision");
     expect(HUB_SEMANTIC_TO_LANE.agent_runtime_decision).toBe("waiting_on_you");
+    expect(HUB_AUTHORITY_BY_TYPE.agent_runtime_decision).toBe("founder");
+    expect(authorityForSemanticType("agent_runtime_decision")).toBe("founder");
   });
   it("statuses are the three terminal-distinct lifecycle states + open", () => {
     expect(HUB_ITEM_STATUSES).toEqual(["open", "snoozed", "resolved", "archived"]);
