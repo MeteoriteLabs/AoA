@@ -101,7 +101,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
       page.getByRole("button", { name: /undo resolve/i }).click(),
     ]);
     await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
-    await expect(page.getByRole("button", { name: /^Resolve launch approval$/i })).toBeVisible({
+    await expect(page.getByRole("button", { name: /Resolve launch approval/i })).toBeVisible({
       timeout: 10_000,
     });
 
