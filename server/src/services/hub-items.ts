@@ -120,9 +120,9 @@ export function hubItemsService(db: Db) {
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
-  // ── Query ───────────────────────────────────────────────────────────────────
+  // ── Query / Action / Reconcile ──────────────────────────────────────────────
 
-  return { emit, sourceUniqueKey, resolveOwner, query };
+  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct };
 
   // RBAC-scoped, hot-set (open by default), per-principal-state-joined query.
   // Hoisted so it can sit after the public `return` for readability — function
@@ -197,5 +197,96 @@ export function hubItemsService(db: Db) {
         snoozedUntil: r.snoozedUntil,
         dismissedAt: r.dismissedAt,
       }));
+  }
+
+  // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
+  async function recordAndAct(args: {
+    companyId: string;
+    hubItemId: string;
+    action: string;
+    expectedVersion: number;
+    actorType: string;
+    actorId: string;
+    actorIsFounder: boolean; // route resolves via permissionService (founder OR board)
+    authorityBasis?: string;
+    reason?: string;
+    idempotencyKey?: string;
+    nextStatus: "resolved" | "archived" | "snoozed";
+    // EXTERNAL/irreversible source-API relay; runs AFTER commit.
+    sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
+  }) {
+    const current = await db
+      .select()
+      .from(hubItems)
+      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
+      .limit(1)
+      .then((r) => r[0]);
+    if (!current) throw notFound("Hub item not found");
+
+    // AUTHORITY gate (§7): gated by the item TYPE's authority, not by ownership.
+    // An Owner who lacks Authority is rejected HERE (the action layer), not just
+    // at render — they must Route/Escalate instead.
+    if (
+      authorityForSemanticType(current.semanticType as HubSemanticType) === "founder" &&
+      !args.actorIsFounder
+    ) {
+      throw forbidden("This decision requires founder/board authority — route or escalate it.");
+    }
+
+    // Phase 1 — atomic DB transaction: idempotency + version-guarded transition +
+    // immutable audit. The audit is DURABLE before any external side-effect.
+    const committed = await db.transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Db;
+      if (args.idempotencyKey) {
+        const dup = await tx
+          .select({ id: hubAudit.id })
+          .from(hubAudit)
+          .where(
+            and(
+              eq(hubAudit.companyId, args.companyId),
+              eq(hubAudit.idempotencyKey, args.idempotencyKey),
+            ),
+          )
+          .limit(1)
+          .then((r) => r[0]);
+        if (dup) return { item: current, replayed: true as const };
+      }
+      const updated = await tx
+        .update(hubItems)
+        .set({
+          status: args.nextStatus,
+          version: current.version + 1,
+          resolvedAt: args.nextStatus === "resolved" ? new Date() : current.resolvedAt,
+          archivedAt: args.nextStatus === "archived" ? new Date() : current.archivedAt,
+        })
+        .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.version, args.expectedVersion)))
+        .returning()
+        .then((r) => r[0] ?? null);
+      if (!updated) {
+        throw conflict("This item was changed by someone else. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+      await tx.insert(hubAudit).values({
+        companyId: args.companyId,
+        hubItemId: args.hubItemId,
+        actorType: args.actorType,
+        actorId: args.actorId,
+        action: args.action,
+        authorityBasis: args.authorityBasis ?? null,
+        reason: args.reason ?? null,
+        idempotencyKey: args.idempotencyKey ?? null,
+        priorState: { status: current.status, version: current.version },
+      });
+      return { item: updated, replayed: false as const };
+    });
+    if (committed.replayed) return committed.item; // no second side-effect on replay
+
+    // Phase 2 — EXTERNAL/irreversible source-API side-effect AFTER commit. The
+    // audit row is already durable, so a relay/source failure is recoverable (the
+    // sweeper reconciles), NEVER an erased decision record. DB-only effects belong
+    // inside Phase 1's transaction instead.
+    if (args.sideEffect) await args.sideEffect();
+    return committed.item;
   }
 }
