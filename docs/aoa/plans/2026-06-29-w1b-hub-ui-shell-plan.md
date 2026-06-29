@@ -229,8 +229,8 @@ const oldInboxSources = [
   { name: "actionable approvals", semanticType: "approval_request", lane: "waiting_on_you" },
   { name: "pending join requests", semanticType: "join_request", lane: "waiting_on_you" },
   { name: "pending discussions", semanticType: "discussion_pending", lane: "waiting_on_you" },
-  { name: "thread.needs_human_input", semanticType: "human_input_needed", lane: "waiting_on_you" },
-  { name: "thread.scope_proposal", semanticType: "scope_proposal", lane: "waiting_on_you" },
+  { name: "thread.human_input_needed", semanticType: "human_input_needed", lane: "waiting_on_you" },
+  { name: "thread.scope_proposal_posted", semanticType: "scope_proposal", lane: "waiting_on_you" },
   { name: "thread.artifact_needs_review", semanticType: "legacy_other", lane: "notifications" },
   { name: "thread.crew_failed", semanticType: "agent_error", lane: "notifications" },
   { name: "thread.spinoff_suggested", semanticType: "proactive", lane: "suggestions" },
@@ -243,6 +243,13 @@ const oldInboxSources = [
   { name: "suggestion engine rows", semanticType: "suggestion", lane: "suggestions" },
 ] as const;
 
+const removedOldInboxSources = [
+  {
+    name: "my recent tasks",
+    reason: "Owned by the Tasks page, not the hub attention queue",
+  },
+] as const;
+
 describe("old Inbox to hub parity contract", () => {
   it("maps every retained old Inbox source to a known hub semantic type and lane", () => {
     for (const source of oldInboxSources) {
@@ -252,7 +259,12 @@ describe("old Inbox to hub parity contract", () => {
   });
 
   it("keeps intentionally removed old Inbox sections explicit", () => {
-    expect("my recent tasks").toBe("my recent tasks");
+    expect(removedOldInboxSources).toEqual([
+      {
+        name: "my recent tasks",
+        reason: "Owned by the Tasks page, not the hub attention queue",
+      },
+    ]);
   });
 });
 ```
@@ -267,7 +279,7 @@ pnpm -C server exec vitest run src/__tests__/hub-old-inbox-parity.test.ts
 
 Expected: PASS once shared semantic mappings are total. This test does not prove emit paths; later integration/e2e tests must prove rows are actually created.
 
-- [x] **Step 3: Expand integration acceptance from this contract**
+- [ ] **Step 3: Expand integration acceptance from this contract**
 
 For every retained row in `oldInboxSources`, add either:
 
@@ -275,6 +287,8 @@ For every retained row in `oldInboxSources`, add either:
 - an explicit deferred-source assertion that final `/inbox` cutover remains blocked until that source is implemented.
 
 Do not remove old `Inbox.tsx` or redirect `/inbox` in W1b unless this parity contract and its source-emission integration coverage are green.
+
+Review note: Task 0A locks the source inventory only. Leave this step unchecked until Tasks 2 and 3 add producer/reconciler assertions or explicit final-cutover deferrals for every retained source row.
 
 - [x] **Step 4: Commit**
 
