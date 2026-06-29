@@ -79,6 +79,13 @@ async function auditCount(companyId: string, hubItemId: string): Promise<number>
   return firstRow<{ n: number }>(res).n;
 }
 
+async function activityCount(companyId: string, hubItemId: string, action: string): Promise<number> {
+  const res = await db.execute(
+    sql`SELECT count(*)::int AS n FROM activity_log WHERE company_id = ${companyId} AND entity_type = 'hub_item' AND entity_id = ${hubItemId} AND action = ${action}`,
+  );
+  return firstRow<{ n: number }>(res).n;
+}
+
 describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB", () => {
   it("setup harness boots", () => {
     if (setupError) throw new Error(String(setupError));
@@ -211,5 +218,115 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
 
     expect(sideEffects).toBe(1); // side-effect ran exactly once
     expect(await auditCount(companyId, item.id)).toBe(1); // one audit row only
+  });
+
+  it("claim and release mutate claim fields, not owner, and write audit/activity rows", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({
+      companyId,
+      semanticType: "stale_work",
+      sourceType: "issue",
+      sourceId: "claim-1",
+      title: "claim me",
+      ownerUserId: founderId,
+      ownerPool: "board",
+    });
+
+    const claimed = await svc.recordLifecycleAction({
+      companyId,
+      hubItemId: item.id,
+      action: "claim",
+      expectedVersion: item.version,
+      actorType: "user",
+      actorId: founderId,
+      actorIsFounder: true,
+    });
+    expect(claimed.item.status).toBe("open");
+    expect(claimed.item.ownerUserId).toBe(founderId);
+    expect(claimed.item.claimedByUserId).toBe(founderId);
+    expect(claimed.auditId).toBeTruthy();
+    expect(claimed.undoDeadline).toBeTruthy();
+
+    const released = await svc.recordLifecycleAction({
+      companyId,
+      hubItemId: item.id,
+      action: "release",
+      expectedVersion: claimed.item.version,
+      actorType: "user",
+      actorId: founderId,
+      actorIsFounder: true,
+    });
+    expect(released.item.claimedByUserId).toBeNull();
+    expect(released.item.claimedAt).toBeNull();
+    expect(await auditCount(companyId, item.id)).toBe(2);
+    expect(await activityCount(companyId, item.id, "hub_item.claim")).toBe(1);
+    expect(await activityCount(companyId, item.id, "hub_item.release")).toBe(1);
+  });
+
+  it("undo restores hub-owned fields before the deadline and writes a second audit row", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "undo-1", title: "undo me", ownerUserId: founderId });
+
+    const resolved = await svc.recordLifecycleAction({
+      companyId,
+      hubItemId: item.id,
+      action: "resolve",
+      expectedVersion: item.version,
+      actorType: "user",
+      actorId: founderId,
+      actorIsFounder: true,
+    });
+    expect(resolved.item.status).toBe("resolved");
+
+    const undone = await svc.undoAction({
+      companyId,
+      hubItemId: item.id,
+      auditId: resolved.auditId,
+      expectedVersion: resolved.item.version,
+      actorType: "user",
+      actorId: founderId,
+    });
+    expect(undone.item.status).toBe("open");
+    expect(undone.item.version).toBe(item.version);
+    expect(undone.auditId).toBeTruthy();
+    expect(await auditCount(companyId, item.id)).toBe(2);
+    expect(await activityCount(companyId, item.id, "hub_item.undo")).toBe(1);
+  });
+
+  it("undo rejects expired audit deadlines", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "undo-expired", title: "expired", ownerUserId: founderId });
+    const archived = await svc.recordLifecycleAction({
+      companyId,
+      hubItemId: item.id,
+      action: "archive",
+      expectedVersion: item.version,
+      actorType: "user",
+      actorId: founderId,
+      actorIsFounder: true,
+    });
+    await db.execute(sql`UPDATE hub_audit SET undo_deadline = now() - interval '1 second' WHERE id = ${archived.auditId}`);
+
+    let caught: unknown;
+    try {
+      await svc.undoAction({
+        companyId,
+        hubItemId: item.id,
+        auditId: archived.auditId,
+        expectedVersion: archived.item.version,
+        actorType: "user",
+        actorId: founderId,
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).status).toBe(409);
   });
 });

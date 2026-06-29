@@ -12,6 +12,8 @@ const mockSvc = vi.hoisted(() => ({
   getVisible: vi.fn(),
   recordAndAct: vi.fn(),
   applyPersonalState: vi.fn(),
+  recordLifecycleAction: vi.fn(),
+  undoAction: vi.fn(),
 }));
 
 const mockPerms = vi.hoisted(() => ({
@@ -120,7 +122,7 @@ describe("hub-items routes", () => {
 
   it("(b) POST action with a stale expectedVersion → 409", async () => {
     mockPerms.isFounder.mockResolvedValue(true);
-    mockSvc.recordAndAct.mockRejectedValue(
+    mockSvc.recordLifecycleAction.mockRejectedValue(
       new HttpError(409, "This item was changed by someone else. Reload and retry.", {
         currentVersion: 3,
       }),
@@ -139,7 +141,7 @@ describe("hub-items routes", () => {
     // The route computes actorIsFounder=false (non-founder, non-implicit); the
     // service's Authority gate rejects with forbidden → 403.
     mockPerms.isFounder.mockResolvedValue(false);
-    mockSvc.recordAndAct.mockRejectedValue(
+    mockSvc.recordLifecycleAction.mockRejectedValue(
       new HttpError(403, "This decision requires founder/board authority — route or escalate it."),
     );
     const app = createApp(boardActor());
@@ -150,14 +152,18 @@ describe("hub-items routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     // The route resolved actorIsFounder=false and handed it to the service.
-    expect(mockSvc.recordAndAct).toHaveBeenCalledWith(
+    expect(mockSvc.recordLifecycleAction).toHaveBeenCalledWith(
       expect.objectContaining({ actorIsFounder: false, actorId: "user-1" }),
     );
   });
 
-  it("POST action succeeds for a founder and logs activity", async () => {
+  it("POST action succeeds for a founder and returns audit-backed lifecycle metadata", async () => {
     mockPerms.isFounder.mockResolvedValue(true);
-    mockSvc.recordAndAct.mockResolvedValue({ id: ITEM_ID, status: "resolved", version: 2 });
+    mockSvc.recordLifecycleAction.mockResolvedValue({
+      item: { id: ITEM_ID, status: "resolved", version: 2 },
+      auditId: "audit-1",
+      undoDeadline: "2026-06-29T00:00:08.000Z",
+    });
     const app = createApp(boardActor());
 
     const res = await request(app)
@@ -165,11 +171,32 @@ describe("hub-items routes", () => {
       .send({ action: "resolve", expectedVersion: 1 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.status).toBe("resolved");
-    expect(mockSvc.recordAndAct).toHaveBeenCalledWith(
-      expect.objectContaining({ actorIsFounder: true, nextStatus: "resolved" }),
+    expect(res.body.item.status).toBe("resolved");
+    expect(res.body.auditId).toBe("audit-1");
+    expect(res.body.undoDeadline).toBe("2026-06-29T00:00:08.000Z");
+    expect(mockSvc.recordLifecycleAction).toHaveBeenCalledWith(
+      expect.objectContaining({ actorIsFounder: true, action: "resolve" }),
     );
-    expect(mockLogActivity).toHaveBeenCalledOnce();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("POST action accepts claim without client-chosen status", async () => {
+    mockPerms.isFounder.mockResolvedValue(true);
+    mockSvc.recordLifecycleAction.mockResolvedValue({
+      item: { id: ITEM_ID, status: "open", claimedByUserId: "user-1", version: 2 },
+      auditId: "audit-claim",
+      undoDeadline: "2026-06-29T00:00:08.000Z",
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
+      .send({ action: "claim", expectedVersion: 1 });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSvc.recordLifecycleAction).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "claim", expectedVersion: 1 }),
+    );
   });
 
   it("POST action rejects a forbidden client-chosen nextStatus with 400", async () => {
@@ -178,7 +205,30 @@ describe("hub-items routes", () => {
       .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
       .send({ action: "resolve", expectedVersion: 1, nextStatus: "bogus" });
     expect(res.status).toBe(400);
-    expect(mockSvc.recordAndAct).not.toHaveBeenCalled();
+    expect(mockSvc.recordLifecycleAction).not.toHaveBeenCalled();
+  });
+
+  it("POST undo restores an audit-backed lifecycle action", async () => {
+    mockSvc.undoAction.mockResolvedValue({
+      item: { id: ITEM_ID, status: "open", version: 1 },
+      auditId: "undo-audit-1",
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/undo`)
+      .send({ auditId: "audit-1", expectedVersion: 2 });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSvc.undoAction).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      hubItemId: ITEM_ID,
+      auditId: "audit-1",
+      expectedVersion: 2,
+      actorType: "user",
+      actorId: "user-1",
+    });
+    expect(res.body.auditId).toBe("undo-audit-1");
   });
 
   it.each([

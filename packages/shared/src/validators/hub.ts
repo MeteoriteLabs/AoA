@@ -98,3 +98,12 @@ export const hubBulkActionSchema = z
   .strict();
 
 export type HubBulkActionInput = z.infer<typeof hubBulkActionSchema>;
+
+export const hubUndoSchema = z
+  .object({
+    auditId: z.string().trim().min(1),
+    expectedVersion: z.number().int().min(0),
+  })
+  .strict();
+
+export type HubUndoInput = z.infer<typeof hubUndoSchema>;

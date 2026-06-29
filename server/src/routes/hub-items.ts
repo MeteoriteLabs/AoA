@@ -1,11 +1,11 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import type { UserRole, ListHubItemsQuery } from "@armyofagents/shared";
-import { listHubItemsQuery, hubActionSchema, hubUserStateSchema } from "@armyofagents/shared";
+import { listHubItemsQuery, hubActionSchema, hubUserStateSchema, hubUndoSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { hubItemsService, permissionService, logActivity } from "../services/index.js";
+import { hubItemsService, permissionService } from "../services/index.js";
 import { HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess } from "./authz.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
 import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
 
@@ -100,15 +100,9 @@ export function hubItemRoutes(db: Db) {
         idempotencyKey?: string;
         reason?: string;
       };
-      const nextStatus =
-        action === "resolve" ? "resolved" : action === "archive" ? "archived" : null;
-      if (!nextStatus) {
-        throw new HttpError(422, `${action} is not implemented yet`);
-      }
-
       let item;
       try {
-        item = await svc.recordAndAct({
+        item = await svc.recordLifecycleAction({
           companyId,
           hubItemId,
           action,
@@ -119,7 +113,6 @@ export function hubItemRoutes(db: Db) {
           authorityBasis: actorIsFounder ? "founder" : "owner",
           reason,
           idempotencyKey,
-          nextStatus,
         });
       } catch (err) {
         // conflict→409, notFound→404, forbidden→403 — same HttpError convention
@@ -131,19 +124,33 @@ export function hubItemRoutes(db: Db) {
         throw err;
       }
 
-      const actor = getActorInfo(req);
-      await logActivity(db, {
+      res.json(item);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/hub-items/:id/undo",
+    validate(hubUndoSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const hubItemId = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireBoardUserId(req);
+      const { auditId, expectedVersion } = req.body as {
+        auditId: string;
+        expectedVersion: number;
+      };
+
+      const result = await svc.undoAction({
         companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        action: "hub_item.action",
-        entityType: "hub_item",
-        entityId: hubItemId,
-        details: { action, nextStatus },
+        hubItemId,
+        auditId,
+        expectedVersion,
+        actorType: "user",
+        actorId: userId,
       });
 
-      res.json(item);
+      res.json(result);
     },
   );
 

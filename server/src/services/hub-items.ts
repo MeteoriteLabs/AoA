@@ -4,6 +4,7 @@ import {
   hubItems,
   hubItemUserState,
   hubAudit,
+  activityLog,
   approvals,
   heartbeatRuns,
   joinRequests,
@@ -30,6 +31,7 @@ const HEARTBEAT_LIVE_STATUSES: ReadonlySet<string> = new Set(
 const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revision_requested"]);
 const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
 const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const HUB_UNDO_WINDOW_MS = 8_000;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
@@ -68,6 +70,40 @@ export interface EmitArgs {
 export function hubItemsService(db: Db) {
   function sourceUniqueKey(a: EmitArgs): string {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
+  }
+
+  function decorateItem<T extends { semanticType: string | null }>(row: T) {
+    return {
+      ...row,
+      lane: row.semanticType
+        ? laneForSemanticType(row.semanticType as HubSemanticType)
+        : null,
+    };
+  }
+
+  function hubOwnedPriorState(item: {
+    status: string;
+    version: number;
+    resolvedAt: Date | null;
+    archivedAt: Date | null;
+    claimedByUserId?: string | null;
+    claimedAt?: Date | null;
+  }) {
+    return {
+      status: item.status,
+      version: item.version,
+      resolvedAt: item.resolvedAt,
+      archivedAt: item.archivedAt,
+      claimedByUserId: item.claimedByUserId ?? null,
+      claimedAt: item.claimedAt ?? null,
+    };
+  }
+
+  function jsonDate(value: unknown): Date | null {
+    if (value == null) return null;
+    if (value instanceof Date) return value;
+    if (typeof value === "string" || typeof value === "number") return new Date(value);
+    return null;
   }
 
   // §7/§19: every item has a real human Owner. Natural owner → use it; agent/run
@@ -372,6 +408,268 @@ export function hubItemsService(db: Db) {
   }
 
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
+  async function recordLifecycleAction(args: {
+    companyId: string;
+    hubItemId: string;
+    action: "resolve" | "archive" | "claim" | "release";
+    expectedVersion: number;
+    actorType: "user" | "agent" | "system";
+    actorId: string;
+    actorIsFounder: boolean;
+    authorityBasis?: string;
+    reason?: string;
+    idempotencyKey?: string;
+    sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
+  }) {
+    const current = await db
+      .select()
+      .from(hubItems)
+      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
+      .limit(1)
+      .then((r) => r[0]);
+    if (!current) throw notFound("Hub item not found");
+    if (args.idempotencyKey) {
+      const dup = await db
+        .select({
+          id: hubAudit.id,
+          undoDeadline: hubAudit.undoDeadline,
+        })
+        .from(hubAudit)
+        .where(
+          and(
+            eq(hubAudit.companyId, args.companyId),
+            eq(hubAudit.idempotencyKey, args.idempotencyKey),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+      if (dup) {
+        return { item: decorateItem(current), auditId: dup.id, undoDeadline: dup.undoDeadline };
+      }
+    }
+    if (current.status !== "open") {
+      throw conflict("This item is no longer open. Reload and retry.", {
+        currentVersion: current.version,
+      });
+    }
+
+    if (
+      (args.action === "resolve" || args.action === "archive") &&
+      authorityForSemanticType(current.semanticType as HubSemanticType) === "founder" &&
+      !args.actorIsFounder
+    ) {
+      throw forbidden("This decision requires founder/board authority — route or escalate it.");
+    }
+    if (args.action === "claim") {
+      if (!args.actorIsFounder) throw forbidden("Claiming board-pool work requires board authority.");
+      if (current.ownerPool !== "board") throw conflict("Only board-pool items can be claimed.");
+      if (current.claimedByUserId) {
+        throw conflict("This item is already claimed. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+    }
+    if (args.action === "release") {
+      if (!current.claimedByUserId) throw conflict("This item is not claimed.");
+      if (current.claimedByUserId !== args.actorId && !args.actorIsFounder) {
+        throw forbidden("Only the claimant or founder can release this item.");
+      }
+    }
+
+    const undoDeadline = new Date(Date.now() + HUB_UNDO_WINDOW_MS);
+    const committed = await db.transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Db;
+      if (args.idempotencyKey) {
+        const dup = await tx
+          .select({
+            id: hubAudit.id,
+            undoDeadline: hubAudit.undoDeadline,
+          })
+          .from(hubAudit)
+          .where(
+            and(
+              eq(hubAudit.companyId, args.companyId),
+              eq(hubAudit.idempotencyKey, args.idempotencyKey),
+            ),
+          )
+          .limit(1)
+          .then((r) => r[0]);
+        if (dup) {
+          return { item: decorateItem(current), auditId: dup.id, undoDeadline: dup.undoDeadline, replayed: true as const };
+        }
+      }
+
+      const now = new Date();
+      const patch =
+        args.action === "resolve"
+          ? { status: "resolved" as const, resolvedAt: now, version: args.expectedVersion + 1 }
+          : args.action === "archive"
+            ? { status: "archived" as const, archivedAt: now, version: args.expectedVersion + 1 }
+            : args.action === "claim"
+              ? { claimedByUserId: args.actorId, claimedAt: now, version: args.expectedVersion + 1 }
+              : { claimedByUserId: null, claimedAt: null, version: args.expectedVersion + 1 };
+
+      const updated = await tx
+        .update(hubItems)
+        .set(patch)
+        .where(
+          and(
+            eq(hubItems.id, args.hubItemId),
+            eq(hubItems.companyId, args.companyId),
+            eq(hubItems.version, args.expectedVersion),
+          ),
+        )
+        .returning()
+        .then((r) => r[0] ?? null);
+      if (!updated) {
+        throw conflict("This item was changed by someone else. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+
+      const audit = await tx
+        .insert(hubAudit)
+        .values({
+          companyId: args.companyId,
+          hubItemId: args.hubItemId,
+          actorType: args.actorType,
+          actorId: args.actorId,
+          action: args.action,
+          authorityBasis: args.authorityBasis ?? null,
+          reason: args.reason ?? null,
+          idempotencyKey: args.idempotencyKey ?? null,
+          priorState: hubOwnedPriorState(current),
+          undoDeadline,
+        })
+        .returning({
+          id: hubAudit.id,
+          undoDeadline: hubAudit.undoDeadline,
+        })
+        .then((r) => r[0]);
+
+      await tx.insert(activityLog).values({
+        companyId: args.companyId,
+        actorType: args.actorType,
+        actorId: args.actorId,
+        action: `hub_item.${args.action}`,
+        entityType: "hub_item",
+        entityId: args.hubItemId,
+        details: {
+          action: args.action,
+          reason: args.reason ?? null,
+        },
+      });
+
+      return { item: decorateItem(updated), auditId: audit.id, undoDeadline: audit.undoDeadline, replayed: false as const };
+    });
+
+    if (!committed.replayed && args.sideEffect) await args.sideEffect();
+    return {
+      item: committed.item,
+      auditId: committed.auditId,
+      undoDeadline: committed.undoDeadline,
+    };
+  }
+
+  async function undoAction(args: {
+    companyId: string;
+    hubItemId: string;
+    auditId: string;
+    expectedVersion: number;
+    actorType: "user" | "agent" | "system";
+    actorId: string;
+  }) {
+    const audit = await db
+      .select()
+      .from(hubAudit)
+      .where(
+        and(
+          eq(hubAudit.id, args.auditId),
+          eq(hubAudit.companyId, args.companyId),
+          eq(hubAudit.hubItemId, args.hubItemId),
+        ),
+      )
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!audit) throw notFound("Hub audit row not found");
+    if (!audit.undoDeadline || audit.undoDeadline.getTime() < Date.now()) {
+      throw conflict("Undo window has expired.");
+    }
+    if (audit.irreversibleSideEffects != null || audit.relayResult != null) {
+      throw conflict("This action cannot be undone.");
+    }
+
+    const current = await db
+      .select()
+      .from(hubItems)
+      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!current) throw notFound("Hub item not found");
+    if (current.version !== args.expectedVersion) {
+      throw conflict("This item was changed by someone else. Reload and retry.", {
+        currentVersion: current.version,
+      });
+    }
+
+    const prior = (audit.priorState ?? {}) as Record<string, unknown>;
+    return db.transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Db;
+      const updated = await tx
+        .update(hubItems)
+        .set({
+          status: String(prior.status ?? current.status),
+          version: typeof prior.version === "number" ? prior.version : current.version,
+          resolvedAt: jsonDate(prior.resolvedAt),
+          archivedAt: jsonDate(prior.archivedAt),
+          claimedByUserId: typeof prior.claimedByUserId === "string" ? prior.claimedByUserId : null,
+          claimedAt: jsonDate(prior.claimedAt),
+        })
+        .where(
+          and(
+            eq(hubItems.id, args.hubItemId),
+            eq(hubItems.companyId, args.companyId),
+            eq(hubItems.version, args.expectedVersion),
+          ),
+        )
+        .returning()
+        .then((r) => r[0] ?? null);
+      if (!updated) {
+        throw conflict("This item was changed by someone else. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+
+      const undoAudit = await tx
+        .insert(hubAudit)
+        .values({
+          companyId: args.companyId,
+          hubItemId: args.hubItemId,
+          actorType: args.actorType,
+          actorId: args.actorId,
+          action: "undo",
+          authorityBasis: "undo_window",
+          priorState: hubOwnedPriorState(current),
+        })
+        .returning({ id: hubAudit.id })
+        .then((r) => r[0]);
+
+      await tx.insert(activityLog).values({
+        companyId: args.companyId,
+        actorType: args.actorType,
+        actorId: args.actorId,
+        action: "hub_item.undo",
+        entityType: "hub_item",
+        entityId: args.hubItemId,
+        details: {
+          auditId: args.auditId,
+        },
+      });
+
+      return { item: decorateItem(updated), auditId: undoAudit.id };
+    });
+  }
+
   async function recordAndAct(args: {
     companyId: string;
     hubItemId: string;
@@ -387,6 +685,22 @@ export function hubItemsService(db: Db) {
     // EXTERNAL/irreversible source-API relay; runs AFTER commit.
     sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
   }) {
+    const action = args.nextStatus === "resolved" ? "resolve" : "archive";
+    const result = await recordLifecycleAction({
+      companyId: args.companyId,
+      hubItemId: args.hubItemId,
+      action,
+      expectedVersion: args.expectedVersion,
+      actorType: args.actorType as "user" | "agent" | "system",
+      actorId: args.actorId,
+      actorIsFounder: args.actorIsFounder,
+      authorityBasis: args.authorityBasis,
+      reason: args.reason,
+      idempotencyKey: args.idempotencyKey,
+      sideEffect: args.sideEffect,
+    });
+    return result.item;
+
     const current = await db
       .select()
       .from(hubItems)
@@ -448,7 +762,7 @@ export function hubItemsService(db: Db) {
     // audit row is already durable, so a relay/source failure is recoverable (the
     // sweeper reconciles), NEVER an erased decision record. DB-only effects belong
     // inside Phase 1's transaction instead.
-    if (args.sideEffect) await args.sideEffect();
+    await args.sideEffect?.();
     return committed.item;
   }
 
@@ -803,5 +1117,17 @@ export function hubItemsService(db: Db) {
   }
 
   // Public surface (declared last so every const above has evaluated).
-  return { emit, sourceUniqueKey, resolveOwner, query, getVisible, applyPersonalState, recordAndAct, reconcile, counts };
+  return {
+    emit,
+    sourceUniqueKey,
+    resolveOwner,
+    query,
+    getVisible,
+    applyPersonalState,
+    recordLifecycleAction,
+    undoAction,
+    recordAndAct,
+    reconcile,
+    counts,
+  };
 }
