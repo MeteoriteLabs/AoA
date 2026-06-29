@@ -333,4 +333,27 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
     expect(rows[0]?.scopeKey).not.toBe(discussion.scopeId);
     expect(rows[0]?.title).toBe("Review 2 pending items in Updated planning");
   });
+
+  it("only reconciles discussion_pending rows and preserves discussion mentions", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const discussion = await insertDiscussion(companyId, founderId, 2);
+    const svc = hubItemsService(db);
+    await svc.emit(buildDiscussionPendingHubEmit(discussion));
+    await svc.emit({
+      companyId,
+      semanticType: "mention",
+      sourceType: "discussion",
+      sourceId: `${discussion.id}:entry-1:${founderId}`,
+      title: "You were mentioned in a discussion",
+      summary: "Can you review this?",
+      ownerUserId: founderId,
+    });
+
+    await db.execute(sql`UPDATE discussions SET pending_item_count = 0, updated_at = now() + interval '1 second' WHERE id = ${discussion.id}`);
+    await svc.reconcile(companyId, { sourceType: "discussion" });
+
+    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    expect(rows.map((r) => r.semanticType)).toEqual(["mention"]);
+  });
 });

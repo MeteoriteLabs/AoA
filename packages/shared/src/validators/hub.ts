@@ -13,6 +13,7 @@ export const listHubItemsQuery = z
       .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
       .optional()
       .transform((v) => v === true || v === "true" || v === "1"),
+    limit: z.coerce.number().int().min(1).max(50).optional().default(50),
   })
   .strict();
 

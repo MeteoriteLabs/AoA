@@ -14,11 +14,14 @@ import {
   heartbeatService,
   issueApprovalService,
   logActivity,
+  notifyHireApproved,
   secretService,
   trustScoreService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
+import { hubItemsService } from "../services/hub-items.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -74,35 +77,41 @@ export function approvalRoutes(db: Db) {
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
-    const approval = await svc.create(companyId, {
-      ...approvalInput,
-      payload: normalizedPayload,
-      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
-      requestedByAgentId:
-        approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
-      status: "pending",
-      decisionNote: null,
-      decidedByUserId: null,
-      decidedAt: null,
-      updatedAt: new Date(),
-    });
-
-    if (uniqueIssueIds.length > 0) {
-      await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+    const approval = await db.transaction(async (tx) => {
+      const txApprovalSvc = approvalService(tx as unknown as Db);
+      const txIssueApprovalsSvc = issueApprovalService(tx as unknown as Db);
+      const created = await txApprovalSvc.create(companyId, {
+        ...approvalInput,
+        payload: normalizedPayload,
+        requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        requestedByAgentId:
+          approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
+        status: "pending",
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        updatedAt: new Date(),
       });
-    }
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.created",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
+      if (uniqueIssueIds.length > 0) {
+        await txIssueApprovalsSvc.linkManyForApproval(created.id, uniqueIssueIds, {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        });
+      }
+
+      await logActivity(tx as unknown as Db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.created",
+        entityType: "approval",
+        entityId: created.id,
+        details: { type: created.type, issueIds: uniqueIssueIds },
+      });
+      await emitHubItem(tx as unknown as Db, buildApprovalHubEmit(created));
+      return created;
     });
 
     res.status(201).json(redactApprovalPayload(approval));
@@ -131,7 +140,32 @@ export function approvalRoutes(db: Db) {
     assertCompanyAccess(req, existing.companyId);
 
     const decidedBy = req.actor.userId ?? "local-board";
-    const approval = await svc.approve(id, existing.companyId, decidedBy, req.body.decisionNote);
+    const approvalResult = await db.transaction(async (tx) => {
+      const txApprovalSvc = approvalService(tx as unknown as Db);
+      const txIssueApprovalsSvc = issueApprovalService(tx as unknown as Db);
+      const approval = await txApprovalSvc.approve(id, existing.companyId, decidedBy, req.body.decisionNote);
+      if (!approval) {
+        return { approval: null, linkedIssueIds: [] as string[] };
+      }
+      const linkedIssues = await txIssueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      await logActivity(tx as unknown as Db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.approved",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          type: approval.type,
+          requestedByAgentId: approval.requestedByAgentId,
+          linkedIssueIds,
+        },
+      });
+      await hubItemsService(tx as unknown as Db).reconcile(approval.companyId, { sourceType: "approval", sourceId: approval.id });
+      return { approval, linkedIssueIds };
+    });
+    const { approval, linkedIssueIds } = approvalResult;
     if (!approval) {
       // Service returned null — companyId WHERE didn't match (TOCTOU or
       // upstream guard bypass). Surface as 404 rather than crashing on
@@ -139,23 +173,8 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-    const linkedIssueIds = linkedIssues.map((issue) => issue.id);
     const primaryIssueId = linkedIssueIds[0] ?? null;
-
-    await logActivity(db, {
-      companyId: approval.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "approval.approved",
-      entityType: "approval",
-      entityId: approval.id,
-      details: {
-        type: approval.type,
-        requestedByAgentId: approval.requestedByAgentId,
-        linkedIssueIds,
-      },
-    });
+    const approvedHireAgentId = (approval as typeof approval & { __approvedHireAgentId?: string }).__approvedHireAgentId ?? null;
 
     // Update trust score when task-related approval is approved (agent work accepted without changes)
     if (approval.requestedByAgentId && linkedIssueIds.length > 0) {
@@ -226,7 +245,15 @@ export function approvalRoutes(db: Db) {
         });
       }
     }
-
+    if (approvedHireAgentId) {
+      void notifyHireApproved(db, {
+        companyId: approval.companyId,
+        agentId: approvedHireAgentId,
+        source: "approval",
+        sourceId: approval.id,
+        approvedAt: approval.decidedAt ?? new Date(),
+      }).catch(() => {});
+    }
     res.json(redactApprovalPayload(approval));
   });
 
@@ -241,21 +268,26 @@ export function approvalRoutes(db: Db) {
     assertCompanyAccess(req, existing.companyId);
 
     const decidedBy = req.actor.userId ?? "local-board";
-    const approval = await svc.reject(id, existing.companyId, decidedBy, req.body.decisionNote);
+    const approval = await db.transaction(async (tx) => {
+      const txApprovalSvc = approvalService(tx as unknown as Db);
+      const rejected = await txApprovalSvc.reject(id, existing.companyId, decidedBy, req.body.decisionNote);
+      if (!rejected) return null;
+      await logActivity(tx as unknown as Db, {
+        companyId: rejected.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.rejected",
+        entityType: "approval",
+        entityId: rejected.id,
+        details: { type: rejected.type },
+      });
+      await hubItemsService(tx as unknown as Db).reconcile(rejected.companyId, { sourceType: "approval", sourceId: rejected.id });
+      return rejected;
+    });
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-
-    await logActivity(db, {
-      companyId: approval.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "approval.rejected",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type },
-    });
 
     // Update trust score when task-related approval is rejected (agent work not accepted)
     if (approval.requestedByAgentId) {
@@ -284,26 +316,31 @@ export function approvalRoutes(db: Db) {
       assertCompanyAccess(req, existing.companyId);
 
       const decidedBy = req.actor.userId ?? "local-board";
-      const approval = await svc.requestRevision(
-        id,
-        existing.companyId,
-        decidedBy,
-        req.body.decisionNote,
-      );
+      const approval = await db.transaction(async (tx) => {
+        const txApprovalSvc = approvalService(tx as unknown as Db);
+        const revised = await txApprovalSvc.requestRevision(
+          id,
+          existing.companyId,
+          decidedBy,
+          req.body.decisionNote,
+        );
+        if (!revised) return null;
+        await logActivity(tx as unknown as Db, {
+          companyId: revised.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "approval.revision_requested",
+          entityType: "approval",
+          entityId: revised.id,
+          details: { type: revised.type },
+        });
+        await emitHubItem(tx as unknown as Db, buildApprovalHubEmit(revised));
+        return revised;
+      });
       if (!approval) {
         res.status(404).json({ error: "Approval not found" });
         return;
       }
-
-      await logActivity(db, {
-        companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "approval.revision_requested",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type },
-      });
 
       // Update trust score when revision requested (agent work not accepted as-is)
       if (approval.requestedByAgentId) {
@@ -342,18 +379,28 @@ export function approvalRoutes(db: Db) {
           )
         : req.body.payload
       : undefined;
-    const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: approval.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.resubmitted",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type },
+    const approval = await db.transaction(async (tx) => {
+      const txApprovalSvc = approvalService(tx as unknown as Db);
+      const resubmitted = await txApprovalSvc.resubmit(id, existing.companyId, normalizedPayload);
+      if (!resubmitted) return null;
+      await logActivity(tx as unknown as Db, {
+        companyId: resubmitted.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.resubmitted",
+        entityType: "approval",
+        entityId: resubmitted.id,
+        details: { type: resubmitted.type },
+      });
+      await emitHubItem(tx as unknown as Db, buildApprovalHubEmit(resubmitted));
+      return resubmitted;
     });
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
     res.json(redactApprovalPayload(approval));
   });
 

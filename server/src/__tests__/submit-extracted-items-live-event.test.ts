@@ -12,6 +12,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const { publishLiveEventMock } = vi.hoisted(() => ({
   publishLiveEventMock: vi.fn((input: unknown) => input),
 }));
+const { emitHubItemMock, buildDiscussionPendingHubEmitMock } = vi.hoisted(() => ({
+  emitHubItemMock: vi.fn().mockResolvedValue({ id: "hub-1" }),
+  buildDiscussionPendingHubEmitMock: vi.fn((discussion) => ({
+    sourceType: "discussion",
+    sourceId: discussion.id,
+  })),
+}));
 
 // The tool imports `../../live-events.js`; vitest resolves a mocked module ID
 // to the same absolute file regardless of the importer's relative specifier,
@@ -19,6 +26,11 @@ const { publishLiveEventMock } = vi.hoisted(() => ({
 // import (both resolve to server/src/services/live-events.js).
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: publishLiveEventMock,
+}));
+
+vi.mock("../services/hub-source-producers.js", () => ({
+  buildDiscussionPendingHubEmit: buildDiscussionPendingHubEmitMock,
+  emitHubItem: emitHubItemMock,
 }));
 
 // Drizzle-orm ESM cycle workaround: stub the operators we use.
@@ -80,7 +92,21 @@ function makeMockDb(
 ) {
   const order: string[] = [];
   const resolvedRow =
-    discussionId === null ? [] : [{ discussionId, companyId }];
+    discussionId === null
+      ? []
+      : [
+          {
+            id: discussionId,
+            discussionId,
+            companyId,
+            title: "Thread",
+            ownerUserId: "u-1",
+            scopeType: null,
+            scopeId: null,
+            pendingItemCount: 1,
+            updatedAt: new Date("2026-06-29T00:00:00Z"),
+          },
+        ];
   const db: any = {
     insert: (_table: any) => ({
       values: (_v: any) => {
@@ -144,6 +170,8 @@ function makeCtx(db: any) {
 describe("submit_extracted_items publishes discussion.extraction.completed (F2)", () => {
   beforeEach(() => {
     publishLiveEventMock.mockClear();
+    emitHubItemMock.mockClear();
+    buildDiscussionPendingHubEmitMock.mockClear();
   });
 
   it("emits the LiveEvent with the resolved discussionId + itemCount when items exist", async () => {
@@ -219,7 +247,9 @@ describe("submit_extracted_items publishes discussion.extraction.completed (F2)"
     );
 
     const terminalIndex = order.indexOf("update:entry-completed");
+    const insertIndex = order.indexOf("insert");
     expect(terminalIndex).toBeGreaterThanOrEqual(0);
+    expect(insertIndex).toBeGreaterThan(terminalIndex);
     expect(publishOrderIndex).toBeGreaterThanOrEqual(0);
     expect(terminalIndex).toBeLessThan(publishOrderIndex);
   });

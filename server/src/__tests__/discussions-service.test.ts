@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockHubReconcile = vi.fn();
+
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("drizzle-orm", () => ({
@@ -164,6 +166,12 @@ vi.mock("../services/memory.js", () => ({
   })),
 }));
 
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({
+    reconcile: mockHubReconcile,
+  })),
+}));
+
 import { discussionService } from "../services/discussions.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishLiveEvent } from "../services/live-events.js";
@@ -209,7 +217,11 @@ function createSequenceDb(selectQueue: any[][]) {
       })),
     })),
     delete: vi.fn(() => ({
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn(() => ({
+        returning: vi.fn((_: unknown) =>
+          Promise.resolve(selectQueue[selectIdx++] ?? []),
+        ),
+      })),
     })),
     transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => {
       const tx: any = {
@@ -233,7 +245,11 @@ function createSequenceDb(selectQueue: any[][]) {
           })),
         })),
         delete: vi.fn(() => ({
-          where: vi.fn().mockResolvedValue(undefined),
+          where: vi.fn(() => ({
+            returning: vi.fn((_: unknown) =>
+              Promise.resolve(selectQueue[selectIdx++] ?? []),
+            ),
+          })),
         })),
       };
       return fn(tx);
@@ -248,6 +264,7 @@ function createSequenceDb(selectQueue: any[][]) {
 describe("discussionService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHubReconcile.mockResolvedValue({ healed: 1, closed: 1, refreshed: 0 });
   });
 
   describe("list()", () => {
@@ -506,6 +523,41 @@ describe("discussionService", () => {
         discussionService(db).approveItems("co-1", "disc-1", [], "user-1"),
       ).rejects.toThrow("No items to approve");
     });
+
+    it("reconciles the discussion hub row after approving pending items", async () => {
+      const taskItem = {
+        id: "item-1",
+        discussionEntryId: "entry-1",
+        type: "task",
+        title: "Build feature",
+        description: "Build the new feature",
+        status: "pending",
+        priority: null,
+        suggestedPriority: "high",
+        suggestedAssigneeId: "agent-1",
+        suggestedDepartmentId: null,
+        suggestedProjectId: null,
+        suggestedGoalId: null,
+        layer: null,
+        suggestedLayer: null,
+        mergedContent: null,
+        dedupAction: null,
+        selectedMemoryId: null,
+      };
+      const db = createSequenceDb([
+        [{ id: "disc-1", companyId: "co-1" }],
+        [taskItem],
+        [{ id: "entry-1" }],
+        [{ ...taskItem, status: "approved", resultTaskId: "task-1" }],
+      ]);
+
+      await discussionService(db).approveItems("co-1", "disc-1", ["item-1"], "user-1");
+
+      expect(mockHubReconcile).toHaveBeenCalledWith("co-1", {
+        sourceType: "discussion",
+        sourceId: "disc-1",
+      });
+    });
   });
 
   describe("rejectItems()", () => {
@@ -536,7 +588,7 @@ describe("discussionService", () => {
       );
 
       expect(result.rejectedCount).toBe(2);
-      expect(db.update).toHaveBeenCalled();
+      expect(db.transaction).toHaveBeenCalled();
       expect(logActivity).toHaveBeenCalledWith(
         db,
         expect.objectContaining({
@@ -681,6 +733,47 @@ describe("discussionService", () => {
       // Only the normal entry is reprocessed; the scope_proposal is skipped
       // entirely (NOT counted, NOT reset). reprocessedCount reflects 1 entry.
       expect(result.reprocessedCount).toBe(1);
+    });
+
+    it("reprocessEntry decrements and reconciles when deleting edited reviewable items", async () => {
+      const db = createSequenceDb([
+        // entry
+        [{ id: "entry-edited", discussionId: "disc-1", inputType: "paste" }],
+        // parent discussion
+        [{ companyId: "co-1" }],
+        // approved items
+        [],
+        // reviewable pending/edited items deleted inside the transaction
+        [{ status: "edited" }],
+      ]);
+
+      await discussionService(db).reprocessEntry("co-1", "entry-edited");
+
+      expect(mockHubReconcile).toHaveBeenCalledWith("co-1", {
+        sourceType: "discussion",
+        sourceId: "disc-1",
+      });
+    });
+
+    it("reprocessAllEntries decrements and reconciles when deleting edited reviewable items", async () => {
+      const db = createSequenceDb([
+        // discussion
+        [{ id: "disc-1", companyId: "co-1" }],
+        // entries
+        [{ id: "entry-edited", inputType: "paste", extractionStatus: "pending" }],
+        // approved items
+        [],
+        // reviewable pending/edited items deleted inside the transaction
+        [{ status: "edited" }],
+      ]);
+
+      const result = await discussionService(db).reprocessAllEntries("co-1", "disc-1");
+
+      expect(result.reprocessedCount).toBe(1);
+      expect(mockHubReconcile).toHaveBeenCalledWith("co-1", {
+        sourceType: "discussion",
+        sourceId: "disc-1",
+      });
     });
   });
 });

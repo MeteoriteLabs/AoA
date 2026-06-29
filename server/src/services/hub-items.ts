@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   hubItems,
@@ -218,6 +218,7 @@ export function hubItemsService(db: Db) {
       lane?: HubLane;
       status?: HubItemStatus;
       includeDismissed?: boolean;
+      limit?: number;
     },
   ) {
     const { actorUserId } = opts;
@@ -248,6 +249,10 @@ export function hubItemsService(db: Db) {
       const types = semanticTypesForLane(opts.lane);
       conds.push(inArray(hubItems.semanticType, types));
     }
+    if (!opts.includeDismissed) {
+      conds.push(isNull(hubItemUserState.dismissedAt));
+    }
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50);
 
     const rows = await db
       .select({
@@ -268,10 +273,10 @@ export function hubItemsService(db: Db) {
       .where(and(...conds))
       // Stable order: createdAt is not unique, so add id as a deterministic
       // tiebreaker before W1b builds ordered lists / pagination (P2-6).
-      .orderBy(sql`${hubItems.createdAt} DESC, ${hubItems.id} DESC`);
+      .orderBy(sql`${hubItems.createdAt} DESC, ${hubItems.id} DESC`)
+      .limit(limit);
 
     return rows
-      .filter((r) => opts.includeDismissed || r.dismissedAt == null)
       .map((r) => ({
         ...r.item,
         lane: r.item.semanticType
@@ -536,7 +541,7 @@ export function hubItemsService(db: Db) {
   // Sources are truth — this is the safety net for missed same-tx emits.
   async function reconcile(
     companyId: string,
-    opts: { sourceType: string },
+    opts: { sourceType: string; sourceId?: string },
   ): Promise<{ healed: number; closed: number; refreshed: number }> {
     const reconciler = SOURCE_RECONCILERS[opts.sourceType];
     if (!reconciler) {
@@ -546,7 +551,9 @@ export function hubItemsService(db: Db) {
     const semanticType =
       opts.sourceType === "issue"
         ? "stale_work"
-        : null;
+        : opts.sourceType === "discussion"
+          ? "discussion_pending"
+          : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),
@@ -554,6 +561,7 @@ export function hubItemsService(db: Db) {
       eq(hubItems.status, "open"),
     ];
     if (semanticType) conditions.push(eq(hubItems.semanticType, semanticType));
+    if (opts.sourceId) conditions.push(eq(hubItems.sourceId, opts.sourceId));
 
     const open = await db
       .select()
@@ -562,6 +570,13 @@ export function hubItemsService(db: Db) {
 
     let closed = 0;
     let refreshed = 0;
+    const runTransaction = async <T>(fn: (tx: Db) => Promise<T>) => {
+      const conn = db as Db & { transaction?: (callback: (tx: unknown) => Promise<T>) => Promise<T> };
+      if (typeof conn.transaction === "function") {
+        return conn.transaction(async (txRaw) => fn(txRaw as unknown as Db));
+      }
+      return fn(db);
+    };
     for (const item of open) {
       if (!item.sourceId) continue;
       const snap = await reconciler(companyId, item.sourceId);
@@ -571,8 +586,7 @@ export function hubItemsService(db: Db) {
         // concurrent user action bumps the version → this UPDATE 409s; we swallow
         // it and let the next sweep reconcile (sources stay truth).
         try {
-          await db.transaction(async (txRaw) => {
-            const tx = txRaw as unknown as Db;
+          await runTransaction(async (tx) => {
             await applyGuardedTransition(tx, item, "archived", {
               actorType: "system",
               actorId: "reconciler",

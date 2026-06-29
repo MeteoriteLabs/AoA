@@ -13,6 +13,7 @@ import type { AgentTool } from "../types.js";
 // mirroring extraction.ts:5. live-events.ts only imports node:events + a
 // shared type, so this introduces no circular-import at module load.
 import { publishLiveEvent } from "../../live-events.js";
+import { buildDiscussionPendingHubEmit, emitHubItem } from "../../hub-source-producers.js";
 
 interface SubmitItem {
   type: string;
@@ -126,75 +127,91 @@ export const submitExtractedItemsTool: AgentTool = {
       };
     }
 
-    // Map onto the REAL discussion_extracted_items columns, matching
-    // extraction.ts's itemValues shape. The schema has no `content`,
-    // `confidence`, or `companyId` columns — `content` maps to the required
-    // `title` column; new items get status "pending" (same as extraction.ts).
-    if (itemList.length > 0) {
-      const rows = itemList.map((item) => ({
-        discussionEntryId: entryIdStr,
-        type: item.type,
-        title: item.content,
-        description: null,
-        suggestedPriority: null,
-        suggestedDepartmentId: null,
-        suggestedProjectId: null,
-        suggestedLayer: "domain",
-        layer: "domain",
-        status: "pending" as const,
-      }));
-
-      await ctx.db.insert(discussionExtractedItems).values(rows);
-
-      // I-1: increment the parent discussion's pendingItemCount, mirroring
-      // extraction.ts (lines ~614-620) EXACTLY. Reuses the discussionId
-      // resolved above (no second identical query).
-      if (resolvedDiscussionId) {
-        await ctx.db
-          .update(discussions)
-          .set({
-            pendingItemCount: sql`${discussions.pendingItemCount} + ${rows.length}`,
-            updatedAt: new Date(),
-          })
-          .where(eq(discussions.id, resolvedDiscussionId));
+    const runInTransaction = async <T>(fn: (db: any) => Promise<T>): Promise<T> => {
+      const dbWithTx = ctx.db as typeof ctx.db & {
+        transaction?: (callback: (tx: unknown) => Promise<T>) => Promise<T>;
+      };
+      if (typeof dbWithTx.transaction === "function") {
+        return dbWithTx.transaction((tx) => fn(tx));
       }
-    }
+      return fn(ctx.db);
+    };
 
-    // Terminal success status — extraction.ts sets extractionStatus
-    // "completed" on the entry after writing items. I-2: guard the terminal
-    // write on the still-`processing` state (the runner's atomic claim set
-    // pending -> processing; this tool is the single terminalizer and must
-    // only complete a still-processing entry), matching the codebase
-    // terminalizer/claim convention (extraction.ts:389-398,
-    // dispatcher.ts:121-124). Capture the affected rows via `.returning()` —
-    // same idiom as runner.ts's M2 atomic claim
-    // (runner.ts:57-64: `const claimed = ...returning(); if
-    // (claimed.length === 0) abort`) — so the F2 emit below can be gated on
-    // whether THIS call actually performed the transition.
-    const terminalized = await ctx.db
-      .update(discussionEntries)
-      .set({ extractionStatus: "completed" })
-      .where(
-        and(
-          eq(discussionEntries.id, entryIdStr),
-          eq(discussionEntries.extractionStatus, "processing"),
-        ),
-      )
-      .returning({ id: discussionEntries.id });
+    const shouldPublish = await runInTransaction(async (tx) => {
+      // Terminal success status — extraction.ts sets extractionStatus
+      // "completed" after writing items. Here the guarded processing->completed
+      // transition is the claim that this tool call owns the terminalization. If
+      // it matches 0 rows, a concurrent terminalizer already won; do not create
+      // duplicate extracted items or pending hub work.
+      const terminalized = await tx
+        .update(discussionEntries)
+        .set({ extractionStatus: "completed" })
+        .where(
+          and(
+            eq(discussionEntries.id, entryIdStr),
+            eq(discussionEntries.extractionStatus, "processing"),
+          ),
+        )
+        .returning({ id: discussionEntries.id });
+
+      if (terminalized.length === 0) return false;
+
+      // Map onto the REAL discussion_extracted_items columns, matching
+      // extraction.ts's itemValues shape. The schema has no `content`,
+      // `confidence`, or `companyId` columns — `content` maps to the required
+      // `title` column; new items get status "pending" (same as extraction.ts).
+      if (itemList.length > 0) {
+        const rows = itemList.map((item) => ({
+          discussionEntryId: entryIdStr,
+          type: item.type,
+          title: item.content,
+          description: null,
+          suggestedPriority: null,
+          suggestedDepartmentId: null,
+          suggestedProjectId: null,
+          suggestedLayer: "domain",
+          layer: "domain",
+          status: "pending" as const,
+        }));
+
+        await tx.insert(discussionExtractedItems).values(rows);
+
+        // I-1: increment the parent discussion's pendingItemCount, mirroring
+        // extraction.ts (lines ~614-620) EXACTLY. Reuses the discussionId
+        // resolved above (no second identical query).
+        if (resolvedDiscussionId) {
+          await tx
+            .update(discussions)
+            .set({
+              pendingItemCount: sql`${discussions.pendingItemCount} + ${rows.length}`,
+              updatedAt: new Date(),
+            })
+            .where(eq(discussions.id, resolvedDiscussionId));
+          const [discussion] = await tx
+            .select()
+            .from(discussions)
+            .where(eq(discussions.id, resolvedDiscussionId));
+          if (discussion) {
+            await emitHubItem(tx, buildDiscussionPendingHubEmit(discussion));
+          }
+        }
+      }
+
+      return true;
+    });
+
+    if (!shouldPublish) {
+      return {
+        success: true,
+        data: { count: itemList.length },
+        summary: `Persisted ${itemList.length} extracted item(s) for entry ${entryIdStr}`,
+      };
+    }
 
     // F2: publish the completion LiveEvent AFTER the terminal status write,
     // mirroring extraction.ts:630-638 (ordering parity) so UIs subscribed to
     // `discussion.extraction.completed` refresh when an AoA agent finishes.
-    // Gate on BOTH a resolvable discussionId AND this call having performed
-    // the pending->completed transition (non-empty `.returning()`). This
-    // mirrors the single-terminalizer / atomic-claim convention: runner.ts's
-    // M2 claim only proceeds when its RETURNING is non-empty, and
-    // extraction.ts emits only inside its linear success branch. Without this
-    // gate a concurrent terminalizer that already completed the entry (this
-    // UPDATE matches 0 rows) would cause a double-emit that extraction.ts
-    // never exhibits. The tool still returns success either way (idempotent
-    // no-op when already terminal — only the EVENT is suppressed).
-    if (resolvedDiscussionId && terminalized.length > 0) {
+    if (resolvedDiscussionId) {
       publishLiveEvent({
         companyId: ctx.companyId,
         type: "discussion.extraction.completed",

@@ -9,6 +9,7 @@ import {
   laneForSemanticType,
   authorityForSemanticType,
 } from "../hub.js";
+import { listHubItemsQuery } from "../validators/hub.js";
 
 describe("hub contract", () => {
   it("every semantic type maps to exactly one valid lane", () => {
@@ -39,5 +40,10 @@ describe("hub contract", () => {
   });
   it("approval_request requires founder authority", () => {
     expect(authorityForSemanticType("approval_request")).toBe("founder");
+  });
+  it("list query limit defaults to 50 and caps at 50", () => {
+    expect(listHubItemsQuery.parse({}).limit).toBe(50);
+    expect(listHubItemsQuery.parse({ limit: "25" }).limit).toBe(25);
+    expect(() => listHubItemsQuery.parse({ limit: "51" })).toThrow();
   });
 });

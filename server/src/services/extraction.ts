@@ -6,6 +6,7 @@ import { publishLiveEvent } from "./live-events.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
 import { resolveExtractionEngine, resolveCompanyCliTool } from "./extraction-engine.js";
 import { extractViaCli, CliExtractionError } from "./extraction-cli.js";
+import { buildDiscussionPendingHubEmit, emitHubItem } from "./hub-source-producers.js";
 
 // Re-export pure parser symbols so existing importers (`from "./extraction.js"`)
 // continue to work unchanged after the move to extraction-parser.ts.
@@ -442,54 +443,63 @@ export function extractionService(db: Db) {
 
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
-        // 7. Create extracted items
-        if (extractedItems.length > 0) {
-          const itemValues = extractedItems.map((item) => {
-            let suggestedDepartmentId: string | null = null;
-            let suggestedProjectId: string | null = null;
+        await db.transaction(async (tx) => {
+          // 7. Create extracted items
+          if (extractedItems.length > 0) {
+            const itemValues = extractedItems.map((item) => {
+              let suggestedDepartmentId: string | null = null;
+              let suggestedProjectId: string | null = null;
 
-            if (item.department) {
-              const match = deptLookup.get(item.department.toLowerCase());
-              if (match) {
-                if (match.type === "department") {
-                  suggestedDepartmentId = match.id;
-                } else {
-                  suggestedProjectId = match.id;
+              if (item.department) {
+                const match = deptLookup.get(item.department.toLowerCase());
+                if (match) {
+                  if (match.type === "department") {
+                    suggestedDepartmentId = match.id;
+                  } else {
+                    suggestedProjectId = match.id;
+                  }
                 }
               }
+
+              return {
+                discussionEntryId: entryId,
+                type: item.type,
+                title: item.title,
+                description: item.description || null,
+                suggestedPriority: item.priority || null,
+                suggestedDepartmentId,
+                suggestedProjectId,
+                suggestedLayer: item.layer ?? "domain",
+                layer: item.layer ?? "domain",
+                status: "pending" as const,
+              };
+            });
+
+            await tx.insert(discussionExtractedItems).values(itemValues);
+
+            // Increment discussion's pendingItemCount
+            await tx
+              .update(discussions)
+              .set({
+                pendingItemCount: sql`${discussions.pendingItemCount} + ${itemValues.length}`,
+                updatedAt: new Date(),
+              })
+              .where(eq(discussions.id, entry.discussionId));
+            const [discussion] = await tx
+              .select()
+              .from(discussions)
+              .where(eq(discussions.id, entry.discussionId));
+            if (discussion) {
+              await emitHubItem(tx as unknown as Db, buildDiscussionPendingHubEmit(discussion));
             }
+          }
 
-            return {
-              discussionEntryId: entryId,
-              type: item.type,
-              title: item.title,
-              description: item.description || null,
-              suggestedPriority: item.priority || null,
-              suggestedDepartmentId,
-              suggestedProjectId,
-              suggestedLayer: item.layer ?? "domain",
-              layer: item.layer ?? "domain",
-              status: "pending" as const,
-            };
-          });
-
-          await db.insert(discussionExtractedItems).values(itemValues);
-
-          // Increment discussion's pendingItemCount
-          await db
-            .update(discussions)
-            .set({
-              pendingItemCount: sql`${discussions.pendingItemCount} + ${itemValues.length}`,
-              updatedAt: new Date(),
-            })
-            .where(eq(discussions.id, entry.discussionId));
-        }
-
-        // 9. Mark completed
-        await db
-          .update(discussionEntries)
-          .set({ extractionStatus: "completed" })
-          .where(eq(discussionEntries.id, entryId));
+          // 9. Mark completed
+          await tx
+            .update(discussionEntries)
+            .set({ extractionStatus: "completed" })
+            .where(eq(discussionEntries.id, entryId));
+        });
 
         // 9. Publish completion event
         publishLiveEvent({

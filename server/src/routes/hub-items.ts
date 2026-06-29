@@ -8,6 +8,8 @@ import { validate } from "../middleware/validate.js";
 import { hubItemsService, permissionService, logActivity } from "../services/index.js";
 import { HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
+import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
 
 // Resolve the board user id for these owner-facing hub routes. Agents/MCP keys
 // use separate surfaces; the hub is a human attention/decision plane. Mirrors
@@ -48,12 +50,19 @@ export function hubItemRoutes(db: Db) {
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     const query: ListHubItemsQuery = listHubItemsQuery.parse(req.query);
+    if (!query.lane || query.lane === "waiting_on_you") {
+      await emitOpenApprovalHubItems(db, companyId, query.limit);
+    }
+    if (!query.lane || query.lane === "suggestions") {
+      await emitStaleWorkHubItems(db, companyId, query.limit);
+    }
     const items = await svc.query(companyId, {
       actorUserId: userId,
       role,
       lane: query.lane,
       status: query.status,
       includeDismissed: query.includeDismissed,
+      limit: query.limit,
     });
     res.json(items);
   });
@@ -64,6 +73,8 @@ export function hubItemRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
+    await emitOpenApprovalHubItems(db, companyId);
+    await emitStaleWorkHubItems(db, companyId);
     const result = await svc.counts(companyId, userId, role);
     res.json(result);
   });

@@ -20,6 +20,8 @@ import {
 import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
+import { hubItemsService } from "./hub-items.js";
+import { buildDiscussionPendingHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
@@ -1210,6 +1212,10 @@ export function discussionService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(discussions.id, discussionId));
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion",
+            sourceId: discussionId,
+          });
         }
 
         return { createdTaskIds, createdMemoryIds, approvedCount };
@@ -1282,28 +1288,34 @@ export function discussionService(db: Db) {
         }
       }
 
-      const updated = await db
-        .update(discussionExtractedItems)
-        .set({ status: "rejected", updatedAt: new Date() })
-        .where(
-          and(
-            inArray(discussionExtractedItems.id, itemIds),
-            eq(discussionExtractedItems.status, "pending"),
-          ),
-        )
-        .returning();
+      const rejectedCount = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(discussionExtractedItems)
+          .set({ status: "rejected", updatedAt: new Date() })
+          .where(
+            and(
+              inArray(discussionExtractedItems.id, itemIds),
+              eq(discussionExtractedItems.status, "pending"),
+            ),
+          )
+          .returning();
 
-      const rejectedCount = updated.length;
-
-      if (rejectedCount > 0) {
-        await db
-          .update(discussions)
-          .set({
-            pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${rejectedCount}, 0)`,
-            updatedAt: new Date(),
-          })
-          .where(eq(discussions.id, discussionId));
-      }
+        const count = updated.length;
+        if (count > 0) {
+          await tx
+            .update(discussions)
+            .set({
+              pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${count}, 0)`,
+              updatedAt: new Date(),
+            })
+            .where(eq(discussions.id, discussionId));
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion",
+            sourceId: discussionId,
+          });
+        }
+        return count;
+      });
 
       await logActivity(db, {
         companyId,
@@ -1419,55 +1431,55 @@ export function discussionService(db: Db) {
         throw badRequest("Scope proposals cannot be reprocessed for extraction.");
       }
 
-      // Check for approved items that would be orphaned
-      const approvedItems = await db
-        .select({ id: discussionExtractedItems.id })
-        .from(discussionExtractedItems)
-        .where(
-          and(
-            eq(discussionExtractedItems.discussionEntryId, entryId),
-            eq(discussionExtractedItems.status, "approved"),
-          ),
-        );
+      await db.transaction(async (tx) => {
+        const approvedItems = await tx
+          .select({ id: discussionExtractedItems.id })
+          .from(discussionExtractedItems)
+          .where(
+            and(
+              eq(discussionExtractedItems.discussionEntryId, entryId),
+              eq(discussionExtractedItems.status, "approved"),
+            ),
+          );
 
-      if (approvedItems.length > 0) {
-        throw badRequest(
-          "Cannot reprocess entry with approved items. Approved items have linked tasks/memory that would be orphaned.",
-        );
-      }
+        if (approvedItems.length > 0) {
+          throw badRequest(
+            "Cannot reprocess entry with approved items. Approved items have linked tasks/memory that would be orphaned.",
+          );
+        }
 
-      // Count pending items being deleted to update discussion count
-      const pendingItems = await db
-        .select({ id: discussionExtractedItems.id })
-        .from(discussionExtractedItems)
-        .where(
-          and(
-            eq(discussionExtractedItems.discussionEntryId, entryId),
-            eq(discussionExtractedItems.status, "pending"),
-          ),
-        );
+        const deletedItems = await tx
+          .delete(discussionExtractedItems)
+          .where(
+            and(
+              eq(discussionExtractedItems.discussionEntryId, entryId),
+              inArray(discussionExtractedItems.status, ["pending", "edited", "rejected"]),
+            ),
+          )
+          .returning({ status: discussionExtractedItems.status });
+        const deletedReviewableCount = deletedItems.filter((item) => item.status === "pending" || item.status === "edited").length;
 
-      // Delete non-approved extracted items (pending, rejected, edited)
-      await db
-        .delete(discussionExtractedItems)
-        .where(eq(discussionExtractedItems.discussionEntryId, entryId));
+        // Reset extraction status
+        await tx
+          .update(discussionEntries)
+          .set({ extractionStatus: "pending", extractionRunId: null })
+          .where(eq(discussionEntries.id, entryId));
 
-      // Reset extraction status
-      await db
-        .update(discussionEntries)
-        .set({ extractionStatus: "pending", extractionRunId: null })
-        .where(eq(discussionEntries.id, entryId));
-
-      // Update pending count on discussion
-      if (pendingItems.length > 0) {
-        await db
-          .update(discussions)
-          .set({
-            pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${pendingItems.length}, 0)`,
-            updatedAt: new Date(),
-          })
-          .where(eq(discussions.id, entry.discussionId));
-      }
+        // Update pending count on discussion
+        if (deletedReviewableCount > 0) {
+          await tx
+            .update(discussions)
+            .set({
+              pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${deletedReviewableCount}, 0)`,
+              updatedAt: new Date(),
+            })
+            .where(eq(discussions.id, entry.discussionId));
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion",
+            sourceId: entry.discussionId,
+          });
+        }
+      });
 
       // Trigger re-extraction via the event pipeline
       publishLiveEvent({
@@ -1526,75 +1538,75 @@ export function discussionService(db: Db) {
       let reprocessedCount = 0;
       let skippedCount = 0;
       let deletedPendingCount = 0;
+      const entriesToTrigger: Array<typeof discussionEntries.$inferSelect> = [];
 
-      for (const entry of reprocessable) {
-        // Check for approved items — skip if any
-        const approvedItems = await db
-          .select({ id: discussionExtractedItems.id })
-          .from(discussionExtractedItems)
-          .where(
-            and(
-              eq(discussionExtractedItems.discussionEntryId, entry.id),
-              eq(discussionExtractedItems.status, "approved"),
-            ),
-          );
+      await db.transaction(async (tx) => {
+        for (const entry of reprocessable) {
+          const approvedItems = await tx
+            .select({ id: discussionExtractedItems.id })
+            .from(discussionExtractedItems)
+            .where(
+              and(
+                eq(discussionExtractedItems.discussionEntryId, entry.id),
+                eq(discussionExtractedItems.status, "approved"),
+              ),
+            );
 
-        if (approvedItems.length > 0) {
-          skippedCount++;
-          continue;
+          if (approvedItems.length > 0) {
+            skippedCount++;
+            continue;
+          }
+
+          const deletedItems = await tx
+            .delete(discussionExtractedItems)
+            .where(
+              and(
+                eq(discussionExtractedItems.discussionEntryId, entry.id),
+                inArray(discussionExtractedItems.status, ["pending", "edited", "rejected"]),
+              ),
+            )
+            .returning({ status: discussionExtractedItems.status });
+          deletedPendingCount += deletedItems.filter((item) => item.status === "pending" || item.status === "edited").length;
+
+          await tx
+            .update(discussionEntries)
+            .set({ extractionStatus: "pending", extractionRunId: null })
+            .where(eq(discussionEntries.id, entry.id));
+
+          reprocessedCount++;
+          entriesToTrigger.push(entry);
         }
 
-        // Count pending items being deleted
-        const pendingItems = await db
-          .select({ id: discussionExtractedItems.id })
-          .from(discussionExtractedItems)
-          .where(
-            and(
-              eq(discussionExtractedItems.discussionEntryId, entry.id),
-              eq(discussionExtractedItems.status, "pending"),
-            ),
-          );
-        deletedPendingCount += pendingItems.length;
+        // Update pending count on discussion
+        if (deletedPendingCount > 0) {
+          await tx
+            .update(discussions)
+            .set({
+              pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${deletedPendingCount}, 0)`,
+              updatedAt: new Date(),
+            })
+            .where(eq(discussions.id, discussionId));
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion",
+            sourceId: discussionId,
+          });
+        }
+      });
 
-        // Delete non-approved extracted items
-        await db
-          .delete(discussionExtractedItems)
-          .where(eq(discussionExtractedItems.discussionEntryId, entry.id));
-
-        // Reset extraction status
-        await db
-          .update(discussionEntries)
-          .set({ extractionStatus: "pending", extractionRunId: null })
-          .where(eq(discussionEntries.id, entry.id));
-
-        // Trigger extraction
+      for (const entry of entriesToTrigger) {
         publishLiveEvent({
           companyId,
           type: "discussion.entry.created",
           payload: { discussionId, entryId: entry.id },
         });
 
-        // Trigger extraction directly (fire-and-forget)
         import("./extraction.js")
           .then(({ extractionService }) => {
             extractionService(db)
               .extractFromDiscussionEntry(companyId, entry.id)
-              .catch(() => {}); // errors handled internally
+              .catch(() => {});
           })
-          .catch(() => {}); // module load error — swallow
-
-        reprocessedCount++;
-      }
-
-      // Update pending count on discussion
-      if (deletedPendingCount > 0) {
-        await db
-          .update(discussions)
-          .set({
-            pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${deletedPendingCount}, 0)`,
-            updatedAt: new Date(),
-          })
-          .where(eq(discussions.id, discussionId));
+          .catch(() => {});
       }
 
       return { reprocessedCount, skippedCount };
@@ -1771,6 +1783,23 @@ export function discussionService(db: Db) {
             updatedAt: now,
           })
           .where(eq(discussions.id, sourceDiscussionId));
+        if (pendingCount > 0) {
+          const [target] = await tx
+            .select()
+            .from(discussions)
+            .where(eq(discussions.id, targetDiscussionId));
+          if (target) {
+            await emitHubItem(tx as unknown as Db, buildDiscussionPendingHubEmit(target));
+          }
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion",
+            sourceId: sourceDiscussionId,
+          });
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion",
+            sourceId: targetDiscussionId,
+          });
+        }
 
         return { entryId, sourceDiscussionId, targetDiscussionId };
       });

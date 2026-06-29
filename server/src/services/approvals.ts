@@ -1,9 +1,8 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { approvalComments, approvals } from "@armyofagents/db";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
-import { notifyHireApproved } from "./hire-hook.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -61,7 +60,7 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId)))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), inArray(approvals.status, ["pending", "revision_requested"])))
         .returning()
         .then((rows) => rows[0]);
 
@@ -115,13 +114,10 @@ export function approvalService(db: Db) {
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {
-          void notifyHireApproved(db, {
-            companyId: updated.companyId,
-            agentId: hireApprovedAgentId,
-            source: "approval",
-            sourceId: id,
-            approvedAt: now,
-          }).catch(() => {});
+          Object.defineProperty(updated, "__approvedHireAgentId", {
+            value: hireApprovedAgentId,
+            enumerable: false,
+          });
         }
       }
 
@@ -149,7 +145,7 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId)))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), inArray(approvals.status, ["pending", "revision_requested"])))
         .returning()
         .then((rows) => rows[0]);
 
@@ -190,7 +186,7 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId)))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .returning()
         .then((rows) => rows[0]);
 
@@ -198,7 +194,7 @@ export function approvalService(db: Db) {
       return updated ?? null;
     },
 
-    resubmit: async (id: string, payload?: Record<string, unknown>) => {
+    resubmit: async (id: string, companyId: string, payload?: Record<string, unknown>) => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "revision_requested") {
         throw unprocessable("Only revision requested approvals can be resubmitted");
@@ -215,7 +211,7 @@ export function approvalService(db: Db) {
           decidedAt: null,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), eq(approvals.status, "revision_requested")))
         .returning()
         .then((rows) => rows[0]);
     },

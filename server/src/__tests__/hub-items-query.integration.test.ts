@@ -139,6 +139,21 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     expect(withDismissed.map((i) => i.id).sort()).toEqual([read.id, dismissed.id].sort());
   });
 
+  it("applies dismissed filtering before limit so visible work is not hidden", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const visible = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "t-visible", title: "visible-item", ownerUserId: founderId });
+    const dismissed = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "t-new-dismissed", title: "newer-dismissed-item", ownerUserId: founderId });
+    await db.execute(sql`UPDATE notifications SET created_at = now() - interval '1 minute' WHERE id = ${visible.id}`);
+    await db.execute(sql`UPDATE notifications SET created_at = now() WHERE id = ${dismissed.id}`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissed.id}, 'user', ${founderId}, now())`);
+
+    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder", limit: 1 });
+
+    expect(rows.map((i) => i.id)).toEqual([visible.id]);
+  });
+
   it("team_lead sees department-scoped items; cross-department negative: dept-A member does NOT see a dept-B item", async () => {
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();

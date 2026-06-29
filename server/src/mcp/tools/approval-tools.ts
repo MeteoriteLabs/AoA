@@ -245,7 +245,7 @@ async function handleApprovalDecision(
       );
       break;
     case "resubmit":
-      updated = await ctx.services.approvalsSvc.resubmit(parsed.approvalId, decisionPayload);
+      updated = await ctx.services.approvalsSvc.resubmit(parsed.approvalId, approval.companyId, decisionPayload);
       break;
   }
   if (!updated) {

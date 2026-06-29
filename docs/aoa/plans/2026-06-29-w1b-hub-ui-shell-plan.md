@@ -793,7 +793,7 @@ git commit -m "feat(hub): reconcile W1b source lifecycles"
 - Modify: `server/src/services/issues.ts` or create `server/src/services/hub-stale-work.ts`
 - Test: update affected tests and add focused assertions in `server/src/__tests__/hub-source-producers.integration.test.ts`
 
-- [ ] **Step 1: Write failing route/service tests**
+- [x] **Step 1: Write failing route/service tests**
 
 Add assertions that:
 
@@ -816,7 +816,7 @@ vi.mock("../services/hub-items.js", () => ({
 }));
 ```
 
-- [ ] **Step 2: Run focused tests to confirm failure**
+- [x] **Step 2: Run focused tests to confirm failure**
 
 Run the specific affected tests, starting with:
 
@@ -827,7 +827,7 @@ pnpm -C server exec vitest run src/__tests__/routes-*.test.ts src/__tests__/sugg
 
 Expected: FAIL until emission is wired.
 
-- [ ] **Step 3: Wire approval emissions**
+- [x] **Step 3: Wire approval emissions**
 
 In `server/src/routes/approvals.ts`:
 
@@ -837,7 +837,7 @@ In `server/src/routes/approvals.ts`:
 - After approve/reject/request-revision, call `await hubItemsService(db).reconcile(approval.companyId, { sourceType: "approval" })` in the same transaction when possible.
 - Keep existing activity logs and trust-score logic unchanged.
 
-- [ ] **Step 4: Wire join request emissions**
+- [x] **Step 4: Wire join request emissions**
 
 In `server/src/routes/access.ts`:
 
@@ -846,7 +846,7 @@ In `server/src/routes/access.ts`:
 - After approve/reject updates, call `await hubItemsService(db).reconcile(companyId, { sourceType: "join_request" })` inside the same transaction if the status update uses one.
 - Keep existing `notifyHireApproved` behavior unchanged.
 
-- [ ] **Step 5: Wire discussion pending emissions**
+- [x] **Step 5: Wire discussion pending emissions**
 
 In `server/src/services/discussions.ts` and `server/src/services/internal-agent/tools/submit-extracted-items.ts`:
 
@@ -855,7 +855,7 @@ In `server/src/services/discussions.ts` and `server/src/services/internal-agent/
 - After approve/reject/reprocess paths decrement pending count, call `hubItemsService(db).reconcile(companyId, { sourceType: "discussion", sourceId: discussionId })` with the transaction executor when available.
 - Preserve existing `pendingItemCount` update semantics.
 
-- [ ] **Step 6: Wire suggestion emissions**
+- [x] **Step 6: Wire suggestion emissions**
 
 In `server/src/services/suggestions.ts`:
 
@@ -864,7 +864,7 @@ In `server/src/services/suggestions.ts`:
 - After accept/dismiss/expiry, call `hubItemsService(db).reconcile(companyId, { sourceType: "suggestion" })` after status updates, using the transaction executor when available.
 - Keep suggestion action execution unchanged.
 
-- [ ] **Step 7: Wire stale issue emissions**
+- [x] **Step 7: Wire stale issue emissions**
 
 In `server/src/services/issues.ts` or a focused `server/src/services/hub-stale-work.ts`:
 
@@ -873,7 +873,7 @@ In `server/src/services/issues.ts` or a focused `server/src/services/hub-stale-w
 - Reconcile `sourceType: "issue"` after issue status/assignee/comment/read-state changes that can make stale work fresh or terminal.
 - Do not map `suggestion.category === "pipeline_bottleneck"` to `stale_work`; suggestion rows stay `suggestion`.
 
-- [ ] **Step 8: Run server tests**
+- [x] **Step 8: Run server tests**
 
 Run:
 
@@ -884,12 +884,21 @@ pnpm -C server exec vitest run
 
 Expected: PASS locally, with integration tests skipped if the platform cannot run embedded Postgres.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```sh
 git add server/src/routes/approvals.ts server/src/routes/access.ts server/src/services/discussions.ts server/src/services/internal-agent/tools/submit-extracted-items.ts server/src/services/suggestions.ts server/src/services/issues.ts server/src/services/hub-stale-work.ts server/src/__tests__
 git commit -m "feat(hub): emit W1b source items into hub index"
 ```
+
+Completed in commit `3ea40e760` as `feat(hub): emit W1b source items from mutations`.
+
+Verification:
+
+- `corepack pnpm -C server exec vitest run src/__tests__/join-request-approve-race.test.ts` PASS.
+- `corepack pnpm --filter @armyofagents/server typecheck` PASS.
+- `corepack pnpm -C server exec vitest run src/__tests__/approvals-routes-cross-tenant.test.ts src/__tests__/suggestions.test.ts src/__tests__/discussions-service.test.ts src/__tests__/aoa-submit-extracted-items.test.ts src/__tests__/submit-extracted-items-live-event.test.ts src/__tests__/hub-materializers.test.ts src/__tests__/hub-source-producers.test.ts src/__tests__/hub-source-producers.integration.test.ts src/__tests__/hub-items-query.integration.test.ts src/__tests__/issue-status-event.test.ts src/__tests__/aoa-mention-wakeup-routing.test.ts src/__tests__/invite-accept-replay.test.ts src/__tests__/approvals-service-companyid.test.ts src/__tests__/join-request-approve-race.test.ts` PASS with Windows integration DB skips.
+- Independent code review PASS from subagent `Dewey`: no critical or important issues.
 
 ---
 
