@@ -1,6 +1,6 @@
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { hubItems, hubItemUserState, hubAudit } from "@armyofagents/db";
+import { hubItems, hubItemUserState, hubAudit, approvals, heartbeatRuns } from "@armyofagents/db";
 import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
@@ -121,12 +121,65 @@ export function hubItemsService(db: Db) {
   }
 
   // ── Query / Action / Reconcile ──────────────────────────────────────────────
+  // NOTE: the public `return` sits at the END of this closure (after every
+  // const/function declaration below) so the module-scoped reconciler consts
+  // actually evaluate — a `return` before them would leave them unreachable
+  // (TDZ at reconcile()-call time). Function declarations hoist; consts do not.
 
-  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct };
+  // Version-guarded status transition + audit row, written in ONE transaction.
+  // Shared by recordAndAct (manual) and reconcile (system) so a system transition
+  // and a concurrent user action can't lost-update each other — both go through
+  // the same `version`-guarded UPDATE. Throws `conflict` (409) on a version miss.
+  async function applyGuardedTransition(
+    tx: Db,
+    item: { id: string; companyId: string; status: string; version: number; resolvedAt: Date | null; archivedAt: Date | null },
+    nextStatus: "resolved" | "archived" | "snoozed",
+    audit: {
+      actorType: string;
+      actorId: string;
+      action: string;
+      authorityBasis?: string | null;
+      reason?: string | null;
+      idempotencyKey?: string | null;
+      sourceRevision?: string | null;
+    },
+    // The version the UPDATE is guarded on (the client's expectedVersion for a
+    // manual action). Defaults to the item's own version (system/sweeper path).
+    // priorState always records the item's TRUE current version, not the guard.
+    guardVersion: number = item.version,
+  ) {
+    const updated = await tx
+      .update(hubItems)
+      .set({
+        status: nextStatus,
+        version: guardVersion + 1,
+        resolvedAt: nextStatus === "resolved" ? new Date() : item.resolvedAt,
+        archivedAt: nextStatus === "archived" ? new Date() : item.archivedAt,
+      })
+      .where(and(eq(hubItems.id, item.id), eq(hubItems.version, guardVersion)))
+      .returning()
+      .then((r) => r[0] ?? null);
+    if (!updated) {
+      throw conflict("This item was changed by someone else. Reload and retry.", {
+        currentVersion: item.version,
+      });
+    }
+    await tx.insert(hubAudit).values({
+      companyId: item.companyId,
+      hubItemId: item.id,
+      actorType: audit.actorType,
+      actorId: audit.actorId,
+      action: audit.action,
+      authorityBasis: audit.authorityBasis ?? null,
+      reason: audit.reason ?? null,
+      idempotencyKey: audit.idempotencyKey ?? null,
+      sourceRevision: audit.sourceRevision ?? null,
+      priorState: { status: item.status, version: item.version },
+    });
+    return updated;
+  }
 
   // RBAC-scoped, hot-set (open by default), per-principal-state-joined query.
-  // Hoisted so it can sit after the public `return` for readability — function
-  // declarations are hoisted within hubItemsService's closure.
   async function query(
     companyId: string,
     opts: {
@@ -251,33 +304,23 @@ export function hubItemsService(db: Db) {
           .then((r) => r[0]);
         if (dup) return { item: current, replayed: true as const };
       }
-      const updated = await tx
-        .update(hubItems)
-        .set({
-          status: args.nextStatus,
-          version: current.version + 1,
-          resolvedAt: args.nextStatus === "resolved" ? new Date() : current.resolvedAt,
-          archivedAt: args.nextStatus === "archived" ? new Date() : current.archivedAt,
-        })
-        .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.version, args.expectedVersion)))
-        .returning()
-        .then((r) => r[0] ?? null);
-      if (!updated) {
-        throw conflict("This item was changed by someone else. Reload and retry.", {
-          currentVersion: current.version,
-        });
-      }
-      await tx.insert(hubAudit).values({
-        companyId: args.companyId,
-        hubItemId: args.hubItemId,
-        actorType: args.actorType,
-        actorId: args.actorId,
-        action: args.action,
-        authorityBasis: args.authorityBasis ?? null,
-        reason: args.reason ?? null,
-        idempotencyKey: args.idempotencyKey ?? null,
-        priorState: { status: current.status, version: current.version },
-      });
+      // Guard on the CLIENT's expectedVersion: a stale token (≠ current.version)
+      // misses the WHERE and yields a 409 — same idiom as the agents.ts UPDATE.
+      // priorState records `current` (the true prior state) regardless of guard.
+      const updated = await applyGuardedTransition(
+        tx,
+        current,
+        args.nextStatus,
+        {
+          actorType: args.actorType,
+          actorId: args.actorId,
+          action: args.action,
+          authorityBasis: args.authorityBasis ?? null,
+          reason: args.reason ?? null,
+          idempotencyKey: args.idempotencyKey ?? null,
+        },
+        args.expectedVersion,
+      );
       return { item: updated, replayed: false as const };
     });
     if (committed.replayed) return committed.item; // no second side-effect on replay
@@ -289,4 +332,135 @@ export function hubItemsService(db: Db) {
     if (args.sideEffect) await args.sideEffect();
     return committed.item;
   }
+
+  // ── Reconciliation sweeper (sources = truth) ────────────────────────────────
+
+  // A per-source-type reconciler reports, for a given hub item, whether its
+  // backing source is terminal/gone (→ close) and the source's current
+  // denormalized snapshot (summary + permission revision) for drift healing.
+  interface SourceSnapshot {
+    terminal: boolean; // source row is gone OR in a terminal state → close the hub item
+    summary: string | null; // current denormalized summary (PRE-redaction)
+    permissionRevision: string | null; // monotonic-ish source revision for drift detection
+  }
+  type SourceReconciler = (companyId: string, sourceId: string) => Promise<SourceSnapshot>;
+
+  // approvals: pending = open; anything else (or a missing row) = terminal.
+  const reconcileApproval: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({ status: approvals.status, decisionNote: approvals.decisionNote, updatedAt: approvals.updatedAt })
+      .from(approvals)
+      .where(and(eq(approvals.id, sourceId), eq(approvals.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: row.status !== "pending",
+      summary: row.decisionNote ?? null,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  // heartbeat_runs: an in-flight run is non-terminal; a finished/dead run (or a
+  // missing row) is terminal. queued/running/continuing are the live states.
+  const HEARTBEAT_LIVE_STATUSES = new Set(["queued", "running", "continuing", "starting", "dispatched"]);
+  const reconcileHeartbeatRun: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({ status: heartbeatRuns.status, error: heartbeatRuns.error, updatedAt: heartbeatRuns.updatedAt })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: !HEARTBEAT_LIVE_STATUSES.has(row.status),
+      summary: row.error ?? null,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
+    approval: reconcileApproval,
+    heartbeat_run: reconcileHeartbeatRun,
+  };
+
+  // Sweep open hub items of `sourceType`: close terminal/gone-source items via the
+  // SAME version-guarded path (system audit row) so a concurrent user action can't
+  // lost-update; heal redacted-summary / sourcePermissionRevision drift (§18).
+  // Sources are truth — this is the safety net for missed same-tx emits.
+  async function reconcile(
+    companyId: string,
+    opts: { sourceType: string },
+  ): Promise<{ healed: number; closed: number; refreshed: number }> {
+    const reconciler = SOURCE_RECONCILERS[opts.sourceType];
+    if (!reconciler) {
+      throw unprocessable(`No reconciler registered for source type "${opts.sourceType}"`);
+    }
+
+    const open = await db
+      .select()
+      .from(hubItems)
+      .where(
+        and(
+          eq(hubItems.companyId, companyId),
+          eq(hubItems.sourceType, opts.sourceType),
+          eq(hubItems.status, "open"),
+        ),
+      );
+
+    let closed = 0;
+    let refreshed = 0;
+    for (const item of open) {
+      if (!item.sourceId) continue;
+      const snap = await reconciler(companyId, item.sourceId);
+
+      if (snap.terminal) {
+        // Close via the shared version-guarded transition (system actor). A
+        // concurrent user action bumps the version → this UPDATE 409s; we swallow
+        // it and let the next sweep reconcile (sources stay truth).
+        try {
+          await db.transaction(async (txRaw) => {
+            const tx = txRaw as unknown as Db;
+            await applyGuardedTransition(tx, item, "archived", {
+              actorType: "system",
+              actorId: "reconciler",
+              action: "reconcile_close",
+              authorityBasis: "system_reconciliation",
+              reason: `source ${opts.sourceType} is gone/terminal`,
+              sourceRevision: snap.permissionRevision,
+            });
+          });
+          closed += 1;
+        } catch (err) {
+          // 409 from a concurrent action → skip; anything else rethrows.
+          if (!(err instanceof Error) || (err as { status?: number }).status !== 409) throw err;
+        }
+        continue;
+      }
+
+      // Permission-drift healing: the source is still live but its denormalized
+      // snapshot drifted. Refresh the REDACTED summary + sourcePermissionRevision
+      // in place (no status transition, no audit — this is not a decision).
+      const nextSummary = snap.summary == null ? null : redactSecretsInString(snap.summary);
+      const drifted =
+        nextSummary !== item.summary ||
+        snap.permissionRevision !== item.sourcePermissionRevision;
+      if (drifted) {
+        await db
+          .update(hubItems)
+          .set({ summary: nextSummary, sourcePermissionRevision: snap.permissionRevision })
+          .where(eq(hubItems.id, item.id));
+        refreshed += 1;
+      }
+    }
+
+    const healed = closed + refreshed;
+    console.log(
+      `[hub.reconcile] company=${companyId} source=${opts.sourceType} healed=${healed} (closed=${closed} refreshed=${refreshed})`,
+    );
+    return { healed, closed, refreshed };
+  }
+
+  // Public surface (declared last so every const above has evaluated).
+  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct, reconcile };
 }
