@@ -122,8 +122,10 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
       sourcePermissionRevision: new Date(apprPendingRev).toISOString(),
     });
 
-    // (4) Permission/summary drift: live (pending) source whose decisionNote (and
-    // updatedAt revision) now differs from what the hub item stored at emit.
+    // (4) Permission/summary drift: live (pending) source whose decisionNote and
+    // updatedAt revision are strictly NEWER than what the hub item stored at emit.
+    // The stored revision is an OLD ISO baseline so the source's real updatedAt
+    // (a 2026 ISO) compares strictly newer — exercising the revision-newer heal.
     const apprDrift = await seedApproval(companyId, "pending", "sk-LIVE9876543210SECRET now noted");
     const itDrift = await svc.emit({
       companyId,
@@ -133,7 +135,7 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
       title: "drift",
       ownerUserId: founderId,
       summary: "stale summary",
-      sourcePermissionRevision: "rev-0-stale",
+      sourcePermissionRevision: "2000-01-01T00:00:00.000Z",
     });
 
     const res = await svc.reconcile(companyId, { sourceType: "approval" });
@@ -148,12 +150,13 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
     expect(res.refreshed).toBe(1);
     expect(res.healed).toBe(3);
 
-    // Drift heal: summary refreshed from the source AND redacted-before-persist.
+    // Drift heal: summary refreshed from the source AND redacted-before-persist;
+    // revision advanced off the stale baseline to the source's newer revision.
     const drifted = await db.execute(sql`SELECT summary, source_permission_revision FROM notifications WHERE id = ${itDrift.id}`);
     const drow = firstRow<{ summary: string; source_permission_revision: string }>(drifted);
     expect(drow.summary).not.toContain("sk-LIVE9876543210SECRET"); // redacted
     expect(drow.summary).not.toBe("stale summary"); // refreshed from source
-    expect(drow.source_permission_revision).not.toBe("rev-0-stale");
+    expect(drow.source_permission_revision).not.toBe("2000-01-01T00:00:00.000Z");
 
     // Closes went through the version-guarded path → a system audit row exists.
     const audit = await db.execute(
@@ -163,6 +166,45 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
     expect(arow.actor_type).toBe("system");
     expect(arow.action).toBe("reconcile_close");
     expect(arow.prior_state.status).toBe("open");
+
+    // Steady-state idempotency (P1-2): a SECOND sweep must heal nothing (no churn)
+    // and must NOT null-out the summary it just set on the drift item.
+    const healedSummary = drow.summary;
+    const res2 = await svc.reconcile(companyId, { sourceType: "approval" });
+    expect(res2.refreshed).toBe(0);
+    expect(res2.closed).toBe(0);
+    const after2 = await db.execute(sql`SELECT summary, source_permission_revision FROM notifications WHERE id = ${itDrift.id}`);
+    const arow2 = firstRow<{ summary: string; source_permission_revision: string }>(after2);
+    expect(arow2.summary).toBe(healedSummary); // unchanged, not nulled
+  });
+
+  it("does NOT churn an item emitted with a domain summary and no source revision", async () => {
+    if (setupError) throw new Error(String(setupError));
+    // Production shape: an emit site passes a meaningful `summary` and does NOT
+    // pre-compute the source's updatedAt-ISO (sourcePermissionRevision stays
+    // null). The sweeper must leave this item completely untouched — neither
+    // force-refreshing the null revision nor clobbering the domain summary.
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const appr = await seedApproval(companyId, "pending"); // no decisionNote → source summary null
+    const it = await svc.emit({
+      companyId,
+      semanticType: "approval_request",
+      sourceType: "approval",
+      sourceId: appr,
+      title: "domain",
+      ownerUserId: founderId,
+      summary: "Approve the Q3 hire for the platform team", // meaningful domain summary
+      // sourcePermissionRevision intentionally omitted → null baseline
+    });
+
+    const res = await svc.reconcile(companyId, { sourceType: "approval" });
+    expect(res.refreshed).toBe(0); // null baseline + null source summary → no heal
+    expect(await statusOf(it.id)).toBe("open");
+    const row = firstRow<{ summary: string }>(
+      await db.execute(sql`SELECT summary FROM notifications WHERE id = ${it.id}`),
+    );
+    expect(row.summary).toBe("Approve the Q3 hire for the platform team"); // not clobbered
   });
 
   it("reconciles heartbeat_run: closes a finished run, leaves a running one", async () => {

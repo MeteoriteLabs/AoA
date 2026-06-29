@@ -4,10 +4,19 @@ import { hubItems, hubItemUserState, hubAudit, approvals, heartbeatRuns } from "
 import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
+  HEARTBEAT_RUN_STATUSES,
   laneForSemanticType,
   authorityForSemanticType,
 } from "@armyofagents/shared";
 import type { UserRole } from "@armyofagents/shared";
+
+// Heartbeat runs are non-terminal only while still queued, waiting to retry, or
+// actively running — derived from the shared HEARTBEAT_RUN_STATUSES truth so the
+// set can't drift from real status values. Everything else (succeeded/failed/
+// cancelled/timed_out, or a missing row) is terminal → close the hub item.
+const HEARTBEAT_LIVE_STATUSES: ReadonlySet<string> = new Set(
+  HEARTBEAT_RUN_STATUSES.filter((s) => s === "queued" || s === "scheduled_retry" || s === "running"),
+);
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
@@ -99,6 +108,10 @@ export function hubItemsService(db: Db) {
           title: values.title,
           summary: values.summary,
           priority: values.priority,
+          // Keep the legacy `userId` and the hub `ownerUserId` in lockstep: a
+          // re-emit that resolves a different owner must update BOTH, or the two
+          // owner columns diverge (P2-3).
+          userId: values.userId,
           ownerUserId: values.ownerUserId,
           ownerPool: values.ownerPool,
           slaAt: values.slaAt,
@@ -117,6 +130,10 @@ export function hubItemsService(db: Db) {
         .limit(1)
         .then((r) => r[0]);
     }
+    // TOCTOU guard: if the row was concurrently deleted between the gated upsert
+    // (empty RETURNING) and the re-select, `row` is undefined — never return an
+    // id-less `{ lane }` object to callers (P2-5).
+    if (!row) throw conflict("Hub item vanished during emit; retry.");
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
@@ -236,7 +253,9 @@ export function hubItemsService(db: Db) {
         ),
       )
       .where(and(...conds))
-      .orderBy(sql`${hubItems.createdAt} DESC`);
+      // Stable order: createdAt is not unique, so add id as a deterministic
+      // tiebreaker before W1b builds ordered lists / pagination (P2-6).
+      .orderBy(sql`${hubItems.createdAt} DESC, ${hubItems.id} DESC`);
 
     return rows
       .filter((r) => opts.includeDismissed || r.dismissedAt == null)
@@ -361,9 +380,9 @@ export function hubItemsService(db: Db) {
     };
   };
 
-  // heartbeat_runs: an in-flight run is non-terminal; a finished/dead run (or a
-  // missing row) is terminal. queued/running/continuing are the live states.
-  const HEARTBEAT_LIVE_STATUSES = new Set(["queued", "running", "continuing", "starting", "dispatched"]);
+  // heartbeat_runs: a run that is queued / scheduled_retry / running is still
+  // live (non-terminal). A finished/dead run — or a missing row — is terminal.
+  // The live set is derived from the shared HEARTBEAT_RUN_STATUSES (module top).
   const reconcileHeartbeatRun: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
       .select({ status: heartbeatRuns.status, error: heartbeatRuns.error, updatedAt: heartbeatRuns.updatedAt })
@@ -439,17 +458,32 @@ export function hubItemsService(db: Db) {
       }
 
       // Permission-drift healing: the source is still live but its denormalized
-      // snapshot drifted. Refresh the REDACTED summary + sourcePermissionRevision
-      // in place (no status transition, no audit — this is not a decision).
-      const nextSummary = snap.summary == null ? null : redactSecretsInString(snap.summary);
-      const drifted =
-        nextSummary !== item.summary ||
-        snap.permissionRevision !== item.sourcePermissionRevision;
-      if (drifted) {
-        await db
-          .update(hubItems)
-          .set({ summary: nextSummary, sourcePermissionRevision: snap.permissionRevision })
-          .where(eq(hubItems.id, item.id));
+      // snapshot moved forward. This must be a NO-OP in steady state (no write/log
+      // churn) and must NEVER clobber a meaningful emit-time summary with a null
+      // source field (P1-2). Two independent, conservative heals:
+      //
+      //  (1) Revision: drift only when the source supplies a revision that is
+      //      strictly NEWER than the stored one. Revisions are UTC ISO-8601
+      //      timestamps → lexicographic compare == chronological. A null source
+      //      revision, an equal revision, or a null STORED baseline (nothing to be
+      //      "newer than") are all NOT drift — so items emitted without a revision
+      //      are never force-refreshed every sweep.
+      //  (2) Summary: heal only when the source provides a NON-null value; an
+      //      empty/null source field leaves the existing summary untouched. The
+      //      healed value is redacted-before-persist.
+      const revisionIsNewer =
+        snap.permissionRevision != null &&
+        item.sourcePermissionRevision != null &&
+        snap.permissionRevision > item.sourcePermissionRevision;
+
+      const patch: { summary?: string; sourcePermissionRevision?: string } = {};
+      if (revisionIsNewer) patch.sourcePermissionRevision = snap.permissionRevision!;
+      if (snap.summary != null && snap.summary !== "") {
+        const nextSummary = redactSecretsInString(snap.summary);
+        if (nextSummary !== item.summary) patch.summary = nextSummary;
+      }
+      if (Object.keys(patch).length > 0) {
+        await db.update(hubItems).set(patch).where(eq(hubItems.id, item.id));
         refreshed += 1;
       }
     }
