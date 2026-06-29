@@ -1,12 +1,22 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { hubItems, hubItemUserState, hubAudit } from "@armyofagents/db";
-import type { HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
-import { laneForSemanticType, authorityForSemanticType } from "@armyofagents/shared";
+import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
+import {
+  HUB_SEMANTIC_TYPES,
+  laneForSemanticType,
+  authorityForSemanticType,
+} from "@armyofagents/shared";
+import type { UserRole } from "@armyofagents/shared";
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
+
+// Semantic types that resolve to a given lane (lane is derived, not a column).
+function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
+  return HUB_SEMANTIC_TYPES.filter((t) => laneForSemanticType(t) === lane);
+}
 
 // ── Emit ────────────────────────────────────────────────────────────────────
 
@@ -110,5 +120,82 @@ export function hubItemsService(db: Db) {
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
-  return { emit, sourceUniqueKey, resolveOwner };
+  // ── Query ───────────────────────────────────────────────────────────────────
+
+  return { emit, sourceUniqueKey, resolveOwner, query };
+
+  // RBAC-scoped, hot-set (open by default), per-principal-state-joined query.
+  // Hoisted so it can sit after the public `return` for readability — function
+  // declarations are hoisted within hubItemsService's closure.
+  async function query(
+    companyId: string,
+    opts: {
+      actorUserId: string;
+      role?: UserRole;
+      lane?: HubLane;
+      status?: HubItemStatus;
+      includeDismissed?: boolean;
+    },
+  ) {
+    const { actorUserId } = opts;
+    // Resolve the effective role if not supplied by the caller (route may pass it).
+    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
+
+    const conds = [eq(hubItems.companyId, companyId)];
+
+    // Hot set: open items only by default (uses hub_items_open_idx).
+    conds.push(eq(hubItems.status, opts.status ?? "open"));
+
+    // RBAC scope: founder sees all; team_lead sees owned OR department-scoped;
+    // team_member sees only owned. scopeKey carries the department/project scope.
+    if (role !== "founder") {
+      const ownedCond = eq(hubItems.ownerUserId, actorUserId);
+      if (role === "team_lead") {
+        const leadDepts = await permissionService(db).getTeamLeadDepartments(companyId, actorUserId);
+        const scopeCond = leadDepts.length > 0 ? inArray(hubItems.scopeKey, leadDepts) : undefined;
+        conds.push(scopeCond ? or(ownedCond, scopeCond)! : ownedCond);
+      } else {
+        // team_member (and any unknown role) → owned only.
+        conds.push(ownedCond);
+      }
+    }
+
+    // Lane filter (derived from semanticType — no lane column).
+    if (opts.lane) {
+      const types = semanticTypesForLane(opts.lane);
+      conds.push(inArray(hubItems.semanticType, types));
+    }
+
+    const rows = await db
+      .select({
+        item: hubItems,
+        readAt: hubItemUserState.readAt,
+        snoozedUntil: hubItemUserState.snoozedUntil,
+        dismissedAt: hubItemUserState.dismissedAt,
+      })
+      .from(hubItems)
+      .leftJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, actorUserId),
+        ),
+      )
+      .where(and(...conds))
+      .orderBy(sql`${hubItems.createdAt} DESC`);
+
+    return rows
+      .filter((r) => opts.includeDismissed || r.dismissedAt == null)
+      .map((r) => ({
+        ...r.item,
+        lane: r.item.semanticType
+          ? laneForSemanticType(r.item.semanticType as HubSemanticType)
+          : null,
+        // Per-principal state attached from the sparse user-state table.
+        readAt: r.readAt,
+        snoozedUntil: r.snoozedUntil,
+        dismissedAt: r.dismissedAt,
+      }));
+  }
 }
