@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { clearFakeEmbedderControl, writeFakeEmbedderControl } from "./helpers/fake-embedder";
 
@@ -71,6 +71,36 @@ async function listMemoryItems(
   return res.json() as Promise<{ items: Array<{ id: string; title: string; indexStatus?: string }>; semanticAvailable: boolean }>;
 }
 
+function e2eCompanyName(base: string, testInfo: TestInfo): string {
+  return `${base}-${testInfo.workerIndex}-${testInfo.retry}-${Date.now()}`;
+}
+
+async function waitForIndexStatus(
+  request: APIRequestContext,
+  companyId: string,
+  itemId: string,
+  targetStatus: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const { timeoutMs = 60_000, pollMs = 500 } = opts;
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = "item not found";
+  let lastItems = "";
+
+  while (Date.now() < deadline) {
+    const list = await listMemoryItems(request, companyId);
+    lastItems = list.items.map((item) => `${item.title}:${item.indexStatus ?? "missing-status"}`).join(", ");
+    const found = list.items.find((i) => i.id === itemId);
+    lastStatus = found?.indexStatus ?? "item not found";
+    if (found?.indexStatus === targetStatus) return;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+
+  throw new Error(
+    `Timed out waiting for indexStatus="${targetStatus}" on item ${itemId}; current: ${lastStatus}; items: ${lastItems}`,
+  );
+}
+
 /** Navigate to /memory/legacy (the Memory page that renders the no-llm-key-banner). */
 async function openMemoryPage(page: Page, issuePrefix: string): Promise<void> {
   await page.goto(`/${issuePrefix}/memory/legacy`);
@@ -88,8 +118,8 @@ test.describe("memory index status — no-key path (no pgvector needed)", () => 
 
   test(
     "fresh company with no per-company key: Memory page shows no-llm-key-banner and not-indexed badge",
-    async ({ page, request }) => {
-      const company = await seedCompany(request, `E2E-MemIdx-${Date.now()}`);
+    async ({ page, request }, testInfo) => {
+      const company = await seedCompany(request, e2eCompanyName("E2E-MemIdx", testInfo));
 
       // Create a domain memory item. The freshly seeded company has no per-company
       // OpenAI secret, so resolveSemanticAvailable() → false, and
@@ -152,7 +182,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
 
   test(
     "with pgvector + fake embedder: memory item badge flips to 'indexed' after embedding completes",
-    async ({ page, request }) => {
+    async ({ page, request }, testInfo) => {
       test.skip(
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
@@ -162,7 +192,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
       // Ensure no forced error is set so embeds succeed.
       clearFakeEmbedderControl();
 
-      const company = await seedCompany(request, `E2E-MemIdxPG-${Date.now()}`);
+      const company = await seedCompany(request, e2eCompanyName("E2E-MemIdxPG", testInfo));
 
       // The company needs a per-company OpenAI key for resolveSemanticAvailable()
       // to return true and for the embedding worker to process the queue row.
@@ -184,18 +214,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
       expect(item.id).toBeTruthy();
 
       // Poll the API until indexStatus flips to "indexed" (fake embedder ran).
-      const deadline = Date.now() + 30_000;
-      let indexStatus: string | undefined;
-      while (Date.now() < deadline) {
-        const list = await listMemoryItems(request, company.id);
-        const found = list.items.find((i) => i.id === item.id);
-        if (found?.indexStatus === "indexed") {
-          indexStatus = "indexed";
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      expect(indexStatus).toBe("indexed");
+      await waitForIndexStatus(request, company.id, item.id, "indexed");
 
       // Navigate to the Memory page and assert the badge shows "Indexed".
       await openMemoryPage(page, company.issuePrefix);
@@ -214,7 +233,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
 
   test(
     "with pgvector: adding a company key triggers backfill — existing items become indexed",
-    async ({ page, request }) => {
+    async ({ page, request }, testInfo) => {
       test.skip(
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
@@ -222,7 +241,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
 
       clearFakeEmbedderControl();
 
-      const company = await seedCompany(request, `E2E-MemIdxPG-${Date.now()}`);
+      const company = await seedCompany(request, e2eCompanyName("E2E-MemIdxPG", testInfo));
 
       // Create a memory item BEFORE adding a key — it will have no queue row
       // (keyless path: no key → no enqueue when semanticAvailable=false... or
@@ -246,18 +265,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
       expect(secretRes.ok()).toBe(true);
 
       // Poll until the item is indexed (backfill sweep processed the queue).
-      const deadline = Date.now() + 30_000;
-      let indexStatus: string | undefined;
-      while (Date.now() < deadline) {
-        const list = await listMemoryItems(request, company.id);
-        const found = list.items.find((i) => i.id === item.id);
-        if (found?.indexStatus === "indexed") {
-          indexStatus = "indexed";
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      expect(indexStatus).toBe("indexed");
+      await waitForIndexStatus(request, company.id, item.id, "indexed");
 
       // The Memory page should no longer show the no-llm-key-banner.
       await openMemoryPage(page, company.issuePrefix);
