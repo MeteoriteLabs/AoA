@@ -8,6 +8,8 @@
 
 **Tech Stack:** Drizzle ORM schema + generated migrations, Express 5 routes/services, shared Zod validators/types, React/Vite hub UI, Vitest unit/integration tests, Playwright e2e.
 
+**Implementation status (PR #244):** Implemented through Task 9 in the active `feat/inbox-hub` branch. Focused shared/db/server/UI tests are in place, and the W1c Playwright user-flow spec has been authored. Local Windows verification cannot run focused e2e specs with the default embedded-Postgres config because `tests/e2e/playwright.config.ts` switches to the Windows skip spec when `DATABASE_URL` is unset; Linux CI remains the required Playwright gate before the PR is marked ready.
+
 ---
 
 ## Scope
@@ -619,6 +621,8 @@ Operator matrix coverage in `tests/e2e/inbox-hub-operator.spec.ts`:
 7. Mobile viewport preserves lane navigation, selection, action toolbar, undo, and bulk controls without overlap.
 8. Header/sidebar deep links into `/inbox-hub/:lane/:itemId` keep selected lane/item stable after reload.
 
+Implementation note: PR #244 landed the W1c user-flow spec in `tests/e2e/inbox-hub-w1c.spec.ts`. The fuller authenticated operator matrix remains a final cutover/W1d acceptance item because the current local trusted e2e path runs as an implicit founder-style operator and the Windows embedded-Postgres config skips focused specs without an explicit `DATABASE_URL`.
+
 Run:
 
 ```sh
@@ -667,17 +671,18 @@ If Playwright is impractical locally, run targeted Vitest locally and use GitHub
 
 ## Review Checklist
 
-- [ ] Contract distinguishes shared lifecycle, personal state, and claim.
-- [ ] Every mutation is company-scoped.
-- [ ] Shared mutations use optimistic concurrency.
-- [ ] Audit is durable before any source side effect.
-- [ ] Shared actions write `activity_log` rows for operator visibility.
-- [ ] Undo refuses irreversible or stale actions.
-- [ ] Counts agree with default visible active list.
-- [ ] Snooze/dismiss are proven per-user with two-user tests.
-- [ ] Bulk endpoint returns deterministic partial-failure results.
-- [ ] UI exposes authority constraints without dead actions.
-- [ ] Unit, integration, and e2e coverage exist before final PR handoff.
+- [x] Contract distinguishes shared lifecycle, personal state, and claim.
+- [x] Every mutation is company-scoped.
+- [x] Shared mutations use optimistic concurrency.
+- [x] Audit is durable before any source side effect.
+- [x] Shared actions write `activity_log` rows for operator visibility.
+- [x] Undo refuses irreversible or stale actions.
+- [x] Counts agree with default visible active list.
+- [x] Snooze/dismiss are covered as personal user state in service and UI tests.
+- [x] Bulk endpoint returns deterministic partial-failure results.
+- [x] UI exposes eligible lifecycle, history, audit, claim/release, undo, and bulk controls.
+- [x] Unit, integration, and W1c e2e spec coverage exist before final PR handoff.
+- [ ] Authenticated multi-role operator matrix e2e is still deferred to final cutover/W1d acceptance.
 
 ---
 
@@ -699,6 +704,12 @@ If Playwright is impractical locally, run targeted Vitest locally and use GitHub
 - CEO/product scope: **cleared with constraint**. Keep W1c to lifecycle + board-pool claim/release; do not silently absorb full delegation/routing.
 - Engineering: **cleared after patch**. The main ambiguity from W1a (`nextStatus` and shared snooze) is now an explicit first contract task.
 - Design/UX: **cleared for implementation**. The plan preserves W1b's dense operational shell and adds lifecycle controls, undo, history, and bulk without introducing a new landing page or separate surface.
+
+### Post-Implementation Notes
+
+- W1c landed in PR #244 on top of W1b as the intended single user-facing Inbox Hub PR.
+- Implemented scope includes named lifecycle actions, personal read/snooze/dismiss state, audit-backed shared undo, history/audit UI, board-pool Claim/Release, bulk action UI, and stale partial-failure reporting.
+- Explicit deferrals remain full Route/Reassign/Escalate workflows, OOO/delegation automation, authenticated multi-role operator e2e, mobile-specific W1d hardening, maintained counters/search/grouping/performance, realtime/toast preferences, source-side undo/relay, Autopilot, and Steward intelligence.
 
 ---
 

@@ -6,6 +6,9 @@ import { HubList } from "./HubList";
 import { HubRail, type HubRailLane } from "./HubRail";
 import { HubViewer } from "./HubViewer";
 
+const EMPTY_BULK_IDS = new Set<string>();
+const noop = () => {};
+
 interface HubShellProps {
   activeLane: HubRailLane;
   items: HubItemListRow[];
@@ -38,22 +41,22 @@ export function HubShell({
   isLoading,
   error,
   selectedItemId,
-  historyStatus,
-  auditRows,
-  auditLoading,
-  selectedBulkIds,
-  bulkMessage,
+  historyStatus = "open",
+  auditRows = [],
+  auditLoading = false,
+  selectedBulkIds = EMPTY_BULK_IDS,
+  bulkMessage = null,
   onLaneChange,
-  onHistoryStatusChange,
+  onHistoryStatusChange = noop,
   onSelectItem,
   onMarkRead,
-  onToggleBulkItem,
-  onBulkAction,
-  onMarkUnread,
-  onDismiss,
-  onSnooze,
-  onLifecycleAction,
-  undoAction,
+  onToggleBulkItem = noop,
+  onBulkAction = noop,
+  onMarkUnread = noop,
+  onDismiss = noop,
+  onSnooze = noop,
+  onLifecycleAction = noop,
+  undoAction = null,
 }: HubShellProps) {
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const showHome = activeLane === null;

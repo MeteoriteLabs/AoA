@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Draft for W1b/W1c/W1d planning
+**Status:** Active integration roadmap; W1b and W1c are implemented in PR #244
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -30,9 +30,19 @@ Active branch:
   user-facing "Inbox Hub UI" PR.
 - **Rule:** keep this branch rebased onto `main` whenever foundation PRs land.
 
+Implemented in the active branch / PR #244:
+
+- **W1b - Hub UI shell:** three-pane Inbox Hub shell, rail lanes, Home overview,
+  registry-backed viewer, Approvals reachability, lane/item deep links, and W1b
+  Playwright coverage.
+- **W1c - Lifecycle:** read/unread, personal snooze/dismiss and inverse undo,
+  shared resolve/archive, board-pool Claim/Release, server audit undo,
+  deterministic bulk endpoint and UI controls, history/audit UI, compact bulk
+  partial-result banner, and W1c Playwright coverage.
+
 Not yet planned or built:
 
-- W1b, W1c, W1d
+- W1d
 - W2 Layer 2 and Layer 3
 - W3 Autopilot
 - W4 Steward
@@ -130,6 +140,13 @@ Exit criteria:
 
 Goal: make daily triage reliable and reversible.
 
+Implementation status: **implemented in PR #244**. Local focused verification
+has covered shared contracts, DB schema, server route/service behavior, UI API
+clients/hooks, page/component behavior, and targeted W1c Playwright spec authoring.
+The local Windows embedded-Postgres e2e config switches to the documented skip
+spec when `DATABASE_URL` is unset, so Linux CI remains the required Playwright
+gate before marking the PR ready.
+
 Scope:
 
 - Read/unread interaction.
@@ -163,6 +180,17 @@ Exit criteria:
   to Route/Escalate instead of seeing unusable decision controls.
 - Bulk operations have deterministic success/partial/failure UI.
 - Unit, route/client, and e2e tests cover the triage loop.
+
+Explicit W1c deferrals:
+
+- Full Route/Reassign/Escalate workflows and OOO/delegation automation remain
+  W1d/W2+ work. W1c keeps Claim/Release scoped to board-pool items.
+- Maintained counters, search, grouping, mobile hardening, and high-volume
+  performance remain W1d.
+- Realtime reconciliation, toast bridge, notification preferences, anti-spam,
+  and digests remain W2.
+- External source-side undo/relay behavior and runtime adapter bridges remain W5.
+- Autopilot auto-actions and Steward curation/intelligence remain W3/W4.
 
 ### Plan 3 - W1d Grouping, Search, Settings, Mobile, Performance
 
@@ -407,9 +435,10 @@ mid-task:
 
 ## 8. Next Step
 
-Write the detailed W1b implementation plan:
+Write the detailed W1d implementation plan:
 
-`docs/aoa/plans/2026-06-29-w1b-hub-ui-shell-plan.md`
+`docs/aoa/plans/2026-06-29-w1d-hub-grouping-search-settings-plan.md`
 
-The plan must follow the W1a quality bar: exact file map, TDD steps, focused
-commits, unit/component/API/e2e coverage, and final verification commands.
+The plan must follow the W1a/W1c quality bar: exact file map, TDD steps, focused
+commits, unit/component/API/e2e coverage, mobile/performance checks, and final
+verification commands.
