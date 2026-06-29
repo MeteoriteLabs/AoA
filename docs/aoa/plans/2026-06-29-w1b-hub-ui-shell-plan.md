@@ -1692,8 +1692,9 @@ Implementation note: Task 7 also adds `inbox-hub` to `ui/src/lib/company-routes.
 Verification:
 
 - RED: `corepack pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx src/__tests__/InboxHub.test.tsx` failed because `InboxHub` and the sidebar links did not exist.
-- GREEN: `corepack pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx src/__tests__/InboxHub.test.tsx` PASS.
+- GREEN: `corepack pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx src/__tests__/InboxHub.test.tsx` PASS, including duplicate mark-read prevention for repeated unread row clicks.
 - `corepack pnpm --filter @armyofagents/ui typecheck` PASS.
+- Independent review: Beauvoir PASS after the duplicate mark-read cache/guard fix.
 
 ---
 
@@ -1704,7 +1705,7 @@ Verification:
 - Create: `tests/e2e/inbox-hub-w1b.spec.ts`
 - Create: `tests/e2e/helpers/seed-hub-item.ts` only if no existing source API can create the required non-approval lane rows.
 
-- [ ] **Step 1: Write the failing e2e spec**
+- [x] **Step 1: Write the failing e2e spec**
 
 Create `tests/e2e/inbox-hub-w1b.spec.ts`:
 
@@ -1786,7 +1787,7 @@ test.describe("Inbox Hub W1b preview", () => {
 });
 ```
 
-- [ ] **Step 2: Run to confirm failure or collect**
+- [x] **Step 2: Run to confirm failure or collect**
 
 Run:
 
@@ -1796,7 +1797,7 @@ pnpm test:e2e -- inbox-hub-w1b.spec.ts
 
 Expected before implementation: FAIL. After previous tasks: PASS on Linux-capable e2e environments. On Windows, Playwright config skips e2e because embedded Postgres cannot boot.
 
-- [ ] **Step 3: Fix seed gaps**
+- [x] **Step 3: Fix seed gaps**
 
 If approval creation or the seeded notification/suggestion helpers do not emit hub items in e2e:
 
@@ -1807,12 +1808,18 @@ If approval creation or the seeded notification/suggestion helpers do not emit h
 
 Do not add e2e-only backdoors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```sh
 git add tests/e2e/inbox-hub-w1b.spec.ts tests/e2e/helpers/seed-hub-item.ts
 git commit -m "test(hub): add W1b Playwright preview flow"
 ```
+
+Verification:
+
+- RED: with `DATABASE_URL` temporarily set to force collection on Windows, `corepack pnpm exec playwright test --config=tests/e2e/playwright.config.ts inbox-hub-w1b.spec.ts --list` failed because `tests/e2e/helpers/seed-hub-item` did not exist.
+- GREEN collect: with `DATABASE_URL` temporarily set to force collection on Windows, the same `--list` command listed both W1b Playwright tests.
+- Windows e2e skip: `corepack pnpm test:e2e` PASS with the expected single skipped `windows-embedded-postgres-skip.spec.ts`. Runtime browser flow remains covered by Linux/external-Postgres e2e.
 
 ---
 
