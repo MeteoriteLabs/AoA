@@ -306,7 +306,7 @@ git commit -m "test(hub): lock old Inbox source parity contract"
 - Create: `server/src/services/hub-source-producers.ts`
 - Test: `server/src/__tests__/hub-source-producers.test.ts`
 
-- [ ] **Step 1: Write the failing unit test**
+- [x] **Step 1: Write the failing unit test**
 
 Create `server/src/__tests__/hub-source-producers.test.ts`:
 
@@ -436,7 +436,7 @@ describe("hub source producers", () => {
 });
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 Run:
 
@@ -446,7 +446,7 @@ pnpm -C server exec vitest run src/__tests__/hub-source-producers.test.ts
 
 Expected: FAIL because `hub-source-producers.ts` does not exist.
 
-- [ ] **Step 3: Implement source producer builders**
+- [x] **Step 3: Implement source producer builders**
 
 Create `server/src/services/hub-source-producers.ts`:
 
@@ -612,7 +612,7 @@ export async function emitHubItem(db: Db, args: EmitArgs) {
 }
 ```
 
-- [ ] **Step 4: Run to confirm it passes**
+- [x] **Step 4: Run to confirm it passes**
 
 Run:
 
@@ -622,7 +622,7 @@ pnpm -C server exec vitest run src/__tests__/hub-source-producers.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add server/src/services/hub-source-producers.ts server/src/__tests__/hub-source-producers.test.ts
