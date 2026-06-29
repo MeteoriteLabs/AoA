@@ -81,6 +81,14 @@ Scope:
   tabbed viewer.
 - Lanes: Home, Waiting on you, Notifications, Suggestions, Mail reserved.
 - UI registry backed by shared hub semantic types.
+- Source coverage/remap inventory for the old `Inbox.tsx` sections:
+  approvals, discussions pending review, join requests, scope proposals,
+  human-input items, notifications, failed runs, alerts, mentions, run-complete,
+  stale work, and spinoff suggestions.
+- Emit/backfill wiring for W1 lane sources not covered by W1a. W1a intentionally
+  left the headline "Waiting on you" emitters for W1b, so W1b is not UI-only.
+  Each remapped source must either emit into `hub_items` or be explicitly
+  deferred with a testable reason and no lost user-visible item.
 - Polling reads from W1a routes:
   - `GET /companies/:companyId/hub-items`
   - `GET /companies/:companyId/hub-items/counts`
@@ -90,6 +98,9 @@ Scope:
 - Approvals reachable from sidebar and in-hub.
 - Home overview with Autopilot display/control shell only.
 - Deep-link basics for lanes and item selection.
+- Baseline page-size/pagination handling for lane lists, plus cheap count usage
+  from W1a counts. W1d can add virtualization and advanced high-volume UX, but
+  W1b must not render an unbounded polling list.
 
 Out of scope:
 
@@ -105,11 +116,15 @@ Exit criteria:
 
 - The hub can replace the old flat Inbox in branch-level testing without losing
   the W1b remapped item categories.
+- Seeded items for each W1b-remapped semantic type appear in the correct lane
+  and open the correct viewer or canonical route.
 - Approvals are reachable in one click and open in the hub viewer or their
   canonical detail route.
 - Empty/loading/error states are explicit and company-scoped.
 - The UI has focused component tests and at least one Playwright flow for lane
   navigation and item selection.
+- The UI registry is total over `HUB_SEMANTIC_TYPES`, uses no local-only
+  semantic strings, and any new semantic type includes shared-contract tests.
 
 ### Plan 2 - W1c Lifecycle
 
@@ -123,8 +138,13 @@ Scope:
 - Undo timer and recovery path for supported actions.
 - Bulk selection and bulk action partial-failure semantics.
 - History view for resolved/archived items.
-- Claim/release and basic ownership affordances for board-pool items if W1a
-  source data supports them.
+- Owner display for every item.
+- Authority-gated action states: hide or disable actions the actor cannot take,
+  with Route/Escalate affordances instead of dead buttons.
+- Claim/Release for board-pool items.
+- Reassign, Escalate, and Route UI affordances with required reasons and audit
+  expectations. Delegate/out-of-office automation stays later, but W1c must not
+  erase the locked ownership model from the master scope.
 - Action error recovery for stale version `409`, failed action, and source
   deleted.
 
@@ -139,6 +159,8 @@ Exit criteria:
 - Lifecycle actions call W1a action/state routes with `expectedVersion` and
   idempotency keys where required.
 - Stale action and permission-denied states are visible and recoverable.
+- Owner and authority are visually distinct, and non-authorized users are guided
+  to Route/Escalate instead of seeing unusable decision controls.
 - Bulk operations have deterministic success/partial/failure UI.
 - Unit, route/client, and e2e tests cover the triage loop.
 
@@ -154,7 +176,8 @@ Scope:
   link/entry to future notification preferences.
 - Mobile layout: rail drawer, list/viewer stack, safe touch targets.
 - Keyboard and accessibility hardening.
-- Performance: pagination or virtualization, stable counters, no layout shifts.
+- Performance: virtualization, advanced high-volume UX hardening, and no layout
+  shifts. Baseline page-size handling and cheap counts are W1b requirements.
 
 Out of scope:
 
@@ -196,6 +219,8 @@ Exit criteria:
   8. Search/group/filter where W1d applies.
   9. Use the hub on a mobile viewport.
 - The branch passes full verification commands listed in section 5.
+- The PR description includes the phase checklist and test evidence for W1b,
+  W1c, W1d, and final cutover.
 
 ---
 
@@ -243,6 +268,19 @@ reserved/empty-state path but does not build bridges.
 Every implementation plan must include tests before implementation and must name
 the exact test files and commands.
 
+### Phase Gates
+
+Each W1 phase must pass these gates before the next phase starts:
+
+- Focused unit/component/API/e2e tests for the phase are green.
+- No W2/W3/W4/W5 implementation code has entered the branch.
+- The old Inbox equivalence matrix is updated for every source category touched.
+- Seeded demo/test data verifies the new lane/viewer behavior.
+- `/inbox` remains on the old route until the final cutover plan explicitly
+  switches it.
+- `git diff --name-only origin/main...HEAD` is reviewed so the branch contains
+  only intended roadmap, plan, and implementation files.
+
 ### Per-Phase Required Coverage
 
 - **Shared/contracts:** when shared types or validators change, add tests under
@@ -260,6 +298,10 @@ the exact test files and commands.
 - Hub API client builds correct URLs for list/counts/state.
 - Lane registry maps every W1a semantic type to one lane and one viewer
   strategy.
+- UI registry is total over `HUB_SEMANTIC_TYPES` and rejects unknown local-only
+  semantic strings in tests.
+- Source-remap tests prove every old Inbox category either emits to a hub lane
+  or has an explicit, documented deferral.
 - Sidebar exposes Inbox/Hub and Approvals reachability as specified.
 - Hub page renders Home, lane list, empty states, loading states, and error
   states.
@@ -274,6 +316,7 @@ the exact test files and commands.
   route payload.
 - Stale `409` action errors show a recovery state.
 - Permission-denied actions do not leave dead buttons.
+- Owner, authority, Claim/Release, Route, and Escalate states render distinctly.
 - Bulk action partial failures are represented deterministically.
 - Playwright: founder clears a mixed queue and sees undo/history behavior.
 
@@ -286,6 +329,25 @@ the exact test files and commands.
 - Keyboard navigation covers lane movement and item selection.
 - Playwright: desktop and mobile hub smoke with screenshots/assertions.
 
+### Final Operator Acceptance Matrix
+
+Create a focused Playwright acceptance spec:
+
+`tests/e2e/inbox-hub-operator.spec.ts`
+
+It must cover:
+
+- Founder, team lead, and team member visibility for seeded hub items.
+- Each old Inbox category remapped to its W1 lane or documented as deferred.
+- Approval open in hub viewer, approval action where supported, canonical full
+  detail open, and return to hub with lane/selection state intact.
+- Stale `409` action recovery.
+- Permission-denied action state.
+- Source-deleted or auto-resolved item state.
+- Snooze return, undo/history, and bulk partial failure once W1c lands.
+- Mobile lane/list/viewer navigation without overlap.
+- Header bell and sidebar badge deep-linking into the hub.
+
 ### Final PR Verification Commands
 
 Run before claiming the integration PR is ready:
@@ -294,13 +356,13 @@ Run before claiming the integration PR is ready:
 pnpm -r typecheck
 pnpm test:run
 pnpm build
-pnpm -C tests/e2e test inbox-hub.spec.ts
+pnpm test:e2e -- inbox-hub-operator.spec.ts
 ```
 
 If the final e2e is split across multiple specs, run the whole focused set:
 
 ```sh
-pnpm -C tests/e2e test inbox-hub*.spec.ts
+pnpm test:e2e -- inbox-hub*.spec.ts
 ```
 
 Known CI note: Windows e2e is skipped for embedded Postgres; Linux CI remains
@@ -311,11 +373,19 @@ the required gate for integration and e2e behavior.
 ## 6. Branch Hygiene
 
 - Keep `feat/inbox-hub` rebased on `origin/main`.
+- Before starting W1b and before final PR review, run:
+  - `git fetch origin`
+  - confirm `origin/main` includes PR #243's W1a merge
+  - rebase `feat/inbox-hub` onto `origin/main` if needed
+  - inspect `git diff --name-only origin/main...HEAD`
 - Commit each implementation task separately.
 - Do not mix W2/W3/W4/W5 implementation into the W1 UI integration PR.
 - Do not rename DB tables or API routes for UI naming changes.
 - Preserve company scoping and RBAC checks in every route or client behavior.
 - Keep docs updated when behavior, commands, or phase boundaries change.
+- No dependency additions are expected for W1b/W1c/W1d. If a dependency becomes
+  necessary, follow the current `AGENTS.md` dependency workflow and commit
+  manifest and lockfile changes together when required.
 
 ---
 
