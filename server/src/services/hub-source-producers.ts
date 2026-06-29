@@ -8,8 +8,10 @@ type ApprovalLike = {
   requestedByAgentId: string | null;
   requestedByUserId: string | null;
   payload: Record<string, unknown>;
-  updatedAt: Date;
+  updatedAt: SourceUpdatedAt;
 };
+
+type SourceUpdatedAt = Date | string;
 
 type JoinRequestLike = {
   id: string;
@@ -18,7 +20,7 @@ type JoinRequestLike = {
   agentName: string | null;
   requestEmailSnapshot: string | null;
   adapterType: string | null;
-  updatedAt: Date;
+  updatedAt: SourceUpdatedAt;
 };
 
 type DiscussionLike = {
@@ -31,7 +33,7 @@ type DiscussionLike = {
   lastPendingActorType?: "user" | "agent" | null;
   lastPendingActorId?: string | null;
   pendingItemCount: number;
-  updatedAt: Date;
+  updatedAt: SourceUpdatedAt;
 };
 
 type SuggestionLike = {
@@ -39,7 +41,7 @@ type SuggestionLike = {
   companyId: string;
   title: string;
   evidence: string | null;
-  updatedAt: Date;
+  updatedAt: SourceUpdatedAt;
 };
 
 type IssueLike = {
@@ -48,7 +50,7 @@ type IssueLike = {
   title: string;
   assigneeUserId: string | null;
   assigneeAgentId: string | null;
-  updatedAt: Date;
+  updatedAt: SourceUpdatedAt;
 };
 
 function spaced(value: string) {
@@ -57,6 +59,10 @@ function spaced(value: string) {
 
 function scopeKeyFor(source: { scopeType: string | null; scopeId: string | null }) {
   return source.scopeType && source.scopeId ? source.scopeId : null;
+}
+
+function sourceRevision(value: SourceUpdatedAt) {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
 function approvalSummary(approval: ApprovalLike) {
@@ -86,7 +92,7 @@ export function buildApprovalHubEmit(approval: ApprovalLike): EmitArgs {
     summary: approvalSummary(approval),
     ownerPool: "board",
     ...actor,
-    sourcePermissionRevision: approval.updatedAt.toISOString(),
+    sourcePermissionRevision: sourceRevision(approval.updatedAt),
   };
 }
 
@@ -104,7 +110,7 @@ export function buildJoinRequestHubEmit(request: JoinRequestLike): EmitArgs {
     title: `Review ${subject}`,
     summary: `${spaced(request.requestType)} join request`,
     ownerPool: "board",
-    sourcePermissionRevision: request.updatedAt.toISOString(),
+    sourcePermissionRevision: sourceRevision(request.updatedAt),
   };
 }
 
@@ -129,7 +135,7 @@ export function buildDiscussionPendingHubEmit(discussion: DiscussionLike): EmitA
     ownerUserId: discussion.ownerUserId,
     scopeKey: scopeKeyFor(discussion),
     ...actor,
-    sourcePermissionRevision: discussion.updatedAt.toISOString(),
+    sourcePermissionRevision: sourceRevision(discussion.updatedAt),
   };
 }
 
@@ -141,7 +147,7 @@ export function buildSuggestionHubEmit(suggestion: SuggestionLike): EmitArgs {
     sourceId: suggestion.id,
     title: suggestion.title,
     summary: suggestion.evidence,
-    sourcePermissionRevision: suggestion.updatedAt.toISOString(),
+    sourcePermissionRevision: sourceRevision(suggestion.updatedAt),
   };
 }
 
@@ -157,7 +163,7 @@ export function buildStaleIssueHubEmit(issue: IssueLike): EmitArgs {
     ownerPool: issue.assigneeUserId ? undefined : "board",
     sourceActorType: issue.assigneeAgentId ? "agent" : undefined,
     sourceActorId: issue.assigneeAgentId ?? undefined,
-    sourcePermissionRevision: issue.updatedAt.toISOString(),
+    sourcePermissionRevision: sourceRevision(issue.updatedAt),
   };
 }
 

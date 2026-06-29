@@ -24,8 +24,9 @@ test.describe("Inbox Hub W1b preview", () => {
     const approval = (await approvalRes.json()) as { id: string };
 
     await page.goto(`/${company.issuePrefix}/inbox-hub`);
-    await expect(page.getByRole("navigation", { name: /hub lanes/i })).toBeVisible();
-    await page.getByRole("button", { name: /waiting on you/i }).click();
+    const laneNav = page.getByRole("navigation", { name: /hub lanes/i });
+    await expect(laneNav).toBeVisible();
+    await laneNav.getByRole("button", { name: /waiting on you/i }).click();
     await expect(page.getByText(/Review hire agent approval/i)).toBeVisible();
 
     await page.getByRole("button", { name: /Review hire agent approval/i }).click();
@@ -65,12 +66,13 @@ test.describe("Inbox Hub W1b preview", () => {
     await page.goto(`/${company.issuePrefix}/inbox-hub/notifications`);
     await expect(page.getByText("Agent failed to finish run")).toBeVisible();
 
-    await page.getByRole("button", { name: /suggestions/i }).click();
+    const laneNav = page.getByRole("navigation", { name: /hub lanes/i });
+    await laneNav.getByRole("button", { name: /suggestions/i }).click();
     await expect(page).toHaveURL(new RegExp(`/inbox-hub/suggestions`));
     await expect(page.getByText("Review stale project risk")).toBeVisible();
 
     await page.goto(`/${company.issuePrefix}/inbox/new`);
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/inbox/new$`));
-    await expect(page.getByRole("heading", { name: /^Inbox\.?$/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
   });
 });

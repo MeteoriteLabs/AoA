@@ -143,4 +143,20 @@ describe("hub source producers", () => {
       title: "Stale task: Draft launch copy",
     });
   });
+
+  it("accepts DB timestamp strings for source permission revisions", () => {
+    const updatedAt = "2026-06-29T00:00:00.000Z";
+
+    const emit = buildApprovalHubEmit({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: "user-1",
+      payload: {},
+      updatedAt,
+    } as never);
+
+    expect(emit.sourcePermissionRevision).toBe(updatedAt);
+  });
 });
