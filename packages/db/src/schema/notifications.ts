@@ -4,6 +4,7 @@ import {
   text,
   timestamp,
   index,
+  uniqueIndex,
   integer,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
@@ -54,6 +55,24 @@ export const notifications = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+
+    // ── Hub control-plane columns (W1a) ──
+    semanticType: text("semantic_type"), // HubSemanticType; null on legacy rows until backfilled
+    status: text("status").notNull().default("open"), // HubItemStatus
+    priority: text("priority").notNull().default("normal"),
+    groupKey: text("group_key"),
+    slaAt: timestamp("sla_at", { withTimezone: true }),
+    sourceType: text("source_type"), // e.g. "approval" | "heartbeat_run" | "discussion"
+    sourceId: text("source_id"),
+    scopeKey: text("scope_key"), // department/project/goal scope for RBAC + dedupe
+    sourceUniqueKey: text("source_unique_key"), // company+sourceType+sourceId+semanticType+scopeKey
+    summary: text("summary"), // REDACTED denormalized body (redact-before-persist)
+    sourcePermissionRevision: text("source_permission_revision"),
+    ownerUserId: text("owner_user_id"), // nullable (pool-owned items)
+    ownerPool: text("owner_pool"), // HubOwnerPool when no single owner
+    version: integer("version").notNull().default(0), // optimistic concurrency token
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => ({
     companyUserIdx: index("notifications_company_user_idx").on(
@@ -74,6 +93,18 @@ export const notifications = pgTable(
       .where(
         sql`delivery_error IS NOT NULL AND delivered_at IS NULL`,
       ),
+
+    // ── Hub control-plane indexes (W1a) ──
+    // Hot set = open items only; active-hub queries touch a small working set.
+    hubOpenIdx: index("hub_items_open_idx")
+      .on(table.companyId, table.semanticType, table.createdAt)
+      .where(sql`${table.status} = 'open'`),
+    hubOwnerOpenIdx: index("hub_items_owner_open_idx")
+      .on(table.companyId, table.ownerUserId)
+      .where(sql`${table.status} = 'open'`),
+    hubSourceUniqueIdx: uniqueIndex("hub_items_source_unique_idx").on(
+      table.sourceUniqueKey,
+    ),
   }),
 );
 
@@ -88,3 +119,8 @@ export const notificationsRelations = relations(
     }),
   }),
 );
+
+// ── Hub alias (W1a) ─────────────────────────────────────────────────────────
+// Canonical hub name; same physical `notifications` table (evolve, don't rename).
+// The `notifications` export stays for un-migrated call sites (deprecated alias).
+export const hubItems = notifications;
