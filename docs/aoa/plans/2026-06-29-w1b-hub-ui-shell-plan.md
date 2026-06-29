@@ -1099,7 +1099,7 @@ git commit -m "feat(hub): add UI client for hub items"
 - Create: `ui/src/components/hub/hubRegistry.tsx`
 - Test: `ui/src/components/hub/__tests__/hubRegistry.test.tsx`
 
-- [ ] **Step 1: Write the failing registry test**
+- [x] **Step 1: Write the failing registry test**
 
 Create `ui/src/components/hub/__tests__/hubRegistry.test.tsx`:
 
@@ -1127,7 +1127,7 @@ describe("HUB_REGISTRY", () => {
 });
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 Run:
 
@@ -1137,7 +1137,7 @@ pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/hubR
 
 Expected: FAIL because registry files do not exist.
 
-- [ ] **Step 3: Implement registry types**
+- [x] **Step 3: Implement registry types**
 
 Create `ui/src/components/hub/hubTypes.ts`:
 
@@ -1346,7 +1346,7 @@ export function resolveHubEntry(value: string): HubRegistryEntry | null {
 }
 ```
 
-- [ ] **Step 4: Run to confirm it passes**
+- [x] **Step 4: Run to confirm it passes**
 
 Run:
 
@@ -1356,12 +1356,18 @@ pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/hubR
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add ui/src/components/hub/hubTypes.ts ui/src/components/hub/hubRegistry.tsx ui/src/components/hub/__tests__/hubRegistry.test.tsx
 git commit -m "feat(hub): add total UI registry for hub semantic types"
 ```
+
+Verification:
+
+- RED: `corepack pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/hubRegistry.test.tsx` failed because `../hubRegistry` did not exist.
+- GREEN: `corepack pnpm --filter @armyofagents/ui exec vitest run src/components/hub/__tests__/hubRegistry.test.tsx` PASS, including invalid-link regressions for join requests, mentions, marketplace operations, stale work, and suggestions.
+- `corepack pnpm --filter @armyofagents/ui typecheck` PASS.
 
 ---
 
