@@ -650,7 +650,7 @@ git commit -m "feat(hub): add W1b source producer mappings"
 - Modify: `server/src/services/hub-items.ts`
 - Test: `server/src/__tests__/hub-source-producers.integration.test.ts`
 
-- [ ] **Step 1: Write the failing integration test**
+- [x] **Step 1: Write the failing integration test**
 
 Create `server/src/__tests__/hub-source-producers.integration.test.ts` using the embedded-postgres harness pattern from `server/src/__tests__/hub-items-sweeper.integration.test.ts`.
 
@@ -712,7 +712,7 @@ it("preserves discussion owner and scope when refreshing pending discussion item
 
 The helper functions must insert real rows with unique IDs and a unique company `issuePrefix`, mirroring the existing W1a integration harness.
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 Run:
 
@@ -722,7 +722,9 @@ pnpm -C server exec vitest run src/__tests__/hub-source-producers.integration.te
 
 Expected: FAIL because W1b reconcilers do not exist and approval reconciler closes `revision_requested`.
 
-- [ ] **Step 3: Implement W1b reconcilers**
+Windows note: this embedded-Postgres suite is `skipIf(process.platform === "win32")`, matching the existing W1a hub integration harness. On Windows, this step can only confirm the test file loads and skips; Linux CI is the red/green authority.
+
+- [x] **Step 3: Implement W1b reconcilers**
 
 In `server/src/services/hub-items.ts`:
 
@@ -760,7 +762,7 @@ const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
 };
 ```
 
-- [ ] **Step 4: Run to confirm it passes**
+- [x] **Step 4: Run to confirm it passes**
 
 Run:
 
@@ -770,7 +772,7 @@ pnpm -C server exec vitest run src/__tests__/hub-source-producers.integration.te
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add server/src/services/hub-items.ts server/src/__tests__/hub-source-producers.integration.test.ts

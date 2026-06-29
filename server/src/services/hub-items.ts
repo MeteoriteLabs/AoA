@@ -1,6 +1,16 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { hubItems, hubItemUserState, hubAudit, approvals, heartbeatRuns } from "@armyofagents/db";
+import {
+  hubItems,
+  hubItemUserState,
+  hubAudit,
+  approvals,
+  heartbeatRuns,
+  joinRequests,
+  discussions,
+  suggestions,
+  issues,
+} from "@armyofagents/db";
 import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
@@ -17,6 +27,9 @@ import type { UserRole } from "@armyofagents/shared";
 const HEARTBEAT_LIVE_STATUSES: ReadonlySet<string> = new Set(
   HEARTBEAT_RUN_STATUSES.filter((s) => s === "queued" || s === "scheduled_retry" || s === "running"),
 );
+const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revision_requested"]);
+const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
+const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
@@ -359,12 +372,16 @@ export function hubItemsService(db: Db) {
   // denormalized snapshot (summary + permission revision) for drift healing.
   interface SourceSnapshot {
     terminal: boolean; // source row is gone OR in a terminal state → close the hub item
+    title?: string | null; // current denormalized title when the source owns it
     summary: string | null; // current denormalized summary (PRE-redaction)
+    ownerUserId?: string | null; // current resolved human owner when the source owns it
+    ownerPool?: HubOwnerPool | null; // current pool visibility when the source owns it
+    scopeKey?: string | null; // current source RBAC scope when the source owns it
     permissionRevision: string | null; // monotonic-ish source revision for drift detection
   }
   type SourceReconciler = (companyId: string, sourceId: string) => Promise<SourceSnapshot>;
 
-  // approvals: pending = open; anything else (or a missing row) = terminal.
+  // approvals: pending/revision_requested = open; anything else (or a missing row) = terminal.
   const reconcileApproval: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
       .select({ status: approvals.status, decisionNote: approvals.decisionNote, updatedAt: approvals.updatedAt })
@@ -374,7 +391,7 @@ export function hubItemsService(db: Db) {
       .then((r) => r[0] ?? null);
     if (!row) return { terminal: true, summary: null, permissionRevision: null };
     return {
-      terminal: row.status !== "pending",
+      terminal: !APPROVAL_OPEN_STATUSES.has(row.status),
       summary: row.decisionNote ?? null,
       permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     };
@@ -398,9 +415,119 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  const reconcileJoinRequest: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        requestType: joinRequests.requestType,
+        status: joinRequests.status,
+        agentName: joinRequests.agentName,
+        requestEmailSnapshot: joinRequests.requestEmailSnapshot,
+        adapterType: joinRequests.adapterType,
+        updatedAt: joinRequests.updatedAt,
+      })
+      .from(joinRequests)
+      .where(and(eq(joinRequests.id, sourceId), eq(joinRequests.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const subject =
+      row.requestType === "agent"
+        ? row.agentName ?? `${row.adapterType ?? "Agent"} request`
+        : row.requestEmailSnapshot ?? "Human join request";
+    return {
+      terminal: row.status !== "pending_approval",
+      summary: `${subject} (${row.requestType.replace(/_/g, " ")})`,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const reconcileDiscussion: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        title: discussions.title,
+        ownerUserId: discussions.ownerUserId,
+        scopeType: discussions.scopeType,
+        scopeId: discussions.scopeId,
+        pendingItemCount: discussions.pendingItemCount,
+        updatedAt: discussions.updatedAt,
+      })
+      .from(discussions)
+      .where(and(eq(discussions.id, sourceId), eq(discussions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const count = row.pendingItemCount;
+    const founder = row.ownerUserId ? null : await orgHierarchyService(db).getFounderUserId(companyId);
+    const ownerUserId = row.ownerUserId ?? founder ?? null;
+    const title = row.title?.trim() || "Discussion";
+    return {
+      terminal: count <= 0,
+      title: `Review ${count} pending ${count === 1 ? "item" : "items"} in ${title}`,
+      summary: `${count} extracted ${count === 1 ? "item needs" : "items need"} review.`,
+      ownerUserId,
+      scopeKey: row.scopeType && row.scopeId ? row.scopeId : null,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const reconcileSuggestion: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        status: suggestions.status,
+        evidence: suggestions.evidence,
+        updatedAt: suggestions.updatedAt,
+      })
+      .from(suggestions)
+      .where(and(eq(suggestions.id, sourceId), eq(suggestions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: row.status !== "pending",
+      summary: row.evidence ?? null,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const reconcileIssue: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        title: issues.title,
+        status: issues.status,
+        assigneeUserId: issues.assigneeUserId,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, sourceId), eq(issues.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const updatedAt = row.updatedAt ? new Date(row.updatedAt) : null;
+    const isOldInboxStale =
+      STALE_WORK_STATUSES.has(row.status) &&
+      row.assigneeAgentId == null &&
+      updatedAt != null &&
+      Date.now() - updatedAt.getTime() > STALE_WORK_THRESHOLD_MS;
+    const founder = row.assigneeUserId ? null : await orgHierarchyService(db).getFounderUserId(companyId);
+    const ownerUserId = row.assigneeUserId ?? founder ?? null;
+    return {
+      terminal: !isOldInboxStale,
+      title: `Stale task: ${row.title}`,
+      summary: "No recent human or crew progress.",
+      ownerUserId,
+      ownerPool: row.assigneeUserId ? null : "board",
+      permissionRevision: updatedAt ? updatedAt.toISOString() : null,
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
+    join_request: reconcileJoinRequest,
+    discussion: reconcileDiscussion,
+    suggestion: reconcileSuggestion,
+    issue: reconcileIssue,
   };
 
   // Sweep open hub items of `sourceType`: close terminal/gone-source items via the
@@ -416,16 +543,22 @@ export function hubItemsService(db: Db) {
       throw unprocessable(`No reconciler registered for source type "${opts.sourceType}"`);
     }
 
+    const semanticType =
+      opts.sourceType === "issue"
+        ? "stale_work"
+        : null;
+
+    const conditions = [
+      eq(hubItems.companyId, companyId),
+      eq(hubItems.sourceType, opts.sourceType),
+      eq(hubItems.status, "open"),
+    ];
+    if (semanticType) conditions.push(eq(hubItems.semanticType, semanticType));
+
     const open = await db
       .select()
       .from(hubItems)
-      .where(
-        and(
-          eq(hubItems.companyId, companyId),
-          eq(hubItems.sourceType, opts.sourceType),
-          eq(hubItems.status, "open"),
-        ),
-      );
+      .where(and(...conditions));
 
     let closed = 0;
     let refreshed = 0;
@@ -476,11 +609,32 @@ export function hubItemsService(db: Db) {
         item.sourcePermissionRevision != null &&
         snap.permissionRevision > item.sourcePermissionRevision;
 
-      const patch: { summary?: string; sourcePermissionRevision?: string } = {};
+      const patch: {
+        title?: string;
+        summary?: string;
+        sourcePermissionRevision?: string;
+        userId?: string;
+        ownerUserId?: string | null;
+        ownerPool?: HubOwnerPool | null;
+        scopeKey?: string | null;
+      } = {};
+      if (snap.title != null && snap.title !== "" && snap.title !== item.title) {
+        patch.title = snap.title;
+      }
       if (revisionIsNewer) patch.sourcePermissionRevision = snap.permissionRevision!;
       if (snap.summary != null && snap.summary !== "") {
         const nextSummary = redactSecretsInString(snap.summary);
         if (nextSummary !== item.summary) patch.summary = nextSummary;
+      }
+      if (snap.ownerUserId !== undefined && snap.ownerUserId !== item.ownerUserId) {
+        patch.ownerUserId = snap.ownerUserId;
+        if (snap.ownerUserId) patch.userId = snap.ownerUserId;
+      }
+      if (snap.ownerPool !== undefined && snap.ownerPool !== item.ownerPool) {
+        patch.ownerPool = snap.ownerPool;
+      }
+      if (snap.scopeKey !== undefined && snap.scopeKey !== item.scopeKey) {
+        patch.scopeKey = snap.scopeKey;
       }
       if (Object.keys(patch).length > 0) {
         await db.update(hubItems).set(patch).where(eq(hubItems.id, item.id));
