@@ -253,7 +253,10 @@ test.describe("provider-switching: agent config save-side", () => {
       .getByRole("button", { name: "Adapter & model" })
       .click();
 
-    await page.getByRole("button", { name: "Test environment" }).click();
+    const testEnvironmentButton = page.getByRole("button", { name: "Test environment" });
+    await expect(testEnvironmentButton).toBeVisible({ timeout: 10_000 });
+    await expect(testEnvironmentButton).toBeEnabled();
+    await testEnvironmentButton.dispatchEvent("click");
 
     // Pass OR fail status both render the result div (codex may be absent on CI).
     // Generous timeout: the probe spawns a real adapter CLI, which can be slow

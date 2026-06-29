@@ -93,7 +93,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
     await page.getByRole("button", { name: /^resolve$/i }).click();
     await expect(page.getByRole("button", { name: /undo resolve/i })).toBeVisible();
     await page.getByRole("button", { name: /undo resolve/i }).click();
-    await expect(page.getByText("Resolve launch approval")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Resolve launch approval$/i })).toBeVisible();
 
     await page.goto(`/${company.issuePrefix}/inbox-hub/suggestions/${claimSeed.id}`);
     await expect(page.getByRole("button", { name: /^claim$/i })).toBeVisible();
