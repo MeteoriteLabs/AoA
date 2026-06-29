@@ -10,7 +10,7 @@ import {
   UserX,
 } from "lucide-react";
 import { Link } from "@/lib/router";
-import type { HubItemListRow } from "@/api/hub-items";
+import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import { Button } from "@/components/ui/button";
 import { HUB_REGISTRY } from "./hubRegistry";
 
@@ -25,6 +25,8 @@ interface HubViewerProps {
     action: "resolve" | "archive" | "claim" | "release",
   ) => void;
   undoAction?: { label: string; onUndo: () => void } | null;
+  auditRows?: HubAuditRow[];
+  auditLoading?: boolean;
 }
 
 export function HubViewer({
@@ -35,6 +37,8 @@ export function HubViewer({
   onSnooze,
   onLifecycleAction,
   undoAction,
+  auditRows = [],
+  auditLoading = false,
 }: HubViewerProps) {
   if (!item) {
     return (
@@ -105,6 +109,36 @@ export function HubViewer({
             <dd className="mt-1 font-medium">{item.version}</dd>
           </div>
         </dl>
+        {item.status === "resolved" || item.status === "archived" ? (
+          <section aria-label="Audit timeline" className="mt-6 border-t border-border pt-4">
+            <h3 className="text-xs font-semibold uppercase text-muted-foreground">Audit</h3>
+            {auditLoading ? (
+              <p className="mt-3 text-sm text-muted-foreground">Loading audit...</p>
+            ) : auditRows.length === 0 ? (
+              <p className="mt-3 text-sm text-muted-foreground">No audit events.</p>
+            ) : (
+              <ol className="mt-3 space-y-3">
+                {auditRows.map((row) => (
+                  <li key={row.id} className="border-l border-border pl-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium capitalize text-text">{row.action}</span>
+                      <time className="shrink-0 text-xs text-muted-foreground">
+                        {formatAuditTime(row.createdAt)}
+                      </time>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {row.actorId}
+                      {row.authorityBasis ? ` - ${row.authorityBasis}` : null}
+                    </div>
+                    {row.reason ? (
+                      <div className="mt-1 text-xs text-muted-foreground">{row.reason}</div>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        ) : null}
       </div>
       <div className="space-y-3 border-t border-border p-4">
         <div className="grid grid-cols-2 gap-2">
@@ -183,4 +217,13 @@ export function HubViewer({
       </div>
     </aside>
   );
+}
+
+function formatAuditTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }

@@ -127,6 +127,8 @@ export const queryKeys = {
       },
     ) => ["hub-items", companyId, opts ?? {}] as const,
     counts: (companyId: string) => ["hub-items", companyId, "counts"] as const,
+    audit: (companyId: string, itemId: string) =>
+      ["hub-items", companyId, itemId, "audit"] as const,
   },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,

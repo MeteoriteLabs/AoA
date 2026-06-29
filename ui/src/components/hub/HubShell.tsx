@@ -1,5 +1,6 @@
-import type { HubItemListRow } from "@/api/hub-items";
-import type { HubLane } from "@armyofagents/shared";
+import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
+import type { HubItemStatus, HubLane } from "@armyofagents/shared";
+import { Button } from "@/components/ui/button";
 import { HubHome } from "./HubHome";
 import { HubList } from "./HubList";
 import { HubRail, type HubRailLane } from "./HubRail";
@@ -12,7 +13,11 @@ interface HubShellProps {
   isLoading: boolean;
   error: unknown;
   selectedItemId: string | null;
+  historyStatus: Extract<HubItemStatus, "open" | "resolved" | "archived">;
+  auditRows: HubAuditRow[];
+  auditLoading: boolean;
   onLaneChange: (lane: HubRailLane) => void;
+  onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
   onMarkRead: (itemId: string) => void;
   onMarkUnread: (itemId: string) => void;
@@ -29,7 +34,11 @@ export function HubShell({
   isLoading,
   error,
   selectedItemId,
+  historyStatus,
+  auditRows,
+  auditLoading,
   onLaneChange,
+  onHistoryStatusChange,
   onSelectItem,
   onMarkRead,
   onMarkUnread,
@@ -46,10 +55,26 @@ export function HubShell({
       <HubRail activeLane={activeLane} counts={counts} onLaneChange={onLaneChange} />
       <main className="flex min-w-0 flex-1">
         <section className="flex min-w-[320px] max-w-[480px] flex-[0_0_38%] flex-col border-r border-border">
-          <div className="flex h-12 items-center border-b border-border px-4">
+          <div className="flex h-12 items-center justify-between gap-3 border-b border-border px-4">
             <h1 className="truncate text-sm font-semibold">
               {showHome ? "Hub Home" : laneTitle(activeLane)}
             </h1>
+            {!showHome ? (
+              <div className="flex shrink-0 gap-1">
+                {(["open", "resolved", "archived"] as const).map((status) => (
+                  <Button
+                    key={status}
+                    type="button"
+                    variant={historyStatus === status ? "secondary" : "ghost"}
+                    size="sm"
+                    aria-pressed={historyStatus === status}
+                    onClick={() => onHistoryStatusChange(status)}
+                  >
+                    {statusLabel(status)}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
           </div>
           {showHome ? (
             <HubHome
@@ -76,10 +101,18 @@ export function HubShell({
           onDismiss={onDismiss}
           onSnooze={onSnooze}
           onLifecycleAction={onLifecycleAction}
+          auditRows={auditRows}
+          auditLoading={auditLoading}
         />
       </main>
     </div>
   );
+}
+
+function statusLabel(status: Extract<HubItemStatus, "open" | "resolved" | "archived">) {
+  if (status === "resolved") return "Resolved";
+  if (status === "archived") return "Archived";
+  return "Open";
 }
 
 function laneTitle(lane: HubLane | null) {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { HubLane } from "@armyofagents/shared";
+import type { HubItemStatus, HubLane } from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -40,6 +40,9 @@ export function InboxHub() {
     expectedVersion?: number;
     restore?: { kind: "unsnooze" | "undismiss" };
   } | null>(null);
+  const [historyStatus, setHistoryStatus] = useState<
+    Extract<HubItemStatus, "open" | "resolved" | "archived">
+  >("open");
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -62,11 +65,11 @@ export function InboxHub() {
       activeLane
         ? {
             lane: activeLane,
-            status: "open" as const,
+            status: historyStatus,
             limit: 50,
           }
         : undefined,
-    [activeLane],
+    [activeLane, historyStatus],
   );
 
   const listQuery = useQuery({
@@ -102,22 +105,37 @@ export function InboxHub() {
     },
   });
 
-  if (unknownLane) {
-    return <Navigate to="/inbox-hub" replace />;
-  }
-
   const items = listQuery.data ?? [];
   const selectedItemId =
     params.itemId && items.some((item) => item.id === params.itemId)
       ? params.itemId
       : null;
+  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const auditQuery = useQuery({
+    queryKey:
+      selectedCompanyId && selectedItem
+        ? queryKeys.hubItems.audit(selectedCompanyId, selectedItem.id)
+        : ["hub-items", selectedCompanyId ?? "none", "audit", "none"],
+    queryFn: () => hubItemsApi.audit(selectedCompanyId!, selectedItem!.id),
+    enabled:
+      !!selectedCompanyId &&
+      !!selectedItem &&
+      (selectedItem.status === "resolved" || selectedItem.status === "archived"),
+  });
 
   const handleLaneChange = (lane: HubLane | null) => {
+    setHistoryStatus("open");
     if (!lane) {
       navigate("/inbox-hub");
       return;
     }
     navigate(`/inbox-hub/${LANE_TO_SLUG[lane]}`);
+  };
+
+  const handleHistoryStatusChange = (
+    status: Extract<HubItemStatus, "open" | "resolved" | "archived">,
+  ) => {
+    setHistoryStatus(status);
   };
 
   const handleSelectItem = (itemId: string | null) => {
@@ -188,6 +206,10 @@ export function InboxHub() {
     setUndoAction(null);
   };
 
+  if (unknownLane) {
+    return <Navigate to="/inbox-hub" replace />;
+  }
+
   return (
     <HubShell
       activeLane={activeLane}
@@ -196,7 +218,11 @@ export function InboxHub() {
       isLoading={activeLane ? listQuery.isLoading : countsQuery.isLoading}
       error={listQuery.error ?? countsQuery.error}
       selectedItemId={selectedItemId}
+      historyStatus={historyStatus}
+      auditRows={auditQuery.data ?? []}
+      auditLoading={auditQuery.isLoading}
       onLaneChange={handleLaneChange}
+      onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}
       onMarkUnread={handleMarkUnread}

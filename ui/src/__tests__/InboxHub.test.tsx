@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
@@ -35,6 +35,7 @@ vi.mock("@/api/hub-items", () => ({
       item: { id: "hub-1", status: "open", version: 1 },
       auditId: "undo-audit-1",
     }),
+    audit: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -74,6 +75,7 @@ beforeEach(() => {
     item: { id: "hub-1", status: "open", version: 1 },
     auditId: "undo-audit-1",
   } as never);
+  vi.mocked(hubItemsApi.audit).mockResolvedValue([]);
 });
 
 function hubItem(overrides: Partial<Awaited<ReturnType<typeof hubItemsApi.list>>[number]> = {}) {
@@ -219,5 +221,81 @@ describe("InboxHub page", () => {
         expectedVersion: 1,
       });
     });
+  });
+
+  it("history controls request resolved and archived items inside the active lane", async () => {
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("button", { name: /^resolved$/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "resolved",
+        limit: 50,
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^archived$/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "archived",
+        limit: 50,
+      });
+    });
+  });
+
+  it("opens resolved and archived history items in the viewer", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({
+        id: "history-1",
+        status: "resolved",
+        title: "Resolved approval",
+        readAt: "2026-06-29T10:01:00.000Z",
+      }),
+    ]);
+
+    renderPage("/P4/inbox-hub/waiting/history-1");
+    fireEvent.click(await screen.findByRole("button", { name: /^resolved$/i }));
+
+    expect(await screen.findByRole("heading", { name: /resolved approval/i })).toBeInTheDocument();
+  });
+
+  it("loads an audit timeline for the selected history item", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({
+        id: "history-1",
+        status: "archived",
+        title: "Archived notification",
+        readAt: "2026-06-29T10:01:00.000Z",
+      }),
+    ]);
+    vi.mocked(hubItemsApi.audit).mockResolvedValue([
+      {
+        id: "audit-1",
+        companyId: "company-1",
+        hubItemId: "history-1",
+        actorType: "user",
+        actorId: "user-1",
+        action: "archive",
+        authorityBasis: "founder",
+        reason: "No longer needed",
+        undoDeadline: null,
+        createdAt: "2026-06-29T10:03:00.000Z",
+      },
+    ]);
+
+    renderPage("/P4/inbox-hub/waiting/history-1");
+    fireEvent.click(await screen.findByRole("button", { name: /^archived$/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.audit).toHaveBeenCalledWith("company-1", "history-1");
+    });
+    const auditTimeline = await screen.findByRole("region", { name: /audit timeline/i });
+    expect(within(auditTimeline).getByText(/^archive$/i)).toBeInTheDocument();
+    expect(within(auditTimeline).getByText(/No longer needed/i)).toBeInTheDocument();
+    expect(within(auditTimeline).getByText(/user-1/i)).toBeInTheDocument();
   });
 });
