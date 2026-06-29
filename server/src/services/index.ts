@@ -47,6 +47,7 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { permissionService } from "./permissions.js";
 export type { EntityType, PermissionAction } from "./permissions.js";
+export { hubItemsService, type EmitArgs } from "./hub-items.js";
 export { contextPackagingService } from "./context-packaging.js";
 export { mcpService } from "./mcp.js";
 export { searchService } from "./search.js";

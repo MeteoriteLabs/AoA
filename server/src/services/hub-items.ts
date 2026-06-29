@@ -495,6 +495,61 @@ export function hubItemsService(db: Db) {
     return { healed, closed, refreshed };
   }
 
+  // RBAC-scoped open/unread counters for the hub badge. This is a LIVE count
+  // computed off the partial `hub_items_open_idx` (open rows only) — not a
+  // maintained counter table; a fully-maintained counter is a W1d optimization.
+  //  - `open`   = RBAC-scoped open-item count (same scoping as `query`).
+  //  - `unread` = `open` minus rows this principal has a `readAt` on (in their
+  //               sparse `hub_item_user_state` row).
+  // Reuses the exact RBAC scope `query` builds so the badge can never disagree
+  // with the list (founder → all; team_lead → owned OR led-department; member →
+  // owned only).
+  async function counts(
+    companyId: string,
+    actorUserId: string,
+    role?: UserRole,
+  ): Promise<{ open: number; unread: number }> {
+    const effectiveRole =
+      role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
+
+    const conds = [eq(hubItems.companyId, companyId), eq(hubItems.status, "open")];
+
+    if (effectiveRole !== "founder") {
+      const ownedCond = eq(hubItems.ownerUserId, actorUserId);
+      if (effectiveRole === "team_lead") {
+        const leadDepts = await permissionService(db).getTeamLeadDepartments(
+          companyId,
+          actorUserId,
+        );
+        const scopeCond = leadDepts.length > 0 ? inArray(hubItems.scopeKey, leadDepts) : undefined;
+        conds.push(scopeCond ? or(ownedCond, scopeCond)! : ownedCond);
+      } else {
+        conds.push(ownedCond);
+      }
+    }
+
+    // Single pass: count open rows + count those WITHOUT a readAt for this
+    // principal. The left-join keeps the open set as the universe (a missing
+    // user-state row = unread), so `unread` ≤ `open` by construction.
+    const [row] = await db
+      .select({
+        open: sql<number>`count(*)::int`,
+        unread: sql<number>`count(*) filter (where ${hubItemUserState.readAt} is null)::int`,
+      })
+      .from(hubItems)
+      .leftJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, actorUserId),
+        ),
+      )
+      .where(and(...conds));
+
+    return { open: row?.open ?? 0, unread: row?.unread ?? 0 };
+  }
+
   // Public surface (declared last so every const above has evaluated).
-  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct, reconcile };
+  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct, reconcile, counts };
 }
