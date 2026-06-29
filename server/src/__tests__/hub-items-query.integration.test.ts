@@ -139,6 +139,40 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     expect(withDismissed.map((i) => i.id).sort()).toEqual([read.id, dismissed.id].sort());
   });
 
+  it("hides future-snoozed rows by default and returns past-snoozed rows", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const active = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "s-active", title: "active", ownerUserId: founderId });
+    const future = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "s-future", title: "future", ownerUserId: founderId });
+    const past = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "s-past", title: "past", ownerUserId: founderId });
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${future.id}, 'user', ${founderId}, now() + interval '1 day')`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${past.id}, 'user', ${founderId}, now() - interval '1 day')`);
+
+    const def = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    expect(def.map((i) => i.id).sort()).toEqual([active.id, past.id].sort());
+
+    const withSnoozed = await svc.query(companyId, { actorUserId: founderId, role: "founder", includeSnoozed: true });
+    expect(withSnoozed.map((i) => i.id).sort()).toEqual([active.id, future.id, past.id].sort());
+  });
+
+  it("snooze and dismiss filters are isolated per user", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const bobId = await seedMember(companyId, "team_member");
+    const svc = hubItemsService(db);
+    const snoozedByFounder = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "iso-snoozed", title: "snoozed", ownerUserId: bobId });
+    const dismissedByFounder = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "iso-dismissed", title: "dismissed", ownerUserId: bobId });
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${snoozedByFounder.id}, 'user', ${founderId}, now() + interval '1 day')`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissedByFounder.id}, 'user', ${founderId}, now())`);
+
+    const asFounder = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    expect(asFounder.map((i) => i.id)).toEqual([]);
+
+    const asBob = await svc.query(companyId, { actorUserId: bobId, role: "team_member" });
+    expect(asBob.map((i) => i.id).sort()).toEqual([dismissedByFounder.id, snoozedByFounder.id].sort());
+  });
+
   it("applies dismissed filtering before limit so visible work is not hidden", async () => {
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();

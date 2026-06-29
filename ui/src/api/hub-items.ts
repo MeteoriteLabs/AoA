@@ -31,6 +31,7 @@ export interface HubListOptions {
   lane?: HubLane;
   status?: HubItemStatus;
   includeDismissed?: boolean;
+  includeSnoozed?: boolean;
   limit?: number;
 }
 
@@ -44,6 +45,7 @@ function listQuery(opts: HubListOptions = {}) {
   if (opts.lane) params.set("lane", opts.lane);
   if (opts.status) params.set("status", opts.status);
   if (opts.includeDismissed) params.set("includeDismissed", "true");
+  if (opts.includeSnoozed) params.set("includeSnoozed", "true");
   const rawLimit = Number.isFinite(opts.limit) ? opts.limit! : 50;
   params.set("limit", String(Math.min(Math.max(rawLimit, 1), 50)));
   const query = params.toString();

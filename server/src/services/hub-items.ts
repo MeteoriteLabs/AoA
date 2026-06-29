@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   hubItems,
@@ -11,7 +11,7 @@ import {
   suggestions,
   issues,
 } from "@armyofagents/db";
-import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
+import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
   HEARTBEAT_RUN_STATUSES,
@@ -238,6 +238,7 @@ export function hubItemsService(db: Db) {
       lane?: HubLane;
       status?: HubItemStatus;
       includeDismissed?: boolean;
+      includeSnoozed?: boolean;
       limit?: number;
     },
   ) {
@@ -257,6 +258,10 @@ export function hubItemsService(db: Db) {
     }
     if (!opts.includeDismissed) {
       conds.push(isNull(hubItemUserState.dismissedAt));
+    }
+    if (!opts.includeSnoozed) {
+      const now = new Date();
+      conds.push(or(isNull(hubItemUserState.snoozedUntil), lte(hubItemUserState.snoozedUntil, now))!);
     }
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50);
 
@@ -314,6 +319,56 @@ export function hubItemsService(db: Db) {
       .where(and(...conds))
       .limit(1)
       .then((r) => r[0] ?? null);
+  }
+
+  async function applyPersonalState(args: {
+    companyId: string;
+    hubItemId: string;
+    actorUserId: string;
+    role?: UserRole;
+    state: HubUserStateInput;
+  }) {
+    const visibleItem = await getVisible(args.companyId, {
+      hubItemId: args.hubItemId,
+      actorUserId: args.actorUserId,
+      role: args.role,
+    });
+    if (!visibleItem) throw notFound("Hub item not found");
+
+    const now = new Date();
+    const patch =
+      args.state.kind === "read"
+        ? { readAt: now }
+        : args.state.kind === "unread"
+          ? { readAt: null }
+          : args.state.kind === "snooze"
+            ? { snoozedUntil: new Date(args.state.until) }
+            : args.state.kind === "unsnooze"
+              ? { snoozedUntil: null }
+              : args.state.kind === "dismiss"
+                ? { dismissedAt: now }
+                : { dismissedAt: null };
+
+    const [row] = await db
+      .insert(hubItemUserState)
+      .values({
+        companyId: args.companyId,
+        hubItemId: args.hubItemId,
+        principalType: "user",
+        principalId: args.actorUserId,
+        ...patch,
+      })
+      .onConflictDoUpdate({
+        target: [
+          hubItemUserState.hubItemId,
+          hubItemUserState.principalType,
+          hubItemUserState.principalId,
+        ],
+        set: { ...patch, updatedAt: now },
+      })
+      .returning();
+
+    return row;
   }
 
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
@@ -721,6 +776,9 @@ export function hubItemsService(db: Db) {
         conds.push(ownedCond);
       }
     }
+    const now = new Date();
+    conds.push(isNull(hubItemUserState.dismissedAt));
+    conds.push(or(isNull(hubItemUserState.snoozedUntil), lte(hubItemUserState.snoozedUntil, now))!);
 
     // Single pass: count open rows + count those WITHOUT a readAt for this
     // principal. The left-join keeps the open set as the universe (a missing
@@ -745,5 +803,5 @@ export function hubItemsService(db: Db) {
   }
 
   // Public surface (declared last so every const above has evaluated).
-  return { emit, sourceUniqueKey, resolveOwner, query, getVisible, recordAndAct, reconcile, counts };
+  return { emit, sourceUniqueKey, resolveOwner, query, getVisible, applyPersonalState, recordAndAct, reconcile, counts };
 }

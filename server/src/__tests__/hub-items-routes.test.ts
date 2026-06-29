@@ -11,6 +11,7 @@ const mockSvc = vi.hoisted(() => ({
   counts: vi.fn(),
   getVisible: vi.fn(),
   recordAndAct: vi.fn(),
+  applyPersonalState: vi.fn(),
 }));
 
 const mockPerms = vi.hoisted(() => ({
@@ -46,24 +47,8 @@ const ITEM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 // mocked service. We build a chainable stub whose `returning()` resolves to the
 // upserted row, and record the values passed to `insert(...).values(...)`.
 function makeDbStub() {
-  const calls: { values?: unknown; onConflict?: unknown } = {};
-  const chain = {
-    values(v: unknown) {
-      calls.values = v;
-      return chain;
-    },
-    onConflictDoUpdate(c: unknown) {
-      calls.onConflict = c;
-      return chain;
-    },
-    returning() {
-      return Promise.resolve([
-        { id: "state-1", hubItemId: ITEM_ID, principalId: "user-1", ...(calls.values as object) },
-      ]);
-    },
-  };
-  const db = { insert: vi.fn(() => chain) };
-  return { db, calls };
+  const db = { insert: vi.fn() };
+  return { db };
 }
 
 function createApp(actor: unknown, db: unknown = makeDbStub().db) {
@@ -144,7 +129,7 @@ describe("hub-items routes", () => {
 
     const res = await request(app)
       .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
-      .send({ action: "approve", expectedVersion: 1, nextStatus: "resolved" });
+      .send({ action: "resolve", expectedVersion: 1 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.details).toEqual({ currentVersion: 3 });
@@ -161,7 +146,7 @@ describe("hub-items routes", () => {
 
     const res = await request(app)
       .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
-      .send({ action: "approve", expectedVersion: 0, nextStatus: "resolved" });
+      .send({ action: "resolve", expectedVersion: 0 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     // The route resolved actorIsFounder=false and handed it to the service.
@@ -177,7 +162,7 @@ describe("hub-items routes", () => {
 
     const res = await request(app)
       .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
-      .send({ action: "approve", expectedVersion: 1, nextStatus: "resolved" });
+      .send({ action: "resolve", expectedVersion: 1 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.status).toBe("resolved");
@@ -187,60 +172,55 @@ describe("hub-items routes", () => {
     expect(mockLogActivity).toHaveBeenCalledOnce();
   });
 
-  it("POST action rejects an invalid nextStatus with 400", async () => {
+  it("POST action rejects a forbidden client-chosen nextStatus with 400", async () => {
     const app = createApp(boardActor());
     const res = await request(app)
       .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
-      .send({ action: "approve", expectedVersion: 1, nextStatus: "bogus" });
+      .send({ action: "resolve", expectedVersion: 1, nextStatus: "bogus" });
     expect(res.status).toBe(400);
     expect(mockSvc.recordAndAct).not.toHaveBeenCalled();
   });
 
-  it("(d) PATCH state upserts the per-user state row (read)", async () => {
+  it.each([
+    ["read", { kind: "read" }],
+    ["unread", { kind: "unread" }],
+    ["snooze", { kind: "snooze", until: "2026-07-01T00:00:00.000Z" }],
+    ["unsnooze", { kind: "unsnooze" }],
+    ["dismiss", { kind: "dismiss" }],
+    ["undismiss", { kind: "undismiss" }],
+  ] as const)("PATCH state applies %s through the personal-state service", async (_label, body) => {
     mockPerms.getEffectiveRole.mockResolvedValue("team_member");
-    mockSvc.getVisible.mockResolvedValue({ id: ITEM_ID, companyId: COMPANY_A });
-    const { db, calls } = makeDbStub();
-    const app = createApp(boardActor(), db);
-
-    const res = await request(app)
-      .patch(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/state`)
-      .send({ kind: "read" });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockSvc.getVisible).toHaveBeenCalledWith(
-      COMPANY_A,
-      expect.objectContaining({ hubItemId: ITEM_ID, actorUserId: "user-1", role: "team_member" }),
-    );
-    expect(db.insert).toHaveBeenCalledOnce();
-    // The upsert carries the principal + a readAt timestamp.
-    expect(calls.values).toMatchObject({
+    mockSvc.applyPersonalState.mockResolvedValue({
+      id: "state-1",
       companyId: COMPANY_A,
       hubItemId: ITEM_ID,
-      principalType: "user",
       principalId: "user-1",
+      readAt: null,
+      snoozedUntil: null,
+      dismissedAt: null,
+      updatedAt: "2026-06-29T00:00:00.000Z",
     });
-    expect((calls.values as { readAt?: Date }).readAt).toBeInstanceOf(Date);
-    expect(calls.onConflict).toBeDefined();
-  });
-
-  it("PATCH state snooze records snoozedUntil from the until datetime", async () => {
-    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
-    mockSvc.getVisible.mockResolvedValue({ id: ITEM_ID, companyId: COMPANY_A });
-    const { db, calls } = makeDbStub();
+    const { db } = makeDbStub();
     const app = createApp(boardActor(), db);
 
-    const until = "2026-07-01T00:00:00.000Z";
     const res = await request(app)
       .patch(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/state`)
-      .send({ kind: "snooze", until });
+      .send(body);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect((calls.values as { snoozedUntil?: Date }).snoozedUntil).toEqual(new Date(until));
+    expect(mockSvc.applyPersonalState).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      hubItemId: ITEM_ID,
+      actorUserId: "user-1",
+      role: "team_member",
+      state: body,
+    });
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it("PATCH state rejects hub item ids that are not visible in the URL company", async () => {
     mockPerms.getEffectiveRole.mockResolvedValue("team_member");
-    mockSvc.getVisible.mockResolvedValue(null);
+    mockSvc.applyPersonalState.mockRejectedValue(new HttpError(404, "Hub item not found"));
     const { db } = makeDbStub();
     const app = createApp(boardActor(), db);
 

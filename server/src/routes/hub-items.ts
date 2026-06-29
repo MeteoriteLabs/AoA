@@ -1,7 +1,5 @@
 import { Router, type Request } from "express";
-import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { hubItemUserState } from "@armyofagents/db";
 import type { UserRole, ListHubItemsQuery } from "@armyofagents/shared";
 import { listHubItemsQuery, hubActionSchema, hubUserStateSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
@@ -62,6 +60,7 @@ export function hubItemRoutes(db: Db) {
       lane: query.lane,
       status: query.status,
       includeDismissed: query.includeDismissed,
+      includeSnoozed: query.includeSnoozed,
       limit: query.limit,
     });
     res.json(items);
@@ -95,13 +94,17 @@ export function hubItemRoutes(db: Db) {
         ? true
         : await perms.isFounder(companyId, userId);
 
-      const { action, expectedVersion, nextStatus, idempotencyKey, reason } = req.body as {
-        action: string;
+      const { action, expectedVersion, idempotencyKey, reason } = req.body as {
+        action: "resolve" | "archive" | "claim" | "release";
         expectedVersion: number;
-        nextStatus: "resolved" | "archived" | "snoozed";
         idempotencyKey?: string;
         reason?: string;
       };
+      const nextStatus =
+        action === "resolve" ? "resolved" : action === "archive" ? "archived" : null;
+      if (!nextStatus) {
+        throw new HttpError(422, `${action} is not implemented yet`);
+      }
 
       let item;
       try {
@@ -155,46 +158,13 @@ export function hubItemRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const userId = requireBoardUserId(req);
       const role = await resolveRole(req, companyId, userId);
-      const visibleItem = await svc.getVisible(companyId, {
+      const row = await svc.applyPersonalState({
+        companyId,
         hubItemId,
         actorUserId: userId,
         role,
+        state: req.body,
       });
-      if (!visibleItem) {
-        throw new HttpError(404, "Hub item not found");
-      }
-
-      const body = req.body as
-        | { kind: "read" }
-        | { kind: "snooze"; until: string }
-        | { kind: "dismiss" };
-
-      const now = new Date();
-      const patch =
-        body.kind === "read"
-          ? { readAt: now }
-          : body.kind === "snooze"
-            ? { snoozedUntil: new Date(body.until) }
-            : { dismissedAt: now };
-
-      const [row] = await db
-        .insert(hubItemUserState)
-        .values({
-          companyId,
-          hubItemId,
-          principalType: "user",
-          principalId: userId,
-          ...patch,
-        })
-        .onConflictDoUpdate({
-          target: [
-            hubItemUserState.hubItemId,
-            hubItemUserState.principalType,
-            hubItemUserState.principalId,
-          ],
-          set: { ...patch, updatedAt: now },
-        })
-        .returning();
 
       res.json(row);
     },

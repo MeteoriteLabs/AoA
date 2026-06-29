@@ -9,7 +9,12 @@ import {
   laneForSemanticType,
   authorityForSemanticType,
 } from "../hub.js";
-import { listHubItemsQuery } from "../validators/hub.js";
+import {
+  hubActionSchema,
+  hubBulkActionSchema,
+  hubUserStateSchema,
+  listHubItemsQuery,
+} from "../validators/hub.js";
 
 describe("hub contract", () => {
   it("every semantic type maps to exactly one valid lane", () => {
@@ -45,5 +50,69 @@ describe("hub contract", () => {
     expect(listHubItemsQuery.parse({}).limit).toBe(50);
     expect(listHubItemsQuery.parse({ limit: "25" }).limit).toBe(25);
     expect(() => listHubItemsQuery.parse({ limit: "51" })).toThrow();
+  });
+  it("list query parses includeSnoozed query booleans", () => {
+    expect(listHubItemsQuery.parse({}).includeSnoozed).toBe(false);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "true" }).includeSnoozed).toBe(true);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "1" }).includeSnoozed).toBe(true);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "false" }).includeSnoozed).toBe(false);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "0" }).includeSnoozed).toBe(false);
+  });
+  it("lifecycle action schema accepts named shared actions and rejects client-chosen nextStatus", () => {
+    for (const action of ["resolve", "archive", "claim", "release"]) {
+      expect(
+        hubActionSchema.parse({
+          action,
+          expectedVersion: 2,
+          idempotencyKey: `${action}-key`,
+          reason: "because",
+        }).action,
+      ).toBe(action);
+    }
+
+    expect(() =>
+      hubActionSchema.parse({
+        action: "resolve",
+        expectedVersion: 2,
+        nextStatus: "archived",
+      }),
+    ).toThrow();
+    expect(() =>
+      hubActionSchema.parse({
+        action: "dismiss",
+        expectedVersion: 2,
+      }),
+    ).toThrow();
+  });
+  it("user state schema accepts all W1c personal-state actions", () => {
+    expect(hubUserStateSchema.parse({ kind: "read" }).kind).toBe("read");
+    expect(hubUserStateSchema.parse({ kind: "unread" }).kind).toBe("unread");
+    expect(hubUserStateSchema.parse({ kind: "snooze", until: "2026-06-29T10:00:00.000Z" }).kind).toBe("snooze");
+    expect(hubUserStateSchema.parse({ kind: "unsnooze" }).kind).toBe("unsnooze");
+    expect(hubUserStateSchema.parse({ kind: "dismiss" }).kind).toBe("dismiss");
+    expect(hubUserStateSchema.parse({ kind: "undismiss" }).kind).toBe("undismiss");
+  });
+  it("bulk action schema accepts mixed shared and personal actions with per-item requirements", () => {
+    const parsed = hubBulkActionSchema.parse({
+      bulkId: "bulk-1",
+      items: [
+        { id: "550e8400-e29b-41d4-a716-446655440001", action: "resolve", expectedVersion: 1 },
+        { id: "550e8400-e29b-41d4-a716-446655440002", action: "dismiss" },
+        { id: "550e8400-e29b-41d4-a716-446655440003", action: "snooze", until: "2026-06-29T10:00:00.000Z" },
+        { id: "550e8400-e29b-41d4-a716-446655440004", action: "claim", expectedVersion: 0, reason: "taking it" },
+      ],
+    });
+    expect(parsed.items).toHaveLength(4);
+
+    expect(() =>
+      hubBulkActionSchema.parse({
+        items: [{ id: "550e8400-e29b-41d4-a716-446655440003", action: "snooze" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      hubBulkActionSchema.parse({
+        items: [{ id: "550e8400-e29b-41d4-a716-446655440001", action: "resolve" }],
+      }),
+    ).toThrow();
   });
 });

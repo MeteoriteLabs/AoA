@@ -476,7 +476,9 @@ export {
   listHubItemsQuery,
   hubActionSchema,
   hubUserStateSchema,
+  hubBulkActionSchema,
   type ListHubItemsQuery,
   type HubActionInput,
   type HubUserStateInput,
+  type HubBulkActionInput,
 } from "./hub.js";

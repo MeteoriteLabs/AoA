@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { HUB_LANES, HUB_ITEM_STATUSES } from "../hub.js";
 
+const queryBoolean = z
+  .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+  .optional()
+  .transform((v) => v === true || v === "true" || v === "1");
+
 // ── List query (GET /companies/:companyId/hub-items) ──────────────────────────
 // Query-string params arrive as strings; coerce `includeDismissed` to a boolean
 // and constrain `lane`/`status` to the shared enums.
@@ -9,10 +14,8 @@ export const listHubItemsQuery = z
     lane: z.enum(HUB_LANES).optional(),
     status: z.enum(HUB_ITEM_STATUSES).optional(),
     // Accept "true"/"false"/"1"/"0" from the query string.
-    includeDismissed: z
-      .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
-      .optional()
-      .transform((v) => v === true || v === "true" || v === "1"),
+    includeDismissed: queryBoolean,
+    includeSnoozed: queryBoolean,
     limit: z.coerce.number().int().min(1).max(50).optional().default(50),
   })
   .strict();
@@ -25,9 +28,8 @@ export type ListHubItemsQuery = z.infer<typeof listHubItemsQuery>;
 // state (W1a covers single-item resolve/archive/snooze).
 export const hubActionSchema = z
   .object({
-    action: z.string().trim().min(1),
+    action: z.enum(["resolve", "archive", "claim", "release"]),
     expectedVersion: z.number().int().min(0),
-    nextStatus: z.enum(["resolved", "archived", "snoozed"]),
     idempotencyKey: z.string().trim().min(1).optional(),
     reason: z.string().trim().min(1).optional(),
   })
@@ -41,8 +43,58 @@ export type HubActionInput = z.infer<typeof hubActionSchema>;
 // on the sparse `hub_item_user_state` row.
 export const hubUserStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("read") }).strict(),
+  z.object({ kind: z.literal("unread") }).strict(),
   z.object({ kind: z.literal("snooze"), until: z.string().datetime() }).strict(),
+  z.object({ kind: z.literal("unsnooze") }).strict(),
   z.object({ kind: z.literal("dismiss") }).strict(),
+  z.object({ kind: z.literal("undismiss") }).strict(),
 ]);
 
 export type HubUserStateInput = z.infer<typeof hubUserStateSchema>;
+
+const bulkSharedLifecycleItemSchema = z
+  .object({
+    id: z.string().uuid(),
+    action: z.enum(["resolve", "archive", "claim", "release"]),
+    expectedVersion: z.number().int().min(0),
+    idempotencyKey: z.string().trim().min(1).optional(),
+    reason: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const bulkDismissItemSchema = z
+  .object({
+    id: z.string().uuid(),
+    action: z.literal("dismiss"),
+    idempotencyKey: z.string().trim().min(1).optional(),
+    reason: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const bulkSnoozeItemSchema = z
+  .object({
+    id: z.string().uuid(),
+    action: z.literal("snooze"),
+    until: z.string().datetime(),
+    idempotencyKey: z.string().trim().min(1).optional(),
+    reason: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+export const hubBulkActionSchema = z
+  .object({
+    bulkId: z.string().trim().min(1).optional(),
+    items: z
+      .array(
+        z.discriminatedUnion("action", [
+          bulkSharedLifecycleItemSchema,
+          bulkDismissItemSchema,
+          bulkSnoozeItemSchema,
+        ]),
+      )
+      .min(1)
+      .max(50),
+  })
+  .strict();
+
+export type HubBulkActionInput = z.infer<typeof hubBulkActionSchema>;

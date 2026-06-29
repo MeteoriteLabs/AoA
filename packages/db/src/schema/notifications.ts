@@ -70,6 +70,8 @@ export const notifications = pgTable(
     sourcePermissionRevision: text("source_permission_revision"),
     ownerUserId: text("owner_user_id"), // nullable (pool-owned items)
     ownerPool: text("owner_pool"), // HubOwnerPool when no single owner
+    claimedByUserId: text("claimed_by_user_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     version: integer("version").notNull().default(0), // optimistic concurrency token
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -101,6 +103,9 @@ export const notifications = pgTable(
       .where(sql`${table.status} = 'open'`),
     hubOwnerOpenIdx: index("hub_items_owner_open_idx")
       .on(table.companyId, table.ownerUserId)
+      .where(sql`${table.status} = 'open'`),
+    hubClaimedOpenIdx: index("hub_items_claimed_open_idx")
+      .on(table.companyId, table.claimedByUserId)
       .where(sql`${table.status} = 'open'`),
     hubSourceUniqueIdx: uniqueIndex("hub_items_source_unique_idx").on(
       table.sourceUniqueKey,
