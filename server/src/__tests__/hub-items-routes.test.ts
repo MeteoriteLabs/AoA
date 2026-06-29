@@ -14,6 +14,7 @@ const mockSvc = vi.hoisted(() => ({
   applyPersonalState: vi.fn(),
   recordLifecycleAction: vi.fn(),
   undoAction: vi.fn(),
+  bulkAction: vi.fn(),
 }));
 
 const mockPerms = vi.hoisted(() => ({
@@ -229,6 +230,90 @@ describe("hub-items routes", () => {
       actorId: "user-1",
     });
     expect(res.body.auditId).toBe("undo-audit-1");
+  });
+
+  it("POST bulk-action returns ordered mixed personal and shared results", async () => {
+    mockPerms.isFounder.mockResolvedValue(true);
+    mockPerms.getEffectiveRole.mockResolvedValue("founder");
+    mockSvc.bulkAction.mockResolvedValue({
+      bulkId: "bulk-1",
+      summary: { succeeded: 3, failed: 0, skipped: 0 },
+      results: [
+        { id: ITEM_ID, status: "success", item: { id: ITEM_ID, status: "resolved" }, auditId: "audit-1", undoDeadline: "2026-06-29T00:00:08.000Z" },
+        { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", status: "success", state: { id: "state-1" } },
+        { id: "cccccccc-cccc-cccc-cccc-cccccccccccc", status: "success", state: { id: "state-2" } },
+      ],
+    });
+    const app = createApp(boardActor());
+
+    const payload = {
+      bulkId: "bulk-1",
+      items: [
+        { id: ITEM_ID, action: "resolve", expectedVersion: 1 },
+        { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", action: "dismiss" },
+        { id: "cccccccc-cccc-cccc-cccc-cccccccccccc", action: "snooze", until: "2026-07-01T00:00:00.000Z" },
+      ],
+    };
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/hub-items/bulk-action`)
+      .send(payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.summary).toEqual({ succeeded: 3, failed: 0, skipped: 0 });
+    expect(res.body.results.map((r: { id: string }) => r.id)).toEqual(payload.items.map((i) => i.id));
+    expect(mockSvc.bulkAction).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      actorUserId: "user-1",
+      actorIsFounder: true,
+      role: "founder",
+      actorType: "user",
+      bulkId: "bulk-1",
+      items: payload.items,
+    });
+  });
+
+  it("POST bulk-action preserves ordered partial failures", async () => {
+    mockPerms.isFounder.mockResolvedValue(true);
+    mockPerms.getEffectiveRole.mockResolvedValue("founder");
+    mockSvc.bulkAction.mockResolvedValue({
+      bulkId: "bulk-partial",
+      summary: { succeeded: 1, failed: 1, skipped: 0 },
+      results: [
+        { id: ITEM_ID, status: "failed", error: { status: 409, message: "Changed elsewhere" } },
+        { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", status: "success", state: { id: "state-1" } },
+      ],
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/hub-items/bulk-action`)
+      .send({
+        bulkId: "bulk-partial",
+        items: [
+          { id: ITEM_ID, action: "archive", expectedVersion: 1 },
+          { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", action: "dismiss" },
+        ],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.summary).toEqual({ succeeded: 1, failed: 1, skipped: 0 });
+    expect(res.body.results[0].status).toBe("failed");
+    expect(res.body.results[1].status).toBe("success");
+  });
+
+  it("POST bulk-action rejects invalid item shapes before service execution", async () => {
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/hub-items/bulk-action`)
+      .send({
+        items: [
+          { id: ITEM_ID, action: "resolve" },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockSvc.bulkAction).not.toHaveBeenCalled();
   });
 
   it.each([

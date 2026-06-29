@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import type { UserRole, ListHubItemsQuery } from "@armyofagents/shared";
-import { listHubItemsQuery, hubActionSchema, hubUserStateSchema, hubUndoSchema } from "@armyofagents/shared";
+import { listHubItemsQuery, hubActionSchema, hubUserStateSchema, hubUndoSchema, hubBulkActionSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { hubItemsService, permissionService } from "../services/index.js";
 import { HttpError, unauthorized } from "../errors.js";
@@ -156,6 +156,43 @@ export function hubItemRoutes(db: Db) {
 
   // PATCH state — upsert the sparse per-principal user-state row (read/snooze/
   // dismiss). Keyed on (hubItemId, principalType, principalId) per W6.
+  router.post(
+    "/companies/:companyId/hub-items/bulk-action",
+    validate(hubBulkActionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireBoardUserId(req);
+      const role = await resolveRole(req, companyId, userId);
+      const actorIsFounder = hasImplicitFounderAuthority(req)
+        ? true
+        : await perms.isFounder(companyId, userId);
+      const body = req.body as {
+        bulkId?: string;
+        items: Array<{
+          id: string;
+          action: "resolve" | "archive" | "dismiss" | "snooze" | "claim" | "release";
+          expectedVersion?: number;
+          until?: string;
+          idempotencyKey?: string;
+          reason?: string;
+        }>;
+      };
+
+      const result = await svc.bulkAction({
+        companyId,
+        actorUserId: userId,
+        actorIsFounder,
+        role,
+        actorType: "user",
+        bulkId: body.bulkId,
+        items: body.items,
+      });
+
+      res.json(result);
+    },
+  );
+
   router.patch(
     "/companies/:companyId/hub-items/:id/state",
     validate(hubUserStateSchema),

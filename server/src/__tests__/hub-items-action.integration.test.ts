@@ -329,4 +329,68 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
     expect(caught).toBeInstanceOf(HttpError);
     expect((caught as HttpError).status).toBe(409);
   });
+
+  it("bulkAction runs mixed shared and personal actions in request order", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const resolveItem = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "bulk-resolve", title: "resolve", ownerUserId: founderId });
+    const dismissItem = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "bulk-dismiss", title: "dismiss", ownerUserId: founderId });
+    const snoozeItem = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "bulk-snooze", title: "snooze", ownerUserId: founderId });
+
+    const result = await svc.bulkAction({
+      companyId,
+      actorUserId: founderId,
+      actorIsFounder: true,
+      role: "founder",
+      actorType: "user",
+      bulkId: "bulk-mixed",
+      items: [
+        { id: resolveItem.id, action: "resolve", expectedVersion: resolveItem.version },
+        { id: dismissItem.id, action: "dismiss" },
+        { id: snoozeItem.id, action: "snooze", until: "2026-07-01T00:00:00.000Z" },
+      ],
+    });
+
+    expect(result.bulkId).toBe("bulk-mixed");
+    expect(result.summary).toEqual({ succeeded: 3, failed: 0, skipped: 0 });
+    expect(result.results.map((r) => r.id)).toEqual([resolveItem.id, dismissItem.id, snoozeItem.id]);
+    expect(result.results.map((r) => r.status)).toEqual(["success", "success", "success"]);
+    expect(result.results[0]).toMatchObject({ auditId: expect.any(String) });
+    expect(result.results[1]).toMatchObject({ state: expect.objectContaining({ dismissedAt: expect.any(Date) }) });
+    expect(result.results[2]).toMatchObject({ state: expect.objectContaining({ snoozedUntil: new Date("2026-07-01T00:00:00.000Z") }) });
+  });
+
+  it("bulkAction preserves partial failures and keeps processing later items", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const staleItem = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "bulk-stale", title: "stale", ownerUserId: founderId });
+    const dismissItem = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "bulk-after-stale", title: "after stale", ownerUserId: founderId });
+
+    const result = await svc.bulkAction({
+      companyId,
+      actorUserId: founderId,
+      actorIsFounder: true,
+      role: "founder",
+      actorType: "user",
+      bulkId: "bulk-partial",
+      items: [
+        { id: staleItem.id, action: "archive", expectedVersion: staleItem.version + 10 },
+        { id: dismissItem.id, action: "dismiss" },
+      ],
+    });
+
+    expect(result.summary).toEqual({ succeeded: 1, failed: 1, skipped: 0 });
+    expect(result.results[0]).toMatchObject({
+      id: staleItem.id,
+      status: "failed",
+      error: { status: 409 },
+    });
+    expect(result.results[1]).toMatchObject({
+      id: dismissItem.id,
+      status: "success",
+      state: expect.objectContaining({ dismissedAt: expect.any(Date) }),
+    });
+  });
 });

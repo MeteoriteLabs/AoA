@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   hubItems,
@@ -34,6 +35,7 @@ const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const HUB_UNDO_WINDOW_MS = 8_000;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { HttpError } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 
@@ -670,6 +672,98 @@ export function hubItemsService(db: Db) {
     });
   }
 
+  async function bulkAction(args: {
+    companyId: string;
+    actorUserId: string;
+    actorIsFounder: boolean;
+    role?: UserRole;
+    actorType: "user" | "agent" | "system";
+    bulkId?: string;
+    items: Array<{
+      id: string;
+      action: "resolve" | "archive" | "dismiss" | "snooze" | "claim" | "release";
+      expectedVersion?: number;
+      until?: string;
+      idempotencyKey?: string;
+      reason?: string;
+    }>;
+  }) {
+    const bulkId = args.bulkId ?? randomUUID();
+    const results = [];
+
+    for (const item of args.items) {
+      try {
+        if (
+          item.action === "resolve" ||
+          item.action === "archive" ||
+          item.action === "claim" ||
+          item.action === "release"
+        ) {
+          if (item.expectedVersion == null) {
+            throw new HttpError(400, "expectedVersion is required for shared lifecycle actions");
+          }
+          const result = await recordLifecycleAction({
+            companyId: args.companyId,
+            hubItemId: item.id,
+            action: item.action,
+            expectedVersion: item.expectedVersion,
+            actorType: args.actorType,
+            actorId: args.actorUserId,
+            actorIsFounder: args.actorIsFounder,
+            authorityBasis: args.actorIsFounder ? "founder" : "owner",
+            reason: item.reason,
+            idempotencyKey: item.idempotencyKey,
+          });
+          results.push({
+            id: item.id,
+            status: "success" as const,
+            item: result.item,
+            auditId: result.auditId,
+            undoDeadline: result.undoDeadline,
+          });
+          continue;
+        }
+
+        const state =
+          item.action === "dismiss"
+            ? { kind: "dismiss" as const }
+            : { kind: "snooze" as const, until: item.until! };
+        const result = await applyPersonalState({
+          companyId: args.companyId,
+          hubItemId: item.id,
+          actorUserId: args.actorUserId,
+          role: args.role,
+          state,
+        });
+        results.push({
+          id: item.id,
+          status: "success" as const,
+          state: result,
+        });
+      } catch (err) {
+        const status = err instanceof HttpError ? err.status : 500;
+        const message = err instanceof Error ? err.message : "Bulk action failed";
+        results.push({
+          id: item.id,
+          status: "failed" as const,
+          error: { status, message },
+        });
+      }
+    }
+
+    const summary = results.reduce(
+      (acc, result) => {
+        if (result.status === "success") acc.succeeded += 1;
+        else if (result.status === "failed") acc.failed += 1;
+        else acc.skipped += 1;
+        return acc;
+      },
+      { succeeded: 0, failed: 0, skipped: 0 },
+    );
+
+    return { bulkId, summary, results };
+  }
+
   async function recordAndAct(args: {
     companyId: string;
     hubItemId: string;
@@ -1126,6 +1220,7 @@ export function hubItemsService(db: Db) {
     applyPersonalState,
     recordLifecycleAction,
     undoAction,
+    bulkAction,
     recordAndAct,
     reconcile,
     counts,
