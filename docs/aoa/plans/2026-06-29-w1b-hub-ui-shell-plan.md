@@ -217,7 +217,7 @@ No commit for read-only preflight. Record any mismatch by editing this plan befo
 - Read only: `ui/src/components/inbox/ThreadNotificationItem.tsx`
 - Read only: `packages/shared/src/hub.ts`
 
-- [ ] **Step 1: Write the failing parity contract test**
+- [x] **Step 1: Write the failing parity contract test**
 
 Create `server/src/__tests__/hub-old-inbox-parity.test.ts`:
 
@@ -257,7 +257,7 @@ describe("old Inbox to hub parity contract", () => {
 });
 ```
 
-- [ ] **Step 2: Run the contract**
+- [x] **Step 2: Run the contract**
 
 Run:
 
@@ -267,7 +267,7 @@ pnpm -C server exec vitest run src/__tests__/hub-old-inbox-parity.test.ts
 
 Expected: PASS once shared semantic mappings are total. This test does not prove emit paths; later integration/e2e tests must prove rows are actually created.
 
-- [ ] **Step 3: Expand integration acceptance from this contract**
+- [x] **Step 3: Expand integration acceptance from this contract**
 
 For every retained row in `oldInboxSources`, add either:
 
@@ -276,7 +276,7 @@ For every retained row in `oldInboxSources`, add either:
 
 Do not remove old `Inbox.tsx` or redirect `/inbox` in W1b unless this parity contract and its source-emission integration coverage are green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```sh
 git add server/src/__tests__/hub-old-inbox-parity.test.ts
