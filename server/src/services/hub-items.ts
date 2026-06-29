@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -344,13 +344,15 @@ export function hubItemsService(db: Db) {
       hubItemId: string;
       actorUserId: string;
       role?: UserRole;
-      status?: HubItemStatus;
+      status?: HubItemStatus | "any";
     },
   ) {
     const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, opts.actorUserId));
     const conds = await visibilityConds(companyId, opts.actorUserId, role);
     conds.push(eq(hubItems.id, opts.hubItemId));
-    conds.push(eq(hubItems.status, opts.status ?? "open"));
+    if (opts.status !== "any") {
+      conds.push(eq(hubItems.status, opts.status ?? "open"));
+    }
     return db
       .select()
       .from(hubItems)
@@ -407,6 +409,38 @@ export function hubItemsService(db: Db) {
       .returning();
 
     return row;
+  }
+
+  async function getAudit(args: {
+    companyId: string;
+    hubItemId: string;
+    actorUserId: string;
+    role?: UserRole;
+  }) {
+    const visibleItem = await getVisible(args.companyId, {
+      hubItemId: args.hubItemId,
+      actorUserId: args.actorUserId,
+      role: args.role,
+      status: "any",
+    });
+    if (!visibleItem) throw notFound("Hub item not found");
+
+    return db
+      .select({
+        id: hubAudit.id,
+        companyId: hubAudit.companyId,
+        hubItemId: hubAudit.hubItemId,
+        actorType: hubAudit.actorType,
+        actorId: hubAudit.actorId,
+        action: hubAudit.action,
+        authorityBasis: hubAudit.authorityBasis,
+        reason: hubAudit.reason,
+        undoDeadline: hubAudit.undoDeadline,
+        createdAt: hubAudit.createdAt,
+      })
+      .from(hubAudit)
+      .where(and(eq(hubAudit.companyId, args.companyId), eq(hubAudit.hubItemId, args.hubItemId)))
+      .orderBy(desc(hubAudit.createdAt));
   }
 
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
@@ -1218,6 +1252,7 @@ export function hubItemsService(db: Db) {
     query,
     getVisible,
     applyPersonalState,
+    getAudit,
     recordLifecycleAction,
     undoAction,
     bulkAction,

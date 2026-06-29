@@ -156,6 +156,22 @@ export function hubItemRoutes(db: Db) {
 
   // PATCH state — upsert the sparse per-principal user-state row (read/snooze/
   // dismiss). Keyed on (hubItemId, principalType, principalId) per W6.
+  router.get("/companies/:companyId/hub-items/:id/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const hubItemId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const role = await resolveRole(req, companyId, userId);
+    const rows = await svc.getAudit({
+      companyId,
+      hubItemId,
+      actorUserId: userId,
+      role,
+    });
+
+    res.json(rows);
+  });
+
   router.post(
     "/companies/:companyId/hub-items/bulk-action",
     validate(hubBulkActionSchema),

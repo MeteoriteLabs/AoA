@@ -15,6 +15,7 @@ const mockSvc = vi.hoisted(() => ({
   recordLifecycleAction: vi.fn(),
   undoAction: vi.fn(),
   bulkAction: vi.fn(),
+  getAudit: vi.fn(),
 }));
 
 const mockPerms = vi.hoisted(() => ({
@@ -230,6 +231,43 @@ describe("hub-items routes", () => {
       actorId: "user-1",
     });
     expect(res.body.auditId).toBe("undo-audit-1");
+  });
+
+  it("GET audit returns the selected item's audit timeline", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("founder");
+    mockSvc.getAudit.mockResolvedValue([
+      {
+        id: "audit-1",
+        companyId: COMPANY_A,
+        hubItemId: ITEM_ID,
+        actorType: "user",
+        actorId: "user-1",
+        action: "archive",
+        authorityBasis: "founder",
+        reason: "No longer needed",
+        undoDeadline: null,
+        createdAt: "2026-06-29T10:03:00.000Z",
+      },
+    ]);
+    const app = createApp(boardActor());
+
+    const res = await request(app).get(
+      `/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/audit`,
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSvc.getAudit).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      hubItemId: ITEM_ID,
+      actorUserId: "user-1",
+      role: "founder",
+    });
+    expect(res.body[0]).toMatchObject({
+      id: "audit-1",
+      action: "archive",
+      actorId: "user-1",
+      reason: "No longer needed",
+    });
   });
 
   it("POST bulk-action returns ordered mixed personal and shared results", async () => {
