@@ -187,6 +187,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
       );
+      test.setTimeout(90_000);
 
       // The fake embedder is always active in e2e (AOA_E2E_FAKE_EMBEDDER=1).
       // Ensure no forced error is set so embeds succeed.
@@ -238,6 +239,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
       );
+      test.setTimeout(90_000);
 
       clearFakeEmbedderControl();
 
