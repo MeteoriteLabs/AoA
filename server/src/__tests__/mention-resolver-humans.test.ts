@@ -54,6 +54,12 @@ vi.mock("../errors.js", () => ({
   unprocessable: (msg: string) => Object.assign(new Error(msg), { status: 422 }),
 }));
 
+// issues.ts now imports hub-items.ts (W1a Task 10). Mock it so the real module
+// (and its @armyofagents/shared imports) never load — this suite only tests the
+// pure findMentionedHumans resolver, not the emit path.
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({ emit: vi.fn() })),
+}));
 vi.mock("../services/dependencies.js", () => ({
   dependencyService: vi.fn(() => ({})),
 }));

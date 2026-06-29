@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { discussions } from "@armyofagents/db";
 import { publishLiveEvent } from "../../live-events.js";
+import { hubItemsService } from "../../hub-items.js";
 import type { AgentTool } from "../types.js";
 
 export function createNotifyOwnerTool(): AgentTool {
@@ -66,17 +67,18 @@ export function createNotifyOwnerTool(): AgentTool {
         };
       }
 
-      const notification = await ctx.services.notifications.create(
-        ctx.companyId,
-        {
-          userId: thread.ownerUserId,
-          type: "internal_agent.notification",
-          title: `Thread notification${level && level !== "info" ? ` [${level}]` : ""}`,
-          message: message as string,
-          relatedEntityType: "discussion",
-          relatedEntityId: threadId as string,
-        },
-      );
+      // Natural-owner item: the thread owner is the owner. Routed through
+      // hubItems.emit so it lands in the unified index; the legacy notification
+      // bell still reads the same row (userId = the resolved owner).
+      const notification = await hubItemsService(ctx.db).emit({
+        companyId: ctx.companyId,
+        semanticType: "mention",
+        sourceType: "discussion",
+        sourceId: threadId as string,
+        title: `Thread notification${level && level !== "info" ? ` [${level}]` : ""}`,
+        summary: message as string,
+        ownerUserId: thread.ownerUserId,
+      });
 
       publishLiveEvent({
         companyId: ctx.companyId,

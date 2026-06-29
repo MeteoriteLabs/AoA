@@ -28,6 +28,13 @@ vi.mock("@armyofagents/shared", () => ({
   MEMORY_ITEM_LAYERS: ["identity", "domain", "active_context", "working"],
 }));
 
+// threads.ts/issues.ts (pulled in transitively via the MCP write-tools chain)
+// now import hub-items.ts (W1a Task 10); mock it so the real module + its
+// @armyofagents/shared imports never load.
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({ emit: vi.fn(async () => ({ id: "hub-1" })) })),
+}));
+
 vi.mock("drizzle-orm", () => ({
   and: (...args: any[]) => args,
   eq: (a: any, b: any) => ({ eq: [a, b] }),
