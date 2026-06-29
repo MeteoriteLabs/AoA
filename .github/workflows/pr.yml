@@ -564,7 +564,7 @@ jobs:
 
       - name: Install Playwright
         id: install-playwright
-        timeout-minutes: 5
+        timeout-minutes: 10
         continue-on-error: true
         run: npx playwright install --only-shell chromium
 
