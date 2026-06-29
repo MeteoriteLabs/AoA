@@ -56,7 +56,17 @@ function spaced(value: string) {
 }
 
 function scopeKeyFor(source: { scopeType: string | null; scopeId: string | null }) {
-  return source.scopeType && source.scopeId ? `${source.scopeType}:${source.scopeId}` : null;
+  return source.scopeType && source.scopeId ? source.scopeId : null;
+}
+
+function approvalSummary(approval: ApprovalLike) {
+  const agentName =
+    typeof approval.payload.name === "string"
+      ? approval.payload.name
+      : typeof approval.payload.agentName === "string"
+        ? approval.payload.agentName
+        : null;
+  return agentName ? `Agent: ${agentName}` : `Approval type: ${spaced(approval.type)}`;
 }
 
 export function buildApprovalHubEmit(approval: ApprovalLike): EmitArgs {
@@ -73,10 +83,7 @@ export function buildApprovalHubEmit(approval: ApprovalLike): EmitArgs {
     sourceType: "approval",
     sourceId: approval.id,
     title: `Review ${spaced(approval.type)} approval`,
-    summary:
-      typeof approval.payload.agentName === "string"
-        ? `Agent: ${approval.payload.agentName}`
-        : `Approval type: ${spaced(approval.type)}`,
+    summary: approvalSummary(approval),
     ownerPool: "board",
     ...actor,
     sourcePermissionRevision: approval.updatedAt.toISOString(),

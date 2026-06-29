@@ -329,7 +329,7 @@ describe("hub source producers", () => {
       status: "pending",
       requestedByAgentId: "agent-1",
       requestedByUserId: null,
-      payload: { agentName: "Scout" },
+      payload: { name: "Scout" },
       createdAt: new Date("2026-06-29T00:00:00Z"),
       updatedAt: new Date("2026-06-29T00:00:00Z"),
     } as never);
@@ -386,7 +386,7 @@ describe("hub source producers", () => {
       sourceType: "discussion",
       sourceId: "discussion-1",
       ownerUserId: "user-1",
-      scopeKey: "project:project-1",
+      scopeKey: "project-1",
       sourceActorType: "agent",
       sourceActorId: "agent-1",
       title: "Review 3 pending items in Q3 planning",
@@ -483,7 +483,8 @@ type DiscussionLike = {
   companyId: string;
   title: string | null;
   ownerUserId: string | null;
-  projectId: string | null;
+  scopeType: string | null;
+  scopeId: string | null;
   lastPendingActorType?: "user" | "agent" | null;
   lastPendingActorId?: string | null;
   pendingItemCount: number;
@@ -515,6 +516,20 @@ function spaced(value: string) {
   return value.replace(/_/g, " ");
 }
 
+function scopeKeyFor(source: { scopeType: string | null; scopeId: string | null }) {
+  return source.scopeType && source.scopeId ? source.scopeId : null;
+}
+
+function approvalSummary(approval: ApprovalLike) {
+  const agentName =
+    typeof approval.payload.name === "string"
+      ? approval.payload.name
+      : typeof approval.payload.agentName === "string"
+        ? approval.payload.agentName
+        : null;
+  return agentName ? `Agent: ${agentName}` : `Approval type: ${spaced(approval.type)}`;
+}
+
 export function buildApprovalHubEmit(approval: ApprovalLike): EmitArgs {
   const actor =
     approval.requestedByAgentId != null
@@ -528,10 +543,7 @@ export function buildApprovalHubEmit(approval: ApprovalLike): EmitArgs {
     sourceType: "approval",
     sourceId: approval.id,
     title: `Review ${spaced(approval.type)} approval`,
-    summary:
-      typeof approval.payload.agentName === "string"
-        ? `Agent: ${approval.payload.agentName}`
-        : `Approval type: ${spaced(approval.type)}`,
+    summary: approvalSummary(approval),
     ownerPool: "board",
     ...actor,
     sourcePermissionRevision: approval.updatedAt.toISOString(),
@@ -573,7 +585,7 @@ export function buildDiscussionPendingHubEmit(discussion: DiscussionLike): EmitA
     title: `Review ${count} pending ${count === 1 ? "item" : "items"} in ${title}`,
     summary: `${count} extracted ${count === 1 ? "item needs" : "items need"} review.`,
     ownerUserId: discussion.ownerUserId,
-    scopeKey: discussion.projectId ? `project:${discussion.projectId}` : null,
+    scopeKey: scopeKeyFor(discussion),
     ...actor,
     sourcePermissionRevision: discussion.updatedAt.toISOString(),
   };
@@ -686,14 +698,15 @@ it("preserves discussion owner and scope when refreshing pending discussion item
   const companyId = await seedCompanyWithFounder();
   const discussion = await insertDiscussion(companyId, {
     ownerUserId: "user-2",
-    projectId: "project-1",
+    scopeType: "project",
+    scopeId: "project-1",
     pendingItemCount: 2,
   });
 
   const row = await hubItemsService(db).emit(buildDiscussionPendingHubEmit(discussion));
 
   expect(row.ownerUserId).toBe("user-2");
-  expect(row.scopeKey).toBe("project:project-1");
+  expect(row.scopeKey).toBe("project-1");
 });
 ```
 
@@ -1673,7 +1686,7 @@ test.describe("Inbox Hub W1b preview", () => {
     const approvalRes = await request.post(`/api/companies/${company.id}/approvals`, {
       data: {
         type: "hire_agent",
-        payload: { agentName: "Scout" },
+        payload: { name: "Scout" },
         issueIds: [],
       },
     });

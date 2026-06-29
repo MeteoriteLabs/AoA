@@ -16,7 +16,7 @@ describe("hub source producers", () => {
       status: "pending",
       requestedByAgentId: "agent-1",
       requestedByUserId: null,
-      payload: { agentName: "Scout" },
+      payload: { name: "Scout" },
       createdAt: new Date("2026-06-29T00:00:00Z"),
       updatedAt: new Date("2026-06-29T00:00:00Z"),
     });
@@ -75,7 +75,7 @@ describe("hub source producers", () => {
       sourceType: "discussion",
       sourceId: "discussion-1",
       ownerUserId: "user-1",
-      scopeKey: "project:project-1",
+      scopeKey: "project-1",
       sourceActorType: "agent",
       sourceActorId: "agent-1",
       title: "Review 3 pending items in Q3 planning",
