@@ -914,7 +914,7 @@ Verification:
 - Modify: `ui/src/lib/queryKeys.ts`
 - Test: `ui/src/api/__tests__/hub-items-api.test.ts`
 
-- [ ] **Step 1: Write the failing API test**
+- [x] **Step 1: Write the failing API test**
 
 Create `ui/src/api/__tests__/hub-items-api.test.ts`:
 
@@ -962,7 +962,7 @@ describe("hubItemsApi", () => {
 });
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 Run:
 
@@ -972,7 +972,7 @@ pnpm --filter @armyofagents/ui exec vitest run src/api/__tests__/hub-items-api.t
 
 Expected: FAIL because the client does not exist.
 
-- [ ] **Step 3: Implement the API client**
+- [x] **Step 3: Implement the API client**
 
 Create `ui/src/api/hub-items.ts`:
 
@@ -1063,7 +1063,7 @@ export const listHubItemsQuery = z
 
 In `server/src/services/hub-items.ts`, thread `limit ?? 50` into the query builder and apply `.limit(limit)`. In `server/src/routes/hub-items.ts`, pass the parsed limit from `listHubItemsQuery` into `hubItemsService(db).query(...)`.
 
-- [ ] **Step 4: Run to confirm it passes**
+- [x] **Step 4: Run to confirm it passes**
 
 Run:
 
@@ -1073,7 +1073,16 @@ pnpm --filter @armyofagents/ui exec vitest run src/api/__tests__/hub-items-api.t
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
+
+Implementation note: `packages/shared/src/validators/hub.ts`, `server/src/services/hub-items.ts`, and `server/src/routes/hub-items.ts` already had the Task 4 `limit` parsing/plumbing from the W1a/W1b backend work. Task 4 added the UI API client, export, query keys, and focused API test.
+
+Verification:
+
+- RED: `corepack pnpm --filter @armyofagents/ui exec vitest run src/api/__tests__/hub-items-api.test.ts` failed because `../hub-items` did not exist.
+- GREEN: `corepack pnpm --filter @armyofagents/ui exec vitest run src/api/__tests__/hub-items-api.test.ts` PASS, including default query, `includeDismissed`, limit clamping, and non-finite limit fallback coverage.
+- `corepack pnpm --filter @armyofagents/ui typecheck` PASS.
+- Independent code review PASS from subagent `Cicero`: no critical or important issues; minor query edge coverage was folded back into this commit.
 
 ```sh
 git add packages/shared/src/validators/hub.ts server/src/services/hub-items.ts server/src/routes/hub-items.ts ui/src/api/hub-items.ts ui/src/api/index.ts ui/src/lib/queryKeys.ts ui/src/api/__tests__/hub-items-api.test.ts

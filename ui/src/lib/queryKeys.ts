@@ -115,6 +115,18 @@ export const queryKeys = {
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   home: (companyId: string) => ["home", companyId] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
+  hubItems: {
+    list: (
+      companyId: string,
+      opts?: {
+        lane?: string;
+        status?: string;
+        includeDismissed?: boolean;
+        limit?: number;
+      },
+    ) => ["hub-items", companyId, opts ?? {}] as const,
+    counts: (companyId: string) => ["hub-items", companyId, "counts"] as const,
+  },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
