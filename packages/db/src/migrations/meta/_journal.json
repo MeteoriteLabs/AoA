@@ -1065,6 +1065,13 @@
       "when": 1782638264214,
       "tag": "0151_clumsy_lightspeed",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1782707976877,
+      "tag": "0152_magenta_black_panther",
+      "breakpoints": true
     }
   ]
 }

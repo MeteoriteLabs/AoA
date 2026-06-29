@@ -1002,6 +1002,12 @@ export {
   type CreateInboxDismissal,
   createUserEntityPinSchema,
   type CreateUserEntityPin,
+  listHubItemsQuery,
+  hubActionSchema,
+  hubUserStateSchema,
+  type ListHubItemsQuery,
+  type HubActionInput,
+  type HubUserStateInput,
   createEnvironmentSchema,
   e2bEnvironmentConfigSchema,
   environmentDriverSchema,
@@ -1147,6 +1153,7 @@ export * from "./teams.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
 export * from "./commander-output-refs.js";
+export * from "./hub.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).

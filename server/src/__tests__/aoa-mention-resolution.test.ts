@@ -69,6 +69,13 @@ vi.mock("@armyofagents/shared", () => ({
   extractProjectMentionIds: vi.fn(() => []),
 }));
 
+// issues.ts now imports hub-items.ts (W1a Task 10); mock it so the real module
+// (and its @armyofagents/shared imports) never load — this suite tests mention
+// resolution, not the emit path.
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({ emit: vi.fn(async () => ({ id: "hub-1" })) })),
+}));
+
 vi.mock("../errors.js", () => ({
   conflict: (m: string) => new Error(m),
   notFound: (m: string) => new Error(m),

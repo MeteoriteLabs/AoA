@@ -2,17 +2,25 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createNotifyOwnerTool } from "../services/internal-agent/tools/notify-owner-tool.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-const { publishLiveEventMock } = vi.hoisted(() => ({
+const { publishLiveEventMock, emitMock } = vi.hoisted(() => ({
   publishLiveEventMock: vi.fn(),
+  emitMock: vi.fn(),
 }));
 
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: publishLiveEventMock,
 }));
 
+// notify_owner now routes through hubItems.emit (W1a Task 10). Mock the service
+// so we can assert the emit shape (semanticType/sourceType/sourceId/owner).
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({ emit: emitMock })),
+}));
+
 describe("notify_owner tool (P2.4)", () => {
   beforeEach(() => {
     publishLiveEventMock.mockClear();
+    emitMock.mockReset();
   });
 
   function makeMockDb(rows: Array<{ ownerUserId: string | null }>) {
@@ -29,6 +37,9 @@ describe("notify_owner tool (P2.4)", () => {
     dbRows: Array<{ ownerUserId: string | null }>,
     notifResult?: any,
   ): ToolContext {
+    // The hub emit resolves to the inserted row (carries `.id`, used for the
+    // returned notificationId + the LiveEvent payload).
+    emitMock.mockResolvedValue(notifResult ?? { id: "notif-1" });
     return {
       companyId: "co-1",
       userId: "u-1",
@@ -62,7 +73,7 @@ describe("notify_owner tool (P2.4)", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("NOT_FOUND");
-    expect(ctx.services.notifications.create).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
     expect(publishLiveEventMock).not.toHaveBeenCalled();
   });
 
@@ -77,7 +88,7 @@ describe("notify_owner tool (P2.4)", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("NO_OWNER");
-    expect(ctx.services.notifications.create).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
     expect(publishLiveEventMock).not.toHaveBeenCalled();
   });
 
@@ -92,13 +103,16 @@ describe("notify_owner tool (P2.4)", () => {
 
     expect(result.success).toBe(true);
     expect(result.data).toEqual({ notificationId: "notif-1" });
-    expect(ctx.services.notifications.create).toHaveBeenCalledWith("co-1", {
-      userId: "user-99",
-      type: "internal_agent.notification",
+    // Routed through hubItems.emit: semanticType `mention`, sourceType
+    // `discussion`, sourceId = threadId, owner = the resolved thread owner.
+    expect(emitMock).toHaveBeenCalledWith({
+      companyId: "co-1",
+      semanticType: "mention",
+      sourceType: "discussion",
+      sourceId: "t-1",
       title: "Thread notification",
-      message: "blocked",
-      relatedEntityType: "discussion",
-      relatedEntityId: "t-1",
+      summary: "blocked",
+      ownerUserId: "user-99",
     });
     expect(publishLiveEventMock).toHaveBeenCalledWith({
       companyId: "co-1",
@@ -117,7 +131,7 @@ describe("notify_owner tool (P2.4)", () => {
     );
 
     expect(result.success).toBe(true);
-    const callArgs = (ctx.services.notifications.create as any).mock.calls[0];
-    expect(callArgs[1].title).toContain("[urgent]");
+    const callArgs = emitMock.mock.calls[0];
+    expect(callArgs[0].title).toContain("[urgent]");
   });
 });

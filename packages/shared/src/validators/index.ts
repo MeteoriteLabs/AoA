@@ -471,3 +471,12 @@ export {
   createUserEntityPinSchema,
   type CreateUserEntityPin,
 } from "./user-entity-pins.js";
+
+export {
+  listHubItemsQuery,
+  hubActionSchema,
+  hubUserStateSchema,
+  type ListHubItemsQuery,
+  type HubActionInput,
+  type HubUserStateInput,
+} from "./hub.js";

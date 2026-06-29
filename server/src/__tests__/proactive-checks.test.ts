@@ -88,6 +88,17 @@ vi.mock("@armyofagents/db", () => ({
   notifications: {
     id: "notification_id",
   },
+  // hubItems aliases the notifications table; proactive checks + reminders now
+  // route through hubItemsService(db).emit which references these columns/tables.
+  hubItems: {
+    id: "hub_id",
+    status: "hub_status",
+    sourceUniqueKey: "hub_source_unique_key",
+  },
+  hubItemUserState: {},
+  hubAudit: {},
+  approvals: {},
+  heartbeatRuns: {},
 }));
 
 // ── Sequence-based mock DB ───────────────────────────────────────────────────

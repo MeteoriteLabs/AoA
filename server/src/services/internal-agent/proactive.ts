@@ -12,7 +12,7 @@ import {
   memoryFeedbackPatterns,
   activityLog,
 } from "@armyofagents/db";
-import { createNotification } from "../notifications.js";
+import { hubItemsService } from "../hub-items.js";
 
 // Mirror of dependencies.ts TERMINAL_STATUSES (A-H9). Kept as a local literal
 // rather than imported to avoid dragging the issues/heartbeat/memory module
@@ -99,17 +99,25 @@ async function createNotificationIfAllowed(
   title: string,
   message: string,
   preference: string,
+  // Stable per-check discriminator (e.g. "blocked_task_scan"). All proactive
+  // checks share semanticType `proactive`, so the source id MUST encode the
+  // check kind so distinct checks don't collide on one open hub row, and a
+  // re-run of the same check for the same recipient dedupes onto its own item.
+  checkKind: string,
 ) {
   if (preference === "silent") return null;
 
   // 'digest' and 'realtime' both create the notification record.
   // Digest batching is a consumer concern (the UI groups them).
-  return createNotification(db, {
+  // Natural-owner item: the recipient is the owner.
+  return hubItemsService(db).emit({
     companyId,
-    userId,
-    type: "internal_agent_proactive",
+    semanticType: "proactive",
+    sourceType: "internal_agent_check",
+    sourceId: `${checkKind}:${userId}`,
     title,
-    message,
+    summary: message,
+    ownerUserId: userId,
   });
 }
 
@@ -164,6 +172,7 @@ export async function blockedTaskScan(
     await createNotificationIfAllowed(
       db, companyId, userId,
       "Blocked Tasks Detected", summary, preference,
+      "blocked_task_scan",
     );
   }
 
@@ -212,6 +221,7 @@ export async function budgetThresholdAlert(
     await createNotificationIfAllowed(
       db, companyId, userId,
       "Budget Alert: 80% Threshold Reached", summary, preference,
+      "budget_threshold_alert",
     );
   }
 
@@ -253,6 +263,7 @@ export async function staleWorkDetection(
     await createNotificationIfAllowed(
       db, companyId, userId,
       "Stale Work Detected", summary, preference,
+      "stale_work_detection",
     );
   }
 
@@ -341,6 +352,7 @@ export async function dependencyChainGaps(
     await createNotificationIfAllowed(
       db, companyId, userId,
       "Dependency Chain Gaps", summary, preference,
+      "dependency_chain_gaps",
     );
   }
 
@@ -380,6 +392,7 @@ export async function memoryConflictScan(
     await createNotificationIfAllowed(
       db, companyId, userId,
       "Memory Conflicts Detected", summary, preference,
+      "memory_conflict_scan",
     );
   }
 
@@ -440,6 +453,7 @@ export async function workloadImbalance(
     await createNotificationIfAllowed(
       db, companyId, userId,
       "Workload Imbalance Detected", summary, preference,
+      "workload_imbalance",
     );
   }
 
@@ -548,13 +562,17 @@ export async function checkReminders(
       .set({ status: "fired", firedRunId: run.id })
       .where(eq(internalAgentReminders.id, reminder.id));
 
-    // Reminders always notify regardless of preference
-    await createNotification(db, {
+    // Reminders always notify regardless of preference. Natural-owner item:
+    // the reminder's user is the owner. sourceId = the reminder row id so each
+    // fired reminder is its own hub item (a re-fire dedupes onto the same row).
+    await hubItemsService(db).emit({
       companyId,
-      userId: reminder.userId,
-      type: "internal_agent_reminder",
+      semanticType: "reminder",
+      sourceType: "internal_agent_reminder",
+      sourceId: reminder.id,
       title: "Reminder",
-      message: reminder.content,
+      summary: reminder.content,
+      ownerUserId: reminder.userId,
     });
   }
 

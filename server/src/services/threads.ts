@@ -33,7 +33,7 @@ import {
 } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { publishLiveEvent } from "./live-events.js";
-import { createNotification } from "./notifications.js";
+import { hubItemsService } from "./hub-items.js";
 import { logActivity } from "./activity-log.js";
 import { goalService } from "./goals.js";
 // NOTE: crew-task-service is imported dynamically inside advancePhase() to keep
@@ -311,14 +311,17 @@ export async function processMentions(
       .then((rows) => rows);
 
     if (userRows.length > 0) {
-      await createNotification(db, {
+      // Natural-owner item: the mentioned human is the owner. sourceId folds in
+      // the recipient + entry so each mentioned user gets a distinct hub row and
+      // a re-process of the same entry dedupes onto the same item.
+      await hubItemsService(db).emit({
         companyId,
-        userId: userRows[0].id,
-        type: "thread.mention",
+        semanticType: "mention",
+        sourceType: "discussion",
+        sourceId: `${threadId}:${entryId}:${userRows[0].id}`,
         title: `You were mentioned in a thread`,
-        message: `${mention.raw} in thread`,
-        relatedEntityType: "discussion",
-        relatedEntityId: threadId,
+        summary: `${mention.raw} in thread`,
+        ownerUserId: userRows[0].id,
       });
     }
     // if neither → skip

@@ -42,7 +42,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
-import { notificationService } from "./notifications.js";
+import { hubItemsService } from "./hub-items.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 import {
   buildInitialIssueMonitorFields,
@@ -2136,7 +2136,7 @@ export function issueService(db: Db) {
         ];
         if (mentionedIds.length === 0) return 0;
 
-        const notifSvc = notificationService(db);
+        const hub = hubItemsService(db);
         const message = body.slice(0, 200);
 
         // Parallel inserts with per-promise catch — one failure does not abort
@@ -2149,13 +2149,17 @@ export function issueService(db: Db) {
             // so this comparison correctly never fires for agents.
             if (actor.actorType === "user" && actor.actorId === userId) return false;
             try {
-              await notifSvc.create(companyId, {
-                userId,
-                type: "mention",
+              // Natural-owner item: the mentioned human is the owner. sourceId
+              // folds in the recipient so each mentioned user gets a distinct
+              // hub row keyed on the same task (dedupes on re-emit per user).
+              await hub.emit({
+                companyId,
+                semanticType: "mention",
+                sourceType: "issue",
+                sourceId: `${taskId}:${userId}`,
                 title: "You were mentioned in a comment",
-                message,
-                relatedEntityType: "task",
-                relatedEntityId: taskId,
+                summary: message,
+                ownerUserId: userId,
               });
               return true;
             } catch (err) {

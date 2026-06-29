@@ -12,7 +12,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { userRoles } from "@armyofagents/db";
-import { notificationService } from "./notifications.js";
+import { hubItemsService } from "./hub-items.js";
 import { logger } from "../middleware/logger.js";
 
 async function notifyFounders(
@@ -23,7 +23,10 @@ async function notifyFounders(
     title: string;
     message?: string;
     relatedEntityType?: string;
-    relatedEntityId?: string;
+    // Stable per-event source id. All marketplace events share semanticType
+    // `marketplace_op`, so the source id MUST encode the event type (so distinct
+    // events don't collide on one open hub row), plus the operation/catalog ref.
+    sourceId: string;
   },
 ): Promise<void> {
   try {
@@ -39,17 +42,28 @@ async function notifyFounders(
         ),
       );
 
-    const svc = notificationService(db);
+    const hub = hubItemsService(db);
+    // Each founder is the natural owner of their own hub row; the source id folds
+    // in the recipient so per-founder rows stay distinct (and dedupe per founder).
+    const emitFor = (ownerUserId: string) =>
+      hub.emit({
+        companyId,
+        semanticType: "marketplace_op",
+        sourceType: notification.relatedEntityType ?? "marketplace_operation",
+        sourceId: `${notification.sourceId}:${ownerUserId}`,
+        title: notification.title,
+        summary: notification.message ?? null,
+        ownerUserId,
+      });
+
     if (founders.length === 0) {
       // Fallback: notify local-board user
-      await svc.create(companyId, { ...notification, userId: "local-board" });
+      await emitFor("local-board");
       return;
     }
 
     await Promise.all(
-      founders
-        .filter((r) => r.userId)
-        .map((r) => svc.create(companyId, { ...notification, userId: r.userId! })),
+      founders.filter((r) => r.userId).map((r) => emitFor(r.userId!)),
     );
   } catch (err) {
     logger.error({ err, companyId }, "marketplace-notifications: failed to notify founders");
@@ -63,7 +77,7 @@ export const marketplaceNotifications = {
       title: `${catalogItemName} installed`,
       message: "Marketplace install completed successfully.",
       relatedEntityType: "marketplace_operation",
-      relatedEntityId: operationId,
+      sourceId: `install_completed:${operationId}`,
     }),
 
   installRequested: (db: Db, companyId: string, catalogItemName: string, requestingUserId: string, operationId?: string) =>
@@ -72,7 +86,7 @@ export const marketplaceNotifications = {
       title: `Install requested: ${catalogItemName}`,
       message: `User ${requestingUserId} requested installation of ${catalogItemName}.`,
       relatedEntityType: "marketplace_operation",
-      ...(operationId ? { relatedEntityId: operationId } : {}),
+      sourceId: `install_requested:${operationId ?? catalogItemName}`,
     }),
 
   installFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
@@ -81,6 +95,7 @@ export const marketplaceNotifications = {
       title: `${catalogItemName} install failed`,
       message: error,
       relatedEntityType: "marketplace_operation",
+      sourceId: `install_failed:${catalogItemName}`,
     }),
 
   updateAvailable: (db: Db, companyId: string, catalogItemName: string, fromVersion: string, toVersion: string) =>
@@ -89,12 +104,15 @@ export const marketplaceNotifications = {
       title: `Update available: ${catalogItemName}`,
       message: `${fromVersion} → ${toVersion} is available.`,
       relatedEntityType: "marketplace_update",
+      sourceId: `update_available:${catalogItemName}:${toVersion}`,
     }),
 
   updateCompleted: (db: Db, companyId: string, catalogItemName: string) =>
     notifyFounders(db, companyId, {
       type: "marketplace.update_completed",
       title: `${catalogItemName} updated`,
+      relatedEntityType: "marketplace_update",
+      sourceId: `update_completed:${catalogItemName}`,
     }),
 
   updateFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
@@ -102,5 +120,7 @@ export const marketplaceNotifications = {
       type: "marketplace.update_failed",
       title: `${catalogItemName} update failed`,
       message: error,
+      relatedEntityType: "marketplace_update",
+      sourceId: `update_failed:${catalogItemName}`,
     }),
 };

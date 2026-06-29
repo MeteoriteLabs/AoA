@@ -97,7 +97,9 @@ export { internalAgentRuntimeApprovals } from "./internal_agent_runtime_approval
 export { internalAgentToolTrustRules } from "./internal_agent_tool_trust_rules.js";
 export { aoaAgentTriggers } from "./aoa_agent_triggers.js";
 export { workflowTemplates } from "./workflow_templates.js";
-export { notifications } from "./notifications.js";
+export { notifications, hubItems } from "./notifications.js";
+export * from "./hub_item_user_state.js";
+export * from "./hub_audit.js";
 export { companySkills } from "./company_skills.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";

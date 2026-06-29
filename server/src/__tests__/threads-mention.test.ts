@@ -10,6 +10,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  or: vi.fn((...args: any[]) => ({ or: args })),
+  inArray: vi.fn((a: any, b: any) => ({ inArray: [a, b] })),
+  // hubItems.emit builds `onConflictDoUpdate({ setWhere: sql`…` })` — the mock
+  // must be callable as a tag function so the emit path doesn't throw.
+  sql: vi.fn((...args: any[]) => ({ sql: args })),
 }));
 
 vi.mock("@armyofagents/db", () => ({
@@ -55,6 +60,17 @@ vi.mock("@armyofagents/db", () => ({
     relatedEntityType: "n_related_entity_type",
     relatedEntityId: "n_related_entity_id",
   },
+  // hubItems aliases the notifications table; the human-mention path now routes
+  // through hubItemsService(db).emit which references these columns.
+  hubItems: {
+    id: "hub_id",
+    status: "hub_status",
+    sourceUniqueKey: "hub_source_unique_key",
+  },
+  hubItemUserState: {},
+  hubAudit: {},
+  approvals: {},
+  heartbeatRuns: {},
   // UAT iteration 2: processMentions now looks up the agent's mention-
   // trigger config to include role in the wakeup payload (so the dispatcher
   // autonomy gate can read it).
@@ -136,9 +152,11 @@ describe("processMentions (dispatch)", () => {
   }) {
     const insertValues = vi.fn().mockReturnThis();
     // `.returning()` resolves to a single-row array so `const [row] = await …`
-    // destructures cleanly. Phase G2 (T26) introduced this in createNotification.
+    // destructures cleanly. The human-mention path now goes through
+    // hubItems.emit → insert().values().onConflictDoUpdate().returning().
     const insertChain: any = {
       values: insertValues,
+      onConflictDoUpdate: vi.fn().mockReturnThis(),
       returning: vi.fn(() => Promise.resolve([{ id: "notif-stub" }])),
     };
 
@@ -251,7 +269,7 @@ describe("processMentions (dispatch)", () => {
     expect(call.payload).not.toHaveProperty("role");
   });
 
-  it("creates a notifications row when mention resolves to a human user", async () => {
+  it("emits a hub item (mention) when mention resolves to a human user", async () => {
     const { db, insertValues } = makeMockDb({
       agentRow: null, // no agent with that name
       authRow: { id: "user-1", name: "alice" },
@@ -266,11 +284,18 @@ describe("processMentions (dispatch)", () => {
     );
 
     expect(db.insert).toHaveBeenCalledTimes(1);
+    // Routed through hubItems.emit: semanticType `mention`, sourceType
+    // `discussion`, owner = the mentioned user (legacy `userId` kept in lockstep
+    // so the legacy notification bell still reads the row).
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         companyId: "company-1",
         userId: "user-1",
-        type: "thread.mention",
+        ownerUserId: "user-1",
+        type: "mention",
+        semanticType: "mention",
+        sourceType: "discussion",
+        sourceId: "thread-1:entry-1:user-1",
       }),
     );
   });
@@ -297,6 +322,7 @@ describe("processMentions (dispatch)", () => {
     const insertValues = vi.fn().mockReturnThis();
     const insertChain: any = {
       values: insertValues,
+      onConflictDoUpdate: vi.fn().mockReturnThis(),
       returning: vi.fn(() => Promise.resolve([{ id: "notif-stub" }])),
     };
 

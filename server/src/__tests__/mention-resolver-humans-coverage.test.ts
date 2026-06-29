@@ -151,11 +151,19 @@ vi.mock("../services/execution-workspace-policy.js", () => ({
   issueExecutionWorkspaceModeForPersistedWorkspace: vi.fn(),
 }));
 
-// Mock notificationService with a spy on `create` so we can assert call counts.
+// The task-comment @human mention path now routes through hubItems.emit
+// (W1a Task 10). Mock the service with an `emit` spy so we can assert shape +
+// call counts. (notificationService is mocked too for any other service code.)
 const notifCreateSpy = vi.fn(async () => ({ id: "notif-1" }));
 vi.mock("../services/notifications.js", () => ({
   notificationService: vi.fn(() => ({
     create: notifCreateSpy,
+  })),
+}));
+const hubEmitSpy = vi.fn(async () => ({ id: "hub-1" }));
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({
+    emit: hubEmitSpy,
   })),
 }));
 
@@ -211,11 +219,11 @@ function makeHelperDb({
 
 describe("issueService.notifyMentionedHumans (behavioral)", () => {
   beforeAll(() => {
-    notifCreateSpy.mockClear();
+    hubEmitSpy.mockClear();
   });
 
   it("returns 0 when companies.enableTeams is false (feature flag off)", async () => {
-    notifCreateSpy.mockClear();
+    hubEmitSpy.mockClear();
     const db = makeHelperDb({ enableTeams: false, users: [] });
     const result = await issueService(db).notifyMentionedHumans(
       "c1",
@@ -224,11 +232,11 @@ describe("issueService.notifyMentionedHumans (behavioral)", () => {
       { actorType: "user", actorId: "self" },
     );
     expect(result).toBe(0);
-    expect(notifCreateSpy).not.toHaveBeenCalled();
+    expect(hubEmitSpy).not.toHaveBeenCalled();
   });
 
-  it("skips self-mention — does NOT create notification when user mentions themselves", async () => {
-    notifCreateSpy.mockClear();
+  it("skips self-mention — does NOT emit a hub item when user mentions themselves", async () => {
+    hubEmitSpy.mockClear();
     const db = makeHelperDb({
       enableTeams: true,
       users: [{ id: "self", name: "alice" }],
@@ -240,11 +248,11 @@ describe("issueService.notifyMentionedHumans (behavioral)", () => {
       { actorType: "user", actorId: "self" },
     );
     expect(result).toBe(0);
-    expect(notifCreateSpy).not.toHaveBeenCalled();
+    expect(hubEmitSpy).not.toHaveBeenCalled();
   });
 
-  it("creates one notification per non-self mention (parallel batch)", async () => {
-    notifCreateSpy.mockClear();
+  it("emits one hub item per non-self mention (parallel batch)", async () => {
+    hubEmitSpy.mockClear();
     const db = makeHelperDb({
       enableTeams: true,
       users: [
@@ -259,13 +267,16 @@ describe("issueService.notifyMentionedHumans (behavioral)", () => {
       { actorType: "user", actorId: "u-other" },
     );
     expect(result).toBe(2);
-    expect(notifCreateSpy).toHaveBeenCalledTimes(2);
-    // Spot-check shape of first call
-    expect(notifCreateSpy).toHaveBeenCalledWith("c1", expect.objectContaining({
-      type: "mention",
+    expect(hubEmitSpy).toHaveBeenCalledTimes(2);
+    // Spot-check shape of first call: routed through hubItems.emit with
+    // semanticType `mention`, sourceType `issue`, owner = the mentioned user.
+    expect(hubEmitSpy).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "c1",
+      semanticType: "mention",
+      sourceType: "issue",
+      sourceId: "task-1:u-alice",
       title: "You were mentioned in a comment",
-      relatedEntityType: "task",
-      relatedEntityId: "task-1",
+      ownerUserId: "u-alice",
     }));
   });
 });

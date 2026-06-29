@@ -132,6 +132,12 @@ vi.mock("@armyofagents/shared", () => ({
   extractSkillMentionIds: () => [],
 }));
 
+// threads.ts (pulled in transitively) now imports hub-items.ts (W1a Task 10);
+// mock it so the real module + its @armyofagents/shared imports never load.
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({ emit: vi.fn(async () => ({ id: "hub-1" })) })),
+}));
+
 vi.mock("../errors.js", () => {
   class HttpError extends Error {
     status: number;
