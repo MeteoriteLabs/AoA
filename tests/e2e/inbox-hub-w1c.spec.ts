@@ -83,11 +83,11 @@ test.describe("Inbox Hub W1c lifecycle", () => {
 
     await page.getByRole("button", { name: /Snooze deployment approval/i }).click();
     await page.getByRole("button", { name: /^snooze$/i }).click();
-    await expect(page.getByText("Snooze deployment approval")).toBeHidden();
+    await expect(page.getByRole("button", { name: /^Snooze deployment approval$/i })).toBeHidden();
 
     await page.getByRole("button", { name: /Dismiss noisy approval/i }).click();
     await page.getByRole("button", { name: /^dismiss$/i }).click();
-    await expect(page.getByText("Dismiss noisy approval")).toBeHidden();
+    await expect(page.getByRole("button", { name: /^Dismiss noisy approval$/i })).toBeHidden();
 
     await page.getByRole("button", { name: /Resolve launch approval/i }).click();
     await page.getByRole("button", { name: /^resolve$/i }).click();
@@ -135,7 +135,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
     await act(request, company.id, changed, "claim");
 
     await page.getByRole("button", { name: /archive selected/i }).click();
-    await expect(page.getByRole("status")).toContainText(/1 succeeded, 1 failed/i);
+    await expect(page.locator('[role="status"]').filter({ hasText: /1 succeeded, 1 failed/i })).toBeVisible();
     await expect(page.getByText("Bulk changed stale work")).toBeVisible();
   });
 });
