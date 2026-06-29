@@ -101,6 +101,14 @@ export function HubShell({
               </div>
             </div>
           ) : null}
+          {!showHome && undoAction ? (
+            <div className="flex h-11 items-center justify-between gap-3 border-b border-border bg-card px-4 text-xs">
+              <span className="truncate text-muted-foreground">{undoAction.label}</span>
+              <Button type="button" variant="ghost" size="sm" onClick={undoAction.onUndo}>
+                Undo {undoAction.label}
+              </Button>
+            </div>
+          ) : null}
           {!showHome && bulkMessage ? (
             <div role="status" className="border-b border-border bg-card px-4 py-2 text-xs text-muted-foreground">
               {bulkMessage}
@@ -127,7 +135,7 @@ export function HubShell({
         </section>
         <HubViewer
           item={selectedItem}
-          undoAction={undoAction}
+          undoAction={null}
           onClose={() => onSelectItem(null)}
           onMarkUnread={onMarkUnread}
           onDismiss={onDismiss}

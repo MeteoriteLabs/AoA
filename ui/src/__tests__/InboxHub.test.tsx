@@ -216,6 +216,24 @@ describe("InboxHub page", () => {
     });
   });
 
+  it("keeps server undo reachable after the resolved item leaves the active list", async () => {
+    vi.mocked(hubItemsApi.list)
+      .mockResolvedValueOnce([hubItem()])
+      .mockResolvedValue([]);
+
+    renderPage("/P4/inbox-hub/waiting/hub-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /^resolve$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /undo resolve/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.undo).toHaveBeenCalledWith("company-1", "hub-1", {
+        auditId: "audit-1",
+        expectedVersion: 2,
+      });
+    });
+  });
+
   it("viewer shows claim and release actions for board-pool items", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue([
       hubItem({ semanticType: "stale_work", lane: "suggestions", ownerPool: "board" }),
