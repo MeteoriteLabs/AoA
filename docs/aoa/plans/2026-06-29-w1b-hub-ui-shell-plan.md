@@ -1531,7 +1531,7 @@ Verification:
 - Test: `ui/src/__tests__/Sidebar.test.tsx`
 - Test: `ui/src/__tests__/navigation.test.tsx` or new `ui/src/__tests__/InboxHub.test.tsx`
 
-- [ ] **Step 1: Write failing page/sidebar tests**
+- [x] **Step 1: Write failing page/sidebar tests**
 
 Add to `ui/src/__tests__/Sidebar.test.tsx`:
 
@@ -1615,7 +1615,7 @@ describe("InboxHub page", () => {
 });
 ```
 
-- [ ] **Step 2: Run to confirm failures**
+- [x] **Step 2: Run to confirm failures**
 
 Run:
 
@@ -1625,7 +1625,7 @@ pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx sr
 
 Expected: FAIL until route/page/sidebar are implemented.
 
-- [ ] **Step 3: Implement `InboxHub`**
+- [x] **Step 3: Implement `InboxHub`**
 
 Create `ui/src/pages/InboxHub.tsx`:
 
@@ -1646,7 +1646,7 @@ Create `ui/src/pages/InboxHub.tsx`:
 - If the URL contains `:itemId`, select that row after the list query resolves and render the viewer directly.
 - Set breadcrumbs to `Inbox Hub`.
 
-- [ ] **Step 4: Add routes**
+- [x] **Step 4: Add routes**
 
 In `ui/src/App.tsx`:
 
@@ -1661,7 +1661,7 @@ In `ui/src/App.tsx`:
 
 Do not change existing `/inbox/new` or `/inbox/all`.
 
-- [ ] **Step 5: Add sidebar reachability**
+- [x] **Step 5: Add sidebar reachability**
 
 In `ui/src/components/Sidebar.tsx`:
 
@@ -1670,7 +1670,7 @@ In `ui/src/components/Sidebar.tsx`:
 - Add `Approvals` pointing to `/approvals/pending` under Work.
 - Use lucide icons already imported or add `ShieldCheck`.
 
-- [ ] **Step 6: Run UI tests**
+- [x] **Step 6: Run UI tests**
 
 Run:
 
@@ -1680,12 +1680,20 @@ pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx sr
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```sh
 git add ui/src/pages/InboxHub.tsx ui/src/App.tsx ui/src/components/Sidebar.tsx ui/src/__tests__/Sidebar.test.tsx ui/src/__tests__/InboxHub.test.tsx
 git commit -m "feat(hub): mount W1b hub preview route and approvals nav"
 ```
+
+Implementation note: Task 7 also adds `inbox-hub` to `ui/src/lib/company-routes.ts` so the custom router treats the preview hub as a company-scoped board route.
+
+Verification:
+
+- RED: `corepack pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx src/__tests__/InboxHub.test.tsx` failed because `InboxHub` and the sidebar links did not exist.
+- GREEN: `corepack pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Sidebar.test.tsx src/__tests__/InboxHub.test.tsx` PASS.
+- `corepack pnpm --filter @armyofagents/ui typecheck` PASS.
 
 ---
 
