@@ -43,7 +43,7 @@
 
 4. **Actions are named, not client-chosen statuses.** Replace the W1a-era client contract of `{ action, nextStatus }` with action-specific validation. The server maps `resolve -> resolved`, `archive -> archived`, `claim -> open + claimedBy`, `release -> open + unclaimed`. This prevents contradictory payloads such as `action: "resolve", nextStatus: "archived"`.
 
-5. **Undo is short, explicit, and audit-backed.** Use an 8-second undo window. Only hub-only mutations with `undoDeadline` and no irreversible side effects are undoable. Undo requires the audit id, matching item id/company id, live deadline, and no later conflicting version.
+5. **Undo is short and explicit.** Use an 8-second undo window. Shared lifecycle undo is audit-backed: only hub-only shared mutations with `undoDeadline` and no irreversible side effects are undoable through `/undo`. Personal-state undo is client-context-backed: the UI captures the previous `readAt` / `snoozedUntil` / `dismissedAt` values before the state mutation and reverses with the existing state route during the undo window.
 
 6. **Bulk is partial success by design.** Each item is processed independently with its own optimistic-concurrency guard and audit. The endpoint never pretends heterogeneous source-backed actions are all-or-nothing.
 
@@ -206,21 +206,22 @@ Rules:
 - The current item version must match `expectedVersion`.
 - The audit `priorState` restores only hub-owned fields used by W1c (`status`, `version`, `resolvedAt`, `archivedAt`, `claimedByUserId`, `claimedAt`).
 - Undo itself writes a new audit row with `action = "undo"` and `priorState` equal to the pre-undo state.
+- This route is for shared hub lifecycle/claim mutations only. Personal-state undo does not write `hub_audit`; the client stores the previous visible state in mutation context and calls the inverse `PATCH .../state` within the same 8-second UI window.
 
 Supported W1c undo matrix:
 
 | Action | Mutation type | Undoable? | Recovery |
 |---|---|---:|---|
-| `read` | personal state | Yes | Restore previous `readAt` client/server state when available, or clear the latest read mark. |
-| `unread` | personal state | Yes | Restore previous `readAt`. |
-| `snooze` | personal state | Yes | Restore previous `snoozedUntil`. |
-| `unsnooze` | personal state | Yes | Restore previous `snoozedUntil`. |
-| `dismiss` | personal state | Yes | Restore previous `dismissedAt`. |
-| `undismiss` | personal state | Yes | Restore previous `dismissedAt`. |
-| `resolve` | shared hub status | Yes | Restore prior status/timestamps/version via audit before deadline. |
-| `archive` | shared hub status | Yes | Restore prior status/timestamps/version via audit before deadline. |
-| `claim` | shared claim lock | Yes | Restore prior claim fields via audit before deadline. |
-| `release` | shared claim lock | Yes | Restore prior claim fields via audit before deadline. |
+| `read` | personal state | Yes, client-state undo | Restore previous `readAt` from UI mutation context by calling the state route. |
+| `unread` | personal state | Yes, client-state undo | Restore previous `readAt` from UI mutation context by calling the state route. |
+| `snooze` | personal state | Yes, client-state undo | Restore previous `snoozedUntil` from UI mutation context by calling the state route. |
+| `unsnooze` | personal state | Yes, client-state undo | Restore previous `snoozedUntil` from UI mutation context by calling the state route. |
+| `dismiss` | personal state | Yes, client-state undo | Restore previous `dismissedAt` from UI mutation context by calling the state route. |
+| `undismiss` | personal state | Yes, client-state undo | Restore previous `dismissedAt` from UI mutation context by calling the state route. |
+| `resolve` | shared hub status | Yes, server audit undo | Restore prior status/timestamps/version via audit before deadline. |
+| `archive` | shared hub status | Yes, server audit undo | Restore prior status/timestamps/version via audit before deadline. |
+| `claim` | shared claim lock | Yes, server audit undo | Restore prior claim fields via audit before deadline. |
+| `release` | shared claim lock | Yes, server audit undo | Restore prior claim fields via audit before deadline. |
 | future source relay action | external side effect | No in W1c | Show non-undoable completion; reconciliation/source-specific rollback belongs to W2/W5. |
 
 ### Bulk Action
@@ -428,6 +429,7 @@ Add failing tests for:
 
 - Future-snoozed item is hidden from default list and counts.
 - Past-snoozed item returns to default list.
+- `includeSnoozed=true` includes future-snoozed rows for explicit snoozed/history/debug views.
 - Two-user snooze isolation: Alice snoozing an item does not hide it from Bob.
 - Dismissed item is hidden only for the dismissing user.
 - `includeDismissed=true` includes dismissed rows.
@@ -462,6 +464,7 @@ Add failing route tests for:
 - `dismiss` sets `dismissedAt`.
 - `undismiss` clears `dismissedAt`.
 - State route returns 404 when item is not visible to the actor.
+- Personal-state undo is covered at the UI mutation layer, not by server `/undo`.
 
 Implementation:
 
@@ -496,6 +499,7 @@ Implementation:
 - Return `{ item, auditId, undoDeadline }` from action route.
 - Set `undoDeadline = now + 8 seconds` for W1c reversible hub-only actions.
 - Include claim fields in audit `priorState`.
+- Do not route `read/unread/snooze/unsnooze/dismiss/undismiss` through `hub_audit`; those are sparse personal-state writes.
 
 ### Task 5: Bulk Endpoint
 
@@ -524,6 +528,7 @@ Implementation:
 Files:
 
 - `ui/src/api/hub-items.ts`
+- `ui/src/api/__tests__/hub-items-api.test.ts`
 - `ui/src/__tests__/InboxHub.test.tsx`
 
 Add failing tests for:
@@ -531,6 +536,7 @@ Add failing tests for:
 - API client emits expected URLs/bodies for state, action, undo, bulk, audit.
 - Successful action invalidates list and counts queries.
 - `409` invalidates and refetches instead of silently dropping the action.
+- Personal-state mutation hooks capture previous per-item state so the 8-second undo banner can restore read/snooze/dismiss without server audit.
 
 ### Task 7: UI Lifecycle Controls
 
@@ -549,10 +555,11 @@ Add failing tests for:
 - Selecting an unread item can mark it read and unread.
 - Dismiss removes the item from the default list but not from history/source state.
 - Snooze removes item until future timestamp.
+- Undo after read/snooze/dismiss calls the inverse state mutation and restores the cached row.
 - Resolve/archive move item out of active list.
 - Claim/release buttons appear only for eligible board-pool items.
 - Authority-denied items show route/escalate affordance instead of a dead primary action.
-- Undo banner calls undo endpoint and restores the item.
+- Undo after resolve/archive/claim/release calls the server `/undo` endpoint and restores the item.
 
 Implementation:
 
@@ -636,7 +643,7 @@ Required verification before handoff:
 pnpm -r typecheck
 pnpm test:run
 pnpm build
-pnpm exec playwright test tests/e2e/inbox-hub-w1b.spec.ts tests/e2e/inbox-hub-w1c.spec.ts --config tests/e2e/playwright.config.ts
+pnpm exec playwright test tests/e2e/inbox-hub-w1b.spec.ts tests/e2e/inbox-hub-w1c.spec.ts tests/e2e/inbox-hub-operator.spec.ts --config tests/e2e/playwright.config.ts
 ```
 
 If Playwright is impractical locally, run targeted Vitest locally and use GitHub CI e2e as the required gate before marking PR #244 ready.
@@ -692,3 +699,19 @@ If Playwright is impractical locally, run targeted Vitest locally and use GitHub
 - CEO/product scope: **cleared with constraint**. Keep W1c to lifecycle + board-pool claim/release; do not silently absorb full delegation/routing.
 - Engineering: **cleared after patch**. The main ambiguity from W1a (`nextStatus` and shared snooze) is now an explicit first contract task.
 - Design/UX: **cleared for implementation**. The plan preserves W1b's dense operational shell and adds lifecycle controls, undo, history, and bulk without introducing a new landing page or separate surface.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` criteria | Scope & strategy | 1 | CLEAR | Held W1c to lifecycle + board-pool Claim/Release; full Reassign/Escalate/OOO/Route automation remains W1d/W2/W5+ unless explicitly revised. |
+| Codex Review | Independent read-only agent | Second opinion | 1 | CLEAR AFTER PATCH | Substantive findings applied: snooze semantics, assignment/activity log expectations, undo contract, bulk partial-failure contract, and operator e2e coverage. |
+| Eng Review | `/plan-eng-review` criteria | Architecture & tests | 1 | CLEAR AFTER PATCH | Found and fixed one P1 planning ambiguity: personal-state undo cannot rely on `hub_audit`; plan now separates client-state undo from server audit undo and adds matching tests. |
+| Design Review | `/plan-design-review` criteria | UI/UX gaps | 1 | CLEAR AFTER PATCH | Dense W1b shell preserved; plan now distinguishes inverse state undo vs server `/undo`, includes stale/permission/source-gone states, and requires multi-role/mobile operator e2e. |
+| DX Review | Manual checklist | Developer experience gaps | 1 | CLEAR | Plan names exact files, task order, migration command, targeted tests, final verification, and roadmap update step. |
+
+- **CODEX:** Independent reviewer could not see the original untracked draft, but all applicable substantive findings were applied after the plan was tracked.
+- **UNRESOLVED:** 0 blocking review decisions. Known deferrals are explicit: full routing/reassign/escalate automation, W2 realtime/toast bridge, W3 Autopilot, W4 Steward, W5 adapter bridges, and W1d search/mobile/performance.
+- **VERDICT:** CEO + ENG + DESIGN + DX cleared after patch. Ready to implement W1c starting with Task 0 contract tests and Task 1 claim schema/migration.
