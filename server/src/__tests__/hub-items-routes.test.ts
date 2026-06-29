@@ -19,11 +19,21 @@ const mockPerms = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockEmitOpenApprovalHubItems = vi.hoisted(() => vi.fn().mockResolvedValue([]));
+const mockEmitStaleWorkHubItems = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 
 vi.mock("../services/index.js", () => ({
   hubItemsService: () => mockSvc,
   permissionService: () => mockPerms,
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/hub-approval-requests.js", () => ({
+  emitOpenApprovalHubItems: mockEmitOpenApprovalHubItems,
+}));
+
+vi.mock("../services/hub-stale-work.js", () => ({
+  emitStaleWorkHubItems: mockEmitStaleWorkHubItems,
 }));
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
@@ -99,6 +109,8 @@ describe("hub-items routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].title).toBe("owned");
+    expect(mockEmitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
+    expect(mockEmitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
     // RBAC scope (resolved role) is threaded into the service.
     expect(mockSvc.query).toHaveBeenCalledWith(
       COMPANY_A,

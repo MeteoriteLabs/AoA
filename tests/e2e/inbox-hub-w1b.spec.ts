@@ -70,6 +70,7 @@ test.describe("Inbox Hub W1b preview", () => {
     await expect(page.getByText("Review stale project risk")).toBeVisible();
 
     await page.goto(`/${company.issuePrefix}/inbox/new`);
-    await expect(page).not.toHaveURL(new RegExp(`/inbox-hub`));
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/inbox/new$`));
+    await expect(page.getByRole("heading", { name: /^Inbox\.?$/ })).toBeVisible();
   });
 });

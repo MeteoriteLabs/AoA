@@ -123,8 +123,11 @@ function buildApp(options?: {
     const existing = approvalList.find((a) => a.id === id);
     return { ...(existing ?? { id }), status: "revision_requested", decidedByUserId: userId, decisionNote: note };
   });
-  const resubmitFn = vi.fn().mockImplementation(async (id: string, payload?: Record<string, unknown>) => {
+  const resubmitFn = vi
+    .fn()
+    .mockImplementation(async (id: string, companyIdOrPayload?: string | Record<string, unknown>, maybePayload?: Record<string, unknown>) => {
     const existing = approvalList.find((a) => a.id === id);
+    const payload = typeof companyIdOrPayload === "string" ? maybePayload : companyIdOrPayload;
     return { ...(existing ?? { id }), status: "pending", payload: payload ?? existing?.payload ?? {} };
   });
   const createFn = vi.fn().mockImplementation(async (companyId: string, data: any) => ({
@@ -613,7 +616,7 @@ describe("MCP approval tools", () => {
         payloadJson: JSON.stringify({ updated: true }),
       });
       expect(res.status).toBe(200);
-      expect(approvalsSvc.resubmit).toHaveBeenCalledWith(UUID_APPROVAL, { updated: true });
+      expect(approvalsSvc.resubmit).toHaveBeenCalledWith(UUID_APPROVAL, "company-1", { updated: true });
     });
 
     it("rejects invalid payloadJson (400)", async () => {

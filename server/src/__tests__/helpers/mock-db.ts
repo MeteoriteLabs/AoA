@@ -31,6 +31,17 @@ export function createDiscussionDb(selectQueue: any[][]) {
     };
   }
 
+  function makeDeleteChain() {
+    const chain = {
+      where: vi.fn(() => chain),
+      returning: vi.fn(() => chain),
+      then: vi.fn((fn: (rows: any[]) => any) =>
+        Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
+      ),
+    };
+    return chain;
+  }
+
   const db: any = {
     select: vi.fn(() => makeSelectChain()),
     selectDistinctOn: vi.fn(() => makeSelectChain()),
@@ -52,9 +63,7 @@ export function createDiscussionDb(selectQueue: any[][]) {
         })),
       })),
     })),
-    delete: vi.fn(() => ({
-      where: vi.fn().mockResolvedValue(undefined),
-    })),
+    delete: vi.fn(() => makeDeleteChain()),
     transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => {
       const tx: any = {
         select: vi.fn(() => makeSelectChain()),
@@ -76,9 +85,7 @@ export function createDiscussionDb(selectQueue: any[][]) {
             })),
           })),
         })),
-        delete: vi.fn(() => ({
-          where: vi.fn().mockResolvedValue(undefined),
-        })),
+        delete: vi.fn(() => makeDeleteChain()),
       };
       return fn(tx);
     }),

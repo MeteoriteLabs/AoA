@@ -180,6 +180,17 @@ vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockHubItemsService = vi.hoisted(() =>
+  vi.fn(() => ({
+    emit: vi.fn().mockResolvedValue({ deduped: false, item: null }),
+    reconcile: vi.fn().mockResolvedValue({ healed: 0, closed: 0, refreshed: 0 }),
+  })),
+);
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: mockHubItemsService,
+}));
+
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
 }));

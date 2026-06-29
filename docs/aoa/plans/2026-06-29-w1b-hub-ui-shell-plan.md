@@ -1819,6 +1819,7 @@ Verification:
 
 - RED: with `DATABASE_URL` temporarily set to force collection on Windows, `corepack pnpm exec playwright test --config=tests/e2e/playwright.config.ts inbox-hub-w1b.spec.ts --list` failed because `tests/e2e/helpers/seed-hub-item` did not exist.
 - GREEN collect: with `DATABASE_URL` temporarily set to force collection on Windows, the same `--list` command listed both W1b Playwright tests.
+- Review fix: the legacy Inbox safety assertion now verifies `/:companyPrefix/inbox/new` remains on the legacy route and renders the `Inbox` heading, rather than merely asserting the URL is not `/inbox-hub`.
 - Windows e2e skip: `corepack pnpm test:e2e` PASS with the expected single skipped `windows-embedded-postgres-skip.spec.ts`. Runtime browser flow remains covered by Linux/external-Postgres e2e.
 
 ---
@@ -1829,7 +1830,7 @@ Verification:
 
 - Modify tests only if failures expose incomplete mocks.
 
-- [ ] **Step 1: Run focused checks**
+- [x] **Step 1: Run focused checks**
 
 Run:
 
@@ -1842,7 +1843,17 @@ pnpm test:e2e -- inbox-hub-w1b.spec.ts
 
 Expected: all focused checks pass, except e2e may be skipped on Windows by config.
 
-- [ ] **Step 2: Run broad checks**
+Verification:
+
+- `corepack pnpm --filter @armyofagents/shared exec vitest run src/__tests__/hub-contract.test.ts` PASS (6 tests).
+- `corepack pnpm -C server exec vitest run src/__tests__/hub-source-producers.test.ts src/__tests__/hub-source-producers.integration.test.ts` PASS on Windows (5 passed, 7 skipped integration rows).
+- `corepack pnpm --filter @armyofagents/ui exec vitest run src/api/__tests__/hub-items-api.test.ts src/components/hub/__tests__/hubRegistry.test.tsx src/components/hub/__tests__/HubShell.test.tsx src/__tests__/InboxHub.test.tsx src/__tests__/Sidebar.test.tsx` PASS (29 tests).
+- `corepack pnpm -C server exec vitest run src/__tests__/hub-items-routes.test.ts src/__tests__/mcp-approval-tools.test.ts src/__tests__/v2.5-discussion-flow-qa.test.ts --reporter=verbose` PASS after updating mocks for W1b producer/reconcile calls (98 tests).
+- `corepack pnpm -C server exec vitest run src/__tests__/issues-hasunmet-dependencies.test.ts --reporter=verbose` PASS after updating the test DB stub for transactional checkout reconciliation (3 tests).
+- With `DATABASE_URL` temporarily set only to force Playwright collection on Windows, `corepack pnpm exec playwright test --config=tests/e2e/playwright.config.ts inbox-hub-w1b.spec.ts --list` lists both W1b specs.
+- `corepack pnpm test:e2e` PASS on Windows with the expected single skipped `windows-embedded-postgres-skip.spec.ts`; runtime browser flow still requires Linux/macOS embedded Postgres or an external `DATABASE_URL`.
+
+- [x] **Step 2: Run broad checks**
 
 Run:
 
@@ -1854,7 +1865,13 @@ pnpm build
 
 Expected: PASS. If any check cannot run, record the exact command and reason in the handoff.
 
-- [ ] **Step 3: Review branch scope**
+Verification:
+
+- `corepack pnpm test:run` PASS (10,500 passed, 179 skipped).
+- `pnpm -r typecheck` initially failed because this Codex shell resolved nested bare `pnpm` scripts to `pnpm 11.7.0`, while the repo pins `pnpm@9.15.4`. Re-ran with `C:\Users\TK\AppData\Roaming\npm` first in `PATH`, where `pnpm.cmd --version` is `9.15.4`: `pnpm -r typecheck` PASS.
+- `pnpm build` PASS with the same pinned-pnpm PATH adjustment. Build produced only the existing large-chunk warning.
+
+- [x] **Step 3: Review branch scope**
 
 Run:
 
@@ -1871,7 +1888,12 @@ Expected:
 - W1b tests
 - no W1c/W1d/W2/W3/W4/W5 implementation
 
-- [ ] **Step 4: Commit any verification-only fixes**
+Verification:
+
+- `git diff --name-only origin/main...HEAD` shows the integration roadmap, W1b plan, shared hub validators/tests, server source producer/reconciler/wiring tests, W1b UI/API shell files, and W1b e2e files.
+- No W1c lifecycle UI, W1d grouping/search/settings/mobile, or W2-W5 implementation files were added.
+
+- [x] **Step 4: Commit any verification-only fixes**
 
 ```sh
 git add <files>
