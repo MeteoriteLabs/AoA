@@ -15,6 +15,11 @@ interface HubShellProps {
   onLaneChange: (lane: HubRailLane) => void;
   onSelectItem: (itemId: string | null) => void;
   onMarkRead: (itemId: string) => void;
+  onMarkUnread: (itemId: string) => void;
+  onDismiss: (itemId: string) => void;
+  onSnooze: (itemId: string) => void;
+  onLifecycleAction: (item: HubItemListRow, action: "resolve" | "archive" | "claim" | "release") => void;
+  undoAction: { label: string; onUndo: () => void } | null;
 }
 
 export function HubShell({
@@ -27,6 +32,11 @@ export function HubShell({
   onLaneChange,
   onSelectItem,
   onMarkRead,
+  onMarkUnread,
+  onDismiss,
+  onSnooze,
+  onLifecycleAction,
+  undoAction,
 }: HubShellProps) {
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const showHome = activeLane === null;
@@ -58,7 +68,15 @@ export function HubShell({
             />
           )}
         </section>
-        <HubViewer item={selectedItem} onClose={() => onSelectItem(null)} />
+        <HubViewer
+          item={selectedItem}
+          undoAction={undoAction}
+          onClose={() => onSelectItem(null)}
+          onMarkUnread={onMarkUnread}
+          onDismiss={onDismiss}
+          onSnooze={onSnooze}
+          onLifecycleAction={onLifecycleAction}
+        />
       </main>
     </div>
   );

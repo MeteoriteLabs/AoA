@@ -21,6 +21,20 @@ vi.mock("@/api/hub-items", () => ({
     list: vi.fn().mockResolvedValue([]),
     counts: vi.fn().mockResolvedValue({ open: 0, unread: 0 }),
     markRead: vi.fn().mockResolvedValue({}),
+    markUnread: vi.fn().mockResolvedValue({}),
+    snooze: vi.fn().mockResolvedValue({}),
+    unsnooze: vi.fn().mockResolvedValue({}),
+    dismiss: vi.fn().mockResolvedValue({}),
+    undismiss: vi.fn().mockResolvedValue({}),
+    act: vi.fn().mockResolvedValue({
+      item: { id: "hub-1", status: "resolved", version: 2 },
+      auditId: "audit-1",
+      undoDeadline: "2026-06-29T00:00:08.000Z",
+    }),
+    undo: vi.fn().mockResolvedValue({
+      item: { id: "hub-1", status: "open", version: 1 },
+      auditId: "undo-audit-1",
+    }),
   },
 }));
 
@@ -46,7 +60,47 @@ beforeEach(() => {
   vi.mocked(hubItemsApi.list).mockResolvedValue([]);
   vi.mocked(hubItemsApi.counts).mockResolvedValue({ open: 0, unread: 0 });
   vi.mocked(hubItemsApi.markRead).mockResolvedValue({});
+  vi.mocked(hubItemsApi.markUnread).mockResolvedValue({});
+  vi.mocked(hubItemsApi.snooze).mockResolvedValue({});
+  vi.mocked(hubItemsApi.unsnooze).mockResolvedValue({});
+  vi.mocked(hubItemsApi.dismiss).mockResolvedValue({});
+  vi.mocked(hubItemsApi.undismiss).mockResolvedValue({});
+  vi.mocked(hubItemsApi.act).mockResolvedValue({
+    item: { id: "hub-1", status: "resolved", version: 2 },
+    auditId: "audit-1",
+    undoDeadline: "2026-06-29T00:00:08.000Z",
+  } as never);
+  vi.mocked(hubItemsApi.undo).mockResolvedValue({
+    item: { id: "hub-1", status: "open", version: 1 },
+    auditId: "undo-audit-1",
+  } as never);
 });
+
+function hubItem(overrides: Partial<Awaited<ReturnType<typeof hubItemsApi.list>>[number]> = {}) {
+  return {
+    id: "hub-1",
+    companyId: "company-1",
+    semanticType: "approval_request",
+    lane: "waiting_on_you",
+    status: "open",
+    priority: "normal",
+    title: "Approve deployment",
+    summary: "Needs your decision",
+    sourceType: "approval",
+    sourceId: "approval-1",
+    ownerUserId: null,
+    ownerPool: null,
+    claimedByUserId: null,
+    claimedAt: null,
+    version: 1,
+    createdAt: "2026-06-29T10:00:00.000Z",
+    updatedAt: "2026-06-29T10:00:00.000Z",
+    readAt: null,
+    snoozedUntil: null,
+    dismissedAt: null,
+    ...overrides,
+  } as Awaited<ReturnType<typeof hubItemsApi.list>>[number];
+}
 
 describe("InboxHub page", () => {
   it("renders Home by default", async () => {
@@ -69,28 +123,7 @@ describe("InboxHub page", () => {
   });
 
   it("marks an unread row read only once even if it is clicked repeatedly", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
-      {
-        id: "hub-1",
-        companyId: "company-1",
-        semanticType: "approval_request",
-        lane: "waiting_on_you",
-        status: "open",
-        priority: "normal",
-        title: "Approve deployment",
-        summary: "Needs your decision",
-        sourceType: "approval",
-        sourceId: "approval-1",
-        ownerUserId: null,
-        ownerPool: null,
-        version: 1,
-        createdAt: "2026-06-29T10:00:00.000Z",
-        updatedAt: "2026-06-29T10:00:00.000Z",
-        readAt: null,
-        snoozedUntil: null,
-        dismissedAt: null,
-      },
-    ]);
+    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
 
     renderPage("/P4/inbox-hub/waiting");
 
@@ -100,6 +133,91 @@ describe("InboxHub page", () => {
 
     await waitFor(() => {
       expect(hubItemsApi.markRead).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("viewer can mark a selected read item unread", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({ readAt: "2026-06-29T10:01:00.000Z" }),
+    ]);
+
+    renderPage("/P4/inbox-hub/waiting/hub-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /mark unread/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.markUnread).toHaveBeenCalledWith("company-1", "hub-1");
+    });
+  });
+
+  it("viewer can dismiss and snooze the selected item", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+
+    renderPage("/P4/inbox-hub/waiting/hub-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /dismiss/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /snooze/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.dismiss).toHaveBeenCalledWith("company-1", "hub-1");
+      expect(hubItemsApi.snooze).toHaveBeenCalledWith(
+        "company-1",
+        "hub-1",
+        expect.stringMatching(/T/),
+      );
+    });
+  });
+
+  it("viewer can undo personal dismiss and snooze actions", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+
+    renderPage("/P4/inbox-hub/waiting/hub-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /dismiss/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /undo dismiss/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /snooze/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /undo snooze/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.undismiss).toHaveBeenCalledWith("company-1", "hub-1");
+      expect(hubItemsApi.unsnooze).toHaveBeenCalledWith("company-1", "hub-1");
+    });
+  });
+
+  it("viewer resolves an item and can undo the server-backed action", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+
+    renderPage("/P4/inbox-hub/waiting/hub-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /^resolve$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /undo resolve/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.act).toHaveBeenCalledWith("company-1", "hub-1", {
+        action: "resolve",
+        expectedVersion: 1,
+      });
+      expect(hubItemsApi.undo).toHaveBeenCalledWith("company-1", "hub-1", {
+        auditId: "audit-1",
+        expectedVersion: 2,
+      });
+    });
+  });
+
+  it("viewer shows claim and release actions for board-pool items", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({ semanticType: "stale_work", lane: "suggestions", ownerPool: "board" }),
+    ]);
+
+    renderPage("/P4/inbox-hub/suggestions/hub-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /^claim$/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.act).toHaveBeenCalledWith("company-1", "hub-1", {
+        action: "claim",
+        expectedVersion: 1,
+      });
     });
   });
 });
