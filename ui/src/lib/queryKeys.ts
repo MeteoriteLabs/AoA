@@ -122,6 +122,7 @@ export const queryKeys = {
         lane?: string;
         status?: string;
         includeDismissed?: boolean;
+        includeSnoozed?: boolean;
         limit?: number;
       },
     ) => ["hub-items", companyId, opts ?? {}] as const,
