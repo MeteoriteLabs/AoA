@@ -17,6 +17,7 @@ interface HubShellProps {
   auditRows: HubAuditRow[];
   auditLoading: boolean;
   selectedBulkIds: Set<string>;
+  bulkMessage: string | null;
   onLaneChange: (lane: HubRailLane) => void;
   onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
@@ -41,6 +42,7 @@ export function HubShell({
   auditRows,
   auditLoading,
   selectedBulkIds,
+  bulkMessage,
   onLaneChange,
   onHistoryStatusChange,
   onSelectItem,
@@ -97,6 +99,11 @@ export function HubShell({
                   Snooze selected
                 </Button>
               </div>
+            </div>
+          ) : null}
+          {!showHome && bulkMessage ? (
+            <div role="status" className="border-b border-border bg-card px-4 py-2 text-xs text-muted-foreground">
+              {bulkMessage}
             </div>
           ) : null}
           {showHome ? (

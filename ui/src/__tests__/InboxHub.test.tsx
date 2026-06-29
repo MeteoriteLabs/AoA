@@ -352,4 +352,27 @@ describe("InboxHub page", () => {
       });
     });
   });
+
+  it("shows a compact bulk result summary when one selected item fails", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue([
+      hubItem({ id: "hub-1", title: "Fresh item", version: 1 }),
+      hubItem({ id: "hub-2", title: "Changed item", version: 1 }),
+    ]);
+    vi.mocked(hubItemsApi.bulkAction).mockResolvedValue({
+      bulkId: "bulk-partial",
+      summary: { succeeded: 1, failed: 1, skipped: 0 },
+      results: [
+        { id: "hub-1", status: "success" },
+        { id: "hub-2", status: "failed", error: { status: 409, message: "Changed elsewhere" } },
+      ],
+    });
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: /select fresh item/i }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /select changed item/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /archive selected/i }));
+
+    expect(await screen.findByText(/1 succeeded, 1 failed/i)).toBeInTheDocument();
+  });
 });

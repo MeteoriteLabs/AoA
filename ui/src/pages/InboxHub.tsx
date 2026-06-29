@@ -44,6 +44,7 @@ export function InboxHub() {
     Extract<HubItemStatus, "open" | "resolved" | "archived">
   >("open");
   const [selectedBulkIds, setSelectedBulkIds] = useState<Set<string>>(() => new Set());
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -139,6 +140,7 @@ export function InboxHub() {
   ) => {
     setHistoryStatus(status);
     setSelectedBulkIds(new Set());
+    setBulkMessage(null);
   };
 
   const handleToggleBulkItem = (itemId: string) => {
@@ -150,11 +152,11 @@ export function InboxHub() {
     });
   };
 
-  const handleBulkAction = (action: "archive" | "dismiss" | "snooze") => {
+  const handleBulkAction = async (action: "archive" | "dismiss" | "snooze") => {
     const selectedItems = items.filter((item) => selectedBulkIds.has(item.id));
     if (selectedItems.length === 0) return;
     const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    hubMutations.bulkAction.mutate({
+    const result = await hubMutations.bulkAction.mutateAsync({
       items: selectedItems.map((item) => {
         if (action === "archive") {
           return { id: item.id, action, expectedVersion: item.version };
@@ -165,6 +167,9 @@ export function InboxHub() {
         return { id: item.id, action };
       }),
     });
+    setBulkMessage(
+      `${result.summary.succeeded} succeeded, ${result.summary.failed} failed`,
+    );
     setSelectedBulkIds(new Set());
   };
 
@@ -252,12 +257,15 @@ export function InboxHub() {
       auditRows={auditQuery.data ?? []}
       auditLoading={auditQuery.isLoading}
       selectedBulkIds={selectedBulkIds}
+      bulkMessage={bulkMessage}
       onLaneChange={handleLaneChange}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}
       onToggleBulkItem={handleToggleBulkItem}
-      onBulkAction={handleBulkAction}
+      onBulkAction={(action) => {
+        void handleBulkAction(action);
+      }}
       onMarkUnread={handleMarkUnread}
       onDismiss={handleDismiss}
       onSnooze={handleSnooze}
