@@ -154,6 +154,15 @@ export function hubItemRoutes(db: Db) {
       const hubItemId = req.params.id as string;
       assertCompanyAccess(req, companyId);
       const userId = requireBoardUserId(req);
+      const role = await resolveRole(req, companyId, userId);
+      const visibleItem = await svc.getVisible(companyId, {
+        hubItemId,
+        actorUserId: userId,
+        role,
+      });
+      if (!visibleItem) {
+        throw new HttpError(404, "Hub item not found");
+      }
 
       const body = req.body as
         | { kind: "read" }

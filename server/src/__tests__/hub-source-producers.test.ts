@@ -122,4 +122,25 @@ describe("hub source producers", () => {
       title: "Stale task: Draft launch copy",
     });
   });
+
+  it("keeps agent-assigned stale issues in stale_work parity with old Inbox", () => {
+    const emit = buildStaleIssueHubEmit({
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Draft launch copy",
+      assigneeUserId: null,
+      assigneeAgentId: "agent-1",
+      status: "in_progress",
+      updatedAt: new Date("2026-06-20T00:00:00Z"),
+    });
+
+    expect(emit).toMatchObject({
+      semanticType: "stale_work",
+      sourceType: "issue",
+      sourceId: "issue-1",
+      sourceActorType: "agent",
+      sourceActorId: "agent-1",
+      title: "Stale task: Draft launch copy",
+    });
+  });
 });

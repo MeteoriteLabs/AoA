@@ -9,6 +9,7 @@ import { hubItemRoutes } from "../routes/hub-items.js";
 const mockSvc = vi.hoisted(() => ({
   query: vi.fn(),
   counts: vi.fn(),
+  getVisible: vi.fn(),
   recordAndAct: vi.fn(),
 }));
 
@@ -196,6 +197,8 @@ describe("hub-items routes", () => {
   });
 
   it("(d) PATCH state upserts the per-user state row (read)", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockSvc.getVisible.mockResolvedValue({ id: ITEM_ID, companyId: COMPANY_A });
     const { db, calls } = makeDbStub();
     const app = createApp(boardActor(), db);
 
@@ -204,6 +207,10 @@ describe("hub-items routes", () => {
       .send({ kind: "read" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSvc.getVisible).toHaveBeenCalledWith(
+      COMPANY_A,
+      expect.objectContaining({ hubItemId: ITEM_ID, actorUserId: "user-1", role: "team_member" }),
+    );
     expect(db.insert).toHaveBeenCalledOnce();
     // The upsert carries the principal + a readAt timestamp.
     expect(calls.values).toMatchObject({
@@ -217,6 +224,8 @@ describe("hub-items routes", () => {
   });
 
   it("PATCH state snooze records snoozedUntil from the until datetime", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockSvc.getVisible.mockResolvedValue({ id: ITEM_ID, companyId: COMPANY_A });
     const { db, calls } = makeDbStub();
     const app = createApp(boardActor(), db);
 
@@ -227,6 +236,20 @@ describe("hub-items routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect((calls.values as { snoozedUntil?: Date }).snoozedUntil).toEqual(new Date(until));
+  });
+
+  it("PATCH state rejects hub item ids that are not visible in the URL company", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockSvc.getVisible.mockResolvedValue(null);
+    const { db } = makeDbStub();
+    const app = createApp(boardActor(), db);
+
+    const res = await request(app)
+      .patch(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/state`)
+      .send({ kind: "read" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it("PATCH state rejects an unknown kind with 400", async () => {

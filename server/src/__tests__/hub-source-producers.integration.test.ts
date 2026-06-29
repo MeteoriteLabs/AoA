@@ -199,10 +199,26 @@ async function insertSuggestion(companyId: string, status: string) {
   }>(res);
 }
 
-async function insertIssue(companyId: string, status: string, assigneeUserId: string | null, updatedAtSql = sql`now()`) {
+async function insertAgent(companyId: string, founderId: string) {
+  return firstId(
+    await db.execute(
+      sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id)
+          VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'user', ${founderId})
+          RETURNING id`,
+    ),
+  );
+}
+
+async function insertIssue(
+  companyId: string,
+  status: string,
+  assigneeUserId: string | null,
+  updatedAtSql = sql`now()`,
+  assigneeAgentId: string | null = null,
+) {
   const res = await db.execute(
-    sql`INSERT INTO issues (id, company_id, title, status, assignee_user_id, updated_at)
-        VALUES (gen_random_uuid(), ${companyId}, 'Draft launch copy', ${status}, ${assigneeUserId}, ${updatedAtSql})
+    sql`INSERT INTO issues (id, company_id, title, status, assignee_user_id, assignee_agent_id, updated_at)
+        VALUES (gen_random_uuid(), ${companyId}, 'Draft launch copy', ${status}, ${assigneeUserId}, ${assigneeAgentId}, ${updatedAtSql})
         RETURNING id, company_id AS "companyId", title, status, assignee_user_id AS "assigneeUserId",
           assignee_agent_id AS "assigneeAgentId", updated_at AS "updatedAt"`,
   );
@@ -306,6 +322,26 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
 
     const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows).toHaveLength(0);
+  });
+
+  it("keeps agent-assigned stale-work rows open under old Inbox rules", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const agentId = await insertAgent(companyId, founderId);
+    const svc = hubItemsService(db);
+    const issue = await insertIssue(companyId, "in_progress", null, sql`now() - interval '2 days'`, agentId);
+    await svc.emit(buildStaleIssueHubEmit(issue));
+
+    await svc.reconcile(companyId, { sourceType: "issue" });
+
+    const rows = await svc.query(companyId, {
+      actorUserId: founderId,
+      role: "founder",
+      lane: "suggestions",
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.semanticType).toBe("stale_work");
+    expect(rows[0]?.sourceId).toBe(issue.id);
   });
 
   it("refreshes discussion owner, scope, and title when reconciling pending discussion items", async () => {

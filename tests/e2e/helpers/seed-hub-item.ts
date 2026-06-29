@@ -1,23 +1,5 @@
 import { createDb, hubItems } from "../../../packages/db/src/index";
-
-type HubItemPriority = "low" | "normal" | "high" | "urgent";
-type HubOwnerPool = "board" | "team_lead_pool" | "operator_pool";
-type HubSemanticType =
-  | "approval_request"
-  | "join_request"
-  | "discussion_pending"
-  | "human_input_needed"
-  | "scope_proposal"
-  | "agent_error"
-  | "budget_alert"
-  | "run_failed"
-  | "mention"
-  | "run_complete"
-  | "legacy_other"
-  | "suggestion"
-  | "stale_work"
-  | "proactive"
-  | "marketplace_op";
+import type { HubItemPriority, HubOwnerPool, HubSemanticType } from "../../../packages/shared/src/hub";
 
 export interface SeedHubItemInput {
   companyId: string;

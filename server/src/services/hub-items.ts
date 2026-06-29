@@ -209,6 +209,26 @@ export function hubItemsService(db: Db) {
     return updated;
   }
 
+  async function visibilityConds(
+    companyId: string,
+    actorUserId: string,
+    role: UserRole,
+  ) {
+    const conds = [eq(hubItems.companyId, companyId)];
+    if (role !== "founder") {
+      const ownedCond = eq(hubItems.ownerUserId, actorUserId);
+      if (role === "team_lead") {
+        const leadDepts = await permissionService(db).getTeamLeadDepartments(companyId, actorUserId);
+        const scopeCond = leadDepts.length > 0 ? inArray(hubItems.scopeKey, leadDepts) : undefined;
+        conds.push(scopeCond ? or(ownedCond, scopeCond)! : ownedCond);
+      } else {
+        // team_member (and any unknown role) → owned only.
+        conds.push(ownedCond);
+      }
+    }
+    return conds;
+  }
+
   // RBAC-scoped, hot-set (open by default), per-principal-state-joined query.
   async function query(
     companyId: string,
@@ -225,24 +245,10 @@ export function hubItemsService(db: Db) {
     // Resolve the effective role if not supplied by the caller (route may pass it).
     const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
 
-    const conds = [eq(hubItems.companyId, companyId)];
+    const conds = await visibilityConds(companyId, actorUserId, role);
 
     // Hot set: open items only by default (uses hub_items_open_idx).
     conds.push(eq(hubItems.status, opts.status ?? "open"));
-
-    // RBAC scope: founder sees all; team_lead sees owned OR department-scoped;
-    // team_member sees only owned. scopeKey carries the department/project scope.
-    if (role !== "founder") {
-      const ownedCond = eq(hubItems.ownerUserId, actorUserId);
-      if (role === "team_lead") {
-        const leadDepts = await permissionService(db).getTeamLeadDepartments(companyId, actorUserId);
-        const scopeCond = leadDepts.length > 0 ? inArray(hubItems.scopeKey, leadDepts) : undefined;
-        conds.push(scopeCond ? or(ownedCond, scopeCond)! : ownedCond);
-      } else {
-        // team_member (and any unknown role) → owned only.
-        conds.push(ownedCond);
-      }
-    }
 
     // Lane filter (derived from semanticType — no lane column).
     if (opts.lane) {
@@ -287,6 +293,27 @@ export function hubItemsService(db: Db) {
         snoozedUntil: r.snoozedUntil,
         dismissedAt: r.dismissedAt,
       }));
+  }
+
+  async function getVisible(
+    companyId: string,
+    opts: {
+      hubItemId: string;
+      actorUserId: string;
+      role?: UserRole;
+      status?: HubItemStatus;
+    },
+  ) {
+    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, opts.actorUserId));
+    const conds = await visibilityConds(companyId, opts.actorUserId, role);
+    conds.push(eq(hubItems.id, opts.hubItemId));
+    conds.push(eq(hubItems.status, opts.status ?? "open"));
+    return db
+      .select()
+      .from(hubItems)
+      .where(and(...conds))
+      .limit(1)
+      .then((r) => r[0] ?? null);
   }
 
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
@@ -511,7 +538,6 @@ export function hubItemsService(db: Db) {
     const updatedAt = row.updatedAt ? new Date(row.updatedAt) : null;
     const isOldInboxStale =
       STALE_WORK_STATUSES.has(row.status) &&
-      row.assigneeAgentId == null &&
       updatedAt != null &&
       Date.now() - updatedAt.getTime() > STALE_WORK_THRESHOLD_MS;
     const founder = row.assigneeUserId ? null : await orgHierarchyService(db).getFounderUserId(companyId);
@@ -719,5 +745,5 @@ export function hubItemsService(db: Db) {
   }
 
   // Public surface (declared last so every const above has evaluated).
-  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct, reconcile, counts };
+  return { emit, sourceUniqueKey, resolveOwner, query, getVisible, recordAndAct, reconcile, counts };
 }

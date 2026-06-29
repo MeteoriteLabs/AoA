@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { issues } from "@armyofagents/db";
 import { buildStaleIssueHubEmit, emitHubItem } from "./hub-source-producers.js";
@@ -16,7 +16,6 @@ export async function emitStaleWorkHubItems(db: Db, companyId: string, limit = 5
       and(
         eq(issues.companyId, companyId),
         inArray(issues.status, [...STALE_WORK_STATUSES]),
-        isNull(issues.assigneeAgentId),
         lt(issues.updatedAt, cutoff),
       ),
     )
