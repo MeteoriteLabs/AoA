@@ -205,6 +205,31 @@ export function hubItemsService(db: Db) {
     });
   }
 
+  function toListRow(
+    item: typeof hubItems.$inferSelect,
+    state: {
+      readAt?: Date | null;
+      snoozedUntil?: Date | null;
+      dismissedAt?: Date | null;
+    } = {},
+    groupMode: HubGroupMode = "auto",
+  ): HubListRow {
+    return {
+      ...item,
+      lane: item.semanticType
+        ? laneForSemanticType(item.semanticType as HubSemanticType)
+        : null,
+      readAt: state.readAt ?? null,
+      snoozedUntil: state.snoozedUntil ?? null,
+      dismissedAt: state.dismissedAt ?? null,
+      groupKey: deriveFallbackGroupKey(item, groupMode),
+      groupLabel: deriveGroupLabel(item, groupMode),
+      groupCount: null,
+      scopeKey: item.scopeKey,
+      slaAt: item.slaAt,
+    };
+  }
+
   function publishHubCountsChanged(companyId: string, reason: HubCountsChangedLivePayload["reason"]) {
     publishLiveEvent({
       companyId,
@@ -610,21 +635,11 @@ export function hubItemsService(db: Db) {
       : null;
 
     const items = pageRows
-      .map((r) => ({
-        ...r.item,
-        lane: r.item.semanticType
-          ? laneForSemanticType(r.item.semanticType as HubSemanticType)
-          : null,
-        // Per-principal state attached from the sparse user-state table.
+      .map((r) => toListRow(r.item, {
         readAt: r.readAt,
         snoozedUntil: r.snoozedUntil,
         dismissedAt: r.dismissedAt,
-        groupKey: deriveFallbackGroupKey(r.item, groupMode),
-        groupLabel: deriveGroupLabel(r.item, groupMode),
-        groupCount: null,
-        scopeKey: r.item.scopeKey,
-        slaAt: r.item.slaAt,
-      }));
+      }, groupMode));
 
     return { items, nextCursor, totalKnown: null };
   }
@@ -645,11 +660,27 @@ export function hubItemsService(db: Db) {
       conds.push(eq(hubItems.status, opts.status ?? "open"));
     }
     return db
-      .select()
+      .select({
+        item: hubItems,
+        readAt: hubItemUserState.readAt,
+        snoozedUntil: hubItemUserState.snoozedUntil,
+        dismissedAt: hubItemUserState.dismissedAt,
+      })
       .from(hubItems)
+      .leftJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, opts.actorUserId),
+        ),
+      )
       .where(and(...conds))
       .limit(1)
-      .then((r) => r[0] ?? null);
+      .then((r) => {
+        const row = r[0];
+        return row ? toListRow(row.item, row) : null;
+      });
   }
 
   async function applyPersonalState(args: {

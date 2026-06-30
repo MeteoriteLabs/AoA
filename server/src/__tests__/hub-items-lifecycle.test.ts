@@ -166,10 +166,19 @@ describe("hubItems lifecycle query semantics", () => {
     const insertChain = makeInsertChain([{ id: "state-1" }]);
     const { db } = makeDb([
       {
-        id: "hub-1",
-        companyId: "company-1",
-        semanticType: "approval_request",
-        status: "open",
+        item: {
+          id: "hub-1",
+          companyId: "company-1",
+          semanticType: "approval_request",
+          status: "open",
+          scopeKey: null,
+          sourceType: null,
+          groupKey: null,
+          slaAt: null,
+        },
+        readAt: null,
+        snoozedUntil: null,
+        dismissedAt: null,
       },
     ]);
     Object.assign(db, { insert: vi.fn(() => insertChain) });

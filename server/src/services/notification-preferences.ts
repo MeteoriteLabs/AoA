@@ -40,6 +40,18 @@ function toPreferences(row: NotificationPreferenceRow | null): NotificationPrefe
   return parsed.success ? parsed.data : cloneDefaults();
 }
 
+function mergeRules(
+  existing: NotificationPreferences["rules"],
+  patchRules: NotificationPreferences["rules"] | undefined,
+) {
+  if (!patchRules) return existing;
+  const merged = new Map(existing.map((rule) => [rule.semanticType, { ...rule }]));
+  for (const rule of patchRules) {
+    merged.set(rule.semanticType, { ...rule });
+  }
+  return [...merged.values()];
+}
+
 export function notificationPreferencesService(db: Db) {
   async function readRow(
     userId: string,
@@ -108,7 +120,7 @@ export function notificationPreferencesService(db: Db) {
     ): Promise<NotificationPreferences> {
       const existing = toPreferences(await readRow(userId, companyId));
       return writeRow(userId, companyId, {
-        rules: patch.rules ?? existing.rules,
+        rules: mergeRules(existing.rules, patch.rules),
         quietHours: patch.quietHours ?? existing.quietHours,
         digest: patch.digest ?? existing.digest,
       });

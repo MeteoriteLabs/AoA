@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { errorHandler } from "../middleware/index.js";
 import { notificationPreferenceRoutes } from "../routes/notification-preferences.js";
+import { notificationPreferencesService } from "../services/notification-preferences.js";
 
 const mockPreferences = vi.hoisted(() => ({
   get: vi.fn(),
@@ -156,5 +157,72 @@ describe("notification preference routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockPreferences.get).not.toHaveBeenCalled();
+  });
+});
+
+function preferencesDb({
+  existingRow = null,
+}: {
+  existingRow?: {
+    rules: unknown;
+    quietHours: unknown;
+    digest: unknown;
+    updatedAt: Date | string | null;
+  } | null;
+} = {}) {
+  const written: unknown[] = [];
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn().mockResolvedValue(existingRow ? [existingRow] : []),
+      })),
+    })),
+    insert: vi.fn(() => ({
+      values: vi.fn((value) => {
+        written.push(value);
+        return {
+          onConflictDoUpdate: vi.fn(() => ({
+            returning: vi.fn().mockImplementation(() => {
+              const last = written[written.length - 1] as {
+                rules: unknown;
+                quietHours: unknown;
+                digest: unknown;
+                updatedAt: Date;
+              };
+              return Promise.resolve([last]);
+            }),
+          })),
+        };
+      }),
+    })),
+  };
+  return { db: db as never, written };
+}
+
+describe("notificationPreferencesService", () => {
+  it("merges partial rule patches without dropping other semantic type defaults", async () => {
+    const approvalRule = {
+      semanticType: "approval_request" as const,
+      deliveryMode: "digest" as const,
+      toastEnabled: false,
+    };
+    const { db, written } = preferencesDb();
+
+    const result = await notificationPreferencesService(db).upsert(
+      "user-1",
+      COMPANY_A,
+      { rules: [approvalRule] },
+    );
+
+    expect(result.rules).toContainEqual(approvalRule);
+    expect(result.rules).toHaveLength(DEFAULT_NOTIFICATION_PREFERENCES.rules.length);
+    expect(result.rules).toContainEqual(
+      DEFAULT_NOTIFICATION_PREFERENCES.rules.find(
+        (rule) => rule.semanticType === "reminder",
+      ),
+    );
+    expect((written[0] as { rules: unknown[] }).rules).toHaveLength(
+      DEFAULT_NOTIFICATION_PREFERENCES.rules.length,
+    );
   });
 });

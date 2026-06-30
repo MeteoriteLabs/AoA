@@ -52,17 +52,19 @@ export function notificationDigestService(db: Db) {
       if (rows.length === 0) return { items: [] };
 
       const { hubItemsService } = await import("./hub-items.js");
-      const visible = await hubItemsService(db).query(args.companyId, {
-        actorUserId: args.userId,
-        role: args.role,
-        status: "open",
-        includeDismissed: true,
-        includeSnoozed: true,
-        limit: 50,
-      });
-      const wanted = new Set(rows.map((row) => row.hubItemId));
+      const hub = hubItemsService(db);
+      const visible = await Promise.all(
+        rows.map((row) =>
+          hub.getVisible(args.companyId, {
+            hubItemId: row.hubItemId,
+            actorUserId: args.userId,
+            role: args.role,
+            status: "open",
+          }),
+        ),
+      );
       return {
-        items: visible.items.filter((item) => wanted.has(item.id)),
+        items: visible.filter((item): item is HubListResponse["items"][number] => item !== null),
       };
     },
 

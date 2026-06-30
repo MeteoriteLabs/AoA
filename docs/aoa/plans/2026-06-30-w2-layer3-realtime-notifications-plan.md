@@ -1256,7 +1256,7 @@ git commit -m "test(e2e): cover realtime notification hub flow"
 **Files:**
 - No planned source edits unless verification exposes a real defect.
 
-- [ ] **Step 1: Run focused suites**
+- [x] **Step 1: Run focused suites**
 
 ```sh
 corepack pnpm@9.15.4 test:run packages/shared/src/__tests__/constants.test.ts packages/shared/src/__tests__/notification-preferences.test.ts
@@ -1265,7 +1265,7 @@ corepack pnpm@9.15.4 test:run server/src/__tests__/notification-preferences.test
 corepack pnpm@9.15.4 test:run ui/src/context/__tests__/LiveUpdatesProvider.test.tsx ui/src/lib/__tests__/hub-toast-bridge.test.ts ui/src/components/hub/__tests__/HubShell.test.tsx ui/src/__tests__/InboxHub.test.tsx
 ```
 
-- [ ] **Step 2: Run full required repo checks**
+- [x] **Step 2: Run full required repo checks**
 
 ```sh
 corepack pnpm@9.15.4 -r typecheck
@@ -1273,13 +1273,13 @@ corepack pnpm@9.15.4 test:run
 corepack pnpm@9.15.4 build
 ```
 
-- [ ] **Step 3: Run e2e gate**
+- [x] **Step 3: Run e2e gate**
 
 ```sh
 corepack pnpm@9.15.4 test:e2e -- tests/e2e/inbox-hub-realtime-notifications.spec.ts
 ```
 
-- [ ] **Step 4: Review diff for scope**
+- [x] **Step 4: Review diff for scope**
 
 Run:
 
@@ -1291,7 +1291,7 @@ rg -n "autopilot|steward|adapter bridge|email" packages server ui tests docs/aoa
 
 Expected: only explicit out-of-scope mentions in docs; no W3/W4/W5 implementation.
 
-- [ ] **Step 5: Request code review**
+- [x] **Step 5: Request code review**
 
 Use `superpowers:requesting-code-review` or `codex review` after implementation is complete. Fix all legitimate findings before PR handoff.
 

@@ -7,6 +7,9 @@ import { notificationPreferenceRoutes } from "../routes/notification-preferences
 import { notificationDigestService } from "../services/notification-digest.js";
 
 const publishLiveEvent = vi.hoisted(() => vi.fn());
+const mockHubItems = vi.hoisted(() => ({
+  getVisible: vi.fn(),
+}));
 
 const mockPreferences = vi.hoisted(() => ({
   get: vi.fn(),
@@ -34,6 +37,10 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent,
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: () => mockHubItems,
 }));
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
@@ -166,13 +173,20 @@ describe("notification digest routes", () => {
 });
 
 function digestDb({
+  pendingRows = [],
   insertReturning = [{ id: "digest-1" }],
   updateReturning = [{ id: "digest-1" }],
 }: {
+  pendingRows?: { hubItemId: string }[];
   insertReturning?: { id: string }[];
   updateReturning?: { id: string }[];
 } = {}) {
   return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn().mockResolvedValue(pendingRows),
+      })),
+    })),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({
         onConflictDoNothing: vi.fn(() => ({
@@ -193,6 +207,7 @@ function digestDb({
 describe("notificationDigestService", () => {
   beforeEach(() => {
     publishLiveEvent.mockClear();
+    mockHubItems.getVisible.mockReset();
   });
 
   it("reports whether queueForUser created a pending digest row", async () => {
@@ -248,5 +263,46 @@ describe("notificationDigestService", () => {
       type: "hub.digest.changed",
       payload: { reason: "acked" },
     });
+  });
+
+  it("hydrates each pending digest item directly instead of filtering a generic first page", async () => {
+    mockHubItems.getVisible
+      .mockResolvedValueOnce({
+        id: "older-visible",
+        lane: "notifications",
+        title: "Older visible digest row",
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "newer-visible",
+        lane: "waiting",
+        title: "Newer visible digest row",
+      });
+
+    const result = await notificationDigestService(
+      digestDb({
+        pendingRows: [
+          { hubItemId: "older-visible" },
+          { hubItemId: "hidden-row" },
+          { hubItemId: "newer-visible" },
+        ],
+      }),
+    ).listForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+      role: "founder",
+    });
+
+    expect(mockHubItems.getVisible).toHaveBeenCalledTimes(3);
+    expect(mockHubItems.getVisible).toHaveBeenNthCalledWith(1, COMPANY_A, {
+      hubItemId: "older-visible",
+      actorUserId: "user-1",
+      role: "founder",
+      status: "open",
+    });
+    expect(result.items.map((item) => item.id)).toEqual([
+      "older-visible",
+      "newer-visible",
+    ]);
   });
 });

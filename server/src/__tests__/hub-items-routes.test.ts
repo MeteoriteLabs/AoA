@@ -251,7 +251,7 @@ describe("hub-items routes", () => {
       companyId: COMPANY_A,
       title: "Visible item",
       status: "open",
-      lane: "notifications",
+      lane: "waiting",
     });
     const app = createApp(boardActor());
 
@@ -259,6 +259,7 @@ describe("hub-items routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.title).toBe("Visible item");
+    expect(res.body.lane).toBe("waiting");
     expect(mockSvc.getVisible).toHaveBeenCalledWith(COMPANY_A, {
       hubItemId: ITEM_ID,
       actorUserId: "user-1",

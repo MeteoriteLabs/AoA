@@ -22,7 +22,10 @@ function makeDbReturning(row: Record<string, unknown>) {
   const onConflictDoUpdate = vi.fn(() => ({ returning }));
   const values = vi.fn(() => ({ onConflictDoUpdate }));
   const insert = vi.fn(() => ({ values }));
-  return { insert, values, onConflictDoUpdate, returning };
+  const where = vi.fn().mockResolvedValue([]);
+  const from = vi.fn(() => ({ where }));
+  const select = vi.fn(() => ({ from }));
+  return { insert, values, onConflictDoUpdate, returning, select, from, where };
 }
 
 function itemRow(overrides: Record<string, unknown> = {}) {
