@@ -40,7 +40,7 @@ test.describe("Inbox Hub final operator flow", () => {
 
     await page.getByRole("button", { name: /^archive$/i }).click();
     await page.getByRole("button", { name: /^archived$/i }).click();
-    await expect(page.getByText(/Review hire agent approval/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Review hire agent approval/i })).toBeVisible();
   });
 
   test("approval canonical routes remain available", async ({ page, request }) => {
