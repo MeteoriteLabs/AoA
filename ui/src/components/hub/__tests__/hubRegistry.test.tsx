@@ -1,0 +1,51 @@
+import { describe, expect, it } from "vitest";
+import {
+  HUB_SEMANTIC_TO_LANE,
+  HUB_SEMANTIC_TYPES,
+} from "@armyofagents/shared";
+import { HUB_REGISTRY, resolveHubEntry } from "../hubRegistry";
+
+describe("HUB_REGISTRY", () => {
+  it("is total over HUB_SEMANTIC_TYPES", () => {
+    for (const semanticType of HUB_SEMANTIC_TYPES) {
+      expect(HUB_REGISTRY[semanticType], semanticType).toBeTruthy();
+      expect(HUB_REGISTRY[semanticType].lane).toBe(
+        HUB_SEMANTIC_TO_LANE[semanticType],
+      );
+    }
+  });
+
+  it("rejects unknown semantic strings", () => {
+    expect(resolveHubEntry("not_real")).toBeNull();
+  });
+
+  it("routes approval requests to the approval full page", () => {
+    const entry = HUB_REGISTRY.approval_request;
+
+    expect(entry.fullLink({ sourceId: "approval-1" } as never)).toBe(
+      "/approvals/approval-1",
+    );
+  });
+
+  it("does not expose broken deep links for source ids without canonical routes", () => {
+    expect(HUB_REGISTRY.join_request.fullLink({ sourceId: "join-1" } as never)).toBeNull();
+    expect(
+      HUB_REGISTRY.mention.fullLink({
+        sourceType: "mention",
+        sourceId: "thread-1:entry-1:user-1",
+      } as never),
+    ).toBeNull();
+    expect(
+      HUB_REGISTRY.marketplace_op.fullLink({ sourceId: "marketplace-1" } as never),
+    ).toBeNull();
+  });
+
+  it("routes stale work and suggestions to reachable pages", () => {
+    expect(HUB_REGISTRY.stale_work.fullLink({ sourceId: "issue-1" } as never)).toBe(
+      "/issues/issue-1",
+    );
+    expect(HUB_REGISTRY.suggestion.fullLink({ sourceId: "suggestion-1" } as never)).toBe(
+      "/home",
+    );
+  });
+});

@@ -1351,6 +1351,12 @@ export function issueService(db: Db) {
             wake = await deps.handleCancelledDependency(existing.companyId, id, tx);
           }
         }
+        if (enriched) {
+          await hubItemsService(tx as unknown as Db).reconcile(existing.companyId, {
+            sourceType: "issue",
+            sourceId: enriched.id,
+          });
+        }
 
         return { result: enriched, tasksToWake: wake };
       });
@@ -1380,7 +1386,6 @@ export function issueService(db: Db) {
           reason: "dependency_unblocked",
         });
       }
-
       return result;
     },
 
@@ -1472,6 +1477,10 @@ export function issueService(db: Db) {
         }
 
         if (!removedIssue) return null;
+        await hubItemsService(tx as unknown as Db).reconcile(removedIssue.companyId, {
+          sourceType: "issue",
+          sourceId: id,
+        });
         const [enriched] = await withIssueLabels(tx, [removedIssue]);
         return enriched;
       }),
@@ -1503,27 +1512,36 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        const row = await tx
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (row) {
+          await hubItemsService(tx as unknown as Db).reconcile(row.companyId, {
+            sourceType: "issue",
+            sourceId: row.id,
+          });
+        }
+        return row;
+      });
 
       if (updated) {
         // Task 5.6: checkout is a CREW status-MOVE that bypasses
@@ -1701,17 +1719,26 @@ export function issueService(db: Db) {
         });
       }
 
-      const updated = await db
-        .update(issues)
-        .set({
-          status: "todo",
-          assigneeAgentId: null,
-          checkoutRunId: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        const row = await tx
+          .update(issues)
+          .set({
+            status: "todo",
+            assigneeAgentId: null,
+            checkoutRunId: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (row) {
+          await hubItemsService(tx as unknown as Db).reconcile(row.companyId, {
+            sourceType: "issue",
+            sourceId: row.id,
+          });
+        }
+        return row;
+      });
       if (!updated) return null;
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
@@ -1779,25 +1806,32 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
-      const [comment] = await db
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          authorType: actor.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
-          presentation: actor.presentation ?? null,
-          metadata: actor.metadata ?? null,
-          body,
-        })
-        .returning();
+      const comment = await db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(issueComments)
+          .values({
+            companyId: issue.companyId,
+            issueId,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            authorType: actor.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+            presentation: actor.presentation ?? null,
+            metadata: actor.metadata ?? null,
+            body,
+          })
+          .returning();
 
-      // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+        // Update issue's updatedAt so comment activity is reflected in recency sorting
+        await tx
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+        await hubItemsService(tx as unknown as Db).reconcile(issue.companyId, {
+          sourceType: "issue",
+          sourceId: issueId,
+        });
+        return created;
+      });
 
       return comment;
     },

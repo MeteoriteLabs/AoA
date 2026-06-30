@@ -120,4 +120,21 @@ describe("Sidebar — Phase E chrome", () => {
     renderSidebar();
     expect(screen.getByText("Workspaces")).toBeInTheDocument();
   });
+
+  it("renders Approvals as a reachable work nav item", async () => {
+    renderSidebar();
+    expect(await screen.findByRole("link", { name: /approvals/i })).toHaveAttribute(
+      "href",
+      "/P4/approvals/pending",
+    );
+  });
+
+  it("renders the preview Hub nav item without replacing Inbox", async () => {
+    renderSidebar();
+    expect(await screen.findByRole("link", { name: /^Inbox/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /Hub preview/i })).toHaveAttribute(
+      "href",
+      "/P4/inbox-hub",
+    );
+  });
 });

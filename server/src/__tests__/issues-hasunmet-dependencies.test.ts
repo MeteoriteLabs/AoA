@@ -88,6 +88,12 @@ vi.mock("../services/issue-agent-status-guard.js", () => ({
   assertAgentStatusTransition: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({
+    reconcile: vi.fn().mockResolvedValue({ healed: 0, closed: 0, refreshed: 0 }),
+  })),
+}));
+
 import { issueService } from "../services/issues.js";
 
 const COMPANY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -130,6 +136,7 @@ function makeCheckoutDb(upstreamStatuses: { status: string }[]) {
       return u;
     },
   };
+  db.transaction = async (callback: (tx: any) => unknown) => callback(db);
   return db;
 }
 

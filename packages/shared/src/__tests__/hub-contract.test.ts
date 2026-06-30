@@ -3,12 +3,24 @@ import { describe, it, expect } from "vitest";
 import {
   HUB_LANES,
   HUB_ITEM_STATUSES,
+  HUB_DENSITIES,
+  HUB_GROUP_MODES,
+  HUB_LANDING_TARGETS,
   HUB_SEMANTIC_TYPES,
   HUB_SEMANTIC_TO_LANE,
   HUB_AUTHORITY_BY_TYPE,
   laneForSemanticType,
   authorityForSemanticType,
 } from "../hub.js";
+import {
+  hubActionSchema,
+  hubBulkActionSchema,
+  hubListResponseSchema,
+  hubPreferencesSchema,
+  hubUserStateSchema,
+  listHubItemsQuery,
+  updateHubPreferencesSchema,
+} from "../validators/hub.js";
 
 describe("hub contract", () => {
   it("every semantic type maps to exactly one valid lane", () => {
@@ -39,5 +51,166 @@ describe("hub contract", () => {
   });
   it("approval_request requires founder authority", () => {
     expect(authorityForSemanticType("approval_request")).toBe("founder");
+  });
+  it("list query limit defaults to 50 and caps at 50", () => {
+    expect(listHubItemsQuery.parse({}).limit).toBe(50);
+    expect(listHubItemsQuery.parse({ limit: "25" }).limit).toBe(25);
+    expect(() => listHubItemsQuery.parse({ limit: "51" })).toThrow();
+  });
+  it("list query parses includeSnoozed query booleans", () => {
+    expect(listHubItemsQuery.parse({}).includeSnoozed).toBe(false);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "true" }).includeSnoozed).toBe(true);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "1" }).includeSnoozed).toBe(true);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "false" }).includeSnoozed).toBe(false);
+    expect(listHubItemsQuery.parse({ includeSnoozed: "0" }).includeSnoozed).toBe(false);
+  });
+  it("accepts W1d search, cursor, and group mode list query params", () => {
+    expect(
+      listHubItemsQuery.parse({
+        lane: "waiting_on_you",
+        status: "open",
+        q: "approval deployment",
+        cursor: "eyJjcmVhdGVkQXQiOiIyMDI2LTA2LTMwVDAwOjAwOjAwLjAwMFoiLCJpZCI6ImgifQ",
+        groupMode: "auto",
+        limit: "25",
+      }),
+    ).toMatchObject({
+      lane: "waiting_on_you",
+      status: "open",
+      q: "approval deployment",
+      groupMode: "auto",
+      limit: 25,
+    });
+  });
+  it("trims empty W1d search strings out of list query params", () => {
+    expect(listHubItemsQuery.parse({ q: "   " }).q).toBeUndefined();
+  });
+  it("exports W1d preference constants", () => {
+    expect(HUB_LANDING_TARGETS).toEqual([
+      "home",
+      "waiting_on_you",
+      "notifications",
+      "suggestions",
+    ]);
+    expect(HUB_GROUP_MODES).toEqual(["auto", "source", "scope", "type", "none"]);
+    expect(HUB_DENSITIES).toEqual(["comfortable", "compact"]);
+  });
+  it("accepts default hub preference payloads", () => {
+    expect(
+      hubPreferencesSchema.parse({
+        defaultLanding: "home",
+        visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
+        groupMode: "auto",
+        density: "comfortable",
+        showAutopilotEntry: true,
+        updatedAt: null,
+      }),
+    ).toMatchObject({
+      defaultLanding: "home",
+      visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
+      groupMode: "auto",
+      density: "comfortable",
+      showAutopilotEntry: true,
+      updatedAt: null,
+    });
+  });
+  it("accepts W1d list response envelopes with group metadata", () => {
+    expect(
+      hubListResponseSchema.parse({
+        items: [
+          {
+            id: "hub-1",
+            title: "Deploy approval",
+            groupKey: "source:approval",
+            groupLabel: "approval",
+            groupCount: null,
+            scopeKey: null,
+            slaAt: null,
+          },
+        ],
+        nextCursor: "cursor-1",
+        totalKnown: null,
+      }),
+    ).toMatchObject({
+      items: [
+        {
+          id: "hub-1",
+          groupKey: "source:approval",
+          groupLabel: "approval",
+          groupCount: null,
+        },
+      ],
+      nextCursor: "cursor-1",
+      totalKnown: null,
+    });
+  });
+  it("rejects empty visible lane preferences", () => {
+    expect(() =>
+      updateHubPreferencesSchema.parse({ visibleLanes: [] }),
+    ).toThrow();
+  });
+  it("rejects duplicate visible lane preferences", () => {
+    expect(() =>
+      updateHubPreferencesSchema.parse({
+        visibleLanes: ["waiting_on_you", "waiting_on_you"],
+      }),
+    ).toThrow();
+  });
+  it("lifecycle action schema accepts named shared actions and rejects client-chosen nextStatus", () => {
+    for (const action of ["resolve", "archive", "claim", "release"]) {
+      expect(
+        hubActionSchema.parse({
+          action,
+          expectedVersion: 2,
+          idempotencyKey: `${action}-key`,
+          reason: "because",
+        }).action,
+      ).toBe(action);
+    }
+
+    expect(() =>
+      hubActionSchema.parse({
+        action: "resolve",
+        expectedVersion: 2,
+        nextStatus: "archived",
+      }),
+    ).toThrow();
+    expect(() =>
+      hubActionSchema.parse({
+        action: "dismiss",
+        expectedVersion: 2,
+      }),
+    ).toThrow();
+  });
+  it("user state schema accepts all W1c personal-state actions", () => {
+    expect(hubUserStateSchema.parse({ kind: "read" }).kind).toBe("read");
+    expect(hubUserStateSchema.parse({ kind: "unread" }).kind).toBe("unread");
+    expect(hubUserStateSchema.parse({ kind: "snooze", until: "2026-06-29T10:00:00.000Z" }).kind).toBe("snooze");
+    expect(hubUserStateSchema.parse({ kind: "unsnooze" }).kind).toBe("unsnooze");
+    expect(hubUserStateSchema.parse({ kind: "dismiss" }).kind).toBe("dismiss");
+    expect(hubUserStateSchema.parse({ kind: "undismiss" }).kind).toBe("undismiss");
+  });
+  it("bulk action schema accepts mixed shared and personal actions with per-item requirements", () => {
+    const parsed = hubBulkActionSchema.parse({
+      bulkId: "bulk-1",
+      items: [
+        { id: "550e8400-e29b-41d4-a716-446655440001", action: "resolve", expectedVersion: 1 },
+        { id: "550e8400-e29b-41d4-a716-446655440002", action: "dismiss" },
+        { id: "550e8400-e29b-41d4-a716-446655440003", action: "snooze", until: "2026-06-29T10:00:00.000Z" },
+        { id: "550e8400-e29b-41d4-a716-446655440004", action: "claim", expectedVersion: 0, reason: "taking it" },
+      ],
+    });
+    expect(parsed.items).toHaveLength(4);
+
+    expect(() =>
+      hubBulkActionSchema.parse({
+        items: [{ id: "550e8400-e29b-41d4-a716-446655440003", action: "snooze" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      hubBulkActionSchema.parse({
+        items: [{ id: "550e8400-e29b-41d4-a716-446655440001", action: "resolve" }],
+      }),
+    ).toThrow();
   });
 });

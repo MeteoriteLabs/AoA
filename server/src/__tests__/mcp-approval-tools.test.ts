@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -57,6 +57,20 @@ vi.mock("../services/index.js", () => {
     logActivity: vi.fn().mockResolvedValue(undefined),
   };
 });
+
+const mockHubReconcile = vi.hoisted(() => vi.fn().mockResolvedValue({ healed: 0, closed: 1, refreshed: 0 }));
+const mockHubItemsService = vi.hoisted(() => vi.fn(() => ({ reconcile: mockHubReconcile })));
+const mockBuildApprovalHubEmit = vi.hoisted(() => vi.fn((approval) => ({ sourceType: "approval", sourceId: approval.id })));
+const mockEmitHubItem = vi.hoisted(() => vi.fn().mockResolvedValue({ id: "hub-item-1" }));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: mockHubItemsService,
+}));
+
+vi.mock("../services/hub-source-producers.js", () => ({
+  buildApprovalHubEmit: mockBuildApprovalHubEmit,
+  emitHubItem: mockEmitHubItem,
+}));
 
 import { mcpServerRoutes } from "../mcp/server.js";
 
@@ -123,8 +137,11 @@ function buildApp(options?: {
     const existing = approvalList.find((a) => a.id === id);
     return { ...(existing ?? { id }), status: "revision_requested", decidedByUserId: userId, decisionNote: note };
   });
-  const resubmitFn = vi.fn().mockImplementation(async (id: string, payload?: Record<string, unknown>) => {
+  const resubmitFn = vi
+    .fn()
+    .mockImplementation(async (id: string, companyIdOrPayload?: string | Record<string, unknown>, maybePayload?: Record<string, unknown>) => {
     const existing = approvalList.find((a) => a.id === id);
+    const payload = typeof companyIdOrPayload === "string" ? maybePayload : companyIdOrPayload;
     return { ...(existing ?? { id }), status: "pending", payload: payload ?? existing?.payload ?? {} };
   });
   const createFn = vi.fn().mockImplementation(async (companyId: string, data: any) => ({
@@ -261,6 +278,13 @@ async function callTool(
 }
 
 describe("MCP approval tools", () => {
+  beforeEach(() => {
+    mockHubReconcile.mockClear();
+    mockHubItemsService.mockClear();
+    mockBuildApprovalHubEmit.mockClear();
+    mockEmitHubItem.mockClear();
+  });
+
   describe("tools/list exposes all 10 approval tools", () => {
     it("lists every approval tool name", async () => {
       const { app } = buildApp();
@@ -578,6 +602,39 @@ describe("MCP approval tools", () => {
       expect(approvalsSvc.approve).toHaveBeenCalledWith(UUID_APPROVAL, "company-1", "user-1", "LGTM");
     });
 
+    it("reconciles approval hub items after terminal decisions", async () => {
+      const { app } = buildApp({
+        approvals: [{ id: UUID_APPROVAL, companyId: "company-1", type: "hire_agent", status: "pending", payload: {} }],
+      });
+
+      const res = await callTool(app, "approval-decision", {
+        approvalId: UUID_APPROVAL,
+        action: "approve",
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockHubItemsService).toHaveBeenCalledWith(expect.anything());
+      expect(mockHubReconcile).toHaveBeenCalledWith("company-1", { sourceType: "approval", sourceId: UUID_APPROVAL });
+      expect(mockEmitHubItem).not.toHaveBeenCalled();
+    });
+
+    it("refreshes approval hub items after still-open decisions", async () => {
+      const { app } = buildApp({
+        approvals: [{ id: UUID_APPROVAL, companyId: "company-1", type: "hire_agent", status: "pending", payload: {} }],
+      });
+
+      const res = await callTool(app, "approval-decision", {
+        approvalId: UUID_APPROVAL,
+        action: "requestRevision",
+        decisionNote: "needs work",
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockBuildApprovalHubEmit).toHaveBeenCalledWith(expect.objectContaining({ id: UUID_APPROVAL }));
+      expect(mockEmitHubItem).toHaveBeenCalledWith(expect.anything(), { sourceType: "approval", sourceId: UUID_APPROVAL });
+      expect(mockHubReconcile).not.toHaveBeenCalled();
+    });
+
     it("founder can reject", async () => {
       const { app, approvalsSvc } = buildApp({
         approvals: [{ id: UUID_APPROVAL, companyId: "company-1", type: "hire_agent", status: "pending", payload: {} }],
@@ -613,7 +670,7 @@ describe("MCP approval tools", () => {
         payloadJson: JSON.stringify({ updated: true }),
       });
       expect(res.status).toBe(200);
-      expect(approvalsSvc.resubmit).toHaveBeenCalledWith(UUID_APPROVAL, { updated: true });
+      expect(approvalsSvc.resubmit).toHaveBeenCalledWith(UUID_APPROVAL, "company-1", { updated: true });
     });
 
     it("rejects invalid payloadJson (400)", async () => {

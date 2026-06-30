@@ -22,6 +22,8 @@ import { badRequest, notFound } from "../errors.js";
 import { issueService } from "./issues.js";
 import { memoryFeedbackService } from "./memory-feedback.js";
 import { memoryService } from "./memory.js";
+import { buildSuggestionHubEmit, emitHubItem } from "./hub-source-producers.js";
+import { hubItemsService } from "./hub-items.js";
 
 const SUGGESTION_TTL_DAYS = 30;
 const BLOCKED_TASK_DAYS = 3;
@@ -168,7 +170,7 @@ function rankByPriority() {
 async function expireOldPendingSuggestions(db: Db, companyId: string) {
   const now = new Date();
   const cutoff = new Date(now.getTime() - SUGGESTION_TTL_DAYS * 24 * 60 * 60 * 1000);
-  await db
+  return db
     .update(suggestions)
     .set({
       status: "expired",
@@ -183,7 +185,8 @@ async function expireOldPendingSuggestions(db: Db, companyId: string) {
           sql`${suggestions.expiresAt} < ${now.toISOString()}`,
         ),
       ),
-    );
+    )
+    .returning({ id: suggestions.id });
 }
 
 export function suggestionService(db: Db) {
@@ -813,7 +816,15 @@ export function suggestionService(db: Db) {
     },
 
     async runAllDetectors(companyId: string) {
-      await expireOldPendingSuggestions(db, companyId);
+      await db.transaction(async (tx) => {
+        const expired = await expireOldPendingSuggestions(tx as unknown as Db, companyId);
+        for (const suggestion of expired) {
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "suggestion",
+            sourceId: suggestion.id,
+          });
+        }
+      });
       await feedbackSvc.runAllDetectors(companyId);
 
       const existingPending = await db
@@ -848,13 +859,21 @@ export function suggestionService(db: Db) {
       });
 
       if (toInsert.length > 0) {
-        await db.insert(suggestions).values(
-          toInsert.map((suggestion) => ({
-            ...suggestion,
-            companyId,
-            status: "pending",
-          })),
-        );
+        await db.transaction(async (tx) => {
+          const inserted = await tx
+            .insert(suggestions)
+            .values(
+              toInsert.map((suggestion) => ({
+                ...suggestion,
+                companyId,
+                status: "pending",
+              })),
+            )
+            .returning();
+          for (const suggestion of inserted) {
+            await emitHubItem(tx as unknown as Db, buildSuggestionHubEmit(suggestion));
+          }
+        });
       }
 
       return {
@@ -902,6 +921,10 @@ export function suggestionService(db: Db) {
             .set({ status: "accepted", updatedAt: new Date() })
             .where(and(eq(memoryFeedbackPatterns.companyId, companyId), eq(memoryFeedbackPatterns.id, patternId)));
         }
+        await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+          sourceType: "suggestion",
+          sourceId: suggestion.id,
+        });
 
         return { suggestion: updated, execution };
       });
@@ -945,6 +968,10 @@ export function suggestionService(db: Db) {
             .set({ status: "dismissed", updatedAt: new Date() })
             .where(and(eq(memoryFeedbackPatterns.companyId, companyId), eq(memoryFeedbackPatterns.id, patternId)));
         }
+        await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+          sourceType: "suggestion",
+          sourceId: suggestion.id,
+        });
 
         return updated;
       });

@@ -17,6 +17,7 @@ export { activityApi } from "./activity";
 export { dashboardApi } from "./dashboard";
 export { heartbeatsApi } from "./heartbeats";
 export { sidebarBadgesApi } from "./sidebarBadges";
+export { hubItemsApi } from "./hub-items";
 export { artifactsApi } from "./artifacts";
 export { taskOutputsApi } from "./task-outputs";
 export { mcpApi } from "./mcp";

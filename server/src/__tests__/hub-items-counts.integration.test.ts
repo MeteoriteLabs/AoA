@@ -164,7 +164,40 @@ describe.skipIf(process.platform === "win32")("hubItems.counts — real DB", () 
     const c = await svc.counts(companyId, founderId, "founder");
     expect(c).toEqual({ open: 1, unread: 1 }); // only the still-open item counts
     // Sanity: the lone open item is the one we left open.
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows.map((i) => i.id)).toEqual([open.id]);
+  });
+
+  it("future-snoozed and dismissed items are excluded from both open and unread counts", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const active = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "count-active", title: "active", ownerUserId: founderId });
+    const future = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "count-future", title: "future", ownerUserId: founderId });
+    const past = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "count-past", title: "past", ownerUserId: founderId });
+    const dismissed = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "count-dismissed", title: "dismissed", ownerUserId: founderId });
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, read_at) VALUES (gen_random_uuid(), ${companyId}, ${active.id}, 'user', ${founderId}, now())`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${future.id}, 'user', ${founderId}, now() + interval '1 day')`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${past.id}, 'user', ${founderId}, now() - interval '1 day')`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissed.id}, 'user', ${founderId}, now())`);
+
+    const c = await svc.counts(companyId, founderId, "founder");
+    expect(c).toEqual({ open: 2, unread: 1 });
+  });
+
+  it("snooze and dismiss count filters are isolated per user", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const memberId = await seedMember(companyId, "team_member");
+    const svc = hubItemsService(db);
+    const snoozedByFounder = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "count-iso-snoozed", title: "snoozed", ownerUserId: memberId });
+    const dismissedByFounder = await svc.emit({ companyId, semanticType: "mention", sourceType: "thread", sourceId: "count-iso-dismissed", title: "dismissed", ownerUserId: memberId });
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${snoozedByFounder.id}, 'user', ${founderId}, now() + interval '1 day')`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissedByFounder.id}, 'user', ${founderId}, now())`);
+
+    const asFounder = await svc.counts(companyId, founderId, "founder");
+    const asMember = await svc.counts(companyId, memberId, "team_member");
+    expect(asFounder).toEqual({ open: 0, unread: 0 });
+    expect(asMember).toEqual({ open: 2, unread: 2 });
   });
 });

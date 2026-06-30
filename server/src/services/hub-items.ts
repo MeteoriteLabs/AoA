@@ -1,7 +1,19 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
-import { hubItems, hubItemUserState, hubAudit, approvals, heartbeatRuns } from "@armyofagents/db";
-import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool } from "@armyofagents/shared";
+import {
+  hubItems,
+  hubItemUserState,
+  hubAudit,
+  activityLog,
+  approvals,
+  heartbeatRuns,
+  joinRequests,
+  discussions,
+  suggestions,
+  issues,
+} from "@armyofagents/db";
+import type { HubGroupMode, HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
   HEARTBEAT_RUN_STATUSES,
@@ -17,8 +29,14 @@ import type { UserRole } from "@armyofagents/shared";
 const HEARTBEAT_LIVE_STATUSES: ReadonlySet<string> = new Set(
   HEARTBEAT_RUN_STATUSES.filter((s) => s === "queued" || s === "scheduled_retry" || s === "running"),
 );
+const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revision_requested"]);
+const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
+const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const HUB_UNDO_WINDOW_MS = 8_000;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { HttpError } from "../errors.js";
+import { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 
@@ -52,9 +70,122 @@ export interface EmitArgs {
   executor?: Db;
 }
 
+type HubListRow = typeof hubItems.$inferSelect & {
+  lane: HubLane | null;
+  readAt: Date | null;
+  snoozedUntil: Date | null;
+  dismissedAt: Date | null;
+  groupKey: string | null;
+  groupLabel: string | null;
+  groupCount: number | null;
+  scopeKey: string | null;
+  slaAt: Date | null;
+};
+
+interface HubListResponse {
+  items: HubListRow[];
+  nextCursor: string | null;
+  totalKnown: number | null;
+}
+
+function encodeCursor(row: { createdAt: Date; id: string }) {
+  return Buffer.from(JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id }), "utf8")
+    .toString("base64url");
+}
+
+function decodeCursor(cursor: string) {
+  const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+    createdAt: string;
+    id: string;
+  };
+  return { createdAt: new Date(parsed.createdAt), id: parsed.id };
+}
+
+function likePattern(q: string) {
+  return `%${q.toLowerCase().replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+}
+
+function deriveFallbackGroupKey(
+  item: { semanticType: string | null; scopeKey: string | null; sourceType: string | null; groupKey: string | null },
+  groupMode: HubGroupMode,
+) {
+  if (groupMode === "none") return null;
+  if (item.groupKey) return item.groupKey;
+  if (groupMode === "source") return item.sourceType ? `source:${item.sourceType}` : null;
+  if (groupMode === "scope") return item.scopeKey ? `scope:${item.scopeKey}` : null;
+  if (groupMode === "type") return item.semanticType ? `type:${item.semanticType}` : null;
+  const parts = [item.semanticType ?? "unknown", item.scopeKey ?? "global", item.sourceType ?? "unknown"];
+  return `auto:${parts.join(":")}`;
+}
+
+function deriveGroupLabel(
+  item: { semanticType: string | null; scopeKey: string | null; sourceType: string | null; groupKey: string | null },
+  groupMode: HubGroupMode,
+) {
+  if (groupMode === "none") return null;
+  if (item.groupKey) return item.groupKey;
+  if (groupMode === "source") return item.sourceType ?? null;
+  if (groupMode === "scope") return item.scopeKey ?? null;
+  if (groupMode === "type") return item.semanticType ?? null;
+  return [item.semanticType, item.scopeKey, item.sourceType].filter(Boolean).join(" / ") || null;
+}
+
 export function hubItemsService(db: Db) {
+  const counterSnapshots = hubCounterSnapshotsService(db);
+
+  async function invalidateCounterSnapshotsForCompany(companyId: string) {
+    try {
+      await counterSnapshots.invalidateCompany(companyId);
+    } catch {
+      // Counter snapshots are a performance cache; hub mutations must not fail
+      // because a test double or partially migrated DB cannot update the cache.
+    }
+  }
+
+  async function invalidateCounterSnapshotsForUser(companyId: string, userId: string) {
+    try {
+      await counterSnapshots.invalidateUser(companyId, userId);
+    } catch {
+      // See invalidateCounterSnapshotsForCompany.
+    }
+  }
+
   function sourceUniqueKey(a: EmitArgs): string {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
+  }
+
+  function decorateItem<T extends { semanticType: string | null }>(row: T) {
+    return {
+      ...row,
+      lane: row.semanticType
+        ? laneForSemanticType(row.semanticType as HubSemanticType)
+        : null,
+    };
+  }
+
+  function hubOwnedPriorState(item: {
+    status: string;
+    version: number;
+    resolvedAt: Date | null;
+    archivedAt: Date | null;
+    claimedByUserId?: string | null;
+    claimedAt?: Date | null;
+  }) {
+    return {
+      status: item.status,
+      version: item.version,
+      resolvedAt: item.resolvedAt,
+      archivedAt: item.archivedAt,
+      claimedByUserId: item.claimedByUserId ?? null,
+      claimedAt: item.claimedAt ?? null,
+    };
+  }
+
+  function jsonDate(value: unknown): Date | null {
+    if (value == null) return null;
+    if (value instanceof Date) return value;
+    if (typeof value === "string" || typeof value === "number") return new Date(value);
+    return null;
   }
 
   // §7/§19: every item has a real human Owner. Natural owner → use it; agent/run
@@ -134,6 +265,7 @@ export function hubItemsService(db: Db) {
     // (empty RETURNING) and the re-select, `row` is undefined — never return an
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
+    await invalidateCounterSnapshotsForCompany(a.companyId);
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
@@ -196,28 +328,12 @@ export function hubItemsService(db: Db) {
     return updated;
   }
 
-  // RBAC-scoped, hot-set (open by default), per-principal-state-joined query.
-  async function query(
+  async function visibilityConds(
     companyId: string,
-    opts: {
-      actorUserId: string;
-      role?: UserRole;
-      lane?: HubLane;
-      status?: HubItemStatus;
-      includeDismissed?: boolean;
-    },
+    actorUserId: string,
+    role: UserRole,
   ) {
-    const { actorUserId } = opts;
-    // Resolve the effective role if not supplied by the caller (route may pass it).
-    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
-
     const conds = [eq(hubItems.companyId, companyId)];
-
-    // Hot set: open items only by default (uses hub_items_open_idx).
-    conds.push(eq(hubItems.status, opts.status ?? "open"));
-
-    // RBAC scope: founder sees all; team_lead sees owned OR department-scoped;
-    // team_member sees only owned. scopeKey carries the department/project scope.
     if (role !== "founder") {
       const ownedCond = eq(hubItems.ownerUserId, actorUserId);
       if (role === "team_lead") {
@@ -229,12 +345,69 @@ export function hubItemsService(db: Db) {
         conds.push(ownedCond);
       }
     }
+    return conds;
+  }
+
+  // RBAC-scoped, hot-set (open by default), per-principal-state-joined query.
+  async function query(
+    companyId: string,
+    opts: {
+      actorUserId: string;
+      role?: UserRole;
+      lane?: HubLane;
+      status?: HubItemStatus;
+      includeDismissed?: boolean;
+      includeSnoozed?: boolean;
+      q?: string;
+      cursor?: string;
+      groupMode?: HubGroupMode;
+      limit?: number;
+    },
+  ): Promise<HubListResponse> {
+    const { actorUserId } = opts;
+    // Resolve the effective role if not supplied by the caller (route may pass it).
+    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
+
+    const conds = await visibilityConds(companyId, actorUserId, role);
+
+    // Hot set: open items only by default (uses hub_items_open_idx).
+    conds.push(eq(hubItems.status, opts.status ?? "open"));
 
     // Lane filter (derived from semanticType — no lane column).
     if (opts.lane) {
       const types = semanticTypesForLane(opts.lane);
       conds.push(inArray(hubItems.semanticType, types));
     }
+    if (!opts.includeDismissed) {
+      conds.push(isNull(hubItemUserState.dismissedAt));
+    }
+    if (!opts.includeSnoozed) {
+      const now = new Date();
+      conds.push(or(isNull(hubItemUserState.snoozedUntil), lte(hubItemUserState.snoozedUntil, now))!);
+    }
+    if (opts.q) {
+      const pattern = likePattern(opts.q);
+      conds.push(
+        or(
+          sql`lower(${hubItems.title}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.summary}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.sourceType}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.scopeKey}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.semanticType}) like ${pattern} escape '\\'`,
+        )!,
+      );
+    }
+    if (opts.cursor) {
+      const cursor = decodeCursor(opts.cursor);
+      conds.push(
+        or(
+          lt(hubItems.createdAt, cursor.createdAt),
+          and(eq(hubItems.createdAt, cursor.createdAt), lt(hubItems.id, cursor.id)),
+        )!,
+      );
+    }
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50);
+    const groupMode = opts.groupMode ?? "auto";
 
     const rows = await db
       .select({
@@ -255,10 +428,15 @@ export function hubItemsService(db: Db) {
       .where(and(...conds))
       // Stable order: createdAt is not unique, so add id as a deterministic
       // tiebreaker before W1b builds ordered lists / pagination (P2-6).
-      .orderBy(sql`${hubItems.createdAt} DESC, ${hubItems.id} DESC`);
+      .orderBy(sql`${hubItems.createdAt} DESC, ${hubItems.id} DESC`)
+      .limit(limit + 1);
 
-    return rows
-      .filter((r) => opts.includeDismissed || r.dismissedAt == null)
+    const pageRows = rows.slice(0, limit);
+    const nextCursor = rows.length > limit && pageRows.length > 0
+      ? encodeCursor(pageRows[pageRows.length - 1]!.item)
+      : null;
+
+    const items = pageRows
       .map((r) => ({
         ...r.item,
         lane: r.item.semanticType
@@ -268,10 +446,480 @@ export function hubItemsService(db: Db) {
         readAt: r.readAt,
         snoozedUntil: r.snoozedUntil,
         dismissedAt: r.dismissedAt,
+        groupKey: deriveFallbackGroupKey(r.item, groupMode),
+        groupLabel: deriveGroupLabel(r.item, groupMode),
+        groupCount: null,
+        scopeKey: r.item.scopeKey,
+        slaAt: r.item.slaAt,
       }));
+
+    return { items, nextCursor, totalKnown: null };
+  }
+
+  async function getVisible(
+    companyId: string,
+    opts: {
+      hubItemId: string;
+      actorUserId: string;
+      role?: UserRole;
+      status?: HubItemStatus | "any";
+    },
+  ) {
+    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, opts.actorUserId));
+    const conds = await visibilityConds(companyId, opts.actorUserId, role);
+    conds.push(eq(hubItems.id, opts.hubItemId));
+    if (opts.status !== "any") {
+      conds.push(eq(hubItems.status, opts.status ?? "open"));
+    }
+    return db
+      .select()
+      .from(hubItems)
+      .where(and(...conds))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+  }
+
+  async function applyPersonalState(args: {
+    companyId: string;
+    hubItemId: string;
+    actorUserId: string;
+    role?: UserRole;
+    state: HubUserStateInput;
+  }) {
+    const visibleItem = await getVisible(args.companyId, {
+      hubItemId: args.hubItemId,
+      actorUserId: args.actorUserId,
+      role: args.role,
+    });
+    if (!visibleItem) throw notFound("Hub item not found");
+
+    const now = new Date();
+    const patch =
+      args.state.kind === "read"
+        ? { readAt: now }
+        : args.state.kind === "unread"
+          ? { readAt: null }
+          : args.state.kind === "snooze"
+            ? { snoozedUntil: new Date(args.state.until) }
+            : args.state.kind === "unsnooze"
+              ? { snoozedUntil: null }
+              : args.state.kind === "dismiss"
+                ? { dismissedAt: now }
+                : { dismissedAt: null };
+
+    const [row] = await db
+      .insert(hubItemUserState)
+      .values({
+        companyId: args.companyId,
+        hubItemId: args.hubItemId,
+        principalType: "user",
+        principalId: args.actorUserId,
+        ...patch,
+      })
+      .onConflictDoUpdate({
+        target: [
+          hubItemUserState.hubItemId,
+          hubItemUserState.principalType,
+          hubItemUserState.principalId,
+        ],
+        set: { ...patch, updatedAt: now },
+      })
+      .returning();
+
+    await invalidateCounterSnapshotsForUser(args.companyId, args.actorUserId);
+    return row;
+  }
+
+  async function getAudit(args: {
+    companyId: string;
+    hubItemId: string;
+    actorUserId: string;
+    role?: UserRole;
+  }) {
+    const visibleItem = await getVisible(args.companyId, {
+      hubItemId: args.hubItemId,
+      actorUserId: args.actorUserId,
+      role: args.role,
+      status: "any",
+    });
+    if (!visibleItem) throw notFound("Hub item not found");
+
+    return db
+      .select({
+        id: hubAudit.id,
+        companyId: hubAudit.companyId,
+        hubItemId: hubAudit.hubItemId,
+        actorType: hubAudit.actorType,
+        actorId: hubAudit.actorId,
+        action: hubAudit.action,
+        authorityBasis: hubAudit.authorityBasis,
+        reason: hubAudit.reason,
+        undoDeadline: hubAudit.undoDeadline,
+        createdAt: hubAudit.createdAt,
+      })
+      .from(hubAudit)
+      .where(and(eq(hubAudit.companyId, args.companyId), eq(hubAudit.hubItemId, args.hubItemId)))
+      .orderBy(desc(hubAudit.createdAt));
   }
 
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
+  async function recordLifecycleAction(args: {
+    companyId: string;
+    hubItemId: string;
+    action: "resolve" | "archive" | "claim" | "release";
+    expectedVersion: number;
+    actorType: "user" | "agent" | "system";
+    actorId: string;
+    actorIsFounder: boolean;
+    authorityBasis?: string;
+    reason?: string;
+    idempotencyKey?: string;
+    sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
+  }) {
+    const current = await db
+      .select()
+      .from(hubItems)
+      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
+      .limit(1)
+      .then((r) => r[0]);
+    if (!current) throw notFound("Hub item not found");
+    if (args.idempotencyKey) {
+      const dup = await db
+        .select({
+          id: hubAudit.id,
+          undoDeadline: hubAudit.undoDeadline,
+        })
+        .from(hubAudit)
+        .where(
+          and(
+            eq(hubAudit.companyId, args.companyId),
+            eq(hubAudit.idempotencyKey, args.idempotencyKey),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+      if (dup) {
+        return { item: decorateItem(current), auditId: dup.id, undoDeadline: dup.undoDeadline };
+      }
+    }
+    if (current.status !== "open") {
+      throw conflict("This item is no longer open. Reload and retry.", {
+        currentVersion: current.version,
+      });
+    }
+
+    if (
+      (args.action === "resolve" || args.action === "archive") &&
+      authorityForSemanticType(current.semanticType as HubSemanticType) === "founder" &&
+      !args.actorIsFounder
+    ) {
+      throw forbidden("This decision requires founder/board authority — route or escalate it.");
+    }
+    if (args.action === "claim") {
+      if (!args.actorIsFounder) throw forbidden("Claiming board-pool work requires board authority.");
+      if (current.ownerPool !== "board") throw conflict("Only board-pool items can be claimed.");
+      if (current.claimedByUserId) {
+        throw conflict("This item is already claimed. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+    }
+    if (args.action === "release") {
+      if (!current.claimedByUserId) throw conflict("This item is not claimed.");
+      if (current.claimedByUserId !== args.actorId && !args.actorIsFounder) {
+        throw forbidden("Only the claimant or founder can release this item.");
+      }
+    }
+
+    const undoDeadline = new Date(Date.now() + HUB_UNDO_WINDOW_MS);
+    const committed = await db.transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Db;
+      if (args.idempotencyKey) {
+        const dup = await tx
+          .select({
+            id: hubAudit.id,
+            undoDeadline: hubAudit.undoDeadline,
+          })
+          .from(hubAudit)
+          .where(
+            and(
+              eq(hubAudit.companyId, args.companyId),
+              eq(hubAudit.idempotencyKey, args.idempotencyKey),
+            ),
+          )
+          .limit(1)
+          .then((r) => r[0]);
+        if (dup) {
+          return { item: decorateItem(current), auditId: dup.id, undoDeadline: dup.undoDeadline, replayed: true as const };
+        }
+      }
+
+      const now = new Date();
+      const patch =
+        args.action === "resolve"
+          ? { status: "resolved" as const, resolvedAt: now, version: args.expectedVersion + 1 }
+          : args.action === "archive"
+            ? { status: "archived" as const, archivedAt: now, version: args.expectedVersion + 1 }
+            : args.action === "claim"
+              ? { claimedByUserId: args.actorId, claimedAt: now, version: args.expectedVersion + 1 }
+              : { claimedByUserId: null, claimedAt: null, version: args.expectedVersion + 1 };
+
+      const updated = await tx
+        .update(hubItems)
+        .set(patch)
+        .where(
+          and(
+            eq(hubItems.id, args.hubItemId),
+            eq(hubItems.companyId, args.companyId),
+            eq(hubItems.version, args.expectedVersion),
+          ),
+        )
+        .returning()
+        .then((r) => r[0] ?? null);
+      if (!updated) {
+        throw conflict("This item was changed by someone else. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+
+      const audit = await tx
+        .insert(hubAudit)
+        .values({
+          companyId: args.companyId,
+          hubItemId: args.hubItemId,
+          actorType: args.actorType,
+          actorId: args.actorId,
+          action: args.action,
+          authorityBasis: args.authorityBasis ?? null,
+          reason: args.reason ?? null,
+          idempotencyKey: args.idempotencyKey ?? null,
+          priorState: hubOwnedPriorState(current),
+          undoDeadline,
+        })
+        .returning({
+          id: hubAudit.id,
+          undoDeadline: hubAudit.undoDeadline,
+        })
+        .then((r) => r[0]);
+
+      await tx.insert(activityLog).values({
+        companyId: args.companyId,
+        actorType: args.actorType,
+        actorId: args.actorId,
+        action: `hub_item.${args.action}`,
+        entityType: "hub_item",
+        entityId: args.hubItemId,
+        details: {
+          action: args.action,
+          reason: args.reason ?? null,
+        },
+      });
+
+      return { item: decorateItem(updated), auditId: audit.id, undoDeadline: audit.undoDeadline, replayed: false as const };
+    });
+
+    if (!committed.replayed && args.sideEffect) await args.sideEffect();
+    if (!committed.replayed) await invalidateCounterSnapshotsForCompany(args.companyId);
+    return {
+      item: committed.item,
+      auditId: committed.auditId,
+      undoDeadline: committed.undoDeadline,
+    };
+  }
+
+  async function undoAction(args: {
+    companyId: string;
+    hubItemId: string;
+    auditId: string;
+    expectedVersion: number;
+    actorType: "user" | "agent" | "system";
+    actorId: string;
+  }) {
+    const audit = await db
+      .select()
+      .from(hubAudit)
+      .where(
+        and(
+          eq(hubAudit.id, args.auditId),
+          eq(hubAudit.companyId, args.companyId),
+          eq(hubAudit.hubItemId, args.hubItemId),
+        ),
+      )
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!audit) throw notFound("Hub audit row not found");
+    if (!audit.undoDeadline || audit.undoDeadline.getTime() < Date.now()) {
+      throw conflict("Undo window has expired.");
+    }
+    if (audit.irreversibleSideEffects != null || audit.relayResult != null) {
+      throw conflict("This action cannot be undone.");
+    }
+
+    const current = await db
+      .select()
+      .from(hubItems)
+      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!current) throw notFound("Hub item not found");
+    if (current.version !== args.expectedVersion) {
+      throw conflict("This item was changed by someone else. Reload and retry.", {
+        currentVersion: current.version,
+      });
+    }
+
+    const prior = (audit.priorState ?? {}) as Record<string, unknown>;
+    const result = await db.transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Db;
+      const updated = await tx
+        .update(hubItems)
+        .set({
+          status: String(prior.status ?? current.status),
+          version: typeof prior.version === "number" ? prior.version : current.version,
+          resolvedAt: jsonDate(prior.resolvedAt),
+          archivedAt: jsonDate(prior.archivedAt),
+          claimedByUserId: typeof prior.claimedByUserId === "string" ? prior.claimedByUserId : null,
+          claimedAt: jsonDate(prior.claimedAt),
+        })
+        .where(
+          and(
+            eq(hubItems.id, args.hubItemId),
+            eq(hubItems.companyId, args.companyId),
+            eq(hubItems.version, args.expectedVersion),
+          ),
+        )
+        .returning()
+        .then((r) => r[0] ?? null);
+      if (!updated) {
+        throw conflict("This item was changed by someone else. Reload and retry.", {
+          currentVersion: current.version,
+        });
+      }
+
+      const undoAudit = await tx
+        .insert(hubAudit)
+        .values({
+          companyId: args.companyId,
+          hubItemId: args.hubItemId,
+          actorType: args.actorType,
+          actorId: args.actorId,
+          action: "undo",
+          authorityBasis: "undo_window",
+          priorState: hubOwnedPriorState(current),
+        })
+        .returning({ id: hubAudit.id })
+        .then((r) => r[0]);
+
+      await tx.insert(activityLog).values({
+        companyId: args.companyId,
+        actorType: args.actorType,
+        actorId: args.actorId,
+        action: "hub_item.undo",
+        entityType: "hub_item",
+        entityId: args.hubItemId,
+        details: {
+          auditId: args.auditId,
+        },
+      });
+
+      return { item: decorateItem(updated), auditId: undoAudit.id };
+    });
+    await invalidateCounterSnapshotsForCompany(args.companyId);
+    return result;
+  }
+
+  async function bulkAction(args: {
+    companyId: string;
+    actorUserId: string;
+    actorIsFounder: boolean;
+    role?: UserRole;
+    actorType: "user" | "agent" | "system";
+    bulkId?: string;
+    items: Array<{
+      id: string;
+      action: "resolve" | "archive" | "dismiss" | "snooze" | "claim" | "release";
+      expectedVersion?: number;
+      until?: string;
+      idempotencyKey?: string;
+      reason?: string;
+    }>;
+  }) {
+    const bulkId = args.bulkId ?? randomUUID();
+    const results = [];
+
+    for (const item of args.items) {
+      try {
+        if (
+          item.action === "resolve" ||
+          item.action === "archive" ||
+          item.action === "claim" ||
+          item.action === "release"
+        ) {
+          if (item.expectedVersion == null) {
+            throw new HttpError(400, "expectedVersion is required for shared lifecycle actions");
+          }
+          const result = await recordLifecycleAction({
+            companyId: args.companyId,
+            hubItemId: item.id,
+            action: item.action,
+            expectedVersion: item.expectedVersion,
+            actorType: args.actorType,
+            actorId: args.actorUserId,
+            actorIsFounder: args.actorIsFounder,
+            authorityBasis: args.actorIsFounder ? "founder" : "owner",
+            reason: item.reason,
+            idempotencyKey: item.idempotencyKey,
+          });
+          results.push({
+            id: item.id,
+            status: "success" as const,
+            item: result.item,
+            auditId: result.auditId,
+            undoDeadline: result.undoDeadline,
+          });
+          continue;
+        }
+
+        const state =
+          item.action === "dismiss"
+            ? { kind: "dismiss" as const }
+            : { kind: "snooze" as const, until: item.until! };
+        const result = await applyPersonalState({
+          companyId: args.companyId,
+          hubItemId: item.id,
+          actorUserId: args.actorUserId,
+          role: args.role,
+          state,
+        });
+        results.push({
+          id: item.id,
+          status: "success" as const,
+          state: result,
+        });
+      } catch (err) {
+        const status = err instanceof HttpError ? err.status : 500;
+        const message = err instanceof Error ? err.message : "Bulk action failed";
+        results.push({
+          id: item.id,
+          status: "failed" as const,
+          error: { status, message },
+        });
+      }
+    }
+
+    const summary = results.reduce(
+      (acc, result) => {
+        if (result.status === "success") acc.succeeded += 1;
+        else if (result.status === "failed") acc.failed += 1;
+        else acc.skipped += 1;
+        return acc;
+      },
+      { succeeded: 0, failed: 0, skipped: 0 },
+    );
+
+    return { bulkId, summary, results };
+  }
+
   async function recordAndAct(args: {
     companyId: string;
     hubItemId: string;
@@ -287,6 +935,22 @@ export function hubItemsService(db: Db) {
     // EXTERNAL/irreversible source-API relay; runs AFTER commit.
     sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
   }) {
+    const action = args.nextStatus === "resolved" ? "resolve" : "archive";
+    const result = await recordLifecycleAction({
+      companyId: args.companyId,
+      hubItemId: args.hubItemId,
+      action,
+      expectedVersion: args.expectedVersion,
+      actorType: args.actorType as "user" | "agent" | "system",
+      actorId: args.actorId,
+      actorIsFounder: args.actorIsFounder,
+      authorityBasis: args.authorityBasis,
+      reason: args.reason,
+      idempotencyKey: args.idempotencyKey,
+      sideEffect: args.sideEffect,
+    });
+    return result.item;
+
     const current = await db
       .select()
       .from(hubItems)
@@ -348,7 +1012,7 @@ export function hubItemsService(db: Db) {
     // audit row is already durable, so a relay/source failure is recoverable (the
     // sweeper reconciles), NEVER an erased decision record. DB-only effects belong
     // inside Phase 1's transaction instead.
-    if (args.sideEffect) await args.sideEffect();
+    await args.sideEffect?.();
     return committed.item;
   }
 
@@ -359,12 +1023,16 @@ export function hubItemsService(db: Db) {
   // denormalized snapshot (summary + permission revision) for drift healing.
   interface SourceSnapshot {
     terminal: boolean; // source row is gone OR in a terminal state → close the hub item
+    title?: string | null; // current denormalized title when the source owns it
     summary: string | null; // current denormalized summary (PRE-redaction)
+    ownerUserId?: string | null; // current resolved human owner when the source owns it
+    ownerPool?: HubOwnerPool | null; // current pool visibility when the source owns it
+    scopeKey?: string | null; // current source RBAC scope when the source owns it
     permissionRevision: string | null; // monotonic-ish source revision for drift detection
   }
   type SourceReconciler = (companyId: string, sourceId: string) => Promise<SourceSnapshot>;
 
-  // approvals: pending = open; anything else (or a missing row) = terminal.
+  // approvals: pending/revision_requested = open; anything else (or a missing row) = terminal.
   const reconcileApproval: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
       .select({ status: approvals.status, decisionNote: approvals.decisionNote, updatedAt: approvals.updatedAt })
@@ -374,7 +1042,7 @@ export function hubItemsService(db: Db) {
       .then((r) => r[0] ?? null);
     if (!row) return { terminal: true, summary: null, permissionRevision: null };
     return {
-      terminal: row.status !== "pending",
+      terminal: !APPROVAL_OPEN_STATUSES.has(row.status),
       summary: row.decisionNote ?? null,
       permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     };
@@ -398,9 +1066,118 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  const reconcileJoinRequest: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        requestType: joinRequests.requestType,
+        status: joinRequests.status,
+        agentName: joinRequests.agentName,
+        requestEmailSnapshot: joinRequests.requestEmailSnapshot,
+        adapterType: joinRequests.adapterType,
+        updatedAt: joinRequests.updatedAt,
+      })
+      .from(joinRequests)
+      .where(and(eq(joinRequests.id, sourceId), eq(joinRequests.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const subject =
+      row.requestType === "agent"
+        ? row.agentName ?? `${row.adapterType ?? "Agent"} request`
+        : row.requestEmailSnapshot ?? "Human join request";
+    return {
+      terminal: row.status !== "pending_approval",
+      summary: `${subject} (${row.requestType.replace(/_/g, " ")})`,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const reconcileDiscussion: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        title: discussions.title,
+        ownerUserId: discussions.ownerUserId,
+        scopeType: discussions.scopeType,
+        scopeId: discussions.scopeId,
+        pendingItemCount: discussions.pendingItemCount,
+        updatedAt: discussions.updatedAt,
+      })
+      .from(discussions)
+      .where(and(eq(discussions.id, sourceId), eq(discussions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const count = row.pendingItemCount;
+    const founder = row.ownerUserId ? null : await orgHierarchyService(db).getFounderUserId(companyId);
+    const ownerUserId = row.ownerUserId ?? founder ?? null;
+    const title = row.title?.trim() || "Discussion";
+    return {
+      terminal: count <= 0,
+      title: `Review ${count} pending ${count === 1 ? "item" : "items"} in ${title}`,
+      summary: `${count} extracted ${count === 1 ? "item needs" : "items need"} review.`,
+      ownerUserId,
+      scopeKey: row.scopeType && row.scopeId ? row.scopeId : null,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const reconcileSuggestion: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        status: suggestions.status,
+        evidence: suggestions.evidence,
+        updatedAt: suggestions.updatedAt,
+      })
+      .from(suggestions)
+      .where(and(eq(suggestions.id, sourceId), eq(suggestions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: row.status !== "pending",
+      summary: row.evidence ?? null,
+      permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    };
+  };
+
+  const reconcileIssue: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        title: issues.title,
+        status: issues.status,
+        assigneeUserId: issues.assigneeUserId,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, sourceId), eq(issues.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const updatedAt = row.updatedAt ? new Date(row.updatedAt) : null;
+    const isOldInboxStale =
+      STALE_WORK_STATUSES.has(row.status) &&
+      updatedAt != null &&
+      Date.now() - updatedAt.getTime() > STALE_WORK_THRESHOLD_MS;
+    const founder = row.assigneeUserId ? null : await orgHierarchyService(db).getFounderUserId(companyId);
+    const ownerUserId = row.assigneeUserId ?? founder ?? null;
+    return {
+      terminal: !isOldInboxStale,
+      title: `Stale task: ${row.title}`,
+      summary: "No recent human or crew progress.",
+      ownerUserId,
+      ownerPool: row.assigneeUserId ? null : "board",
+      permissionRevision: updatedAt ? updatedAt.toISOString() : null,
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
+    join_request: reconcileJoinRequest,
+    discussion: reconcileDiscussion,
+    suggestion: reconcileSuggestion,
+    issue: reconcileIssue,
   };
 
   // Sweep open hub items of `sourceType`: close terminal/gone-source items via the
@@ -409,26 +1186,42 @@ export function hubItemsService(db: Db) {
   // Sources are truth — this is the safety net for missed same-tx emits.
   async function reconcile(
     companyId: string,
-    opts: { sourceType: string },
+    opts: { sourceType: string; sourceId?: string },
   ): Promise<{ healed: number; closed: number; refreshed: number }> {
     const reconciler = SOURCE_RECONCILERS[opts.sourceType];
     if (!reconciler) {
       throw unprocessable(`No reconciler registered for source type "${opts.sourceType}"`);
     }
 
+    const semanticType =
+      opts.sourceType === "issue"
+        ? "stale_work"
+        : opts.sourceType === "discussion"
+          ? "discussion_pending"
+          : null;
+
+    const conditions = [
+      eq(hubItems.companyId, companyId),
+      eq(hubItems.sourceType, opts.sourceType),
+      eq(hubItems.status, "open"),
+    ];
+    if (semanticType) conditions.push(eq(hubItems.semanticType, semanticType));
+    if (opts.sourceId) conditions.push(eq(hubItems.sourceId, opts.sourceId));
+
     const open = await db
       .select()
       .from(hubItems)
-      .where(
-        and(
-          eq(hubItems.companyId, companyId),
-          eq(hubItems.sourceType, opts.sourceType),
-          eq(hubItems.status, "open"),
-        ),
-      );
+      .where(and(...conditions));
 
     let closed = 0;
     let refreshed = 0;
+    const runTransaction = async <T>(fn: (tx: Db) => Promise<T>) => {
+      const conn = db as Db & { transaction?: (callback: (tx: unknown) => Promise<T>) => Promise<T> };
+      if (typeof conn.transaction === "function") {
+        return conn.transaction(async (txRaw) => fn(txRaw as unknown as Db));
+      }
+      return fn(db);
+    };
     for (const item of open) {
       if (!item.sourceId) continue;
       const snap = await reconciler(companyId, item.sourceId);
@@ -438,8 +1231,7 @@ export function hubItemsService(db: Db) {
         // concurrent user action bumps the version → this UPDATE 409s; we swallow
         // it and let the next sweep reconcile (sources stay truth).
         try {
-          await db.transaction(async (txRaw) => {
-            const tx = txRaw as unknown as Db;
+          await runTransaction(async (tx) => {
             await applyGuardedTransition(tx, item, "archived", {
               actorType: "system",
               actorId: "reconciler",
@@ -476,11 +1268,32 @@ export function hubItemsService(db: Db) {
         item.sourcePermissionRevision != null &&
         snap.permissionRevision > item.sourcePermissionRevision;
 
-      const patch: { summary?: string; sourcePermissionRevision?: string } = {};
+      const patch: {
+        title?: string;
+        summary?: string;
+        sourcePermissionRevision?: string;
+        userId?: string;
+        ownerUserId?: string | null;
+        ownerPool?: HubOwnerPool | null;
+        scopeKey?: string | null;
+      } = {};
+      if (snap.title != null && snap.title !== "" && snap.title !== item.title) {
+        patch.title = snap.title;
+      }
       if (revisionIsNewer) patch.sourcePermissionRevision = snap.permissionRevision!;
       if (snap.summary != null && snap.summary !== "") {
         const nextSummary = redactSecretsInString(snap.summary);
         if (nextSummary !== item.summary) patch.summary = nextSummary;
+      }
+      if (snap.ownerUserId !== undefined && snap.ownerUserId !== item.ownerUserId) {
+        patch.ownerUserId = snap.ownerUserId;
+        if (snap.ownerUserId) patch.userId = snap.ownerUserId;
+      }
+      if (snap.ownerPool !== undefined && snap.ownerPool !== item.ownerPool) {
+        patch.ownerPool = snap.ownerPool;
+      }
+      if (snap.scopeKey !== undefined && snap.scopeKey !== item.scopeKey) {
+        patch.scopeKey = snap.scopeKey;
       }
       if (Object.keys(patch).length > 0) {
         await db.update(hubItems).set(patch).where(eq(hubItems.id, item.id));
@@ -492,6 +1305,7 @@ export function hubItemsService(db: Db) {
     console.log(
       `[hub.reconcile] company=${companyId} source=${opts.sourceType} healed=${healed} (closed=${closed} refreshed=${refreshed})`,
     );
+    if (healed > 0) await invalidateCounterSnapshotsForCompany(companyId);
     return { healed, closed, refreshed };
   }
 
@@ -527,6 +1341,9 @@ export function hubItemsService(db: Db) {
         conds.push(ownedCond);
       }
     }
+    const now = new Date();
+    conds.push(isNull(hubItemUserState.dismissedAt));
+    conds.push(or(isNull(hubItemUserState.snoozedUntil), lte(hubItemUserState.snoozedUntil, now))!);
 
     // Single pass: count open rows + count those WITHOUT a readAt for this
     // principal. The left-join keeps the open set as the universe (a missing
@@ -551,5 +1368,19 @@ export function hubItemsService(db: Db) {
   }
 
   // Public surface (declared last so every const above has evaluated).
-  return { emit, sourceUniqueKey, resolveOwner, query, recordAndAct, reconcile, counts };
+  return {
+    emit,
+    sourceUniqueKey,
+    resolveOwner,
+    query,
+    getVisible,
+    applyPersonalState,
+    getAudit,
+    recordLifecycleAction,
+    undoAction,
+    bulkAction,
+    recordAndAct,
+    reconcile,
+    counts,
+  };
 }

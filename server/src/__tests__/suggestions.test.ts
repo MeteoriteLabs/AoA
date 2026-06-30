@@ -3,6 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockIssueCreate = vi.fn();
 const mockMemoryCreate = vi.fn();
 const mockFeedbackRunAllDetectors = vi.fn();
+const {
+  mockEmitHubItem,
+  mockBuildSuggestionHubEmit,
+  mockReconcile,
+} = vi.hoisted(() => ({
+  mockEmitHubItem: vi.fn(),
+  mockBuildSuggestionHubEmit: vi.fn((suggestion) => ({ sourceType: "suggestion", sourceId: suggestion.id })),
+  mockReconcile: vi.fn(),
+}));
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
@@ -62,6 +71,17 @@ vi.mock("../services/memory-feedback.js", () => ({
   }),
 }));
 
+vi.mock("../services/hub-source-producers.js", () => ({
+  buildSuggestionHubEmit: mockBuildSuggestionHubEmit,
+  emitHubItem: mockEmitHubItem,
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: () => ({
+    reconcile: mockReconcile,
+  }),
+}));
+
 import { suggestionService } from "../services/suggestions.js";
 
 type MockRow = Record<string, unknown>;
@@ -105,6 +125,8 @@ describe("suggestionService", () => {
     mockFeedbackRunAllDetectors.mockResolvedValue({ patternsCreated: 0, suggestionsCreated: 0 });
     mockIssueCreate.mockResolvedValue({ id: "issue-created" });
     mockMemoryCreate.mockResolvedValue({ id: "memory-created" });
+    mockEmitHubItem.mockResolvedValue({ id: "hub-1", version: 0 });
+    mockReconcile.mockResolvedValue({ healed: 1, closed: 1, refreshed: 0 });
   });
 
   it("detects memory gaps for departments with no domain items", async () => {
@@ -275,6 +297,106 @@ describe("suggestionService", () => {
 
     expect(result).toEqual({ detected: 2, created: 2 });
     expect((db as any).__insertValues).toHaveLength(1);
+  });
+
+  it("runAllDetectors emits hub rows for inserted pending suggestions", async () => {
+    const insertedSuggestion = {
+      id: "sug-1",
+      companyId: "co-1",
+      category: "goal_gap",
+      actionType: "create_task",
+      actionPayload: { goalId: "goal-1" },
+      title: "goal",
+      evidence: null,
+      status: "pending",
+      updatedAt: new Date("2026-06-29T00:00:00Z"),
+    };
+    const db = createSequenceDb({
+      selects: [[]],
+      inserts: [[insertedSuggestion]],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([
+      {
+        category: "goal_gap",
+        actionType: "create_task",
+        title: "goal",
+        evidence: null,
+        actionPayload: { goalId: "goal-1" },
+      },
+    ] as any);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    await svc.runAllDetectors("co-1");
+
+    expect(mockBuildSuggestionHubEmit).toHaveBeenCalledWith(insertedSuggestion);
+    expect(mockEmitHubItem).toHaveBeenCalledWith(expect.anything(), {
+      sourceType: "suggestion",
+      sourceId: "sug-1",
+    });
+  });
+
+  it("runAllDetectors reconciles expired suggestion hub rows", async () => {
+    const db = createSequenceDb({
+      selects: [[]],
+      updates: [[{ id: "sug-expired" }]],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    await svc.runAllDetectors("co-1");
+
+    expect(mockReconcile).toHaveBeenCalledWith("co-1", {
+      sourceType: "suggestion",
+      sourceId: "sug-expired",
+    });
+  });
+
+  it("accept and dismiss reconcile suggestion hub rows after status changes", async () => {
+    const pending = {
+      id: "sug-1",
+      companyId: "co-1",
+      category: "goal_gap",
+      actionType: "create_task",
+      actionPayload: { title: "x" },
+      title: "gap",
+      evidence: null,
+      status: "pending",
+    };
+
+    await suggestionService(
+      createSequenceDb({
+        selects: [[pending]],
+        updates: [[{ ...pending, status: "accepted" }]],
+      }) as any,
+    ).accept("co-1", "sug-1");
+    await suggestionService(
+      createSequenceDb({
+        selects: [[pending]],
+        updates: [[{ ...pending, status: "dismissed" }]],
+      }) as any,
+    ).dismiss("co-1", "sug-1");
+
+    expect(mockReconcile).toHaveBeenCalledTimes(2);
+    expect(mockReconcile).toHaveBeenCalledWith("co-1", {
+      sourceType: "suggestion",
+      sourceId: "sug-1",
+    });
   });
 
   it("returns empty arrays when detectors have no data", async () => {

@@ -1072,6 +1072,34 @@
       "when": 1782707976877,
       "tag": "0152_magenta_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1782751228042,
+      "tag": "0153_purple_sebastian_shaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1782796699249,
+      "tag": "0154_dusty_karen_page",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1782796969257,
+      "tag": "0155_shallow_lake",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1782798403713,
+      "tag": "0156_pretty_the_call",
+      "breakpoints": true
     }
   ]
 }

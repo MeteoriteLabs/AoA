@@ -1,13 +1,25 @@
 import { Router, type Request } from "express";
-import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { hubItemUserState } from "@armyofagents/db";
 import type { UserRole, ListHubItemsQuery } from "@armyofagents/shared";
-import { listHubItemsQuery, hubActionSchema, hubUserStateSchema } from "@armyofagents/shared";
+import {
+  listHubItemsQuery,
+  hubActionSchema,
+  hubUserStateSchema,
+  hubUndoSchema,
+  hubBulkActionSchema,
+  updateHubPreferencesSchema,
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { hubItemsService, permissionService, logActivity } from "../services/index.js";
+import {
+  hubCounterSnapshotsService,
+  hubItemsService,
+  hubPreferencesService,
+  permissionService,
+} from "../services/index.js";
 import { HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess } from "./authz.js";
+import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
+import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
 
 // Resolve the board user id for these owner-facing hub routes. Agents/MCP keys
 // use separate surfaces; the hub is a human attention/decision plane. Mirrors
@@ -29,6 +41,10 @@ function hasImplicitFounderAuthority(req: Request): boolean {
 export function hubItemRoutes(db: Db) {
   const router = Router();
   const svc = hubItemsService(db);
+  const preferences = hubPreferencesService(db);
+  const counterSnapshots = hubCounterSnapshotsService(db, {
+    liveCounts: ({ companyId, userId, role }) => svc.counts(companyId, userId, role),
+  });
   const perms = permissionService(db);
 
   // Resolve the effective role for query/counts. Implicit-authority actors
@@ -37,6 +53,34 @@ export function hubItemRoutes(db: Db) {
     if (hasImplicitFounderAuthority(req)) return "founder";
     return perms.getEffectiveRole(companyId, userId);
   }
+
+  router.get("/companies/:companyId/hub-items/preferences/me", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const result = await preferences.get(userId, companyId);
+    res.json(result);
+  });
+
+  router.patch(
+    "/companies/:companyId/hub-items/preferences/me",
+    validate(updateHubPreferencesSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireBoardUserId(req);
+      const result = await preferences.upsert(userId, companyId, req.body);
+      res.json(result);
+    },
+  );
+
+  router.post("/companies/:companyId/hub-items/preferences/me/reset", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const result = await preferences.reset(userId, companyId);
+    res.json(result);
+  });
 
   // GET list — RBAC-scoped hot set (open by default), per-user state joined in.
   // List filters arrive on the query string, so parse `req.query` directly (the
@@ -48,12 +92,23 @@ export function hubItemRoutes(db: Db) {
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     const query: ListHubItemsQuery = listHubItemsQuery.parse(req.query);
+    if (!query.lane || query.lane === "waiting_on_you") {
+      await emitOpenApprovalHubItems(db, companyId, query.limit);
+    }
+    if (!query.lane || query.lane === "suggestions") {
+      await emitStaleWorkHubItems(db, companyId, query.limit);
+    }
     const items = await svc.query(companyId, {
       actorUserId: userId,
       role,
       lane: query.lane,
       status: query.status,
       includeDismissed: query.includeDismissed,
+      includeSnoozed: query.includeSnoozed,
+      q: query.q,
+      cursor: query.cursor,
+      groupMode: query.groupMode,
+      limit: query.limit,
     });
     res.json(items);
   });
@@ -64,7 +119,9 @@ export function hubItemRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
-    const result = await svc.counts(companyId, userId, role);
+    await emitOpenApprovalHubItems(db, companyId);
+    await emitStaleWorkHubItems(db, companyId, null);
+    const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);
   });
 
@@ -84,17 +141,15 @@ export function hubItemRoutes(db: Db) {
         ? true
         : await perms.isFounder(companyId, userId);
 
-      const { action, expectedVersion, nextStatus, idempotencyKey, reason } = req.body as {
-        action: string;
+      const { action, expectedVersion, idempotencyKey, reason } = req.body as {
+        action: "resolve" | "archive" | "claim" | "release";
         expectedVersion: number;
-        nextStatus: "resolved" | "archived" | "snoozed";
         idempotencyKey?: string;
         reason?: string;
       };
-
       let item;
       try {
-        item = await svc.recordAndAct({
+        item = await svc.recordLifecycleAction({
           companyId,
           hubItemId,
           action,
@@ -105,7 +160,6 @@ export function hubItemRoutes(db: Db) {
           authorityBasis: actorIsFounder ? "founder" : "owner",
           reason,
           idempotencyKey,
-          nextStatus,
         });
       } catch (err) {
         // conflict→409, notFound→404, forbidden→403 — same HttpError convention
@@ -117,24 +171,91 @@ export function hubItemRoutes(db: Db) {
         throw err;
       }
 
-      const actor = getActorInfo(req);
-      await logActivity(db, {
+      res.json(item);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/hub-items/:id/undo",
+    validate(hubUndoSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const hubItemId = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireBoardUserId(req);
+      const { auditId, expectedVersion } = req.body as {
+        auditId: string;
+        expectedVersion: number;
+      };
+
+      const result = await svc.undoAction({
         companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        action: "hub_item.action",
-        entityType: "hub_item",
-        entityId: hubItemId,
-        details: { action, nextStatus },
+        hubItemId,
+        auditId,
+        expectedVersion,
+        actorType: "user",
+        actorId: userId,
       });
 
-      res.json(item);
+      res.json(result);
     },
   );
 
   // PATCH state — upsert the sparse per-principal user-state row (read/snooze/
   // dismiss). Keyed on (hubItemId, principalType, principalId) per W6.
+  router.get("/companies/:companyId/hub-items/:id/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const hubItemId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const role = await resolveRole(req, companyId, userId);
+    const rows = await svc.getAudit({
+      companyId,
+      hubItemId,
+      actorUserId: userId,
+      role,
+    });
+
+    res.json(rows);
+  });
+
+  router.post(
+    "/companies/:companyId/hub-items/bulk-action",
+    validate(hubBulkActionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireBoardUserId(req);
+      const role = await resolveRole(req, companyId, userId);
+      const actorIsFounder = hasImplicitFounderAuthority(req)
+        ? true
+        : await perms.isFounder(companyId, userId);
+      const body = req.body as {
+        bulkId?: string;
+        items: Array<{
+          id: string;
+          action: "resolve" | "archive" | "dismiss" | "snooze" | "claim" | "release";
+          expectedVersion?: number;
+          until?: string;
+          idempotencyKey?: string;
+          reason?: string;
+        }>;
+      };
+
+      const result = await svc.bulkAction({
+        companyId,
+        actorUserId: userId,
+        actorIsFounder,
+        role,
+        actorType: "user",
+        bulkId: body.bulkId,
+        items: body.items,
+      });
+
+      res.json(result);
+    },
+  );
+
   router.patch(
     "/companies/:companyId/hub-items/:id/state",
     validate(hubUserStateSchema),
@@ -143,38 +264,14 @@ export function hubItemRoutes(db: Db) {
       const hubItemId = req.params.id as string;
       assertCompanyAccess(req, companyId);
       const userId = requireBoardUserId(req);
-
-      const body = req.body as
-        | { kind: "read" }
-        | { kind: "snooze"; until: string }
-        | { kind: "dismiss" };
-
-      const now = new Date();
-      const patch =
-        body.kind === "read"
-          ? { readAt: now }
-          : body.kind === "snooze"
-            ? { snoozedUntil: new Date(body.until) }
-            : { dismissedAt: now };
-
-      const [row] = await db
-        .insert(hubItemUserState)
-        .values({
-          companyId,
-          hubItemId,
-          principalType: "user",
-          principalId: userId,
-          ...patch,
-        })
-        .onConflictDoUpdate({
-          target: [
-            hubItemUserState.hubItemId,
-            hubItemUserState.principalType,
-            hubItemUserState.principalId,
-          ],
-          set: { ...patch, updatedAt: now },
-        })
-        .returning();
+      const role = await resolveRole(req, companyId, userId);
+      const row = await svc.applyPersonalState({
+        companyId,
+        hubItemId,
+        actorUserId: userId,
+        role,
+        state: req.body,
+      });
 
       res.json(row);
     },

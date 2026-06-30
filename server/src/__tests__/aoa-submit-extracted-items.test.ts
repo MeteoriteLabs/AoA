@@ -1,4 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const {
+  mockBuildDiscussionPendingHubEmit,
+  mockEmitHubItem,
+} = vi.hoisted(() => ({
+  mockBuildDiscussionPendingHubEmit: vi.fn((discussion) => ({
+    sourceType: "discussion",
+    sourceId: discussion.id,
+  })),
+  mockEmitHubItem: vi.fn(),
+}));
 
 // Drizzle-orm ESM cycle workaround: stub the operators we use.
 vi.mock("drizzle-orm", () => ({
@@ -26,6 +37,11 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 
+vi.mock("../services/hub-source-producers.js", () => ({
+  buildDiscussionPendingHubEmit: mockBuildDiscussionPendingHubEmit,
+  emitHubItem: mockEmitHubItem,
+}));
+
 import { submitExtractedItemsTool } from "../services/internal-agent/tools/submit-extracted-items.js";
 
 // Builds a mock Db that records insert/update calls (with the table the
@@ -45,12 +61,27 @@ import { submitExtractedItemsTool } from "../services/internal-agent/tools/submi
 function makeMockDb(
   discussionId: string | null = "disc-1",
   companyId: string = "co-1",
+  terminalRows: Array<{ id: string }> = [{ id: "entry" }],
 ) {
   const inserted: { table: any; values: any }[] = [];
   const updated: { table: any; set: any; where: any }[] = [];
   const selects: { from: any; where: any }[] = [];
   const resolvedRow =
-    discussionId === null ? [] : [{ discussionId, companyId }];
+    discussionId === null
+      ? []
+      : [
+          {
+            id: discussionId,
+            discussionId,
+            companyId,
+            title: "Thread",
+            ownerUserId: "u-1",
+            scopeType: null,
+            scopeId: null,
+            pendingItemCount: 1,
+            updatedAt: new Date("2026-06-29T00:00:00Z"),
+          },
+        ];
   const db: any = {
     insert: (table: any) => ({
       values: (v: any) => {
@@ -74,8 +105,7 @@ function makeMockDb(
           // tool's call shape — it does not change any I-1/I-2 assertion
           // (those inspect the recorded `set`/`where`, not the return value).
           const handle: any = Promise.resolve([]);
-          handle.returning = (_proj?: any) =>
-            Promise.resolve([{ id: "entry" }]);
+          handle.returning = (_proj?: any) => Promise.resolve(terminalRows);
           return handle;
         },
       }),
@@ -100,6 +130,11 @@ function makeMockDb(
 }
 
 describe("submit-extracted-items internal-agent tool", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockEmitHubItem.mockResolvedValue({ id: "hub-1", version: 0 });
+  });
+
   it("inserts mapped discussion_extracted_items + reports count + marks entry completed", async () => {
     const { db, inserted, updated } = makeMockDb();
     // Real ToolContext shape (see internal-agent/types.ts).
@@ -139,6 +174,123 @@ describe("submit-extracted-items internal-agent tool", () => {
       (u) => u.set?.extractionStatus === "completed",
     );
     expect(statusUpdates.length).toBe(1);
+  });
+
+  it("emits a discussion_pending hub item after extracted items become pending", async () => {
+    const { db } = makeMockDb("disc-42");
+    const ctx: any = {
+      companyId: "co-1",
+      userId: "u-1",
+      userRole: "founder",
+      enabledCapabilities: ["discussion_processing"],
+      db,
+      services: {},
+    };
+
+    await submitExtractedItemsTool.execute(
+      {
+        entryId: "e1",
+        items: [{ type: "task", content: "Ship X" }],
+      },
+      ctx,
+    );
+
+    expect(mockBuildDiscussionPendingHubEmit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "disc-42", companyId: "co-1" }),
+    );
+    expect(mockEmitHubItem).toHaveBeenCalledWith(ctx.db, {
+      sourceType: "discussion",
+      sourceId: "disc-42",
+    });
+  });
+
+  it("does not persist items, increment pending count, or emit hub work when terminalization loses the race", async () => {
+    const { db, inserted, updated } = makeMockDb("disc-42", "co-1", []);
+    const ctx: any = {
+      companyId: "co-1",
+      userId: "u-1",
+      userRole: "founder",
+      enabledCapabilities: ["discussion_processing"],
+      db,
+      services: {},
+    };
+
+    const res = await submitExtractedItemsTool.execute(
+      {
+        entryId: "e1",
+        items: [{ type: "task", content: "Ship X" }],
+      },
+      ctx,
+    );
+
+    expect(res.success).toBe(true);
+    expect(inserted).toHaveLength(0);
+    expect(updated.filter((u) => u.set?.pendingItemCount !== undefined)).toHaveLength(0);
+    expect(mockEmitHubItem).not.toHaveBeenCalled();
+  });
+
+  it("rolls back terminalization when persistence after the guard fails", async () => {
+    const committed: string[] = [];
+    let staged: string[] = [];
+    const tx: any = {
+      insert: () => ({
+        values: () => {
+          throw new Error("insert failed");
+        },
+      }),
+      update: () => ({
+        set: (v: any) => ({
+          where: () => {
+            const handle: any = Promise.resolve([]);
+            handle.returning = () => {
+              if (v?.extractionStatus === "completed") staged.push("completed");
+              return Promise.resolve([{ id: "entry" }]);
+            };
+            return handle;
+          },
+        }),
+      }),
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      }),
+    };
+    const db: any = {
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => Promise.resolve([{ discussionId: "disc-42", companyId: "co-1" }]),
+          }),
+        }),
+      }),
+      transaction: async (callback: (executor: any) => Promise<unknown>) => {
+        staged = [];
+        const result = await callback(tx);
+        committed.push(...staged);
+        return result;
+      },
+    };
+    const ctx: any = {
+      companyId: "co-1",
+      userId: "u-1",
+      userRole: "founder",
+      enabledCapabilities: ["discussion_processing"],
+      db,
+      services: {},
+    };
+
+    await expect(
+      submitExtractedItemsTool.execute(
+        {
+          entryId: "e1",
+          items: [{ type: "task", content: "Ship X" }],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow("insert failed");
+    expect(committed).not.toContain("completed");
+    expect(mockEmitHubItem).not.toHaveBeenCalled();
   });
 
   it("skips insert when items is empty but still marks entry completed", async () => {

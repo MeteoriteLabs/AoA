@@ -52,6 +52,8 @@ import {
   executePinnedRequest,
   type ValidatedFetchTarget,
 } from "../services/outbound-url-guard.js";
+import { buildJoinRequestHubEmit, emitHubItem } from "../services/hub-source-producers.js";
+import { hubItemsService } from "../services/hub-items.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -2141,32 +2143,46 @@ export function accessRoutes(
               })
               .returning()
               .then((rows) => rows[0]);
+            if (row) {
+              await emitHubItem(tx as unknown as Db, buildJoinRequestHubEmit(row));
+            }
             return row;
           })
-        : await db
-            .update(joinRequests)
-            .set({
-              requestIp: requestIp(req),
-              agentName:
-                requestType === "agent"
-                  ? req.body.agentName ??
-                    existingJoinRequestForInvite?.agentName ??
-                    null
-                  : null,
-              capabilities:
-                requestType === "agent"
-                  ? req.body.capabilities ??
-                    existingJoinRequestForInvite?.capabilities ??
-                    null
-                  : null,
-              adapterType: requestType === "agent" ? adapterType : null,
-              agentDefaultsPayload:
-                requestType === "agent" ? joinDefaults.normalized : null,
-              updatedAt: new Date()
-            })
-            .where(eq(joinRequests.id, replayJoinRequestId as string))
-            .returning()
-            .then((rows) => rows[0]);
+        : await db.transaction(async (tx) => {
+            const row = await tx
+              .update(joinRequests)
+              .set({
+                requestIp: requestIp(req),
+                agentName:
+                  requestType === "agent"
+                    ? req.body.agentName ??
+                      existingJoinRequestForInvite?.agentName ??
+                      null
+                    : null,
+                capabilities:
+                  requestType === "agent"
+                    ? req.body.capabilities ??
+                      existingJoinRequestForInvite?.capabilities ??
+                      null
+                    : null,
+                adapterType: requestType === "agent" ? adapterType : null,
+                agentDefaultsPayload:
+                  requestType === "agent" ? joinDefaults.normalized : null,
+                updatedAt: new Date()
+              })
+              .where(
+                and(
+                  eq(joinRequests.id, replayJoinRequestId as string),
+                  eq(joinRequests.companyId, companyId)
+                )
+              )
+              .returning()
+              .then((rows) => rows[0]);
+            if (row?.status === "pending_approval") {
+              await emitHubItem(tx as unknown as Db, buildJoinRequestHubEmit(row));
+            }
+            return row;
+          });
 
       if (!created) {
         throw conflict("Join request not found");
@@ -2412,117 +2428,155 @@ export function accessRoutes(
       if (!invite) throw notFound("Invite not found");
 
       let createdAgentId: string | null = existing.createdAgentId ?? null;
-      if (existing.requestType === "human") {
-        if (!existing.requestingUserId)
-          throw conflict("Join request missing user identity");
-        await access.ensureMembership(
-          companyId,
-          "user",
-          existing.requestingUserId,
-          "member",
-          "active"
-        );
-        const grants = grantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null,
-          "human"
-        );
-        await access.setPrincipalGrants(
-          companyId,
-          "user",
-          existing.requestingUserId,
-          grants,
-          req.actor.userId ?? null
-        );
-        await team.applyInviteRole(
-          companyId,
-          existing.requestingUserId,
-          invite.defaultsPayload as Record<string, unknown> | null,
-          req.actor.userId ?? null
-        );
-      } else {
-        const existingAgents = await agents.list(companyId);
-        const managerId = resolveJoinRequestAgentManagerId(existingAgents);
-        if (!managerId) {
-          throw conflict(
-            "Join request cannot be approved because this company has no active CEO"
+      const approved = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const txAccess = accessService(txDb);
+        const txTeam = teamService(txDb);
+        const txAgents = agentService(txDb);
+        const approvedAt = new Date();
+        const row = await tx
+          .update(joinRequests)
+          .set({
+            status: "approved",
+            approvedByUserId:
+              req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            approvedAt,
+            createdAgentId,
+            updatedAt: approvedAt
+          })
+          .where(
+            and(
+              eq(joinRequests.companyId, companyId),
+              eq(joinRequests.id, requestId),
+              eq(joinRequests.status, "pending_approval")
+            )
+          )
+          .returning()
+          .then((rows) => rows[0]);
+        if (!row) return null;
+
+        if (existing.requestType === "human") {
+          if (!existing.requestingUserId)
+            throw conflict("Join request missing user identity");
+          await txAccess.ensureMembership(
+            companyId,
+            "user",
+            existing.requestingUserId,
+            "member",
+            "active"
+          );
+          const grants = grantsFromDefaults(
+            invite.defaultsPayload as Record<string, unknown> | null,
+            "human"
+          );
+          await txAccess.setPrincipalGrants(
+            companyId,
+            "user",
+            existing.requestingUserId,
+            grants,
+            req.actor.userId ?? null
+          );
+          await txTeam.applyInviteRole(
+            companyId,
+            existing.requestingUserId,
+            invite.defaultsPayload as Record<string, unknown> | null,
+            req.actor.userId ?? null
+          );
+        } else {
+          const existingAgents = await txAgents.list(companyId);
+          const managerId = resolveJoinRequestAgentManagerId(existingAgents);
+          if (!managerId) {
+            throw conflict(
+              "Join request cannot be approved because this company has no active CEO"
+            );
+          }
+
+          const agentName = deduplicateAgentName(
+            existing.agentName ?? "New Agent",
+            existingAgents.map((a) => ({
+              id: a.id,
+              name: a.name,
+              status: a.status
+            }))
+          );
+
+          const created = await txAgents.create(companyId, {
+            name: agentName,
+            role: "general",
+            title: null,
+            status: "idle",
+            reportsTo: managerId,
+            parentType: managerId ? "agent" : null,
+            parentId: managerId,
+            capabilities: existing.capabilities ?? null,
+            adapterType: existing.adapterType ?? "process",
+            adapterConfig:
+              existing.agentDefaultsPayload &&
+              typeof existing.agentDefaultsPayload === "object"
+                ? (existing.agentDefaultsPayload as Record<string, unknown>)
+                : {},
+            runtimeConfig: {},
+            budgetMonthlyCents: 0,
+            spentMonthlyCents: 0,
+            permissions: {},
+            lastHeartbeatAt: null,
+            metadata: null
+          });
+          createdAgentId = created.id;
+          await txAccess.ensureMembership(
+            companyId,
+            "agent",
+            created.id,
+            "member",
+            "active"
+          );
+          const grants = grantsFromDefaults(
+            invite.defaultsPayload as Record<string, unknown> | null,
+            "agent"
+          );
+          await txAccess.setPrincipalGrants(
+            companyId,
+            "agent",
+            created.id,
+            grants,
+            req.actor.userId ?? null
           );
         }
 
-        const agentName = deduplicateAgentName(
-          existing.agentName ?? "New Agent",
-          existingAgents.map((a) => ({
-            id: a.id,
-            name: a.name,
-            status: a.status
-          }))
-        );
+        const finalRow =
+          createdAgentId && createdAgentId !== row.createdAgentId
+            ? await tx
+                .update(joinRequests)
+                .set({ createdAgentId, updatedAt: new Date() })
+                .where(
+                  and(
+                    eq(joinRequests.companyId, companyId),
+                    eq(joinRequests.id, requestId),
+                    eq(joinRequests.status, "approved")
+                  )
+                )
+                .returning()
+                .then((rows) => rows[0] ?? row)
+            : row;
 
-        const created = await agents.create(companyId, {
-          name: agentName,
-          role: "general",
-          title: null,
-          status: "idle",
-          reportsTo: managerId,
-          parentType: managerId ? "agent" : null,
-          parentId: managerId,
-          capabilities: existing.capabilities ?? null,
-          adapterType: existing.adapterType ?? "process",
-          adapterConfig:
-            existing.agentDefaultsPayload &&
-            typeof existing.agentDefaultsPayload === "object"
-              ? (existing.agentDefaultsPayload as Record<string, unknown>)
-              : {},
-          runtimeConfig: {},
-          budgetMonthlyCents: 0,
-          spentMonthlyCents: 0,
-          permissions: {},
-          lastHeartbeatAt: null,
-          metadata: null
+        await hubItemsService(txDb).reconcile(companyId, {
+          sourceType: "join_request",
+          sourceId: requestId
         });
-        createdAgentId = created.id;
-        await access.ensureMembership(
+        await logActivity(txDb, {
           companyId,
-          "agent",
-          created.id,
-          "member",
-          "active"
-        );
-        const grants = grantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null,
-          "agent"
-        );
-        await access.setPrincipalGrants(
-          companyId,
-          "agent",
-          created.id,
-          grants,
-          req.actor.userId ?? null
-        );
-      }
-
-      const approved = await db
-        .update(joinRequests)
-        .set({
-          status: "approved",
-          approvedByUserId:
-            req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
-          approvedAt: new Date(),
-          createdAgentId,
-          updatedAt: new Date()
-        })
-        .where(eq(joinRequests.id, requestId))
-        .returning()
-        .then((rows) => rows[0]);
-
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "join.approved",
-        entityType: "join_request",
-        entityId: requestId,
-        details: { requestType: existing.requestType, createdAgentId }
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "join.approved",
+          entityType: "join_request",
+          entityId: requestId,
+          details: { requestType: existing.requestType, createdAgentId }
+        });
+        return finalRow;
       });
+      if (!approved) {
+        throw conflict("Join request is not pending");
+      }
 
       if (createdAgentId) {
         void notifyHireApproved(db, {
@@ -2559,18 +2613,36 @@ export function accessRoutes(
       if (existing.status !== "pending_approval")
         throw conflict("Join request is not pending");
 
-      const rejected = await db
-        .update(joinRequests)
-        .set({
-          status: "rejected",
-          rejectedByUserId:
-            req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
-          rejectedAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(joinRequests.id, requestId))
-        .returning()
-        .then((rows) => rows[0]);
+      const rejected = await db.transaction(async (tx) => {
+        const row = await tx
+          .update(joinRequests)
+          .set({
+            status: "rejected",
+            rejectedByUserId:
+              req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            rejectedAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(
+            and(
+              eq(joinRequests.companyId, companyId),
+              eq(joinRequests.id, requestId),
+              eq(joinRequests.status, "pending_approval")
+            )
+          )
+          .returning()
+          .then((rows) => rows[0]);
+        if (row) {
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "join_request",
+            sourceId: requestId
+          });
+        }
+        return row;
+      });
+      if (!rejected) {
+        throw conflict("Join request is not pending");
+      }
 
       await logActivity(db, {
         companyId,

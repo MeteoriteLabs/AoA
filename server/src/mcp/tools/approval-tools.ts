@@ -5,6 +5,8 @@ import {
   createApprovalSchema,
 } from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
+import { hubItemsService } from "../../services/hub-items.js";
+import { buildApprovalHubEmit, emitHubItem } from "../../services/hub-source-producers.js";
 import {
   type ToolContext,
   type ToolHandler,
@@ -15,6 +17,8 @@ import {
   ok,
 } from "./types.js";
 import { canAccessProjectScopedEntity } from "./scope.js";
+
+const OPEN_APPROVAL_HUB_STATUSES = new Set(["pending", "revision_requested"]);
 
 /**
  * True when the approval has at least one linked task whose project is in
@@ -37,6 +41,17 @@ async function canActorSeeApproval(
   if (approval.companyId !== ctx.companyId) return false;
   if (ctx.scope.kind === "founder") return true;
   return approvalHasScopedIssueLink(ctx, approval.id);
+}
+
+async function syncApprovalHubItem(
+  ctx: ToolContext,
+  approval: { id: string; companyId: string; status: string } & Parameters<typeof buildApprovalHubEmit>[0],
+) {
+  if (OPEN_APPROVAL_HUB_STATUSES.has(approval.status)) {
+    await emitHubItem(ctx.db, buildApprovalHubEmit(approval));
+    return;
+  }
+  await hubItemsService(ctx.db).reconcile(approval.companyId, { sourceType: "approval", sourceId: approval.id });
 }
 
 async function handleListApprovals(
@@ -245,7 +260,7 @@ async function handleApprovalDecision(
       );
       break;
     case "resubmit":
-      updated = await ctx.services.approvalsSvc.resubmit(parsed.approvalId, decisionPayload);
+      updated = await ctx.services.approvalsSvc.resubmit(parsed.approvalId, approval.companyId, decisionPayload);
       break;
   }
   if (!updated) {
@@ -266,6 +281,7 @@ async function handleApprovalDecision(
     entityId: parsed.approvalId,
     details: { action: parsed.action, source: "mcp" },
   });
+  await syncApprovalHubItem(ctx, updated);
 
   return ok(updated);
 }

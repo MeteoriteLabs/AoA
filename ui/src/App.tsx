@@ -17,6 +17,7 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
+import { InboxHub } from "./pages/InboxHub";
 import { SettingsPage } from "./pages/SettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
@@ -203,6 +204,9 @@ function boardRoutes() {
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
+      <Route path="inbox-hub" element={<InboxHub />} />
+      <Route path="inbox-hub/:lane" element={<InboxHub />} />
+      <Route path="inbox-hub/:lane/:itemId" element={<InboxHub />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="workspaces" element={<WorkspacesList />} />
       <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />

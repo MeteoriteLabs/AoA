@@ -90,8 +90,10 @@ vi.mock("../services/instance-settings.js", () => ({
 // The chokepoint under test. Spy on publishIssueStatusChanged (crosses the
 // issues.ts → live-events.js boundary → observable). Keep publishLiveEvent as a
 // no-op so any other publishing code in issues.ts stays inert.
-const { publishIssueStatusChangedMock } = vi.hoisted(() => ({
+const { publishIssueStatusChangedMock, hubReconcileMock, hubServiceExecutors } = vi.hoisted(() => ({
   publishIssueStatusChangedMock: vi.fn(),
+  hubReconcileMock: vi.fn().mockResolvedValue(undefined),
+  hubServiceExecutors: [] as unknown[],
 }));
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
@@ -100,6 +102,15 @@ vi.mock("../services/live-events.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn((executor: unknown) => {
+    hubServiceExecutors.push(executor);
+    return {
+      reconcile: hubReconcileMock,
+    };
+  }),
 }));
 
 // The A4 agent status-transition guard reads the db; for these (non-agent /
@@ -188,6 +199,7 @@ function makeCheckoutDb() {
       return u;
     },
   };
+  db.transaction = async (cb: (tx: unknown) => unknown) => cb(db);
   return db;
 }
 
@@ -238,5 +250,109 @@ describe("issue.status_changed publish (Task 5.6) — issues.ts chokepoints", ()
 
     expect(publishIssueStatusChangedMock).toHaveBeenCalledTimes(1);
     expect(publishIssueStatusChangedMock).toHaveBeenCalledWith(COMPANY_ID, ISSUE_ID, "in_progress");
+  });
+});
+
+function makeReleaseDb() {
+  const existing = {
+    id: ISSUE_ID,
+    companyId: COMPANY_ID,
+    status: "in_progress",
+    assigneeAgentId: "agent-1",
+    checkoutRunId: "run-1",
+  };
+  const updatedRow = {
+    ...existing,
+    status: "todo",
+    assigneeAgentId: null,
+    checkoutRunId: null,
+  };
+  let outerSelectCall = 0;
+  const db: any = {
+    select: () => {
+      const c: any = {};
+      c.from = () => c; c.where = () => c; c.innerJoin = () => c; c.leftJoin = () => c;
+      c.orderBy = () => c; c.limit = () => c;
+      c.then = (r: (v: unknown[]) => unknown) => {
+        outerSelectCall += 1;
+        return Promise.resolve(outerSelectCall === 1 ? [existing] : []).then(r);
+      };
+      return c;
+    },
+  };
+  const tx: any = {
+    update: () => {
+      const u: any = {};
+      u.set = () => u;
+      u.where = () => u;
+      u.returning = () => Promise.resolve([updatedRow]);
+      return u;
+    },
+  };
+  db.transaction = async (cb: (t: unknown) => unknown) => cb(tx);
+  return { db, tx };
+}
+
+function makeRemoveDb() {
+  const removedIssue = { id: ISSUE_ID, companyId: COMPANY_ID, status: "todo" };
+  let selectCall = 0;
+  let deleteCall = 0;
+  const tx: any = {
+    select: () => {
+      const c: any = {};
+      c.from = () => c; c.where = () => c; c.innerJoin = () => c; c.leftJoin = () => c;
+      c.orderBy = () => c; c.limit = () => c;
+      c.then = (r: (v: unknown[]) => unknown) => {
+        selectCall += 1;
+        if (selectCall === 1) return Promise.resolve([{ companyId: COMPANY_ID }]).then(r);
+        return Promise.resolve([]).then(r);
+      };
+      return c;
+    },
+    delete: () => {
+      deleteCall += 1;
+      const d: any = {};
+      d.where = () => d;
+      d.returning = () => Promise.resolve(deleteCall === 2 ? [removedIssue] : []);
+      d.then = (r: (v: unknown[]) => unknown) => Promise.resolve([]).then(r);
+      return d;
+    },
+    update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+    insert: () => ({ values: () => Promise.resolve(undefined) }),
+  };
+  const db: any = {
+    transaction: async (cb: (t: unknown) => unknown) => cb(tx),
+  };
+  return { db, tx };
+}
+
+describe("issue stale-work hub reconciliation chokepoints", () => {
+  beforeEach(() => {
+    hubReconcileMock.mockClear();
+    hubServiceExecutors.length = 0;
+  });
+
+  it("release() reconciles stale-work hub state inside the release transaction", async () => {
+    const { db, tx } = makeReleaseDb();
+
+    await issueService(db).release(ISSUE_ID, "agent-1", "run-1");
+
+    expect(hubServiceExecutors).toContain(tx);
+    expect(hubReconcileMock).toHaveBeenCalledWith(COMPANY_ID, {
+      sourceType: "issue",
+      sourceId: ISSUE_ID,
+    });
+  });
+
+  it("remove() reconciles stale-work hub state inside the delete transaction", async () => {
+    const { db, tx } = makeRemoveDb();
+
+    await issueService(db).remove(ISSUE_ID);
+
+    expect(hubServiceExecutors).toContain(tx);
+    expect(hubReconcileMock).toHaveBeenCalledWith(COMPANY_ID, {
+      sourceType: "issue",
+      sourceId: ISSUE_ID,
+    });
   });
 });
