@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { hubItems, notifications } from "../schema/notifications.js";
 import { hubPreferences } from "../schema/hub_preferences.js";
 import { hubCounterSnapshots } from "../schema/hub_counter_snapshots.js";
+import { notificationPreferences } from "../schema/notification_preferences.js";
+import { notificationDigestItems } from "../schema/notification_digest_items.js";
 
 describe("hubItems schema", () => {
   it("hubItems aliases the notifications table and exposes hub columns", () => {
@@ -46,6 +48,29 @@ describe("hubItems schema", () => {
       "updatedAt",
     ]) {
       expect(hubCounterSnapshots, col).toHaveProperty(col);
+    }
+  });
+
+  it("exports W2-L3 notification preference and digest tables", () => {
+    for (const col of [
+      "userId",
+      "companyId",
+      "rules",
+      "quietHours",
+      "digest",
+      "updatedAt",
+    ]) {
+      expect(notificationPreferences, col).toHaveProperty(col);
+    }
+    for (const col of [
+      "userId",
+      "companyId",
+      "hubItemId",
+      "semanticType",
+      "queuedAt",
+      "ackedAt",
+    ]) {
+      expect(notificationDigestItems, col).toHaveProperty(col);
     }
   });
 });
