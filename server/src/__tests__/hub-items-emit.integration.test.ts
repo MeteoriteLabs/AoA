@@ -122,4 +122,50 @@ describe.skipIf(process.platform === "win32")("hubItems.emit — real DB", () =>
     expect(item.userId).toBe(founderId); // legacy NOT NULL column carries the resolved human
     expect(item.lane).toBe("notifications");
   });
+
+  it("emit writes legacy notification compatibility columns", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const relatedEntityId = "11111111-1111-4111-8111-111111111111";
+    const item = await hubItemsService(db).emit({
+      companyId,
+      semanticType: "mention",
+      sourceType: "discussion",
+      sourceId: relatedEntityId,
+      title: "Mentioned",
+      summary: "Body with token sk-ABC123SECRETVALUEXYZ",
+      legacyType: "thread.mention",
+      ownerUserId: founderId,
+      relatedEntityType: "discussion",
+      relatedEntityId,
+      deliveryAttempts: 0,
+      deliveredAt: new Date("2026-06-30T00:00:00.000Z"),
+      deliveryError: null,
+    });
+
+    const row = firstRow<{
+      message: string | null;
+      related_entity_type: string | null;
+      related_entity_id: string | null;
+      delivery_attempts: number;
+      delivered_at: Date | string | null;
+      delivery_error: string | null;
+      type: string;
+    }>(
+      await db.execute(sql`
+        SELECT type, message, related_entity_type, related_entity_id, delivery_attempts, delivered_at, delivery_error
+        FROM notifications
+        WHERE id = ${item.id}
+      `),
+    );
+
+    expect(row.type).toBe("thread.mention");
+    expect(row.message).toBe(item.summary);
+    expect(row.message).not.toContain("sk-ABC123SECRETVALUEXYZ");
+    expect(row.related_entity_type).toBe("discussion");
+    expect(row.related_entity_id).toBe(relatedEntityId);
+    expect(row.delivery_attempts).toBe(0);
+    expect(row.delivered_at).toBeTruthy();
+    expect(row.delivery_error).toBeNull();
+  });
 });

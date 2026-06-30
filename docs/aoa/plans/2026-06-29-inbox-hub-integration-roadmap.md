@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b, W1c, and W1d merged in PR #244; final cutover implemented on `feat/inbox-hub-integration` pending PR verification
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 2 active on `codex/inbox-hub-next-roadmap`
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -23,18 +23,18 @@ Completed foundations:
   audit, emit/query/action/reconcile service, REST routes, counts, and shared
   hub contracts are on `main`.
 
-Current integration branch:
+Current roadmap branch:
 
-- **Branch:** `feat/inbox-hub-integration`
-- **Purpose:** carry the final Inbox cutover and acceptance pass after PR #244
-  merged W1b/W1c/W1d to `main`.
-- **Rule:** branch final cutover work from this integration branch or from the
-  latest `origin/main`; keep W2/W3/W4/W5 out of this cutover.
+- **Branch:** `codex/inbox-hub-next-roadmap`
+- **Purpose:** carry W2 Layer 2 after W1 final cutover merged.
+- **Rule:** keep W2 Layer 2 scoped to registry-driven persistent notifications,
+  canonical hub emit, legacy route state sync, dead-type cleanup, and focused
+  compatibility tests. Keep W2 Layer 3 and W3/W4/W5 out of this PR.
 
 Final cutover status:
 
 - PR #244 merged W1b/W1c/W1d into `main`.
-- `feat/inbox-hub-integration` now tracks final cutover and acceptance.
+- PR #246 merged final Inbox cutover into `main`.
 - Final cutover replaced `/inbox` with the hub, preserved `/inbox/new`,
   `/inbox/all`, `/inbox-hub/*`, and `/approvals/*`, removed the Hub preview
   sidebar entry, and deleted the unreferenced legacy `Inbox.tsx` UI surface.
@@ -53,13 +53,16 @@ Merged in PR #244:
   mobile rail drawer and stacked viewer flow, keyboard shortcuts, per-user
   counter snapshots, and W1d Playwright coverage.
 
-Planned next:
+Planned/active next:
 
-- **Final Inbox cutover and acceptance:** `docs/aoa/plans/2026-06-30-inbox-hub-final-cutover-acceptance-plan.md`
+- **W2 Layer 2:** active in `docs/aoa/plans/2026-06-30-w2-layer2-notifications-registry-plan.md`.
+  Scope is persistent notification registry, canonical hub-backed create path,
+  legacy route state sync, direct-write guard, cockpit proactive compatibility,
+  and dead-type cleanup.
 
 Not yet planned or built:
 
-- W2 Layer 2 and Layer 3
+- W2 Layer 3
 - W3 Autopilot
 - W4 Steward
 - W5 runtime decision routing
@@ -93,7 +96,9 @@ This avoids mixing W2/W3/W4/W5 implementation into the route cutover.
 
 These stay outside the UI integration PR:
 
-- **W2 Layer 2:** notifications registry and single emit cleanup
+- **W2 Layer 2:** active on `codex/inbox-hub-next-roadmap`; notifications
+  registry, canonical hub-backed persistent emit, legacy route state sync, and
+  dead-type cleanup.
 - **W2 Layer 3:** realtime, toast bridge, preferences, anti-spam, digests
 - **W3:** Autopilot autonomy and auto-action audit/undo
 - **W4:** Steward crew agent and curation worker
@@ -289,6 +294,13 @@ Exit criteria:
 Layer 2 should lock the persistent notification registry and single emit path
 against the shared hub semantic contract. Layer 3 should replace polling with
 realtime and add the toast bridge plus preferences.
+
+Current status: W2 Layer 2 is active on `codex/inbox-hub-next-roadmap`.
+Compatibility predicates for old proactive notification rows
+(`internal_agent.proactive` and `internal_agent_proactive`) remain until a
+separate backfill/migration plan proves they can be removed. W2 Layer 3 remains
+deferred; realtime, toast bridge, preferences, anti-spam, quiet hours, and
+digests are not part of W2-L2.
 
 Dependency boundary: W1 can use polling and W1a routes. W1 must not invent a
 second notification store or toast system.

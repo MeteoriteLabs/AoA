@@ -393,4 +393,47 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
       state: expect.objectContaining({ dismissedAt: expect.any(Date) }),
     });
   });
+
+  it("personal read/dismiss state mirrors legacy notification columns for the recipient", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({
+      companyId,
+      semanticType: "mention",
+      legacyType: "thread.mention",
+      sourceType: "discussion",
+      sourceId: `state-sync-${Math.random()}`,
+      title: "Mention",
+      ownerUserId: founderId,
+    });
+
+    await svc.applyPersonalState({
+      companyId,
+      hubItemId: item.id,
+      actorUserId: founderId,
+      state: { kind: "read" },
+    });
+    let row = firstRow<{ read_at: Date | null; dismissed_at: Date | null }>(
+      await db.execute(sql`
+        SELECT read_at, dismissed_at FROM notifications WHERE id = ${item.id}
+      `),
+    );
+    expect(row.read_at).toBeTruthy();
+    expect(row.dismissed_at).toBeNull();
+
+    await svc.applyPersonalState({
+      companyId,
+      hubItemId: item.id,
+      actorUserId: founderId,
+      state: { kind: "dismiss" },
+    });
+    row = firstRow<{ read_at: Date | null; dismissed_at: Date | null }>(
+      await db.execute(sql`
+        SELECT read_at, dismissed_at FROM notifications WHERE id = ${item.id}
+      `),
+    );
+    expect(row.read_at).toBeTruthy();
+    expect(row.dismissed_at).toBeTruthy();
+  });
 });

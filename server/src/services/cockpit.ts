@@ -28,7 +28,7 @@
  *     runtime_tool_trust → any role, owner-scoped by userId (HC4).
  */
 
-import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -397,12 +397,9 @@ async function cockpitDoneToday(
 // ── Opt-in card resolvers: proactive findings + teammates' activity ────────────
 
 /**
- * Proactive findings: recent unread + undismissed notifications of Commander
- * proactive types for the current user.
- *
- * Codex #1: the writer inserts "internal_agent_proactive" (proactive.ts:102) but the
- * constant/schema comment say "internal_agent.proactive" (constants.ts:967).
- * Query BOTH to be robust to the codebase inconsistency.
+ * Proactive findings: recent unread + undismissed Commander proactive items
+ * for the current user. Prefer hub semantic type, while keeping dot/underscore
+ * legacy type compatibility until a data backfill removes old rows.
  */
 async function cockpitProactiveFindings(
   db: Db,
@@ -422,7 +419,10 @@ async function cockpitProactiveFindings(
       and(
         eq(notifications.companyId, companyId),
         eq(notifications.userId, scope.userId),
-        inArray(notifications.type, ["internal_agent.proactive", "internal_agent_proactive"]),
+        or(
+          eq(notifications.semanticType, "proactive"),
+          inArray(notifications.type, ["internal_agent.proactive", "internal_agent_proactive"]),
+        )!,
         isNull(notifications.readAt),
         isNull(notifications.dismissedAt),
       ),
