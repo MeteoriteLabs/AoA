@@ -14,7 +14,6 @@ import {
   Puzzle,
   FolderGit2,
   LayoutList,
-  LayoutDashboard,
   ShieldCheck,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -132,7 +131,6 @@ export function Sidebar() {
               alert={(sidebarBadges?.failedRuns ?? 0) > 0}
               collapsed={collapsed}
             />
-            <SidebarNavItem to="/inbox-hub" label="Hub preview" icon={LayoutDashboard} collapsed={collapsed} />
             <SidebarNavItem to="/commander" label="Commander" icon={Shield} collapsed={collapsed} />
           </div>
 

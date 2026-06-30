@@ -92,7 +92,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
       ownerPool: "board",
     });
 
-    await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await expandGroupIfNeeded(page, /Read toggle approval/i, /w1c/i);
 
     await page.getByRole("button", { name: /Read toggle approval/i }).click();
@@ -119,20 +119,20 @@ test.describe("Inbox Hub W1c lifecycle", () => {
       ),
       page.getByRole("button", { name: /undo resolve/i }).click(),
     ]);
-    await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await expandGroupIfNeeded(page, /Resolve launch approval/i, /w1c/i);
     await expect(page.getByRole("button", { name: /Resolve launch approval/i })).toBeVisible({
       timeout: 10_000,
     });
 
-    await page.goto(`/${company.issuePrefix}/inbox-hub/suggestions/${claimSeed.id}`);
+    await page.goto(`/${company.issuePrefix}/inbox/suggestions/${claimSeed.id}`);
     await expect(page.getByRole("button", { name: /^claim$/i })).toBeVisible();
     await page.getByRole("button", { name: /^claim$/i }).click();
     await expect(page.getByRole("button", { name: /^release$/i })).toBeVisible();
     await page.getByRole("button", { name: /^release$/i }).click();
     await expect(page.getByRole("button", { name: /^claim$/i })).toBeVisible();
 
-    await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await page.getByRole("button", { name: /^resolved$/i }).click();
     await expandGroupIfNeeded(page, /Resolved history approval/i, /w1c/i);
     await expect(page.getByText("Resolved history approval")).toBeVisible();
@@ -159,7 +159,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
       ownerPool: "board",
     });
 
-    await page.goto(`/${company.issuePrefix}/inbox-hub/suggestions`);
+    await page.goto(`/${company.issuePrefix}/inbox/suggestions`);
     await page.getByRole("checkbox", { name: /select bulk fresh stale work/i }).check();
     await page.getByRole("checkbox", { name: /select bulk changed stale work/i }).check();
 

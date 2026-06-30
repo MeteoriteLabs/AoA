@@ -26,7 +26,24 @@ const removedOldInboxSources = [
   },
 ] as const;
 
+const requiredW1Categories = [
+  ["approvals", "approval_request", "waiting_on_you"],
+  ["discussion pending review", "discussion_pending", "waiting_on_you"],
+  ["thread human input", "human_input_needed", "waiting_on_you"],
+  ["failed runs", "run_failed", "notifications"],
+  ["budget alert", "budget_alert", "notifications"],
+  ["stale work", "stale_work", "suggestions"],
+] as const;
+
 describe("old Inbox to hub parity contract", () => {
+  it.each(requiredW1Categories)(
+    "%s maps to a hub lane",
+    (_label, semanticType, expectedLane) => {
+      expect(HUB_SEMANTIC_TYPES).toContain(semanticType);
+      expect(HUB_SEMANTIC_TO_LANE[semanticType]).toBe(expectedLane);
+    },
+  );
+
   it("maps every retained old Inbox source to a known hub semantic type and lane", () => {
     for (const source of oldInboxSources) {
       expect(HUB_SEMANTIC_TYPES, source.name).toContain(source.semanticType);

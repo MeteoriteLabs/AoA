@@ -1,19 +1,45 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
 import { joinRequests } from "@armyofagents/db";
+import type { UserRole } from "@armyofagents/shared";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { issueService } from "../services/issues.js";
 import { accessService } from "../services/access.js";
 import { dashboardService } from "../services/dashboard.js";
+import {
+  hubCounterSnapshotsService,
+  hubItemsService,
+  permissionService,
+} from "../services/index.js";
+import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
+import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
 import { assertCompanyAccess } from "./authz.js";
+
+function hasImplicitFounderAuthority(req: Request): boolean {
+  return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+}
 
 export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
+  const hubItems = hubItemsService(db);
+  const counterSnapshots = hubCounterSnapshotsService(db, {
+    liveCounts: ({ companyId, userId, role }) => hubItems.counts(companyId, userId, role),
+  });
+  const perms = permissionService(db);
   const issueSvc = issueService(db);
   const access = accessService(db);
   const dashboard = dashboardService(db);
+
+  async function resolveHubBadgeRole(
+    req: Request,
+    companyId: string,
+    userId: string,
+  ): Promise<UserRole> {
+    if (hasImplicitFounderAuthority(req)) return "founder";
+    return perms.getEffectiveRole(companyId, userId);
+  }
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -39,13 +65,26 @@ export function sidebarBadgeRoutes(db: Db) {
     const badges = await svc.get(companyId, {
       joinRequests: joinRequestCount,
     });
-    const summary = await dashboard.summary(companyId);
-    const staleIssueCount = await issueSvc.staleCount(companyId, 24 * 60);
-    const hasFailedRuns = badges.failedRuns > 0;
-    const alertsCount =
-      (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
-      (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount + badges.pendingDiscussions;
+    if (req.actor.type === "board" && req.actor.userId) {
+      await emitOpenApprovalHubItems(db, companyId);
+      await emitStaleWorkHubItems(db, companyId, null);
+      const role = await resolveHubBadgeRole(req, companyId, req.actor.userId);
+      const hubCounts = await counterSnapshots.getOrRefresh({
+        companyId,
+        userId: req.actor.userId,
+        role,
+      });
+      badges.inbox = hubCounts.open;
+    } else {
+      const summary = await dashboard.summary(companyId);
+      const staleIssueCount = await issueSvc.staleCount(companyId, 24 * 60);
+      const hasFailedRuns = badges.failedRuns > 0;
+      const alertsCount =
+        (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
+        (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
+      badges.inbox =
+        badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount + badges.pendingDiscussions;
+    }
 
     res.json(badges);
   });

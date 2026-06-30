@@ -38,7 +38,7 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
       ownerPool: "board",
     });
 
-    await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     const alphaGroup = page.getByRole("button", { name: /w1d-alpha/i });
     await expect(alphaGroup).toBeVisible();
     await expect(alphaGroup).toHaveAttribute("aria-expanded", "false");
@@ -52,10 +52,10 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
       ),
       page.getByRole("combobox", { name: /default landing/i }).selectOption("suggestions"),
     ]);
-    await page.goto(`/${company.issuePrefix}/inbox-hub`);
-    await expect(page).toHaveURL(new RegExp("/inbox-hub/suggestions$"));
+    await page.goto(`/${company.issuePrefix}/inbox`);
+    await expect(page).toHaveURL(new RegExp("/inbox/suggestions$"));
 
-    await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await page.getByRole("searchbox", { name: /search hub/i }).fill("unique deploy");
     await expect(page.getByText("W1d unique deploy approval")).toBeVisible();
     await expect(page.getByText("W1d beta approval 1")).toBeHidden();
@@ -109,13 +109,13 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     });
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
 
     await page.getByRole("button", { name: /open hub lanes/i }).click();
     const drawer = page.getByRole("dialog", { name: /hub lanes/i });
     await expect(drawer).toBeVisible();
     await drawer.getByRole("button", { name: /suggestions/i }).click();
-    await expect(page).toHaveURL(new RegExp("/inbox-hub/suggestions$"));
+    await expect(page).toHaveURL(new RegExp("/inbox/suggestions$"));
     await expect(page.getByRole("button", { name: /W1d mobile stale work/i })).toBeVisible();
 
     await page.getByRole("button", { name: /W1d mobile stale work/i }).click();

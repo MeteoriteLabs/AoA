@@ -44,7 +44,7 @@ function fullPageRoute(item: CockpitApprovalItem): string {
   if (item.source === "approval") return `/approvals/${item.id}`;
   if (item.source === "memory") return `/memory/explore`;
   if (item.source === "memory_version" || item.source === "memory_archive") return `/memory/explore`;
-  if (item.source === "join_request") return `/inbox/new`;
+  if (item.source === "join_request") return `/inbox/waiting`;
   if (item.source === "runtime_tool_trust") return ""; // no full-page destination
   // discussion_item: navigate to the discussion thread
   return `/discussions/${item.discussionId ?? ""}`;

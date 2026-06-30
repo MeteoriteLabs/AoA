@@ -129,12 +129,12 @@ describe("Sidebar — Phase E chrome", () => {
     );
   });
 
-  it("renders the preview Hub nav item without replacing Inbox", async () => {
+  it("renders Inbox as the single hub entry point", async () => {
     renderSidebar();
-    expect(await screen.findByRole("link", { name: /^Inbox/ })).toBeInTheDocument();
-    expect(await screen.findByRole("link", { name: /Hub preview/i })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: /^Inbox/ })).toHaveAttribute(
       "href",
-      "/P4/inbox-hub",
+      "/P4/inbox",
     );
+    expect(screen.queryByRole("link", { name: /Hub preview/i })).not.toBeInTheDocument();
   });
 });

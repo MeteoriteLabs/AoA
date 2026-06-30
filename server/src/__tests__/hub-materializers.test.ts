@@ -2,8 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { emitHubItem, buildApprovalHubEmit, buildStaleIssueHubEmit } = vi.hoisted(() => ({
   emitHubItem: vi.fn(),
-  buildApprovalHubEmit: vi.fn((approval) => ({ sourceType: "approval", sourceId: approval.id })),
-  buildStaleIssueHubEmit: vi.fn((issue) => ({ sourceType: "issue", sourceId: issue.id })),
+  buildApprovalHubEmit: vi.fn((approval) => ({
+    companyId: approval.companyId,
+    semanticType: "approval_request",
+    sourceType: "approval",
+    sourceId: approval.id,
+  })),
+  buildStaleIssueHubEmit: vi.fn((issue) => ({
+    companyId: issue.companyId,
+    semanticType: "stale_work",
+    sourceType: "issue",
+    sourceId: issue.id,
+  })),
 }));
 
 vi.mock("../services/hub-source-producers.js", () => ({
@@ -56,22 +66,32 @@ describe("hub source materializers", () => {
   });
 
   it("caps open approval materialization at 50", async () => {
-    const { db, limits } = makeSelectDb([{ id: "approval-1" }]);
+    const { db, limits } = makeSelectDb([{ id: "approval-1", companyId: "co-1" }]);
 
     await emitOpenApprovalHubItems(db as any, "co-1", 500);
 
     expect(limits).toEqual([50]);
-    expect(buildApprovalHubEmit).toHaveBeenCalledWith({ id: "approval-1" });
-    expect(emitHubItem).toHaveBeenCalledWith(db, { sourceType: "approval", sourceId: "approval-1" });
+    expect(buildApprovalHubEmit).toHaveBeenCalledWith({ id: "approval-1", companyId: "co-1" });
+    expect(emitHubItem).toHaveBeenCalledWith(db, {
+      companyId: "co-1",
+      semanticType: "approval_request",
+      sourceType: "approval",
+      sourceId: "approval-1",
+    });
   });
 
   it("caps stale-work materialization at 50", async () => {
-    const { db, limits } = makeSelectDb([{ id: "issue-1" }]);
+    const { db, limits } = makeSelectDb([{ id: "issue-1", companyId: "co-1" }]);
 
     await emitStaleWorkHubItems(db as any, "co-1", 500);
 
     expect(limits).toEqual([50]);
-    expect(buildStaleIssueHubEmit).toHaveBeenCalledWith({ id: "issue-1" });
-    expect(emitHubItem).toHaveBeenCalledWith(db, { sourceType: "issue", sourceId: "issue-1" });
+    expect(buildStaleIssueHubEmit).toHaveBeenCalledWith({ id: "issue-1", companyId: "co-1" });
+    expect(emitHubItem).toHaveBeenCalledWith(db, {
+      companyId: "co-1",
+      semanticType: "stale_work",
+      sourceType: "issue",
+      sourceId: "issue-1",
+    });
   });
 });
