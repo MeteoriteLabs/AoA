@@ -8,6 +8,7 @@ export type HubRailLane = HubLane | null;
 interface HubRailProps {
   activeLane: HubRailLane;
   counts: { open: number; unread: number };
+  visibleLanes?: HubLane[];
   onLaneChange: (lane: HubRailLane) => void;
 }
 
@@ -22,13 +23,17 @@ const lanes: Array<{
   { lane: "suggestions", label: "Suggestions", icon: Lightbulb },
 ];
 
-export function HubRail({ activeLane, counts, onLaneChange }: HubRailProps) {
+export function HubRail({ activeLane, counts, visibleLanes, onLaneChange }: HubRailProps) {
+  const visibleRailLanes = lanes.filter(
+    ({ lane }) => lane === null || !visibleLanes || visibleLanes.includes(lane),
+  );
+
   return (
     <nav
       aria-label="Hub lanes"
       className="flex h-full w-16 shrink-0 flex-col items-center gap-2 border-r border-border bg-bg py-3"
     >
-      {lanes.map(({ lane, label, icon: Icon }) => {
+      {visibleRailLanes.map(({ lane, label, icon: Icon }) => {
         const active = activeLane === lane;
         return (
           <Button

@@ -652,7 +652,7 @@ git commit -m "feat(hub): wire search and paginated loading"
 - Modify `ui/src/components/hub/__tests__/HubShell.test.tsx`
 - Modify `ui/src/__tests__/InboxHub.test.tsx`
 
-- [ ] **Step 1: Add failing component tests**
+- [x] **Step 1: Add failing component tests**
 
 Cover:
 
@@ -662,7 +662,7 @@ expect(screen.queryByRole("button", { name: /hidden notification/i })).not.toBeI
 expect(screen.getByRole("combobox", { name: /default landing/i })).toHaveValue("waiting_on_you");
 ```
 
-- [ ] **Step 2: Implement grouping model**
+- [x] **Step 2: Implement grouping model**
 
 Create a local helper in `hubTypes.ts`:
 
@@ -674,11 +674,11 @@ export type HubListEntry =
 
 Group only when `groupMode !== "none"` and the group has at least 3 items. Urgent/high-priority items must remain individually visible above their group; the group header should show urgent and unread counts for the remaining grouped items.
 
-- [ ] **Step 3: Render groups without nested cards**
+- [x] **Step 3: Render groups without nested cards**
 
 Use full-width row bands inside the list. Group rows must have stable height and an expand/collapse button with `aria-expanded`.
 
-- [ ] **Step 4: Add preferences UI**
+- [x] **Step 4: Add preferences UI**
 
 Add a compact settings control in the shell toolbar:
 
@@ -691,7 +691,7 @@ Add a compact settings control in the shell toolbar:
 
 If a preference change hides the active lane, immediately navigate to `"home"` or the first visible lane and keep the viewer closed until the new lane data loads.
 
-- [ ] **Step 5: Wire preferences mutations**
+- [x] **Step 5: Wire preferences mutations**
 
 On successful patch/reset, invalidate:
 
@@ -700,7 +700,7 @@ queryKeys.hubItems.preferences(companyId)
 queryKeys.hubItems.list(companyId, ...)
 ```
 
-- [ ] **Step 6: Run UI tests**
+- [x] **Step 6: Run UI tests**
 
 Run:
 
@@ -708,7 +708,14 @@ Run:
 corepack pnpm@9.15.4 --filter @armyofagents/ui test -- HubShell.test.tsx InboxHub.test.tsx
 ```
 
-- [ ] **Step 7: Commit**
+Verified with:
+
+```sh
+corepack pnpm@9.15.4 --filter @armyofagents/ui test -- hub-items-api.test.ts HubShell.test.tsx InboxHub.test.tsx
+corepack pnpm@9.15.4 --filter @armyofagents/ui typecheck
+```
+
+- [x] **Step 7: Commit**
 
 ```sh
 git add ui/src/components/hub/HubShell.tsx ui/src/components/hub/HubList.tsx ui/src/components/hub/HubHome.tsx ui/src/components/hub/HubRail.tsx ui/src/components/hub/hubTypes.ts ui/src/components/hub/__tests__/HubShell.test.tsx ui/src/__tests__/InboxHub.test.tsx

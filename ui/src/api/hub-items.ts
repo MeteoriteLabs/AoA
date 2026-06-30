@@ -1,9 +1,11 @@
 import type {
   HubGroupMode,
+  HubPreferences,
   HubItemPriority,
   HubItemStatus,
   HubLane,
   HubSemanticType,
+  UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
 import { api } from "./client";
 
@@ -185,6 +187,18 @@ export const hubItemsApi = {
     ),
   counts: (companyId: string) =>
     api.get<HubCounts>(`/companies/${companyId}/hub-items/counts`),
+  getPreferences: (companyId: string) =>
+    api.get<HubPreferences>(`/companies/${companyId}/hub-items/preferences/me`),
+  updatePreferences: (companyId: string, patch: UpdateHubPreferencesInput) =>
+    api.patch<HubPreferences>(
+      `/companies/${companyId}/hub-items/preferences/me`,
+      patch,
+    ),
+  resetPreferences: (companyId: string) =>
+    api.post<HubPreferences>(
+      `/companies/${companyId}/hub-items/preferences/me/reset`,
+      {},
+    ),
   markRead: (companyId: string, itemId: string) =>
     api.patch(`/companies/${companyId}/hub-items/${itemId}/state`, {
       kind: "read",

@@ -105,6 +105,26 @@ describe("hubItemsApi", () => {
     expect(get).toHaveBeenCalledWith("/companies/company-1/hub-items/counts");
   });
 
+  it("reads, updates, and resets hub preferences", async () => {
+    get.mockResolvedValueOnce({ defaultLanding: "home" });
+    patch.mockResolvedValueOnce({ density: "compact" });
+    post.mockResolvedValueOnce({ defaultLanding: "home" });
+
+    await hubItemsApi.getPreferences("company-1");
+    await hubItemsApi.updatePreferences("company-1", { density: "compact" });
+    await hubItemsApi.resetPreferences("company-1");
+
+    expect(get).toHaveBeenCalledWith("/companies/company-1/hub-items/preferences/me");
+    expect(patch).toHaveBeenCalledWith(
+      "/companies/company-1/hub-items/preferences/me",
+      { density: "compact" },
+    );
+    expect(post).toHaveBeenCalledWith(
+      "/companies/company-1/hub-items/preferences/me/reset",
+      {},
+    );
+  });
+
   it("marks an item read through sparse state route", async () => {
     patch.mockResolvedValueOnce({});
 

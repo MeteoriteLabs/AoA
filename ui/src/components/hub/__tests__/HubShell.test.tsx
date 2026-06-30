@@ -31,6 +31,11 @@ const items: HubItemListRow[] = [
     readAt: null,
     snoozedUntil: null,
     dismissedAt: null,
+    groupKey: "source:approval",
+    groupLabel: "approval",
+    groupCount: null,
+    scopeKey: null,
+    slaAt: null,
   },
 ];
 
@@ -47,6 +52,14 @@ function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> =
         onLaneChange={vi.fn()}
         onSelectItem={vi.fn()}
         onMarkRead={vi.fn()}
+        preferences={{
+          defaultLanding: "waiting_on_you",
+          visibleLanes: ["waiting_on_you", "suggestions"],
+          groupMode: "auto",
+          density: "comfortable",
+          showAutopilotEntry: true,
+          updatedAt: null,
+        }}
         {...overrides}
       />
     </MemoryRouter>,
@@ -94,5 +107,43 @@ describe("HubShell", () => {
     await user.click(screen.getByRole("button", { name: /close viewer/i }));
 
     expect(onSelectItem).toHaveBeenCalledWith(null);
+  });
+
+  it("hides lanes excluded by preferences", () => {
+    renderShell();
+
+    expect(screen.getByRole("button", { name: /waiting on you/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /notifications/i })).not.toBeInTheDocument();
+  });
+
+  it("renders grouped rows with explicit expansion state", () => {
+    renderShell({
+      items: Array.from({ length: 3 }, (_, index) => ({
+        ...items[0],
+        id: `hub-${index + 1}`,
+        title: `Approval ${index + 1}`,
+      })),
+    });
+
+    expect(screen.getByRole("button", { name: /3 approval/i })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("renders preference controls", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(screen.getByRole("button", { name: /hub settings/i }));
+
+    expect(screen.getByRole("combobox", { name: /default landing/i })).toHaveValue(
+      "waiting_on_you",
+    );
+    expect(screen.getByRole("combobox", { name: /density/i })).toHaveValue("comfortable");
+    expect(screen.getByRole("checkbox", { name: /autopilot entry/i })).toBeChecked();
+    expect(
+      screen.getByRole("button", { name: /notification preferences/i }),
+    ).toBeDisabled();
   });
 });

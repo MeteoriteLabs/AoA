@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { HubItemStatus, HubLane } from "@armyofagents/shared";
+import type {
+  HubItemStatus,
+  HubLane,
+  HubPreferences,
+  UpdateHubPreferencesInput,
+} from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -19,6 +24,15 @@ export const SLUG_TO_LANE: Record<string, HubLane> = {
   waiting: "waiting_on_you",
   notifications: "notifications",
   suggestions: "suggestions",
+};
+
+const DEFAULT_HUB_PREFERENCES: HubPreferences = {
+  defaultLanding: "home",
+  visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
+  groupMode: "auto",
+  density: "comfortable",
+  showAutopilotEntry: true,
+  updatedAt: null,
 };
 
 export function InboxHub() {
@@ -66,6 +80,41 @@ export function InboxHub() {
     enabled: !!selectedCompanyId,
   });
 
+  const preferencesQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.hubItems.preferences(selectedCompanyId)
+      : ["hub-items", "preferences", "none"],
+    queryFn: () => hubItemsApi.getPreferences(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const preferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
+
+  const updatePreferences = useMutation({
+    mutationFn: (patch: UpdateHubPreferencesInput) =>
+      hubItemsApi.updatePreferences(selectedCompanyId!, patch),
+    onSuccess: async () => {
+      if (!selectedCompanyId) return;
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.preferences(selectedCompanyId),
+        }),
+        queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
+      ]);
+    },
+  });
+
+  useEffect(() => {
+    if (!activeLane) {
+      if (preferences.defaultLanding !== "home") {
+        navigate(`/inbox-hub/${LANE_TO_SLUG[preferences.defaultLanding]}`);
+      }
+      return;
+    }
+    if (!preferences.visibleLanes.includes(activeLane)) {
+      navigate("/inbox-hub");
+    }
+  }, [activeLane, navigate, preferences.defaultLanding, preferences.visibleLanes]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedSearchText(searchText.trim());
@@ -80,12 +129,12 @@ export function InboxHub() {
             lane: activeLane,
             status: historyStatus,
             q: debouncedSearchText || undefined,
-            groupMode: "auto" as const,
+            groupMode: preferences.groupMode,
             cursor: cursor ?? undefined,
             limit: 50,
           }
         : undefined,
-    [activeLane, cursor, debouncedSearchText, historyStatus],
+    [activeLane, cursor, debouncedSearchText, historyStatus, preferences.groupMode],
   );
 
   useEffect(() => {
@@ -225,6 +274,13 @@ export function InboxHub() {
     }
   };
 
+  const handlePreferencesChange = (patch: UpdateHubPreferencesInput) => {
+    updatePreferences.mutate(patch);
+    if (patch.visibleLanes && activeLane && !patch.visibleLanes.includes(activeLane)) {
+      navigate("/inbox-hub");
+    }
+  };
+
   const handleMarkRead = (itemId: string) => {
     if (markingReadItemIds.current.has(itemId)) return;
     markingReadItemIds.current.add(itemId);
@@ -303,9 +359,11 @@ export function InboxHub() {
       searchText={searchText}
       hasMore={!!listQuery.data?.nextCursor}
       isLoadingMore={listQuery.isFetching && !!cursor}
+      preferences={preferences}
       onLaneChange={handleLaneChange}
       onSearchTextChange={setSearchText}
       onLoadMore={handleLoadMore}
+      onPreferencesChange={handlePreferencesChange}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}
