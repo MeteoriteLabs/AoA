@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { notificationDigestItems } from "@armyofagents/db";
 import type { HubDigestChangedLivePayload, HubSemanticType, UserRole } from "@armyofagents/shared";
-import { hubItemsService } from "./hub-items.js";
+import type { HubListResponse } from "./hub-items.js";
 import { publishLiveEvent } from "./live-events.js";
 
 export function notificationDigestService(db: Db) {
@@ -38,7 +38,7 @@ export function notificationDigestService(db: Db) {
       companyId: string;
       userId: string;
       role?: UserRole;
-    }): Promise<{ items: Awaited<ReturnType<ReturnType<typeof hubItemsService>["query"]>>["items"] }> {
+    }): Promise<{ items: HubListResponse["items"] }> {
       const rows = await db
         .select({ hubItemId: notificationDigestItems.hubItemId })
         .from(notificationDigestItems)
@@ -51,6 +51,7 @@ export function notificationDigestService(db: Db) {
         );
       if (rows.length === 0) return { items: [] };
 
+      const { hubItemsService } = await import("./hub-items.js");
       const visible = await hubItemsService(db).query(args.companyId, {
         actorUserId: args.userId,
         role: args.role,

@@ -6,6 +6,7 @@ import {
   hubItemUserState,
   hubAudit,
   activityLog,
+  companyMemberships,
   approvals,
   heartbeatRuns,
   joinRequests,
@@ -22,6 +23,7 @@ import type {
   HubSemanticType,
   HubOwnerPool,
   HubUserStateInput,
+  NotificationPreferences,
 } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
@@ -47,6 +49,8 @@ import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { HttpError } from "../errors.js";
 import { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
+import { notificationDigestService } from "./notification-digest.js";
+import { notificationPreferencesService } from "./notification-preferences.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -88,7 +92,7 @@ export interface EmitArgs {
   executor?: Db;
 }
 
-type HubListRow = typeof hubItems.$inferSelect & {
+export type HubListRow = typeof hubItems.$inferSelect & {
   lane: HubLane | null;
   readAt: Date | null;
   snoozedUntil: Date | null;
@@ -100,7 +104,7 @@ type HubListRow = typeof hubItems.$inferSelect & {
   slaAt: Date | null;
 };
 
-interface HubListResponse {
+export interface HubListResponse {
   items: HubListRow[];
   nextCursor: string | null;
   totalKnown: number | null;
@@ -249,6 +253,111 @@ export function hubItemsService(db: Db) {
     return founder;
   }
 
+  function clockMinutes(value: string) {
+    const [hours, minutes] = value.split(":").map(Number);
+    return (hours ?? 0) * 60 + (minutes ?? 0);
+  }
+
+  function zonedClockMinutes(now: Date, timezone: string) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(now);
+    const hourPart = parts.find((part) => part.type === "hour")?.value ?? "0";
+    const minutePart = parts.find((part) => part.type === "minute")?.value ?? "0";
+    const hour = Number(hourPart) % 24;
+    return hour * 60 + Number(minutePart);
+  }
+
+  function quietHoursActive(
+    quietHours: NotificationPreferences["quietHours"],
+    now = new Date(),
+  ) {
+    if (!quietHours.enabled) return false;
+    const start = clockMinutes(quietHours.start);
+    const end = clockMinutes(quietHours.end);
+    if (start === end) return true;
+    const current = zonedClockMinutes(now, quietHours.timezone);
+    return start < end
+      ? current >= start && current < end
+      : current >= start || current < end;
+  }
+
+  async function findDigestCandidateUserIds(
+    conn: Db,
+    item: { companyId: string; ownerUserId: string | null; scopeKey: string | null },
+  ) {
+    const memberships = await conn
+      .select({ userId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, item.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+    const candidates = new Set<string>();
+    const permissions = permissionService(conn);
+    for (const membership of memberships) {
+      const userId = membership.userId;
+      if (userId === item.ownerUserId) {
+        candidates.add(userId);
+        continue;
+      }
+      const role = await permissions.getEffectiveRole(item.companyId, userId);
+      if (role === "founder") {
+        candidates.add(userId);
+        continue;
+      }
+      if (role === "team_lead" && item.scopeKey) {
+        const leadDepartments = await permissions.getTeamLeadDepartments(item.companyId, userId);
+        if (leadDepartments.includes(item.scopeKey)) {
+          candidates.add(userId);
+        }
+      }
+    }
+    return [...candidates];
+  }
+
+  async function queueDigestDeliveries(
+    conn: Db,
+    item: {
+      id: string;
+      companyId: string;
+      semanticType: string | null;
+      status: string;
+      ownerUserId: string | null;
+      scopeKey: string | null;
+    },
+    publish: boolean,
+  ) {
+    if (item.status !== "open" || !item.semanticType) return;
+    const semanticType = item.semanticType as HubSemanticType;
+    const userIds = await findDigestCandidateUserIds(conn, item);
+    const preferences = notificationPreferencesService(conn);
+    const digest = notificationDigestService(conn);
+    for (const userId of userIds) {
+      const userPreferences = await preferences.get(userId, item.companyId);
+      if (!userPreferences.digest.enabled) continue;
+      const rule = userPreferences.rules.find((r) => r.semanticType === semanticType);
+      if (!rule || rule.deliveryMode === "silent") continue;
+      const shouldQueue =
+        rule.deliveryMode === "digest" ||
+        (rule.deliveryMode === "realtime" && quietHoursActive(userPreferences.quietHours));
+      if (!shouldQueue) continue;
+      await digest.queueForUser({
+        companyId: item.companyId,
+        userId,
+        hubItemId: item.id,
+        semanticType,
+        publish,
+      });
+    }
+  }
+
   async function emit(a: EmitArgs) {
     const conn = (a.executor ?? db) as unknown as Db; // executor may be a PgTransaction
     const ownerUserId = await resolveOwner(conn, a); // a real human; never ""
@@ -325,6 +434,7 @@ export function hubItemsService(db: Db) {
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
     await invalidateCounterSnapshotsForCompany(a.companyId);
+    await queueDigestDeliveries(conn, row, !a.executor);
     if (!a.executor) {
       publishHubItemChanged(row, "created");
       publishHubCountsChanged(a.companyId, "item_changed");
