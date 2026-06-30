@@ -120,7 +120,7 @@ export function hubItemRoutes(db: Db) {
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     await emitOpenApprovalHubItems(db, companyId);
-    await emitStaleWorkHubItems(db, companyId);
+    await emitStaleWorkHubItems(db, companyId, null);
     const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);
   });

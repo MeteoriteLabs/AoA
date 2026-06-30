@@ -551,4 +551,16 @@ describe("hub-items routes", () => {
     });
     expect(mockSvc.counts).not.toHaveBeenCalled();
   });
+
+  it("GET counts materializes all stale work before reading snapshots", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("founder");
+    const app = createApp(boardActor());
+
+    const res = await request(app).get(`/api/companies/${COMPANY_A}/hub-items/counts`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockEmitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A);
+    expect(mockEmitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, null);
+    expect(mockHubCounterSnapshots.getOrRefresh).toHaveBeenCalled();
+  });
 });
