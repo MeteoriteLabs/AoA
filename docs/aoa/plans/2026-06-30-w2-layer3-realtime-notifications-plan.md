@@ -1215,7 +1215,7 @@ git commit -m "feat(notifications): queue digest delivery from hub emits"
 - Create: `tests/e2e/inbox-hub-realtime-notifications.spec.ts`
 - Modify: `docs/aoa/plans/2026-06-29-inbox-hub-integration-roadmap.md`
 
-- [ ] **Step 1: Write Playwright e2e**
+- [x] **Step 1: Write Playwright e2e**
 
 Create an e2e spec that:
 
@@ -1228,7 +1228,7 @@ Create an e2e spec that:
 7. switches to silent and verifies no toast/digest entry;
 8. enables quiet hours and verifies realtime falls back to digest.
 
-- [ ] **Step 2: Run e2e locally if supported**
+- [x] **Step 2: Run e2e locally if supported**
 
 Run:
 
@@ -1238,11 +1238,11 @@ corepack pnpm@9.15.4 test:e2e -- tests/e2e/inbox-hub-realtime-notifications.spec
 
 Expected: PASS. If Windows browser/server harness blocks locally, record the failure and rely on CI.
 
-- [ ] **Step 3: Update roadmap**
+- [x] **Step 3: Update roadmap**
 
 In `2026-06-29-inbox-hub-integration-roadmap.md`, update W2 Layer 3 status to active/in current PR and list W3/W4/W5 as next queue.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```sh
 git add tests/e2e/inbox-hub-realtime-notifications.spec.ts docs/aoa/plans/2026-06-29-inbox-hub-integration-roadmap.md
