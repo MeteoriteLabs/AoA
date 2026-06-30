@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     summary: vi.fn(),
   },
   emitOpenApprovalHubItems: vi.fn(),
+  emitLegacyAlertHubItems: vi.fn(),
   emitStaleWorkHubItems: vi.fn(),
   issueService: {
     staleCount: vi.fn(),
@@ -41,6 +42,10 @@ vi.mock("../services/dashboard.js", () => ({
 
 vi.mock("../services/hub-approval-requests.js", () => ({
   emitOpenApprovalHubItems: mocks.emitOpenApprovalHubItems,
+}));
+
+vi.mock("../services/hub-legacy-alerts.js", () => ({
+  emitLegacyAlertHubItems: mocks.emitLegacyAlertHubItems,
 }));
 
 vi.mock("../services/hub-stale-work.js", () => ({
@@ -101,6 +106,7 @@ describe("sidebar badge routes", () => {
       costs: { monthBudgetCents: 0, monthUtilizationPercent: 0 },
     });
     mocks.emitOpenApprovalHubItems.mockResolvedValue([]);
+    mocks.emitLegacyAlertHubItems.mockResolvedValue([]);
     mocks.emitStaleWorkHubItems.mockResolvedValue([]);
     mocks.issueService.staleCount.mockResolvedValue(5);
     mocks.hubItems.counts.mockResolvedValue({ open: 7, unread: 5 });
@@ -120,6 +126,7 @@ describe("sidebar badge routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.inbox).toBe(7);
     expect(mocks.emitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), "co-1");
+    expect(mocks.emitLegacyAlertHubItems).toHaveBeenCalledWith(expect.anything(), "co-1");
     expect(mocks.emitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), "co-1", null);
     expect(mocks.counterSnapshots.getOrRefresh).toHaveBeenCalledWith({
       companyId: "co-1",
@@ -162,6 +169,7 @@ describe("sidebar badge routes", () => {
     expect(res.body.inbox).toBe(12);
     expect(mocks.counterSnapshots.getOrRefresh).not.toHaveBeenCalled();
     expect(mocks.emitOpenApprovalHubItems).not.toHaveBeenCalled();
+    expect(mocks.emitLegacyAlertHubItems).not.toHaveBeenCalled();
     expect(mocks.emitStaleWorkHubItems).not.toHaveBeenCalled();
   });
 });

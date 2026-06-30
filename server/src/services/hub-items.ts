@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -22,12 +22,12 @@ import {
 } from "@armyofagents/shared";
 import type { UserRole } from "@armyofagents/shared";
 
-// Heartbeat runs are non-terminal only while still queued, waiting to retry, or
-// actively running — derived from the shared HEARTBEAT_RUN_STATUSES truth so the
-// set can't drift from real status values. Everything else (succeeded/failed/
-// cancelled/timed_out, or a missing row) is terminal → close the hub item.
-const HEARTBEAT_LIVE_STATUSES: ReadonlySet<string> = new Set(
-  HEARTBEAT_RUN_STATUSES.filter((s) => s === "queued" || s === "scheduled_retry" || s === "running"),
+// Heartbeat-backed hub items are actionable while the source run is live, or
+// while it is the latest failed/timed-out run for its agent.
+const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set(
+  HEARTBEAT_RUN_STATUSES.filter((s) =>
+    s === "queued" || s === "scheduled_retry" || s === "running" || s === "failed" || s === "timed_out"
+  ),
 );
 const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revision_requested"]);
 const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
@@ -1053,14 +1053,32 @@ export function hubItemsService(db: Db) {
   // The live set is derived from the shared HEARTBEAT_RUN_STATUSES (module top).
   const reconcileHeartbeatRun: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
-      .select({ status: heartbeatRuns.status, error: heartbeatRuns.error, updatedAt: heartbeatRuns.updatedAt })
+      .select({
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, companyId)))
       .limit(1)
       .then((r) => r[0] ?? null);
     if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const newerRun = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, row.agentId),
+          gt(heartbeatRuns.createdAt, row.createdAt),
+        ),
+      )
+      .limit(1)
+      .then((r) => r[0] ?? null);
     return {
-      terminal: !HEARTBEAT_LIVE_STATUSES.has(row.status),
+      terminal: !HEARTBEAT_ACTIONABLE_STATUSES.has(row.status) || Boolean(newerRun),
       summary: row.error ?? null,
       permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     };

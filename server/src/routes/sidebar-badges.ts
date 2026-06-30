@@ -14,6 +14,7 @@ import {
 } from "../services/index.js";
 import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
+import { emitLegacyAlertHubItems } from "../services/hub-legacy-alerts.js";
 import { assertCompanyAccess } from "./authz.js";
 
 function hasImplicitFounderAuthority(req: Request): boolean {
@@ -67,6 +68,7 @@ export function sidebarBadgeRoutes(db: Db) {
     });
     if (req.actor.type === "board" && req.actor.userId) {
       await emitOpenApprovalHubItems(db, companyId);
+      await emitLegacyAlertHubItems(db, companyId);
       await emitStaleWorkHubItems(db, companyId, null);
       const role = await resolveHubBadgeRole(req, companyId, req.actor.userId);
       const hubCounts = await counterSnapshots.getOrRefresh({
