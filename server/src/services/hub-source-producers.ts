@@ -53,6 +53,24 @@ type IssueLike = {
   updatedAt: SourceUpdatedAt;
 };
 
+type FailedRunLike = {
+  id: string;
+  companyId: string;
+  agentId: string;
+  agentName?: string | null;
+  status: string;
+  error?: string | null;
+  updatedAt: SourceUpdatedAt;
+};
+
+type BudgetAlertLike = {
+  companyId: string;
+  monthSpendCents: number;
+  monthBudgetCents: number;
+  monthUtilizationPercent: number;
+  updatedAt: SourceUpdatedAt;
+};
+
 function spaced(value: string) {
   return value.replace(/_/g, " ");
 }
@@ -164,6 +182,36 @@ export function buildStaleIssueHubEmit(issue: IssueLike): EmitArgs {
     sourceActorType: issue.assigneeAgentId ? "agent" : undefined,
     sourceActorId: issue.assigneeAgentId ?? undefined,
     sourcePermissionRevision: sourceRevision(issue.updatedAt),
+  };
+}
+
+export function buildFailedRunHubEmit(run: FailedRunLike): EmitArgs {
+  const agentName = run.agentName?.trim() || "Agent";
+  return {
+    companyId: run.companyId,
+    semanticType: "run_failed",
+    sourceType: "heartbeat_run",
+    sourceId: run.id,
+    title: `${agentName} run ${run.status.replace(/_/g, " ")}`,
+    summary: run.error ?? `Latest run status: ${run.status}`,
+    sourceActorType: "agent",
+    sourceActorId: run.agentId,
+    priority: "high",
+    sourcePermissionRevision: sourceRevision(run.updatedAt),
+  };
+}
+
+export function buildBudgetAlertHubEmit(alert: BudgetAlertLike): EmitArgs {
+  return {
+    companyId: alert.companyId,
+    semanticType: "budget_alert",
+    sourceType: "company_budget",
+    sourceId: alert.companyId,
+    title: "Budget approaching limit",
+    summary: `${alert.monthUtilizationPercent.toFixed(2)}% used (${alert.monthSpendCents}/${alert.monthBudgetCents} cents)`,
+    ownerPool: "board",
+    priority: alert.monthUtilizationPercent >= 100 ? "urgent" : "high",
+    sourcePermissionRevision: sourceRevision(alert.updatedAt),
   };
 }
 

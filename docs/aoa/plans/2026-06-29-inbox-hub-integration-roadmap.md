@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b, W1c, and W1d are implemented in PR #244
+**Status:** Active integration roadmap; W1b, W1c, and W1d merged in PR #244; final cutover implemented on `feat/inbox-hub-integration` pending PR verification
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -23,14 +23,23 @@ Completed foundations:
   audit, emit/query/action/reconcile service, REST routes, counts, and shared
   hub contracts are on `main`.
 
-Active branch:
+Current integration branch:
 
-- **Branch:** `feat/inbox-hub`
-- **Purpose:** integrate W1b, W1c, W1d, and the final Inbox cutover into one
-  user-facing "Inbox Hub UI" PR.
-- **Rule:** keep this branch rebased onto `main` whenever foundation PRs land.
+- **Branch:** `feat/inbox-hub-integration`
+- **Purpose:** carry the final Inbox cutover and acceptance pass after PR #244
+  merged W1b/W1c/W1d to `main`.
+- **Rule:** branch final cutover work from this integration branch or from the
+  latest `origin/main`; keep W2/W3/W4/W5 out of this cutover.
 
-Implemented in the active branch / PR #244:
+Final cutover status:
+
+- PR #244 merged W1b/W1c/W1d into `main`.
+- `feat/inbox-hub-integration` now tracks final cutover and acceptance.
+- Final cutover replaced `/inbox` with the hub, preserved `/inbox/new`,
+  `/inbox/all`, `/inbox-hub/*`, and `/approvals/*`, removed the Hub preview
+  sidebar entry, and deleted the unreferenced legacy `Inbox.tsx` UI surface.
+
+Merged in PR #244:
 
 - **W1b - Hub UI shell:** three-pane Inbox Hub shell, rail lanes, Home overview,
   registry-backed viewer, Approvals reachability, lane/item deep links, and W1b
@@ -44,6 +53,10 @@ Implemented in the active branch / PR #244:
   mobile rail drawer and stacked viewer flow, keyboard shortcuts, per-user
   counter snapshots, and W1d Playwright coverage.
 
+Planned next:
+
+- **Final Inbox cutover and acceptance:** `docs/aoa/plans/2026-06-30-inbox-hub-final-cutover-acceptance-plan.md`
+
 Not yet planned or built:
 
 - W2 Layer 2 and Layer 3
@@ -55,17 +68,26 @@ Not yet planned or built:
 
 ## 2. PR Strategy
 
-### Active Integration PR
+### W1 Integration PRs
 
-One PR should carry the coherent user-facing hub:
+PR #244 carried the coherent W1 hub experience through W1b/W1c/W1d and is now
+merged. The remaining W1 work should be a focused final cutover PR from
+`feat/inbox-hub-integration` or the latest `origin/main`.
 
-1. **W1b - Hub UI shell**
-2. **W1c - Lifecycle**
-3. **W1d - Grouping/search/settings/mobile/performance**
-4. **Final Inbox cutover and acceptance pass**
+### Final Cutover PR
 
-This prevents `main` from receiving a half-built attention hub while still
-allowing small commits and per-phase review inside the branch.
+One focused PR carries:
+
+1. **Route cutover:** `/inbox` opens the Hub; old `/inbox/new`, `/inbox/all`,
+   and `/inbox-hub/*` remain valid through redirects or compatibility handling.
+2. **Navigation cutover:** sidebar has one Inbox entry and no Hub preview entry;
+   Approvals stays reachable.
+3. **Badge and coverage parity:** old Inbox categories are mapped, tested, or
+   explicitly deferred.
+4. **Final operator acceptance:** desktop, stale/permission recovery, and mobile
+   Playwright flows.
+
+This avoids mixing W2/W3/W4/W5 implementation into the route cutover.
 
 ### Separate Later PRs
 
@@ -371,14 +393,17 @@ Create a focused Playwright acceptance spec:
 
 `tests/e2e/inbox-hub-operator.spec.ts`
 
-It must cover:
+It covers or documents:
 
-- Founder, team lead, and team member visibility for seeded hub items.
+- Founder local-trusted browser flow for seeded hub items; authenticated
+  non-founder Playwright coverage remains a follow-up because the current e2e
+  harness runs in local-trusted mode.
 - Each old Inbox category remapped to its W1 lane or documented as deferred.
 - Approval open in hub viewer, approval action where supported, canonical full
   detail open, and return to hub with lane/selection state intact.
 - Stale `409` action recovery.
-- Permission-denied action state.
+- Permission-denied action state via route/unit coverage; authenticated browser
+  coverage remains a follow-up with the multi-user e2e harness.
 - Source-deleted or auto-resolved item state.
 - Snooze return, undo/history, and bulk partial failure once W1c lands.
 - Mobile lane/list/viewer navigation without overlap.
@@ -404,22 +429,35 @@ pnpm test:e2e -- inbox-hub*.spec.ts
 Known CI note: Windows e2e is skipped for embedded Postgres; Linux CI remains
 the required gate for integration and e2e behavior.
 
+Current final-cutover evidence on `feat/inbox-hub-integration`:
+
+- Focused Inbox Hub, Sidebar, registry, parity/materializer, and sidebar-badge
+  tests passed.
+- Focused UI and server typechecks passed.
+- Full Vitest passed: 1254 files passed / 35 skipped; 10580 tests passed / 189
+  skipped.
+- Local Windows Playwright ran the repository sentinel only: 1 skipped. Linux CI
+  remains the browser acceptance gate for the real `inbox-hub*.spec.ts` specs.
+- Recursive `pnpm -r typecheck` and `pnpm build` were blocked locally by pnpm
+  ignored-build-script approval state during dependency/prebuild resolution, not
+  by observed TypeScript or test failures in the touched UI/server surfaces.
+
 ---
 
 ## 6. Branch Hygiene
 
-- Keep `feat/inbox-hub` rebased on `origin/main`.
-- Before starting W1b and before final PR review, run:
+- Keep `feat/inbox-hub-integration` rebased on `origin/main`.
+- Before starting final cutover and before final PR review, run:
   - `git fetch origin`
-  - confirm `origin/main` includes PR #243's W1a merge
-  - rebase `feat/inbox-hub` onto `origin/main` if needed
+  - confirm `origin/main` includes PR #244's W1b/W1c/W1d merge
+  - rebase `feat/inbox-hub-integration` onto `origin/main` if needed
   - inspect `git diff --name-only origin/main...HEAD`
 - Commit each implementation task separately.
 - Do not mix W2/W3/W4/W5 implementation into the W1 UI integration PR.
 - Do not rename DB tables or API routes for UI naming changes.
 - Preserve company scoping and RBAC checks in every route or client behavior.
 - Keep docs updated when behavior, commands, or phase boundaries change.
-- No dependency additions are expected for W1b/W1c/W1d. If a dependency becomes
+- No dependency additions are expected for final cutover. If a dependency becomes
   necessary, follow the current `AGENTS.md` dependency workflow and commit
   manifest and lockfile changes together when required.
 
@@ -430,22 +468,21 @@ the required gate for integration and e2e behavior.
 These must be resolved inside the relevant implementation plan, not improvised
 mid-task:
 
-- W1b: exact route shape for lane and item deep links.
-- W1b: tab persistence limit and behavior when switching lanes.
-- W1b: which existing source viewers are embedded directly versus summarized
-  with "Open full" only.
-- W1c: exact undo duration and which actions are undoable.
-- W1c: partial-failure semantics for heterogeneous bulk actions.
-- W1d: grouping taxonomy and performance threshold for grouping/virtualization.
-- W1d: mobile breakpoint behavior for rail, list, and viewer.
+- Final cutover: exact compatibility behavior for `/inbox/new`, `/inbox/all`,
+  and `/inbox-hub/*`.
+- Final cutover: sidebar badge source after hub counts become canonical.
+- Final cutover: old Inbox category parity and explicit deferrals.
+- Final cutover: whether legacy `Inbox.tsx` is deleted immediately or kept
+  unreferenced for one cleanup PR.
 
 ---
 
 ## 8. Next Step
 
-Write the final cutover and acceptance plan:
+Review and execute the final cutover and acceptance plan:
 
-`docs/aoa/plans/<date>-inbox-hub-final-cutover-acceptance-plan.md`
+`docs/aoa/plans/2026-06-30-inbox-hub-final-cutover-acceptance-plan.md`
 
-The plan must verify old Inbox coverage, route cutover behavior, sidebar/header
-badge links, final operator acceptance, visual QA, and PR #244 readiness evidence.
+The plan verifies old Inbox coverage, route cutover behavior, sidebar/header
+badge links, final operator acceptance, visual QA, and final W1 readiness
+evidence.

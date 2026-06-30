@@ -12,7 +12,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useHubItemMutations } from "@/hooks/useHubItemMutations";
 import { queryKeys } from "@/lib/queryKeys";
-import { Navigate, useNavigate, useParams } from "@/lib/router";
+import { Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 
 export const LANE_TO_SLUG: Record<HubLane, string> = {
   waiting_on_you: "waiting",
@@ -26,6 +26,20 @@ export const SLUG_TO_LANE: Record<string, HubLane> = {
   suggestions: "suggestions",
 };
 
+type RouteHistoryStatus = Extract<HubItemStatus, "open" | "resolved" | "archived">;
+
+function getRouteHistoryStatus(search: string): RouteHistoryStatus {
+  const status = new URLSearchParams(search).get("status");
+  return status === "resolved" || status === "archived" ? status : "open";
+}
+
+function appendStatus(search: string, status: RouteHistoryStatus) {
+  const params = new URLSearchParams(search);
+  params.set("status", status);
+  const nextSearch = params.toString();
+  return nextSearch ? `?${nextSearch}` : "";
+}
+
 const DEFAULT_HUB_PREFERENCES: HubPreferences = {
   defaultLanding: "home",
   visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
@@ -38,6 +52,7 @@ const DEFAULT_HUB_PREFERENCES: HubPreferences = {
 export function InboxHub() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const location = useLocation();
   const navigate = useNavigate();
   const params = useParams<{
     companyPrefix?: string;
@@ -54,9 +69,9 @@ export function InboxHub() {
     expectedVersion?: number;
     restore?: { kind: "unsnooze" | "undismiss" };
   } | null>(null);
-  const [historyStatus, setHistoryStatus] = useState<
-    Extract<HubItemStatus, "open" | "resolved" | "archived">
-  >("open");
+  const routeHistoryStatus = getRouteHistoryStatus(location.search);
+  const [historyStatus, setHistoryStatus] =
+    useState<RouteHistoryStatus>(routeHistoryStatus);
   const [selectedBulkIds, setSelectedBulkIds] = useState<Set<string>>(() => new Set());
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -68,10 +83,21 @@ export function InboxHub() {
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
   const unknownLane = laneSlug != null && activeLane == null;
+  const inboxHubIndex = location.pathname.indexOf("/inbox-hub");
+  const legacyInboxHubTarget =
+    inboxHubIndex >= 0
+      ? `/inbox${location.pathname.slice(inboxHubIndex + "/inbox-hub".length)}${location.search}`
+      : null;
+  const isLegacyInboxNew = /\/inbox\/new$/.test(location.pathname);
+  const isLegacyInboxAll = /\/inbox\/all$/.test(location.pathname);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Inbox Hub" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    setHistoryStatus(routeHistoryStatus);
+  }, [routeHistoryStatus]);
 
   const countsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -133,12 +159,12 @@ export function InboxHub() {
   useEffect(() => {
     if (!activeLane) {
       if (preferences.defaultLanding !== "home") {
-        navigate(`/inbox-hub/${LANE_TO_SLUG[preferences.defaultLanding]}`);
+        navigate(`/inbox/${LANE_TO_SLUG[preferences.defaultLanding]}`);
       }
       return;
     }
     if (!preferences.visibleLanes.includes(activeLane)) {
-      navigate("/inbox-hub");
+      navigate("/inbox");
     }
   }, [activeLane, navigate, preferences.defaultLanding, preferences.visibleLanes]);
 
@@ -242,17 +268,26 @@ export function InboxHub() {
     setHistoryStatus("open");
     setSelectedBulkIds(new Set());
     if (!lane) {
-      navigate("/inbox-hub");
+      navigate("/inbox");
       return;
     }
-    navigate(`/inbox-hub/${LANE_TO_SLUG[lane]}`);
+    navigate(`/inbox/${LANE_TO_SLUG[lane]}`);
   };
 
   const handleHistoryStatusChange = (
-    status: Extract<HubItemStatus, "open" | "resolved" | "archived">,
+    status: RouteHistoryStatus,
   ) => {
     setHistoryStatus(status);
     setBulkMessage(null);
+    if (activeLane) {
+      const itemPath = params.itemId ? `/${params.itemId}` : "";
+      navigate(
+        `/inbox/${LANE_TO_SLUG[activeLane]}${itemPath}${appendStatus(
+          location.search,
+          status,
+        )}`,
+      );
+    }
   };
 
   const handleToggleBulkItem = (itemId: string) => {
@@ -287,12 +322,12 @@ export function InboxHub() {
 
   const handleSelectItem = (itemId: string | null) => {
     if (!activeLane) return;
-    const lanePath = `/inbox-hub/${LANE_TO_SLUG[activeLane]}`;
+    const lanePath = `/inbox/${LANE_TO_SLUG[activeLane]}`;
     if (!itemId) {
-      navigate(lanePath);
+      navigate(`${lanePath}${location.search}`);
       return;
     }
-    navigate(`${lanePath}/${itemId}`);
+    navigate(`${lanePath}/${itemId}${location.search}`);
   };
 
   const handleLoadMore = () => {
@@ -305,7 +340,7 @@ export function InboxHub() {
     setOptimisticPreferences({ ...preferences, ...patch });
     updatePreferences.mutate(patch);
     if (patch.visibleLanes && activeLane && !patch.visibleLanes.includes(activeLane)) {
-      navigate("/inbox-hub");
+      navigate("/inbox");
     }
   };
 
@@ -367,8 +402,33 @@ export function InboxHub() {
     setUndoAction(null);
   };
 
+  if (legacyInboxHubTarget) {
+    return <Navigate to={legacyInboxHubTarget} replace />;
+  }
+
+  if (isLegacyInboxNew) {
+    return (
+      <Navigate
+        to={`/inbox/${LANE_TO_SLUG.waiting_on_you}${location.search}`}
+        replace
+      />
+    );
+  }
+
+  if (isLegacyInboxAll) {
+    return (
+      <Navigate
+        to={`/inbox/${LANE_TO_SLUG.waiting_on_you}${appendStatus(
+          location.search,
+          "resolved",
+        )}`}
+        replace
+      />
+    );
+  }
+
   if (unknownLane) {
-    return <Navigate to="/inbox-hub" replace />;
+    return <Navigate to="/inbox" replace />;
   }
 
   return (

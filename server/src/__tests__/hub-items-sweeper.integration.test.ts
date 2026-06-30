@@ -207,20 +207,26 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
     expect(row.summary).toBe("Approve the Q3 hire for the platform team"); // not clobbered
   });
 
-  it("reconciles heartbeat_run: closes a finished run, leaves a running one", async () => {
+  it("reconciles heartbeat_run: keeps latest failed/run-live alerts and closes superseded runs", async () => {
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();
     const svc = hubItemsService(db);
-    const agentId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Worker', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const agentWithSupersededFailure = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Superseded', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const agentWithLatestFailure = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Failed', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const agentWithLiveRun = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Running', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
 
-    const doneRun = firstId(await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status) VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'failed') RETURNING id`));
-    const liveRun = firstId(await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status) VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'running') RETURNING id`));
+    const oldFailedRun = firstId(await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentWithSupersededFailure}, 'failed', now() - interval '2 hours') RETURNING id`));
+    await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentWithSupersededFailure}, 'succeeded', now() - interval '1 hour')`);
+    const latestFailedRun = firstId(await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentWithLatestFailure}, 'failed', now()) RETURNING id`));
+    const liveRun = firstId(await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentWithLiveRun}, 'running', now()) RETURNING id`));
 
-    const itDone = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: doneRun, title: "done", ownerUserId: founderId });
+    const itOldFailed = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: oldFailedRun, title: "old failed", ownerUserId: founderId });
+    const itLatestFailed = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: latestFailedRun, title: "latest failed", ownerUserId: founderId });
     const itLive = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: liveRun, title: "live", ownerUserId: founderId });
 
     const res = await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
-    expect(await statusOf(itDone.id)).toBe("archived");
+    expect(await statusOf(itOldFailed.id)).toBe("archived");
+    expect(await statusOf(itLatestFailed.id)).toBe("open");
     expect(await statusOf(itLive.id)).toBe("open");
     expect(res.closed).toBe(1);
   });

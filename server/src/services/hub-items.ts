@@ -16,19 +16,20 @@ import {
 import type { HubGroupMode, HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
-  HEARTBEAT_RUN_STATUSES,
   laneForSemanticType,
   authorityForSemanticType,
 } from "@armyofagents/shared";
 import type { UserRole } from "@armyofagents/shared";
 
-// Heartbeat runs are non-terminal only while still queued, waiting to retry, or
-// actively running — derived from the shared HEARTBEAT_RUN_STATUSES truth so the
-// set can't drift from real status values. Everything else (succeeded/failed/
-// cancelled/timed_out, or a missing row) is terminal → close the hub item.
-const HEARTBEAT_LIVE_STATUSES: ReadonlySet<string> = new Set(
-  HEARTBEAT_RUN_STATUSES.filter((s) => s === "queued" || s === "scheduled_retry" || s === "running"),
-);
+// Heartbeat-backed hub items are actionable while the source run is live, or
+// while it is the latest failed/timed-out run for its agent.
+const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set([
+  "queued",
+  "scheduled_retry",
+  "running",
+  "failed",
+  "timed_out",
+]);
 const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revision_requested"]);
 const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
 const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
@@ -1053,14 +1054,33 @@ export function hubItemsService(db: Db) {
   // The live set is derived from the shared HEARTBEAT_RUN_STATUSES (module top).
   const reconcileHeartbeatRun: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
-      .select({ status: heartbeatRuns.status, error: heartbeatRuns.error, updatedAt: heartbeatRuns.updatedAt })
+      .select({
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, companyId)))
       .limit(1)
       .then((r) => r[0] ?? null);
     if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const latestRun = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, row.agentId),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    const isSuperseded = latestRun != null && latestRun.id !== sourceId;
     return {
-      terminal: !HEARTBEAT_LIVE_STATUSES.has(row.status),
+      terminal: !HEARTBEAT_ACTIONABLE_STATUSES.has(row.status) || isSuperseded,
       summary: row.error ?? null,
       permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     };

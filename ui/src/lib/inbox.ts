@@ -1,35 +1,4 @@
-const NESTING_KEY = "aoa:inbox:nestingEnabled";
 const COLLAPSED_KEY = "aoa:inbox:collapsed:set";
-
-const NESTING_CHANGE_EVENT = "inbox-nesting-change";
-
-/** Whether parent-child nesting is currently enabled in the inbox. */
-export function getInboxNestingEnabled(): boolean {
-  try {
-    return localStorage.getItem(NESTING_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-/** Toggle nesting on/off and persist; emits a window event so listeners refresh. */
-export function setInboxNestingEnabled(enabled: boolean): void {
-  try {
-    localStorage.setItem(NESTING_KEY, enabled ? "1" : "0");
-    window.dispatchEvent(new CustomEvent(NESTING_CHANGE_EVENT, { detail: { enabled } }));
-  } catch {
-    // localStorage unavailable (private mode, SSR) — silently no-op
-  }
-}
-
-/** Subscribe to nesting toggle changes (returns an unsubscribe). */
-export function subscribeInboxNestingChange(handler: (enabled: boolean) => void): () => void {
-  function onEvent(e: Event) {
-    if (e instanceof CustomEvent) handler(e.detail?.enabled === true);
-  }
-  window.addEventListener(NESTING_CHANGE_EVENT, onEvent as EventListener);
-  return () => window.removeEventListener(NESTING_CHANGE_EVENT, onEvent as EventListener);
-}
 
 /** Read the set of collapsed parent-issue IDs from localStorage. */
 export function getCollapsedSet(): Set<string> {
@@ -70,7 +39,7 @@ export function computeVisibleOrderedIds(
     out.push(parent.id);
     if (!collapsed.has(parent.id)) {
       const children = childrenByParent.get(parent.id) ?? [];
-      for (const c of children) out.push(c.id);
+      for (const child of children) out.push(child.id);
     }
   }
   return out;

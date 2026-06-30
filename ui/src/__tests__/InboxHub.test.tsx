@@ -1,10 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { HubPreferences } from "@armyofagents/shared";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
 import { InboxHub } from "../pages/InboxHub";
+
+function LocationProbe() {
+  const location = useLocation();
+  return (
+    <output data-testid="location">
+      {location.pathname}
+      {location.search}
+    </output>
+  );
+}
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -55,9 +65,14 @@ function renderPage(initialEntry: string) {
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
+          <Route path="/:companyPrefix/inbox" element={<><InboxHub /><LocationProbe /></>} />
+          <Route path="/:companyPrefix/inbox/new" element={<><InboxHub /><LocationProbe /></>} />
+          <Route path="/:companyPrefix/inbox/all" element={<><InboxHub /><LocationProbe /></>} />
+          <Route path="/:companyPrefix/inbox/:lane" element={<><InboxHub /><LocationProbe /></>} />
+          <Route path="/:companyPrefix/inbox/:lane/:itemId" element={<><InboxHub /><LocationProbe /></>} />
           <Route path="/:companyPrefix/inbox-hub" element={<InboxHub />} />
-          <Route path="/:companyPrefix/inbox-hub/:lane" element={<InboxHub />} />
-          <Route path="/:companyPrefix/inbox-hub/:lane/:itemId" element={<InboxHub />} />
+          <Route path="/:companyPrefix/inbox-hub/:lane" element={<><InboxHub /><LocationProbe /></>} />
+          <Route path="/:companyPrefix/inbox-hub/:lane/:itemId" element={<><InboxHub /><LocationProbe /></>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -143,6 +158,68 @@ function hubItem(overrides: Partial<HubListItem> = {}) {
 }
 
 describe("InboxHub page", () => {
+  it("renders the hub at the canonical /inbox route", async () => {
+    renderPage("/P4/inbox");
+
+    expect(await screen.findByText(/Autopilot/i)).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: /hub lanes/i })).toBeInTheDocument();
+  });
+
+  it("maps legacy /inbox/new to the active waiting hub view", async () => {
+    renderPage("/P4/inbox/new");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        groupMode: "auto",
+        limit: 50,
+      });
+    });
+  });
+
+  it("maps legacy /inbox/all to a route-backed all/history view", async () => {
+    renderPage("/P4/inbox/all");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "resolved",
+        groupMode: "auto",
+        limit: 50,
+      });
+    });
+  });
+
+  it("redirects old /inbox-hub deep links to canonical /inbox links and preserves search", async () => {
+    renderPage("/P4/inbox-hub/waiting/hub-1?q=approval&status=archived");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "/P4/inbox/waiting/hub-1?q=approval&status=archived",
+      );
+    });
+  });
+
+  it("writes canonical /inbox paths when lanes and items are selected", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
+
+    renderPage("/P4/inbox");
+
+    const laneNav = await screen.findByRole("navigation", { name: /hub lanes/i });
+    fireEvent.click(within(laneNav).getByRole("button", { name: /waiting on you/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("/P4/inbox/waiting");
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /approve deployment/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("/P4/inbox/waiting/hub-1");
+    });
+  });
+
   it("renders Home by default", async () => {
     renderPage("/P4/inbox-hub");
 

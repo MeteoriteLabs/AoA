@@ -16,7 +16,6 @@ import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
-import { Inbox } from "./pages/Inbox";
 import { InboxHub } from "./pages/InboxHub";
 import { SettingsPage } from "./pages/SettingsPage";
 import { VisionMission } from "./pages/VisionMission";
@@ -201,9 +200,11 @@ function boardRoutes() {
       <Route path="budget" element={<Navigate to="../settings?tab=budget" replace />} />
       <Route path="costs" element={<Navigate to="../settings?tab=budget" replace />} />
       <Route path="activity" element={<Navigate to="../settings?tab=activity" replace />} />
-      <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
-      <Route path="inbox/new" element={<Inbox />} />
-      <Route path="inbox/all" element={<Inbox />} />
+      <Route path="inbox" element={<InboxHub />} />
+      <Route path="inbox/new" element={<InboxHub />} />
+      <Route path="inbox/all" element={<InboxHub />} />
+      <Route path="inbox/:lane" element={<InboxHub />} />
+      <Route path="inbox/:lane/:itemId" element={<InboxHub />} />
       <Route path="inbox-hub" element={<InboxHub />} />
       <Route path="inbox-hub/:lane" element={<InboxHub />} />
       <Route path="inbox-hub/:lane/:itemId" element={<InboxHub />} />
