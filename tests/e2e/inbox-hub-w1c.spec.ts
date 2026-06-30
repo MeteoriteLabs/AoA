@@ -19,7 +19,13 @@ async function act(
 
 async function expandGroupIfNeeded(page: Page, rowName: RegExp, groupName: RegExp) {
   const row = page.getByRole("button", { name: rowName });
-  if (await row.isVisible()) return row;
+  try {
+    await expect(row).toBeVisible({ timeout: 2_000 });
+    return row;
+  } catch {
+    // W1d grouping can hide W1c's rows behind a collapsed group; expand it only
+    // after giving the flat row path a moment to load.
+  }
 
   const group = page.getByRole("button", { name: groupName }).first();
   await expect(group).toBeVisible();

@@ -129,13 +129,22 @@ export function HubShell({
 
       if ((event.key === "j" || event.key === "k") && activeLane && items.length > 0) {
         event.preventDefault();
+        const visibleRowIds = getVisibleHubRowIds();
+        const navigationItems =
+          visibleRowIds.length > 0
+            ? visibleRowIds
+                .map((id) => items.find((item) => item.id === id))
+                .filter((item): item is HubItemListRow => Boolean(item))
+            : items;
         const currentId = keyboardSelectedItemId.current ?? selectedItemId;
-        const currentIndex = currentId ? items.findIndex((item) => item.id === currentId) : -1;
+        const currentIndex = currentId
+          ? navigationItems.findIndex((item) => item.id === currentId)
+          : -1;
         const nextIndex =
           event.key === "j"
-            ? Math.min(currentIndex + 1, items.length - 1)
+            ? Math.min(currentIndex + 1, navigationItems.length - 1)
             : Math.max(currentIndex - 1, 0);
-        const nextItem = items[nextIndex] ?? items[0];
+        const nextItem = navigationItems[nextIndex] ?? navigationItems[0];
         keyboardSelectedItemId.current = nextItem.id;
         onSelectItem(nextItem.id);
       }
@@ -429,4 +438,11 @@ function focusHubRow(itemId: string) {
     (element) => element.getAttribute("data-hub-row-id") === itemId,
   );
   row?.focus();
+}
+
+function getVisibleHubRowIds() {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-hub-row-id]"))
+    .filter((element) => element.offsetParent !== null)
+    .map((element) => element.getAttribute("data-hub-row-id"))
+    .filter((id): id is string => Boolean(id));
 }

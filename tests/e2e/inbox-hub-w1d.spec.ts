@@ -66,12 +66,17 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     await expect(alphaGroup).toHaveAttribute("aria-expanded", "true");
     await expect(page.getByRole("button", { name: /W1d alpha approval 1/i })).toBeVisible();
 
+    const visibleRows = page.locator("[data-hub-row-id]");
+    await expect(visibleRows.first()).toBeVisible();
+    const firstTitle = firstLine(await visibleRows.nth(0).innerText());
+    const secondTitle = firstLine(await visibleRows.nth(1).innerText());
+
     await page.keyboard.press("j");
-    await expect(page.getByRole("heading", { name: /W1d alpha approval 1/i })).toBeFocused();
+    await expect(page.getByRole("heading", { name: firstTitle })).toBeFocused();
     await page.keyboard.press("j");
-    await expect(page.getByRole("heading", { name: /W1d alpha approval 2/i })).toBeFocused();
+    await expect(page.getByRole("heading", { name: secondTitle })).toBeFocused();
     await page.keyboard.press("k");
-    await expect(page.getByRole("heading", { name: /W1d alpha approval 1/i })).toBeFocused();
+    await expect(page.getByRole("heading", { name: firstTitle })).toBeFocused();
 
     await page.getByRole("button", { name: /hub settings/i }).click();
     await Promise.all([
@@ -122,3 +127,7 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     await expect(page.getByRole("button", { name: /W1d mobile stale work/i })).toBeFocused();
   });
 });
+
+function firstLine(value: string) {
+  return value.split(/\r?\n/)[0]?.trim() ?? "";
+}
