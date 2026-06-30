@@ -34,7 +34,7 @@
 - Modify: `ui/src/components/hub/HubShell.tsx`
 - Modify: `ui/src/components/hub/__tests__/HubShell.test.tsx`
 
-- [ ] **Step 1: Write failing HubShell settings tests**
+- [x] **Step 1: Write failing HubShell settings tests**
 
 Add tests that render `HubShell` with:
 
@@ -88,7 +88,7 @@ await user.click(screen.getByRole("button", { name: /reset notification preferen
 expect(onResetNotificationPreferences).toHaveBeenCalled();
 ```
 
-- [ ] **Step 2: Run HubShell tests and verify RED**
+- [x] **Step 2: Run HubShell tests and verify RED**
 
 Run:
 
@@ -98,7 +98,7 @@ corepack pnpm@9.15.4 test:run ui/src/components/hub/__tests__/HubShell.test.tsx
 
 Expected: FAIL because `HubShell` does not accept notification props and the notification preferences entry is disabled.
 
-- [ ] **Step 3: Implement the controlled panel**
+- [x] **Step 3: Implement the controlled panel**
 
 Add props to `HubShellProps`:
 
@@ -126,7 +126,7 @@ Implementation details:
   - `Reset notification preferences` button.
 - Build full `rules` arrays when updating one rule so the server receives a complete deduplicated rules patch.
 
-- [ ] **Step 4: Run HubShell tests and verify GREEN**
+- [x] **Step 4: Run HubShell tests and verify GREEN**
 
 Run:
 
@@ -136,7 +136,7 @@ corepack pnpm@9.15.4 test:run ui/src/components/hub/__tests__/HubShell.test.tsx
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```sh
 git add ui/src/components/hub/HubShell.tsx ui/src/components/hub/__tests__/HubShell.test.tsx
@@ -151,7 +151,7 @@ git commit -m "feat(ui): add hub notification settings panel"
 - Modify: `ui/src/pages/InboxHub.tsx`
 - Modify: `ui/src/__tests__/InboxHub.test.tsx`
 
-- [ ] **Step 1: Write failing InboxHub wiring tests**
+- [x] **Step 1: Write failing InboxHub wiring tests**
 
 Add tests to `InboxHub.test.tsx`:
 
@@ -185,7 +185,7 @@ it("acknowledges pending digest items from hub settings", async () => {
 });
 ```
 
-- [ ] **Step 2: Run InboxHub tests and verify RED**
+- [x] **Step 2: Run InboxHub tests and verify RED**
 
 Run:
 
@@ -195,7 +195,7 @@ corepack pnpm@9.15.4 test:run ui/src/__tests__/InboxHub.test.tsx
 
 Expected: FAIL because `InboxHub` does not pass notification settings props to `HubShell` and does not define update/reset/digest ack mutations.
 
-- [ ] **Step 3: Implement React Query wiring**
+- [x] **Step 3: Implement React Query wiring**
 
 In `InboxHub.tsx`:
 
@@ -215,7 +215,7 @@ In `InboxHub.tsx`:
   - on success invalidate digest query.
 - Pass `notificationPreferences`, `notificationPreferencesPending`, handlers, `digestItems`, and `onAckDigest` to `HubShell`.
 
-- [ ] **Step 4: Run focused UI tests and typecheck**
+- [x] **Step 4: Run focused UI tests and typecheck**
 
 Run:
 
@@ -226,7 +226,7 @@ corepack pnpm@9.15.4 --filter @armyofagents/ui typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```sh
 git add ui/src/pages/InboxHub.tsx ui/src/__tests__/InboxHub.test.tsx
