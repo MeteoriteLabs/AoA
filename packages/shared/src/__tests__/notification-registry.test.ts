@@ -36,6 +36,13 @@ describe("notification registry", () => {
     expect(notificationTypeToLane("old.plugin.type")).toBe("notifications");
   });
 
+  it("treats inherited object keys as unknown persisted rows", () => {
+    expect(getPersistentNotificationRegistryEntry("toString")).toBeUndefined();
+    expect(getPersistentNotificationRegistryEntry("constructor")).toBeUndefined();
+    expect(mapPersistedNotificationType("toString")).toBe("legacy_other");
+    expect(notificationTypeToLane("constructor")).toBe("notifications");
+  });
+
   it("marks successful extraction as dead awareness noise", () => {
     expect(getPersistentNotificationRegistryEntry("discussion.extraction_complete")).toMatchObject({
       status: "dead",

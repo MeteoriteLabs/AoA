@@ -152,6 +152,7 @@ export const NOTIFICATION_REGISTRY = {
 export function getPersistentNotificationRegistryEntry(
   type: string,
 ): NotificationRegistryEntry | undefined {
+  if (!Object.prototype.hasOwnProperty.call(NOTIFICATION_REGISTRY, type)) return undefined;
   return NOTIFICATION_REGISTRY[type as RegisteredNotificationType];
 }
 
