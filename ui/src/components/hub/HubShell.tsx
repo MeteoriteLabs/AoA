@@ -7,8 +7,12 @@ import type {
   HubItemStatus,
   HubLane,
   HubPreferences,
+  NotificationPreferences,
+  NotificationPreference,
   UpdateHubPreferencesInput,
+  UpdateNotificationPreferencesInput,
 } from "@armyofagents/shared";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HubHome } from "./HubHome";
 import { HubList } from "./HubList";
@@ -42,10 +46,16 @@ interface HubShellProps {
   hasMore?: boolean;
   isLoadingMore?: boolean;
   preferences?: HubPreferences;
+  notificationPreferences?: NotificationPreferences;
+  notificationPreferencesPending?: boolean;
+  digestItems?: HubItemListRow[];
   onLaneChange: (lane: HubRailLane) => void;
   onSearchTextChange?: (value: string) => void;
   onLoadMore?: () => void;
   onPreferencesChange?: (patch: UpdateHubPreferencesInput) => void;
+  onUpdateNotificationPreferences?: (patch: UpdateNotificationPreferencesInput) => void;
+  onResetNotificationPreferences?: () => void;
+  onAckDigest?: () => void;
   onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
   onMarkRead: (itemId: string) => void;
@@ -74,10 +84,16 @@ export function HubShell({
   hasMore = false,
   isLoadingMore = false,
   preferences = DEFAULT_PREFERENCES,
+  notificationPreferences = DEFAULT_NOTIFICATION_PREFERENCES,
+  notificationPreferencesPending = false,
+  digestItems = [],
   onLaneChange,
   onSearchTextChange = noop,
   onLoadMore = noop,
   onPreferencesChange = noop,
+  onUpdateNotificationPreferences = noop,
+  onResetNotificationPreferences = noop,
+  onAckDigest = noop,
   onHistoryStatusChange = noop,
   onSelectItem,
   onMarkRead,
@@ -90,6 +106,7 @@ export function HubShell({
   undoAction = null,
 }: HubShellProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const keyboardSelectedItemId = useRef<string | null>(selectedItemId);
@@ -162,6 +179,29 @@ export function HubShell({
   const handleLaneChange = (lane: HubRailLane) => {
     setMobileRailOpen(false);
     onLaneChange(lane);
+  };
+
+  const updateNotificationRule = (
+    semanticType: NotificationPreferences["rules"][number]["semanticType"],
+    patch: Partial<Pick<NotificationPreferences["rules"][number], "deliveryMode" | "toastEnabled">>,
+  ) => {
+    onUpdateNotificationPreferences({
+      rules: notificationPreferences.rules.map((rule) =>
+        rule.semanticType === semanticType ? { ...rule, ...patch } : rule,
+      ),
+    });
+  };
+
+  const updateQuietHours = (patch: Partial<NotificationPreferences["quietHours"]>) => {
+    onUpdateNotificationPreferences({
+      quietHours: { ...notificationPreferences.quietHours, ...patch },
+    });
+  };
+
+  const updateDigest = (patch: Partial<NotificationPreferences["digest"]>) => {
+    onUpdateNotificationPreferences({
+      digest: { ...notificationPreferences.digest, ...patch },
+    });
   };
 
   return (
@@ -322,9 +362,160 @@ export function HubShell({
                 />
                 <span>Autopilot entry</span>
               </label>
-              <Button type="button" variant="ghost" size="sm" disabled className="justify-start">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="justify-start"
+                aria-expanded={notificationPanelOpen}
+                onClick={() => setNotificationPanelOpen((open) => !open)}
+              >
                 Notification preferences
               </Button>
+              {notificationPanelOpen ? (
+                <div className="grid gap-3 rounded border border-border bg-bg p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-sm font-semibold">Notification preferences</h2>
+                    {notificationPreferencesPending ? (
+                      <span className="text-[11px] text-muted-foreground">Saving</span>
+                    ) : null}
+                  </div>
+                  <div className="grid gap-2">
+                    {notificationPreferences.rules.map((rule) => {
+                      const label = semanticTypeLabel(rule.semanticType);
+                      return (
+                        <div key={rule.semanticType} className="grid gap-2 border-t border-border pt-2 first:border-t-0 first:pt-0">
+                          <div className="font-medium">{label}</div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <label className="grid gap-1">
+                              <span className="text-muted-foreground">Delivery</span>
+                              <select
+                                aria-label={`${label} delivery`}
+                                value={rule.deliveryMode}
+                                disabled={notificationPreferencesPending}
+                                onChange={(event) =>
+                                  updateNotificationRule(rule.semanticType, {
+                                    deliveryMode: event.target.value as NotificationPreference,
+                                  })
+                                }
+                                className="h-8 rounded border border-border bg-bg px-2"
+                              >
+                                <option value="realtime">Realtime</option>
+                                <option value="digest">Digest</option>
+                                <option value="silent">Silent</option>
+                              </select>
+                            </label>
+                            <label className="flex items-center gap-2 self-end">
+                              <input
+                                type="checkbox"
+                                aria-label={`${label} toast`}
+                                checked={rule.toastEnabled}
+                                disabled={notificationPreferencesPending || rule.deliveryMode !== "realtime"}
+                                onChange={(event) =>
+                                  updateNotificationRule(rule.semanticType, {
+                                    toastEnabled: event.target.checked,
+                                  })
+                                }
+                              />
+                              <span>Toast</span>
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="grid gap-2 border-t border-border pt-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        aria-label="Quiet hours"
+                        checked={notificationPreferences.quietHours.enabled}
+                        disabled={notificationPreferencesPending}
+                        onChange={(event) => updateQuietHours({ enabled: event.target.checked })}
+                      />
+                      <span>Quiet hours</span>
+                    </label>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <label className="grid gap-1">
+                        <span className="text-muted-foreground">Start</span>
+                        <input
+                          aria-label="Quiet hours start"
+                          value={notificationPreferences.quietHours.start}
+                          disabled={notificationPreferencesPending}
+                          onChange={(event) => updateQuietHours({ start: event.target.value })}
+                          className="h-8 rounded border border-border bg-bg px-2"
+                        />
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-muted-foreground">End</span>
+                        <input
+                          aria-label="Quiet hours end"
+                          value={notificationPreferences.quietHours.end}
+                          disabled={notificationPreferencesPending}
+                          onChange={(event) => updateQuietHours({ end: event.target.value })}
+                          className="h-8 rounded border border-border bg-bg px-2"
+                        />
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-muted-foreground">Timezone</span>
+                        <input
+                          aria-label="Quiet hours timezone"
+                          value={notificationPreferences.quietHours.timezone}
+                          disabled={notificationPreferencesPending}
+                          onChange={(event) => updateQuietHours({ timezone: event.target.value })}
+                          className="h-8 rounded border border-border bg-bg px-2"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <div className="grid gap-2 border-t border-border pt-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        aria-label="Digest enabled"
+                        checked={notificationPreferences.digest.enabled}
+                        disabled={notificationPreferencesPending}
+                        onChange={(event) => updateDigest({ enabled: event.target.checked })}
+                      />
+                      <span>Digest enabled</span>
+                    </label>
+                    <div className="grid gap-1">
+                      <div className="text-muted-foreground">Pending digest</div>
+                      {digestItems.length > 0 ? (
+                        <ul className="grid gap-1">
+                          {digestItems.slice(0, 5).map((item) => (
+                            <li key={item.id} className="truncate rounded border border-border px-2 py-1">
+                              {item.title}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-muted-foreground">No pending digest items</div>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={notificationPreferencesPending || digestItems.length === 0}
+                        onClick={onAckDigest}
+                      >
+                        Acknowledge digest
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={notificationPreferencesPending}
+                        onClick={onResetNotificationPreferences}
+                      >
+                        Reset notification preferences
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
           {!showHome ? (
@@ -422,6 +613,13 @@ function laneTitle(lane: HubLane | null) {
   if (lane === "notifications") return "Notifications";
   if (lane === "suggestions") return "Suggestions";
   return "Home";
+}
+
+function semanticTypeLabel(value: string) {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function isEditableTarget(target: EventTarget | null) {
