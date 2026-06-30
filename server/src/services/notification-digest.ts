@@ -1,8 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { notificationDigestItems } from "@armyofagents/db";
-import type { HubSemanticType, UserRole } from "@armyofagents/shared";
+import type { HubDigestChangedLivePayload, HubSemanticType, UserRole } from "@armyofagents/shared";
 import { hubItemsService } from "./hub-items.js";
+import { publishLiveEvent } from "./live-events.js";
 
 export function notificationDigestService(db: Db) {
   return {
@@ -11,8 +12,9 @@ export function notificationDigestService(db: Db) {
       userId: string;
       hubItemId: string;
       semanticType: HubSemanticType;
-    }): Promise<void> {
-      await db
+      publish?: boolean;
+    }): Promise<{ queued: boolean }> {
+      const created = await db
         .insert(notificationDigestItems)
         .values({
           companyId: args.companyId,
@@ -20,7 +22,16 @@ export function notificationDigestService(db: Db) {
           hubItemId: args.hubItemId,
           semanticType: args.semanticType,
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing()
+        .returning({ id: notificationDigestItems.id });
+      if (args.publish !== false && created.length > 0) {
+        publishLiveEvent({
+          companyId: args.companyId,
+          type: "hub.digest.changed",
+          payload: { reason: "queued" } satisfies HubDigestChangedLivePayload,
+        });
+      }
+      return { queued: created.length > 0 };
     },
 
     async listForUser(args: {
@@ -69,6 +80,13 @@ export function notificationDigestService(db: Db) {
           ),
         )
         .returning({ id: notificationDigestItems.id });
+      if (updated.length > 0) {
+        publishLiveEvent({
+          companyId: args.companyId,
+          type: "hub.digest.changed",
+          payload: { reason: "acked" } satisfies HubDigestChangedLivePayload,
+        });
+      }
       return { acked: updated.length };
     },
   };

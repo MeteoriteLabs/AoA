@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { errorHandler } from "../middleware/index.js";
 import { notificationPreferenceRoutes } from "../routes/notification-preferences.js";
+import { notificationDigestService } from "../services/notification-digest.js";
+
+const publishLiveEvent = vi.hoisted(() => vi.fn());
 
 const mockPreferences = vi.hoisted(() => ({
   get: vi.fn(),
@@ -27,6 +30,10 @@ vi.mock("../services/index.js", () => ({
   notificationDigestService: () => mockDigest,
   permissionService: () => mockPerms,
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent,
 }));
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
@@ -155,5 +162,91 @@ describe("notification digest routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockDigest.listForUser).not.toHaveBeenCalled();
+  });
+});
+
+function digestDb({
+  insertReturning = [{ id: "digest-1" }],
+  updateReturning = [{ id: "digest-1" }],
+}: {
+  insertReturning?: { id: string }[];
+  updateReturning?: { id: string }[];
+} = {}) {
+  return {
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue(insertReturning),
+        })),
+      })),
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue(updateReturning),
+        })),
+      })),
+    })),
+  } as never;
+}
+
+describe("notificationDigestService", () => {
+  beforeEach(() => {
+    publishLiveEvent.mockClear();
+  });
+
+  it("reports whether queueForUser created a pending digest row", async () => {
+    const created = await notificationDigestService(digestDb()).queueForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+      hubItemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      semanticType: "reminder",
+    });
+    const duplicate = await notificationDigestService(
+      digestDb({ insertReturning: [] }),
+    ).queueForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+      hubItemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      semanticType: "reminder",
+    });
+
+    expect(created).toEqual({ queued: true });
+    expect(duplicate).toEqual({ queued: false });
+  });
+
+  it("publishes digest changed only when queue or ack changes rows", async () => {
+    await notificationDigestService(digestDb()).queueForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+      hubItemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      semanticType: "reminder",
+    });
+    await notificationDigestService(digestDb({ insertReturning: [] })).queueForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+      hubItemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      semanticType: "reminder",
+    });
+    await notificationDigestService(digestDb()).ackForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+    });
+    await notificationDigestService(digestDb({ updateReturning: [] })).ackForUser({
+      companyId: COMPANY_A,
+      userId: "user-1",
+    });
+
+    expect(publishLiveEvent).toHaveBeenCalledTimes(2);
+    expect(publishLiveEvent).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      type: "hub.digest.changed",
+      payload: { reason: "queued" },
+    });
+    expect(publishLiveEvent).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      type: "hub.digest.changed",
+      payload: { reason: "acked" },
+    });
   });
 });
