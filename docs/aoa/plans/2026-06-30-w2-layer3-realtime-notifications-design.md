@@ -37,9 +37,10 @@ queuing. This builds on W1 Hub, W2 Layer 2 notification registry, and Toast Laye
 1. **Hub remains canonical.** Notifications are hub items. Realtime events notify
    clients that hub state changed; clients refetch through existing RBAC-scoped
    routes before showing content.
-2. **Company events are metadata-only.** The existing WebSocket fans out
-   company-wide except for thread events. Hub live payloads must not include
-   titles, summaries, message bodies, or source secrets.
+2. **Hub events are metadata-only and RBAC-filtered.** The WebSocket server must
+   filter `hub.item.changed` through hub visibility before delivery. Hub live
+   payloads must not include titles, summaries, message bodies, or source
+   secrets.
 3. **Preferences are per human operator.** Delivery choices belong to the user in
    a company context, not to the company globally.
 4. **Toast bridge is optional delivery, not storage.** Toasts are an interrupting
@@ -77,7 +78,13 @@ interface HubCountsChangedPayload {
 `hubItemsService.emit`, `applyPersonalState`, lifecycle actions, bulk actions,
 undo, reconcile, and sweeper-return paths publish these events after successful
 DB writes. Publishing happens after the durable mutation, and failed publishing
-does not roll back the hub mutation.
+does not roll back the hub mutation. Transaction-backed emit/reconcile callers
+must avoid publishing before their outer transaction commits.
+
+`hub.item.changed` is delivered only to board sockets that can see the item.
+Agent sockets do not receive `hub.*` events because the hub is a human attention
+plane. `local_trusted` board sockets may receive hub events under the existing
+single-operator loopback trust boundary.
 
 ### Notification Preferences
 
@@ -136,19 +143,11 @@ leak.
 
 ### UI Realtime Hook
 
-Create `useCompanyLiveEvents(companyId, handlers)` as a reusable UI hook around
-`/api/companies/:companyId/events/ws`.
+Extend the existing `LiveUpdatesProvider` rather than opening a second company
+WebSocket. The provider already owns reconnect behavior, online/offline state,
+thread subscriptions, and toast gating.
 
-The hook:
-
-- connects only when a company is selected;
-- dispatches parsed live events to typed handlers;
-- reconnects with bounded backoff;
-- exposes connection state for tests and future UI use;
-- ignores malformed messages safely.
-
-`InboxHub` registers handlers for hub events. On `hub.item.changed` or
-`hub.counts.changed`, it invalidates:
+On `hub.item.changed` or `hub.counts.changed`, the provider invalidates:
 
 - `queryKeys.hubItems.counts(companyId)`
 - active `queryKeys.hubItems.list(...)` queries
@@ -162,14 +161,16 @@ has fetched through RBAC-scoped APIs.
 
 Flow:
 
-1. WebSocket receives `hub.item.changed`.
+1. WebSocket receives an RBAC-filtered `hub.item.changed`.
 2. UI invalidates/refetches hub queries.
-3. If the changed item is now visible to the current user and the preference
-   says `realtime` with `toastEnabled = true`, the bridge shows a toast using
-   existing `pushToast`.
-4. The toast uses a stable dedupe key:
+3. Inbox Hub hydrates the item through `GET /hub-items/:id`; this route uses the
+   same hub RBAC checks as list/query.
+4. If the changed item is visible to the current user and the preference says
+   `realtime` with `toastEnabled = true`, the bridge shows a toast using existing
+   `pushToast`.
+5. The toast uses a stable dedupe key:
    `hub:${companyId}:${itemId}:${version}`.
-5. If delivery is `digest`, `silent`, quiet-hours-suppressed, or anti-spam
+6. If delivery is `digest`, `silent`, quiet-hours-suppressed, or anti-spam
    suppressed, no toast is shown.
 
 Toast content comes from the authorized hub row after refetch. Live event payloads
@@ -181,7 +182,7 @@ Anti-spam has two layers:
 
 - client dedupe through `ToastContext` dedupe keys;
 - server digest suppression records so repeated eligible events for the same
-  user/item do not create duplicate digest entries.
+  user/item do not create duplicate pending digest entries.
 
 Quiet hours are evaluated using the user's stored timezone. During quiet hours,
 `realtime` rules fall back to digest when digest is enabled; otherwise they fall
@@ -198,6 +199,7 @@ The panel includes:
 - toast enabled toggle for realtime rules;
 - quiet-hours enable/start/end/timezone controls;
 - digest enabled/cadence controls;
+- pending digest summary and acknowledge action;
 - reset-to-defaults action.
 
 The UI remains compact and operational, matching the existing Hub settings drawer
@@ -213,8 +215,8 @@ rather than introducing a new standalone page.
   quiet-hours times, and unsupported digest cadences.
 - Toast bridge decision tests cover realtime, digest, silent, quiet-hours, and
   dedupe.
-- `useCompanyLiveEvents` tests cover connect, dispatch, malformed events,
-  reconnect, and cleanup.
+- `LiveUpdatesProvider` tests cover hub event invalidation, malformed event
+  tolerance, reconnect reuse, and listener cleanup.
 
 ### Server Integration
 
@@ -251,7 +253,7 @@ The implementation PR should include the following verification before handoff:
 ```sh
 corepack pnpm@9.15.4 test:run packages/shared/src/__tests__/constants.test.ts packages/shared/src/__tests__/notification-registry.test.ts
 corepack pnpm@9.15.4 test:run server/src/__tests__/hub-items-lifecycle.test.ts server/src/__tests__/hub-items-routes.test.ts server/src/__tests__/notification-preferences.test.ts server/src/__tests__/notification-digest.test.ts
-corepack pnpm@9.15.4 test:run ui/src/__tests__/InboxHub.test.tsx ui/src/context/__tests__/ToastContext.test.tsx ui/src/hooks/__tests__/useCompanyLiveEvents.test.tsx ui/src/components/hub/__tests__/HubShell.test.tsx
+corepack pnpm@9.15.4 test:run ui/src/__tests__/InboxHub.test.tsx ui/src/context/__tests__/ToastContext.test.tsx ui/src/context/__tests__/LiveUpdatesProvider.test.tsx ui/src/components/hub/__tests__/HubShell.test.tsx
 corepack pnpm@9.15.4 test:e2e -- tests/e2e/inbox-hub-realtime-notifications.spec.ts
 corepack pnpm@9.15.4 -r typecheck
 corepack pnpm@9.15.4 test:run
