@@ -5,6 +5,15 @@
 export const HUB_LANES = ["waiting_on_you", "notifications", "suggestions"] as const;
 export type HubLane = (typeof HUB_LANES)[number];
 
+export const HUB_LANDING_TARGETS = ["home", ...HUB_LANES] as const;
+export type HubLandingTarget = (typeof HUB_LANDING_TARGETS)[number];
+
+export const HUB_GROUP_MODES = ["auto", "source", "scope", "type", "none"] as const;
+export type HubGroupMode = (typeof HUB_GROUP_MODES)[number];
+
+export const HUB_DENSITIES = ["comfortable", "compact"] as const;
+export type HubDensity = (typeof HUB_DENSITIES)[number];
+
 export const HUB_ITEM_STATUSES = ["open", "snoozed", "resolved", "archived"] as const;
 export type HubItemStatus = (typeof HUB_ITEM_STATUSES)[number];
 

@@ -478,9 +478,13 @@ export {
   hubUserStateSchema,
   hubBulkActionSchema,
   hubUndoSchema,
+  hubPreferencesSchema,
+  updateHubPreferencesSchema,
   type ListHubItemsQuery,
   type HubActionInput,
   type HubUserStateInput,
   type HubBulkActionInput,
   type HubUndoInput,
+  type HubPreferences,
+  type UpdateHubPreferencesInput,
 } from "./hub.js";

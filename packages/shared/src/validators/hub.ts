@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { HUB_LANES, HUB_ITEM_STATUSES } from "../hub.js";
+import {
+  HUB_DENSITIES,
+  HUB_GROUP_MODES,
+  HUB_ITEM_STATUSES,
+  HUB_LANDING_TARGETS,
+  HUB_LANES,
+} from "../hub.js";
 
 const queryBoolean = z
   .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
@@ -13,6 +19,14 @@ export const listHubItemsQuery = z
   .object({
     lane: z.enum(HUB_LANES).optional(),
     status: z.enum(HUB_ITEM_STATUSES).optional(),
+    q: z
+      .string()
+      .trim()
+      .max(120)
+      .optional()
+      .transform((value) => (value && value.length > 0 ? value : undefined)),
+    cursor: z.string().trim().min(1).optional(),
+    groupMode: z.enum(HUB_GROUP_MODES).optional(),
     // Accept "true"/"false"/"1"/"0" from the query string.
     includeDismissed: queryBoolean,
     includeSnoozed: queryBoolean,
@@ -21,6 +35,38 @@ export const listHubItemsQuery = z
   .strict();
 
 export type ListHubItemsQuery = z.infer<typeof listHubItemsQuery>;
+
+const visibleLanesSchema = z
+  .array(z.enum(HUB_LANES))
+  .min(1)
+  .refine((lanes) => new Set(lanes).size === lanes.length, {
+    message: "visibleLanes must not contain duplicates",
+  });
+
+export const hubPreferencesSchema = z
+  .object({
+    defaultLanding: z.enum(HUB_LANDING_TARGETS),
+    visibleLanes: visibleLanesSchema,
+    groupMode: z.enum(HUB_GROUP_MODES),
+    density: z.enum(HUB_DENSITIES),
+    showAutopilotEntry: z.boolean(),
+    updatedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+
+export type HubPreferences = z.infer<typeof hubPreferencesSchema>;
+
+export const updateHubPreferencesSchema = z
+  .object({
+    defaultLanding: z.enum(HUB_LANDING_TARGETS).optional(),
+    visibleLanes: visibleLanesSchema.optional(),
+    groupMode: z.enum(HUB_GROUP_MODES).optional(),
+    density: z.enum(HUB_DENSITIES).optional(),
+    showAutopilotEntry: z.boolean().optional(),
+  })
+  .strict();
+
+export type UpdateHubPreferencesInput = z.infer<typeof updateHubPreferencesSchema>;
 
 // ── Action (POST /companies/:companyId/hub-items/:id/action) ──────────────────
 // Optimistic-concurrency action envelope. `expectedVersion` is the version the
