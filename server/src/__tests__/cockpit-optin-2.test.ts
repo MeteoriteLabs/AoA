@@ -13,6 +13,7 @@
  */
 
 import { beforeEach, describe, it, expect, vi } from "vitest";
+import { inspect } from "node:util";
 
 // ── Mocks (hoisted) ───────────────────────────────────────────────────────────
 
@@ -276,6 +277,18 @@ describe("cockpitProactiveFindings — shape and filtering", () => {
 
     expect(result.proactiveFindings).toHaveLength(2);
     expect(result.proactiveFindings.map((r) => r.id)).toEqual(["n-1", "n-2"]);
+  });
+
+  it("queries proactive findings by semantic type with legacy type compatibility", async () => {
+    const db = buildSequenceDb(founderSequence({ proactiveSlot: [] }));
+
+    await cockpitService(db).get(COMPANY, FOUNDER_ACTOR);
+
+    const proactiveWhereArgs = (db._stubs[10] as any).__whereArgs;
+    const predicate = inspect(proactiveWhereArgs, { depth: 20 });
+    expect(predicate).toContain("semantic_type");
+    expect(predicate).toContain("internal_agent.proactive");
+    expect(predicate).toContain("internal_agent_proactive");
   });
 });
 

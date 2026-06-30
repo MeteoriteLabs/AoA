@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({
+  hubEmit: vi.fn(),
+  hubApplyPersonalState: vi.fn(),
+}));
+
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("drizzle-orm", () => ({
@@ -28,6 +33,13 @@ vi.mock("@armyofagents/db", () => ({
     dismissedAt: "notifications_dismissed_at",
     createdAt: "notifications_created_at",
   },
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: () => ({
+    emit: mocks.hubEmit,
+    applyPersonalState: mocks.hubApplyPersonalState,
+  }),
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -84,44 +96,73 @@ describe("notificationService", () => {
   beforeEach(() => {
     callIndex = 0;
     mockResults = [];
+    vi.clearAllMocks();
     db = createChainDb();
   });
 
-  it("create() inserts a notification and returns it", async () => {
+  it("create() routes known persistent notification types through hub emit", async () => {
     const { notificationService } = await import(
       "../services/notifications.js"
     );
 
     const mockNotification = {
-      id: "notif-1",
+      id: "hub-row-1",
       companyId: "co-1",
       userId: "user-1",
-      type: "discussion.extraction_complete",
-      title: "Extraction complete",
-      message: "Your discussion has been processed",
+      type: "mention",
+      title: "Mentioned",
+      message: "You were mentioned",
       relatedEntityType: "discussion",
-      relatedEntityId: "disc-1",
+      relatedEntityId: "11111111-1111-4111-8111-111111111111",
+      deliveryAttempts: 0,
+      deliveredAt: new Date(),
+      deliveryError: null,
       readAt: null,
       dismissedAt: null,
       createdAt: new Date(),
     };
 
-    mockResults = [[mockNotification]]; // returning()
+    mocks.hubEmit.mockResolvedValueOnce(mockNotification);
 
     const svc = notificationService(db);
     const result = await svc.create("co-1", {
       userId: "user-1",
-      type: "discussion.extraction_complete",
-      title: "Extraction complete",
-      message: "Your discussion has been processed",
+      type: "thread.mention",
+      title: "Mentioned",
+      message: "You were mentioned",
       relatedEntityType: "discussion",
-      relatedEntityId: "disc-1",
+      relatedEntityId: "11111111-1111-4111-8111-111111111111",
     });
 
     expect(result).toEqual(mockNotification);
-    expect(db.insert).toHaveBeenCalled();
-    expect(db.values).toHaveBeenCalled();
-    expect(db.returning).toHaveBeenCalled();
+    expect(mocks.hubEmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "co-1",
+        semanticType: "mention",
+        sourceType: "discussion",
+        title: "Mentioned",
+        summary: "You were mentioned",
+        message: "You were mentioned",
+        ownerUserId: "user-1",
+        relatedEntityType: "discussion",
+        relatedEntityId: "11111111-1111-4111-8111-111111111111",
+      }),
+    );
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("create() rejects dead persistent notification types", async () => {
+    const { notificationService } = await import(
+      "../services/notifications.js"
+    );
+
+    const svc = notificationService(db);
+    await expect(svc.create("co-1", {
+      userId: "user-1",
+      type: "discussion.extraction_complete",
+      title: "Extraction complete",
+    })).rejects.toMatchObject({ status: 422 });
+    expect(mocks.hubEmit).not.toHaveBeenCalled();
   });
 
   it("list() returns notifications ordered by createdAt desc", async () => {
@@ -185,6 +226,12 @@ describe("notificationService", () => {
     expect(db.update).toHaveBeenCalled();
     expect(db.set).toHaveBeenCalled();
     expect(db.returning).toHaveBeenCalled();
+    expect(mocks.hubApplyPersonalState).toHaveBeenCalledWith({
+      companyId: "co-1",
+      hubItemId: "notif-1",
+      actorUserId: "user-1",
+      state: { kind: "read" },
+    });
   });
 
   it("markRead() throws 404 when notification not found", async () => {
@@ -217,6 +264,12 @@ describe("notificationService", () => {
 
     expect(result).toEqual(mockUpdated);
     expect(db.update).toHaveBeenCalled();
+    expect(mocks.hubApplyPersonalState).toHaveBeenCalledWith({
+      companyId: "co-1",
+      hubItemId: "notif-1",
+      actorUserId: "user-1",
+      state: { kind: "dismiss" },
+    });
   });
 
   it("dismiss() throws 404 when notification not found", async () => {

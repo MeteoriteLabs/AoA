@@ -2,7 +2,7 @@
  * Notification delivery retry queue tests (Phase G2, T26).
  *
  * Covers the three public helpers in server/src/services/notifications.ts:
- *   - createNotification: happy path + failure → stub row
+ *   - createNotification: hub-backed happy path + registry/failure rejection
  *   - retryFailedNotifications: candidate selection, success/failure paths,
  *     attempt-count rollover into `exhausted`
  *   - countPersistentlyFailingNotifications: aggregates rows that hit MAX
@@ -21,8 +21,18 @@ import {
   makeTableProxy,
 } from "./helpers/drizzle-mock.js";
 
+const mocks = vi.hoisted(() => ({
+  hubEmit: vi.fn(),
+}));
+
 vi.mock("@armyofagents/db", () => ({
   notifications: makeTableProxy("notifications"),
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: () => ({
+    emit: mocks.hubEmit,
+  }),
 }));
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
@@ -153,25 +163,23 @@ describe("createNotification", () => {
     vi.clearAllMocks();
   });
 
-  it("happy path: inserts a row with deliveryAttempts=0 and deliveredAt set", async () => {
+  it("happy path: emits a delivered hub-backed notification row", async () => {
     const insertedId = "00000000-0000-0000-0000-000000000001";
-    const db = createDb({
-      inserts: [
-        [
-          {
-            id: insertedId,
-            companyId: "co-1",
-            userId: "user-1",
-            type: "thread.mention",
-            title: "Hello",
-            message: null,
-            deliveryAttempts: 0,
-            deliveredAt: new Date(),
-            deliveryError: null,
-            createdAt: new Date(),
-          },
-        ],
-      ],
+    const deliveredAt = new Date();
+    const db = createDb();
+    mocks.hubEmit.mockResolvedValueOnce({
+      id: insertedId,
+      companyId: "co-1",
+      userId: "user-1",
+      type: "mention",
+      title: "Hello",
+      message: null,
+      relatedEntityType: null,
+      relatedEntityId: null,
+      deliveryAttempts: 0,
+      deliveredAt,
+      deliveryError: null,
+      createdAt: new Date(),
     });
 
     const row = await createNotification(db as never, {
@@ -182,77 +190,86 @@ describe("createNotification", () => {
     });
 
     expect(row.id).toBe(insertedId);
-    expect(db.insertValues).toHaveLength(1);
-    expect(db.insertValues[0]).toMatchObject({
+    expect(row.type).toBe("mention");
+    expect(row.deliveryAttempts).toBe(0);
+    expect(row.deliveredAt).toBe(deliveredAt);
+    expect(db.insertValues).toHaveLength(0);
+    expect(mocks.hubEmit).toHaveBeenCalledWith(expect.objectContaining({
       companyId: "co-1",
-      userId: "user-1",
-      type: "thread.mention",
+      semanticType: "mention",
       title: "Hello",
+      ownerUserId: "user-1",
       message: null,
-      relatedEntityType: null,
-      relatedEntityId: null,
       deliveryAttempts: 0,
-    });
-    expect(db.insertValues[0]!.deliveredAt).toBeInstanceOf(Date);
-    // No deliveryError on happy path
-    expect(db.insertValues[0]!.deliveryError).toBeUndefined();
+      deliveryError: null,
+    }));
   });
 
-  it("insert failure: persists a stub row with deliveryAttempts=1 and deliveryError set", async () => {
-    const stubId = "00000000-0000-0000-0000-000000000002";
-    const db = createDb({
-      inserts: [
-        [], // first insert "returns" nothing (the throw aborts the chain)
-        [
-          {
-            id: stubId,
-            companyId: "co-1",
-            userId: "user-1",
-            type: "thread.mention",
-            title: "Hello",
-            message: null,
-            deliveryAttempts: 1,
-            deliveryError: "transient db hiccup",
-            createdAt: new Date(),
-          },
-        ],
-      ],
-      insertOnCall: [
-        () => { throw new Error("transient db hiccup"); },
-        null,
-      ],
-    });
+  it("creates distinct hub source ids for repeated related notification events", async () => {
+    const db = createDb();
+    const deliveredAt = new Date();
+    mocks.hubEmit
+      .mockResolvedValueOnce({
+        id: "00000000-0000-0000-0000-000000000101",
+        companyId: "co-1",
+        userId: "user-1",
+        type: "thread.mention",
+        title: "Hello",
+        message: "First",
+        relatedEntityType: "discussion",
+        relatedEntityId: "11111111-1111-4111-8111-111111111111",
+        deliveryAttempts: 0,
+        deliveredAt,
+        deliveryError: null,
+        createdAt: new Date(),
+      })
+      .mockResolvedValueOnce({
+        id: "00000000-0000-0000-0000-000000000102",
+        companyId: "co-1",
+        userId: "user-1",
+        type: "thread.mention",
+        title: "Hello again",
+        message: "Second",
+        relatedEntityType: "discussion",
+        relatedEntityId: "11111111-1111-4111-8111-111111111111",
+        deliveryAttempts: 0,
+        deliveredAt,
+        deliveryError: null,
+        createdAt: new Date(),
+      });
 
-    const row = await createNotification(db as never, {
+    const input = {
       companyId: "co-1",
       userId: "user-1",
       type: "thread.mention",
       title: "Hello",
-    });
+      message: "Mention body",
+      relatedEntityType: "discussion",
+      relatedEntityId: "11111111-1111-4111-8111-111111111111",
+    };
 
-    expect(row.id).toBe(stubId);
-    // Two inserts attempted: original + stub
-    expect(db.insertValues).toHaveLength(2);
-    expect(db.insertValues[1]).toMatchObject({
-      companyId: "co-1",
-      userId: "user-1",
-      type: "thread.mention",
-      title: "Hello",
-      deliveryAttempts: 1,
-      deliveryError: "transient db hiccup",
-    });
-    // Stub row should NOT have deliveredAt — it's still queued for the retry worker
-    expect(db.insertValues[1]!.deliveredAt).toBeUndefined();
+    await createNotification(db as never, input);
+    await createNotification(db as never, { ...input, title: "Hello again" });
+
+    const [first, second] = mocks.hubEmit.mock.calls.map((call) => call[0]);
+    expect(first).toEqual(expect.objectContaining({
+      legacyType: "thread.mention",
+      sourceId: expect.stringMatching(
+        /^11111111-1111-4111-8111-111111111111:user-1:thread\.mention:/,
+      ),
+    }));
+    expect(second).toEqual(expect.objectContaining({
+      legacyType: "thread.mention",
+      sourceId: expect.stringMatching(
+        /^11111111-1111-4111-8111-111111111111:user-1:thread\.mention:/,
+      ),
+    }));
+    expect(first.sourceId).not.toBe(second.sourceId);
   });
 
-  it("stub failure: rethrows the original error so the caller sees it", async () => {
-    const db = createDb({
-      inserts: [[], []],
-      insertOnCall: [
-        () => { throw new Error("primary failure"); },
-        () => { throw new Error("stub also failed"); },
-      ],
-    });
+  it("hub emit failure rethrows without creating an unvalidated retry stub", async () => {
+    const db = createDb();
+    mocks.hubEmit.mockRejectedValueOnce(new Error("transient db hiccup"));
 
     await expect(
       createNotification(db as never, {
@@ -261,32 +278,35 @@ describe("createNotification", () => {
         type: "thread.mention",
         title: "Hello",
       }),
-    ).rejects.toThrow("primary failure");
+    ).rejects.toThrow("transient db hiccup");
 
-    expect(db.insertValues).toHaveLength(2);
+    expect(db.insertValues).toHaveLength(0);
   });
 
-  it("truncates very long error messages to 1000 chars in the stub", async () => {
-    const longMessage = "x".repeat(2500);
-    const db = createDb({
-      inserts: [
-        [],
-        [{ id: "stub-1" }],
-      ],
-      insertOnCall: [
-        () => { throw new Error(longMessage); },
-        null,
-      ],
-    });
+  it("rejects unknown notification types before hub emit", async () => {
+    const db = createDb();
 
-    await createNotification(db as never, {
+    await expect(createNotification(db as never, {
       companyId: "co-1",
       userId: "user-1",
-      type: "thread.mention",
+      type: "plugin.random",
       title: "Hello",
-    });
+    })).rejects.toMatchObject({ status: 422 });
 
-    expect((db.insertValues[1]!.deliveryError as string).length).toBe(1000);
+    expect(mocks.hubEmit).not.toHaveBeenCalled();
+  });
+
+  it("rejects dead notification types before hub emit", async () => {
+    const db = createDb();
+
+    await expect(createNotification(db as never, {
+      companyId: "co-1",
+      userId: "user-1",
+      type: "discussion.extraction_complete",
+      title: "Extraction complete",
+    })).rejects.toMatchObject({ status: 422 });
+
+    expect(mocks.hubEmit).not.toHaveBeenCalled();
   });
 });
 

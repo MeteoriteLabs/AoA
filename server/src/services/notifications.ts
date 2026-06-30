@@ -1,20 +1,22 @@
 /**
  * Notification creation + delivery-retry surface (Phase G2, T26).
  *
- * Single entry point for inserting notifications. Catches and persists
- * delivery failures so the retry worker can pick them up later instead of
- * dropping the notification entirely. Callers that previously did
- * `db.insert(notifications)` directly should migrate to `createNotification`.
+ * Single entry point for creating persistent notifications. New writes are
+ * validated through the W2 notification registry and persisted through the hub
+ * emit path. Callers that previously did `db.insert(notifications)` directly
+ * should migrate to `createNotification`.
  *
  * The legacy `notificationService(db)` factory below is preserved as the
  * read/mark/dismiss surface used by routes; its `create` method now delegates
- * to `createNotification` so it inherits retry semantics.
+ * to `createNotification` so registry validation and hub emit semantics apply.
  */
 import { and, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { notifications } from "@armyofagents/db";
 import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { hubItemsService } from "./hub-items.js";
+import { buildNotificationHubEmit } from "./notification-registry.js";
 
 /**
  * Maximum number of delivery attempts before a notification is left for
@@ -51,38 +53,21 @@ export interface NotificationRow {
 }
 
 /**
- * Insert a notification with delivery tracking.
+ * Insert a validated, hub-backed persistent notification.
  *
- * On the happy path inserts a row with `deliveryAttempts: 0` and
- * `deliveredAt: now()`. If the primary insert throws (e.g. transient DB
- * failure, deadlock), the function attempts a second insert that records
- * the error in `deliveryError` with `deliveryAttempts: 1` so the retry
- * worker can pick the row up on its next sweep. If even the stub insert
- * fails the original error is rethrown — callers should treat that as a
- * hard failure.
+ * New writes go through the W2 notification registry and hub emit path. The
+ * retry worker below remains for historical rows that already carry a
+ * deliveryError; createNotification no longer creates raw retry stubs for
+ * invalid or failed writes.
  */
 export async function createNotification(
   db: Db,
   params: NotificationInput,
 ): Promise<NotificationRow> {
   try {
-    const [row] = await db
-      .insert(notifications)
-      .values({
-        companyId: params.companyId,
-        userId: params.userId,
-        type: params.type,
-        title: params.title,
-        message: params.message ?? null,
-        relatedEntityType: params.relatedEntityType ?? null,
-        relatedEntityId: params.relatedEntityId ?? null,
-        deliveryAttempts: 0,
-        deliveredAt: new Date(),
-      })
-      .returning();
+    const row = await hubItemsService(db).emit(buildNotificationHubEmit(params));
     return row as NotificationRow;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     logger.error(
       {
         err,
@@ -90,30 +75,9 @@ export async function createNotification(
         userId: params.userId,
         type: params.type,
       },
-      "notification.create failed — inserting retry stub",
+      "notification.create failed",
     );
-    // Insert a stub row with deliveryError set so the retry worker can pick it up.
-    try {
-      const [stub] = await db
-        .insert(notifications)
-        .values({
-          companyId: params.companyId,
-          userId: params.userId,
-          type: params.type,
-          title: params.title,
-          message: params.message ?? null,
-          relatedEntityType: params.relatedEntityType ?? null,
-          relatedEntityId: params.relatedEntityId ?? null,
-          deliveryAttempts: 1,
-          deliveryError: message.slice(0, 1000),
-        })
-        .returning();
-      return stub as NotificationRow;
-    } catch (stubErr) {
-      // If we can't even insert the stub, give up — caller sees the original.
-      logger.error({ err: stubErr }, "notification stub insert also failed");
-      throw err;
-    }
+    throw err;
   }
 }
 
@@ -129,10 +93,9 @@ export interface RetrySweepResult {
  * Pick up to `batchSize` notifications with a recorded delivery error
  * (and < MAX_DELIVERY_ATTEMPTS attempts) and try to mark them delivered.
  *
- * The current implementation just clears the error flag — concrete
- * delivery channels (WS push, email) hook in via the `attempt` callback
- * once those land. This is the queue infrastructure, not the channel
- * adapter.
+ * The current implementation just clears the error flag; concrete delivery
+ * channels (WS push, email) hook in via the `attempt` callback once those
+ * land. This is the queue infrastructure, not the channel adapter.
  *
  * Counters returned:
  *   - `scanned`: total candidates picked up this sweep
@@ -231,14 +194,41 @@ export { MAX_DELIVERY_ATTEMPTS };
 //
 // The original notificationService factory predates Phase G2. Routes still
 // import it for list/markRead/dismiss/getUnreadCount and the original
-// `create` shape. `create` now delegates to `createNotification` so retry
-// semantics are inherited by callers that have not yet migrated.
+// `create` shape. `create` now delegates to `createNotification` so registry
+// validation and hub emit semantics are inherited by callers that have not yet
+// migrated.
 
 export function notificationService(db: Db) {
+  async function syncHubPersonalState(args: {
+    companyId: string;
+    userId: string;
+    id: string;
+    state: { kind: "read" } | { kind: "dismiss" };
+  }) {
+    try {
+      await hubItemsService(db).applyPersonalState({
+        companyId: args.companyId,
+        hubItemId: args.id,
+        actorUserId: args.userId,
+        state: args.state,
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 403 || status === 404) {
+        logger.warn(
+          { err, companyId: args.companyId, userId: args.userId, id: args.id },
+          "notification legacy route could not sync hub user state",
+        );
+        return;
+      }
+      throw err;
+    }
+  }
+
   return {
     /**
      * Create a notification for a user. Delegates to `createNotification`
-     * so retry semantics apply uniformly.
+     * so registry validation and hub emit semantics apply uniformly.
      */
     create: async (
       companyId: string,
@@ -308,6 +298,13 @@ export function notificationService(db: Db) {
         throw notFound("Notification not found");
       }
 
+      await syncHubPersonalState({
+        companyId,
+        userId,
+        id,
+        state: { kind: "read" },
+      });
+
       return updated;
     },
 
@@ -331,6 +328,13 @@ export function notificationService(db: Db) {
       if (!updated) {
         throw notFound("Notification not found");
       }
+
+      await syncHubPersonalState({
+        companyId,
+        userId,
+        id,
+        state: { kind: "dismiss" },
+      });
 
       return updated;
     },

@@ -55,6 +55,13 @@ export interface EmitArgs {
   sourceId: string;
   title: string;
   summary?: string | null;
+  legacyType?: string | null;
+  message?: string | null;
+  relatedEntityType?: string | null;
+  relatedEntityId?: string | null;
+  deliveryAttempts?: number;
+  deliveredAt?: Date | null;
+  deliveryError?: string | null;
   scopeKey?: string | null;
   priority?: "low" | "normal" | "high" | "urgent";
   // Owner resolution: pass ownerUserId for NATURAL-owner items (mention → the
@@ -208,12 +215,19 @@ export function hubItemsService(db: Db) {
     const conn = (a.executor ?? db) as unknown as Db; // executor may be a PgTransaction
     const ownerUserId = await resolveOwner(conn, a); // a real human; never ""
     const key = sourceUniqueKey(a);
-    const safeSummary = a.summary == null ? null : redactSecretsInString(a.summary);
+    const body = a.summary ?? a.message ?? null;
+    const safeSummary = body == null ? null : redactSecretsInString(body);
     const values = {
       companyId: a.companyId,
       userId: ownerUserId, // legacy NOT NULL column = the resolved human owner
-      type: a.semanticType, // keep legacy `type` populated for back-compat reads
+      type: a.legacyType ?? a.semanticType, // preserve old notification type when supplied
       title: a.title,
+      message: safeSummary,
+      relatedEntityType: a.relatedEntityType ?? null,
+      relatedEntityId: a.relatedEntityId ?? null,
+      deliveryAttempts: a.deliveryAttempts ?? 0,
+      deliveredAt: a.deliveredAt ?? new Date(),
+      deliveryError: a.deliveryError ?? null,
       semanticType: a.semanticType,
       sourceType: a.sourceType,
       sourceId: a.sourceId,
@@ -238,6 +252,12 @@ export function hubItemsService(db: Db) {
         setWhere: sql`${hubItems.status} = 'open'`,
         set: {
           title: values.title,
+          message: values.message,
+          relatedEntityType: values.relatedEntityType,
+          relatedEntityId: values.relatedEntityId,
+          deliveryAttempts: values.deliveryAttempts,
+          deliveredAt: values.deliveredAt,
+          deliveryError: values.deliveryError,
           summary: values.summary,
           priority: values.priority,
           // Keep the legacy `userId` and the hub `ownerUserId` in lockstep: a
@@ -526,6 +546,31 @@ export function hubItemsService(db: Db) {
         set: { ...patch, updatedAt: now },
       })
       .returning();
+
+    if (visibleItem.userId === args.actorUserId) {
+      const legacyPatch =
+        args.state.kind === "read"
+          ? { readAt: now }
+          : args.state.kind === "unread"
+            ? { readAt: null }
+            : args.state.kind === "dismiss"
+              ? { dismissedAt: now }
+              : args.state.kind === "undismiss"
+                ? { dismissedAt: null }
+                : null;
+      if (legacyPatch) {
+        await db
+          .update(hubItems)
+          .set(legacyPatch)
+          .where(
+            and(
+              eq(hubItems.id, args.hubItemId),
+              eq(hubItems.companyId, args.companyId),
+              eq(hubItems.userId, args.actorUserId),
+            ),
+          );
+      }
+    }
 
     await invalidateCounterSnapshotsForUser(args.companyId, args.actorUserId);
     return row;
@@ -1291,6 +1336,7 @@ export function hubItemsService(db: Db) {
       const patch: {
         title?: string;
         summary?: string;
+        message?: string;
         sourcePermissionRevision?: string;
         userId?: string;
         ownerUserId?: string | null;
@@ -1303,7 +1349,10 @@ export function hubItemsService(db: Db) {
       if (revisionIsNewer) patch.sourcePermissionRevision = snap.permissionRevision!;
       if (snap.summary != null && snap.summary !== "") {
         const nextSummary = redactSecretsInString(snap.summary);
-        if (nextSummary !== item.summary) patch.summary = nextSummary;
+        if (nextSummary !== item.summary) {
+          patch.summary = nextSummary;
+          patch.message = nextSummary;
+        }
       }
       if (snap.ownerUserId !== undefined && snap.ownerUserId !== item.ownerUserId) {
         patch.ownerUserId = snap.ownerUserId;
