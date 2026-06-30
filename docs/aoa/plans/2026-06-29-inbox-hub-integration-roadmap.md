@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b and W1c are implemented in PR #244
+**Status:** Active integration roadmap; W1b, W1c, and W1d are implemented in PR #244
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -39,10 +39,13 @@ Implemented in the active branch / PR #244:
   shared resolve/archive, board-pool Claim/Release, server audit undo,
   deterministic bulk endpoint and UI controls, history/audit UI, compact bulk
   partial-result banner, and W1c Playwright coverage.
+- **W1d - Grouping/search/settings/mobile/performance:** server-side search,
+  keyset pagination, deterministic grouped rows, per-user hub preferences,
+  mobile rail drawer and stacked viewer flow, keyboard shortcuts, per-user
+  counter snapshots, and W1d Playwright coverage.
 
 Not yet planned or built:
 
-- W1d
 - W2 Layer 2 and Layer 3
 - W3 Autopilot
 - W4 Steward
@@ -195,6 +198,11 @@ Explicit W1c deferrals:
 ### Plan 3 - W1d Grouping, Search, Settings, Mobile, Performance
 
 Goal: make the hub usable at agent volume and on smaller screens.
+
+Implementation status: **implemented in PR #244**. The branch now includes
+server-side search and cursor pagination, deterministic grouping, hub
+preferences, mobile/keyboard hardening, counter snapshots, and focused unit,
+route, component, and Playwright coverage.
 
 Scope:
 
@@ -435,10 +443,9 @@ mid-task:
 
 ## 8. Next Step
 
-Write the detailed W1d implementation plan:
+Write the final cutover and acceptance plan:
 
-`docs/aoa/plans/2026-06-29-w1d-hub-grouping-search-settings-plan.md`
+`docs/aoa/plans/<date>-inbox-hub-final-cutover-acceptance-plan.md`
 
-The plan must follow the W1a/W1c quality bar: exact file map, TDD steps, focused
-commits, unit/component/API/e2e coverage, mobile/performance checks, and final
-verification commands.
+The plan must verify old Inbox coverage, route cutover behavior, sidebar/header
+badge links, final operator acceptance, visual QA, and PR #244 readiness evidence.

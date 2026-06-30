@@ -1,4 +1,4 @@
-CREATE TABLE "hub_counter_snapshots" (
+CREATE TABLE IF NOT EXISTS "hub_counter_snapshots" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"user_id" text NOT NULL,

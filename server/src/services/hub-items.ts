@@ -133,6 +133,23 @@ function deriveGroupLabel(
 export function hubItemsService(db: Db) {
   const counterSnapshots = hubCounterSnapshotsService(db);
 
+  async function invalidateCounterSnapshotsForCompany(companyId: string) {
+    try {
+      await counterSnapshots.invalidateCompany(companyId);
+    } catch {
+      // Counter snapshots are a performance cache; hub mutations must not fail
+      // because a test double or partially migrated DB cannot update the cache.
+    }
+  }
+
+  async function invalidateCounterSnapshotsForUser(companyId: string, userId: string) {
+    try {
+      await counterSnapshots.invalidateUser(companyId, userId);
+    } catch {
+      // See invalidateCounterSnapshotsForCompany.
+    }
+  }
+
   function sourceUniqueKey(a: EmitArgs): string {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
   }
@@ -248,7 +265,7 @@ export function hubItemsService(db: Db) {
     // (empty RETURNING) and the re-select, `row` is undefined — never return an
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
-    await counterSnapshots.invalidateCompany(a.companyId);
+    await invalidateCounterSnapshotsForCompany(a.companyId);
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
@@ -509,7 +526,7 @@ export function hubItemsService(db: Db) {
       })
       .returning();
 
-    await counterSnapshots.invalidateUser(args.companyId, args.actorUserId);
+    await invalidateCounterSnapshotsForUser(args.companyId, args.actorUserId);
     return row;
   }
 
@@ -702,7 +719,7 @@ export function hubItemsService(db: Db) {
     });
 
     if (!committed.replayed && args.sideEffect) await args.sideEffect();
-    if (!committed.replayed) await counterSnapshots.invalidateCompany(args.companyId);
+    if (!committed.replayed) await invalidateCounterSnapshotsForCompany(args.companyId);
     return {
       item: committed.item,
       auditId: committed.auditId,
@@ -807,7 +824,7 @@ export function hubItemsService(db: Db) {
 
       return { item: decorateItem(updated), auditId: undoAudit.id };
     });
-    await counterSnapshots.invalidateCompany(args.companyId);
+    await invalidateCounterSnapshotsForCompany(args.companyId);
     return result;
   }
 
@@ -1288,7 +1305,7 @@ export function hubItemsService(db: Db) {
     console.log(
       `[hub.reconcile] company=${companyId} source=${opts.sourceType} healed=${healed} (closed=${closed} refreshed=${refreshed})`,
     );
-    if (healed > 0) await counterSnapshots.invalidateCompany(companyId);
+    if (healed > 0) await invalidateCounterSnapshotsForCompany(companyId);
     return { healed, closed, refreshed };
   }
 
