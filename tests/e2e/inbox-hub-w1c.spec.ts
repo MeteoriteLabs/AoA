@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { seedHubItem } from "./helpers/seed-hub-item";
 
@@ -15,6 +15,19 @@ async function act(
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   return (await res.json()) as { item: SeededHubItem; auditId: string };
+}
+
+async function expandGroupIfNeeded(page: Page, rowName: RegExp, groupName: RegExp) {
+  const row = page.getByRole("button", { name: rowName });
+  if (await row.isVisible()) return row;
+
+  const group = page.getByRole("button", { name: groupName }).first();
+  await expect(group).toBeVisible();
+  if ((await group.getAttribute("aria-expanded")) === "false") {
+    await group.click();
+  }
+  await expect(row).toBeVisible();
+  return row;
 }
 
 test.describe("Inbox Hub W1c lifecycle", () => {
@@ -74,7 +87,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
     });
 
     await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
-    await expect(page.getByText("Read toggle approval")).toBeVisible();
+    await expandGroupIfNeeded(page, /Read toggle approval/i, /w1c/i);
 
     await page.getByRole("button", { name: /Read toggle approval/i }).click();
     await expect(page.getByRole("button", { name: /mark unread/i })).toBeVisible();
@@ -101,6 +114,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
       page.getByRole("button", { name: /undo resolve/i }).click(),
     ]);
     await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
+    await expandGroupIfNeeded(page, /Resolve launch approval/i, /w1c/i);
     await expect(page.getByRole("button", { name: /Resolve launch approval/i })).toBeVisible({
       timeout: 10_000,
     });
@@ -114,6 +128,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
 
     await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
     await page.getByRole("button", { name: /^resolved$/i }).click();
+    await expandGroupIfNeeded(page, /Resolved history approval/i, /w1c/i);
     await expect(page.getByText("Resolved history approval")).toBeVisible();
     await page.getByRole("button", { name: /Resolved history approval/i }).click();
     await expect(page.getByRole("region", { name: /audit timeline/i })).toContainText(/resolve/i);

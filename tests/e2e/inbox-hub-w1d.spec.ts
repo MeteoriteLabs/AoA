@@ -39,7 +39,9 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     });
 
     await page.goto(`/${company.issuePrefix}/inbox-hub/waiting`);
-    await expect(page.getByText("W1d alpha approval 1")).toBeVisible();
+    const alphaGroup = page.getByRole("button", { name: /w1d-alpha/i });
+    await expect(alphaGroup).toBeVisible();
+    await expect(alphaGroup).toHaveAttribute("aria-expanded", "false");
 
     await page.getByRole("button", { name: /hub settings/i }).click();
     await Promise.all([
@@ -59,7 +61,6 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     await expect(page.getByText("W1d beta approval 1")).toBeHidden();
 
     await page.getByRole("searchbox", { name: /search hub/i }).fill("");
-    const alphaGroup = page.getByRole("button", { name: /w1d-alpha/i });
     await expect(alphaGroup).toHaveAttribute("aria-expanded", "false");
     await alphaGroup.click();
     await expect(alphaGroup).toHaveAttribute("aria-expanded", "true");

@@ -51,7 +51,7 @@ export function HubViewer({
     return (
       <aside
         aria-label="Hub viewer"
-        className="flex h-full w-[360px] shrink-0 items-center justify-center border-l border-border bg-bg p-6 text-center text-sm text-muted-foreground"
+        className="hidden h-full w-[360px] shrink-0 items-center justify-center border-l border-border bg-bg p-6 text-center text-sm text-muted-foreground lg:flex"
       >
         Select an item to review details.
       </aside>
@@ -65,7 +65,7 @@ export function HubViewer({
   return (
     <aside
       aria-label="Hub viewer"
-      className="flex h-full w-[360px] shrink-0 flex-col border-l border-border bg-bg"
+      className="flex min-h-[320px] w-full shrink-0 flex-col border-t border-border bg-bg lg:h-full lg:w-[360px] lg:border-l lg:border-t-0"
     >
       <div className="flex h-12 items-center justify-between border-b border-border px-4">
         <div role="tablist" aria-label="Hub item viewer" className="flex min-w-0 items-center gap-2">
