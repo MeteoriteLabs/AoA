@@ -132,6 +132,7 @@ export function HubList({
         </span>
         <button
           type="button"
+          data-hub-row-id={item.id}
           onClick={() => {
             onSelectItem(item.id);
             if (!item.readAt) onMarkRead(item.id);

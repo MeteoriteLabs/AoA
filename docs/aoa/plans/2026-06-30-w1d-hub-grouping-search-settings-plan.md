@@ -732,7 +732,7 @@ git commit -m "feat(hub): add grouping and preferences controls"
 - Modify `ui/src/components/hub/__tests__/HubShell.test.tsx`
 - Modify `ui/src/__tests__/InboxHub.test.tsx`
 
-- [ ] **Step 1: Add failing tests**
+- [x] **Step 1: Add failing tests**
 
 Component tests:
 
@@ -754,12 +754,12 @@ it("moves selection with j and k", async () => {
 });
 ```
 
-- [ ] **Step 2: Implement keyboard handler**
+- [x] **Step 2: Implement keyboard handler**
 
 Only handle shortcuts when the active element is `body`, the hub shell root, or a non-editable hub row/control. Ignore shortcuts inside input, textarea, select, combobox, dialog text fields, and contenteditable nodes.
 `j`/`k` navigation walks the visible flattened entry list only; collapsed group children are skipped until their group is expanded.
 
-- [ ] **Step 3: Implement mobile shell**
+- [x] **Step 3: Implement mobile shell**
 
 At widths below the existing `lg` breakpoint:
 
@@ -771,7 +771,7 @@ At widths below the existing `lg` breakpoint:
 
 On desktop widths at or above `lg`, preserve the W1b/W1c three-pane shell geometry.
 
-- [ ] **Step 4: Run UI tests**
+- [x] **Step 4: Run UI tests**
 
 Run:
 
@@ -779,7 +779,14 @@ Run:
 corepack pnpm@9.15.4 --filter @armyofagents/ui test -- HubShell.test.tsx InboxHub.test.tsx
 ```
 
-- [ ] **Step 5: Commit**
+Verified with:
+
+```sh
+corepack pnpm@9.15.4 --filter @armyofagents/ui test -- HubShell.test.tsx InboxHub.test.tsx
+corepack pnpm@9.15.4 --filter @armyofagents/ui typecheck
+```
+
+- [x] **Step 5: Commit**
 
 ```sh
 git add ui/src/components/hub/HubShell.tsx ui/src/components/hub/HubRail.tsx ui/src/components/hub/HubList.tsx ui/src/components/hub/HubViewer.tsx ui/src/components/hub/__tests__/HubShell.test.tsx ui/src/__tests__/InboxHub.test.tsx

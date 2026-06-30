@@ -9,6 +9,7 @@ import {
   UserCheck,
   UserX,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Link } from "@/lib/router";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,12 @@ export function HubViewer({
   auditRows = [],
   auditLoading = false,
 }: HubViewerProps) {
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+
+  useEffect(() => {
+    if (item) headingRef.current?.focus();
+  }, [item?.id]);
+
   if (!item) {
     return (
       <aside
@@ -87,7 +94,9 @@ export function HubViewer({
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         <div className="text-xs uppercase text-muted-foreground">{entry.viewerKind}</div>
-        <h2 className="mt-2 text-lg font-semibold leading-snug">{item.title}</h2>
+        <h2 ref={headingRef} tabIndex={-1} className="mt-2 text-lg font-semibold leading-snug">
+          {item.title}
+        </h2>
         {item.summary ? (
           <p className="mt-3 text-sm leading-6 text-muted-foreground">{item.summary}</p>
         ) : null}

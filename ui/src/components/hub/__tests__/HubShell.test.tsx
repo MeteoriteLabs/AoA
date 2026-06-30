@@ -146,4 +146,71 @@ describe("HubShell", () => {
       screen.getByRole("button", { name: /notification preferences/i }),
     ).toBeDisabled();
   });
+
+  it("focuses search when slash is pressed outside an editable field", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.keyboard("/");
+
+    expect(screen.getByRole("searchbox", { name: /search hub/i })).toHaveFocus();
+  });
+
+  it("does not steal slash key presses from editable fields", async () => {
+    const user = userEvent.setup();
+    const onSearchTextChange = vi.fn();
+    renderShell({ onSearchTextChange });
+    const search = screen.getByRole("searchbox", { name: /search hub/i });
+
+    await user.click(search);
+    await user.keyboard("/");
+
+    expect(onSearchTextChange).toHaveBeenCalledWith("/");
+  });
+
+  it("moves selection with j and k", async () => {
+    const user = userEvent.setup();
+    const onSelectItem = vi.fn();
+    renderShell({
+      onSelectItem,
+      items: [
+        { ...items[0], id: "hub-1", title: "First approval" },
+        { ...items[0], id: "hub-2", title: "Second approval" },
+      ],
+    });
+
+    await user.keyboard("j");
+    await user.keyboard("j");
+    await user.keyboard("k");
+
+    expect(onSelectItem).toHaveBeenNthCalledWith(1, "hub-1");
+    expect(onSelectItem).toHaveBeenNthCalledWith(2, "hub-2");
+    expect(onSelectItem).toHaveBeenNthCalledWith(3, "hub-1");
+  });
+
+  it("renders and closes the mobile lane drawer", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(screen.getByRole("button", { name: /open hub lanes/i }));
+
+    expect(screen.getByRole("dialog", { name: /hub lanes/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /close hub lanes/i }));
+
+    expect(screen.queryByRole("dialog", { name: /hub lanes/i })).not.toBeInTheDocument();
+  });
+
+  it("focuses the viewer heading and restores focus to the selected row on close", async () => {
+    const user = userEvent.setup();
+    const onSelectItem = vi.fn();
+    renderShell({ selectedItemId: "hub-1", onSelectItem });
+
+    expect(screen.getByRole("heading", { name: /review hire approval/i })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: /close viewer/i }));
+
+    expect(onSelectItem).toHaveBeenCalledWith(null);
+    expect(screen.getByRole("button", { name: /review hire approval/i })).toHaveFocus();
+  });
 });

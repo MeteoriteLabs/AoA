@@ -1,5 +1,5 @@
-import { Settings } from "lucide-react";
-import { useState } from "react";
+import { Menu, Settings, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import type {
   HubDensity,
@@ -90,24 +90,125 @@ export function HubShell({
   undoAction = null,
 }: HubShellProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mobileRailOpen, setMobileRailOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const keyboardSelectedItemId = useRef<string | null>(selectedItemId);
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const showHome = activeLane === null;
   const selectedCount = selectedBulkIds.size;
 
+  useEffect(() => {
+    keyboardSelectedItemId.current = selectedItemId;
+  }, [selectedItemId]);
+
+  useEffect(() => {
+    keyboardSelectedItemId.current = null;
+  }, [activeLane, historyStatus]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isEditableTarget(event.target)) return;
+
+      if (event.key === "/" && !showHome) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (mobileRailOpen) {
+          setMobileRailOpen(false);
+          return;
+        }
+        if (selectedItemId) {
+          focusHubRow(selectedItemId);
+          onSelectItem(null);
+        }
+        return;
+      }
+
+      if ((event.key === "j" || event.key === "k") && activeLane && items.length > 0) {
+        event.preventDefault();
+        const currentId = keyboardSelectedItemId.current ?? selectedItemId;
+        const currentIndex = currentId ? items.findIndex((item) => item.id === currentId) : -1;
+        const nextIndex =
+          event.key === "j"
+            ? Math.min(currentIndex + 1, items.length - 1)
+            : Math.max(currentIndex - 1, 0);
+        const nextItem = items[nextIndex] ?? items[0];
+        keyboardSelectedItemId.current = nextItem.id;
+        onSelectItem(nextItem.id);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeLane, items, mobileRailOpen, onSelectItem, selectedItemId, showHome]);
+
+  const handleViewerClose = () => {
+    if (selectedItemId) focusHubRow(selectedItemId);
+    onSelectItem(null);
+  };
+
+  const handleLaneChange = (lane: HubRailLane) => {
+    setMobileRailOpen(false);
+    onLaneChange(lane);
+  };
+
   return (
-    <div className="flex h-[calc(100vh-96px)] min-h-[520px] overflow-hidden border-y border-border bg-bg text-text">
-      <HubRail
-        activeLane={activeLane}
-        counts={counts}
-        visibleLanes={preferences.visibleLanes}
-        onLaneChange={onLaneChange}
-      />
-      <main className="flex min-w-0 flex-1">
-        <section className="flex min-w-[320px] max-w-[480px] flex-[0_0_38%] flex-col border-r border-border">
+    <div className="flex h-[calc(100vh-96px)] min-h-[520px] flex-col overflow-hidden border-y border-border bg-bg text-text lg:flex-row">
+      <div className="hidden lg:block">
+        <HubRail
+          activeLane={activeLane}
+          counts={counts}
+          visibleLanes={preferences.visibleLanes}
+          onLaneChange={handleLaneChange}
+        />
+      </div>
+      {mobileRailOpen ? (
+        <div
+          role="dialog"
+          aria-label="Hub lanes"
+          className="border-b border-border bg-bg lg:hidden"
+        >
+          <div className="flex h-11 items-center justify-between border-b border-border px-3">
+            <span className="text-sm font-semibold">Hub lanes</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Close hub lanes"
+              onClick={() => setMobileRailOpen(false)}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+          <HubRail
+            activeLane={activeLane}
+            counts={counts}
+            visibleLanes={preferences.visibleLanes}
+            onLaneChange={handleLaneChange}
+          />
+        </div>
+      ) : null}
+      <main className="flex min-w-0 flex-1 flex-col lg:flex-row">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-border lg:max-w-[480px] lg:flex-[0_0_38%]">
           <div className="flex h-12 items-center justify-between gap-3 border-b border-border px-4">
-            <h1 className="truncate text-sm font-semibold">
-              {showHome ? "Hub Home" : laneTitle(activeLane)}
-            </h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Open hub lanes"
+                onClick={() => setMobileRailOpen(true)}
+                className="lg:hidden"
+              >
+                <Menu className="size-4" aria-hidden="true" />
+              </Button>
+              <h1 className="truncate text-sm font-semibold">
+                {showHome ? "Hub Home" : laneTitle(activeLane)}
+              </h1>
+            </div>
             {!showHome ? (
               <div className="flex shrink-0 gap-1">
                 {(["open", "resolved", "archived"] as const).map((status) => (
@@ -222,6 +323,7 @@ export function HubShell({
               <input
                 type="search"
                 aria-label="Search hub"
+                ref={searchInputRef}
                 value={searchText}
                 onChange={(event) => onSearchTextChange(event.target.value)}
                 placeholder="Search"
@@ -287,7 +389,7 @@ export function HubShell({
         <HubViewer
           item={selectedItem}
           undoAction={null}
-          onClose={() => onSelectItem(null)}
+          onClose={handleViewerClose}
           onMarkUnread={onMarkUnread}
           onDismiss={onDismiss}
           onSnooze={onSnooze}
@@ -311,4 +413,20 @@ function laneTitle(lane: HubLane | null) {
   if (lane === "notifications") return "Notifications";
   if (lane === "suggestions") return "Suggestions";
   return "Home";
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === "input" || tagName === "textarea" || tagName === "select") return true;
+  const role = target.getAttribute("role");
+  return role === "textbox" || role === "combobox";
+}
+
+function focusHubRow(itemId: string) {
+  const row = Array.from(document.querySelectorAll<HTMLElement>("[data-hub-row-id]")).find(
+    (element) => element.getAttribute("data-hub-row-id") === itemId,
+  );
+  row?.focus();
 }
