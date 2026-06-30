@@ -1,9 +1,16 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import type { UserRole, ListHubItemsQuery } from "@armyofagents/shared";
-import { listHubItemsQuery, hubActionSchema, hubUserStateSchema, hubUndoSchema, hubBulkActionSchema } from "@armyofagents/shared";
+import {
+  listHubItemsQuery,
+  hubActionSchema,
+  hubUserStateSchema,
+  hubUndoSchema,
+  hubBulkActionSchema,
+  updateHubPreferencesSchema,
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { hubItemsService, permissionService } from "../services/index.js";
+import { hubItemsService, hubPreferencesService, permissionService } from "../services/index.js";
 import { HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
@@ -29,6 +36,7 @@ function hasImplicitFounderAuthority(req: Request): boolean {
 export function hubItemRoutes(db: Db) {
   const router = Router();
   const svc = hubItemsService(db);
+  const preferences = hubPreferencesService(db);
   const perms = permissionService(db);
 
   // Resolve the effective role for query/counts. Implicit-authority actors
@@ -37,6 +45,34 @@ export function hubItemRoutes(db: Db) {
     if (hasImplicitFounderAuthority(req)) return "founder";
     return perms.getEffectiveRole(companyId, userId);
   }
+
+  router.get("/companies/:companyId/hub-items/preferences/me", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const result = await preferences.get(userId, companyId);
+    res.json(result);
+  });
+
+  router.patch(
+    "/companies/:companyId/hub-items/preferences/me",
+    validate(updateHubPreferencesSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireBoardUserId(req);
+      const result = await preferences.upsert(userId, companyId, req.body);
+      res.json(result);
+    },
+  );
+
+  router.post("/companies/:companyId/hub-items/preferences/me/reset", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const result = await preferences.reset(userId, companyId);
+    res.json(result);
+  });
 
   // GET list — RBAC-scoped hot set (open by default), per-user state joined in.
   // List filters arrive on the query string, so parse `req.query` directly (the

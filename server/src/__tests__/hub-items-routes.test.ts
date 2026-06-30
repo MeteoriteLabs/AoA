@@ -18,6 +18,12 @@ const mockSvc = vi.hoisted(() => ({
   getAudit: vi.fn(),
 }));
 
+const mockHubPreferences = vi.hoisted(() => ({
+  get: vi.fn(),
+  upsert: vi.fn(),
+  reset: vi.fn(),
+}));
+
 const mockPerms = vi.hoisted(() => ({
   getEffectiveRole: vi.fn(),
   isFounder: vi.fn(),
@@ -30,6 +36,7 @@ const mockEmitStaleWorkHubItems = vi.hoisted(() => vi.fn().mockResolvedValue([])
 
 vi.mock("../services/index.js", () => ({
   hubItemsService: () => mockSvc,
+  hubPreferencesService: () => mockHubPreferences,
   permissionService: () => mockPerms,
   logActivity: mockLogActivity,
 }));
@@ -87,6 +94,76 @@ function boardActor(
 describe("hub-items routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("GET preferences/me returns user company-scoped preferences", async () => {
+    mockHubPreferences.get.mockResolvedValue({
+      defaultLanding: "home",
+      visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
+      groupMode: "auto",
+      density: "comfortable",
+      showAutopilotEntry: true,
+      updatedAt: null,
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app).get(`/api/companies/${COMPANY_A}/hub-items/preferences/me`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.defaultLanding).toBe("home");
+    expect(mockHubPreferences.get).toHaveBeenCalledWith("user-1", COMPANY_A);
+  });
+
+  it("PATCH preferences/me rejects duplicate visible lanes", async () => {
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .patch(`/api/companies/${COMPANY_A}/hub-items/preferences/me`)
+      .send({ visibleLanes: ["notifications", "notifications"] });
+
+    expect(res.status).toBe(400);
+    expect(mockHubPreferences.upsert).not.toHaveBeenCalled();
+  });
+
+  it("PATCH preferences/me normalizes a hidden default landing", async () => {
+    mockHubPreferences.upsert.mockResolvedValue({
+      defaultLanding: "home",
+      visibleLanes: ["notifications"],
+      groupMode: "auto",
+      density: "comfortable",
+      showAutopilotEntry: true,
+      updatedAt: "2026-06-30T00:00:00.000Z",
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .patch(`/api/companies/${COMPANY_A}/hub-items/preferences/me`)
+      .send({ defaultLanding: "waiting_on_you", visibleLanes: ["notifications"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.defaultLanding).toBe("home");
+    expect(mockHubPreferences.upsert).toHaveBeenCalledWith("user-1", COMPANY_A, {
+      defaultLanding: "waiting_on_you",
+      visibleLanes: ["notifications"],
+    });
+  });
+
+  it("POST preferences/me/reset restores defaults", async () => {
+    mockHubPreferences.reset.mockResolvedValue({
+      defaultLanding: "home",
+      visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
+      groupMode: "auto",
+      density: "comfortable",
+      showAutopilotEntry: true,
+      updatedAt: "2026-06-30T00:00:00.000Z",
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app).post(`/api/companies/${COMPANY_A}/hub-items/preferences/me/reset`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.visibleLanes).toEqual(["waiting_on_you", "notifications", "suggestions"]);
+    expect(mockHubPreferences.reset).toHaveBeenCalledWith("user-1", COMPANY_A);
   });
 
   it("(a) GET list asserts company access and returns the RBAC-scoped service result", async () => {
